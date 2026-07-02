@@ -46,6 +46,7 @@ from .admm_utils import (
     attach_rr_revolute_angular_local_compute_Jv_kernel,
     attach_rr_revolute_angular_local_compute_u_target_kernel,
     body_gravity_compensation_lumped_kernel,
+    compute_interface_weights_kernel,
     contact_lambda_update_kernel,
     contact_pp_accumulate_forces_kernel,
     contact_pp_compute_Jv_kernel,
@@ -1918,14 +1919,6 @@ class SolverCoupledADMM(SolverCoupled):
             wp.empty(count, dtype=float, device=device),
         )
 
-    def _body_effective_mass_np(self, entry_name: str):
-        buf = self._admm_buffers[entry_name]
-        return buf.body_effective_mass.numpy() if buf.body_effective_mass is not None else []
-
-    def _particle_effective_mass_np(self, entry_name: str):
-        buf = self._admm_buffers[entry_name]
-        return buf.particle_effective_mass.numpy() if buf.particle_effective_mass is not None else []
-
     def _mark_effective_mass_unsupported(
         self,
         entry: SolverEntry,
@@ -1942,15 +1935,34 @@ class SolverCoupledADMM(SolverCoupled):
         solver = self._entries[entry_name].solver
         raise NotImplementedError(f"{solver.__class__.__name__} does not support coupling_eval_effective_mass()")
 
-    @staticmethod
-    def _interface_weight(m_a: float, m_b: float) -> float:
-        if m_a > 0.0 and m_b > 0.0:
-            return ((m_a * m_b) / (m_a + m_b)) ** 0.5
-        if m_a > 0.0:
-            return m_a**0.5
-        if m_b > 0.0:
-            return m_b**0.5
-        return 1.0
+    def _compute_interface_weights(
+        self,
+        indices_a: Sequence[int],
+        masses_a: wp.array[float] | None,
+        indices_b: Sequence[int],
+        masses_b: wp.array[float] | None,
+    ) -> wp.array[float]:
+        """Compute indexed endpoint-pair weights on the model device."""
+        if len(indices_a) != len(indices_b):
+            raise ValueError("ADMM interface weight index arrays must have the same length")
+        count = len(indices_a)
+        if masses_a is None or masses_b is None:
+            return wp.ones(count, dtype=float, device=self.model.device)
+
+        weights = wp.empty(count, dtype=float, device=self.model.device)
+        wp.launch(
+            compute_interface_weights_kernel,
+            dim=count,
+            inputs=[
+                wp.array(indices_a, dtype=int, device=self.model.device),
+                masses_a,
+                wp.array(indices_b, dtype=int, device=self.model.device),
+                masses_b,
+            ],
+            outputs=[weights],
+            device=self.model.device,
+        )
+        return weights
 
     def _populate_admm_body_effective_mass_buffer(
         self,
@@ -2347,15 +2359,6 @@ class SolverCoupledADMM(SolverCoupled):
         )
         return frame_child, frame_parent
 
-    @staticmethod
-    def _inertia_scalar(inertia) -> float:
-        mat = np.asarray(inertia, dtype=np.float32)
-        if mat.shape == (3, 3):
-            value = float(np.trace(mat) / 3.0)
-        else:
-            value = float(np.mean(mat))
-        return max(value, 0.0)
-
     def _entry_name_for_body(self, body: int) -> str | None:
         if body < 0 or body >= len(self._body_owner):
             return None
@@ -2390,21 +2393,6 @@ class SolverCoupledADMM(SolverCoupled):
                 "leave it to SolverCoupledADMM so the constraint is not applied twice"
             )
         return child_entry, parent_entry
-
-    def _angular_effective_weight(self, entry_name_a: str, body_a: int, entry_name_b: str, body_b: int) -> float:
-        ids_a = wp.array([body_a], dtype=int, device=self.model.device)
-        ids_b = wp.array([body_b], dtype=int, device=self.model.device)
-        props_a = self._eval_effective_body_inertial_properties(
-            self._entries[entry_name_a], ids_a, raise_on_unsupported=False
-        )
-        props_b = self._eval_effective_body_inertial_properties(
-            self._entries[entry_name_b], ids_b, raise_on_unsupported=False
-        )
-        if props_a is None or props_b is None:
-            return 1.0
-        inertia_a = self._inertia_scalar(props_a[1][0])
-        inertia_b = self._inertia_scalar(props_b[1][0])
-        return self._interface_weight(inertia_a, inertia_b)
 
     def _build_admm_joint_groups(self, coupling: SolverCoupledADMM.Config) -> None:
         """Build quadratic ADMM attachments from cross-solver model joints."""
@@ -2553,19 +2541,20 @@ class SolverCoupledADMM(SolverCoupled):
         for (entry_name_a, entry_name_b), items in point_items.items():
             self._require_effective_mass(entry_name_a, CouplingEndpointKind.BODY)
             self._require_effective_mass(entry_name_b, CouplingEndpointKind.BODY)
-            body_mass_np_a = self._body_effective_mass_np(entry_name_a)
-            body_mass_np_b = self._body_effective_mass_np(entry_name_b)
-            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
+            body_global_ids_a = [item[0] for item in items]
+            body_global_ids_b = [item[2] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, body) for body in body_global_ids_a]
             points_a = [wp.vec3(*item[1]) for item in items]
-            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, body) for body in body_global_ids_b]
             points_b = [wp.vec3(*item[3]) for item in items]
             kappa = [item[4] for item in items]
             damping = [item[5] for item in items]
-            W = []
-            for body_a, _, body_b, _, _, _ in items:
-                m_a = float(body_mass_np_a[body_a]) if len(body_mass_np_a) > body_a else 0.0
-                m_b = float(body_mass_np_b[body_b]) if len(body_mass_np_b) > body_b else 0.0
-                W.append(self._interface_weight(m_a, m_b))
+            W = self._compute_interface_weights(
+                body_global_ids_a,
+                self._admm_buffers[entry_name_a].body_effective_mass,
+                body_global_ids_b,
+                self._admm_buffers[entry_name_b].body_effective_mass,
+            )
 
             n = len(items)
             self._admm_rr_groups.append(
@@ -2578,7 +2567,7 @@ class SolverCoupledADMM(SolverCoupled):
                     point_b=wp.array(points_b, dtype=wp.vec3, device=device),
                     kappa=wp.array(kappa, dtype=float, device=device),
                     damping=wp.array(damping, dtype=float, device=device),
-                    W=wp.array(W, dtype=float, device=device),
+                    W=W,
                     u=wp.zeros(n, dtype=wp.vec3, device=device),
                     lambda_=wp.zeros(n, dtype=wp.vec3, device=device),
                     Jv=wp.zeros(n, dtype=wp.vec3, device=device),
@@ -2587,16 +2576,20 @@ class SolverCoupledADMM(SolverCoupled):
             )
 
         for (entry_name_a, entry_name_b), items in angular_items.items():
-            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
+            body_global_ids_a = [item[0] for item in items]
+            body_global_ids_b = [item[2] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, body) for body in body_global_ids_a]
             frames_a = [item[1] for item in items]
-            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, body) for body in body_global_ids_b]
             frames_b = [item[3] for item in items]
             kappa = [item[4] for item in items]
             damping = [item[5] for item in items]
-            W = [
-                self._angular_effective_weight(entry_name_a, body_a, entry_name_b, body_b)
-                for body_a, _, body_b, _, _, _ in items
-            ]
+            W = self._compute_interface_weights(
+                body_global_ids_a,
+                self._admm_buffers[entry_name_a].body_effective_inertia_scalar,
+                body_global_ids_b,
+                self._admm_buffers[entry_name_b].body_effective_inertia_scalar,
+            )
             n = len(items)
             self._admm_rr_angular_groups.append(
                 _AdmmRigidRigidAngularAttachmentGroup(
@@ -2608,7 +2601,7 @@ class SolverCoupledADMM(SolverCoupled):
                     frame_b=wp.array(frames_b, dtype=wp.transform, device=device),
                     kappa=wp.array(kappa, dtype=float, device=device),
                     damping=wp.array(damping, dtype=float, device=device),
-                    W=wp.array(W, dtype=float, device=device),
+                    W=W,
                     u=wp.zeros(n, dtype=wp.vec3, device=device),
                     lambda_=wp.zeros(n, dtype=wp.vec3, device=device),
                     Jv=wp.zeros(n, dtype=wp.vec3, device=device),
@@ -2617,16 +2610,20 @@ class SolverCoupledADMM(SolverCoupled):
             )
 
         for (entry_name_a, entry_name_b), items in revolute_angular_items.items():
-            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
+            body_global_ids_a = [item[0] for item in items]
+            body_global_ids_b = [item[2] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, body) for body in body_global_ids_a]
             frames_a = [item[1] for item in items]
-            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, body) for body in body_global_ids_b]
             frames_b = [item[3] for item in items]
             kappa = [item[4] for item in items]
             damping = [item[5] for item in items]
-            W = [
-                self._angular_effective_weight(entry_name_a, body_a, entry_name_b, body_b)
-                for body_a, _, body_b, _, _, _ in items
-            ]
+            W = self._compute_interface_weights(
+                body_global_ids_a,
+                self._admm_buffers[entry_name_a].body_effective_inertia_scalar,
+                body_global_ids_b,
+                self._admm_buffers[entry_name_b].body_effective_inertia_scalar,
+            )
             n = len(items)
             self._admm_rr_revolute_angular_groups.append(
                 _AdmmRigidRigidAngularAttachmentGroup(
@@ -2638,7 +2635,7 @@ class SolverCoupledADMM(SolverCoupled):
                     frame_b=wp.array(frames_b, dtype=wp.transform, device=device),
                     kappa=wp.array(kappa, dtype=float, device=device),
                     damping=wp.array(damping, dtype=float, device=device),
-                    W=wp.array(W, dtype=float, device=device),
+                    W=W,
                     u=wp.zeros(n, dtype=wp.vec3, device=device),
                     lambda_=wp.zeros(n, dtype=wp.vec3, device=device),
                     Jv=wp.zeros(n, dtype=wp.vec3, device=device),
@@ -2647,14 +2644,18 @@ class SolverCoupledADMM(SolverCoupled):
             )
 
         for (entry_name_a, entry_name_b), items in angular_friction_items.items():
-            body_ids_a = [self._body_local_id(entry_name_a, item[0]) for item in items]
+            body_global_ids_a = [item[0] for item in items]
+            body_global_ids_b = [item[2] for item in items]
+            body_ids_a = [self._body_local_id(entry_name_a, body) for body in body_global_ids_a]
             frames_a = [item[1] for item in items]
-            body_ids_b = [self._body_local_id(entry_name_b, item[2]) for item in items]
+            body_ids_b = [self._body_local_id(entry_name_b, body) for body in body_global_ids_b]
             friction = [wp.vec3(*item[3]) for item in items]
-            W = [
-                self._angular_effective_weight(entry_name_a, body_a, entry_name_b, body_b)
-                for body_a, _, body_b, _ in items
-            ]
+            W = self._compute_interface_weights(
+                body_global_ids_a,
+                self._admm_buffers[entry_name_a].body_effective_inertia_scalar,
+                body_global_ids_b,
+                self._admm_buffers[entry_name_b].body_effective_inertia_scalar,
+            )
             n = len(items)
             self._admm_rr_angular_friction_groups.append(
                 _AdmmRigidRigidAngularFrictionGroup(
@@ -2664,7 +2665,7 @@ class SolverCoupledADMM(SolverCoupled):
                     frame_a=wp.array(frames_a, dtype=wp.transform, device=device),
                     body_ids_b=wp.array(body_ids_b, dtype=int, device=device),
                     friction=wp.array(friction, dtype=wp.vec3, device=device),
-                    W=wp.array(W, dtype=float, device=device),
+                    W=W,
                     u=wp.zeros(n, dtype=wp.vec3, device=device),
                     lambda_=wp.zeros(n, dtype=wp.vec3, device=device),
                     Jv=wp.zeros(n, dtype=wp.vec3, device=device),
@@ -2728,18 +2729,18 @@ class SolverCoupledADMM(SolverCoupled):
         for (body_entry, particle_entry), items in grouped.items():
             self._require_effective_mass(body_entry, CouplingEndpointKind.BODY)
             self._require_effective_mass(particle_entry, CouplingEndpointKind.PARTICLE)
-            body_mass_np = self._body_effective_mass_np(body_entry)
-            particle_mass_np = self._particle_effective_mass_np(particle_entry)
-            body_ids = [self._body_local_id(body_entry, item[0]) for item in items]
-            points = [wp.vec3(*item[1]) for item in items]
+            body_global_ids = [item[0] for item in items]
             particle_ids = [item[2] for item in items]
+            body_ids = [self._body_local_id(body_entry, body) for body in body_global_ids]
+            points = [wp.vec3(*item[1]) for item in items]
             kappa = [item[3] for item in items]
             damping = [item[4] for item in items]
-            W = []
-            for body, _, particle, _, _ in items:
-                m_body = float(body_mass_np[body]) if len(body_mass_np) > body else 0.0
-                m_particle = float(particle_mass_np[particle]) if len(particle_mass_np) > particle else 0.0
-                W.append(self._interface_weight(m_body, m_particle))
+            W = self._compute_interface_weights(
+                body_global_ids,
+                self._admm_buffers[body_entry].body_effective_mass,
+                particle_ids,
+                self._admm_buffers[particle_entry].particle_effective_mass,
+            )
 
             n = len(items)
             self._admm_rp_groups.append(
@@ -2751,7 +2752,7 @@ class SolverCoupledADMM(SolverCoupled):
                     particle_ids=wp.array(particle_ids, dtype=int, device=device),
                     kappa=wp.array(kappa, dtype=float, device=device),
                     damping=wp.array(damping, dtype=float, device=device),
-                    W=wp.array(W, dtype=float, device=device),
+                    W=W,
                     u=wp.zeros(n, dtype=wp.vec3, device=device),
                     lambda_=wp.zeros(n, dtype=wp.vec3, device=device),
                     Jv=wp.zeros(n, dtype=wp.vec3, device=device),
@@ -3179,19 +3180,23 @@ class SolverCoupledADMM(SolverCoupled):
                 continue
             self._require_effective_mass(spec.owner_a, CouplingEndpointKind.BODY)
             self._require_effective_mass(spec.owner_b, CouplingEndpointKind.BODY)
-            body_mass_np_a = self._body_effective_mass_np(spec.owner_a)
-            body_mass_np_b = self._body_effective_mass_np(spec.owner_b)
+            body_global_ids_a = []
+            body_global_ids_b = []
             candidate_body_ids_a = []
             candidate_body_ids_b = []
-            candidate_W = []
             for shape_a, shape_b in self._rigid_rigid_spec_shape_pairs(spec):
                 body_a = int(shape_body[shape_a])
                 body_b = int(shape_body[shape_b])
+                body_global_ids_a.append(body_a)
+                body_global_ids_b.append(body_b)
                 candidate_body_ids_a.append(self._body_local_id(spec.owner_a, body_a))
                 candidate_body_ids_b.append(self._body_local_id(spec.owner_b, body_b))
-                m_a = float(body_mass_np_a[body_a]) if len(body_mass_np_a) > body_a else 0.0
-                m_b = float(body_mass_np_b[body_b]) if len(body_mass_np_b) > body_b else 0.0
-                candidate_W.append(self._interface_weight(m_a, m_b))
+            candidate_W = self._compute_interface_weights(
+                body_global_ids_a,
+                self._admm_buffers[spec.owner_a].body_effective_mass,
+                body_global_ids_b,
+                self._admm_buffers[spec.owner_b].body_effective_mass,
+            )
 
             groups.append(
                 _AdmmRigidRigidContactGroup(
@@ -3227,7 +3232,7 @@ class SolverCoupledADMM(SolverCoupled):
                     shape_mask_b=self._make_int_mask_array(self.model.shape_count, set(shapes_b)),
                     candidate_body_ids_a=wp.array(candidate_body_ids_a, dtype=int, device=device),
                     candidate_body_ids_b=wp.array(candidate_body_ids_b, dtype=int, device=device),
-                    candidate_W=wp.array(candidate_W, dtype=float, device=device),
+                    candidate_W=candidate_W,
                 )
             )
 
@@ -3255,19 +3260,21 @@ class SolverCoupledADMM(SolverCoupled):
                 continue
             self._require_effective_mass(spec.body_owner, CouplingEndpointKind.BODY)
             self._require_effective_mass(spec.particle_owner, CouplingEndpointKind.PARTICLE)
-            body_mass_np = self._body_effective_mass_np(spec.body_owner)
-            particle_mass_np = self._particle_effective_mass_np(spec.particle_owner)
+            body_global_ids = []
             candidate_body_ids = []
             candidate_particle_ids = []
-            candidate_W = []
             for particle in particle_candidates:
                 for shape in shape_candidates:
                     body = int(shape_body[shape])
+                    body_global_ids.append(body)
                     candidate_body_ids.append(self._body_local_id(spec.body_owner, body))
                     candidate_particle_ids.append(int(particle))
-                    m_body = float(body_mass_np[body]) if len(body_mass_np) > body else 0.0
-                    m_particle = float(particle_mass_np[particle]) if len(particle_mass_np) > particle else 0.0
-                    candidate_W.append(self._interface_weight(m_body, m_particle))
+            candidate_W = self._compute_interface_weights(
+                body_global_ids,
+                self._admm_buffers[spec.body_owner].body_effective_mass,
+                candidate_particle_ids,
+                self._admm_buffers[spec.particle_owner].particle_effective_mass,
+            )
 
             groups.append(
                 _AdmmRigidParticleContactGroup(
@@ -3300,7 +3307,7 @@ class SolverCoupledADMM(SolverCoupled):
                     prev_lambda=wp.zeros(capacity, dtype=wp.vec3, device=device),
                     candidate_body_ids=wp.array(candidate_body_ids, dtype=int, device=device),
                     candidate_particle_ids=wp.array(candidate_particle_ids, dtype=int, device=device),
-                    candidate_W=wp.array(candidate_W, dtype=float, device=device),
+                    candidate_W=candidate_W,
                 )
             )
 
@@ -3318,18 +3325,18 @@ class SolverCoupledADMM(SolverCoupled):
                 continue
             self._require_effective_mass(spec.owner_a, CouplingEndpointKind.PARTICLE)
             self._require_effective_mass(spec.owner_b, CouplingEndpointKind.PARTICLE)
-            particle_mass_np_a = self._particle_effective_mass_np(spec.owner_a)
-            particle_mass_np_b = self._particle_effective_mass_np(spec.owner_b)
             candidate_particle_ids_a = []
             candidate_particle_ids_b = []
-            candidate_W = []
             for particle_a in particles_a:
                 for particle_b in particles_b:
                     candidate_particle_ids_a.append(int(particle_a))
                     candidate_particle_ids_b.append(int(particle_b))
-                    m_a = float(particle_mass_np_a[particle_a]) if len(particle_mass_np_a) > particle_a else 0.0
-                    m_b = float(particle_mass_np_b[particle_b]) if len(particle_mass_np_b) > particle_b else 0.0
-                    candidate_W.append(self._interface_weight(m_a, m_b))
+            candidate_W = self._compute_interface_weights(
+                candidate_particle_ids_a,
+                self._admm_buffers[spec.owner_a].particle_effective_mass,
+                candidate_particle_ids_b,
+                self._admm_buffers[spec.owner_b].particle_effective_mass,
+            )
 
             query_radius = 2.0 * float(self.model.particle_max_radius)
             contact_stream = AdmmContactStream.allocate(
@@ -3366,7 +3373,7 @@ class SolverCoupledADMM(SolverCoupled):
                     prev_lambda=wp.zeros(capacity, dtype=wp.vec3, device=device),
                     candidate_particle_ids_a=wp.array(candidate_particle_ids_a, dtype=int, device=device),
                     candidate_particle_ids_b=wp.array(candidate_particle_ids_b, dtype=int, device=device),
-                    candidate_W=wp.array(candidate_W, dtype=float, device=device),
+                    candidate_W=candidate_W,
                 )
             )
 

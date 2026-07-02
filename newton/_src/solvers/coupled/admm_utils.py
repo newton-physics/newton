@@ -34,6 +34,19 @@ def _interface_weight(m_a: float, m_b: float) -> float:
     return 1.0
 
 
+@wp.kernel(enable_backward=False)
+def compute_interface_weights_kernel(
+    indices_a: wp.array[int],
+    masses_a: wp.array[float],
+    indices_b: wp.array[int],
+    masses_b: wp.array[float],
+    weights: wp.array[float],
+):
+    """Compute interface weights for indexed endpoint mass pairs."""
+    i = wp.tid()
+    weights[i] = _interface_weight(masses_a[indices_a[i]], masses_b[indices_b[i]])
+
+
 @wp.func
 def _rescale_lambda(lambda_value: wp.vec3, old_weight: float, new_weight: float) -> wp.vec3:
     if old_weight > _WEIGHT_RESCALE_EPS and new_weight > _WEIGHT_RESCALE_EPS:
