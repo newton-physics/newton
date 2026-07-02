@@ -233,8 +233,8 @@ def joint_conversion_kernel(
     assert act_type_j >= 0, "Joint actuation type must be valid"
     joint_act_type[joint_id] = act_type_j
 
-    # Infer if the joint requires dynamic constraints
     is_dynamic_j = bool(False)
+    # Infer if the joint requires dynamic constraints
     for dof_id in range(ndofs_j):
         a_j = model_joint_armature[dofs_start_j + dof_id]
         b_j = model_joint_friction[dofs_start_j + dof_id]
