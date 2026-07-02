@@ -1105,6 +1105,95 @@ def parse_usd(
         else:
             return parent_id, child_id
 
+    def resolve_dof_params(jp_prim, jd, is_revolute: bool) -> dict[str, Any]:
+        """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
+
+        Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``
+        and the initial state stay ``None`` when unauthored so callers can apply their
+        own fallbacks; drive targets/gains are zero when ``has_drive`` is False.
+        """
+        limit_gains_scaling = DegreesToRadian if is_revolute else 1.0
+        armature = R.get_value(
+            jp_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+        )
+        friction = R.get_value(
+            jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+        )
+        velocity_limit = R.get_value(
+            jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
+        )
+        limit_ke = R.get_value(
+            jp_prim,
+            prim_type=PrimType.JOINT,
+            key="limit_angular_ke" if is_revolute else "limit_linear_ke",
+            default=default_joint_limit_ke * limit_gains_scaling,
+            verbose=verbose,
+        )
+        limit_kd = R.get_value(
+            jp_prim,
+            prim_type=PrimType.JOINT,
+            key="limit_angular_kd" if is_revolute else "limit_linear_kd",
+            default=default_joint_limit_kd * limit_gains_scaling,
+            verbose=verbose,
+        )
+        limit_lower = jd.limit.lower
+        limit_upper = jd.limit.upper
+
+        has_drive = jd.drive.enabled
+        target_pos = jd.drive.targetPosition if has_drive else 0.0
+        target_vel = jd.drive.targetVelocity if has_drive else 0.0
+        target_ke = jd.drive.stiffness if has_drive else 0.0
+        target_kd = jd.drive.damping if has_drive else 0.0
+        effort_limit = jd.drive.forceLimit if has_drive else np.inf
+        if has_drive:
+            actuator_mode = JointTargetMode.from_gains(
+                target_ke, target_kd, force_position_velocity_actuation, has_drive=True
+            )
+        else:
+            actuator_mode = JointTargetMode.NONE
+
+        state_prefix = "angular" if is_revolute else "linear"
+        initial_position = R.get_value(
+            jp_prim, PrimType.JOINT, f"{state_prefix}_position", default=None, verbose=verbose
+        )
+        initial_velocity = R.get_value(
+            jp_prim, PrimType.JOINT, f"{state_prefix}_velocity", default=None, verbose=verbose
+        )
+
+        if is_revolute:
+            limit_lower *= DegreesToRadian
+            limit_upper *= DegreesToRadian
+            limit_ke /= DegreesToRadian
+            limit_kd /= DegreesToRadian
+            if has_drive:
+                target_pos *= DegreesToRadian
+                target_vel *= DegreesToRadian
+                target_ke /= DegreesToRadian / joint_drive_gains_scaling
+                target_kd /= DegreesToRadian / joint_drive_gains_scaling
+            if velocity_limit is not None:
+                velocity_limit *= DegreesToRadian
+            if initial_position is not None:
+                initial_position *= DegreesToRadian
+
+        return {
+            "armature": armature,
+            "friction": friction,
+            "velocity_limit": velocity_limit,
+            "limit_lower": limit_lower,
+            "limit_upper": limit_upper,
+            "limit_ke": limit_ke,
+            "limit_kd": limit_kd,
+            "has_drive": has_drive,
+            "target_pos": target_pos,
+            "target_vel": target_vel,
+            "target_ke": target_ke,
+            "target_kd": target_kd,
+            "effort_limit": effort_limit,
+            "actuator_mode": actuator_mode,
+            "initial_position": initial_position,
+            "initial_velocity": initial_velocity,
+        }
+
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
         incoming_xform: wp.transform | None = None,
@@ -1125,20 +1214,6 @@ def parse_usd(
         if incoming_xform is not None:
             parent_tf = incoming_xform * parent_tf
 
-        joint_armature = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
-        )
-        joint_friction = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
-        )
-        joint_velocity_limit = R.get_value(
-            joint_prim,
-            prim_type=PrimType.JOINT,
-            key="velocity_limit",
-            default=None,
-            verbose=verbose,
-        )
-
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
             joint_prim, builder_custom_attr_joint, context={"builder": builder}
@@ -1157,94 +1232,44 @@ def parse_usd(
         if key == UsdPhysics.ObjectType.FixedJoint:
             joint_index = builder.add_joint_fixed(**joint_params)
         elif key == UsdPhysics.ObjectType.RevoluteJoint or key == UsdPhysics.ObjectType.PrismaticJoint:
-            # we need to scale the builder defaults for the joint limits to degrees for revolute joints
-            if key == UsdPhysics.ObjectType.RevoluteJoint:
-                limit_gains_scaling = DegreesToRadian
-            else:
-                limit_gains_scaling = 1.0
-
-            # Resolve limit gains with precedence, fallback to builder defaults when missing
-            current_joint_limit_ke = R.get_value(
-                joint_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
-                default=default_joint_limit_ke * limit_gains_scaling,
-                verbose=verbose,
-            )
-            current_joint_limit_kd = R.get_value(
-                joint_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
-                default=default_joint_limit_kd * limit_gains_scaling,
-                verbose=verbose,
-            )
+            is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
+            dof = resolve_dof_params(joint_prim, joint_desc, is_revolute)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
-            joint_params["limit_lower"] = joint_desc.limit.lower
-            joint_params["limit_upper"] = joint_desc.limit.upper
-            joint_params["limit_ke"] = current_joint_limit_ke
-            joint_params["limit_kd"] = current_joint_limit_kd
-            joint_params["armature"] = joint_armature
-            joint_params["friction"] = joint_friction
-            joint_params["velocity_limit"] = joint_velocity_limit
-            if joint_desc.drive.enabled:
-                target_vel = joint_desc.drive.targetVelocity
-                target_pos = joint_desc.drive.targetPosition
-                target_ke = joint_desc.drive.stiffness
-                target_kd = joint_desc.drive.damping
+            joint_params["limit_lower"] = dof["limit_lower"]
+            joint_params["limit_upper"] = dof["limit_upper"]
+            joint_params["limit_ke"] = dof["limit_ke"]
+            joint_params["limit_kd"] = dof["limit_kd"]
+            joint_params["armature"] = dof["armature"]
+            joint_params["friction"] = dof["friction"]
+            joint_params["velocity_limit"] = dof["velocity_limit"]
+            if dof["has_drive"]:
+                joint_params["target_vel"] = dof["target_vel"]
+                joint_params["target_pos"] = dof["target_pos"]
+                joint_params["target_ke"] = dof["target_ke"]
+                joint_params["target_kd"] = dof["target_kd"]
+                joint_params["effort_limit"] = dof["effort_limit"]
+            joint_params["actuator_mode"] = dof["actuator_mode"]
 
-                joint_params["target_vel"] = target_vel
-                joint_params["target_pos"] = target_pos
-                joint_params["target_ke"] = target_ke
-                joint_params["target_kd"] = target_kd
-                joint_params["effort_limit"] = joint_desc.drive.forceLimit
+            # Initial joint state, applied after creation (already in Newton units)
+            initial_position = dof["initial_position"]
+            initial_velocity = dof["initial_velocity"]
 
-                joint_params["actuator_mode"] = JointTargetMode.from_gains(
-                    target_ke, target_kd, force_position_velocity_actuation, has_drive=True
-                )
-            else:
-                joint_params["actuator_mode"] = JointTargetMode.NONE
-
-            # Read initial joint state BEFORE creating/overwriting USD attributes
-            initial_position = None
-            initial_velocity = None
-            dof_type = "linear" if key == UsdPhysics.ObjectType.PrismaticJoint else "angular"
-
-            # Resolve initial joint state from schema resolver
-            if dof_type == "angular":
-                initial_position = R.get_value(
-                    joint_prim, PrimType.JOINT, "angular_position", default=None, verbose=verbose
-                )
-                initial_velocity = R.get_value(
-                    joint_prim, PrimType.JOINT, "angular_velocity", default=None, verbose=verbose
-                )
-            else:  # linear
-                initial_position = R.get_value(
-                    joint_prim, PrimType.JOINT, "linear_position", default=None, verbose=verbose
-                )
-                initial_velocity = R.get_value(
-                    joint_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
-                )
-
-            if key == UsdPhysics.ObjectType.PrismaticJoint:
-                joint_index = builder.add_joint_prismatic(**joint_params)
-            else:
-                if joint_desc.drive.enabled:
-                    joint_params["target_pos"] *= DegreesToRadian
-                    joint_params["target_vel"] *= DegreesToRadian
-                    joint_params["target_kd"] /= DegreesToRadian / joint_drive_gains_scaling
-                    joint_params["target_ke"] /= DegreesToRadian / joint_drive_gains_scaling
-
-                joint_params["limit_lower"] *= DegreesToRadian
-                joint_params["limit_upper"] *= DegreesToRadian
-                joint_params["limit_ke"] /= DegreesToRadian
-                joint_params["limit_kd"] /= DegreesToRadian
-                if joint_params["velocity_limit"] is not None:
-                    joint_params["velocity_limit"] *= DegreesToRadian
-
+            if is_revolute:
                 joint_index = builder.add_joint_revolute(**joint_params)
+            else:
+                joint_index = builder.add_joint_prismatic(**joint_params)
         elif key == UsdPhysics.ObjectType.SphericalJoint:
             joint_index = builder.add_joint_ball(**joint_params)
         elif key == UsdPhysics.ObjectType.D6Joint:
+            joint_armature = R.get_value(
+                joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
+            )
+            joint_friction = R.get_value(
+                joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
+            )
+            joint_velocity_limit = R.get_value(
+                joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
+            )
             linear_axes = []
             angular_axes = []
             num_dofs = 0
@@ -1453,25 +1478,15 @@ def parse_usd(
 
         # Apply saved initial joint state after joint creation
         if key in (UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint):
+            joint_type_str = "revolute" if key == UsdPhysics.ObjectType.RevoluteJoint else "prismatic"
             if initial_position is not None:
-                q_start = builder.joint_q_start[joint_index]
-                if key == UsdPhysics.ObjectType.RevoluteJoint:
-                    builder.joint_q[q_start] = initial_position * DegreesToRadian
-                else:
-                    builder.joint_q[q_start] = initial_position
+                builder.joint_q[builder.joint_q_start[joint_index]] = initial_position
                 if verbose:
-                    joint_type_str = "revolute" if key == UsdPhysics.ObjectType.RevoluteJoint else "prismatic"
-                    print(
-                        f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({'rad' if key == UsdPhysics.ObjectType.RevoluteJoint else 'm'})"
-                    )
+                    unit = "rad" if key == UsdPhysics.ObjectType.RevoluteJoint else "m"
+                    print(f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({unit})")
             if initial_velocity is not None:
-                qd_start = builder.joint_qd_start[joint_index]
-                if key == UsdPhysics.ObjectType.RevoluteJoint:
-                    builder.joint_qd[qd_start] = initial_velocity  # velocity is already in rad/s
-                else:
-                    builder.joint_qd[qd_start] = initial_velocity
+                builder.joint_qd[builder.joint_qd_start[joint_index]] = initial_velocity
                 if verbose:
-                    joint_type_str = "revolute" if key == UsdPhysics.ObjectType.RevoluteJoint else "prismatic"
                     print(f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} rad/s")
         elif key == UsdPhysics.ObjectType.D6Joint:
             # Apply D6 joint initial state
@@ -1616,89 +1631,9 @@ def parse_usd(
                 )
 
             is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
-            if is_revolute:
-                limit_gains_scaling = DegreesToRadian
-            else:
-                limit_gains_scaling = 1.0
-
-            j_armature = R.get_value(
-                jp_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
-            )
-            j_friction = R.get_value(
-                jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
-            )
-            j_velocity_limit = R.get_value(
-                jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
-            )
-
-            limit_ke = R.get_value(
-                jp_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_ke" if is_revolute else "limit_linear_ke",
-                default=default_joint_limit_ke * limit_gains_scaling,
-                verbose=verbose,
-            )
-            limit_kd = R.get_value(
-                jp_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_kd" if is_revolute else "limit_linear_kd",
-                default=default_joint_limit_kd * limit_gains_scaling,
-                verbose=verbose,
-            )
-
-            limit_lower = jd.limit.lower
-            limit_upper = jd.limit.upper
-
-            # Build drive params
-            target_pos = 0.0
-            target_vel = 0.0
-            target_ke = 0.0
-            target_kd = 0.0
-            effort_limit = np.inf
-            actuator_mode = JointTargetMode.NONE
-            if jd.drive.enabled:
-                target_vel = jd.drive.targetVelocity
-                target_pos = jd.drive.targetPosition
-                target_ke = jd.drive.stiffness
-                target_kd = jd.drive.damping
-                effort_limit = jd.drive.forceLimit
-                actuator_mode = JointTargetMode.from_gains(
-                    target_ke, target_kd, force_position_velocity_actuation, has_drive=True
-                )
-
-            # Read initial joint state
-            initial_position = None
-            initial_velocity = None
-            if is_revolute:
-                initial_position = R.get_value(
-                    jp_prim, PrimType.JOINT, "angular_position", default=None, verbose=verbose
-                )
-                initial_velocity = R.get_value(
-                    jp_prim, PrimType.JOINT, "angular_velocity", default=None, verbose=verbose
-                )
-            else:
-                initial_position = R.get_value(
-                    jp_prim, PrimType.JOINT, "linear_position", default=None, verbose=verbose
-                )
-                initial_velocity = R.get_value(
-                    jp_prim, PrimType.JOINT, "linear_velocity", default=None, verbose=verbose
-                )
-
-            # Unit conversion for revolute joints
-            if is_revolute:
-                limit_lower *= DegreesToRadian
-                limit_upper *= DegreesToRadian
-                limit_ke /= DegreesToRadian
-                limit_kd /= DegreesToRadian
-                if jd.drive.enabled:
-                    target_pos *= DegreesToRadian
-                    target_vel *= DegreesToRadian
-                    target_kd /= DegreesToRadian / joint_drive_gains_scaling
-                    target_ke /= DegreesToRadian / joint_drive_gains_scaling
-                if j_velocity_limit is not None:
-                    j_velocity_limit *= DegreesToRadian
-                if initial_position is not None:
-                    initial_position *= DegreesToRadian
+            dof = resolve_dof_params(jp_prim, jd, is_revolute)
+            initial_position = dof["initial_position"]
+            initial_velocity = dof["initial_velocity"]
 
             # Compute the DOF axis in the representative joint's frame.
             # Each USD joint may have a different localRot that orients its fixed axis
@@ -1725,19 +1660,21 @@ def parse_usd(
 
             ax = ModelBuilder.JointDofConfig(
                 axis=dof_axis,
-                limit_lower=limit_lower,
-                limit_upper=limit_upper,
-                limit_ke=limit_ke,
-                limit_kd=limit_kd,
-                target_pos=target_pos,
-                target_vel=target_vel,
-                target_ke=target_ke,
-                target_kd=target_kd,
-                armature=j_armature,
-                friction=j_friction,
-                effort_limit=effort_limit,
-                velocity_limit=j_velocity_limit if j_velocity_limit is not None else default_joint_velocity_limit,
-                actuator_mode=actuator_mode,
+                limit_lower=dof["limit_lower"],
+                limit_upper=dof["limit_upper"],
+                limit_ke=dof["limit_ke"],
+                limit_kd=dof["limit_kd"],
+                target_pos=dof["target_pos"],
+                target_vel=dof["target_vel"],
+                target_ke=dof["target_ke"],
+                target_kd=dof["target_kd"],
+                armature=dof["armature"],
+                friction=dof["friction"],
+                effort_limit=dof["effort_limit"],
+                velocity_limit=dof["velocity_limit"]
+                if dof["velocity_limit"] is not None
+                else default_joint_velocity_limit,
+                actuator_mode=dof["actuator_mode"],
             )
 
             # Collect per-DOF custom attributes from this sibling prim
