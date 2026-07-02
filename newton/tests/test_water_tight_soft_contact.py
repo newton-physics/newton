@@ -30,7 +30,7 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_edge_sdf,
     optimize_face_sdf,
 )
-from newton._src.sim.collide import _build_soft_ef_rigid_pairs
+from newton._src.sim.collide import _build_soft_ef_device_adjacency, _build_soft_ef_rigid_pairs
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -319,6 +319,7 @@ def test_edge_face_passes_box(test, device):
     state = model.state()
     contacts.soft_contact_count.zero_()
     edge_pairs, face_pairs = _build_soft_ef_rigid_pairs(model)
+    tri_edge, edge_tri = _build_soft_ef_device_adjacency(model)
     launch_soft_ef_contacts(
         model=model,
         state=state,
@@ -327,6 +328,8 @@ def test_edge_face_passes_box(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
+        tri_edge_indices=tri_edge,
+        edge_tri_indices=edge_tri,
     )
 
     counts = contacts.soft_contact_count.numpy()
@@ -827,6 +830,7 @@ def test_end_to_end_no_false_pos_neg(test, device):
     state = model.state()
     contacts.soft_contact_count.zero_()
     edge_pairs, face_pairs = _build_soft_ef_rigid_pairs(model)
+    tri_edge, edge_tri = _build_soft_ef_device_adjacency(model)
     launch_soft_ef_contacts(
         model=model,
         state=state,
@@ -835,6 +839,8 @@ def test_end_to_end_no_false_pos_neg(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
+        tri_edge_indices=tri_edge,
+        edge_tri_indices=edge_tri,
     )
 
     counts = contacts.soft_contact_count.numpy()

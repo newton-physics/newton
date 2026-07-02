@@ -589,6 +589,22 @@ def _build_soft_ef_rigid_pairs(model: Model) -> tuple[wp.array[wp.vec2i], wp.arr
     return edge_pairs, face_pairs
 
 
+def _build_soft_ef_device_adjacency(model: Model):
+    """Upload the soft mesh's ``tri_edge_indices`` / ``edge_tri_indices`` topology maps to the model
+    device for the water-tight edge pass (which resolves each edge's owner triangle + local slot on
+    device). The host :class:`~newton._src.utils.mesh.MeshAdjacency` keeps them as NumPy, so upload
+    once at pipeline construction (topology is immutable after finalize). Returns
+    ``(tri_edge_indices, edge_tri_indices)`` device arrays, or ``(None, None)`` if there is no soft
+    mesh adjacency.
+    """
+    adj = getattr(model, "soft_mesh_adjacency", None)
+    if adj is None:
+        return None, None
+    tri_edge = wp.array(np.ascontiguousarray(adj.tri_edge_indices, dtype=np.int32), dtype=wp.int32, device=model.device)
+    edge_tri = wp.array(np.ascontiguousarray(adj.edge_tri_indices, dtype=np.int32), dtype=wp.int32, device=model.device)
+    return tri_edge, edge_tri
+
+
 class CollisionPipeline:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -984,8 +1000,11 @@ class CollisionPipeline:
         self.enable_water_tight_rigid_soft_contact = enable_water_tight_rigid_soft_contact
         # Water-tight edge/face candidate pairs (world-compatible, like the particle pairs above);
         # empty when the flag is off so the flag-off default stays bit-for-bit.
+        self._soft_ef_tri_edge_indices = None
+        self._soft_ef_edge_tri_indices = None
         if enable_water_tight_rigid_soft_contact:
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _build_soft_ef_rigid_pairs(model)
+            self._soft_ef_tri_edge_indices, self._soft_ef_edge_tri_indices = _build_soft_ef_device_adjacency(model)
         else:
             _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
@@ -1464,4 +1483,6 @@ class CollisionPipeline:
                 device=self.device,
                 edge_pairs=self.soft_edge_rigid_pairs,
                 face_pairs=self.soft_face_rigid_pairs,
+                tri_edge_indices=self._soft_ef_tri_edge_indices,
+                edge_tri_indices=self._soft_ef_edge_tri_indices,
             )

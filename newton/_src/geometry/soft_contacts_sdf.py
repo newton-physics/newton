@@ -12,7 +12,6 @@ This lives in its own module (not ``kernels.py``) because it needs the volume-SD
 Nothing imports this module except the collision launcher, so it is cycle-free.
 """
 
-import numpy as np
 import warp as wp
 
 from .flags import ShapeFlags
@@ -444,12 +443,16 @@ def create_soft_edge_contacts(
         )
 
 
-def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, edge_pairs, face_pairs):
+def launch_soft_ef_contacts(
+    *, model, state, contacts, margin: float, device, edge_pairs, face_pairs, tri_edge_indices, edge_tri_indices
+):
     """Launch the soft EDGE then FACE passes (the soft-particle pass is the legacy kernel).
 
     ``edge_pairs`` / ``face_pairs`` are precomputed world-compatible (soft feature, shape) index
     pairs (``wp.vec2i``), analogous to :func:`_build_soft_rigid_contact_pairs` for the particle
-    pass -- one thread per pair, so cross-world features never reach the kernel.
+    pass -- one thread per pair, so cross-world features never reach the kernel. ``tri_edge_indices``
+    / ``edge_tri_indices`` are the mesh topology maps on device, uploaded once by the caller (the
+    host MeshAdjacency keeps them as NumPy).
 
     Order matters: EDGE before FACE, because the face pass's write base reads the final edge count.
     """
@@ -460,19 +463,6 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
     n_face_pairs = int(face_pairs.shape[0])
     if n_edge_pairs == 0 and n_face_pairs == 0:
         return
-
-    # MeshAdjacency keeps the edge/edge-tri/tri-edge tables on the host (numpy); upload the two
-    # the edge kernel needs to the device once and cache on the model (keyed by device). Built
-    # here (outside any solver graph capture) so the launch itself allocates nothing.
-    dev = wp.get_device(device)
-    dev_adj = getattr(model, "_soft_ef_dev_adjacency", None)
-    if dev_adj is None or dev_adj[0] != str(dev):
-        tri_edge_dev = wp.array(np.ascontiguousarray(adj.tri_edge_indices, dtype=np.int32), dtype=wp.int32, device=dev)
-        edge_tri_dev = wp.array(np.ascontiguousarray(adj.edge_tri_indices, dtype=np.int32), dtype=wp.int32, device=dev)
-        dev_adj = (str(dev), tri_edge_dev, edge_tri_dev)
-        model._soft_ef_dev_adjacency = dev_adj
-    tri_edge_indices_dev = dev_adj[1]
-    edge_tri_indices_dev = dev_adj[2]
 
     shape_args = [
         model.shape_body,
@@ -503,8 +493,8 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
                 state.particle_q,
                 model.particle_radius,
                 model.tri_indices,
-                tri_edge_indices_dev,
-                edge_tri_indices_dev,
+                tri_edge_indices,
+                edge_tri_indices,
                 *shape_args,
                 SDF_EDGE_ITERS,
                 margin,
