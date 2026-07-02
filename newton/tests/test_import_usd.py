@@ -809,6 +809,88 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertIn("/World/DistanceJoint", builder.joint_label)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_joint_collision_enabled(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        def build(joints, *, enable_self_collisions=True):
+            stage = Usd.Stage.CreateInMemory()
+            articulation = UsdGeom.Xform.Define(stage, "/World")
+            UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+            bodies = []
+            for name in ("Body0", "Body1"):
+                body = UsdGeom.Cube.Define(stage, f"/World/{name}")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+                bodies.append(body)
+
+            for joint_type, name, collision_enabled in joints:
+                joint = joint_type.Define(stage, f"/World/{name}")
+                joint.CreateBody0Rel().SetTargets([bodies[0].GetPath()])
+                joint.CreateBody1Rel().SetTargets([bodies[1].GetPath()])
+                joint.CreateCollisionEnabledAttr().Set(collision_enabled)
+
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage, enable_self_collisions=enable_self_collisions)
+            shape_pair = tuple(sorted(builder.shape_label.index(str(body.GetPath())) for body in bodies))
+            return builder, shape_pair
+
+        for collision_enabled in (False, True):
+            with self.subTest(collision_enabled=collision_enabled):
+                builder, shape_pair = build([(UsdPhysics.RevoluteJoint, "Joint", collision_enabled)])
+                self.assertEqual(
+                    shape_pair in builder.shape_collision_filter_pairs,
+                    not collision_enabled,
+                )
+
+        for collision_values in ((True, True), (True, False), (False, True)):
+            with self.subTest(merged_collision_enabled=collision_values):
+                builder, shape_pair = build(
+                    [
+                        (UsdPhysics.RevoluteJoint, "Angular", collision_values[0]),
+                        (UsdPhysics.PrismaticJoint, "Linear", collision_values[1]),
+                    ]
+                )
+                self.assertEqual(
+                    shape_pair in builder.shape_collision_filter_pairs,
+                    not all(collision_values),
+                )
+
+        builder, shape_pair = build(
+            [(UsdPhysics.RevoluteJoint, "Joint", True)],
+            enable_self_collisions=False,
+        )
+        self.assertIn(shape_pair, builder.shape_collision_filter_pairs)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_does_not_filter_collisions(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        for joint_type in (UsdPhysics.FixedJoint, UsdPhysics.RevoluteJoint):
+            for collision_enabled in (False, True):
+                with self.subTest(joint_type=joint_type, collision_enabled=collision_enabled):
+                    stage = Usd.Stage.CreateInMemory()
+                    articulation = UsdGeom.Xform.Define(stage, "/World")
+                    UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+                    ground = UsdGeom.Cube.Define(stage, "/Ground")
+                    UsdPhysics.CollisionAPI.Apply(ground.GetPrim())
+                    body = UsdGeom.Cube.Define(stage, "/World/Body")
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+                    joint = joint_type.Define(stage, "/World/Joint")
+                    joint.CreateBody1Rel().SetTargets([body.GetPath()])
+                    joint.CreateCollisionEnabledAttr().Set(collision_enabled)
+
+                    builder = newton.ModelBuilder()
+                    builder.add_usd(stage)
+                    shape_pair = tuple(
+                        sorted(builder.shape_label.index(str(prim.GetPath())) for prim in (ground, body))
+                    )
+                    self.assertNotIn(shape_pair, builder.shape_collision_filter_pairs)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
         builder_dfs = newton.ModelBuilder()
         builder_dfs.add_usd(
