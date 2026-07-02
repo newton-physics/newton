@@ -54,7 +54,8 @@ API
     launch()  # one zero-arg callable; CUDA-graph capturable
 """
 
-from __future__ import annotations
+# No `from __future__ import annotations`: the kernel factories' `dtype`
+# annotations must evaluate eagerly (the kernel bodies never reference it).
 
 import math
 from collections.abc import Callable
