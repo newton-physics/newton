@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -13,7 +15,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerUSD
 
 if USD_AVAILABLE:
-    from pxr import UsdGeom
+    from pxr import UsdGeom, UsdShade
 
 
 def _build_box_model() -> newton.Model:
@@ -37,13 +39,24 @@ def _build_box_model() -> newton.Model:
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestViewerUSD(unittest.TestCase):
     def _make_viewer(self):
-        temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
-        temp_file.close()
-        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
-        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        # Allocate a private work dir per test so the texture PNG and any
+        # mkstemp siblings stay isolated from the system temp dir. Without
+        # this, the .tmp check below is flaky on hosts where other tests or
+        # processes also call mkstemp into the shared temp dir.
+        work_dir = tempfile.mkdtemp(prefix="newton_test_viewer_usd_")
+        self.addCleanup(lambda: shutil.rmtree(work_dir, ignore_errors=True))
+        output_path = os.path.join(work_dir, "scene.usda")
+        viewer = ViewerUSD(output_path=output_path, num_frames=1)
         self.addCleanup(viewer.close)
         self.addCleanup(lambda: setattr(viewer, "output_path", ""))
+        viewer._test_work_dir = work_dir
         return viewer
+
+    def _logged_texture_path(self, viewer, mesh_name: str) -> str:
+        safe = mesh_name.replace("/", "_").lstrip("_")
+        shader = UsdShade.Shader.Get(viewer.stage, f"/root/Materials/mat_{safe}/DiffuseTexture")
+        asset_path = shader.GetInput("file").Get()
+        return asset_path.path if hasattr(asset_path, "path") else str(asset_path)
 
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()
@@ -100,6 +113,55 @@ class TestViewerUSD(unittest.TestCase):
         prim_after = UsdGeom.Points.Get(viewer2.stage, path).GetPrim()
         self.assertFalse(prim_after.IsValid())
         self.assertTrue(os.path.exists(temp_file.name))
+
+    def test_generated_texture_path_stays_stable_after_clear_model(self):
+        """Reusing a mesh name across clear_model keeps the same texture asset path and leaves no temp siblings behind."""
+        viewer = self._make_viewer()
+        mesh_name = "/textured_mesh"
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        uvs = wp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=wp.vec2)
+        texture = np.array(
+            [
+                [[255, 0, 0, 255], [0, 255, 0, 255]],
+                [[0, 0, 255, 255], [255, 255, 255, 255]],
+            ],
+            dtype=np.uint8,
+        )
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+        first_texture_path = self._logged_texture_path(viewer, mesh_name)
+
+        viewer.clear_model()
+        viewer.begin_frame(0.0)
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+        second_texture_path = self._logged_texture_path(viewer, mesh_name)
+
+        self.assertEqual(first_texture_path, second_texture_path)
+        self.assertTrue(os.path.exists(first_texture_path))
+        # Only scan the test's private work dir; the system temp dir is shared.
+        leaked = sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".tmp"))
+        self.assertEqual(leaked, [])
+
+    def test_save_texture_atomic_cleans_up_tmp_on_failure(self):
+        """A failure during the temp-file write must not leave a `.tmp` sibling behind."""
+        viewer = self._make_viewer()
+        tex_path = os.path.join(viewer._test_work_dir, "tex.png")
+        tex_array = np.zeros((2, 2, 3), dtype=np.uint8)
+
+        # Force os.replace to fail after the PNG has been written to the
+        # temp file, so the finally cleanup branch in _save_texture_atomic
+        # must run to remove the .tmp sibling.
+        with mock.patch("newton._src.viewer.viewer_usd.os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                ViewerUSD._save_texture_atomic(tex_array, tex_path)
+
+        leaked = [name for name in os.listdir(viewer._test_work_dir) if name.endswith(".tmp")]
+        self.assertEqual(leaked, [])
 
     def test_log_points_treats_wp_float_triplet_as_single_constant_color(self):
         viewer = self._make_viewer()

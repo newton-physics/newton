@@ -65,6 +65,7 @@
 - Fix URDF `package://` mesh fallback resolution without `resolve-robotics-uri-py` so package names only match full path components instead of unrelated directory-name substrings
 - Fix `ModelBuilder.collapse_fixed_joints()` crashing with `IndexError` when a `mujoco:equality_constraint` row omits optional fields (`anchor`, `relpose`) that carry defaults. (#3054)
 - Fix `ViewerGL.set_model()` resetting headless/interactive camera and wind state when switching between models that use the same up-axis. (#2658)
+- Fix `ViewerUSD` exposing partial PNGs to texture consumers by writing generated textures to a sibling temp file and publishing them with `os.replace`, so `clear_model` cannot leave a renderer reading a truncated image while the new PNG is being written.
 - Fix bend force calculation error in Style3D solver
 
 ### Removed

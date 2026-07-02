@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import warnings
 from typing import Any
 
@@ -171,6 +172,27 @@ class ViewerUSD(ViewerBase):
         self.stage.SetDefaultPrim(self.root.GetPrim())
         self._frame_index = 0
         self._frame_count = 0
+
+    @staticmethod
+    def _save_texture_atomic(tex_array: np.ndarray, tex_path: str) -> None:
+        """Write a texture image atomically so readers never see a partial PNG."""
+        from PIL import Image
+
+        tex_dir = os.path.dirname(tex_path)
+        base_name = os.path.basename(tex_path)
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix=f".{base_name}.", suffix=".tmp", dir=tex_dir)
+            os.close(fd)
+            Image.fromarray(tex_array).save(tmp_path, format="PNG")
+            os.replace(tmp_path, tex_path)
+            tmp_path = None
+        finally:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _remove_active_layer_prims(self):
         names = set(self._meshes) | set(self._instance_groups) | set(self._instancers) | set(self._points)
@@ -348,9 +370,7 @@ class ViewerUSD(ViewerBase):
             safe_name = mesh_name.replace("/", "_").replace("\\", "_")
             tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
             try:
-                from PIL import Image
-
-                Image.fromarray(tex_array).save(tex_path)
+                self._save_texture_atomic(tex_array, tex_path)
             except Exception as exc:
                 warnings.warn(
                     f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. "
