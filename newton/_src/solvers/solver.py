@@ -191,8 +191,7 @@ class SolverBase:
         self.model = model
         if not self._supports_mimic_compliance and getattr(model, "_has_authored_mimic_compliance", False):
             warnings.warn(
-                f"{type(self).__name__} does not support mimic constraints; "
-                "authored stiffness/damping are ignored.",
+                f"{type(self).__name__} does not support mimic constraints; authored stiffness/damping are ignored.",
                 stacklevel=2,
             )
 
