@@ -981,6 +981,28 @@ def Xform "World"
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_distance_joint_label(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        body0 = UsdGeom.Xform.Define(stage, "/World/Body0")
+        UsdPhysics.RigidBodyAPI.Apply(body0.GetPrim())
+        body1 = UsdGeom.Xform.Define(stage, "/World/Body1")
+        UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
+
+        joint = UsdPhysics.DistanceJoint.Define(stage, "/World/DistanceJoint")
+        joint.CreateBody0Rel().SetTargets([body0.GetPath()])
+        joint.CreateBody1Rel().SetTargets([body1.GetPath()])
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertIn("/World/DistanceJoint", builder.joint_label)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_collision_enabled(self):
         from pxr import Usd, UsdGeom, UsdPhysics
 

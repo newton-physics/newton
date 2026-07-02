@@ -4663,6 +4663,7 @@ class ModelBuilder:
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        label: str | None = None,
     ) -> int:
         """Adds a distance joint to the model. The distance joint constraints the distance between the joint anchor points on the two bodies (see :ref:`FK-IK`) it connects to the interval [`min_distance`, `max_distance`].
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 linear and then 3 angular velocity dimensions).
@@ -4677,6 +4678,7 @@ class ModelBuilder:
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
+            label: The label of the joint.
 
         Returns:
             The index of the added joint.
@@ -4696,6 +4698,7 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
+            label=label,
             linear_axes=[
                 ax,
                 ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
@@ -8398,6 +8401,53 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.EDGE,
             )
 
+    @staticmethod
+    def _expand_edge_parameter(values: float | Sequence[float] | np.ndarray | None, count: int):
+        """Normalize edge parameters to one value per generated edge."""
+        if values is None:
+            return None
+        values_array = np.asarray(values, dtype=np.float32)
+        if values_array.ndim == 0:
+            return [float(values_array)] * count
+        values_flat = values_array.reshape(-1)
+        if values_flat.size != count:
+            raise ValueError(f"Expected {count} edge parameter values, got {values_flat.size}")
+        return values_flat.tolist()
+
+    def _add_soft_mesh_edges_from_triangles(
+        self,
+        start_tri: int,
+        end_tri: int,
+        *,
+        edge_ke: float | Sequence[float] | np.ndarray | None = None,
+        edge_kd: float | Sequence[float] | np.ndarray | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> range:
+        """Register bending edges for a triangle range from its derived edge topology.
+
+        Computes the unique edges of the triangle range and registers them as
+        bending edges (with material). The edge/triangle adjacency maps are rebuilt
+        from the accumulated tables in :meth:`finalize`.
+
+        Returns:
+            The range of global edge indices added.
+        """
+        edge_start = len(self.edge_indices)
+        if end_tri > start_tri:
+            local = MeshAdjacency(self.tri_indices[start_tri:end_tri])
+            edge_count = local.edge_indices.shape[0]
+            if edge_count:
+                self.add_edges(
+                    local.edge_indices[:, 0],
+                    local.edge_indices[:, 1],
+                    local.edge_indices[:, 2],
+                    local.edge_indices[:, 3],
+                    edge_ke=self._expand_edge_parameter(edge_ke, edge_count),
+                    edge_kd=self._expand_edge_parameter(edge_kd, edge_count),
+                    custom_attributes=custom_attributes,
+                )
+        return range(edge_start, len(self.edge_indices))
+
     @deprecate_nonkeyword_arguments
     def add_cloth_grid(
         self,
@@ -8650,21 +8700,14 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-
-        edge_indices = np.fromiter(
-            (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-            int,
-        ).reshape(-1, 4)
-        self.add_edges(
-            edge_indices[:, 0],
-            edge_indices[:, 1],
-            edge_indices[:, 2],
-            edge_indices[:, 3],
-            edge_ke=[edge_ke] * len(edge_indices),
-            edge_kd=[edge_kd] * len(edge_indices),
+        edge_range = self._add_soft_mesh_edges_from_triangles(
+            start_tri,
+            end_tri,
+            edge_ke=edge_ke,
+            edge_kd=edge_kd,
             custom_attributes=custom_attributes_edges,
         )
+        edge_indices = np.asarray(self.edge_indices[edge_range.start : edge_range.stop], dtype=np.int32)
 
         if add_springs:
             spring_indices = set()
@@ -8956,15 +8999,7 @@ class ModelBuilder:
         if add_surface_mesh_edges:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
-                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-                edge_indices = np.fromiter(
-                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-                    int,
-                ).reshape(-1, 4)
-                if len(edge_indices) > 0:
-                    # Add edges with specified stiffness/damping (for collision)
-                    for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
+                self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
     @deprecate_nonkeyword_arguments
     def add_soft_mesh(
@@ -9183,15 +9218,7 @@ class ModelBuilder:
         if add_surface_mesh_edges:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
-                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-                edge_indices = np.fromiter(
-                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-                    int,
-                ).reshape(-1, 4)
-                if len(edge_indices) > 0:
-                    # Add edges with specified stiffness/damping (for collision)
-                    for o1, o2, v1, v2 in edge_indices:
-                        self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
+                self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
@@ -11194,6 +11221,22 @@ class ModelBuilder:
             m.edge_rest_length = _to_wp_array(self.edge_rest_length, wp.float32, requires_grad=requires_grad)
             m.edge_bending_properties = _to_wp_array(
                 self.edge_bending_properties, wp.float32, requires_grad=requires_grad
+            )
+            # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
+            # keep the builder's edge numbering (it stays aligned with the bending materials) and
+            # derive the edge/triangle maps against the final triangles. Vertex adjacency stays
+            # unset until the solver builds it via init_vertex_adjacency; kernels get a device copy
+            # from MeshAdjacency.to.
+            edge_indices = (
+                np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
+                if self.edge_indices
+                else np.empty((0, 4), dtype=np.int32)
+            )
+            m.soft_mesh_adjacency = MeshAdjacency(
+                tri_indices=self.tri_indices,
+                edge_indices=edge_indices,
+                spring_indices=self.spring_indices,
+                tet_indices=self.tet_indices,
             )
 
             # ---------------------

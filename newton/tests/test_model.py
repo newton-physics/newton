@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.utils
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
@@ -384,6 +385,193 @@ class TestModelMesh(unittest.TestCase):
         assert_np_equal(np.array(builder1.edge_indices), np.array(builder2.edge_indices))
         assert_np_equal(np.array(builder1.edge_rest_angle), np.array(builder2.edge_rest_angle), tol=1.0e-4)
         assert_np_equal(np.array(builder1.edge_bending_properties), np.array(builder2.edge_bending_properties))
+
+    def test_soft_mesh_adjacency_from_cloth_mesh(self):
+        builder = ModelBuilder()
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+                wp.vec3(0.0, 1.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=1.0,
+        )
+
+        # The adjacency is built in finalize() from the accumulated edges and triangles.
+        model = builder.finalize(device="cpu")
+        adjacency = model.soft_mesh_adjacency
+        self.assertIsNotNone(adjacency)
+        np.testing.assert_array_equal(
+            adjacency.tri_edge_indices,
+            np.array([[0, 1, 2], [2, 3, 4]], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            adjacency.edge_tri_indices,
+            np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
+        )
+        # Vertex adjacency stays unset until the solver builds it via init_vertex_adjacency.
+        self.assertIsNone(adjacency.v_adj_tris)
+        self.assertIsNone(adjacency.v_adj_edges_offsets)
+
+    def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), 1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), 1.0)
+        builder.add_particle(wp.vec3(0.0, 1.0, 0.0), wp.vec3(), 1.0)
+        builder.add_triangle(0, 1, 2)
+        builder.add_edge(-1, -1, 0, 1)
+
+        # A bare triangle and a placeholder edge (o0 == o1 == -1) stay unlinked: the triangle's
+        # opposite vertex matches neither stored opposite, so finalize leaves both map rows at -1.
+        model = builder.finalize(device="cpu")
+        adjacency = model.soft_mesh_adjacency
+        self.assertIsNotNone(adjacency)
+        np.testing.assert_array_equal(adjacency.tri_edge_indices, np.array([[-1, -1, -1]], dtype=np.int32))
+        np.testing.assert_array_equal(adjacency.edge_tri_indices, np.array([[-1, -1]], dtype=np.int32))
+
+    def test_add_builder_offsets_soft_mesh_adjacency(self):
+        base = ModelBuilder()
+        base.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+                wp.vec3(0.0, 1.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=1.0,
+        )
+
+        combined = ModelBuilder()
+        combined.add_builder(base)
+        combined.add_builder(base)
+
+        # add_builder concatenates the edge/triangle tables; finalize() rebuilds the maps, so the
+        # second copy's rows are the first's with triangle ids +2 and edge ids +5.
+        base_adj = base.finalize(device="cpu").soft_mesh_adjacency
+        combined_adj = combined.finalize(device="cpu").soft_mesh_adjacency
+
+        np.testing.assert_array_equal(combined_adj.tri_edge_indices[:2], base_adj.tri_edge_indices)
+        np.testing.assert_array_equal(combined_adj.edge_tri_indices[:5], base_adj.edge_tri_indices)
+        np.testing.assert_array_equal(combined_adj.tri_edge_indices[2:], base_adj.tri_edge_indices + 5)
+        np.testing.assert_array_equal(
+            combined_adj.edge_tri_indices[5:],
+            np.array([[2, -1], [2, -1], [2, 3], [3, -1], [3, -1]], dtype=np.int32),
+        )
+
+    def test_soft_mesh_adjacency_mixes_cloth_and_bare_triangles(self):
+        # A cloth mesh (with bending edges) plus a bare add_triangle (no edges) in one builder:
+        # finalize() sizes tri_edge_indices to every triangle, leaves the bare triangle's row at -1,
+        # keeps the cloth rows linked, and never synthesizes edges for the bare triangle.
+        builder = ModelBuilder()
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+                wp.vec3(0.0, 1.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=1.0,
+        )
+        p0 = builder.add_particle(wp.vec3(2.0, 0.0, 0.0), wp.vec3(), 1.0)
+        p1 = builder.add_particle(wp.vec3(3.0, 0.0, 0.0), wp.vec3(), 1.0)
+        p2 = builder.add_particle(wp.vec3(2.0, 1.0, 0.0), wp.vec3(), 1.0)
+        builder.add_triangle(p0, p1, p2)
+
+        adjacency = builder.finalize(device="cpu").soft_mesh_adjacency
+        np.testing.assert_array_equal(
+            adjacency.tri_edge_indices,
+            np.array([[0, 1, 2], [2, 3, 4], [-1, -1, -1]], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            adjacency.edge_tri_indices,
+            np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
+        )
+
+    def test_mesh_adjacency_public_deprecated(self):
+        tris = [[0, 1, 2], [0, 2, 3]]
+        # Construction from triangle indices is supported (no warning) and eager.
+        adj = newton.utils.MeshAdjacency(tris)
+        self.assertEqual(adj.edge_indices.shape, (5, 4))
+        self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
+        self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
+        # The legacy .edges dict stays available but is deprecated.
+        with self.assertWarns(DeprecationWarning):
+            edges = adj.edges
+        self.assertEqual(len(edges), 5)
+        shared = edges[(0, 2)]
+        self.assertEqual({shared.f0, shared.f1}, {0, 1})
+
+    def test_mesh_adjacency_indices_deprecated_alias(self):
+        tris = [[0, 1, 2], [0, 2, 3]]
+        # `indices` is a deprecated alias for `tri_indices` and builds the same tables.
+        with self.assertWarns(DeprecationWarning):
+            adj = newton.utils.MeshAdjacency(indices=tris)
+        np.testing.assert_array_equal(adj.edge_indices, newton.utils.MeshAdjacency(tri_indices=tris).edge_indices)
+        # Passing both names with conflicting values is rejected.
+        with self.assertRaises(ValueError):
+            newton.utils.MeshAdjacency(tri_indices=tris, indices=[[0, 1, 2]])
+
+    def test_mesh_adjacency_add_edge_deprecated(self):
+        adj = newton.utils.MeshAdjacency()
+        # add_edge is a deprecated incremental shim; it updates edge_indices / edge_tri_indices.
+        with self.assertWarns(DeprecationWarning):
+            adj.add_edge(0, 1, 2, 0)
+        self.assertEqual(adj.edge_indices.shape, (1, 4))
+        self.assertEqual(adj.edge_tri_indices.shape, (1, 2))
+        with self.assertWarns(DeprecationWarning):
+            adj.add_edge(1, 0, 3, 1)  # second adjacent triangle (endpoints reversed)
+        np.testing.assert_array_equal(adj.edge_indices[0], [2, 3, 0, 1])
+        np.testing.assert_array_equal(adj.edge_tri_indices[0], [0, 1])
+        with self.assertWarns(DeprecationWarning):
+            edges = adj.edges
+        self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
+
+    def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
+        # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
+        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
+        with self.assertWarns(UserWarning):
+            data = adj.to("cpu")
+        self.assertIsNotNone(data.edge_tri_indices)
+        self.assertIsNotNone(data.tri_edge_indices)
+        self.assertIsNone(data.v_adj_tris)
+        self.assertIsNone(data.v_adj_edges_offsets)
+
+    def test_mesh_adjacency_owns_index_copies(self):
+        # The constructor stores owned int32 copies, detached from the input arrays/lists.
+        tris = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+        adj = newton.utils.MeshAdjacency(tris)
+        tris[0, 0] = 99
+        self.assertEqual(int(adj.indices[0, 0]), 0)
+
+    def test_expand_edge_parameter(self):
+        expand = newton.ModelBuilder._expand_edge_parameter
+        # Scalars broadcast to one value per generated edge.
+        self.assertEqual(expand(2.0, 3), [2.0, 2.0, 2.0])
+        # A 0-D array is treated as a scalar, not iterated.
+        self.assertEqual(expand(np.array(2.0), 3), [2.0, 2.0, 2.0])
+        # A per-edge sequence of matching length passes through.
+        self.assertEqual(expand([1.0, 2.0, 3.0], 3), [1.0, 2.0, 3.0])
+        # None is preserved so add_edges() can substitute its default.
+        self.assertIsNone(expand(None, 3))
+        # A length mismatch is rejected instead of silently desyncing.
+        with self.assertRaises(ValueError):
+            expand([1.0, 2.0], 3)
 
     def test_mesh_approximation(self):
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):

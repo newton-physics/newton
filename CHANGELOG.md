@@ -15,6 +15,7 @@
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
+- Expose `MeshAdjacencyData` (the device-resident soft-mesh adjacency struct returned by `MeshAdjacency.to()`) as public API for use in custom Warp kernels
 - Add `ModelBuilder.BvhConfig` for selecting Warp BVH constructors during model finalization for mesh, Gaussian, and shape BVHs.
 
 ### Changed
@@ -35,6 +36,8 @@
 - Deprecate omitting `body_frame_origin` in `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()`; the implicit behavior still uses the existing start-node body-frame convention during the deprecation window, but the implicit default will change to `body_frame_origin="com"` in a future release. Pass `body_frame_origin="start"` to preserve the legacy frame or `body_frame_origin="com"` to opt into the future COM-centered frame.
 - Change VBD Neo-Hookean membrane/tet damping to an objective metric based on the rate of `C = FᵀF`, so rigid-body rotations no longer generate damping force.
 - Change VBD spring damping to act only along the spring axis (damping edge-length rate), so transverse and rigid-rotational motion is no longer damped by springs.
+- Deprecate the `indices` argument of `MeshAdjacency` in favor of `tri_indices`
+- Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
 - `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
 
 ### Fixed
@@ -319,6 +322,7 @@
 - Deprecate the top-level `Model.equality_constraint_*` arrays and `Model.equality_constraint_count`, the `ModelBuilder.equality_constraint_*` accumulators, `ModelBuilder.add_equality_constraint{,_connect,_weld,_joint}()`, and the `Model.AttributeFrequency.EQUALITY_CONSTRAINT` enum, in favor of the namespaced `model.mujoco.equality_constraint_*` fields (custom attributes on the `"mujoco:equality_constraint"` frequency). Migrate reads and writes to `model.mujoco.equality_constraint_*`, and construct rows via `ModelBuilder.add_custom_values(**{"mujoco:equality_constraint_*": ...})`. The deprecated names forward to the namespace during the deprecation window and will be removed in a future release.
 - Deprecate `SensorRaycast` in favor of `SensorTiledCamera`; migrate to `SensorTiledCamera.utils.compute_pinhole_camera_rays()` and `create_depth_image_output()` for single-camera depth rendering — see the `SensorRaycast` class docstring for a complete migration example
 - Deprecate and ignore `rigid_enable_dahl_friction` in `SolverVBD`; Dahl friction is now auto-detected from model attributes (`model.vbd.dahl_eps_max` / `model.vbd.dahl_tau`)
+- Deprecate the `MeshAdjacency.edges` dict accessor; use the `edge_indices` / `edge_tri_indices` arrays instead
 - Deprecate `newton-actuators` package dependency; all actuator functionality is now built into `newton.actuators`. The dependency is kept for backward compatibility and will be removed in a future release; migrate imports from `newton_actuators` to `newton.actuators`
 
 ### Fixed
