@@ -81,6 +81,10 @@ support label matching accept one of the following:
   (supports ``*`` and ``?`` wildcards).
 - A **list of string patterns** -- selects all entries whose label matches at least one of the patterns.
 
+Selection APIs that expose ``pattern_syntax="regex"`` match string patterns with :func:`re.fullmatch`.
+A list of strings matches when any regex matches. Existing calls without ``pattern_syntax`` continue to use
+``fnmatch`` glob patterns.
+
 Examples::
 
    # single pattern: all shapes whose label starts with "foot_"

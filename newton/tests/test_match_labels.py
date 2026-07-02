@@ -66,6 +66,16 @@ class TestMatchLabels(unittest.TestCase):
         result = match_labels(labels, ["arm_*", "*_left"])
         self.assertEqual(result, [0, 1, 2])
 
+    def test_regex_str_fullmatch(self):
+        labels = ["env_0/Robot/LF_FOOT", "env_0/Robot/base", "env_12/Robot/RF_FOOT"]
+        result = match_labels(labels, r"env_[0-9]+/Robot/(LF|RF)_FOOT", pattern_syntax="regex")
+        self.assertEqual(result, [0, 2])
+
+    def test_regex_list_str_union(self):
+        labels = ["Robot/LF_FOOT", "Robot/RF_FOOT", "Robot/ARM"]
+        result = match_labels(labels, [r".*/LF_FOOT", r".*/RF_FOOT"], pattern_syntax="regex")
+        self.assertEqual(result, [0, 1])
+
 
 if __name__ == "__main__":
     unittest.main()
