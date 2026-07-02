@@ -1108,6 +1108,16 @@ class Model:
         """Install the canonical filter store: sorted unique packed pair codes."""
         self.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(packed=packed)
 
+    def _shape_collision_filter_store(self) -> _DeprecatedShapeCollisionFilterSet | None:
+        """Return the stored filter view without triggering materialization.
+
+        The store shares the instance-dict slot with the public
+        ``shape_collision_filter_pairs`` descriptor, whose ``__get__``
+        materializes the set; array-backed queries read the slot directly so
+        they stay materialization-free.
+        """
+        return self.__dict__.get("shape_collision_filter_pairs")
+
     def shape_collision_filter_contains(self, shape_a: int, shape_b: int) -> bool:
         """Return whether a canonicalized shape pair is collision-filtered.
 
@@ -1121,7 +1131,7 @@ class Model:
         Returns:
             Whether the pair is present in the collision filter.
         """
-        filters = object.__getattribute__(self, "__dict__").get("shape_collision_filter_pairs")
+        filters = self._shape_collision_filter_store()
         if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
             packed_result = filters.contains_packed(shape_a, shape_b)
             if packed_result is not None:
@@ -1143,7 +1153,7 @@ class Model:
             Canonical shape index pairs sorted lexicographically, shape
             [pair_count, 2].
         """
-        filters = object.__getattribute__(self, "__dict__").get("shape_collision_filter_pairs")
+        filters = self._shape_collision_filter_store()
         if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
             pairs = filters.pairs_array()
             if pairs is not None:
@@ -1171,7 +1181,7 @@ class Model:
         lo = np.minimum(pairs[:, 0], pairs[:, 1])
         hi = np.maximum(pairs[:, 0], pairs[:, 1])
         codes = (lo << 32) | hi
-        filters = object.__getattribute__(self, "__dict__").get("shape_collision_filter_pairs")
+        filters = self._shape_collision_filter_store()
         if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
             packed = filters.packed_pairs()
             if packed is not None:

@@ -874,7 +874,7 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize()
 
-        internal_filters = object.__getattribute__(model, "__dict__")["shape_collision_filter_pairs"]
+        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
         self.assertFalse(internal_filters.is_materialized)
         self.assertTrue(internal_filters.contains_packed(1, 2))
         self.assertFalse(internal_filters.is_materialized)
@@ -1012,7 +1012,7 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize(device="cpu")
         expected_filters = {(1, 2), (3, 4), (ground, 1)}
-        internal_filters = object.__getattribute__(model, "__dict__")["shape_collision_filter_pairs"]
+        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
         self.assertFalse(internal_filters.is_materialized)
 
         serialized = cast(Mapping[str, Any], pointer_as_key({"model": model}, format_type="json"))
@@ -1047,7 +1047,7 @@ class TestModelMesh(unittest.TestCase):
         pair_list = [tuple(pair) for pair in broad_phase_pairs.tolist()]
         self.assertEqual(pair_list, sorted(pair_list))
 
-        internal_filters = object.__getattribute__(model, "__dict__")["shape_collision_filter_pairs"]
+        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
         self.assertFalse(internal_filters.is_materialized)
 
         self.assertTrue(model.shape_collision_filter_contains(1, 2))
