@@ -3430,6 +3430,8 @@ class SolverMuJoCo(SolverBase):
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._contact_overflow_counts = wp.zeros(2, dtype=wp.int32, device=self.device)
+        self._contact_overflow_warned = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Track the Contacts instance and its capacity, plus the MJWarp
         # naconmax used during the last full pass.  Any change to these
         # invariants invalidates the cached tid_to_cid mapping because the
@@ -3651,6 +3653,7 @@ class SolverMuJoCo(SolverBase):
         """
         self._last_contact_generation.fill_(_GENERATION_SENTINEL)
         self._last_nacon_count.zero_()
+        self._contact_overflow_counts.zero_()
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
@@ -3763,6 +3766,8 @@ class SolverMuJoCo(SolverBase):
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
                 self._last_nacon_count,
+                self._contact_overflow_counts,
+                self._contact_overflow_warned,
             ],
             device=model.device,
         )
@@ -4381,6 +4386,17 @@ class SolverMuJoCo(SolverBase):
         if self.use_mujoco_cpu:
             raise NotImplementedError()
         return self.mjw_data.naconmax
+
+    def get_newton_contact_overflow_counts(self) -> tuple[int, int]:
+        """Return generated and clipped contact counts from the last full Newton-to-MJWarp conversion."""
+        if self.use_mujoco_cpu:
+            raise NotImplementedError()
+        counts = self._contact_overflow_counts.numpy()
+        return int(counts[0]), int(counts[1])
+
+    def get_newton_contact_overflow_count(self) -> int:
+        """Return contacts clipped by the last full Newton-to-MJWarp conversion."""
+        return self.get_newton_contact_overflow_counts()[1]
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:

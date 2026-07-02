@@ -284,6 +284,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
     last_nacon_count: wp.array[wp.int32],
+    contact_overflow_counts: wp.array[wp.int32],
+    contact_overflow_warned: wp.array[wp.int32],
 ):
     # nacon_out must be zeroed before this kernel is launched so that
     # wp.atomic_add below produces the correct compacted count.
@@ -309,13 +311,18 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # the original kernel plus recording the tid→cid mapping.
 
         if tid == 0:
-            if count > naconmax:
-                wp.printf(
-                    "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
-                    count,
-                    naconmax,
-                )
             ncollision_out[0] = 0
+            contact_overflow_counts[0] = count
+            contact_overflow_counts[1] = 0
+            if count > naconmax:
+                contact_overflow_counts[1] = count - naconmax
+                if contact_overflow_warned[0] == 0:
+                    contact_overflow_warned[0] = 1
+                    wp.printf(
+                        "SolverMuJoCo clipped Newton contacts: generated %d exceeds MJWarp nconmax %d; increase nconmax to avoid dropped contacts.\n",
+                        count,
+                        naconmax,
+                    )
 
         if count > naconmax:
             count = naconmax

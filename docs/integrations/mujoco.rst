@@ -590,6 +590,13 @@ Caveats
   Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
   ignored.
 
+**Newton contacts are capped by MJWarp nconmax.**
+  When ``use_mujoco_contacts=False``, Newton-generated contacts are converted
+  into MJWarp's contact buffer. Contacts beyond ``nconmax`` are clipped. The
+  first overflow emits a single device warning, and
+  :meth:`~newton.solvers.SolverMuJoCo.get_newton_contact_overflow_counts`
+  reports the generated and clipped counts from the last full conversion.
+
 **Kinematic-root armature override.**
   DOFs of kinematic articulation roots have their
   :attr:`~newton.Model.joint_armature` replaced with a very large
