@@ -1601,6 +1601,78 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertGreater(np.trace(inertia), 0.0, "Body inertia trace must be positive")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_nan_body_mass_warns_and_falls_back(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        mass_api = UsdPhysics.MassAPI.Apply(body)
+        mass_api.CreateMassAttr().Set(float("nan"))
+
+        sphere = UsdGeom.Sphere.Define(stage, "/World/Body/Sphere")
+        sphere.CreateRadiusAttr().Set(0.1)
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "authored MassAPI mass must be finite"):
+            builder.add_usd(stage)
+
+        self.assertTrue(np.isfinite(builder.body_mass[0]))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_nan_collider_mass_density_uses_default(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        UsdPhysics.MassAPI.Apply(body)
+
+        sphere = UsdGeom.Sphere.Define(stage, "/World/Body/Sphere")
+        sphere.CreateRadiusAttr().Set(0.1)
+        UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+        collider_mass_api = UsdPhysics.MassAPI.Apply(sphere.GetPrim())
+        collider_mass_api.CreateMassAttr().Set(float("nan"))
+        collider_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "authored MassAPI mass must be finite"):
+            builder.add_usd(stage)
+
+        self.assertTrue(np.isfinite(builder.body_mass[0]))
+        self.assertTrue(np.all(np.isfinite(np.array(builder.body_inertia[0]))))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_usd_nan_collider_density_warns_and_uses_default(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        UsdPhysics.MassAPI.Apply(body)
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+        UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateDensityAttr().Set(float("nan"))
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "density.*finite"):
+            builder.add_usd(stage)
+
+        self.assertTrue(np.isfinite(builder.body_mass[0]))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_kinematic_enabled_flag(self):
         """USD bodies with physics:kinematicEnabled=true get BodyFlags.KINEMATIC."""
         from pxr import Usd, UsdGeom, UsdPhysics

@@ -1987,6 +1987,14 @@ def parse_usd(
                 return None
             return float(val)
 
+        density = desc.density if desc.density > 0.0 else default_shape_density
+        if not math.isfinite(desc.density):
+            warnings.warn(
+                f"Material {sdf_path}: authored density must be finite. Using default shape density.",
+                stacklevel=2,
+            )
+            density = default_shape_density
+
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
@@ -2007,7 +2015,7 @@ def parse_usd(
             ),
             # Treat non-positive/unauthored material density as "use importer default".
             # Authored collider/body MassAPI mass+inertia is handled later.
-            density=desc.density if desc.density > 0.0 else default_shape_density,
+            density=density,
             ke=_resolve_contact_attr("ke"),
             kd=_resolve_contact_attr("kd"),
             kf=_resolve_contact_attr("kf"),
@@ -2662,9 +2670,9 @@ def parse_usd(
             return None
 
         mass = float(mass_attr.Get())
-        if mass <= 0.0:
+        if not math.isfinite(mass) or mass <= 0.0:
             warnings.warn(
-                f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be > 0 to derive volume and density.",
+                f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be finite and > 0 to derive volume and density.",
                 stacklevel=2,
             )
             return None
@@ -2677,14 +2685,20 @@ def parse_usd(
             )
             return None
         density = mass / shape_volume
-        if density <= 0.0:
+        if not math.isfinite(density) or density <= 0.0:
             warnings.warn(
-                f"Skipping collider {prim.GetPath()}: derived density from authored mass is non-positive.",
+                f"Skipping collider {prim.GetPath()}: derived density from authored mass must be finite and positive.",
                 stacklevel=2,
             )
             return None
 
         diag = np.array(diag_attr.Get(), dtype=np.float32)
+        if not np.all(np.isfinite(diag)):
+            warnings.warn(
+                f"Skipping collider {prim.GetPath()}: authored diagonal inertia must be finite.",
+                stacklevel=2,
+            )
+            return None
         if np.any(diag < 0.0):
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: authored diagonal inertia contains negative values.",
@@ -2835,6 +2849,14 @@ def parse_usd(
                     shape_density = material.density
                 else:
                     shape_density = default_shape_density
+                if prim.HasAPI(UsdPhysics.MassAPI):
+                    density_attr = UsdPhysics.MassAPI(prim).GetDensityAttr()
+                    if density_attr.HasAuthoredValue() and not math.isfinite(float(density_attr.Get())):
+                        warnings.warn(
+                            f"Collider {path}: authored density must be finite. Using default shape density.",
+                            stacklevel=2,
+                        )
+                        shape_density = default_shape_density
                 local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
@@ -3483,6 +3505,15 @@ def parse_usd(
             has_authored_mass = mass_api.GetMassAttr().HasAuthoredValue()
             has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
             has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
+            if has_authored_mass:
+                authored_mass = float(mass_api.GetMassAttr().Get())
+                if not math.isfinite(authored_mass) or authored_mass < 0.0:
+                    warnings.warn(
+                        f"Body {body_path}: authored MassAPI mass must be finite and non-negative. "
+                        "Falling back to mass-computer result.",
+                        stacklevel=2,
+                    )
+                    has_authored_mass = False
 
             # newton:inertia (compact 6-element tensor) overrides physics:diagonalInertia + physics:principalAxes.
             inertia_tensor_val = (
@@ -3521,13 +3552,30 @@ def parse_usd(
                         has_authored_inertia = True
                         inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
 
+            if has_authored_inertia and not has_inertia_tensor:
+                authored_diag = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
+                if not np.all(np.isfinite(authored_diag)):
+                    warnings.warn(
+                        f"Body {body_path}: authored diagonal inertia must be finite. "
+                        "Falling back to mass-computer result.",
+                        stacklevel=2,
+                    )
+                    has_authored_inertia = False
+                elif np.any(authored_diag < 0.0):
+                    warnings.warn(
+                        f"Body {body_path}: authored diagonal inertia contains negative values. "
+                        "Falling back to mass-computer result.",
+                        stacklevel=2,
+                    )
+                    has_authored_inertia = False
+
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_authored_mass and has_authored_inertia and has_authored_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
                 cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
                     _get_collision_mass_information
                 )
-                if cmp_mass < 0.0:
+                if not math.isfinite(cmp_mass) or cmp_mass < 0.0:
                     # ComputeMassProperties failed to discover colliders (e.g. shapes
                     # created by schema resolvers are not real USD prims). Fall back to
                     # builder-accumulated mass properties from add_shape_*() calls.
