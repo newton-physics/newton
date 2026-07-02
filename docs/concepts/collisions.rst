@@ -1323,8 +1323,6 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Soft contact counts ``[particle, edge, face]`` (length 3); ``[0]`` is the per-particle count, ``[1]`` / ``[2]`` the water-tight edge / face counts.
    * - ``soft_contact_primitive``
      - Soft feature id: a particle index in the particle range, a soft-triangle index in the water-tight edge/face ranges. (Replaces the deprecated ``soft_contact_particle``.)
-   * - ``soft_contact_kind``
-     - Soft contact kind for edge/face records: ``SOFT_CONTACT_KIND_EDGE`` or ``SOFT_CONTACT_KIND_FACE``.
    * - ``soft_contact_barycentric``
      - Barycentric coordinates on the soft triangle for edge/face records.
    * - ``soft_contact_shape``

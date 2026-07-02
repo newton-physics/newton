@@ -66,12 +66,6 @@ def _normalize_texture_input(texture: str | os.PathLike[str] | np.ndarray | None
     return np.ascontiguousarray(np.asarray(texture))
 
 
-SOFT_CONTACT_KIND_EDGE = wp.constant(wp.uint8(2))
-"""Soft contact kind: a soft owned edge vs a rigid 1D feature / SDF (E/F range of :class:`Contacts`)."""
-SOFT_CONTACT_KIND_FACE = wp.constant(wp.uint8(3))
-"""Soft contact kind: a soft triangle face vs a rigid 0D feature / SDF surface (E/F range of :class:`Contacts`)."""
-
-
 class GeoType(enum.IntEnum):
     """
     Enumeration of geometric shape types supported in Newton.

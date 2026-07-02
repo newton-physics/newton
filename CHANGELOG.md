@@ -17,7 +17,7 @@
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Expose `MeshAdjacencyData` (the device-resident soft-mesh adjacency struct returned by `MeshAdjacency.to()`) as public API for use in custom Warp kernels
 - Add `ModelBuilder.BvhConfig` for selecting Warp BVH constructors during model finalization for mesh, Gaussian, and shape BVHs.
-- Add opt-in water-tight rigid-soft contact generation via `enable_water_tight_rigid_soft_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs built by `ModelBuilder.enable_rigid_mesh_sdfs()` before `finalize()`. When enabled, soft-triangle edges and faces that cross a rigid shape's signed-distance field are detected by local SDF optimization and written into new edge/face ranges of `Contacts.soft_contact_*` (`soft_contact_primitive`, `soft_contact_kind`, `soft_contact_barycentric`), catching soft edge/face contacts the per-particle path misses. Default off reproduces the per-particle behavior.
+- Add opt-in water-tight rigid-soft contact generation via `enable_water_tight_rigid_soft_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs built by `ModelBuilder.enable_rigid_mesh_sdfs()` before `finalize()`. When enabled, soft-triangle edges and faces that cross a rigid shape's signed-distance field are detected by local SDF optimization and written into new edge/face ranges of `Contacts.soft_contact_*` (`soft_contact_primitive`, `soft_contact_barycentric`), catching soft edge/face contacts the per-particle path misses. Default off reproduces the per-particle behavior.
 
 ### Changed
 

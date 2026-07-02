@@ -4,8 +4,8 @@
 """Tests for the water-tight rigid-soft contact path (SDF back-end).
 
 Covers the ``Contacts`` schema change (standalone length-3 ``soft_contact_count``;
-``soft_contact_particle`` renamed to ``soft_contact_primitive``; new ``soft_contact_kind`` /
-``soft_contact_barycentric`` fields), and — as later tasks land — the SDF optimizers, the
+``soft_contact_particle`` renamed to ``soft_contact_primitive``; new
+``soft_contact_barycentric`` field), and — as later tasks land — the SDF optimizers, the
 edge/face passes, backward-compat, and water-tight regressions.
 """
 
@@ -61,7 +61,6 @@ def test_soft_contact_schema(test, device):
 
     # New / renamed fields sized to soft_contact_max.
     test.assertEqual(contacts.soft_contact_primitive.shape[0], contacts.soft_contact_max)
-    test.assertEqual(contacts.soft_contact_kind.shape[0], contacts.soft_contact_max)
     test.assertEqual(contacts.soft_contact_barycentric.shape[0], contacts.soft_contact_max)
 
     # soft_contact_particle is a deprecated alias for soft_contact_primitive.
@@ -328,22 +327,21 @@ def test_edge_face_passes_box(test, device):
     test.assertEqual(n_edge, n_edges)
     test.assertEqual(n_face, model.tri_count)
 
-    kinds = contacts.soft_contact_kind.numpy()
     prims = contacts.soft_contact_primitive.numpy()
     barys = contacts.soft_contact_barycentric.numpy()
     normals = contacts.soft_contact_normal.numpy()
     body_pos = contacts.soft_contact_body_pos.numpy()
     half = np.array([0.5, 0.5, 0.5])
 
-    # Records pack contiguously: edge range [c0, c0+n_edge), face range [c0+n_edge, c0+n_edge+n_face).
+    # Records pack contiguously and the range IS the kind (no per-record flag): edge range
+    # [c0, c0+n_edge), face range [c0+n_edge, c0+n_edge+n_face). n_edge/n_face (asserted above)
+    # confirm each range holds exactly the expected feature count.
     for i in range(c0, c0 + n_edge):
-        test.assertEqual(int(kinds[i]), 2)  # SOFT_CONTACT_KIND_EDGE
         test.assertTrue(0 <= int(prims[i]) < model.tri_count)
         test.assertAlmostEqual(float(barys[i].sum()), 1.0, places=4)
         test.assertGreater(float(normals[i][2]), 0.99)  # +z face of the box
         test.assertLess(abs(_box_sdf_np(body_pos[i], half)), 1.0e-2)  # closest point on the box surface
     for i in range(c0 + n_edge, c0 + n_edge + n_face):
-        test.assertEqual(int(kinds[i]), 3)  # SOFT_CONTACT_KIND_FACE
         test.assertTrue(0 <= int(prims[i]) < model.tri_count)
         test.assertAlmostEqual(float(barys[i].sum()), 1.0, places=4)
         test.assertGreater(float(normals[i][2]), 0.99)
