@@ -240,7 +240,7 @@ class Example:
         plug_mesh, pc = _load_mesh(stage, "/World/Plug")
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
         builder.rigid_gap = 0.005
 

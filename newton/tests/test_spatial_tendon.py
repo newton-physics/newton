@@ -45,7 +45,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
 
     def test_spatial_tendon_parsing(self):
         """Verify that spatial tendon attributes are parsed correctly from MJCF."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(self.SPATIAL_TENDON_MJCF)
         model = builder.finalize()
 
@@ -114,10 +114,10 @@ class TestMujocoSpatialTendon(unittest.TestCase):
   </tendon>
 </mujoco>
 """
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True, parse_sites=True)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _ in range(2):
             builder.add_world(individual_builder)
         model = builder.finalize()
@@ -192,7 +192,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
   </actuator>
 </mujoco>
 """
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
 
         model = individual_builder.finalize()
@@ -250,10 +250,10 @@ class TestMujocoSpatialTendon(unittest.TestCase):
   </tendon>
 </mujoco>
 """
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _ in range(2):
             builder.add_world(individual_builder)
         model = builder.finalize()
@@ -324,7 +324,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
   </tendon>
 </mujoco>
 """
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -366,7 +366,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
   </tendon>
 </mujoco>
 """
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
@@ -414,7 +414,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
   </tendon>
 </mujoco>
 """
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(mjcf, parse_sites=True)
         model = builder.finalize()
 
@@ -447,10 +447,10 @@ class TestMujocoSpatialTendon(unittest.TestCase):
 
     def test_spatial_tendon_multi_world_wrap_offsets(self):
         """Verify that wrap address and shape references are offset correctly across worlds."""
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         individual_builder.add_mjcf(self.SPATIAL_TENDON_MJCF, parse_sites=True)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _ in range(3):
             builder.add_world(individual_builder)
         model = builder.finalize()
@@ -506,7 +506,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
   </tendon>
 </mujoco>
 """
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -527,7 +527,7 @@ class TestMujocoSpatialTendon(unittest.TestCase):
 
     def test_spatial_tendon_warning_out_of_bounds_wrap(self):
         """Verify that out-of-bounds wrap ranges produce a warning during solver init."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(self.SPATIAL_TENDON_MJCF, parse_sites=True)
 
         # Corrupt the wrap address to be out of bounds
