@@ -266,9 +266,6 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
-        if type == JointType.CABLE:
-            # CABLE joints are skipped by generic forward kinematics.
-            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -320,6 +317,15 @@ def eval_single_articulation_fk(
 
             X_j = t
             v_j = v
+
+        if type == JointType.CABLE:
+            # CABLE stores its relative anchor pose in joint_q (like FREE), so FK
+            # rebuilds the rod. Its 2 DOFs are currently strain rates, not a body
+            # velocity, so v_j=0.
+            X_j = wp.transform(
+                wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
+                wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
+            )
 
         if type == JointType.D6:
             pos = wp.vec3(0.0)
@@ -514,8 +520,11 @@ def eval_fk(
 
     .. note::
 
-        :attr:`~newton.JointType.CABLE` body transforms are not changed by
-        :func:`newton.eval_fk`; they are advanced directly by
+        :attr:`~newton.JointType.CABLE` joints store their relative anchor pose
+        (3 translation + 4 quaternion) in :attr:`~newton.Model.joint_q`, so
+        :func:`newton.eval_fk` reconstructs cable body transforms like a FREE
+        joint. Their velocity contribution is zero (the two cable DOFs are VBD
+        stretch/bend slots); cable dynamics are advanced by
         :class:`newton.solvers.SolverVBD`.
 
     Args:
@@ -808,6 +817,25 @@ def eval_articulation_ik(
         joint_qd[qd_start + 3] = w_err_c[0]
         joint_qd[qd_start + 4] = w_err_c[1]
         joint_qd[qd_start + 5] = w_err_c[2]
+
+        return
+
+    if type == JointType.CABLE:
+        # CABLE's joint_q is the relative anchor pose X_j = inv(X_wpj) * X_wcj,
+        # the same quantity FREE stores, so eval_fk can reconstruct the rod. Its
+        # 2 DOFs are currently strain rates, not a body velocity, so joint_qd is
+        # left untouched.
+        q_pc = wp.quat_inverse(q_p) * q_c
+        x_err_c = wp.quat_rotate_inv(q_p, x_err)
+
+        joint_q[q_start + 0] = x_err_c[0]
+        joint_q[q_start + 1] = x_err_c[1]
+        joint_q[q_start + 2] = x_err_c[2]
+
+        joint_q[q_start + 3] = q_pc[0]
+        joint_q[q_start + 4] = q_pc[1]
+        joint_q[q_start + 5] = q_pc[2]
+        joint_q[q_start + 6] = q_pc[3]
 
         return
 
