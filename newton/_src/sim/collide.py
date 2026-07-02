@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Literal
 
 import numpy as np
@@ -537,7 +536,7 @@ def _world_compatible_pairs(
     return _pairs(np.concatenate(f_cols), np.concatenate(s_cols))
 
 
-def _build_soft_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     """Build the soft-rigid (particle-shape) candidate pairs for ``model``.
 
     Emits every particle-shape pair whose worlds are compatible (see :func:`_world_compatible_pairs`).
@@ -553,60 +552,58 @@ def _build_soft_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
 
 
-def _build_soft_ef_rigid_pairs(model: Model) -> tuple[wp.array[wp.vec2i], wp.array[wp.vec2i]]:
-    """Build world-compatible ``(soft edge, shape)`` and ``(soft triangle, shape)`` candidate pairs
-    for the water-tight edge/face passes, mirroring :func:`_build_soft_rigid_contact_pairs`.
+def _build_soft_face_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+    """World-compatible ``(soft triangle, shape)`` candidate pairs for the water-tight FACE pass,
+    mirroring :func:`_build_soft_particle_rigid_contact_pairs`. A triangle's world is the world of
+    its first vertex (all three share it). Empty when there is no soft mesh, no triangles, or no shapes.
+    """
+    device = model.device
+    empty = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=device)
+    if getattr(model, "soft_mesh_adjacency", None) is None:
+        return empty
+    shape_count = int(getattr(model, "shape_count", 0) or 0)
+    n_tris = int(getattr(model, "tri_count", 0) or 0)
+    if shape_count == 0 or n_tris == 0:
+        return empty
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    face_world = model.particle_world.numpy()[model.tri_indices.numpy()[:, 0]]
+    return _world_compatible_pairs(face_world, model.shape_world.numpy(), world_count, device)
 
-    A soft feature's world is the world of any of its vertices (a soft mesh lives in one world).
-    Returns ``(edge_pairs, face_pairs)``; either is empty when its feature or the shape count is zero.
+
+def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+    """World-compatible ``(soft edge, shape)`` candidate pairs for the water-tight EDGE pass,
+    mirroring :func:`_build_soft_particle_rigid_contact_pairs`. An edge's world is that of its owner
+    triangle's first vertex (same mesh => same world). Empty when there is no soft mesh, no edges,
+    or no shapes.
     """
     device = model.device
     empty = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=device)
     adj = getattr(model, "soft_mesh_adjacency", None)
+    if adj is None:
+        return empty
     shape_count = int(getattr(model, "shape_count", 0) or 0)
-    if adj is None or shape_count == 0:
-        return empty, empty
-
-    world_count = int(getattr(model, "world_count", 0) or 0)
-    shape_world = model.shape_world.numpy()
-    particle_world = model.particle_world.numpy()
-    tri = model.tri_indices.numpy()  # [T, 3]
-
-    n_tris = int(getattr(model, "tri_count", 0) or 0)
-    face_pairs = empty
-    if n_tris > 0:
-        # A triangle's world is the world of its first vertex (all three share it).
-        face_world = particle_world[tri[:, 0]]
-        face_pairs = _world_compatible_pairs(face_world, shape_world, world_count, device)
-
     n_edges = int(adj.edge_indices.shape[0])
-    edge_pairs = empty
-    if n_edges > 0:
-        # An edge's world is that of its owner triangle's first vertex (same mesh => same world).
-        owner_tri = np.asarray(adj.edge_tri_indices)[:, 0]
-        edge_world = particle_world[tri[owner_tri, 0]]
-        edge_pairs = _world_compatible_pairs(edge_world, shape_world, world_count, device)
-
-    return edge_pairs, face_pairs
+    if shape_count == 0 or n_edges == 0:
+        return empty
+    world_count = int(getattr(model, "world_count", 0) or 0)
+    owner_tri = np.asarray(adj.edge_tri_indices)[:, 0]
+    edge_world = model.particle_world.numpy()[model.tri_indices.numpy()[owner_tri, 0]]
+    return _world_compatible_pairs(edge_world, model.shape_world.numpy(), world_count, device)
 
 
-def _build_soft_ef_device_adjacency(model: Model):
-    """The soft mesh's ``tri_edge_indices`` / ``edge_tri_indices`` topology maps on the model device,
-    obtained from its own :class:`~newton._src.utils.mesh.MeshAdjacency` via ``.to()`` -- the single
-    host-to-device upload path (the host adjacency keeps the tables as NumPy). The water-tight edge
-    pass resolves each edge's owner triangle + local slot from these on device. Called once at
-    pipeline construction (topology is immutable after finalize). Only the topology maps are needed,
-    not the vertex-adjacency CSR the solver builds later, so silence ``to()``'s "vertex adjacency not
-    initialized" note. Returns ``(tri_edge_indices, edge_tri_indices)``, or ``(None, None)`` when
-    there is no soft mesh adjacency.
+def _build_soft_edge_tri_device(model: Model):
+    """The soft mesh's edge->owner-triangle map (``edge_tri_indices``) on the model device.
+
+    This is the only topology map the water-tight edge pass must upload: the edge's two vertices come
+    from ``model.edge_indices`` (already on device) and its local triangle slot is derived in-kernel.
+    The host :class:`~newton._src.utils.mesh.MeshAdjacency` keeps the map as NumPy, so upload it
+    directly with ``wp.array`` once at pipeline construction (topology is immutable after finalize).
+    Returns ``None`` when there is no soft mesh adjacency.
     """
     adj = getattr(model, "soft_mesh_adjacency", None)
     if adj is None:
-        return None, None
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        device_adjacency = adj.to(model.device)
-    return device_adjacency.tri_edge_indices, device_adjacency.edge_tri_indices
+        return None
+    return wp.array(np.ascontiguousarray(adj.edge_tri_indices, dtype=np.int32), dtype=wp.int32, device=model.device)
 
 
 class CollisionPipeline:
@@ -999,16 +996,16 @@ class CollisionPipeline:
 
         # Built here (not in finalize) so models/tasks that never collide don't pay for it.
         # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
-        self.soft_rigid_contact_pairs = _build_soft_rigid_contact_pairs(model)
+        self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model)
         self._soft_rigid_contact_pair_count = len(self.soft_rigid_contact_pairs)
         self.enable_water_tight_rigid_soft_contact = enable_water_tight_rigid_soft_contact
         # Water-tight edge/face candidate pairs (world-compatible, like the particle pairs above);
         # empty when the flag is off so the flag-off default stays bit-for-bit.
-        self._soft_ef_tri_edge_indices = None
         self._soft_ef_edge_tri_indices = None
         if enable_water_tight_rigid_soft_contact:
-            self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _build_soft_ef_rigid_pairs(model)
-            self._soft_ef_tri_edge_indices, self._soft_ef_edge_tri_indices = _build_soft_ef_device_adjacency(model)
+            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model)
+            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model)
+            self._soft_ef_edge_tri_indices = _build_soft_edge_tri_device(model)
         else:
             _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
@@ -1487,6 +1484,5 @@ class CollisionPipeline:
                 device=self.device,
                 edge_pairs=self.soft_edge_rigid_pairs,
                 face_pairs=self.soft_face_rigid_pairs,
-                tri_edge_indices=self._soft_ef_tri_edge_indices,
                 edge_tri_indices=self._soft_ef_edge_tri_indices,
             )

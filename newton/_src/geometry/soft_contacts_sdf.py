@@ -351,7 +351,7 @@ def create_soft_edge_contacts(
     particle_q: wp.array[wp.vec3],
     particle_radius: wp.array[float],
     tri_indices: wp.array2d[wp.int32],
-    tri_edge_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
     edge_tri_indices: wp.array2d[wp.int32],
     shape_body: wp.array[wp.int32],
     shape_type: wp.array[wp.int32],
@@ -383,11 +383,19 @@ def create_soft_edge_contacts(
     t0 = edge_tri_indices[e, 0]  # owner triangle (always valid for a real edge)
     if t0 < 0:
         return
-    k = int(0)  # local slot of edge e within triangle t0
-    if tri_edge_indices[t0, 1] == e:
-        k = 1
-    elif tri_edge_indices[t0, 2] == e:
-        k = 2
+    # Local slot k of edge e within triangle t0 (its corners are k, (k+1)%3). Derive it by matching
+    # the edge's endpoints (edge_indices cols 2,3) against t0's corners: the corner that is NOT an
+    # endpoint is opposite slot (k+2)%3, so k = (opposite + 1) % 3.
+    ev0 = edge_indices[e, 2]
+    ev1 = edge_indices[e, 3]
+    c0 = tri_indices[t0, 0]
+    c1 = tri_indices[t0, 1]
+    # Test corners 0 and 1; if neither is opposite, corner 2 is (the else -> k = 0).
+    k = int(0)  # corner 2 opposite -> edge is (c0, c1)
+    if c0 != ev0 and c0 != ev1:
+        k = 1  # corner 0 opposite -> edge is (c1, c2)
+    elif c1 != ev0 and c1 != ev1:
+        k = 2  # corner 1 opposite -> edge is (c2, c0)
     i1 = (k + 1) % 3
     p_idx = tri_indices[t0, k]
     q_idx = tri_indices[t0, i1]
@@ -443,16 +451,15 @@ def create_soft_edge_contacts(
         )
 
 
-def launch_soft_ef_contacts(
-    *, model, state, contacts, margin: float, device, edge_pairs, face_pairs, tri_edge_indices, edge_tri_indices
-):
+def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, edge_pairs, face_pairs, edge_tri_indices):
     """Launch the soft EDGE then FACE passes (the soft-particle pass is the legacy kernel).
 
     ``edge_pairs`` / ``face_pairs`` are precomputed world-compatible (soft feature, shape) index
-    pairs (``wp.vec2i``), analogous to :func:`_build_soft_rigid_contact_pairs` for the particle
-    pass -- one thread per pair, so cross-world features never reach the kernel. ``tri_edge_indices``
-    / ``edge_tri_indices`` are the mesh topology maps on device, uploaded once by the caller (the
-    host MeshAdjacency keeps them as NumPy).
+    pairs (``wp.vec2i``), analogous to :func:`_build_soft_particle_rigid_contact_pairs` for the particle
+    pass -- one thread per pair, so cross-world features never reach the kernel. ``edge_tri_indices``
+    is the edge->owner-triangle map on device (uploaded by the caller; the host MeshAdjacency keeps
+    it as NumPy); the edge's vertices come from ``model.edge_indices`` and its local triangle slot is
+    derived in-kernel.
 
     Order matters: EDGE before FACE, because the face pass's write base reads the final edge count.
     """
@@ -492,7 +499,7 @@ def launch_soft_ef_contacts(
                 state.particle_q,
                 model.particle_radius,
                 model.tri_indices,
-                tri_edge_indices,
+                model.edge_indices,
                 edge_tri_indices,
                 *shape_args,
                 SDF_EDGE_ITERS,
