@@ -1,22 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for USD volume-deformable (TetMesh) import: soft-body ranges and tet reorientation."""
+"""Tests for USD volume-deformable (TetMesh) import: mass policy, body hierarchy, tet reorientation.
 
-import tempfile
+Cross-family happy-path, skip-policy, and lifecycle contracts live in
+``test_import_usd_deformable_mixed`` and ``test_import_usd_deformable_groups``; this module
+owns the volume-specific lowering (mass precedence, deformable-body hierarchy, transforms).
+"""
+
 import unittest
-from pathlib import Path
+import warnings
 
 import numpy as np
-import warp as wp
 
 import newton
 from newton.tests._usd_deformable_test_utils import (
     _apply_deformable_body_api,
     _bind_deformable_material,
-    deformable_maps,
+    _deformable_stage,
+    group_labels,
+    group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_selected_cuda_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE
 
 
 def _author_tet_cube(stage, path, z0=0.0):
@@ -41,13 +46,15 @@ def _author_tet_cube(stage, path, z0=0.0):
     return tet
 
 
-def _author_unit_tet(stage, path):
-    """Author a single-tetrahedron TetMesh (volume 1/6) at the given path."""
+def _author_unit_tet(stage, path, *, sim_api=False):
+    """Author a single-tetrahedron TetMesh (volume 1/6), optionally marked as a simulation mesh."""
     from pxr import UsdGeom
 
     tet = UsdGeom.TetMesh.Define(stage, path)
     tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
     tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+    if sim_api:
+        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
     return tet
 
 
@@ -69,238 +76,58 @@ def _author_two_tet_wedge(stage, path):
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableVolume(unittest.TestCase):
-    """Volume (TetMesh) soft-body addressability (REQ #3038)."""
-
-    def test_tetmesh_imports_with_soft_range(self):
-        """A UsdGeom.TetMesh imports as a soft body with a recoverable particle / tet range."""
-        from pxr import Usd, UsdGeom, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "tet.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path))
-            _, _, soft_map = deformable_maps(builder)
-            ranges = soft_map["/World/Soft"]
-            self.assertEqual(ranges["particle"], (0, 4))  # 4 tet vertices
-            self.assertEqual(ranges["tet"], (0, 1))  # 1 tetrahedron
-            self.assertEqual(builder.particle_count, 4)
-
-    def test_soft_addressable_by_path_after_finalize(self):
-        """After finalize(), a soft volume resolves by prim path to its particle/tet ranges."""
-        from pxr import Usd, UsdGeom, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "tet.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path))
-            _, _, soft_map = deformable_maps(builder)
-            ranges = soft_map["/World/Soft"]
-            model = builder.finalize()
-
-            self.assertEqual(model.soft_count, 1)
-            self.assertEqual(model.soft_label, ["/World/Soft"])
-            index = model.soft_index("/World/Soft")
-            self.assertEqual(model.soft_particle_range(index), ranges["particle"])
-            self.assertEqual(model.soft_tet_range(index), ranges["tet"])
-            self.assertEqual(int(model.soft_world.numpy()[index]), -1)  # no begin_world -> global
-
-    def test_kinematic_volume_is_skipped(self):
-        """physics:kinematicEnabled=true skips the volume (no kinematic deformable support)."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "kinematic_tet.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            tet.GetPrim().CreateAttribute("physics:kinematicEnabled", Sdf.ValueTypeNames.Bool).Set(True)
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "kinematic deformables are not supported"):
-                builder.add_usd(str(usd_path))
-            self.assertEqual(builder.soft_label, [])
-            self.assertEqual(builder.particle_count, 0)
-
-    def test_volume_negative_scale_mirrors_and_reorients_tets(self):
-        """A reflective xformOp:scale mirrors the soft-body particles and reorients each tet to keep a
-        positive rest volume; a rotation+scale decomposition would drop the reflection."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "tet_reflected.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-            UsdGeom.Xformable(tet).AddScaleOp().Set(Gf.Vec3d(-1.0, 1.0, 1.0))
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path))
-            _, _, soft_map = deformable_maps(builder)
-            p0, p1 = soft_map["/World/Soft"]["particle"]
-            pq = np.array([list(builder.particle_q[i]) for i in range(p0, p1)])
-            # Original X {0, 1, 0, 0} mirrors to {0, -1, 0, 0}.
-            np.testing.assert_allclose(sorted(pq[:, 0]), [-1.0, 0.0, 0.0, 0.0], atol=1e-4)
-
-            # The imported tet keeps a positive signed rest volume (winding repaired for the reflection).
-            t0, _t1 = soft_map["/World/Soft"]["tet"]
-            i, j, k, m = builder.tet_indices[t0]
-
-            def pos(n):
-                return np.array(list(builder.particle_q[n]))
-
-            signed_vol = np.dot(pos(j) - pos(i), np.cross(pos(k) - pos(i), pos(m) - pos(i))) / 6.0
-            self.assertGreater(signed_vol, 0.0, "reflected tet must keep a positive rest volume")
-
-    def test_rest_shape_points_warns(self):
-        """An authored but unsupported physics:restShapePoints warns instead of being silently dropped."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "rest.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            tet = _author_tet_cube(stage, "/World/Soft")
-            tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-                [(0.0, 0.0, 0.0)] * 8
-            )
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "restShapePoints.*not yet supported"):
-                builder.add_usd(str(usd_path))
-
-    def test_two_tetmeshes_have_disjoint_soft_ranges(self):
-        """Two TetMesh soft bodies map to disjoint, covering particle ranges."""
-        from pxr import Usd, UsdGeom, UsdPhysics
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "tets.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            for name, dz in (("A", 0.0), ("B", 2.0)):
-                tet = UsdGeom.TetMesh.Define(stage, f"/World/Soft{name}")
-                tet.CreatePointsAttr(
-                    [(0.0, 0.0, 1.0 + dz), (1.0, 0.0, 1.0 + dz), (0.0, 1.0, 1.0 + dz), (0.0, 0.0, 2.0 + dz)]
-                )
-                tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path))
-            _, _, soft_map = deformable_maps(builder)
-            ra = soft_map["/World/SoftA"]["particle"]
-            rb = soft_map["/World/SoftB"]["particle"]
-            self.assertEqual(ra, (0, 4))
-            self.assertEqual(rb, (4, 8))
-            self.assertEqual(builder.particle_count, 8)
-
-    def test_soft_simulates(self, device=None):
-        """After parsing, a tet soft body runs through SolverVBD and stays finite."""
-        from pxr import Usd, UsdGeom, UsdPhysics
-
-        if device is None or not wp.get_device(device).is_cuda:
-            self.skipTest("VBD soft-body simulation requires a CUDA device")
-
-        with wp.ScopedDevice(device), tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "soft.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            tet = _author_tet_cube(stage, "/World/Soft", z0=1.0)
-            _bind_deformable_material(
-                stage, tet.GetPrim(), "/World/SoftMat", youngsModulus=1.0e5, poissonsRatio=0.3, density=1000.0
-            )
-            stage.Save()
-
-            builder = newton.ModelBuilder()
-            builder.add_usd(str(usd_path))
-            builder.add_ground_plane()
-            builder.color()
-            model = builder.finalize()
-
-            solver = newton.solvers.SolverVBD(model, iterations=10)
-            state_0, state_1, control = model.state(), model.state(), model.control()
-            contacts = model.contacts()
-            dt = 1.0 / 240.0
-            for _ in range(20):
-                state_0.clear_forces()
-                model.collide(state_0, contacts)
-                solver.step(state_0, state_1, control, contacts, dt)
-                state_0, state_1 = state_1, state_0
-
-            pq = state_0.particle_q.numpy()
-            self.assertTrue(np.isfinite(pq).all(), "non-finite soft-body particle positions after stepping")
+    """Volume (TetMesh) soft-body mass policy, body hierarchy, and transform baking."""
 
     def _build_soft(self, author_fn):
-        from pxr import Usd, UsdGeom, UsdPhysics
+        stage = _deformable_stage()
+        author_fn(stage)
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        return builder, result
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            usd_path = Path(tmpdir) / "soft.usda"
-            stage = Usd.Stage.CreateNew(str(usd_path))
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.Scene.Define(stage, "/PhysicsScene")
-            author_fn(stage)
-            stage.Save()
-            builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
-            return builder, result
-
-    def test_per_point_masses_take_precedence(self):
-        """physics:masses on the simulation geometry overrides body/material mass."""
+    def test_volume_mass_precedence(self):
+        """Per-prim mass sources resolve in precedence order: physics:masses on the simulation
+        geometry beats a body-mass override; a body-mass override rescales the density-derived
+        distribution proportionally, preserving the volume weighting (proposal:
+        m_p = sum_{e in tau(p)} V_e / T); and PhysicsDeformableBodyAPI.density beats the bound
+        material's density."""
         from pxr import Sdf
 
-        def author(stage):
-            tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")  # mark as the simulation mesh
-            # Body mass + material density are present but per-point masses win.
-            _apply_deformable_body_api(tet.GetPrim(), mass=99.0)
-            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 2.0, 3.0, 4.0])
-
-        builder, _ = self._build_soft(author)
-        self.assertEqual([builder.particle_mass[i] for i in range(4)], [1.0, 2.0, 3.0, 4.0])
-
-    def test_body_mass_override_preserves_volume_weighting(self):
-        """A body-mass override must rescale the per-point masses *proportionally*, preserving the
-        volume weighting (proposal: m_p = sum_{e in tau(p)} V_e / T). The importer's rescale is
-        ``particle_mass[i] *= body_mass / current``; a uniform ``body_mass / n`` would also hit the
-        total but flatten the distribution, so assert the per-point ratios, not just the sum."""
         body_mass = 10.0
-        v_large, v_small = 4.0 / 6.0, 1.0 / 6.0  # the two authored tet volumes
+        v_large, v_small = 4.0 / 6.0, 1.0 / 6.0  # the two authored wedge tet volumes
         total_vol = v_large + v_small
 
-        def author(stage):
-            tet = _author_two_tet_wedge(stage, "/World/Soft")
-            _apply_deformable_body_api(tet.GetPrim(), mass=body_mass)
+        stage = _deformable_stage()
+        # A body mass is present but per-point masses win (99 is never distributed).
+        masses_tet = _author_unit_tet(stage, "/World/SoftMasses", sim_api=True)
+        _apply_deformable_body_api(masses_tet.GetPrim(), mass=99.0)
+        masses_tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 2.0, 3.0, 4.0])
+        # Body-mass override on the non-uniform wedge.
+        wedge = _author_two_tet_wedge(stage, "/World/SoftWedge")
+        _apply_deformable_body_api(wedge.GetPrim(), mass=body_mass)
+        # Material-density baseline vs. a 5x body-density override.
+        mat_tet = _author_unit_tet(stage, "/World/SoftMatOnly", sim_api=True)
+        _bind_deformable_material(stage, mat_tet.GetPrim(), "/World/MatA", density=100.0)
+        ovr_tet = _author_unit_tet(stage, "/World/SoftDensity", sim_api=True)
+        _bind_deformable_material(stage, ovr_tet.GetPrim(), "/World/MatB", density=100.0)
+        _apply_deformable_body_api(ovr_tet.GetPrim(), density=500.0)
 
-        builder, _ = self._build_soft(author)
-        m = [builder.particle_mass[i] for i in range(5)]
-        # The override sets the total ...
-        self.assertAlmostEqual(sum(m), body_mass, places=4)
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        def masses(path):
+            p0, p1 = group_range(builder, "soft", path, "particle")
+            return [builder.particle_mass[i] for i in range(p0, p1)]
+
+        # physics:masses on the simulation geometry overrides body/material mass.
+        self.assertEqual(masses("/World/SoftMasses"), [1.0, 2.0, 3.0, 4.0])
+
+        # A body-mass override must rescale the per-point masses *proportionally*. The importer's
+        # rescale is ``particle_mass[i] *= body_mass / current``; a uniform ``body_mass / n`` would
+        # also hit the total but flatten the distribution, so assert the per-point ratios, not just
+        # the sum.
+        m = masses("/World/SoftWedge")
+        self.assertAlmostEqual(sum(m), body_mass, places=4)  # the override sets the total ...
         # ... but the distribution still follows adjacent-element volume. Apexes sit on one tet
         # each (V_e / 4); shared base vertices sum both tets ((V_large + V_small) / 4).
         self.assertAlmostEqual(m[3], body_mass * (v_large / 4.0) / total_vol, places=4)  # large apex
@@ -310,117 +137,39 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertAlmostEqual(m[i], body_mass / 4.0, places=4)  # shared = (V_large+V_small)/4 scaled
         self.assertGreater(max(m) - min(m), 1.0e-6)  # genuinely non-uniform, not flattened
 
-    def test_body_mass_sets_total(self):
-        """PhysicsDeformableBodyAPI.mass rescales the distribution to that total."""
-
-        def author(stage):
-            tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            _apply_deformable_body_api(tet.GetPrim(), mass=10.0)
-
-        builder, _ = self._build_soft(author)
-        self.assertAlmostEqual(sum(builder.particle_mass[:4]), 10.0, places=4)
-
-    def test_body_density_overrides_material_density(self):
-        """PhysicsDeformableBodyAPI.density takes precedence over the bound material."""
-
-        def author_material_only(stage):
-            tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
-
-        def author_with_override(stage):
-            tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=100.0)
-            _apply_deformable_body_api(tet.GetPrim(), density=500.0)
-
-        builder_mat, _ = self._build_soft(author_material_only)
-        builder_ovr, _ = self._build_soft(author_with_override)
-        total_mat = sum(builder_mat.particle_mass[:4])
-        total_ovr = sum(builder_ovr.particle_mass[:4])
+        # PhysicsDeformableBodyAPI.density takes precedence over the bound material (5x density -> 5x mass).
+        total_mat = sum(masses("/World/SoftMatOnly"))
+        total_ovr = sum(masses("/World/SoftDensity"))
         self.assertGreater(total_mat, 0.0)
         self.assertAlmostEqual(total_ovr / total_mat, 5.0, places=4)
 
-    def test_body_api_on_ancestor_is_found(self):
-        """PhysicsDeformableBodyAPI on an ancestor Xform governs a child sim geometry."""
+    def test_body_hierarchy_selects_single_sim_mesh(self):
+        """A PhysicsDeformableBodyAPI ancestor governs exactly one simulation mesh: its
+        authored mass applies to the child sim geometry, while a non-sim (graphics/collision)
+        TetMesh and a second sim mesh under the same body root are warned about and skipped,
+        so the body's authored total mass (12 kg) is not exceeded."""
         from pxr import UsdGeom
 
-        def author(stage):
-            UsdGeom.Xform.Define(stage, "/World/Body")
-            tet = _author_unit_tet(stage, "/World/Body/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")  # the body's simulation mesh
-            _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=7.0)
+        stage = _deformable_stage()
+        UsdGeom.Xform.Define(stage, "/World/Body")
+        _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=12.0)
+        _author_tet_cube(stage, "/World/Body/Sim")  # carries PhysicsVolumeDeformableSimAPI
+        _author_unit_tet(stage, "/World/Body/Graphics")  # no sim API -> graphics/collision
+        _author_tet_cube(stage, "/World/Body/SimB", z0=2.0)  # malformed second sim mesh
 
-        builder, _ = self._build_soft(author)
-        self.assertAlmostEqual(sum(builder.particle_mass[:4]), 7.0, places=4)
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(w.message) for w in caught]
+        self.assertTrue(any("/World/Body/Graphics" in m and "graphics/collision geometry" in m for m in messages))
+        self.assertTrue(any("/World/Body/SimB" in m and "skipping additional simulation mesh" in m for m in messages))
 
-    def test_non_sim_tetmesh_under_body_is_skipped(self):
-        """A non-sim (graphics/collision) TetMesh under a deformable body is skipped, not simulated as
-        an independent soft body, so the body's authored total mass (12 kg) is not exceeded."""
-        from pxr import UsdGeom
-
-        def author(stage):
-            UsdGeom.Xform.Define(stage, "/World/Body")
-            _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=12.0)
-            _author_tet_cube(stage, "/World/Body/Sim")  # carries PhysicsVolumeDeformableSimAPI
-            _author_unit_tet(stage, "/World/Body/Graphics")  # no sim API -> graphics/collision
-
-        with self.assertWarnsRegex(UserWarning, "graphics/collision geometry"):
-            builder, _result = self._build_soft(author)
-        _, _, soft = deformable_maps(builder)
-        self.assertIn("/World/Body/Sim", soft)
-        self.assertNotIn("/World/Body/Graphics", soft)  # skipped, not simulated
-        # The whole simulated system is exactly the body's authored 12 kg (no extra graphics mass).
+        # Only the first simulation mesh is imported; the extras are skipped, not simulated.
+        self.assertEqual(group_labels(builder, "soft"), ["/World/Body/Sim"])
+        # The whole simulated system is exactly the ancestor body's authored 12 kg
+        # (mass found on the ancestor Xform; no extra graphics or second-sim mass).
         self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
-
-    def test_multiple_sim_meshes_under_one_body_skips_extras(self):
-        """A deformable body designates one simulation mesh: a second sim mesh under the same body
-        root is malformed and skipped (with a warning), so the authored 12 kg is not exceeded."""
-        from pxr import UsdGeom
-
-        def author(stage):
-            UsdGeom.Xform.Define(stage, "/World/Body")
-            _apply_deformable_body_api(stage.GetPrimAtPath("/World/Body"), mass=12.0)
-            _author_tet_cube(stage, "/World/Body/SimA")
-            _author_tet_cube(stage, "/World/Body/SimB")
-
-        with self.assertWarnsRegex(UserWarning, "skipping additional simulation mesh"):
-            builder, _result = self._build_soft(author)
-        _, _, soft = deformable_maps(builder)
-        self.assertIn("/World/Body/SimA", soft)
-        self.assertNotIn("/World/Body/SimB", soft)  # extra sim mesh skipped
-        self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
-
-    def test_volume_velocities_warn_and_do_not_crash(self):
-        """Authored velocities are dropped with a warning (not silently), and must not crash the
-        custom-attribute frequency inference on a single-tet mesh (vertex_count == tri_count)."""
-        from pxr import UsdGeom
-
-        def author(stage):
-            tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            UsdGeom.PointBased(tet.GetPrim()).CreateVelocitiesAttr([(1.0, 2.0, 3.0)] * 4)
-
-        with self.assertWarnsRegex(UserWarning, "velocities are not imported"):
-            builder, _result = self._build_soft(author)
-        _, _, soft_map = deformable_maps(builder)
-        # Imported at rest (velocities dropped), no crash.
-        p0, p1 = soft_map["/World/Soft"]["particle"]
-        for i in range(p0, p1):
-            np.testing.assert_allclose(np.array(builder.particle_qd[i]), [0.0, 0.0, 0.0], atol=1e-6)
-
-    def test_volume_sim_api_enables_per_point_masses(self):
-        """A TetMesh marked PhysicsVolumeDeformableSimAPI honors physics:masses."""
-        from pxr import Sdf
-
-        def author(stage):
-            tet = _author_unit_tet(stage, "/World/Soft")
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            tet.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([2.0, 4.0, 6.0, 8.0])
-
-        builder, _ = self._build_soft(author)
-        self.assertEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
 
     def test_bare_tetmesh_ignores_per_point_masses(self):
         """A bare TetMesh (no deformable markers) keeps the legacy import; masses ignored."""
@@ -434,14 +183,49 @@ class TestUSDDeformableVolume(unittest.TestCase):
         # Legacy mass distribution (density-derived), not the authored per-point values.
         self.assertNotEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
 
+    def test_volume_velocities_warn_and_do_not_crash(self):
+        """Authored velocities are dropped with a warning (not silently), and must not crash the
+        custom-attribute frequency inference on a single-tet mesh (vertex_count == tri_count)."""
+        from pxr import UsdGeom
 
-devices = get_selected_cuda_test_devices()
-add_function_test(
-    TestUSDDeformableVolume,
-    "test_soft_simulates",
-    TestUSDDeformableVolume.test_soft_simulates,
-    devices=devices,
-)
+        def author(stage):
+            tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+            UsdGeom.PointBased(tet.GetPrim()).CreateVelocitiesAttr([(1.0, 2.0, 3.0)] * 4)
+
+        with self.assertWarnsRegex(UserWarning, "velocities are not imported"):
+            builder, _result = self._build_soft(author)
+        # Imported at rest (velocities dropped), no crash.
+        p0, p1 = group_range(builder, "soft", "/World/Soft", "particle")
+        for i in range(p0, p1):
+            np.testing.assert_allclose(np.array(builder.particle_qd[i]), [0.0, 0.0, 0.0], atol=1e-6)
+
+    def test_volume_negative_scale_mirrors_and_reorients_tets(self):
+        """A reflective xformOp:scale mirrors the soft-body particles and reorients each tet to keep a
+        positive rest volume; a rotation+scale decomposition would drop the reflection."""
+        from pxr import Gf, UsdGeom
+
+        stage = _deformable_stage()
+        tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
+        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+        tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+        UsdGeom.Xformable(tet).AddScaleOp().Set(Gf.Vec3d(-1.0, 1.0, 1.0))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        p0, p1 = group_range(builder, "soft", "/World/Soft", "particle")
+        pq = np.array([list(builder.particle_q[i]) for i in range(p0, p1)])
+        # Original X {0, 1, 0, 0} mirrors to {0, -1, 0, 0}.
+        np.testing.assert_allclose(sorted(pq[:, 0]), [-1.0, 0.0, 0.0, 0.0], atol=1e-4)
+
+        # The imported tet keeps a positive signed rest volume (winding repaired for the reflection).
+        t0, _t1 = group_range(builder, "soft", "/World/Soft", "tet")
+        i, j, k, m = builder.tet_indices[t0]
+
+        def pos(n):
+            return np.array(list(builder.particle_q[n]))
+
+        signed_vol = np.dot(pos(j) - pos(i), np.cross(pos(k) - pos(i), pos(m) - pos(i))) / 6.0
+        self.assertGreater(signed_vol, 0.0, "reflected tet must keep a positive rest volume")
 
 
 if __name__ == "__main__":

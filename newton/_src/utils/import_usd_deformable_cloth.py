@@ -79,6 +79,22 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if any(int(c) < 3 for c in face_counts):
             warnings.warn(f"{path}: cloth mesh has a face with fewer than 3 vertices; skipping.", stacklevel=2)
             continue
+        # Validate the flattened topology before any builder mutation (matching the cable
+        # pass's warn-and-skip policy), so malformed authoring cannot crash the import or
+        # leave a partially-appended cloth behind.
+        if sum(int(c) for c in face_counts) != len(face_indices):
+            warnings.warn(
+                f"{path}: cloth mesh faceVertexCounts sum {sum(int(c) for c in face_counts)} != "
+                f"faceVertexIndices length {len(face_indices)}; skipping.",
+                stacklevel=2,
+            )
+            continue
+        if any(i < 0 or i >= len(mesh_points) for i in face_indices):
+            warnings.warn(
+                f"{path}: cloth mesh has a face vertex index outside the {len(mesh_points)}-point array; skipping.",
+                stacklevel=2,
+            )
+            continue
         # Reuse the shared mesh handling from the rigid path: fan-triangulate faces
         # (n-gons such as quads; exact for convex faces, preserving vertex indices so
         # each mesh point stays one particle) and flip winding for left-handed

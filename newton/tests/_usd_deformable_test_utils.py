@@ -140,34 +140,43 @@ def _apply_deformable_body_api(prim, *, mass=None, density=None):
         prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
 
 
-def deformable_maps(builder):
-    """Reconstruct per-prim deformable index maps from a builder's group registry.
+def _deformable_stage(up_axis="z"):
+    """Create an in-memory stage with the up axis and a physics scene already authored.
 
-    ``add_usd()`` no longer returns ``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` —
-    index ranges live on the builder/Model group registries. Tests rebuild the old dict shape here
-    from those registries (cable body/joint ranges are contiguous, so ``range`` matches the original
-    index lists) to keep per-prim range assertions concise. Returns ``(cable, cloth, soft)``.
+    ``add_usd()`` accepts a stage directly, so parsing tests skip the disk round-trip;
+    author on disk only when file composition/resolution itself is under test.
     """
-    cable = {
-        builder.cable_label[i]: (
-            list(range(builder.cable_body_start[i], builder.cable_body_end[i])),
-            list(range(builder.cable_joint_start[i], builder.cable_joint_end[i])),
-        )
-        for i in range(len(builder.cable_label))
-    }
-    cloth = {
-        builder.cloth_label[i]: {
-            "particle": (builder.cloth_particle_start[i], builder.cloth_particle_end[i]),
-            "tri": (builder.cloth_tri_start[i], builder.cloth_tri_end[i]),
-            "edge": (builder.cloth_edge_start[i], builder.cloth_edge_end[i]),
-        }
-        for i in range(len(builder.cloth_label))
-    }
-    soft = {
-        builder.soft_label[i]: {
-            "particle": (builder.soft_particle_start[i], builder.soft_particle_end[i]),
-            "tet": (builder.soft_tet_start[i], builder.soft_tet_end[i]),
-        }
-        for i in range(len(builder.soft_label))
-    }
-    return cable, cloth, soft
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(stage, getattr(UsdGeom.Tokens, up_axis))
+    UsdPhysics.Scene.Define(stage, "/PhysicsScene")
+    return stage
+
+
+def group_labels(builder, family):
+    """Prim-path labels of a deformable family's imported groups (``cable``/``cloth``/``soft``).
+
+    The single seam through which tests locate deformable groups: it reads the builder
+    registry (which the importer populates regardless of what ``Model`` exposes), so a
+    reshape of the experimental ``Model`` group API only touches this helper, not the tests.
+    """
+    return list(getattr(builder, f"{family}_label"))
+
+
+def group_range(builder, family, label, kind, world=None):
+    """``[start, end)`` index range of one deformable group's ``kind`` array.
+
+    ``kind`` is ``body``/``joint`` for cables, ``particle``/``tri``/``edge`` for cloth, and
+    ``particle``/``tet`` for soft volumes. See :func:`group_labels` for why tests must resolve
+    ranges through this seam.
+    """
+    labels = getattr(builder, f"{family}_label")
+    worlds = getattr(builder, f"{family}_world")
+    matches = [i for i, group_label in enumerate(labels) if group_label == label]
+    if world is not None:
+        matches = [i for i in matches if worlds[i] == world]
+    if len(matches) != 1:
+        raise LookupError(f"{len(matches)} {family} groups labelled '{label}' (world={world})")
+    (i,) = matches
+    return getattr(builder, f"{family}_{kind}_start")[i], getattr(builder, f"{family}_{kind}_end")[i]
