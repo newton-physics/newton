@@ -40,6 +40,11 @@ sim = [
     "mujoco~=3.8.0",        # MuJoCo physics engine
 ]
 
+# Optional ONNX policy inference for neural actuators and RL policy examples.
+onnx = [
+    "warp-nn[onnx] @ git+https://github.com/NVIDIA/warp-nn.git@4200c82b2c9617b4367f87f411e7df66f1e5c5a0",
+]
+
 # Asset import and mesh processing dependencies
 importers = [
     # HTTP client for downloading meshes from URIs
@@ -74,6 +79,7 @@ remesh = [
 examples = [
     "newton[sim]",          # include simulation dependencies
     "newton[importers]",    # include import dependencies
+    "newton[onnx]",         # for RL policy examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
     "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
@@ -89,7 +95,8 @@ rtx = [
     "ovrtx>=0.3",           # NVIDIA OVRTX renderer
 ]
 
-# Extra dependency needed to run examples that inference an RL policy
+# PyTorch is not required for ONNX policy inference. These extras cover
+# workflows that still need PyTorch explicitly, including .pt/.pth policies.
 torch-cu12 = [
     "newton[examples]", # include example dependencies
     "torch>=2.7.0",     # CUDA 12 PyTorch
