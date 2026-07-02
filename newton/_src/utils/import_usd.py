@@ -71,6 +71,28 @@ def _external_stacklevel() -> int:
         del frame
 
 
+@dataclass
+class _DofParams:
+    """Resolved limits, drive, and initial state for one revolute/prismatic DOF, in Newton units."""
+
+    armature: float
+    friction: float
+    velocity_limit: float | None
+    limit_lower: float
+    limit_upper: float
+    limit_ke: float
+    limit_kd: float
+    has_drive: bool
+    target_pos: float
+    target_vel: float
+    target_ke: float
+    target_kd: float
+    effort_limit: float
+    actuator_mode: JointTargetMode
+    initial_position: float | None
+    initial_velocity: float | None
+
+
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,
@@ -1105,7 +1127,7 @@ def parse_usd(
         else:
             return parent_id, child_id
 
-    def resolve_dof_params(jp_prim, jd, is_revolute: bool) -> dict[str, Any]:
+    def resolve_dof_params(jp_prim, jd, is_revolute: bool) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
         Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``
@@ -1175,24 +1197,24 @@ def parse_usd(
             if initial_position is not None:
                 initial_position *= DegreesToRadian
 
-        return {
-            "armature": armature,
-            "friction": friction,
-            "velocity_limit": velocity_limit,
-            "limit_lower": limit_lower,
-            "limit_upper": limit_upper,
-            "limit_ke": limit_ke,
-            "limit_kd": limit_kd,
-            "has_drive": has_drive,
-            "target_pos": target_pos,
-            "target_vel": target_vel,
-            "target_ke": target_ke,
-            "target_kd": target_kd,
-            "effort_limit": effort_limit,
-            "actuator_mode": actuator_mode,
-            "initial_position": initial_position,
-            "initial_velocity": initial_velocity,
-        }
+        return _DofParams(
+            armature=armature,
+            friction=friction,
+            velocity_limit=velocity_limit,
+            limit_lower=limit_lower,
+            limit_upper=limit_upper,
+            limit_ke=limit_ke,
+            limit_kd=limit_kd,
+            has_drive=has_drive,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            target_ke=target_ke,
+            target_kd=target_kd,
+            effort_limit=effort_limit,
+            actuator_mode=actuator_mode,
+            initial_position=initial_position,
+            initial_velocity=initial_velocity,
+        )
 
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
@@ -1235,24 +1257,24 @@ def parse_usd(
             is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
             dof = resolve_dof_params(joint_prim, joint_desc, is_revolute)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
-            joint_params["limit_lower"] = dof["limit_lower"]
-            joint_params["limit_upper"] = dof["limit_upper"]
-            joint_params["limit_ke"] = dof["limit_ke"]
-            joint_params["limit_kd"] = dof["limit_kd"]
-            joint_params["armature"] = dof["armature"]
-            joint_params["friction"] = dof["friction"]
-            joint_params["velocity_limit"] = dof["velocity_limit"]
-            if dof["has_drive"]:
-                joint_params["target_vel"] = dof["target_vel"]
-                joint_params["target_pos"] = dof["target_pos"]
-                joint_params["target_ke"] = dof["target_ke"]
-                joint_params["target_kd"] = dof["target_kd"]
-                joint_params["effort_limit"] = dof["effort_limit"]
-            joint_params["actuator_mode"] = dof["actuator_mode"]
+            joint_params["limit_lower"] = dof.limit_lower
+            joint_params["limit_upper"] = dof.limit_upper
+            joint_params["limit_ke"] = dof.limit_ke
+            joint_params["limit_kd"] = dof.limit_kd
+            joint_params["armature"] = dof.armature
+            joint_params["friction"] = dof.friction
+            joint_params["velocity_limit"] = dof.velocity_limit
+            if dof.has_drive:
+                joint_params["target_vel"] = dof.target_vel
+                joint_params["target_pos"] = dof.target_pos
+                joint_params["target_ke"] = dof.target_ke
+                joint_params["target_kd"] = dof.target_kd
+                joint_params["effort_limit"] = dof.effort_limit
+            joint_params["actuator_mode"] = dof.actuator_mode
 
             # Initial joint state, applied after creation (already in Newton units)
-            initial_position = dof["initial_position"]
-            initial_velocity = dof["initial_velocity"]
+            initial_position = dof.initial_position
+            initial_velocity = dof.initial_velocity
 
             if is_revolute:
                 joint_index = builder.add_joint_revolute(**joint_params)
@@ -1487,7 +1509,8 @@ def parse_usd(
             if initial_velocity is not None:
                 builder.joint_qd[builder.joint_qd_start[joint_index]] = initial_velocity
                 if verbose:
-                    print(f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} rad/s")
+                    unit = "rad/s" if key == UsdPhysics.ObjectType.RevoluteJoint else "m/s"
+                    print(f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} {unit}")
         elif key == UsdPhysics.ObjectType.D6Joint:
             # Apply D6 joint initial state
             q_start = builder.joint_q_start[joint_index]
@@ -1632,8 +1655,8 @@ def parse_usd(
 
             is_revolute = key == UsdPhysics.ObjectType.RevoluteJoint
             dof = resolve_dof_params(jp_prim, jd, is_revolute)
-            initial_position = dof["initial_position"]
-            initial_velocity = dof["initial_velocity"]
+            initial_position = dof.initial_position
+            initial_velocity = dof.initial_velocity
 
             # Compute the DOF axis in the representative joint's frame.
             # Each USD joint may have a different localRot that orients its fixed axis
@@ -1660,21 +1683,19 @@ def parse_usd(
 
             ax = ModelBuilder.JointDofConfig(
                 axis=dof_axis,
-                limit_lower=dof["limit_lower"],
-                limit_upper=dof["limit_upper"],
-                limit_ke=dof["limit_ke"],
-                limit_kd=dof["limit_kd"],
-                target_pos=dof["target_pos"],
-                target_vel=dof["target_vel"],
-                target_ke=dof["target_ke"],
-                target_kd=dof["target_kd"],
-                armature=dof["armature"],
-                friction=dof["friction"],
-                effort_limit=dof["effort_limit"],
-                velocity_limit=dof["velocity_limit"]
-                if dof["velocity_limit"] is not None
-                else default_joint_velocity_limit,
-                actuator_mode=dof["actuator_mode"],
+                limit_lower=dof.limit_lower,
+                limit_upper=dof.limit_upper,
+                limit_ke=dof.limit_ke,
+                limit_kd=dof.limit_kd,
+                target_pos=dof.target_pos,
+                target_vel=dof.target_vel,
+                target_ke=dof.target_ke,
+                target_kd=dof.target_kd,
+                armature=dof.armature,
+                friction=dof.friction,
+                effort_limit=dof.effort_limit,
+                velocity_limit=dof.velocity_limit if dof.velocity_limit is not None else default_joint_velocity_limit,
+                actuator_mode=dof.actuator_mode,
             )
 
             # Collect per-DOF custom attributes from this sibling prim
