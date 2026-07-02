@@ -1109,7 +1109,7 @@ class TestModelConversions(unittest.TestCase):
         state_newton_converted: State = StateKamino.to_newton(model_newton, state_kamino_converted)
         self.assertIsInstance(state_newton_converted.body_q, wp.array)
         self.assertEqual(state_newton_converted.body_q.size, model_newton.body_count)
-        # NOTE: Check ptr due to conversion from vec6f
+        # NOTE: Check ptr due to conversion from wp.spatial_vectorf
         self.assertIs(state_newton_converted.body_qd.ptr, state_kamino_converted.u_i.ptr)
         self.assertIs(state_newton_converted.body_f.ptr, state_kamino_converted.w_i_e.ptr)
         self.assertIs(state_newton_converted.body_f_total.ptr, state_kamino_converted.w_i.ptr)

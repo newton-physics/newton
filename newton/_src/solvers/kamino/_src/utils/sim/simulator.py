@@ -46,13 +46,10 @@ class SimulatorData:
     Holds the time-varying data for the simulation.
 
     Attributes:
-        state_p (StateKamino):
-            The previous state data of the simulation
-        state_n (StateKamino):
-            The current state data of the simulation, computed from the previous step as:
+        state_p: The previous state data of the simulation.
+        state_n: The current state data of the simulation, computed from the previous step as:
             ``state_n = f(state_p, control)``, where ``f()`` is the system dynamics function.
-        control (ControlKamino):
-            The control data, computed at each step as:
+        control: The control data, computed at each step as:
             ``control = g(state_n, state_p, control)``, where ``g()`` is the control function.
     """
 
@@ -114,7 +111,7 @@ class Simulator:
 
         dt: float | FloatArrayLike = 0.001
         """
-        The time-step to be used for the simulation.\n
+        The time-step to be used for the simulation.
         Defaults to `0.001` seconds.
         """
 
@@ -126,7 +123,7 @@ class Simulator:
 
         solver: SolverKaminoImpl.Config = field(default_factory=SolverKaminoImpl.Config)
         """
-        The config for the dynamics solver.\n
+        The config for the dynamics solver.
         See :class:`SolverKaminoImpl.Config` for more details.
         """
 
@@ -177,9 +174,9 @@ class Simulator:
         Initializes the simulator with the given model builder, time-step, and device.
 
         Args:
-            builder (ModelBuilderKamino): The model builder defining the model to be simulated.
-            config (Simulator.Config, optional): The simulator config to use. If None, the default config are used.
-            device (wp.DeviceLike, optional): The device to run the simulation on. If None, the default device is used.
+            builder: The model builder defining the model to be simulated.
+            config: The simulator config to use. If None, the default config are used.
+            device: The device to run the simulation on. If None, the default device is used.
         """
         # Cache simulator config: If no config is provided, use default configs
         if config is None:
@@ -343,7 +340,7 @@ class Simulator:
 
     def reset(
         self,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         config: SolverKamino.ResetConfig | None = None,
     ):
         """
@@ -358,7 +355,7 @@ class Simulator:
         Args:
             world_mask: Optional array of per-world masks indicating which
                 worlds should be reset.
-                Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
+                Shape of ``(num_worlds,)``.
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
