@@ -11,6 +11,7 @@
   - SI units for physical quantities in public API docstrings: `"""Particle positions [m], shape [particle_count, 3]."""`. Joint-dependent: `[m or rad]`. Spatial vectors: `[N, N·m]`. Compound arrays: per-component. Skip non-physical fields.
 - Code comments: brief, and only for non-obvious code. Explain *why* (intent, constraints, edge cases), not *what* the code already shows. Prefer a cross-reference (doc, `:class:`/`:meth:`) over re-explaining context.
 - Run `docs/generate_api.py` when adding public API symbols.
+- When tuning a simulation — instability, contact, drive, or solver-parameter work — use the `simulation-tuning` skill, which routes to `docs/concepts/simulation_tuning.rst` and its sub-pages.
 - Avoid new required dependencies. Strongly prefer not adding optional ones — use Warp, NumPy, or stdlib.
 - Create a feature branch before committing — never commit directly to `main`. Use `<username>/feature-desc`.
 - Imperative mood in commit messages ("Fix X", not "Fixed X"), ~50 char subject, body wraps at 72 chars explaining _what_ and _why_.
