@@ -54,12 +54,22 @@ class ModelFlags(IntEnum):
 
 
 class StateFlags(IntEnum):
-    """Flags indicating which state attributes should be reset.
+    """Flags indicating which state attributes were updated or should be reset.
 
-    These flags are used with :meth:`~newton.solvers.SolverBase.reset` to control
-    which parts of the simulation state are reset, allowing the solver to
-    efficiently update only the necessary components.
+    These flags are used with :meth:`~newton.solvers.SolverBase.reset` to
+    control which parts of the simulation state are reset, and with
+    :meth:`~newton.solvers.experimental.coupled.CouplingInterface.coupling_notify_input_state_update`
+    to describe which public state inputs a coupler updated.
+
+    .. experimental::
+
+        The interpretation of these flags by
+        :class:`~newton.solvers.experimental.coupled.CouplingInterface` may
+        change without prior notice.
     """
+
+    NONE = 0
+    """Indicates no state attributes were updated."""
 
     JOINT_Q = 1 << 0
     """Indicates reduced joint position coordinates: ``State.joint_q``."""
@@ -79,8 +89,29 @@ class StateFlags(IntEnum):
     PARTICLE_QD = 1 << 5
     """Indicates particle velocities: ``State.particle_qd``."""
 
-    ALL = JOINT_Q | JOINT_QD | BODY_Q | BODY_QD | PARTICLE_Q | PARTICLE_QD
-    """Indicates all state attributes should be reset."""
+    BODY_F = 1 << 6
+    """Indicates rigid-body force inputs: ``State.body_f``."""
+
+    PARTICLE_F = 1 << 7
+    """Indicates particle force inputs: ``State.particle_f``."""
+
+    JOINT_F = 1 << 8
+    """Indicates joint force inputs: ``Control.joint_f`` or solver-local equivalents."""
+
+    BODY = BODY_Q | BODY_QD
+    """Indicates rigid-body pose and velocity inputs."""
+
+    PARTICLE = PARTICLE_Q | PARTICLE_QD
+    """Indicates particle position and velocity inputs."""
+
+    JOINT = JOINT_Q | JOINT_QD
+    """Indicates joint position and velocity inputs."""
+
+    FORCE = BODY_F | PARTICLE_F | JOINT_F
+    """Indicates force-input arrays."""
+
+    ALL = BODY | PARTICLE | JOINT | FORCE
+    """Indicates all public state and force-input attributes."""
 
 
 # Body flags
@@ -88,10 +119,17 @@ class BodyFlags(IntEnum):
     """
     Per-body dynamic state flags.
 
-    Each body must store exactly one runtime state flag:
-    :attr:`DYNAMIC` or :attr:`KINEMATIC`. :attr:`ALL` is a convenience
-    filter mask for APIs such as :func:`newton.eval_fk` and is not a valid
-    stored body state.
+    Each finalized model body must store exactly one runtime state flag:
+    :attr:`DYNAMIC` or :attr:`KINEMATIC`. Coupled solver views may OR in
+    :attr:`PROXY` on view-local ``body_flags`` overrides. :attr:`ALL` is a
+    convenience filter mask for APIs such as :func:`newton.eval_fk` and is not
+    a valid stored body state.
+
+    .. experimental::
+
+        :attr:`PROXY` and its inclusion in :attr:`ALL` are part of the
+        experimental coupled-solver contract and may change without prior
+        notice.
     """
 
     DYNAMIC = 1 << 0
@@ -100,8 +138,11 @@ class BodyFlags(IntEnum):
     KINEMATIC = 1 << 1
     """User-prescribed body that does not respond to applied forces."""
 
-    ALL = DYNAMIC | KINEMATIC
-    """Filter bitmask selecting both dynamic and kinematic bodies."""
+    PROXY = 1 << 2
+    """View-local proxy body marker for coupled simulations."""
+
+    ALL = DYNAMIC | KINEMATIC | PROXY
+    """Filter bitmask selecting all body types."""
 
 
 # Types of joints linking rigid bodies
