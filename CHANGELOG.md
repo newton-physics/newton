@@ -11,6 +11,7 @@
 - Add SDF contact support for convex-hull shapes with mesh-attached SDFs and opt-in SDF contact generation for box shapes.
 - Add opt-in filtering of static-static, static-kinematic, and kinematic-kinematic contacts during broad-phase collision detection. Set `CollisionPipeline(include_static_kinematic_pairs=False)` to enable filtering; the default preserves existing contact generation. `Model.shape_contact_pairs` remains an unfiltered superset for direct consumers such as `SolverKamino` and hydroelastic SDF setup.
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
+- Add `Model.shape_collision_filter_contains()` and `Model.shape_collision_filter_pairs_for_broad_phase()` for solver integrations that need collision-filter queries.
 - Add `CollisionPipeline.soft_rigid_contact_pair_count` for the number of precomputed soft-rigid (particle-shape) candidate pairs, filtered to compatible worlds, launched for soft-contact generation; this is the default capacity for `soft_contact_max`
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
@@ -32,6 +33,7 @@
 - Deprecate passing solver constructor options positionally after stable positional inputs such as `model` and explicit solver configs; migrate calls such as `SolverVBD(model, 10)` to `SolverVBD(model, iterations=10)`.
 - Deprecate passing option-heavy helper API parameters positionally, including `ModelBuilder.ShapeConfig`, `ModelBuilder.JointDofConfig`, `Contacts`, `ArticulationView`, and selected `ModelBuilder` body, joint, shape, rod, cloth, soft-body, and FEM helpers. Keep stable identifiers such as `body`, `parent`/`child`, capacity counts, and topology indices positional; migrate calls such as `add_shape_box(body, xform, hx=...)` to `add_shape_box(body, xform=xform, hx=...)`.
 - Deprecate omitting `body_frame_origin` in `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()`; the implicit behavior still uses the existing start-node body-frame convention during the deprecation window, but the implicit default will change to `body_frame_origin="com"` in a future release. Pass `body_frame_origin="start"` to preserve the legacy frame or `body_frame_origin="com"` to opt into the future COM-centered frame.
+- Deprecate mutating `Model.shape_collision_filter_pairs`; modify `ModelBuilder.shape_collision_filter_pairs` before calling `finalize()` and rebuild the model instead, because mutating finalized collision filters does not rebuild `Model.shape_contact_pairs`.
 - Change VBD Neo-Hookean membrane/tet damping to an objective metric based on the rate of `C = FᵀF`, so rigid-body rotations no longer generate damping force.
 - Change VBD spring damping to act only along the spring axis (damping edge-length rate), so transverse and rigid-rotational motion is no longer damped by springs.
 - `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
@@ -46,6 +48,7 @@
 - Fix memory growth in the Style3D solver when CUDA Graph capture is disabled
 - Fix `newton.eval_jacobian`, `SolverFeatherstone`, and the IK analytic Jacobian building `JointType.D6` angular motion-subspace columns from raw axes, so `J @ joint_qd` now matches `State.body_qd` for two- or three-angular-DOF joints at non-identity configurations.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
+- Fix `ModelBuilder` construction of large replicated robot scenes to avoid materializing duplicate collision-filter pairs, reducing `add_builder()` and `finalize()` time and memory at high world counts. (#1675)
 - Fix `SolverImplicitMPM` whole-step CUDA graph capture failing when the rheology inner solver is an iterative linear method such as `solver="cg"`. (#3155)
 - Preserve MJCF geom visualization groups when constructing MuJoCo models. (#2492)
 - Fix USD import so non-unit `metersPerUnit` and `kilogramsPerUnit` warn as unsupported, and stop scaling `PhysicsScene` gravity magnitude by `metersPerUnit`.

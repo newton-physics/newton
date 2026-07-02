@@ -4309,7 +4309,7 @@ class SolverMuJoCo(SolverBase):
                         s1, s2 = shape_2, shape_1
                     else:
                         s1, s2 = shape_1, shape_2
-                    if (s1, s2) not in model.shape_collision_filter_pairs:
+                    if not model.shape_collision_filter_contains(s1, s2):
                         excluded = False
                         break
             if excluded:
@@ -4350,8 +4350,7 @@ class SolverMuJoCo(SolverBase):
             (i, j)
             for i, j in zip(shape_a, shape_b, strict=True)
             if (
-                (min(selected_shapes[i], selected_shapes[j]), max(selected_shapes[i], selected_shapes[j]))
-                not in model.shape_collision_filter_pairs
+                not model.shape_collision_filter_contains(selected_shapes[i], selected_shapes[j])
                 and (cgroup[i] == cgroup[j] or cgroup[i] == -1 or cgroup[j] == -1)
             )
         ]
