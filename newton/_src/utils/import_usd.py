@@ -805,7 +805,23 @@ def parse_usd(
         if prim_path not in tetmesh_cache:
             # Pass the resolver-declared namespaces explicitly (never None), so the importer keeps the
             # canonical physics: default and does not trip get_tetmesh()'s legacy-default deprecation.
-            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=deformable_compat_ns)
+            compat_ns = deformable_compat_ns
+            if not compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
+                # Deprecation window: a material that authors only vendor-namespaced moduli
+                # imported with them before the canonical physics: default; dropping them
+                # silently would change existing assets' stiffness/density with no diagnostic.
+                warnings.warn(
+                    f"{prim_path}: the bound material authors legacy vendor-namespaced deformable "
+                    f"material attributes (omniphysics: / physxDeformableBody:) without "
+                    f"PhysicsVolumeDeformableMaterialAPI. add_usd() still reads them, but this is "
+                    f"deprecated: author the canonical physics: attributes with the material API, or "
+                    f"pass schema_resolvers=[..., SchemaResolverPhysx()] to keep vendor namespaces "
+                    f"explicitly.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                compat_ns = usd.DEFORMABLE_LEGACY_NAMESPACES
+            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=compat_ns)
         return tetmesh_cache[prim_path]
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:

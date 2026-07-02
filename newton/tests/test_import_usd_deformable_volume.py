@@ -8,6 +8,7 @@ Cross-family happy-path, skip-policy, and lifecycle contracts live in
 owns the volume-specific lowering (mass precedence, deformable-body hierarchy, transforms).
 """
 
+import os
 import unittest
 import warnings
 
@@ -170,6 +171,22 @@ class TestUSDDeformableVolume(unittest.TestCase):
         # The whole simulated system is exactly the ancestor body's authored 12 kg
         # (mass found on the ancestor Xform; no extra graphics or second-sim mass).
         self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
+
+    def test_legacy_vendor_material_keeps_deprecation_window(self):
+        """A TetMesh material authoring only vendor-namespaced (omniphysics:) moduli still
+        imports its stiffness/density through add_usd() during the deprecation window, with a
+        DeprecationWarning naming the recovery, instead of silently falling back to defaults."""
+        asset = os.path.join(os.path.dirname(__file__), "assets", "tetmesh_with_legacy_material.usda")
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "vendor-namespaced deformable material"):
+            builder.add_usd(asset)
+
+        # E = 3e5, nu = 0.3 -> k_mu = E / (2 (1 + nu)), k_lambda = E nu / ((1 + nu)(1 - 2 nu)).
+        k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+        self.assertAlmostEqual(k_mu, 3.0e5 / 2.6, delta=1.0)
+        self.assertAlmostEqual(k_lambda, 3.0e5 * 0.3 / (1.3 * 0.4), delta=1.0)
+        # density 40 over the unit tet (V = 1/6) -> total particle mass = 40 / 6.
+        self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, delta=1e-3)
 
     def test_bare_tetmesh_ignores_per_point_masses(self):
         """A bare TetMesh (no deformable markers) keeps the legacy import; masses ignored."""

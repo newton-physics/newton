@@ -1229,6 +1229,25 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
 
 
+def _material_authors_legacy_deformable_attrs(prim: Usd.Prim) -> bool:
+    """Return whether ``prim``'s bound physics material authors deformable moduli only under
+    the legacy vendor namespaces (see :data:`DEFORMABLE_LEGACY_NAMESPACES`).
+
+    True means a canonical-only read would silently drop the authored stiffness/density:
+    the material lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
+    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to keep a
+    deprecation window for such assets.
+    """
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
+        return False
+    return any(
+        material_prim.GetAttribute(f"{namespace}:{name}").HasAuthoredValue()
+        for namespace in DEFORMABLE_LEGACY_NAMESPACES
+        for name in ("youngsModulus", "poissonsRatio", "density")
+    )
+
+
 def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = None) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
