@@ -220,7 +220,7 @@ class SolverVBD(SolverBase):
         rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Deadzone snap angular threshold; 0 disables snap
         rigid_contact_k_start: float = 1.0e2,  # Body-body/body-particle penalty seed when ramping is enabled
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
-        rigid_body_particle_contact_buffer_size: int = 256,  # Per-body particle-contact list capacity
+        rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
         # Rigid body - joints
         rigid_joint_linear_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural linear joint constraints
         rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
@@ -322,7 +322,8 @@ class SolverVBD(SolverBase):
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the contact stiffness regardless of this value.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
-            rigid_body_particle_contact_buffer_size: Max body-particle contacts tracked per rigid body.
+            rigid_body_particle_contact_buffer_size: Max body-particle soft contacts tracked per rigid
+                body, covering both particle-vs-surface and water-tight edge/face contacts.
             rigid_joint_linear_ke: Penalty stiffness ceiling for non-cable structural linear joint slots.
             rigid_joint_angular_ke: Penalty stiffness ceiling for non-cable structural angular joint slots.
             rigid_joint_linear_k_start: Linear penalty seed for AVBD ramping. Used when
@@ -1943,14 +1944,13 @@ class SolverVBD(SolverBase):
                         # body-particle contact
                         self.friction_epsilon,
                         model.particle_radius,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
-                        model.shape_material_mu,
                         model.shape_body,
                         body_q_for_particles,
                         body_q_prev_for_particles,
@@ -1961,6 +1961,9 @@ class SolverVBD(SolverBase):
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
                         model.shape_margin,
+                        # water-tight EDGE/FACE soft contacts (section 2)
+                        model.tri_indices,
+                        contacts.soft_contact_barycentric,
                     ],
                     outputs=[
                         self.particle_forces,
@@ -2107,10 +2110,12 @@ class SolverVBD(SolverBase):
                     dim=contacts.soft_contact_max,
                     inputs=[
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_normal,
+                        model.tri_indices,
+                        contacts.soft_contact_barycentric,
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
@@ -2148,21 +2153,25 @@ class SolverVBD(SolverBase):
                         state_in.particle_q,
                         self.particle_q_prev,
                         model.particle_radius,
+                        model.tri_indices,
                         self.body_q_prev,
                         state_in.body_q,
+                        state_in.body_qd,
                         model.body_com,
                         self.body_inv_mass_effective,
+                        model.shape_body,
                         self.friction_epsilon,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        contacts.soft_contact_barycentric,
                         model.shape_margin,
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
@@ -2324,10 +2333,12 @@ class SolverVBD(SolverBase):
                     dim=soft_contact_launch_dim,
                     inputs=[
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_primitive,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_normal,
+                        model.tri_indices,
+                        contacts.soft_contact_barycentric,
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,

@@ -1016,7 +1016,7 @@ def create_soft_contacts(
     heightfield_elevations: wp.array[wp.float32],
     # outputs
     soft_contact_count: wp.array[int],
-    soft_contact_particle: wp.array[int],
+    soft_contact_primitive: wp.array[int],
     soft_contact_shape: wp.array[int],
     soft_contact_body_pos: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
@@ -1146,7 +1146,7 @@ def create_soft_contacts(
             soft_contact_shape[index] = shape_index
             soft_contact_body_pos[index] = body_pos
             soft_contact_body_vel[index] = body_vel
-            soft_contact_particle[index] = particle_index
+            soft_contact_primitive[index] = particle_index
             soft_contact_normal[index] = world_normal
 
 
