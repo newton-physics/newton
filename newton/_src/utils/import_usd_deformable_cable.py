@@ -53,7 +53,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
     segment (heterogeneous welds warn). Each curve's own authored material is still reported in
     ``path_cable_attrs``.
     """
-    from pxr import Usd, UsdGeom
+    from pxr import UsdGeom
 
     from ..usd import utils as usd  # noqa: PLC0415
     from .cable import create_cable_stiffness_from_elastic_moduli  # noqa: PLC0415
@@ -80,11 +80,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
     # whole BasisCurves prim (not an individual curve within it), so a multi-curve prim is left
     # to the per-curve pass.
     curve_recs: dict[str, _CurveDeformableRecord] = {}
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        if not prim.IsA(UsdGeom.BasisCurves):
-            continue
-        if not usd.has_applied_api_schema(prim, "PhysicsCurvesDeformableSimAPI"):
-            continue
+    for prim in ctx.prims.cables:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
             continue
@@ -131,9 +127,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             parent[rb] = ra
 
     welds: list[tuple[str, int, str, int]] = []
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        if prim.GetTypeName() != "PhysicsAttachment":
-            continue
+    for prim in ctx.prims.attachments:
         # An ignored junction must not alter topology; leave its curves to the per-curve pass.
         if _is_ignored_path(str(prim.GetPath()), ignore_paths):
             continue
@@ -397,7 +391,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
     wrapped into its own articulation so the model is finalize-ready. Results land in
     ``path_cable_map`` / attrs / segments / point anchors.
     """
-    from pxr import Usd, UsdGeom
+    from pxr import UsdGeom
 
     from ..usd import utils as usd  # noqa: PLC0415
     from .cable import create_cable_stiffness_from_elastic_moduli  # noqa: PLC0415
@@ -417,17 +411,12 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
 
     if not (root_prim and root_prim.IsValid()):
         return
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        if not prim.IsA(UsdGeom.BasisCurves):
-            continue
-        if not usd.has_applied_api_schema(prim, "PhysicsCurvesDeformableSimAPI"):
-            continue
-
+    for prim in ctx.prims.cables:
         path = str(prim.GetPath())
         if path in consumed_cable_curve_paths:
             continue  # already built as part of a welded rod graph
-        # TraverseInstanceProxies (above) covers instance proxies; prototype masters never appear
-        # under a scene-root traversal, so no prototype filter is needed.
+        # The scout traverses with TraverseInstanceProxies, so instance proxies are covered;
+        # prototype masters never appear under a scene-root traversal.
         if _is_ignored_path(path, ignore_paths):
             continue
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)

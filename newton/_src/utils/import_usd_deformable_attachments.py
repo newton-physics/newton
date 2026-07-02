@@ -37,8 +37,6 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
     already consumed as rod-graph topology are skipped, and unsupported sites (cloth/volume source,
     non-xform target, ...) are warned and preserved in ``path_attachment_attrs``.
     """
-    from pxr import Usd
-
     builder = ctx.builder
     stage = ctx.stage
     root_prim = ctx.root_prim
@@ -84,10 +82,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
 
     if not (root_prim and root_prim.IsValid()):
         return
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        if str(prim.GetTypeName()) != "PhysicsAttachment":
-            continue
-
+    for prim in ctx.prims.attachments:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
             continue
@@ -339,8 +334,6 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
     collider, so its whole shape set is filtered. Cloth/volume (triangle/tet) element sources have no
     per-element rigid shape in Newton's shape-filter model and are warned and skipped.
     """
-    from pxr import Usd
-
     builder = ctx.builder
     root_prim = ctx.root_prim
     ignore_paths = ctx.ignore_paths
@@ -399,9 +392,7 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         )
         return None
 
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        if str(prim.GetTypeName()) != "PhysicsElementCollisionFilter":
-            continue
+    for prim in ctx.prims.element_filters:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
             continue

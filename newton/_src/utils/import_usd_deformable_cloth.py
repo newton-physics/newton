@@ -35,7 +35,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
     n-gon faces are fan-triangulated, so the source need not be pre-triangulated. The surface
     material is mapped onto the isotropic membrane and results land in ``path_cloth_map`` / attrs.
     """
-    from pxr import Usd, UsdGeom
+    from pxr import UsdGeom
 
     from ..usd import utils as usd  # noqa: PLC0415
     from ..usd.schema_resolver import PrimType  # noqa: PLC0415
@@ -53,15 +53,10 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
 
     if not (root_prim and root_prim.IsValid()):
         return
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        if not prim.IsA(UsdGeom.Mesh):
-            continue
-        if not usd.has_applied_api_schema(prim, "PhysicsSurfaceDeformableSimAPI"):
-            continue
-
+    for prim in ctx.prims.cloth:
         path = str(prim.GetPath())
-        # TraverseInstanceProxies (above) covers instance proxies; prototype masters never appear
-        # under a scene-root traversal, so no prototype filter is needed.
+        # The scout traverses with TraverseInstanceProxies, so instance proxies are covered;
+        # prototype masters never appear under a scene-root traversal.
         if _is_ignored_path(path, ignore_paths):
             continue
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)

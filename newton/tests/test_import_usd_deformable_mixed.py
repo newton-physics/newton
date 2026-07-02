@@ -186,6 +186,31 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertEqual(group_labels(builder, "soft"), ["/World/BareTet"])  # legacy import
         self.assertEqual(builder.particle_count, 4)
 
+    def test_rigid_only_stage_skips_deformable_passes(self):
+        """A stage with only rigid bodies imports its rigid content unchanged and registers no
+        deformable results (the deformable passes are skipped because no candidate prims exist)."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        cube = UsdGeom.Cube.Define(stage, "/World/Body/Col")
+        cube.CreateSizeAttr(0.1)
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.particle_count, 0)
+        for family in ("cable", "cloth", "soft"):
+            self.assertEqual(group_labels(builder, family), [])
+        model = builder.finalize()
+        self.assertEqual(model.body_count, 1)
+
     def test_mixed_scene_simulates(self, device=None):
         """All three imported families coexist in one SolverVBD model and stay finite."""
         if device is None or not wp.get_device(device).is_cuda:

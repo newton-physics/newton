@@ -36,8 +36,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
     TetMeshes (graphics / collision, or bare) still import as legacy soft bodies. Results land in
     ``path_soft_map`` / attrs.
     """
-    from pxr import Usd, UsdGeom
-
     from ..usd import utils as usd  # noqa: PLC0415
 
     builder = ctx.builder
@@ -58,13 +56,10 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
     # The one simulation mesh imported per deformable body root, so graphics/collision TetMeshes and
     # any extra simulation meshes under the same body are skipped rather than simulated as extra mass.
     sim_mesh_for_body: dict[str, str] = {}
-    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-        if not prim.IsA(UsdGeom.TetMesh):
-            continue
-
+    for prim in ctx.prims.tetmeshes:
         path = str(prim.GetPath())
-        # TraverseInstanceProxies (above) covers instance proxies; prototype masters never appear
-        # under a scene-root traversal, so no prototype filter is needed.
+        # The scout traverses with TraverseInstanceProxies, so instance proxies are covered;
+        # prototype masters never appear under a scene-root traversal.
         if _is_ignored_path(path, ignore_paths):
             continue
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)

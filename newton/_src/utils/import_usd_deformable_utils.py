@@ -471,6 +471,55 @@ def _cable_attachment_anchors(
 
 
 @dataclass
+class _DeformablePrimBuckets:
+    """Deformable candidate prims discovered by :func:`_scout_deformable_prims`.
+
+    Each list keeps stage traversal order, so iterating a bucket visits prims in the same order
+    the per-family full-stage walks used to. The buckets classify by coarse type only;
+    ``ignore_paths`` filtering and per-prim validation stay in the lowering passes so their
+    warnings and skip behavior are unchanged.
+    """
+
+    cables: list[Usd.Prim] = field(default_factory=list)
+    cloth: list[Usd.Prim] = field(default_factory=list)
+    tetmeshes: list[Usd.Prim] = field(default_factory=list)
+    attachments: list[Usd.Prim] = field(default_factory=list)
+    element_filters: list[Usd.Prim] = field(default_factory=list)
+
+
+def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
+    """Classify deformable candidate prims in one stage traversal.
+
+    Replaces the per-family full-stage walks: the lowering passes iterate these buckets instead of
+    re-traversing the stage, so a stage without deformables pays a single scouting walk. Buckets
+    match each pass's coarse type filter: cables/cloth require their applied sim API, but every
+    ``TetMesh`` is bucketed because bare TetMeshes still import as legacy soft bodies.
+    """
+    from pxr import Usd, UsdGeom
+
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    buckets = _DeformablePrimBuckets()
+    if not (root_prim and root_prim.IsValid()):
+        return buckets
+    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+        type_name = str(prim.GetTypeName())
+        if type_name == "PhysicsAttachment":
+            buckets.attachments.append(prim)
+        elif type_name == "PhysicsElementCollisionFilter":
+            buckets.element_filters.append(prim)
+        elif prim.IsA(UsdGeom.TetMesh):
+            buckets.tetmeshes.append(prim)
+        elif prim.IsA(UsdGeom.BasisCurves):
+            if usd.has_applied_api_schema(prim, "PhysicsCurvesDeformableSimAPI"):
+                buckets.cables.append(prim)
+        elif prim.IsA(UsdGeom.Mesh):
+            if usd.has_applied_api_schema(prim, "PhysicsSurfaceDeformableSimAPI"):
+                buckets.cloth.append(prim)
+    return buckets
+
+
+@dataclass
 class _DeformableImportContext:
     """Shared state for the deformable import passes (cable / cloth / volume / attachment).
 
@@ -505,3 +554,5 @@ class _DeformableImportContext:
     path_soft_attrs: dict
     path_attachment_map: dict
     path_attachment_attrs: dict
+    # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
+    prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)
