@@ -1437,6 +1437,40 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         )
 
 
+def test_convex_mesh_hydroelastic_contacts(test, device):
+    """SDF-backed convex meshes should be valid hydroelastic shapes."""
+    cube_mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    cube_mesh.build_sdf(max_resolution=32, narrow_band_range=(-0.1, 0.1), margin=0.02, device=device)
+
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, gap=0.02)
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_convex_hull(body=body_a, mesh=cube_mesh, cfg=cfg)
+    builder.add_shape_convex_hull(body=body_b, mesh=cube_mesh, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    collision_pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="sap",
+        rigid_contact_max=256,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_mult_contact=2),
+    )
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(model.state(), contacts)
+
+    test.assertIsNotNone(collision_pipeline.hydroelastic_sdf)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
 # --- Test class ---
 
 
@@ -1548,6 +1582,14 @@ add_function_test(
     "test_mujoco_hydroelastic_penetration_depth",
     test_mujoco_hydroelastic_penetration_depth,
     devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_convex_mesh_hydroelastic_contacts",
+    test_convex_mesh_hydroelastic_contacts,
+    devices=cuda_devices,
+    check_output=False,
 )
 
 add_function_test(

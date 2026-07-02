@@ -349,8 +349,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "qLD_all_updates",
     "qLD_level_offsets",
     "qLDiagInv_tiles",
-    # Visualization group: Newton defaults to 0, native may use other groups
-    "geom_group",
     # Collision exclusions: Newton needs to fix parent/child filtering to match MuJoCo
     "nexclude",
     # Lights: Newton doesn't parse lights from MJCF
