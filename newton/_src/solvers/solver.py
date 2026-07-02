@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
+import numpy as np
 import warp as wp
 
 from ..geometry import ParticleFlags
@@ -183,8 +186,29 @@ class SolverBase:
     necessary.
     """
 
+    _supports_mimic_compliance = False
+
     def __init__(self, model: Model):
         self.model = model
+        if model.constraint_mimic_count:
+            stiffness = model.constraint_mimic_stiffness.numpy()
+            damping = model.constraint_mimic_damping.numpy()
+            stiffness_authored = ~np.isneginf(stiffness)
+            damping_authored = ~np.isneginf(damping)
+            partial = stiffness_authored ^ damping_authored
+            if np.any(partial):
+                warnings.warn(
+                    "Mimic constraint compliance requires both stiffness and damping to be authored; "
+                    f"constraints {np.flatnonzero(partial).tolist()} authored only one and will use "
+                    "the solver default.",
+                    stacklevel=2,
+                )
+            if not self._supports_mimic_compliance and (np.any(stiffness_authored) or np.any(damping_authored)):
+                warnings.warn(
+                    f"{type(self).__name__} does not support mimic constraint stiffness/damping; "
+                    "authored values are retained but ignored.",
+                    stacklevel=2,
+                )
 
     @property
     def device(self) -> wp.Device:

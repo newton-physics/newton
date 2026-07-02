@@ -87,6 +87,7 @@ from .kernels import (
     update_jnt_solref_from_invweight0_kernel,
     update_joint_transforms_kernel,
     update_mimic_eq_data_and_active_kernel,
+    update_mimic_eq_solref_from_invweight0_kernel,
     update_mocap_transforms_kernel,
     update_model_properties_kernel,
     update_pair_properties_kernel,
@@ -407,6 +408,8 @@ class SolverMuJoCo(SolverBase):
 
             solver.render_mujoco_viewer()
     """
+
+    _supports_mimic_compliance = True
 
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
@@ -3852,10 +3855,9 @@ class SolverMuJoCo(SolverBase):
             flags & ModelFlags.CONSTRAINT_PROPERTIES
         )
 
-        # ``need_const_0`` already covers every update that changes the derived
-        # ``dof_invweight0`` factors or the source joint-limit data, so it also
-        # captures every case that needs ``jnt_solref`` to be re-scaled.
+        # ``need_const_0`` covers updates that change derived inverse weights.
         need_solref_update = need_const_0
+        need_mimic_solref_update = need_const_0 or bool(flags & ModelFlags.CONSTRAINT_PROPERTIES)
 
         if self.use_mujoco_cpu:
             if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
@@ -3884,6 +3886,8 @@ class SolverMuJoCo(SolverBase):
                 # factors; ``jnt_solimp`` was already written by
                 # ``_update_joint_dof_properties`` above.
                 self._update_solref_from_invweight0()
+            if need_mimic_solref_update:
+                self._update_mimic_solref_from_invweight0()
             # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
             # without accounting for Newton's dof_ref, so we overwrite with the
             # correctly computed values.
@@ -3900,6 +3904,7 @@ class SolverMuJoCo(SolverBase):
                 or need_const_fixed
                 or need_const_0
                 or need_solref_update
+                or need_mimic_solref_update
                 or update_connect_constraint_anchor_rel_xform_at_ref_pose
                 or update_connect_constraint_anchors
             ):
@@ -3915,6 +3920,8 @@ class SolverMuJoCo(SolverBase):
                         # ``jnt_solimp`` was already written by
                         # ``_update_joint_dof_properties`` above.
                         self._update_solref_from_invweight0()
+                    if need_mimic_solref_update:
+                        self._update_mimic_solref_from_invweight0()
                     # Must be called last — mj_setConst/set_const_0 computes CONNECT anchor2
                     # without accounting for Newton's dof_ref, so we overwrite with the
                     # correctly computed values.
@@ -7666,6 +7673,75 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.eq_data,
                 self.mjw_data.eq_active,
             ],
+            device=self.model.device,
+        )
+
+    def _update_mimic_solref_from_invweight0(self):
+        """Scale mimic equality ``solref`` to preserve force-space gains.
+
+        MuJoCo's joint equality uses the sum of the follower and leader
+        ``dof_invweight0`` values. Pre-scaling by that effective inverse weight
+        and ``1 - dmax`` cancels MuJoCo's solver normalization. Mimics with an
+        unauthored stiffness or damping keep MuJoCo's default equality behavior.
+        """
+        if self.model.constraint_mimic_count == 0 or self.mjc_eq_to_newton_mimic is None:
+            return
+
+        neq = self.mj_model.neq
+        if neq == 0:
+            return
+
+        if self.use_mujoco_cpu:
+            mimic_map = self.mjc_eq_to_newton_mimic.numpy()[0]
+            stiffness = self.model.constraint_mimic_stiffness.numpy()
+            damping = self.model.constraint_mimic_damping.numpy()
+            eq_solref = self.mjw_model.eq_solref.numpy()[0]
+
+            for mjc_eq, newton_mimic in enumerate(mimic_map):
+                if newton_mimic < 0:
+                    continue
+
+                ke = float(stiffness[newton_mimic])
+                kd = float(damping[newton_mimic])
+                if not (ke > 0.0 and kd > 0.0):
+                    solref = convert_solref(ke, kd, 1.0, 1.0)
+                    eq_solref[mjc_eq] = (float(solref[0]), float(solref[1]))
+                    continue
+
+                joint0 = int(self.mj_model.eq_obj1id[mjc_eq])
+                joint1 = int(self.mj_model.eq_obj2id[mjc_eq])
+                dof0 = int(self.mj_model.jnt_dofadr[joint0])
+                dof1 = int(self.mj_model.jnt_dofadr[joint1])
+                invweight = float(self.mj_model.dof_invweight0[dof0] + self.mj_model.dof_invweight0[dof1])
+                dmax = float(self.mj_model.eq_solimp[mjc_eq][1])
+                factor = invweight * (1.0 - dmax) if invweight > 0.0 and dmax < 1.0 else 1.0
+                solref = convert_solref(
+                    max(ke * factor, MJ_MINVAL),
+                    max(kd * factor, MJ_MINVAL),
+                    1.0,
+                    1.0,
+                )
+                eq_solref[mjc_eq] = (float(solref[0]), float(solref[1]))
+
+            self.mj_model.eq_solref[:] = eq_solref
+            self.mjw_model.eq_solref.assign(eq_solref.reshape(1, neq, 2))
+            return
+
+        world_count = self.mjc_eq_to_newton_mimic.shape[0]
+        wp.launch(
+            update_mimic_eq_solref_from_invweight0_kernel,
+            dim=(world_count, neq),
+            inputs=[
+                self.mjc_eq_to_newton_mimic,
+                self.model.constraint_mimic_stiffness,
+                self.model.constraint_mimic_damping,
+                self.mjw_model.eq_obj1id,
+                self.mjw_model.eq_obj2id,
+                self.mjw_model.jnt_dofadr,
+                self.mjw_model.dof_invweight0,
+                self.mjw_model.eq_solimp,
+            ],
+            outputs=[self.mjw_model.eq_solref],
             device=self.model.device,
         )
 

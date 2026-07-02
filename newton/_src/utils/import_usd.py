@@ -4061,12 +4061,16 @@ def parse_usd(
             continue
         coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
         coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
+        stiffness = usd.get_attribute(joint_prim, "newton:mimicStiffness", default=-math.inf)
+        damping = usd.get_attribute(joint_prim, "newton:mimicDamping", default=-math.inf)
         leader_idx = path_joint_map[leader_path_str]
         builder.add_constraint_mimic(
             joint0=joint_idx,
             joint1=leader_idx,
             coef0=coef0,
             coef1=coef1,
+            stiffness=stiffness,
+            damping=damping,
             enabled=True,
             label=joint_path,
         )

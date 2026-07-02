@@ -1863,6 +1863,8 @@ class TestModelJoints(unittest.TestCase):
             joint1=j1,
             coef0=-0.25,
             coef1=1.5,
+            stiffness=120.0,
+            damping=12.0,
             label="mimic1",
         )
         _c2 = builder.add_constraint_mimic(
@@ -1883,6 +1885,8 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
         self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
+        self.assertAlmostEqual(model.constraint_mimic_stiffness.numpy()[0], 120.0)
+        self.assertAlmostEqual(model.constraint_mimic_damping.numpy()[0], 12.0)
         self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
         self.assertEqual(model.constraint_mimic_label[0], "mimic1")
 
@@ -1891,8 +1895,41 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
         self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
+        self.assertTrue(np.isneginf(model.constraint_mimic_stiffness.numpy()[1]))
+        self.assertTrue(np.isneginf(model.constraint_mimic_damping.numpy()[1]))
         self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
         self.assertEqual(model.constraint_mimic_label[1], "mimic2")
+        self.assertEqual(
+            model.get_attribute_frequency("constraint_mimic_stiffness"),
+            newton.Model.AttributeFrequency.CONSTRAINT_MIMIC,
+        )
+        self.assertEqual(
+            model.get_attribute_frequency("constraint_mimic_damping"),
+            newton.Model.AttributeFrequency.CONSTRAINT_MIMIC,
+        )
+
+    def test_mimic_constraint_compliance_builder_composition(self):
+        """Builder composition preserves per-world mimic compliance."""
+        template = ModelBuilder()
+        body0 = template.add_body()
+        body1 = template.add_body()
+        joint0 = template.add_joint_revolute(parent=-1, child=body0)
+        joint1 = template.add_joint_revolute(parent=-1, child=body1)
+        template.add_constraint_mimic(
+            joint0=joint1,
+            joint1=joint0,
+            stiffness=250.0,
+            damping=25.0,
+        )
+
+        builder = ModelBuilder()
+        builder.replicate(template, world_count=3)
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 3)
+        np.testing.assert_array_equal(model.constraint_mimic_world.numpy(), [0, 1, 2])
+        np.testing.assert_allclose(model.constraint_mimic_stiffness.numpy(), [250.0] * 3)
+        np.testing.assert_allclose(model.constraint_mimic_damping.numpy(), [25.0] * 3)
 
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""

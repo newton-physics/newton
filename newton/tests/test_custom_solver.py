@@ -125,6 +125,24 @@ class TestCustomSolver(unittest.TestCase):
         self.assertEqual(solver.reset_epoch, 11)
         self.assertEqual(int(state.custom_solver.reset_epoch.numpy()[0]), 12)
 
+    def test_unsupported_mimic_compliance_warns(self):
+        """Solvers that ignore authored mimic compliance warn at construction."""
+        builder = newton.ModelBuilder()
+        body0 = builder.add_body()
+        body1 = builder.add_body()
+        joint0 = builder.add_joint_revolute(parent=-1, child=body0)
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        builder.add_constraint_mimic(
+            joint0=joint1,
+            joint1=joint0,
+            stiffness=100.0,
+            damping=10.0,
+        )
+        model = builder.finalize()
+
+        with self.assertWarnsRegex(UserWarning, "does not support mimic constraint stiffness/damping"):
+            DummySolver(model)
+
 
 if __name__ == "__main__":
     unittest.main()

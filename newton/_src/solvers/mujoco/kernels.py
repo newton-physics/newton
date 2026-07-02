@@ -2676,6 +2676,45 @@ def update_mimic_eq_data_and_active_kernel(
     eq_active_out[world, mjc_eq] = constraint_mimic_enabled[newton_mimic]
 
 
+@wp.kernel(enable_backward=False)
+def update_mimic_eq_solref_from_invweight0_kernel(
+    mjc_eq_to_newton_mimic: wp.array2d[wp.int32],
+    constraint_mimic_stiffness: wp.array[wp.float32],
+    constraint_mimic_damping: wp.array[wp.float32],
+    eq_obj1id: wp.array[wp.int32],
+    eq_obj2id: wp.array[wp.int32],
+    jnt_dofadr: wp.array[wp.int32],
+    dof_invweight0: wp.array2d[float],
+    eq_solimp: wp.array2d[vec5],
+    # outputs
+    eq_solref: wp.array2d[wp.vec2],
+):
+    """Convert force-space mimic compliance to MuJoCo equality ``solref``."""
+    world, mjc_eq = wp.tid()
+    newton_mimic = mjc_eq_to_newton_mimic[world, mjc_eq]
+    if newton_mimic < 0:
+        return
+
+    stiffness = constraint_mimic_stiffness[newton_mimic]
+    damping = constraint_mimic_damping[newton_mimic]
+    if not (stiffness > 0.0 and damping > 0.0):
+        eq_solref[world, mjc_eq] = convert_solref(stiffness, damping, 1.0, 1.0)
+        return
+
+    dof0 = jnt_dofadr[eq_obj1id[mjc_eq]]
+    dof1 = jnt_dofadr[eq_obj2id[mjc_eq]]
+    invweight = dof_invweight0[world, dof0] + dof_invweight0[world, dof1]
+    dmax = eq_solimp[world, mjc_eq][1]
+
+    factor = float(1.0)
+    if invweight > 0.0 and dmax < 1.0:
+        factor = invweight * (1.0 - dmax)
+
+    direct_stiffness = wp.max(stiffness * factor, MJ_MINVAL)
+    direct_damping = wp.max(damping * factor, MJ_MINVAL)
+    eq_solref[world, mjc_eq] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
+
+
 @wp.func
 def mj_body_acceleration(
     body_rootid: wp.array[int],
