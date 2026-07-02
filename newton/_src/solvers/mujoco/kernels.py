@@ -405,7 +405,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         # FORCE_SPACE per-contact override: bypass contact_params' per-geom
         # solref averaging and recompute the solref from the combined
-        # two-body factor. See docs/integrations/mujoco.rst > "Shape-material
+        # two-body factor. See docs/solvers/mujoco.rst > "Shape-material
         # contact stiffness and damping" for the mechanism.
         if shape_mjc_solref_mode:
             mode_a = shape_mjc_solref_mode[shape_a]
@@ -2286,7 +2286,7 @@ def update_geom_properties_kernel(
     rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
-    # geom_solref per shape_mjc_solref_mode. See docs/integrations/mujoco.rst
+    # geom_solref per shape_mjc_solref_mode. See docs/solvers/mujoco.rst
     # > "Shape-material contact stiffness and damping". FORCE_SPACE and
     # MJCF_DEFAULT both write the legacy convert_solref round-trip here;
     # FORCE_SPACE additionally triggers the per-contact override in
