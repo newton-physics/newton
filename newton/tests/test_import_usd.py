@@ -1448,10 +1448,10 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        root = UsdGeom.Xform.Define(stage, "/World")
-        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        UsdGeom.Xform.Define(stage, "/World")
         body = UsdGeom.Cube.Define(stage, "/World/Body")
         body.AddRotateYOp().Set(90.0)
+        UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
         rigid_body = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
         rigid_body.CreateVelocityAttr().Set(Gf.Vec3f(1.0, 2.0, 3.0))
         rigid_body.CreateAngularVelocityAttr().Set(Gf.Vec3f(90.0, 0.0, 0.0))
