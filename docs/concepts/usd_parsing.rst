@@ -81,7 +81,7 @@ The first release deliberately supports a narrow, predictable set of inputs:
   establishes an initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
-* Every imported deformable can be found by prim path on the builder (see below).
+* Every imported deformable can be found by prim path on the finalized model (see below).
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
@@ -126,15 +126,18 @@ shape instead, but rest state is not imported yet (see the limitations above), s
 saved pose shifts mass with it.
 
 Every imported deformable can be looked up by its prim path. Per family,
-:class:`~newton.ModelBuilder` stores a label list (e.g.
-:attr:`~newton.ModelBuilder.cloth_label`), a world index, and ``[start, end)`` index ranges
-into the per-element arrays: body/joint ranges for cables, particle/triangle/edge ranges for
-cloth, and particle/tet ranges for volumes (soft bodies). Find a group by its position in the
-label list and read the matching range lists (e.g. ``cloth_particle_start`` /
-``cloth_particle_end``). The ranges stay valid through :meth:`~newton.ModelBuilder.replicate`
-(each copy is tagged with its world index) and ``collapse_fixed_joints`` (cable ranges follow
-the renumbered bodies and joints). Replication repeats a label in every world, so match on the
-label and the world index together.
+:class:`~newton.ModelBuilder` and the finalized :class:`~newton.Model` store a label list, a
+world index, and ``[start, end)`` index ranges into the per-element arrays: body/joint ranges
+for cables, particle/triangle/edge ranges for cloth, and particle/tet ranges for volumes
+(soft bodies). Find a group with :meth:`~newton.Model.cable_index` /
+:meth:`~newton.Model.cloth_index` / :meth:`~newton.Model.soft_index` and read its range with the
+matching ``*_range`` method (e.g. :meth:`~newton.Model.cloth_particle_range`). The ranges stay
+valid through :meth:`~newton.ModelBuilder.finalize`, :meth:`~newton.ModelBuilder.replicate`
+(each copy is tagged with its world index), and ``collapse_fixed_joints`` (cable ranges follow
+the renumbered bodies and joints). Replication repeats a label in every world, so the lookup
+then needs an explicit ``world`` argument and raises an error without one rather than guessing.
+Pattern matching, per-world grouping, and batched state access are planned for
+``newton.selection``, following :class:`~newton.selection.ArticulationView`.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -173,10 +176,9 @@ close a loop, so they stay outside the articulation.
 .. code-block:: python
 
     builder.add_usd("cables.usda")
-    # Look up an imported cable by prim path:
-    c = builder.cable_label.index("/World/Cable")
-    body_start, body_end = builder.cable_body_start[c], builder.cable_body_end[c]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
+    # Look up an imported cable by prim path:
+    body_start, body_end = model.cable_body_range(model.cable_index("/World/Cable"))
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly

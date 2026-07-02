@@ -242,10 +242,11 @@ def parse_usd(
 
     Returns:
         Imported deformables (cable/cloth/volume) can be looked up by prim path through the
-        group registries on :class:`~newton.ModelBuilder` (e.g. :attr:`~newton.ModelBuilder.cable_label`
-        with the matching ``[start, end)`` range lists); :meth:`replicate` keeps the ranges
-        valid per world. The material attributes are returned as authored in the
-        ``path_*_attrs`` entries below.
+        group metadata on :class:`~newton.ModelBuilder` and the finalized
+        :class:`~newton.Model` (e.g. :attr:`~newton.Model.cable_label`,
+        :meth:`~newton.Model.cloth_index`, :meth:`~newton.Model.soft_particle_range`), whose index
+        ranges survive :meth:`~newton.ModelBuilder.finalize` and :meth:`~newton.ModelBuilder.replicate`.
+        The as-authored, solver-neutral attributes remain in the ``path_*_attrs`` entries below.
 
         The returned mapping has the following entries:
 

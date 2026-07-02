@@ -1228,8 +1228,8 @@ class ModelBuilder:
 
         # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
         # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
-        # [start, end) into the corresponding builder arrays, and replicate()/add_builder() carry
-        # them per world so each group stays indexable by path.
+        # [start, end) into the corresponding builder arrays; finalize() copies them onto the Model,
+        # and replicate()/add_builder() carry them per world so each group stays indexable by path.
         self.cable_label: list[str] = []
         """Prim-path labels of imported cable groups."""
         self.cable_world: list[int] = []
@@ -3010,10 +3010,11 @@ class ModelBuilder:
 
         Returns:
             Imported deformables (cable/cloth/volume) can be looked up by prim path through the
-            group registries on :class:`~newton.ModelBuilder` (e.g. :attr:`~newton.ModelBuilder.cable_label`
-            with the matching ``[start, end)`` range lists); :meth:`replicate` keeps the ranges
-            valid per world. The material attributes are returned as authored in the
-            ``path_*_attrs`` entries below.
+            group metadata on :class:`~newton.ModelBuilder` and the finalized
+            :class:`~newton.Model` (e.g. :attr:`~newton.Model.cable_label`,
+            :meth:`~newton.Model.cloth_index`, :meth:`~newton.Model.soft_particle_range`), whose
+            index ranges survive :meth:`finalize` and :meth:`replicate`. The as-authored,
+            solver-neutral attributes remain in the ``path_*_attrs`` entries below.
 
             The returned mapping has the following entries:
 
@@ -11596,6 +11597,55 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
+
+            # Deformable groups (cable/cloth/volume): copy the builder's per-group [start, end)
+            # ranges, labels, and world tags onto the Model so each imported deformable stays
+            # addressable by prim path after finalization (see Model.cable_index/cable_body_range).
+            m.cable_count = len(self.cable_label)
+            m.cable_label = list(self.cable_label)
+            m.cable_world = wp.array(self.cable_world, dtype=wp.int32)
+            m.cable_body_start = wp.array(self.cable_body_start, dtype=wp.int32)
+            m.cable_body_end = wp.array(self.cable_body_end, dtype=wp.int32)
+            m.cable_joint_start = wp.array(self.cable_joint_start, dtype=wp.int32)
+            m.cable_joint_end = wp.array(self.cable_joint_end, dtype=wp.int32)
+
+            m.cloth_count = len(self.cloth_label)
+            m.cloth_label = list(self.cloth_label)
+            m.cloth_world = wp.array(self.cloth_world, dtype=wp.int32)
+            m.cloth_particle_start = wp.array(self.cloth_particle_start, dtype=wp.int32)
+            m.cloth_particle_end = wp.array(self.cloth_particle_end, dtype=wp.int32)
+            m.cloth_tri_start = wp.array(self.cloth_tri_start, dtype=wp.int32)
+            m.cloth_tri_end = wp.array(self.cloth_tri_end, dtype=wp.int32)
+            m.cloth_edge_start = wp.array(self.cloth_edge_start, dtype=wp.int32)
+            m.cloth_edge_end = wp.array(self.cloth_edge_end, dtype=wp.int32)
+
+            m.soft_count = len(self.soft_label)
+            m.soft_label = list(self.soft_label)
+            m.soft_world = wp.array(self.soft_world, dtype=wp.int32)
+            m.soft_particle_start = wp.array(self.soft_particle_start, dtype=wp.int32)
+            m.soft_particle_end = wp.array(self.soft_particle_end, dtype=wp.int32)
+            m.soft_tet_start = wp.array(self.soft_tet_start, dtype=wp.int32)
+            m.soft_tet_end = wp.array(self.soft_tet_end, dtype=wp.int32)
+
+            # Plain-list mirrors backing Model's *_index()/*_range() helpers (no device copies).
+            m._deformable_group_host = {
+                "cable": {
+                    "world": list(self.cable_world),
+                    "body": (list(self.cable_body_start), list(self.cable_body_end)),
+                    "joint": (list(self.cable_joint_start), list(self.cable_joint_end)),
+                },
+                "cloth": {
+                    "world": list(self.cloth_world),
+                    "particle": (list(self.cloth_particle_start), list(self.cloth_particle_end)),
+                    "tri": (list(self.cloth_tri_start), list(self.cloth_tri_end)),
+                    "edge": (list(self.cloth_edge_start), list(self.cloth_edge_end)),
+                },
+                "soft": {
+                    "world": list(self.soft_world),
+                    "particle": (list(self.soft_particle_start), list(self.soft_particle_end)),
+                    "tet": (list(self.soft_tet_start), list(self.soft_tet_end)),
+                },
+            }
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
