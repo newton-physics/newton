@@ -127,28 +127,6 @@ class Model:
     class AttributeSpec:
         """Semantic metadata for an indexed model attribute.
 
-        Attributes:
-            frequency: Entity domain that determines the attribute row count.
-            assignment: Object that owns the attribute. If ``None``, the
-                attribute belongs to the :class:`Model`.
-            references: Entity domain referenced by integer attribute values,
-                or ``None`` when values are not entity indices.
-            row_width: Number of flattened values stored for each entity row.
-            requires_empty_sentinel: Whether empty compacted storage retains a
-                sentinel value.
-            deprecated: Whether the attribute is a deprecated compatibility
-                alias that generic consumers should skip.
-            alias_of: Canonical attribute name used when explicitly accessing
-                this alias through a model view.
-            compaction_policy: Experimental policy used by coupled model
-                views. ``"generic"`` selects and remaps rows using this spec;
-                ``"end"`` remaps exclusive boundaries in the referenced
-                domain; ``"start"``, ``"world_start"``, and ``"color_groups"``
-                select their corresponding structured handling; and
-                ``"passthrough"`` disables automatic count limiting.
-                Non-generic policies may still be overridden by the coupled
-                solver when constructing a compact view.
-
         .. experimental::
 
             ``compaction_policy`` is part of the experimental coupled-solver
@@ -156,13 +134,29 @@ class Model:
         """
 
         frequency: Model.AttributeFrequency | str
+        """Entity domain that determines the attribute row count."""
         assignment: Model.AttributeAssignment | None = None
+        """Object that owns the attribute, or ``None`` when it belongs to the :class:`Model`."""
         references: Model.AttributeFrequency | str | None = None
+        """Entity domain referenced by integer values, or ``None`` when values are not entity indices."""
         row_width: int = 1
+        """Number of flattened values stored for each entity row."""
         requires_empty_sentinel: bool = False
+        """Whether empty compacted storage retains a sentinel value."""
         deprecated: bool = False
+        """Whether this is a deprecated compatibility alias that generic consumers should skip."""
         alias_of: str | None = None
+        """Canonical name used when explicitly accessing this alias through a model view."""
         compaction_policy: Literal["generic", "end", "start", "world_start", "color_groups", "passthrough"] = "generic"
+        """Experimental policy used by coupled model views.
+
+        ``"generic"`` selects and remaps rows using this spec; ``"end"``
+        remaps exclusive boundaries in the referenced domain; ``"start"``,
+        ``"world_start"``, and ``"color_groups"`` select their corresponding
+        structured handling; and ``"passthrough"`` disables automatic count
+        limiting. Non-generic policies may still be overridden by the coupled
+        solver when constructing a compact view.
+        """
 
         def __post_init__(self) -> None:
             if self.row_width < 1:
