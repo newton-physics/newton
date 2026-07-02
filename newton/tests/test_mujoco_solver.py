@@ -10301,10 +10301,10 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         kd: float,
         *,
         inertia: float = 0.5,
-        gravity: float = -9.81,
+        gravity: tuple[float, float, float] = (0.0, 0.0, -9.81),
         register_mujoco_attrs: bool = False,
     ):
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, gravity))
+        builder = newton.ModelBuilder(gravity=gravity)
         if register_mujoco_attrs:
             SolverMuJoCo.register_custom_attributes(builder)
         inertia_tensor = wp.mat33(np.eye(3) * inertia)
