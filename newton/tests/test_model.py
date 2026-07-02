@@ -1844,10 +1844,12 @@ class TestModelJoints(unittest.TestCase):
     def test_articulation_validation_orphan_joint(self):
         """Test that joints not belonging to an articulation raise an error on finalize."""
         builder = ModelBuilder()
-        body = builder.add_link()
+        parent = builder.add_link()
+        child = builder.add_link()
 
-        # Add joint but do NOT add it to an articulation
-        builder.add_joint_revolute(parent=-1, child=body, label="orphan_joint")
+        # World-root joints are intentionally allowed without articulation
+        # metadata, so use a non-root joint to exercise orphan validation.
+        builder.add_joint_revolute(parent=parent, child=child, label="orphan_joint")
 
         # finalize() should raise ValueError about orphan joints
         with self.assertRaises(ValueError) as context:
@@ -1856,15 +1858,27 @@ class TestModelJoints(unittest.TestCase):
         self.assertIn("not belonging to any articulation", str(context.exception))
         self.assertIn("orphan_joint", str(context.exception))
 
+    def test_articulation_validation_allows_standalone_world_root(self):
+        """Test that a standalone world-root joint does not require an articulation."""
+        builder = ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_fixed(parent=-1, child=body, label="standalone_root")
+
+        model = builder.finalize()
+
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_articulation.numpy()[joint], -1)
+
     def test_articulation_validation_multiple_orphan_joints(self):
         """Test error message shows multiple orphan joints."""
         builder = ModelBuilder()
         body1 = builder.add_link()
         body2 = builder.add_link()
+        body3 = builder.add_link()
 
-        # Add multiple joints without articulations
-        builder.add_joint_revolute(parent=-1, child=body1, label="first_joint")
-        builder.add_joint_revolute(parent=body1, child=body2, label="second_joint")
+        # Add multiple non-root joints without articulations.
+        builder.add_joint_revolute(parent=body1, child=body2, label="first_joint")
+        builder.add_joint_revolute(parent=body2, child=body3, label="second_joint")
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()
@@ -2627,8 +2641,9 @@ class TestModelValidation(unittest.TestCase):
     def test_skip_all_validations(self):
         """Test that skip_all_validations skips all validation checks."""
         builder = ModelBuilder()
-        body = builder.add_link(mass=1.0)
-        builder.add_joint_revolute(parent=-1, child=body, label="orphan_joint")
+        parent = builder.add_link(mass=1.0)
+        child = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=parent, child=child, label="orphan_joint")
         # Don't add articulation - this would normally fail _validate_joints
 
         # Without skip_all_validations, should raise ValueError about orphan joint
@@ -2639,8 +2654,9 @@ class TestModelValidation(unittest.TestCase):
         # With skip_all_validations=True, should NOT raise the validation error
         # Create a fresh builder for clean test
         builder2 = ModelBuilder()
-        body2 = builder2.add_link(mass=1.0)
-        builder2.add_joint_revolute(parent=-1, child=body2, label="orphan_joint2")
+        parent2 = builder2.add_link(mass=1.0)
+        child2 = builder2.add_link(mass=1.0)
+        builder2.add_joint_revolute(parent=parent2, child=child2, label="orphan_joint2")
         # This should succeed (validation skipped)
         model = builder2.finalize(skip_all_validations=True)
         self.assertIsNotNone(model)
