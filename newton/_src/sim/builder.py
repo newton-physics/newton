@@ -3012,9 +3012,9 @@ class ModelBuilder:
             Imported deformables (cable/cloth/volume) can be looked up by prim path through the
             group metadata on :class:`~newton.ModelBuilder` and the finalized
             :class:`~newton.Model` (e.g. :attr:`~newton.Model.cable_label`,
-            :meth:`~newton.Model.cloth_index`, :meth:`~newton.Model.soft_particle_range`), whose
-            index ranges survive :meth:`finalize` and :meth:`replicate`. The as-authored,
-            solver-neutral attributes remain in the ``path_*_attrs`` entries below.
+            :meth:`~newton.Model.cloth_index`, :meth:`~newton.Model.soft_particle_range`), whose index
+            ranges survive :meth:`~newton.ModelBuilder.finalize` and :meth:`~newton.ModelBuilder.replicate`.
+            The as-authored, solver-neutral attributes remain in the ``path_*_attrs`` entries below.
 
             The returned mapping has the following entries:
 
