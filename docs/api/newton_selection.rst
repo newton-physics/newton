@@ -14,3 +14,4 @@ newton.selection
    :nosignatures:
 
    ArticulationView
+   DeformableView

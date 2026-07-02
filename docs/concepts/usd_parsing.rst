@@ -136,6 +136,8 @@ valid through :meth:`~newton.ModelBuilder.finalize`, :meth:`~newton.ModelBuilder
 (each copy is tagged with its world index), and ``collapse_fixed_joints`` (cable ranges follow
 the renumbered bodies and joints). Replication repeats a label in every world, so the lookup
 then needs an explicit ``world`` argument and raises an error without one rather than guessing.
+For batched access across replicated worlds, select groups by label pattern with
+:class:`~newton.selection.DeformableView`.
 Pattern matching, per-world grouping, and batched state access are planned for
 ``newton.selection``, following :class:`~newton.selection.ArticulationView`.
 

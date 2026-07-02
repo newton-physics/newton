@@ -6,7 +6,7 @@ from __future__ import annotations
 import functools
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import warp as wp
 from warp.types import is_array
@@ -1873,3 +1873,243 @@ class ArticulationView:
             outputs=[dst],
             device=self.device,
         )
+
+
+@wp.kernel
+def _gather_group_vec3_kernel(
+    src: wp.array[wp.vec3],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.vec3],
+):
+    group, i = wp.tid()
+    out[group, i] = src[starts[group] + i]
+
+
+@wp.kernel
+def _scatter_group_vec3_kernel(
+    values: wp.array2d[wp.vec3],
+    starts: wp.array[wp.int32],
+    dst: wp.array[wp.vec3],
+):
+    group, i = wp.tid()
+    dst[starts[group] + i] = values[group, i]
+
+
+@wp.kernel
+def _gather_group_transform_kernel(
+    src: wp.array[wp.transform],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.transform],
+):
+    group, i = wp.tid()
+    out[group, i] = src[starts[group] + i]
+
+
+@wp.kernel
+def _scatter_group_transform_kernel(
+    values: wp.array2d[wp.transform],
+    starts: wp.array[wp.int32],
+    dst: wp.array[wp.transform],
+):
+    group, i = wp.tid()
+    dst[starts[group] + i] = values[group, i]
+
+
+@wp.kernel
+def _gather_group_spatial_kernel(
+    src: wp.array[wp.spatial_vector],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.spatial_vector],
+):
+    group, i = wp.tid()
+    out[group, i] = src[starts[group] + i]
+
+
+@wp.kernel
+def _scatter_group_spatial_kernel(
+    values: wp.array2d[wp.spatial_vector],
+    starts: wp.array[wp.int32],
+    dst: wp.array[wp.spatial_vector],
+):
+    group, i = wp.tid()
+    dst[starts[group] + i] = values[group, i]
+
+
+class DeformableView:
+    """Batched access to imported deformables selected by label pattern.
+
+    Selects the cable, cloth, or soft-body groups whose prim-path label matches ``pattern``
+    and exposes their state as batched arrays of shape ``(count, elements_per_group)``, one
+    row per selected group ordered world by world. This mirrors
+    :class:`~newton.selection.ArticulationView` for the deformable families that
+    :meth:`~newton.ModelBuilder.add_usd` imports.
+
+    The selection must be homogeneous: the same number of matching groups in every world
+    and the same element count in every group (which :meth:`~newton.ModelBuilder.replicate`
+    produces). Ragged selections raise ``ValueError``.
+
+    Example:
+
+    .. code-block:: python
+
+        import newton
+
+        view = newton.selection.DeformableView(model, "/World/Cloth", family="cloth")
+        positions = view.get_particle_positions(state)  # (count, particles_per_cloth) vec3
+        lifted = positions.numpy()
+        lifted[:, :, 2] += 1.0
+        view.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
+
+    Args:
+        model: The model containing the imported deformables.
+        pattern: Pattern to match group labels (prim paths) — see :ref:`label-matching`.
+        family: Deformable family to select: ``"cable"``, ``"cloth"``, or ``"soft"``.
+        verbose: If True, prints a selection summary.
+    """
+
+    _FAMILY_KINDS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "cable": ("body", "joint"),
+        "cloth": ("particle", "tri", "edge"),
+        "soft": ("particle", "tet"),
+    }
+
+    @deprecate_nonkeyword_arguments
+    def __init__(
+        self,
+        model: Model,
+        pattern: str,
+        *,
+        family: str,
+        verbose: bool | None = None,
+    ):
+        if family not in self._FAMILY_KINDS:
+            raise ValueError(f"Unknown deformable family '{family}'; expected one of {sorted(self._FAMILY_KINDS)}")
+        self.model = model
+        self.device = model.device
+        self.family = family
+
+        if verbose is None:
+            verbose = wp.config.log_level <= wp.LOG_DEBUG
+
+        labels = getattr(model, f"{family}_label")
+        host = model._deformable_group_host[family]
+
+        group_ids, global_group_ids = find_matching_ids(pattern, labels, host["world"], model.world_count)
+
+        world_count = model.world_count
+        counts_per_world = [len(ids) for ids in group_ids]
+        group_count = sum(counts_per_world)
+
+        # can't mix global and per-world groups in the same view
+        if group_count > 0 and global_group_ids:
+            raise ValueError(
+                f"Deformable pattern '{pattern}' matches global and per-world groups, which is not supported"
+            )
+
+        # handle scenes with only global groups
+        if group_count == 0 and global_group_ids:
+            world_count = 1
+            group_count = len(global_group_ids)
+            counts_per_world = [group_count]
+            group_ids = [global_group_ids]
+
+        if group_count == 0:
+            raise KeyError(f"No {family} groups matching pattern '{pattern}'")
+
+        if not all_equal(counts_per_world):
+            raise ValueError(f"Varying {family} group counts per world are not supported")
+
+        self.count = group_count
+        """Number of selected groups across all worlds."""
+        self.world_count = world_count
+        """Number of worlds spanned by the selection."""
+        self.count_per_world = counts_per_world[0]
+        """Number of selected groups in each world."""
+        flat_ids = [i for ids in group_ids for i in ids]
+        self.labels = [labels[i] for i in flat_ids]
+        """Label of each selected group, ordered world by world."""
+        self.worlds = [host["world"][i] for i in flat_ids]
+        """World index of each selected group."""
+
+        # Element ranges per kind; the selection must be homogeneous per kind.
+        self._starts = {}
+        self._counts = {}
+        for kind in self._FAMILY_KINDS[family]:
+            starts, ends = host[kind]
+            sizes = {ends[i] - starts[i] for i in flat_ids}
+            if len(sizes) != 1:
+                raise ValueError(f"Varying {kind} counts per {family} group are not supported (got {sorted(sizes)})")
+            self._counts[kind] = sizes.pop()
+            self._starts[kind] = wp.array([starts[i] for i in flat_ids], dtype=wp.int32, device=self.device)
+
+        if verbose:
+            elements = ", ".join(f"{self._counts[k]} {k}(s)" for k in self._FAMILY_KINDS[family])
+            print(f"DeformableView '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
+
+    # generic gather/scatter -------------------------------------------------
+
+    def _element_count(self, kind: str) -> int:
+        count = self._counts.get(kind)
+        if count is None:
+            raise AttributeError(f"{self.family} groups have no {kind} elements")
+        return count
+
+    def _gather(self, kind, src, kernel, dtype):
+        count = self._element_count(kind)
+        out = wp.empty((self.count, count), dtype=dtype, device=self.device)
+        wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
+        return out
+
+    def _scatter(self, kind, values, kernel, dst, dtype):
+        count = self._element_count(kind)
+        if not isinstance(values, wp.array):
+            values = wp.array(values, dtype=dtype, shape=(self.count, count), device=self.device, copy=False)
+        if values.shape != (self.count, count):
+            raise ValueError(f"Expected values shape {(self.count, count)}, got {values.shape}")
+        wp.launch(kernel, dim=(self.count, count), inputs=[values, self._starts[kind], dst], device=self.device)
+
+    # particle state (cloth / soft) -------------------------------------------
+
+    @property
+    def particles_per_group(self) -> int:
+        """Particles in each selected cloth/soft group."""
+        return self._element_count("particle")
+
+    def get_particle_positions(self, source: Model | State):
+        """Particle positions [m] of each group, shape ``(count, particles_per_group)`` of vec3."""
+        return self._gather("particle", source.particle_q, _gather_group_vec3_kernel, wp.vec3)
+
+    def set_particle_positions(self, source: Model | State, values):
+        """Write particle positions [m] from ``(count, particles_per_group)`` vec3 values."""
+        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_q, wp.vec3)
+
+    def get_particle_velocities(self, source: Model | State):
+        """Particle velocities [m/s] of each group, shape ``(count, particles_per_group)`` of vec3."""
+        return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel, wp.vec3)
+
+    def set_particle_velocities(self, source: Model | State, values):
+        """Write particle velocities [m/s] from ``(count, particles_per_group)`` vec3 values."""
+        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_qd, wp.vec3)
+
+    # body state (cable) -------------------------------------------------------
+
+    @property
+    def bodies_per_group(self) -> int:
+        """Segment bodies in each selected cable group."""
+        return self._element_count("body")
+
+    def get_body_transforms(self, source: Model | State):
+        """Segment body transforms of each cable, shape ``(count, bodies_per_group)`` of transform."""
+        return self._gather("body", source.body_q, _gather_group_transform_kernel, wp.transform)
+
+    def set_body_transforms(self, source: Model | State, values):
+        """Write segment body transforms from ``(count, bodies_per_group)`` transform values."""
+        self._scatter("body", values, _scatter_group_transform_kernel, source.body_q, wp.transform)
+
+    def get_body_velocities(self, source: Model | State):
+        """Segment body spatial velocities of each cable, shape ``(count, bodies_per_group)``."""
+        return self._gather("body", source.body_qd, _gather_group_spatial_kernel, wp.spatial_vector)
+
+    def set_body_velocities(self, source: Model | State, values):
+        """Write segment body spatial velocities from ``(count, bodies_per_group)`` values."""
+        self._scatter("body", values, _scatter_group_spatial_kernel, source.body_qd, wp.spatial_vector)
