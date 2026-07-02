@@ -1024,7 +1024,7 @@ class CollisionPipeline:
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
-        sorted_pairs = model.shape_collision_filter_pairs_for_broad_phase()
+        sorted_pairs = model.shape_collision_filter_pairs_array()
         if sorted_pairs.shape[0] == 0:
             return None
         return wp.array(

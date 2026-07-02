@@ -1131,12 +1131,13 @@ class Model:
         pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
         return pair in filters
 
-    def shape_collision_filter_pairs_for_broad_phase(self) -> np.ndarray:
-        """Return sorted collision-filter pairs for broad-phase exclusion arrays.
+    def shape_collision_filter_pairs_array(self) -> np.ndarray:
+        """Return the collision-filter pairs as an array.
 
-        ``"nxn"`` and ``"sap"`` broad phases consume a sorted device array of
-        excluded pairs. This method returns the canonical filter-pair array
-        without materializing the public set first.
+        Array counterpart to :attr:`shape_collision_filter_pairs` that returns
+        the canonical filter-pair array without materializing the public set.
+        Consumers that need every excluded pair — such as the ``"nxn"`` and
+        ``"sap"`` broad-phase exclusion arrays — should prefer this form.
 
         Returns:
             Canonical shape index pairs sorted lexicographically, shape

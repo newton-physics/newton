@@ -1042,7 +1042,7 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize()
 
-        broad_phase_pairs = model.shape_collision_filter_pairs_for_broad_phase()
+        broad_phase_pairs = model.shape_collision_filter_pairs_array()
         self.assertEqual(broad_phase_pairs.shape, (5, 2))
         pair_list = [tuple(pair) for pair in broad_phase_pairs.tolist()]
         self.assertEqual(pair_list, sorted(pair_list))
@@ -1068,7 +1068,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertTrue(model.shape_collision_filter_contains(ground, 2))
         mask = model.shape_collision_filter_mask(candidates)
         self.assertEqual(mask.tolist(), [True, True, True, True, True])
-        self.assertEqual(len(model.shape_collision_filter_pairs_for_broad_phase()), 6)
+        self.assertEqual(len(model.shape_collision_filter_pairs_array()), 6)
 
     def test_collision_filter_pairs_reject_invalid_shape_indices(self):
         """Invalid filters should fail consistently before contact generation."""

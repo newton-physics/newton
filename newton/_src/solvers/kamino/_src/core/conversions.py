@@ -1363,7 +1363,7 @@ def convert_geometries(
     )
 
     # Create additional collision detection meta-data
-    sorted_excluded_pairs = model.shape_collision_filter_pairs_for_broad_phase()
+    sorted_excluded_pairs = model.shape_collision_filter_pairs_array()
     excluded_pairs = wp.array(sorted_excluded_pairs, dtype=vec2i, device=model.device)
 
     # Construct and return the converted geometries model
