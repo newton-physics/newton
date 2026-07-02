@@ -3651,12 +3651,19 @@ def parse_usd(
                     )
 
     # add joints to floating bodies (bodies not connected as children to any joint)
-    if not (no_articulations and has_joints):
-        new_bodies = list(path_body_map.values())
+    new_bodies = list(path_body_map.values())
+    if no_articulations and has_joints:
+        # Preserve authored orphan-joint graphs while still articulating unrelated bodies (#3002).
+        connected_bodies = set(builder.joint_parent) | set(builder.joint_child)
+        bodies_to_articulate = [body_id for body_id in new_bodies if body_id not in connected_bodies]
+    else:
+        bodies_to_articulate = new_bodies
+
+    if bodies_to_articulate:
         if parent_body != -1:
             # When parent_body is specified, manually add joints to floating bodies with correct parent
             joint_children = set(builder.joint_child)
-            for body_id in new_bodies:
+            for body_id in bodies_to_articulate:
                 if body_id in joint_children:
                     continue  # Already has a joint
                 if builder.body_mass[body_id] <= 0:
@@ -3678,7 +3685,7 @@ def parse_usd(
                     articulation_label=None,
                 )
         else:
-            builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
+            builder._add_base_joints_to_floating_bodies(bodies_to_articulate, floating=floating, base_joint=base_joint)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
@@ -4265,7 +4272,6 @@ def parse_usd(
             value = attr.values[row] if row < len(attr.values) else None
             return attr.default if value is None else value
 
-        autolimits = bool(_row("mujoco:autolimits", 0))
         converted = 0
 
         for row in range(mjc_actuator_count):
@@ -4279,9 +4285,9 @@ def parse_usd(
             # actuators with default dyntype/gaintype/biastype/gear, so non-default
             # values for those force the actuator to stay CTRL_DIRECT.
             #
-            # Authored ctrlrange/forcerange are not gating: ctrlrange has no
-            # equivalent under Control.joint_target_q/qd (matching MJCF's
-            # behavior), and forcerange is propagated below into joint_effort_limit.
+            # ctrlrange/forcerange don't gate: the rebuild re-attaches them
+            # (see joint_target_ranges in _init_actuators). Effort limit
+            # (jnt_actfrcrange) comes from the joint, not the actuator.
             if (
                 int(_row("mujoco:actuator_biastype", row)) != biastype_affine
                 or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
@@ -4326,21 +4332,10 @@ def parse_usd(
             # so _init_actuators routes through MuJoCo's joint_target_mode actuators.
             builder.custom_attributes["mujoco:ctrl_source"].values[row] = ctrl_source_joint_target
             builder.custom_attributes["mujoco:actuator_trnid"].values[row] = wp.vec2i(dof, 0)
-
-            # Tighten the joint effort limit when the actuator authored a forceRange.
-            if bool(_row("mujoco:actuator_has_forcerange", row)):
-                limited = int(_row("mujoco:actuator_forcelimited", row))
-                if limited == 1 or (limited == 2 and autolimits):
-                    force_range = list(_row("mujoco:actuator_forcerange", row))
-                    limit = max(abs(force_range[0]), abs(force_range[1]))
-                    current = builder.joint_effort_limit[dof]
-                    if not np.isfinite(current) or limit < current:
-                        if np.isfinite(current) and verbose:
-                            print(
-                                f"MuJoCo USD actuator {row} narrows joint DOF {dof} "
-                                f"effort limit from {current} to {limit}"
-                            )
-                        builder.joint_effort_limit[dof] = limit
+            # Record the kind classified above so the solver doesn't re-derive it.
+            builder.custom_attributes["mujoco:ctrl_type"].values[row] = int(
+                SolverMuJoCo.CtrlType.POSITION if is_position else SolverMuJoCo.CtrlType.VELOCITY
+            )
 
             converted += 1
 

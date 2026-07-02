@@ -102,7 +102,7 @@ def correct_quat_vector_coord(q_j_in: vec4f, q_j_ref: vec4f) -> vec4f:
 @wp.func
 def correct_joint_coord_free(q_j_in: vec7f, q_j_ref: vec7f, q_j_limit: vec7f = DEFAULT_LIMIT_V7F) -> vec7f:
     """Corrects the orientation quaternion coordinate of a free joint."""
-    q_j_in[0:4] = correct_quat_vector_coord(q_j_in[0:4], q_j_ref[0:4])
+    q_j_in[3:] = correct_quat_vector_coord(q_j_in[3:], q_j_ref[3:])
     return q_j_in
 
 
@@ -349,8 +349,11 @@ def get_joint_constraint_angular_residual_function(dof_type: JointDoFType):
 
 
 @wp.func
-def joint_constraint_velocity_residual_universal(j_q_j: quatf, j_u_j: vec6f) -> vec6f:
-    """Returns the joint constraint velocity residual for a universal joint."""
+def convert_angular_vel_to_universal_joint_intermediary_frame(j_q_j: quatf, j_u_j: vec6f) -> vec6f:
+    """
+    Converts the angular part of a relative body velocity at a universal joint, from the
+    joint frame on the base body to the intermediary frame.
+    """
     # Compute intermediary body axes, in the joint frame on the base body
     e_x = vec3f(1.0, 0.0, 0.0)
     e_y = vec3f(0.0, 1.0, 0.0)
@@ -410,7 +413,7 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
     ):
         # Convert angular velocity to intermediary body frame for universal joint
         if wp.static(dof_type == JointDoFType.UNIVERSAL):
-            j_u_j = joint_constraint_velocity_residual_universal(j_q_j, j_u_j)
+            j_u_j = convert_angular_vel_to_universal_joint_intermediary_frame(j_q_j, j_u_j)
 
         # Only write the constraint residual and velocity if the joint defines constraints
         # NOTE: This will be disabled for free joints
@@ -719,9 +722,10 @@ def compute_and_write_joint_implicit_dynamics(
     model_joint_k_d_j: wp.array[float32],
     data_joint_q_j: wp.array[float32],
     data_joint_dq_j: wp.array[float32],
+    data_joint_tau_j: wp.array[float32],
     data_joint_q_j_ref: wp.array[float32],
     data_joint_dq_j_ref: wp.array[float32],
-    data_joint_tau_j_ref: wp.array[float32],
+    data_joint_tau_j_ref: wp.array[float32],  # Can be `None`
     # Outputs:
     data_joint_m_j: wp.array[float32],
     data_joint_inv_m_j: wp.array[float32],
@@ -748,19 +752,23 @@ def compute_and_write_joint_implicit_dynamics(
         k_p_j = model_joint_k_p_j[dofs_offset_j]
         k_d_j = model_joint_k_d_j[dofs_offset_j]
 
+        # Retrieve external load
+        tau_j = data_joint_tau_j[dofs_offset_j]
+
         # Retrieve PD control references
         pd_q_j_ref = data_joint_q_j_ref[coords_offset_j]
         pd_dq_j_ref = data_joint_dq_j_ref[dofs_offset_j]
-        pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j]
+        pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
 
-        # Compute the implicit joint dynamics intermedates
-        m_j = a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j
+        # Compute the implicit joint dynamics intermediates
+        # Enforce minimum mass to avoid division by zero
+        m_j = wp.max(1e-6, a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j)
         inv_m_j = 1.0 / m_j
-        tau_j = pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
-        h_j = a_j * dq_j + dt * tau_j
+        tau_j_tot = tau_j + pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+        h_j = a_j * dq_j + dt * tau_j_tot
         dq_b_j = inv_m_j * h_j
 
-        # Store the resulting joint dynamics intermadiates
+        # Store the resulting joint dynamics intermediates
         data_joint_m_j[dynamic_cts_offset_j] = m_j
         data_joint_inv_m_j[dynamic_cts_offset_j] = inv_m_j
         data_joint_dq_b_j[dynamic_cts_offset_j] = dq_b_j
@@ -799,6 +807,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_joint_k_d_j: wp.array[float32],
         data_body_q_i: wp.array[transformf],
         data_body_u_i: wp.array[vec6f],
+        data_joint_tau_j: wp.array[float32],
         data_joint_q_j_ref: wp.array[float32],
         data_joint_dq_j_ref: wp.array[float32],
         data_joint_tau_j_ref: wp.array[float32],
@@ -886,6 +895,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
             model_joint_k_d_j,
             data_joint_q_j,
             data_joint_dq_j,
+            data_joint_tau_j,
             data_joint_q_j_ref,
             data_joint_dq_j_ref,
             data_joint_tau_j_ref,
@@ -1050,6 +1060,7 @@ def compute_joints_data(
             model.joints.k_d_j,
             data.bodies.q_i,
             data.bodies.u_i,
+            data.joints.tau_j,
             data.joints.q_j_ref,
             data.joints.dq_j_ref,
             data.joints.tau_j_ref,
