@@ -12,11 +12,12 @@ import newton
 from newton import GeoType
 from newton._src.geometry import create_mesh_terrain
 from newton._src.geometry.flags import ParticleFlags, ShapeFlags
-from newton._src.geometry.kernels import create_soft_contacts, mesh_sdf
-from newton._src.sim.collide import (
-    _compute_per_world_shape_pairs_max,
-    _estimate_rigid_contact_max,
+from newton._src.geometry.kernels import (
+    MeshSignQuery,
+    create_soft_contacts,
+    mesh_sdf,
 )
+from newton._src.sim.collide import CollisionPipeline, _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
@@ -644,6 +645,20 @@ def _sample_thin_gap_points(sample_count: int = 8192) -> np.ndarray:
     return points
 
 
+def _make_open_square() -> tuple[np.ndarray, np.ndarray]:
+    vertices = np.array(
+        [
+            [-1.0, -1.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    return vertices, faces
+
+
 def test_mixed_winding_convex_pile_contact_normal(test, device):
     vertices, faces = _make_mixed_winding_convex_pile_proxy()
     mesh = _make_warp_mesh(vertices, faces, device)
@@ -682,6 +697,7 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([int(GeoType.CONVEX_MESH)], dtype=wp.int32, device=device),
             wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
             wp.array([mesh.id], dtype=wp.uint64, device=device),
+            wp.array([MeshSignQuery.PARITY], dtype=wp.int32, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
             wp.array([0.0], dtype=wp.float32, device=device),
@@ -771,6 +787,59 @@ def test_parity_sign_accuracy_exceeds_normal_query(test, device):
     )
 
 
+def test_model_mesh_sign_query_tracks_watertight(test, device):
+    open_vertices, open_faces = _make_open_square()
+    closed_vertices, closed_faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+
+    class CountingMesh(newton.Mesh):
+        watertight_query_count = 0
+
+        @property
+        def is_watertight(self):
+            self.watertight_query_count += 1
+            return super().is_watertight
+
+    open_mesh = newton.Mesh(open_vertices, open_faces, compute_inertia=False)
+    closed_mesh = CountingMesh(closed_vertices, closed_faces, compute_inertia=False)
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    open_shape = builder.add_shape_mesh(body=-1, mesh=open_mesh)
+    closed_shape = builder.add_shape_mesh(body=-1, mesh=closed_mesh)
+    model = builder.finalize(device=device)
+
+    query_types = model._shape_mesh_sign_query.numpy()
+    test.assertEqual(int(query_types[open_shape]), MeshSignQuery.NORMAL)
+    test.assertEqual(int(query_types[closed_shape]), MeshSignQuery.PARITY)
+    test.assertEqual(closed_mesh.watertight_query_count, 1)
+
+    CollisionPipeline(model)
+    test.assertEqual(closed_mesh.watertight_query_count, 1)
+
+
+def test_mesh_query_type_skips_visual_only_mesh(test, device):
+    vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+
+    class VisualMesh(newton.Mesh):
+        @property
+        def is_watertight(self):
+            raise AssertionError("visual-only meshes should not require a mesh sign query type")
+
+    mesh = VisualMesh(vertices, faces, compute_inertia=False)
+    cfg = newton.ModelBuilder.ShapeConfig(
+        density=0.0,
+        has_shape_collision=False,
+        has_particle_collision=False,
+        is_visible=True,
+    )
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    shape = builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    query_types = model._shape_mesh_sign_query.numpy()
+    test.assertEqual(int(query_types[shape]), MeshSignQuery.NORMAL)
+
+
 add_function_test(
     TestMeshSignQueries,
     "test_mixed_winding_convex_pile_contact_normal",
@@ -782,6 +851,20 @@ add_function_test(
     TestMeshSignQueries,
     "test_parity_sign_accuracy_exceeds_normal_query",
     test_parity_sign_accuracy_exceeds_normal_query,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_model_mesh_sign_query_tracks_watertight",
+    test_model_mesh_sign_query_tracks_watertight,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_mesh_query_type_skips_visual_only_mesh",
+    test_mesh_query_type_skips_visual_only_mesh,
     devices=devices,
     check_output=False,
 )
