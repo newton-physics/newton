@@ -16,12 +16,10 @@ def Xform "World" ()
         rel material:binding:physics = </World/PhysicsMaterial>
     }
 
-    def Material "PhysicsMaterial" (
-        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
-    )
+    def Material "PhysicsMaterial"
     {
-        float physics:density = 40
-        float physics:youngsModulus = 300000
-        float physics:poissonsRatio = 0.3
+        float omniphysics:density = 40
+        float omniphysics:youngsModulus = 300000
+        float omniphysics:poissonsRatio = 0.3
     }
 }

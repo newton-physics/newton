@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
@@ -16,6 +17,7 @@ from ..core.types import Axis, AxisType
 from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
+from ..utils.import_usd_deformable_utils import _validate_mass_array, _warn_geometry_authored_material_attrs
 from ..utils.texture import linear_texture_to_srgb, load_texture
 
 logger = logging.getLogger("newton")
@@ -1212,21 +1214,61 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
         "visibility",
         "xformOpOrder",
         "proxyPrim",
+        # Standard UsdGeom.PointBased attributes (velocities, accelerations, normals): importing them
+        # is deferred to a follow-up, so skip them here rather than capturing them as custom data.
+        "velocities",
+        "accelerations",
+        "normals",
     }
 )
 
 
-def get_tetmesh(prim: Usd.Prim) -> TetMesh:
+# Vendor attribute namespaces that get_tetmesh() read by default before the canonical
+# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read these
+# vendor namespaces off any bound material (under these namespaces).
+DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
+
+
+def _material_authors_legacy_deformable_attrs(prim: Usd.Prim) -> bool:
+    """Return whether ``prim``'s bound physics material authors deformable moduli only under
+    the legacy vendor namespaces (see :data:`DEFORMABLE_LEGACY_NAMESPACES`).
+
+    True means a canonical-only read would silently drop the authored stiffness/density:
+    the material lacks ``PhysicsVolumeDeformableMaterialAPI`` but carries vendor-namespaced
+    ``youngsModulus`` / ``poissonsRatio`` / ``density``. Callers use this to keep a
+    deprecation window for such assets.
+    """
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI"):
+        return False
+    return any(
+        material_prim.GetAttribute(f"{namespace}:{name}").HasAuthoredValue()
+        for namespace in DEFORMABLE_LEGACY_NAMESPACES
+        for name in ("youngsModulus", "poissonsRatio", "density")
+    )
+
+
+def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = None) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
     Reads vertex positions from the ``points`` attribute and tetrahedral
     connectivity from ``tetVertexIndices``. If a physics material is bound
     to the prim (via ``material:binding:physics``) and contains
-    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
-    (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+    ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
+    ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
     those values are read and converted to Lame parameters (``k_mu``,
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
+
+    Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
+    (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
+    are read off any bound material, matching the pre-canonical behavior. That default is
+    deprecated and emits a ``DeprecationWarning`` when a physics material is bound; a future
+    release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
+    the canonical-only behavior now -- moduli are then read only from a material that applies
+    ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
+    ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
+    warning.
 
     Example:
 
@@ -1244,6 +1286,10 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
 
     Args:
         prim: The USD prim to load the tetrahedral mesh from.
+        compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
+            ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
+            gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
+            canonical-only.
 
     Returns:
         TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
@@ -1275,11 +1321,38 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
     k_lambda = None
     density = None
 
+    # Volume material moduli (youngsModulus/poissonsRatio/...) belong on the bound material, not the
+    # geometry; warn if authored on the TetMesh prim itself so the misplacement is visible to direct
+    # get_tetmesh() callers too (add_usd's deformable pass warns separately).
+    _warn_geometry_authored_material_attrs(
+        prim, str(prim.GetPath()), "PhysicsVolumeDeformableMaterialAPI", _read_physics_attr
+    )
+
     material_prim = _find_physics_material_prim(prim)
-    if material_prim is not None:
-        youngs = _read_physics_attr(material_prim, "youngsModulus")
-        poissons = _read_physics_attr(material_prim, "poissonsRatio")
-        density_val = _read_physics_attr(material_prim, "density")
+    if compat_namespaces is None:
+        # Deprecated legacy default: read vendor namespaces off any bound material. Warn only when a
+        # physics material is actually bound, so the default change is visible exactly where it matters.
+        if material_prim is not None:
+            warnings.warn(
+                "get_tetmesh(): reading legacy vendor-namespaced deformable material attributes "
+                "(omniphysics: / physxDeformableBody:) off any bound material by default is deprecated; "
+                "a future release will default to canonical physics:-only. Pass compat_namespaces=() to "
+                "adopt the canonical-only behavior now, or compat_namespaces="
+                "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
+    # Canonical behavior (compat_namespaces=()) scopes the moduli to the volume deformable material
+    # API, so they are not read off an unrelated physics material. A non-empty compat_namespaces reads
+    # the listed vendor namespaces off any bound material.
+    read_material = material_prim is not None and (
+        bool(compat_namespaces) or has_applied_api_schema(material_prim, "PhysicsVolumeDeformableMaterialAPI")
+    )
+    if read_material:
+        youngs = _read_physics_attr(material_prim, "youngsModulus", compat_namespaces)
+        poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
+        density_val = _read_physics_attr(material_prim, "density", compat_namespaces)
 
         if youngs is not None and poissons is not None:
             E = float(youngs)
@@ -1333,6 +1406,12 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
             continue
         if name.startswith("primvars:") or name.startswith("xformOp:"):
             continue
+        # Deformable physics-schema attributes are handled by the deformable importer
+        # where supported (e.g. physics:masses) or intentionally skipped (e.g.
+        # physics:restShapePoints, whose rest-shape import is not yet supported and is
+        # warned about by the importer); none are carried as generic mesh data here.
+        if name.startswith(("physics:", "omniphysics:", "physxDeformableBody:")):
+            continue
         if not attr.HasAuthoredValue():
             continue
         val = attr.Get()
@@ -1355,27 +1434,153 @@ def get_tetmesh(prim: Usd.Prim) -> TetMesh:
 
 
 def _find_physics_material_prim(prim: Usd.Prim):
-    """Find the physics material prim bound to a prim or its ancestors."""
+    """Resolve the ``physics``-purpose bound material prim (or ``None``).
+
+    Via :meth:`UsdShade.MaterialBindingAPI.ComputeBoundMaterial`, honoring inherited,
+    collection-based, and strength-resolved (``bindMaterialAs``) bindings.
+    """
+    material, _rel = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial("physics")
+    mat_prim = material.GetPrim()
+    return mat_prim if mat_prim and mat_prim.IsValid() else None
+
+
+def _read_physics_attr(prim: Usd.Prim, name: str, compat_namespaces: Sequence[str] = ()):
+    """Read a deformable physics attribute, canonical ``physics:`` namespace first.
+
+    The AOUSD deformable proposal authors under ``physics:``; this is parsed as
+    written. ``compat_namespaces`` lists vendor namespaces (e.g. ``omniphysics``,
+    ``physxDeformableBody``) accepted as a fallback, sourced from the active
+    schema resolvers (see :meth:`SchemaResolverManager.deformable_compat_namespaces`),
+    so a default import reads only the canonical schema.
+    """
+    for prefix in ("physics", *compat_namespaces):
+        attr = prim.GetAttribute(f"{prefix}:{name}")
+        if attr and attr.HasAuthoredValue():
+            return attr.Get()
+    return None
+
+
+def _read_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any], api_schema: str, attr_names: Sequence[str]
+) -> dict[str, float] | None:
+    """Read a per-family deformable material's authored, in-range parameters bound to a prim.
+
+    Shared by the per-family readers (:func:`_get_curve_deformable_material`,
+    :func:`_get_surface_deformable_material`): resolves the physics material bound via
+    ``material:binding:physics`` and reads ``attr_names`` through ``read_attr`` (the resolver's
+    single-source namespace read, see :meth:`SchemaResolverManager.read_deformable_attr`) when the
+    bound material declares ``api_schema``.
+
+    Returns a dict of the authored, finite values among ``attr_names``, or ``None`` if the bound
+    material does not declare ``api_schema``. Stiffness fields keep an authored zero (the proposal's
+    range is ``[0, inf)``); ``thickness`` and ``density`` must be positive. The schema's ``-inf``
+    "simulator default" sentinel (and any out-of-range value) is dropped so the caller falls back to
+    its defaults.
+    """
+    material_prim = _find_physics_material_prim(prim)
+    if material_prim is None or not has_applied_api_schema(material_prim, api_schema):
+        return None
+    out: dict[str, float] = {}
+    for name in attr_names:
+        val = read_attr(material_prim, name)
+        if val is None:
+            continue
+        val = float(val)
+        if not math.isfinite(val):
+            continue  # drops the -inf "simulator default" sentinel
+        # Stiffness range is [0, inf): preserve an authored zero. thickness / density are strictly positive.
+        if name in ("thickness", "density"):
+            if val > 0.0:
+                out[name] = val
+        elif val >= 0.0:
+            out[name] = val
+    return out
+
+
+def _get_curve_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
+    """Read curve-deformable (cable) ``PhysicsCurvesDeformableMaterialAPI`` parameters bound to a prim.
+
+    Returns a dict of authored, finite values among ``thickness``, ``stretchStiffness``,
+    ``shearStiffness``, ``bendStiffness``, ``twistStiffness`` and ``density``; or ``None`` if the
+    bound material does not declare ``PhysicsCurvesDeformableMaterialAPI``. See
+    :func:`_read_deformable_material` for the value-validation rules.
+    """
+    return _read_deformable_material(
+        prim,
+        read_attr,
+        "PhysicsCurvesDeformableMaterialAPI",
+        ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "twistStiffness", "density"),
+    )
+
+
+def _get_surface_deformable_material(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> dict[str, float] | None:
+    """Read surface-deformable (cloth) ``PhysicsSurfaceDeformableMaterialAPI`` parameters bound to a prim.
+
+    Returns a dict of authored, finite values among ``thickness``, ``stretchStiffness``,
+    ``shearStiffness``, ``bendStiffness`` and ``density``; or ``None`` if the bound material does not
+    declare ``PhysicsSurfaceDeformableMaterialAPI``. See :func:`_read_deformable_material` for the
+    value-validation rules.
+    """
+    return _read_deformable_material(
+        prim,
+        read_attr,
+        "PhysicsSurfaceDeformableMaterialAPI",
+        ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"),
+    )
+
+
+def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
+    """Find the ``PhysicsDeformableBodyAPI`` prim governing a simulation geometry.
+
+    The deformable proposal allows the body API on the simulation geometry itself
+    or on an ancestor ``Xform`` whose direct child is the simulation geometry, so
+    this walks up the prim hierarchy until it finds the body API (or runs out).
+    """
     p = prim
     while p and p.IsValid():
-        binding_api = UsdShade.MaterialBindingAPI(p)
-        rel = binding_api.GetDirectBindingRel("physics")
-        if rel and rel.GetTargets():
-            mat_path = rel.GetTargets()[0]
-            mat_prim = prim.GetStage().GetPrimAtPath(mat_path)
-            if mat_prim and mat_prim.IsValid():
-                return mat_prim
+        if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
+            return p
         p = p.GetParent()
     return None
 
 
-def _read_physics_attr(prim: Usd.Prim, name: str):
-    """Read a physics attribute from a prim, trying known namespaces."""
-    for prefix in ("omniphysics:", "physxDeformableBody:", "physics:"):
-        attr = prim.GetAttribute(f"{prefix}{name}")
-        if attr and attr.HasAuthoredValue():
-            return attr.Get()
-    return None
+def _get_deformable_body_overrides(
+    prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
+) -> tuple[float | None, float | None]:
+    """Read ``PhysicsDeformableBodyAPI`` ``mass`` / ``density`` overrides.
+
+    Both default to 0 in the schema, meaning "ignore for mass distribution"; only
+    positive authored values are returned. ``density`` here overrides the bound
+    material's density (see the precedence in :meth:`ModelBuilder.add_usd`).
+
+    Returns:
+        ``(mass, density)`` with each entry ``None`` when unset / non-positive.
+    """
+    body_prim = _find_deformable_body_prim(prim)
+    if body_prim is None:
+        return None, None
+    mass = read_attr(body_prim, "mass")
+    density = read_attr(body_prim, "density")
+    # Require a finite positive value; drop unset, non-positive, or inf/nan overrides.
+    mass = float(mass) if mass is not None and math.isfinite(float(mass)) and float(mass) > 0.0 else None
+    density = float(density) if density is not None and math.isfinite(float(density)) and float(density) > 0.0 else None
+    return mass, density
+
+
+def _get_deformable_point_masses(prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]) -> list[float] | None:
+    """Read the simulation API's per-point ``physics:masses`` array.
+
+    Per-point masses take precedence over body and material mass/density (proposal
+    "Simulation Geometry and Rest Shape"). Returns ``None`` when unauthored/empty.
+    """
+    val = read_attr(prim, "masses")
+    if val is None:
+        return None
+    return _validate_mass_array(val, str(prim.GetPath()))
 
 
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
