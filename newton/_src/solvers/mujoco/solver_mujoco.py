@@ -6454,6 +6454,7 @@ class SolverMuJoCo(SolverBase):
             "actuator_gear",
             "actuator_cranklength",
             "actuator_acc0",
+            "actuator_lengthrange",
             "pair_solref",
             "pair_solreffriction",
             "pair_solimp",

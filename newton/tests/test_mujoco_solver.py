@@ -9549,7 +9549,7 @@ class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
 
 
 class TestActuatorLengthRangeRuntime(unittest.TestCase):
-    """Verify actuator lengthrange updates after runtime gear changes."""
+    """Verify per-world actuator lengthrange updates after runtime gear changes."""
 
     MJCF = """<?xml version="1.0" ?>
     <mujoco>
@@ -9567,23 +9567,28 @@ class TestActuatorLengthRangeRuntime(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        robot_builder = newton.ModelBuilder()
+        robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         builder = newton.ModelBuilder()
-        builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(robot_builder, 2)
         cls.model = builder.finalize()
         cls.solver = SolverMuJoCo(cls.model)
 
     def test_lengthrange_updates_with_gear(self):
-        lr0 = self.solver.mjw_model.actuator_lengthrange.numpy()[0, 0]
-        jnt_range = self.solver.mjw_model.jnt_range.numpy()[0, 0]
+        lr0 = self.solver.mjw_model.actuator_lengthrange.numpy()[:, 0]
+        jnt_range = self.solver.mjw_model.jnt_range.numpy()[:, 0]
         np.testing.assert_allclose(lr0, jnt_range * 2.0, atol=1e-5)
 
         gear = self.model.mujoco.actuator_gear.numpy()
         gear[0, 0] = 3.0
+        gear[1, 0] = 4.0
         self.model.mujoco.actuator_gear.assign(gear)
         self.solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
-        lr1 = self.solver.mjw_model.actuator_lengthrange.numpy()[0, 0]
-        np.testing.assert_allclose(lr1, jnt_range * 3.0, atol=1e-5)
+        lr1 = self.solver.mjw_model.actuator_lengthrange.numpy()[:, 0]
+        np.testing.assert_allclose(lr1[0], jnt_range[0] * 3.0, atol=1e-5)
+        np.testing.assert_allclose(lr1[1], jnt_range[1] * 4.0, atol=1e-5)
 
 
 class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
