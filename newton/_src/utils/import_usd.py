@@ -1832,6 +1832,9 @@ def parse_usd(
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
     physics_scene_prim = None
+    scene_gravity_direction = None
+    scene_gravity_magnitude = None
+    gravity_enabled = True
     if UsdPhysics.ObjectType.Scene in ret_dict:
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
@@ -1841,7 +1844,8 @@ def parse_usd(
             print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
-        builder.gravity = -scene_desc.gravityMagnitude
+        scene_gravity_direction = scene_desc.gravityDirection
+        scene_gravity_magnitude = scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
@@ -1867,8 +1871,6 @@ def parse_usd(
         gravity_enabled = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
         )
-        if not gravity_enabled:
-            builder.gravity = 0.0
         max_solver_iters = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
         )
@@ -1891,6 +1893,21 @@ def parse_usd(
         incoming_world_xform = axis_xform
     else:
         incoming_world_xform = wp.transform(*xform) * axis_xform
+
+    if scene_gravity_direction is not None:
+        gravity_direction = wp.vec3(*scene_gravity_direction)
+        direction_length = wp.length(gravity_direction)
+        if direction_length > 0.0:
+            gravity_direction /= direction_length
+        else:
+            gravity_direction = -stage_up_axis.to_vec3()
+        gravity_xform = axis_xform if override_root_xform else incoming_world_xform
+        gravity_direction = wp.transform_vector(gravity_xform, gravity_direction)
+        gravity_vector = gravity_direction * scene_gravity_magnitude if gravity_enabled else wp.vec3()
+        if builder.current_world >= 0:
+            builder.world_gravity[builder.current_world] = gravity_vector
+        else:
+            builder.gravity = gravity_vector
 
     if verbose:
         print(

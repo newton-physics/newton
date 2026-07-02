@@ -64,7 +64,7 @@ def _joint_type_name(joint_type):
 
 
 def _build_rotated_anchor_descendant_model(device, joint_type, parent_kinematic):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     base = builder.add_link(is_kinematic=parent_kinematic, mass=1.0)
     child = builder.add_link(mass=1.0)
     builder.add_shape_sphere(base, radius=0.1)
@@ -145,7 +145,7 @@ def test_angular_velocity_com_stationary(
         angular_velocity: Angular velocity in world frame (wx, wy, wz)
         tolerance: Maximum allowed CoM drift
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     # Create a body with the specified CoM offset
     initial_pos = wp.vec3(1.0, 2.0, 3.0)
@@ -234,7 +234,7 @@ def test_linear_velocity_com_moves(
         linear_velocity: Linear velocity in world frame (vx, vy, vz)
         tolerance: Maximum allowed displacement error
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
@@ -308,7 +308,7 @@ def test_combined_velocity(
         com_offset: Center of mass offset in body frame (x, y, z)
         tolerance: Maximum allowed displacement error
     """
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     initial_pos = wp.vec3(0.0, 0.0, 1.0)
     b = builder.add_body(xform=wp.transform(initial_pos, wp.quat_identity()))
@@ -381,7 +381,7 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     (regression for #2704 — the MuJoCo bridge previously wrote both in world
     frame).
     """
-    builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
     parent_xform = wp.transform(wp.vec3(0.5, 0.6, 0.7), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0))
     body = builder.add_link(mass=1.0, inertia=wp.mat33(1, 0, 0, 0, 1, 0, 0, 0, 1))
     joint = builder.add_joint_free(parent=-1, child=body, parent_xform=parent_xform)
@@ -416,7 +416,7 @@ def test_featherstone_d6_three_angular_body_qd_matches_fk(
     the raw joint_qd.
     """
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
     builder.add_shape_sphere(child, radius=0.1)
     j = builder.add_joint_d6(
@@ -460,7 +460,7 @@ def test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent(
     device,
 ):
     """Featherstone should preserve descendant FREE joint_qd in parent-frame coordinates."""
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     parent = builder.add_link(mass=1.0)
     child = builder.add_link(mass=1.0)
     builder.body_com[child] = wp.vec3(0.2, 0.0, 0.0)
@@ -631,7 +631,7 @@ def test_featherstone_root_free_distance_angular_velocity_keeps_body_stationary_
     space should stay fixed. A bug in the COM-to-anchor conversion shows up here
     as a per-step translational drift proportional to the child-anchor offset.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(mass=1.0)
     builder.add_shape_sphere(body, radius=0.1)
     builder.body_com[body] = wp.vec3(0.0, 0.0, 0.0)

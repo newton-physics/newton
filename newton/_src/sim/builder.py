@@ -78,6 +78,12 @@ else:
     UsdStage = Any
 
 
+_SCALAR_GRAVITY_DEPRECATION_MSG = (
+    "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
+    "Scalar gravity will be removed in a future release."
+)
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -866,15 +872,20 @@ class ModelBuilder:
             """The key of the custom frequency (e.g., ``"mujoco:actuator"`` or ``"pair"``)."""
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
-    def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
+    def __init__(
+        self,
+        up_axis: AxisType = Axis.Z,
+        gravity: float | Vec3 | None = None,
+    ):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
 
         Args:
             up_axis: The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity: The magnitude of gravity to apply along the up axis.
-                Defaults to -9.81.
+            gravity: Default gravity vector. The deprecated scalar form applies
+                acceleration along ``up_axis``. If omitted, gravity defaults to
+                -9.81 along ``up_axis``.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
@@ -1237,9 +1248,10 @@ class ModelBuilder:
         """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        """Up axis used when expanding scalar gravity into per-world gravity vectors."""
-        self.gravity: float = gravity
-        """Gravity acceleration [m/s^2] applied along :attr:`up_axis` for newly added worlds."""
+        """Up axis used by geometry helpers and the deprecated scalar gravity API."""
+        self._gravity: float | wp.vec3 = -9.81
+        if gravity is not None:
+            self._set_gravity(gravity, stacklevel=3)
 
         self.world_gravity: list[Vec3] = []
         """Per-world gravity vectors retained until :meth:`finalize <ModelBuilder.finalize>` populates
@@ -2193,6 +2205,32 @@ class ModelBuilder:
         raise AttributeError(
             "The 'up_vector' property is read-only and cannot be set. Instead, use 'up_axis' to set the up axis."
         )
+
+    @property
+    def gravity(self) -> float | wp.vec3:
+        """Default gravity vector, or a deprecated scalar along :attr:`up_axis`."""
+        if np.isscalar(self._gravity):
+            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self._gravity
+
+    @gravity.setter
+    def gravity(self, value: float | Vec3) -> None:
+        self._set_gravity(value, stacklevel=3)
+
+    def _set_gravity(self, value: float | Vec3, stacklevel: int) -> None:
+        if np.isscalar(value):
+            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
+            self._gravity = float(value)
+            return
+        gravity = np.asarray(value, dtype=np.float32)
+        if gravity.shape != (3,):
+            raise ValueError(f"Expected gravity with shape (3,), got {gravity.shape}")
+        self._gravity = wp.vec3(*gravity)
+
+    def _gravity_as_vector(self) -> wp.vec3:
+        if np.isscalar(self._gravity):
+            return wp.vec3(*(component * self._gravity for component in self.up_vector))
+        return self._gravity
 
     @property
     def current_world(self) -> int:
@@ -3203,9 +3241,8 @@ class ModelBuilder:
                 a default label "world_{index}" will be generated.
             attributes: Optional custom attributes to associate
                 with this world for later use.
-            gravity: Optional gravity vector for this world. If None,
-                the world will use the builder's default gravity (computed from
-                ``self.gravity`` and ``self.up_vector``).
+            gravity: Optional gravity vector for this world. If None, the world
+                uses the builder's default :attr:`gravity`.
 
         Raises:
             RuntimeError: If called when already inside a world context
@@ -3248,10 +3285,7 @@ class ModelBuilder:
         if gravity is not None:
             self.world_gravity.append(gravity)
         else:
-            up_vector = self.up_vector
-            self.world_gravity.append(
-                (up_vector[0] * self.gravity, up_vector[1] * self.gravity, up_vector[2] * self.gravity)
-            )
+            self.world_gravity.append(self._gravity_as_vector())
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -3366,15 +3400,10 @@ class ModelBuilder:
         # Copy gravity from source builder
         if self.current_world >= 0 and self.current_world < len(self.world_gravity):
             # We're in a world context, update this world's gravity vector
-            builder_up = builder.up_vector
-            self.world_gravity[self.current_world] = (
-                builder_up[0] * builder.gravity,
-                builder_up[1] * builder.gravity,
-                builder_up[2] * builder.gravity,
-            )
+            self.world_gravity[self.current_world] = builder._gravity_as_vector()
         elif self.current_world < 0:
-            # No world context (add_builder called directly), copy scalar gravity
-            self.gravity = builder.gravity
+            # No world context (add_builder called directly), copy default gravity
+            self._gravity = copy.copy(builder._gravity)
 
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
@@ -11493,9 +11522,7 @@ class ModelBuilder:
                 # Use per-world gravity from world_gravity list
                 gravity_vecs = self.world_gravity
             else:
-                # Fallback: use scalar gravity for all worlds
-                gravity_vec = tuple(g * self.gravity for g in self.up_vector)
-                gravity_vecs = [gravity_vec] * self.world_count
+                gravity_vecs = [self._gravity_as_vector()] * self.world_count
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,

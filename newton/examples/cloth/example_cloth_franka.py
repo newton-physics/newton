@@ -108,7 +108,7 @@ class Example:
         self.bending_ke = 5
         self.bending_kd = 5e-1
 
-        self.scene = ModelBuilder(gravity=-981.0)
+        self.scene = ModelBuilder(gravity=(0.0, 0.0, -981.0))
 
         self.viewer = viewer
 

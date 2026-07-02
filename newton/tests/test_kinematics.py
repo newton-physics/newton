@@ -98,7 +98,7 @@ def test_fk_ik_with_analytical_solution(test, device):
     L1, L2 = 1.0, 0.8
 
     # Add two dummy links with revolute joint
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     link0 = builder.add_link()
     builder.add_shape_sphere(link0, radius=0.01)
     link1 = builder.add_link()
@@ -170,7 +170,7 @@ def test_fk_ik_with_analytical_solution(test, device):
 
 
 def test_fk_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     link0 = builder.add_link()
     link1 = builder.add_link()
@@ -239,7 +239,7 @@ def test_fk_descendant_linear_velocity_matches_finite_difference(test, device):
 
 
 def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     slider = builder.add_link()
@@ -305,7 +305,7 @@ def test_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test,
 
 
 def test_ik_prismatic_descendant_recovers_joint_state(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     slider = builder.add_link()
@@ -372,7 +372,7 @@ def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_differe
     Looping over both FK entry points guards both code paths against
     divergence on the FREE/DISTANCE root.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     child = builder.add_link()
@@ -499,7 +499,7 @@ def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_differe
 
 
 def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_type):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     child = builder.add_link()
@@ -557,7 +557,7 @@ def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_ty
 
 
 def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_difference(test, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link()
     slider = builder.add_link()
@@ -1041,7 +1041,7 @@ def test_fk_ik_d6_left_handed_angular_axes(test, device):
     ``qfa(axis_0, q0) * qfa(axis_1, q1) * qfa(axis_2, q2)`` must hold for the resulting body rotation,
     and ``eval_ik`` must recover the original joint coordinates."""
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
     j = builder.add_joint_d6(
         parent=-1,

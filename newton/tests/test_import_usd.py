@@ -6950,7 +6950,7 @@ def Xform "Articulation" (
         builder.add_usd(stage)
 
         # Gravity should be enabled (non-zero)
-        self.assertNotEqual(builder.gravity, 0.0)
+        self.assertGreater(np.linalg.norm(np.asarray(builder.gravity)), 0.0)
 
         # Test with gravity disabled via newton:gravityEnabled
         stage2 = Usd.Stage.CreateInMemory()
@@ -6969,7 +6969,7 @@ def Xform "Articulation" (
         builder2.add_usd(stage2)
 
         # Gravity should be disabled (zero)
-        self.assertEqual(builder2.gravity, 0.0)
+        np.testing.assert_allclose(builder2.gravity, (0.0, 0.0, 0.0))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_non_unit_linear_unit(self):
@@ -6991,7 +6991,47 @@ def Xform "Articulation" (
         with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
             builder.add_usd(stage)
 
-        self.assertAlmostEqual(builder.gravity, -12.34, places=6)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -12.34), atol=1.0e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_gravity_direction(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(3.0, 4.0, 0.0))
+        scene.CreateGravityMagnitudeAttr().Set(10.0)
+
+        body = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-6)
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.begin_world()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+        )
+        np.testing.assert_allclose(builder.world_gravity[0], (-8.0, 6.0, 0.0), atol=1.0e-5)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+            override_root_xform=True,
+        )
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-5)
+
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        scene.GetGravityDirectionAttr().Set(Gf.Vec3f(0.0, -1.0, 0.0))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -10.0), atol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_time_steps_per_second_parsing(self):

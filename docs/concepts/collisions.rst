@@ -1432,7 +1432,7 @@ treated as a frozen constant.
 
 .. testcode:: diff-contacts
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.3)))
     builder.add_shape_sphere(body=body, radius=0.5)
     builder.add_ground_plane()

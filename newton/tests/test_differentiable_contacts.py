@@ -13,7 +13,7 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 def test_no_overhead_when_disabled(test, device):
     """Differentiable arrays are None when requires_grad=False."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -31,7 +31,7 @@ def test_no_overhead_when_disabled(test, device):
 def test_arrays_allocated_when_enabled(test, device):
     """Differentiable arrays are allocated when requires_grad=True."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -50,7 +50,7 @@ def test_arrays_allocated_when_enabled(test, device):
 def test_sphere_on_plane_distance(test, device):
     """Sphere penetrating ground plane produces correct differentiable distance."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         sphere_height = 0.3
         sphere_radius = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, sphere_height)))
@@ -77,7 +77,7 @@ def test_sphere_on_plane_distance(test, device):
 def test_gradient_flow_through_body_q(test, device):
     """Verify gradients flow from diff distance through body_q via wp.Tape."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -109,7 +109,7 @@ def test_gradient_flow_through_body_q(test, device):
 def test_gradient_direction(test, device):
     """Moving the sphere upward should increase (make less negative) the contact distance."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -144,7 +144,7 @@ def test_gradient_direction(test, device):
 def test_collide_outside_tape(test, device):
     """collide() works correctly outside a tape (no gradients, no crash)."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -165,7 +165,7 @@ def test_collide_outside_tape(test, device):
 def test_two_body_contact(test, device):
     """Two dynamic bodies in contact both receive non-zero gradients."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
         builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5)
         body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.8)))
@@ -201,7 +201,7 @@ def test_two_body_contact(test, device):
 def test_world_points_correctness(test, device):
     """Differentiable world-space points and distance are geometrically consistent."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         sphere_height = 0.3
         sphere_radius = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, sphere_height)))
@@ -249,7 +249,7 @@ def test_world_points_correctness(test, device):
 def test_finite_difference_distance_gradient(test, device):
     """Tape gradient of distance w.r.t. z-translation matches finite differences."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         h0 = 0.3
         r = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, h0)))
@@ -302,7 +302,7 @@ def test_finite_difference_distance_gradient(test, device):
 def test_repeated_collide_independent_gradients(test, device):
     """Calling collide() twice in separate tapes gives independent gradients."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -344,7 +344,7 @@ def test_repeated_collide_independent_gradients(test, device):
 def test_finite_difference_two_body_gradient(test, device):
     """Tape gradients match central finite differences for two overlapping boxes across all translation DOFs."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
         builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5)
         body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.8)))
@@ -411,7 +411,7 @@ def _body_position_loss_kernel(
 def test_multistep_gradient_flow(test, device):
     """Multi-step tape gradient of position loss w.r.t. initial z matches finite differences."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         sphere_height = 2.0
         sphere_radius = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, sphere_height)))

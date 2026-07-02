@@ -274,7 +274,6 @@ class Example:
         builder.approximate_meshes("convex_hull")
 
         builder.add_ground_plane()
-        # builder's gravity isn't a vec3. use model.set_gravity()
         # builder.gravity = wp.vec3(0.0, 0.0, -9.81)
 
         builder.joint_q[:3] = [0.0, 0.0, 0.76]

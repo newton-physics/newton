@@ -403,14 +403,14 @@ apply the appropriate rotation transforms:
    import newton
    
    # Configure Newton for Z-up coordinate system (robotics convention)
-   builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=-9.81)
+   builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, -9.81))
    
-   # Or use Y-up (graphics/animation convention)  
-   builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-9.81)
-   
-   # Gravity vector will automatically align with the chosen up axis:
-   # - Y-up: gravity = (0, -9.81, 0)
-   # - Z-up: gravity = (0, 0, -9.81)
+   # Or use Y-up (graphics/animation convention)
+   builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0))
+
+The up axis controls geometry conventions but does not constrain an explicit
+gravity vector. Omitting ``gravity`` defaults to ``-9.81`` along the configured
+up axis. Passing a scalar gravity value is deprecated.
 
 Color Space Handling
 --------------------

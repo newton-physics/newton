@@ -1522,7 +1522,7 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):
     """D6 structural slots should be inactive when all axes are free."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
 
@@ -1579,7 +1579,7 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
 
 
 def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_max=None, dahl_tau=None):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=dahl_defaults_enabled)
@@ -1878,7 +1878,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
     num_frames = 200
     settle_frames = 50
 
-    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 100.0
     cfg.mu = 0.0
