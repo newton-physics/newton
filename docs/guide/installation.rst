@@ -212,8 +212,9 @@ simultaneously on the GPU:
     # The solver steps all 1024 worlds in parallel
     solver = newton.solvers.SolverMuJoCo(model)
 
-See the :doc:`/guide/overview` guide and :doc:`/integrations/isaac-lab`
-for more details.
+See the :doc:`MuJoCo solver guide </solvers/mujoco>` for solver-specific
+details, the :doc:`/guide/overview` for Newton's core workflow, and
+:doc:`/lab/isaac-lab` for Isaac Lab integration details.
 
 .. _extra-dependencies:
 

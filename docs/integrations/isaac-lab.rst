@@ -1,8 +1,14 @@
 .. SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 .. SPDX-License-Identifier: CC-BY-4.0
 
-Isaac Lab Integration
-=====================
+:orphan:
 
-For details about Isaac Lab support for Newton, see the
-`Isaac Lab documentation <https://isaac-sim.github.io/IsaacLab/main/source/experimental-features/newton-physics-integration/index.html>`_.
+.. raw:: html
+
+   <link rel="canonical" href="../lab/isaac-lab.html" />
+   <meta http-equiv="refresh" content="0; url=../lab/isaac-lab.html" />
+
+Isaac Lab documentation moved
+==============================
+
+The Isaac Lab page moved to :doc:`/lab/isaac-lab`.
