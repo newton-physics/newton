@@ -10111,13 +10111,14 @@ def Xform "World"
         temperature = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
         region_id = np.array([7], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 
@@ -10129,6 +10130,37 @@ def Xform "World"
         arr, freq = tm.custom_attributes["regionId"]
         assert_np_equal(arr, region_id)
         self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+
+    def test_tetmesh_custom_attributes_infer_once(self):
+        """Test that length-1 arrays are inferred as ONCE when unambiguous."""
+        vertices = np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0.5]],
+            dtype=np.float32,
+        )
+        tet_indices = np.array([0, 1, 2, 3, 0, 1, 2, 4], dtype=np.int32)
+        constant = np.array([42.0], dtype=np.float32)
+
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={"constant": constant},
+        )
+
+        arr, freq = tm.custom_attributes["constant"]
+        assert_np_equal(arr, constant)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.ONCE)
+
+    def test_tetmesh_custom_attributes_ambiguous_once(self):
+        """Test that length-1 arrays raise when tet_count is also 1."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+
+        with self.assertRaisesRegex(ValueError, "ONCE"):
+            newton.TetMesh(
+                vertices,
+                tet_indices,
+                custom_attributes={"ambig": np.array([1.0], dtype=np.float32)},
+            )
 
     def test_tetmesh_custom_attributes_empty_by_default(self):
         """Test TetMesh has empty custom_attributes when none are provided."""
@@ -10175,13 +10207,14 @@ def Xform "World"
         temperature = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
         region_id = np.array([3], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 
