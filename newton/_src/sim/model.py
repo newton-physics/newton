@@ -759,6 +759,8 @@ class Model:
         """Total number of joint constraints of all joints."""
         self.constraint_mimic_count: int = 0
         """Total number of mimic constraints in the system."""
+        self._has_authored_mimic_compliance: bool = False
+        """Whether any mimic constraint has usable stiffness and damping; set by :meth:`ModelBuilder.finalize`."""
 
         # indices of particles sharing the same color
         self.particle_color_groups: list[wp.array[wp.int32]] = []

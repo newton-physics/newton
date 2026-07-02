@@ -1263,9 +1263,9 @@ class ModelBuilder:
         self.constraint_mimic_coef1: list[float] = []
         """Scale coefficients accumulated for :attr:`Model.constraint_mimic_coef1`."""
         self.constraint_mimic_stiffness: list[float] = []
-        """Stiffness values accumulated for :attr:`Model.constraint_mimic_stiffness`."""
+        """Stiffness values accumulated for :attr:`Model.constraint_mimic_stiffness` [N/m or N·m/rad]."""
         self.constraint_mimic_damping: list[float] = []
-        """Damping values accumulated for :attr:`Model.constraint_mimic_damping`."""
+        """Damping values accumulated for :attr:`Model.constraint_mimic_damping` [N·s/m or N·m·s/rad]."""
         self.constraint_mimic_enabled: list[bool] = []
         """Enabled flags accumulated for :attr:`Model.constraint_mimic_enabled`."""
         self.constraint_mimic_label: list[str] = []
@@ -5092,10 +5092,13 @@ class ModelBuilder:
                 f"current_world={self.current_world}."
             )
 
-        if math.isinf(stiffness) ^ math.isinf(damping):
+        # A gain takes effect only when finite and positive (matches the solver).
+        stiffness_usable = math.isfinite(stiffness) and stiffness > 0.0
+        damping_usable = math.isfinite(damping) and damping > 0.0
+        if stiffness_usable != damping_usable:
             warnings.warn(
-                "Mimic constraint compliance requires both stiffness and damping to be authored; "
-                "only one was provided and the constraint will use the solver default.",
+                "Mimic constraint compliance requires both stiffness and damping to be positive; "
+                "the incomplete specification is ignored and the constraint uses the solver default.",
                 stacklevel=2,
             )
 
@@ -11431,6 +11434,11 @@ class ModelBuilder:
             m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
             m.constraint_mimic_stiffness = wp.array(self.constraint_mimic_stiffness, dtype=wp.float32)
             m.constraint_mimic_damping = wp.array(self.constraint_mimic_damping, dtype=wp.float32)
+            # Host-side flag so solvers can warn without a device copy at init.
+            m._has_authored_mimic_compliance = any(
+                math.isfinite(s) and s > 0.0 and math.isfinite(d) and d > 0.0
+                for s, d in zip(self.constraint_mimic_stiffness, self.constraint_mimic_damping)
+            )
             m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
             m.constraint_mimic_label = self.constraint_mimic_label
             m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)

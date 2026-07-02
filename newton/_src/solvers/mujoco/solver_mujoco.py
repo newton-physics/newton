@@ -7703,9 +7703,8 @@ class SolverMuJoCo(SolverBase):
 
                 ke = float(stiffness[newton_mimic])
                 kd = float(damping[newton_mimic])
-                if not (ke > 0.0 and kd > 0.0):
-                    solref = convert_solref(ke, kd, 1.0, 1.0)
-                    eq_solref[mjc_eq] = (float(solref[0]), float(solref[1]))
+                if not (math.isfinite(ke) and math.isfinite(kd) and ke > 0.0 and kd > 0.0):
+                    eq_solref[mjc_eq] = (float(DEFAULT_LIMIT_SOLREF[0]), float(DEFAULT_LIMIT_SOLREF[1]))
                     continue
 
                 joint0 = int(self.mj_model.eq_obj1id[mjc_eq])

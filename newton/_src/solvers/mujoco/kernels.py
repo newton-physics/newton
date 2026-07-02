@@ -2697,8 +2697,8 @@ def update_mimic_eq_solref_from_invweight0_kernel(
 
     stiffness = constraint_mimic_stiffness[newton_mimic]
     damping = constraint_mimic_damping[newton_mimic]
-    if not (stiffness > 0.0 and damping > 0.0):
-        eq_solref[world, mjc_eq] = convert_solref(stiffness, damping, 1.0, 1.0)
+    if not (wp.isfinite(stiffness) and wp.isfinite(damping) and stiffness > 0.0 and damping > 0.0):
+        eq_solref[world, mjc_eq] = wp.vec2(DEFAULT_LIMIT_SOLREF_TIMECONST, DEFAULT_LIMIT_SOLREF_DAMPRATIO)
         return
 
     dof0 = jnt_dofadr[eq_obj1id[mjc_eq]]

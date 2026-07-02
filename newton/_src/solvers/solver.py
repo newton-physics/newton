@@ -3,7 +3,6 @@
 
 import warnings
 
-import numpy as np
 import warp as wp
 
 from ..geometry import ParticleFlags
@@ -190,21 +189,11 @@ class SolverBase:
 
     def __init__(self, model: Model):
         self.model = model
-        # SolverBase is also reused internally by Kamino with its own ModelKamino
-        if isinstance(model, Model):
-            self._warn_on_authored_mimic_compliance(model)
-
-    def _warn_on_authored_mimic_compliance(self, model: Model) -> None:
-        if self._supports_mimic_compliance or not model.constraint_mimic_count:
-            return
-
-        stiffness_authored = ~np.isneginf(model.constraint_mimic_stiffness.numpy())
-        damping_authored = ~np.isneginf(model.constraint_mimic_damping.numpy())
-        if stiffness_authored.any() or damping_authored.any():
+        if not self._supports_mimic_compliance and getattr(model, "_has_authored_mimic_compliance", False):
             warnings.warn(
-                f"{type(self).__name__} does not support mimic constraint stiffness/damping; "
-                "authored values are retained but ignored.",
-                stacklevel=3,
+                f"{type(self).__name__} does not support mimic constraints; "
+                "authored stiffness/damping are ignored.",
+                stacklevel=2,
             )
 
     @property

@@ -140,7 +140,7 @@ class TestCustomSolver(unittest.TestCase):
         )
         model = builder.finalize()
 
-        with self.assertWarnsRegex(UserWarning, "does not support mimic constraint stiffness/damping"):
+        with self.assertWarnsRegex(UserWarning, "does not support mimic constraints"):
             DummySolver(model)
 
 
