@@ -16,6 +16,7 @@
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Add `ModelBuilder.BvhConfig` for selecting Warp BVH constructors during model finalization for mesh, Gaussian, and shape BVHs.
+- Add USD mesh marker logging via `newton.usd.get_mesh()` support for USD stages, file paths, and URLs plus `ViewerBase.log_usd()` and `ViewerBase.log_mesh_instances()`.
 
 ### Changed
 
