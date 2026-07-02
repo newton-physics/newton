@@ -470,7 +470,7 @@ def _cable_attachment_anchors(
     return [(segment_body, local_point)]
 
 
-@dataclass
+@dataclass(slots=True)
 class _DeformablePrimBuckets:
     """Deformable candidate prims discovered by :func:`_scout_deformable_prims`.
 
@@ -485,6 +485,15 @@ class _DeformablePrimBuckets:
     tetmeshes: list[Usd.Prim] = field(default_factory=list)
     attachments: list[Usd.Prim] = field(default_factory=list)
     element_filters: list[Usd.Prim] = field(default_factory=list)
+
+    def has_candidates(self) -> bool:
+        """Whether any deformable lowering pass has candidate prims.
+
+        All five buckets count: bare TetMeshes still take the legacy soft-body path, and
+        standalone attachments / element filters must run their passes even when no supported
+        deformable was imported (to record their attrs and warn).
+        """
+        return bool(self.cables or self.cloth or self.tetmeshes or self.attachments or self.element_filters)
 
 
 def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
@@ -519,7 +528,7 @@ def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
     return buckets
 
 
-@dataclass
+@dataclass(slots=True)
 class _DeformableImportContext:
     """Shared state for the deformable import passes (cable / cloth / volume / attachment).
 

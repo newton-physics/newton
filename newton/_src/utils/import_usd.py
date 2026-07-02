@@ -3721,65 +3721,66 @@ def parse_usd(
     root_prim = stage.GetPrimAtPath(root_path)
     # One scouting walk classifies every deformable candidate prim; the passes below iterate
     # these buckets instead of each re-traversing the stage, so a stage without deformables
-    # pays a single walk and skips every pass.
+    # pays a single walk and skips every pass (including the context construction).
     _deformable_prims = _scout_deformable_prims(root_prim)
-    _deformable_ctx = _DeformableImportContext(
-        builder=builder,
-        stage=stage,
-        root_prim=root_prim,
-        resolver=R,
-        collect_schema_attrs=collect_schema_attrs,
-        deformable_read=deformable_read,
-        get_prim_world_mat=_get_prim_world_mat,
-        get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
-        get_first_target=_get_first_target,
-        get_tetmesh_cached=_get_tetmesh_cached,
-        incoming_world_xform=incoming_world_xform,
-        linear_unit=linear_unit,
-        ignore_paths=ignore_paths,
-        verbose=verbose,
-        path_body_map=path_body_map,
-        path_shape_map=path_shape_map,
-        path_cable_map=path_cable_map,
-        path_cable_attrs=path_cable_attrs,
-        path_cable_segments=path_cable_segments,
-        path_cable_point_anchors=path_cable_point_anchors,
-        path_cloth_map=path_cloth_map,
-        path_cloth_attrs=path_cloth_attrs,
-        path_soft_map=path_soft_map,
-        path_soft_attrs=path_soft_attrs,
-        path_attachment_map=path_attachment_map,
-        path_attachment_attrs=path_attachment_attrs,
-        prims=_deformable_prims,
-    )
-
-    # Curve-to-curve junctions weld into rod graphs before the per-curve cable pass, which skips
-    # the consumed curves; the attachment pass below skips the consumed junctions. Each pass runs
-    # only when its bucket has candidates; welding additionally needs attachments to weld with.
-    consumed_cable_curve_paths: set[str] = set()
-    consumed_junction_attachment_paths: set[str] = set()
-    if _deformable_prims.cables and _deformable_prims.attachments:
-        consumed_cable_curve_paths, consumed_junction_attachment_paths = _deformable_import_cable_graphs(
-            _deformable_ctx
+    if _deformable_prims.has_candidates():
+        _deformable_ctx = _DeformableImportContext(
+            builder=builder,
+            stage=stage,
+            root_prim=root_prim,
+            resolver=R,
+            collect_schema_attrs=collect_schema_attrs,
+            deformable_read=deformable_read,
+            get_prim_world_mat=_get_prim_world_mat,
+            get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
+            get_first_target=_get_first_target,
+            get_tetmesh_cached=_get_tetmesh_cached,
+            incoming_world_xform=incoming_world_xform,
+            linear_unit=linear_unit,
+            ignore_paths=ignore_paths,
+            verbose=verbose,
+            path_body_map=path_body_map,
+            path_shape_map=path_shape_map,
+            path_cable_map=path_cable_map,
+            path_cable_attrs=path_cable_attrs,
+            path_cable_segments=path_cable_segments,
+            path_cable_point_anchors=path_cable_point_anchors,
+            path_cloth_map=path_cloth_map,
+            path_cloth_attrs=path_cloth_attrs,
+            path_soft_map=path_soft_map,
+            path_soft_attrs=path_soft_attrs,
+            path_attachment_map=path_attachment_map,
+            path_attachment_attrs=path_attachment_attrs,
+            prims=_deformable_prims,
         )
-    if _deformable_prims.cables:
-        _deformable_import_cable(_deformable_ctx, consumed_cable_curve_paths)
-    if _deformable_prims.cloth:
-        _deformable_import_cloth(_deformable_ctx)
-    if _deformable_prims.tetmeshes:
-        _deformable_import_volume(_deformable_ctx)
 
-    # PhysicsAttachment prims from the AOUSD deformables proposal. The current
-    # builder can faithfully lower the cable/rod subset because imported cables
-    # are rigid capsule bodies. Surface/volume attachments require a separate
-    # deformable-site constraint model, so those are preserved as attrs and warned.
-    if _deformable_prims.attachments:
-        _deformable_import_attachments(_deformable_ctx, consumed_junction_attachment_paths)
+        # Curve-to-curve junctions weld into rod graphs before the per-curve cable pass, which skips
+        # the consumed curves; the attachment pass below skips the consumed junctions. Each pass runs
+        # only when its bucket has candidates; welding additionally needs attachments to weld with.
+        consumed_cable_curve_paths: set[str] = set()
+        consumed_junction_attachment_paths: set[str] = set()
+        if _deformable_prims.cables and _deformable_prims.attachments:
+            consumed_cable_curve_paths, consumed_junction_attachment_paths = _deformable_import_cable_graphs(
+                _deformable_ctx
+            )
+        if _deformable_prims.cables:
+            _deformable_import_cable(_deformable_ctx, consumed_cable_curve_paths)
+        if _deformable_prims.cloth:
+            _deformable_import_cloth(_deformable_ctx)
+        if _deformable_prims.tetmeshes:
+            _deformable_import_volume(_deformable_ctx)
 
-    # AOUSD PhysicsElementCollisionFilter prims: suppress collision between authored element
-    # groups (cable segments / collider shapes); runs after the cables and colliders exist.
-    if _deformable_prims.element_filters:
-        _deformable_import_element_collision_filters(_deformable_ctx)
+        # PhysicsAttachment prims from the AOUSD deformables proposal. The current
+        # builder can faithfully lower the cable/rod subset because imported cables
+        # are rigid capsule bodies. Surface/volume attachments require a separate
+        # deformable-site constraint model, so those are preserved as attrs and warned.
+        if _deformable_prims.attachments:
+            _deformable_import_attachments(_deformable_ctx, consumed_junction_attachment_paths)
+
+        # AOUSD PhysicsElementCollisionFilter prims: suppress collision between authored element
+        # groups (cable segments / collider shapes); runs after the cables and colliders exist.
+        if _deformable_prims.element_filters:
+            _deformable_import_element_collision_filters(_deformable_ctx)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
