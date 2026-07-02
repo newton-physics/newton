@@ -4660,6 +4660,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         min_distance: float = -1.0,
         max_distance: float = 1.0,
+        label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
@@ -4674,6 +4675,7 @@ class ModelBuilder:
             child_xform: The transform of the joint in the child body's local frame.
             min_distance: The minimum distance between the bodies (no limit if negative).
             max_distance: The maximum distance between the bodies (no limit if negative).
+            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
@@ -4696,6 +4698,7 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
+            label=label,
             linear_axes=[
                 ax,
                 ModelBuilder.JointDofConfig.create_unlimited(Axis.Y),
