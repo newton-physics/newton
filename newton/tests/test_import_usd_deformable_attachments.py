@@ -30,18 +30,23 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         Without transforming the world ``coords1``, the cable bodies move under ``xform`` but
         the world ball-joint anchor stays in original USD coordinates, pulling the cable off.
+        The asymmetric u = 0.25 also pins the proposal's segment-coordinate convention:
+        p = u*x0 + (1-u)*x1, so u weights the segment START vertex (u = 1 selects the start,
+        u = 0 the end), and with the start at body-local -L/2 the site sits at (0.5-u)*L.
         """
         stage = _deformable_stage()
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         _add_cable_curve(stage, "/World/Cable", pts)
+        # Segment 1 runs x0 = (0.1, 0, 1) -> x1 = (0.2, 0, 1), L = 0.1.
+        # u = 0.25 -> p = 0.25*x0 + 0.75*x1 = (0.175, 0, 1), authored as the world target too.
         _add_physics_attachment(
             stage,
             "/World/AttachMid",
             src0="/World/Cable",
             type0="segment",
             indices0=[1],
-            coords0=[(0.5, 0.0, 0.0)],
-            coords1=[(0.15, 0.0, 1.0)],
+            coords0=[(0.25, 0.0, 0.0)],
+            coords1=[(0.175, 0.0, 1.0)],
         )
 
         builder = newton.ModelBuilder()
@@ -56,9 +61,13 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         self.assertEqual(builder.joint_child[j], b0 + 1)
         # The cable body and its world anchor both translate by xform's +10 in x.
         np.testing.assert_allclose(np.array(builder.body_q[b0 + 1].p)[0], 10.15, atol=1e-5)
-        np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [10.15, 0.0, 1.0], atol=1e-5)
-        # The child-frame anchor is body-local and thus invariant under xform.
-        np.testing.assert_allclose(np.array(builder.joint_X_c[j].p), [0.0, 0.0, 0.0], atol=1e-6)
+        np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [10.175, 0.0, 1.0], atol=1e-5)
+        # Child-local anchor: z = (0.5 - u) * L = 0.025, invariant under xform.
+        np.testing.assert_allclose(np.array(builder.joint_X_c[j].p), [0.0, 0.0, 0.025], atol=1e-6)
+        # Both joint frames name the same world point (a flipped u sign puts the child
+        # anchor at world x = 10.125 and this fails).
+        child_anchor_world = wp.transform_point(builder.body_q[builder.joint_child[j]], builder.joint_X_c[j].p)
+        np.testing.assert_allclose(np.array(child_anchor_world), np.array(builder.joint_X_p[j].p), atol=1e-5)
 
     def test_physics_attachment_interior_point_to_rigid_imports_incident_segment_joints(self):
         """A cable point attachment maps an interior point to both incident segment bodies."""
