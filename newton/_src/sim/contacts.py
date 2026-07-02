@@ -327,8 +327,6 @@ class Contacts:
             # Soft feature id: particle id in the particle range, soft-triangle id in the
             # edge/face ranges (renamed from soft_contact_particle).
             self.soft_contact_primitive = wp.full(soft_contact_max, -1, dtype=int)
-            self.soft_contact_kind = wp.zeros(soft_contact_max, dtype=wp.uint8)
-            """Soft contact feature kind (``SOFT_CONTACT_KIND_EDGE`` / ``_FACE``) for edge/face records; unused in the particle range. Shape (soft_contact_max,), dtype uint8."""
             self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Barycentric coordinates on the soft triangle for edge/face contacts [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)

@@ -32,7 +32,7 @@ from .kernels import (
     sdf_sphere_grad,
 )
 from .sdf_texture import TextureSDFData, texture_sample_sdf_grad
-from .types import SOFT_CONTACT_KIND_EDGE, SOFT_CONTACT_KIND_FACE, Axis, GeoType
+from .types import Axis, GeoType
 
 # Fixed iteration counts -> data-independent loops -> CUDA-graph-capturable. Passed as kernel args
 # (uniform across threads/launches). Tuned against a brute-force grid reference
@@ -227,14 +227,12 @@ def _emit_soft_ef_contact(
     soft_contact_max: wp.int32,
     soft_contact_count: wp.array[wp.int32],
     soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
     soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[wp.int32],
     soft_contact_body_pos: wp.array[wp.vec3],
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
     prim_id: wp.int32,
-    kind: wp.uint8,
     bary: wp.vec3,
     shape_index: wp.int32,
     body_pos: wp.vec3,
@@ -252,7 +250,6 @@ def _emit_soft_ef_contact(
     idx = base + wp.atomic_add(soft_contact_count, slot, 1)
     if idx < soft_contact_max:
         soft_contact_primitive[idx] = prim_id
-        soft_contact_kind[idx] = kind
         soft_contact_barycentric[idx] = bary
         soft_contact_shape[idx] = shape_index
         soft_contact_body_pos[idx] = body_pos
@@ -282,7 +279,6 @@ def create_soft_face_contacts(
     soft_contact_max: wp.int32,
     soft_contact_count: wp.array[wp.int32],
     soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
     soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[wp.int32],
     soft_contact_body_pos: wp.array[wp.vec3],
@@ -338,14 +334,12 @@ def create_soft_face_contacts(
             soft_contact_max,
             soft_contact_count,
             soft_contact_primitive,
-            soft_contact_kind,
             soft_contact_barycentric,
             soft_contact_shape,
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
             t,
-            SOFT_CONTACT_KIND_FACE,
             bary,
             shape_index,
             wp.transform_point(X_bs, y),
@@ -377,7 +371,6 @@ def create_soft_edge_contacts(
     soft_contact_max: wp.int32,
     soft_contact_count: wp.array[wp.int32],
     soft_contact_primitive: wp.array[wp.int32],
-    soft_contact_kind: wp.array[wp.uint8],
     soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_shape: wp.array[wp.int32],
     soft_contact_body_pos: wp.array[wp.vec3],
@@ -442,14 +435,12 @@ def create_soft_edge_contacts(
             soft_contact_max,
             soft_contact_count,
             soft_contact_primitive,
-            soft_contact_kind,
             soft_contact_barycentric,
             soft_contact_shape,
             soft_contact_body_pos,
             soft_contact_body_vel,
             soft_contact_normal,
             t0,
-            SOFT_CONTACT_KIND_EDGE,
             bary,
             shape_index,
             wp.transform_point(X_bs, y),
@@ -496,7 +487,6 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device):
     outputs = [
         contacts.soft_contact_count,
         contacts.soft_contact_primitive,
-        contacts.soft_contact_kind,
         contacts.soft_contact_barycentric,
         contacts.soft_contact_shape,
         contacts.soft_contact_body_pos,

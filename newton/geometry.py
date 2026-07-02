@@ -29,13 +29,10 @@ from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder,
 from ._src.geometry.narrow_phase import NarrowPhase
 from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from ._src.geometry.sdf_utils import compute_offset_mesh, create_empty_sdf_data
-from ._src.geometry.types import SOFT_CONTACT_KIND_EDGE, SOFT_CONTACT_KIND_FACE
 
 __all__ = [
     "MATCH_BROKEN",
     "MATCH_NOT_FOUND",
-    "SOFT_CONTACT_KIND_EDGE",
-    "SOFT_CONTACT_KIND_FACE",
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
