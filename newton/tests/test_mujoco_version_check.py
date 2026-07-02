@@ -111,6 +111,71 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
                 self.assertIsNone(solver_mujoco._required_specifier("mujoco", requirements))
 
 
+class TestMuJoCoDeterminismConfig(unittest.TestCase):
+    def test_scoped_config_uses_solver_mode_and_restores_globals(self):
+        solver = object.__new__(solver_mujoco.SolverMuJoCo)
+        solver._deterministic = solver_mujoco.wp.DeterministicMode.NOT_GUARANTEED
+        solver._deterministic_max_records = 0
+
+        original_mode = solver_mujoco.wp.config.deterministic
+        original_max_records = solver_mujoco.wp.config.deterministic_max_records
+        try:
+            solver_mujoco.wp.config.deterministic = solver_mujoco.wp.DeterministicMode.RUN_TO_RUN
+            solver_mujoco.wp.config.deterministic_max_records = 17
+            with solver._scoped_deterministic_config():
+                self.assertEqual(
+                    solver_mujoco.wp.config.deterministic,
+                    solver_mujoco.wp.DeterministicMode.NOT_GUARANTEED,
+                )
+                self.assertEqual(solver_mujoco.wp.config.deterministic_max_records, 0)
+
+            self.assertEqual(solver_mujoco.wp.config.deterministic, solver_mujoco.wp.DeterministicMode.RUN_TO_RUN)
+            self.assertEqual(solver_mujoco.wp.config.deterministic_max_records, 17)
+        finally:
+            solver_mujoco.wp.config.deterministic = original_mode
+            solver_mujoco.wp.config.deterministic_max_records = original_max_records
+
+    def test_max_records_are_derived_from_model_dimensions(self):
+        def make_model(nv, *, nu=0, tendon_num=(), ten_j_rownnz=(), **overrides):
+            fields = {
+                "nv": nv,
+                "nu": nu,
+                "nbody": 1,
+                "body_weldid": (0,),
+                "body_dofadr": (-1,),
+                "body_dofnum": (0,),
+                "dof_parentid": (),
+                "tendon_num": tendon_num,
+                "ten_J_rownnz": ten_j_rownnz,
+                "flexedge_J_rownnz": (),
+            }
+            fields.update(overrides)
+            return types.SimpleNamespace(**fields)
+
+        independent_free_bodies = make_model(
+            18,
+            nbody=4,
+            body_weldid=(0, 1, 2, 3),
+            body_dofadr=(-1, 0, 6, 12),
+            body_dofnum=(0, 6, 6, 6),
+            dof_parentid=(-1, 0, 1, 2, 3, 4, -1, 6, 7, 8, 9, 10, -1, 12, 13, 14, 15, 16),
+        )
+        cases = {
+            "constraint rows": (make_model(4), 200, 200),
+            "sparse actuator Hessian": (make_model(32, nu=1), 64, 528),
+            "spatial tendon": (make_model(8, tendon_num=(6,), ten_j_rownnz=(3,)), 2, 30),
+            "fixed tendon armature": (make_model(1, tendon_num=(1,), ten_j_rownnz=(1,)), 0, 2),
+            "independent body chains": (independent_free_bodies, 50, 78),
+        }
+        for name, (mj_model, njmax, expected) in cases.items():
+            with self.subTest(name=name):
+                mjw_data = types.SimpleNamespace(njmax=njmax)
+                self.assertEqual(
+                    solver_mujoco._mujoco_warp_deterministic_max_records(mj_model, mjw_data),
+                    expected,
+                )
+
+
 def _matching_version(specifier: str) -> str:
     for pattern in (r">=\s*([0-9][^,;]*)", r"~=\s*([0-9][^,;]*)"):
         match = solver_mujoco.re.search(pattern, specifier)
