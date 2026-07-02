@@ -4272,7 +4272,6 @@ def parse_usd(
             value = attr.values[row] if row < len(attr.values) else None
             return attr.default if value is None else value
 
-        autolimits = bool(_row("mujoco:autolimits", 0))
         converted = 0
 
         for row in range(mjc_actuator_count):
@@ -4286,9 +4285,9 @@ def parse_usd(
             # actuators with default dyntype/gaintype/biastype/gear, so non-default
             # values for those force the actuator to stay CTRL_DIRECT.
             #
-            # Authored ctrlrange/forcerange are not gating: ctrlrange has no
-            # equivalent under Control.joint_target_q/qd (matching MJCF's
-            # behavior), and forcerange is propagated below into joint_effort_limit.
+            # ctrlrange/forcerange don't gate: the rebuild re-attaches them
+            # (see joint_target_ranges in _init_actuators). Effort limit
+            # (jnt_actfrcrange) comes from the joint, not the actuator.
             if (
                 int(_row("mujoco:actuator_biastype", row)) != biastype_affine
                 or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
@@ -4333,21 +4332,10 @@ def parse_usd(
             # so _init_actuators routes through MuJoCo's joint_target_mode actuators.
             builder.custom_attributes["mujoco:ctrl_source"].values[row] = ctrl_source_joint_target
             builder.custom_attributes["mujoco:actuator_trnid"].values[row] = wp.vec2i(dof, 0)
-
-            # Tighten the joint effort limit when the actuator authored a forceRange.
-            if bool(_row("mujoco:actuator_has_forcerange", row)):
-                limited = int(_row("mujoco:actuator_forcelimited", row))
-                if limited == 1 or (limited == 2 and autolimits):
-                    force_range = list(_row("mujoco:actuator_forcerange", row))
-                    limit = max(abs(force_range[0]), abs(force_range[1]))
-                    current = builder.joint_effort_limit[dof]
-                    if not np.isfinite(current) or limit < current:
-                        if np.isfinite(current) and verbose:
-                            print(
-                                f"MuJoCo USD actuator {row} narrows joint DOF {dof} "
-                                f"effort limit from {current} to {limit}"
-                            )
-                        builder.joint_effort_limit[dof] = limit
+            # Record the kind classified above so the solver doesn't re-derive it.
+            builder.custom_attributes["mujoco:ctrl_type"].values[row] = int(
+                SolverMuJoCo.CtrlType.POSITION if is_position else SolverMuJoCo.CtrlType.VELOCITY
+            )
 
             converted += 1
 
