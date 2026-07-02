@@ -971,7 +971,6 @@ def parse_mjcf(
                 mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
-                assert len(geom_size) == 3, "need to specify size for mesh geom"
 
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
@@ -1872,7 +1871,11 @@ def parse_mjcf(
             joint_label_name = "_".join(joint_name)
             joint_label = f"{body_label_path}/{joint_label_name}"
             if joint_type == JointType.FREE:
-                assert parent == -1, "Free joints must have the world body as parent"
+                if parent != -1:
+                    raise ValueError(
+                        f"Free joints must have the world body as parent; "
+                        f"joint '{joint_label}' on body '{body_label_path}' has parent body index {parent}."
+                    )
                 joint_idx = builder.add_joint_free(
                     link,
                     label=joint_label,
@@ -1976,8 +1979,17 @@ def parse_mjcf(
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
                 fullinertia = inertial_attrib.get("fullinertia")
-                assert fullinertia is not None
+                if fullinertia is None:
+                    raise ValueError(
+                        f"MJCF inertial element for body '{body_label_path}' must define "
+                        "either diaginertia or fullinertia."
+                    )
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
+                if fullinertia.shape[0] != 6:
+                    raise ValueError(
+                        f"MJCF fullinertia for body '{body_label_path}' must contain 6 values; "
+                        f"got {fullinertia.shape[0]}."
+                    )
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = fullinertia[0] * scale**2
                 I_m[1, 1] = fullinertia[1] * scale**2
