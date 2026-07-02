@@ -6243,7 +6243,8 @@ def Xform "Articulation" (
         joint1_prim.CreateAttribute("newton:mimicStiffness", Sdf.ValueTypeNames.Float).Set(200.0)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with self.assertWarnsRegex(UserWarning, "requires both stiffness and damping"):
+            result = builder.add_usd(stage)
         model = builder.finalize()
 
         self.assertEqual(model.constraint_mimic_count, 2)
