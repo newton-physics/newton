@@ -6353,7 +6353,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
         """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -6394,24 +6394,40 @@ def Xform "Articulation" (
         joint2.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
         joint2.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
         joint2.CreateAxisAttr().Set("Z")
+        joint1_prim = joint1.GetPrim()
         joint2_prim = joint2.GetPrim()
         joint2_prim.ApplyAPI("NewtonMimicAPI")
         joint2_prim.GetRelationship("newton:mimicJoint").SetTargets([joint1.GetPrim().GetPath()])
         joint2_prim.GetAttribute("newton:mimicCoef0").Set(0.5)
         joint2_prim.GetAttribute("newton:mimicCoef1").Set(2.0)
+        # TODO: After newton-usd-schemas#51 is released, raise the minimum schema version and use GetAttribute().
+        joint2_prim.CreateAttribute("newton:mimicStiffness", Sdf.ValueTypeNames.Float).Set(400.0)
+        joint2_prim.CreateAttribute("newton:mimicDamping", Sdf.ValueTypeNames.Float).Set(40.0)
+
+        # A second mimic with only one gain exercises the per-attribute engine-default sentinel.
+        joint1_prim.ApplyAPI("NewtonMimicAPI")
+        joint1_prim.GetRelationship("newton:mimicJoint").SetTargets([joint2_prim.GetPath()])
+        joint1_prim.CreateAttribute("newton:mimicStiffness", Sdf.ValueTypeNames.Float).Set(200.0)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with self.assertWarnsRegex(UserWarning, "requires both stiffness and damping"):
+            result = builder.add_usd(stage)
         model = builder.finalize()
 
-        self.assertEqual(model.constraint_mimic_count, 1)
+        self.assertEqual(model.constraint_mimic_count, 2)
         path_joint_map = result["path_joint_map"]
         joint1_idx = path_joint_map["/World/Articulation/Joint1"]
         joint2_idx = path_joint_map["/World/Articulation/Joint2"]
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], joint2_idx)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], joint1_idx)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], 0.5, places=5)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 2.0, places=5)
+        follower_joints = model.constraint_mimic_joint0.numpy()
+        authored_idx = int(np.flatnonzero(follower_joints == joint2_idx)[0])
+        default_idx = int(np.flatnonzero(follower_joints == joint1_idx)[0])
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[authored_idx], joint1_idx)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[authored_idx], 0.5, places=5)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[authored_idx], 2.0, places=5)
+        self.assertAlmostEqual(model.constraint_mimic_stiffness.numpy()[authored_idx], 400.0, places=5)
+        self.assertAlmostEqual(model.constraint_mimic_damping.numpy()[authored_idx], 40.0, places=5)
+        self.assertAlmostEqual(model.constraint_mimic_stiffness.numpy()[default_idx], 200.0, places=5)
+        self.assertTrue(np.isneginf(model.constraint_mimic_damping.numpy()[default_idx]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_equality_joint_parsing(self):

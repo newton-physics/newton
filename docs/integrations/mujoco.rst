@@ -310,6 +310,23 @@ array; slot layout depends on the constraint type.
        :attr:`~newton.JointType.REVOLUTE` and
        :attr:`~newton.JointType.PRISMATIC` joints are supported.
 
+Mimic stiffness and damping are authored with the ``stiffness`` and ``damping``
+arguments of :meth:`~newton.ModelBuilder.add_constraint_mimic`, or updated at
+runtime through :attr:`~newton.Model.constraint_mimic_stiffness` and
+:attr:`~newton.Model.constraint_mimic_damping`. Their force-space units are
+``N/m`` and ``N·s/m`` for prismatic followers, or ``N·m/rad`` and
+``N·m·s/rad`` for revolute followers. The solver scales authored gains by
+``factor = (dof_invweight0[follower] + dof_invweight0[leader]) * (1 - dmax)``
+before converting them to MuJoCo's positive ``(timeconst, dampratio)``
+``eq_solref`` convention. This keeps the configured gains in force space and is
+recomputed after relevant mass, inertia, or constraint-property updates.
+
+The value ``-inf`` means unauthored and preserves MuJoCo's default equality
+behavior. Both stiffness and damping must be authored for portable compliance
+to take effect. A MuJoCo-native equality row preserved during MJCF/USD import
+takes precedence over portable mimic gains, retaining its authored
+``mujoco:eq_solref`` and ``mujoco:eq_solimp`` values.
+
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them through the MuJoCo
 :ref:`custom-attribute namespace <mujoco-custom-attributes>` with

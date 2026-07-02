@@ -1262,6 +1262,10 @@ class ModelBuilder:
         """Offset coefficients accumulated for :attr:`Model.constraint_mimic_coef0`."""
         self.constraint_mimic_coef1: list[float] = []
         """Scale coefficients accumulated for :attr:`Model.constraint_mimic_coef1`."""
+        self.constraint_mimic_stiffness: list[float] = []
+        """Stiffness values accumulated for :attr:`Model.constraint_mimic_stiffness` [N/m for prismatic joints or torque per radian for revolute joints]."""
+        self.constraint_mimic_damping: list[float] = []
+        """Damping values accumulated for :attr:`Model.constraint_mimic_damping` [N·s/m or N·m·s/rad]."""
         self.constraint_mimic_enabled: list[bool] = []
         """Enabled flags accumulated for :attr:`Model.constraint_mimic_enabled`."""
         self.constraint_mimic_label: list[str] = []
@@ -3557,6 +3561,8 @@ class ModelBuilder:
             )
             self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
             self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
+            self.constraint_mimic_stiffness.extend(builder.constraint_mimic_stiffness)
+            self.constraint_mimic_damping.extend(builder.constraint_mimic_damping)
             self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
             if label_prefix:
                 self.constraint_mimic_label.extend(
@@ -5047,6 +5053,9 @@ class ModelBuilder:
         enabled: bool = True,
         label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
+        *,
+        stiffness: float = -math.inf,
+        damping: float = -math.inf,
     ) -> int:
         """Adds a mimic constraint to the model.
 
@@ -5063,6 +5072,10 @@ class ModelBuilder:
             enabled: Whether constraint is active
             label: Optional constraint label
             custom_attributes: Custom attributes to set on the constraint
+            stiffness: Constraint stiffness [N/m for prismatic joints or torque per radian
+                for revolute joints]. ``-inf`` uses the solver default.
+            damping: Constraint damping [N·s/m for prismatic joints or N·m·s/rad
+                for revolute joints]. ``-inf`` uses the solver default.
 
         Returns:
             Constraint index
@@ -5079,10 +5092,22 @@ class ModelBuilder:
                 f"current_world={self.current_world}."
             )
 
+        # A gain takes effect only when finite and positive (matches the solver).
+        stiffness_usable = math.isfinite(stiffness) and stiffness > 0.0
+        damping_usable = math.isfinite(damping) and damping > 0.0
+        if stiffness_usable != damping_usable:
+            warnings.warn(
+                "Mimic constraint compliance requires both stiffness and damping to be positive; "
+                "the incomplete specification is ignored and the constraint uses the solver default.",
+                stacklevel=2,
+            )
+
         self.constraint_mimic_joint0.append(joint0)
         self.constraint_mimic_joint1.append(joint1)
         self.constraint_mimic_coef0.append(coef0)
         self.constraint_mimic_coef1.append(coef1)
+        self.constraint_mimic_stiffness.append(stiffness)
+        self.constraint_mimic_damping.append(damping)
         self.constraint_mimic_enabled.append(enabled)
         self.constraint_mimic_label.append(label or "")
         self.constraint_mimic_world.append(self.current_world)
@@ -11449,6 +11474,13 @@ class ModelBuilder:
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
             m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
             m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
+            m.constraint_mimic_stiffness = wp.array(self.constraint_mimic_stiffness, dtype=wp.float32)
+            m.constraint_mimic_damping = wp.array(self.constraint_mimic_damping, dtype=wp.float32)
+            # Host-side flag so solvers can warn without a device copy at init.
+            m._has_authored_mimic_compliance = any(
+                math.isfinite(s) and s > 0.0 and math.isfinite(d) and d > 0.0
+                for s, d in zip(self.constraint_mimic_stiffness, self.constraint_mimic_damping, strict=True)
+            )
             m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
             m.constraint_mimic_label = self.constraint_mimic_label
             m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
