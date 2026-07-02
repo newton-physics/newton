@@ -24,7 +24,7 @@ Most Newton sensors follow a common pattern:
 
    ``SensorContact`` additionally requires a call to ``solver.update_contacts()`` before ``sensor.update()``.
 
-   ``SensorTiledCamera`` writes results to output arrays passed into ``update()`` rather than storing them as sensor
+   Camera sensors write results to output arrays passed into ``update()`` rather than storing them as sensor
    attributes.
 
 .. testcode::
@@ -95,7 +95,7 @@ Examples::
 Available Sensors
 -----------------
 
-Newton provides five sensor types. See the
+Newton provides these sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
@@ -103,7 +103,9 @@ attributes, and usage examples.
   with optional per-counterpart breakdown.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
-* :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
+* :class:`~newton.sensors.SensorBatchedCamera` -- raytraced color and depth rendering for selected camera views.
+* :class:`~newton.sensors.SensorTiledCamera` -- deprecated tiled-camera API; use
+  :class:`~newton.sensors.SensorBatchedCamera` for new code.
 
 Extended Attributes
 -------------------
@@ -139,4 +141,4 @@ See Also
 * :doc:`extended_attributes` -- optional ``State``/``Contacts`` arrays required by some sensors
 * ``newton.examples.sensors.example_sensor_contact`` -- SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` -- SensorIMU example
-* ``newton.examples.sensors.example_sensor_tiled_camera`` -- SensorTiledCamera example
+* ``newton.examples.sensors.example_sensor_batched_camera`` -- SensorBatchedCamera example

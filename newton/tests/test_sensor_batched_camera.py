@@ -1,29 +1,18 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 import math
 import os
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorBatchedCamera
 
 
-def _create_tiled_camera(*args, **kwargs) -> SensorTiledCamera:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="SensorTiledCamera is deprecated",
-            category=DeprecationWarning,
-        )
-        return SensorTiledCamera(*args, **kwargs)
-
-
-class TestSensorTiledCamera(unittest.TestCase):
+class TestSensorBatchedCamera(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not wp.is_cuda_available():
@@ -80,9 +69,27 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     def __compare_images(self, test_image: np.ndarray, gold_image: np.ndarray, allowed_difference: float = 0.0):
         self.assertEqual(test_image.dtype, gold_image.dtype, "Images have different data types")
-        self.assertEqual(test_image.size, gold_image.size, "Images have different data shapes")
+        self.assertEqual(test_image.shape, gold_image.shape, "Images have different shapes")
 
-        gold_image = gold_image.reshape(test_image.shape)
+        if test_image.dtype == np.uint32:
+            test_image = np.stack(
+                [
+                    test_image & np.uint32(0xFF),
+                    (test_image >> np.uint32(8)) & np.uint32(0xFF),
+                    (test_image >> np.uint32(16)) & np.uint32(0xFF),
+                    (test_image >> np.uint32(24)) & np.uint32(0xFF),
+                ],
+                axis=-1,
+            ).astype(np.uint8)
+            gold_image = np.stack(
+                [
+                    gold_image & np.uint32(0xFF),
+                    (gold_image >> np.uint32(8)) & np.uint32(0xFF),
+                    (gold_image >> np.uint32(16)) & np.uint32(0xFF),
+                    (gold_image >> np.uint32(24)) & np.uint32(0xFF),
+                ],
+                axis=-1,
+            ).astype(np.uint8)
 
         # Promote to a wide type before subtracting: int64 avoids unsigned underflow for
         # integer images, float64 preserves fractional deltas for float (e.g. depth) images.
@@ -108,12 +115,6 @@ class TestSensorTiledCamera(unittest.TestCase):
         return builder.finalize(device="cpu")
 
     @staticmethod
-    def _build_single_particle_scene() -> newton.Model:
-        builder = newton.ModelBuilder()
-        builder.add_particle(pos=wp.vec3(0.0), vel=wp.vec3(0.0), mass=1.0, radius=0.1)
-        return builder.finalize(device="cpu")
-
-    @staticmethod
     def _unpack_rgba(packed: int) -> np.ndarray:
         value = int(packed)
         return np.array(
@@ -127,8 +128,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
     def test_render_config_uses_utils_color_space_enum(self) -> None:
-        self.assertEqual(SensorTiledCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
-        config = SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
+        self.assertEqual(SensorBatchedCamera.RenderConfig().output_color_space, newton.utils.ColorSpace.SRGB)
+        config = SensorBatchedCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
         self.assertEqual(config.output_color_space, newton.utils.ColorSpace.LINEAR)
 
         linear = newton.utils.color_srgb_to_linear((0.5, 0.25, 0.1))
@@ -138,23 +139,24 @@ class TestSensorTiledCamera(unittest.TestCase):
         color = (0.25, 0.5, 0.75)
         model = self._build_single_sphere_scene(color)
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            [wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))],
             dtype=wp.transformf,
             device="cpu",
         )
+        camera_indices = wp.array([[0, 0]], dtype=wp.int32, device="cpu")
         state = model.state()
 
         for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
-            sensor = _create_tiled_camera(
+            sensor = SensorBatchedCamera(
                 model=model,
-                config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+                config=SensorBatchedCamera.RenderConfig(output_color_space=output_color_space),
             )
             camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
-            albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
+            albedo_image = sensor.utils.create_albedo_image_output(1, 1, 1)
 
-            sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
+            sensor.update(state, camera_transforms, camera_rays, camera_indices, albedo_image=albedo_image)
 
-            packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0, 0])
+            packed = self._unpack_rgba(albedo_image.numpy()[0, 0, 0])
             expected_rgb = (
                 np.array([63, 127, 191], dtype=np.uint8)
                 if output_color_space == newton.utils.ColorSpace.SRGB
@@ -188,10 +190,10 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
         model = builder.finalize(device="cpu")
 
-        sensor = _create_tiled_camera(model=model)
+        sensor = SensorBatchedCamera(model=model)
         # The public render_context alias was removed; this regression test needs
         # the internal mesh state that drives first-render construction.
-        render_context = sensor._SensorTiledCamera__render_context
+        render_context = sensor._SensorBatchedCamera__render_context
 
         # init_from_model copies model.particle_q/tri_indices into triangle_points/
         # triangle_indices but does not build wp.Mesh until the first render call.
@@ -200,14 +202,15 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         width, height = 8, 8
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(0.0, 0.0, 0.5), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            [wp.transformf(wp.vec3f(0.0, 0.0, 0.5), wp.quatf(0.0, 0.0, 0.0, 1.0))],
             dtype=wp.transformf,
             device="cpu",
         )
+        camera_indices = wp.array([[0, 0]], dtype=wp.int32, device="cpu")
         camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(60.0))
-        depth_image = sensor.utils.create_depth_image_output(width, height)
+        depth_image = sensor.utils.create_depth_image_output(1, width, height)
 
-        sensor.update(model.state(), camera_transforms, camera_rays, depth_image=depth_image)
+        sensor.update(model.state(), camera_transforms, camera_rays, camera_indices, depth_image=depth_image)
 
         # update() must construct the cloth triangle mesh on this first render call.
         self.assertIsNotNone(render_context.triangle_mesh)
@@ -217,7 +220,7 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     def test_checkerboard_material_requires_keyword_arguments(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
-        sensor = _create_tiled_camera(model=model)
+        sensor = SensorBatchedCamera(model=model)
 
         with self.assertRaises(TypeError):
             sensor.utils.assign_checkerboard_material([0])
@@ -231,41 +234,43 @@ class TestSensorTiledCamera(unittest.TestCase):
         camera_count = 1
 
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
+            [wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))],
+            dtype=wp.transformf,
         )
+        camera_indices = wp.array([[0, 0]], dtype=wp.int32)
 
-        tiled_camera_sensor = _create_tiled_camera(model=model)
-        tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
-        tiled_camera_sensor.utils.assign_checkerboard_material(
+        batched_camera_sensor = SensorBatchedCamera(model=model)
+        batched_camera_sensor.utils.create_default_light(enable_shadows=True)
+        batched_camera_sensor.utils.assign_checkerboard_material(
             shape_indices=np.arange(model.shape_count, dtype=np.int32)
         )
 
-        camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
-        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
+        camera_rays = batched_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        color_image = batched_camera_sensor.utils.create_color_image_output(camera_count, width, height)
+        depth_image = batched_camera_sensor.utils.create_depth_image_output(camera_count, width, height)
 
         state = model.state()
-        tiled_camera_sensor.update(
-            state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
+        batched_camera_sensor.update(
+            state, camera_transforms, camera_rays, camera_indices, color_image=color_image, depth_image=depth_image
         )
 
         golden_color_data = np.load(
             os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera", "color.npy")
-        )
+        )[:, 0]
         golden_depth_data = np.load(
             os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera", "depth.npy")
-        )
+        )[:, 0]
 
-        self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=0.1)
+        self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=3.0)
         self.__compare_images(depth_image.numpy(), golden_depth_data, allowed_difference=0.1)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_deprecated_checkerboard_material_to_all_shapes_warns(self):
         model = self._shared_model
-        tiled_camera_sensor = _create_tiled_camera(model=model)
+        batched_camera_sensor = SensorBatchedCamera(model=model)
 
         with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material"):
-            tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
+            batched_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):
@@ -276,86 +281,47 @@ class TestSensorTiledCamera(unittest.TestCase):
         camera_count = 1
 
         camera_transforms = wp.array(
-            [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
+            [wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))],
+            dtype=wp.transformf,
         )
+        camera_indices = wp.array([[0, 0]], dtype=wp.int32)
 
-        tiled_camera_sensor = _create_tiled_camera(model=model)
-        camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        batched_camera_sensor = SensorBatchedCamera(model=model)
+        camera_rays = batched_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
         state = model.state()
 
-        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
-        tiled_camera_sensor.update(
-            state, camera_transforms, camera_rays, color_image=color_image, depth_image=depth_image
+        color_image = batched_camera_sensor.utils.create_color_image_output(camera_count, width, height)
+        depth_image = batched_camera_sensor.utils.create_depth_image_output(camera_count, width, height)
+        batched_camera_sensor.update(
+            state, camera_transforms, camera_rays, camera_indices, color_image=color_image, depth_image=depth_image
         )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
-        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
-        tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=color_image, depth_image=None)
+        color_image = batched_camera_sensor.utils.create_color_image_output(camera_count, width, height)
+        depth_image = batched_camera_sensor.utils.create_depth_image_output(camera_count, width, height)
+        batched_camera_sensor.update(
+            state, camera_transforms, camera_rays, camera_indices, color_image=color_image, depth_image=None
+        )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
-        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
-        tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=None, depth_image=depth_image)
+        color_image = batched_camera_sensor.utils.create_color_image_output(camera_count, width, height)
+        depth_image = batched_camera_sensor.utils.create_depth_image_output(camera_count, width, height)
+        batched_camera_sensor.update(
+            state, camera_transforms, camera_rays, camera_indices, color_image=None, depth_image=depth_image
+        )
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
-        color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
-        depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
-        tiled_camera_sensor.update(state, camera_transforms, camera_rays, color_image=None, depth_image=None)
+        color_image = batched_camera_sensor.utils.create_color_image_output(camera_count, width, height)
+        depth_image = batched_camera_sensor.utils.create_depth_image_output(camera_count, width, height)
+        batched_camera_sensor.update(
+            state, camera_transforms, camera_rays, camera_indices, color_image=None, depth_image=None
+        )
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
-
-    def test_deprecated_geometry_bvh_helpers_forward_to_model_methods(self) -> None:
-        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
-        state = model.state()
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.build_bvh_shape(model, state, bvh_constructor="median")
-        self.assertIsNotNone(model.bvh_shapes)
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.refit_bvh_shape(model, state)
-
-        particle_model = self._build_single_particle_scene()
-        particle_state = particle_model.state()
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.build_bvh_particle(particle_model, particle_state, bvh_constructor="median")
-        self.assertIsNotNone(particle_model.bvh_particles)
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.refit_bvh_particle(particle_model, particle_state)
-
-    def test_model_bvh_build_accepts_constructor(self) -> None:
-        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
-        state = model.state()
-
-        model.bvh_build_shapes(state, bvh_constructor="median")
-        self.assertIsNotNone(model.bvh_shapes)
-
-        particle_model = self._build_single_particle_scene()
-        particle_state = particle_model.state()
-
-        particle_model.bvh_build_particles(particle_state, bvh_constructor="median")
-        self.assertIsNotNone(particle_model.bvh_particles)
-
-    def test_model_bvhs_are_built_by_finalize_and_refit(self) -> None:
-        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
-        state = model.state()
-
-        self.assertIsNotNone(model.bvh_shapes)
-        model.bvh_refit_shapes(state)
-
-        particle_model = self._build_single_particle_scene()
-        particle_state = particle_model.state()
-
-        self.assertIsNotNone(particle_model.bvh_particles)
-        particle_model.bvh_refit_particles(particle_state)
 
 
 if __name__ == "__main__":

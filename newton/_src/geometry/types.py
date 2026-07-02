@@ -2399,7 +2399,7 @@ class Gaussian:
             Gaussian.Data struct containing the Warp arrays.
         """
 
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..sensors.batched_camera_renderer.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
             self.warp_data = Gaussian.Data()

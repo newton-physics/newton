@@ -23,6 +23,17 @@ def _make_utils(world_count: int = 1, device=None):
     return Utils(render_context)
 
 
+def _make_batched_utils(device=None):
+    """Construct batched camera Utils with a minimal stand-in RenderContext."""
+    from newton._src.sensors.batched_camera_renderer.utils import Utils  # noqa: PLC0415
+
+    render_context = types.SimpleNamespace(
+        world_count=1,
+        device=device or wp.get_preferred_device(),
+    )
+    return Utils(render_context)
+
+
 class TestToRgba(unittest.TestCase):
     def test_unpacks_uint32_to_uint8(self):
         # 4D uint32 input: (W=2 worlds, C=3 cams, H=2, Wpix=2).
@@ -66,6 +77,273 @@ class TestToRgba(unittest.TestCase):
                 self.assertEqual(got[tile, 0, 0, 1], c, f"G channel mismatch at world={w} camera={c}")
                 self.assertEqual(got[tile, 0, 0, 2], 0)
                 self.assertEqual(got[tile, 0, 0, 3], 255)
+
+
+class TestBatchedToRgba(unittest.TestCase):
+    def test_unpacks_uint32_to_uint8(self):
+        packed = (10) | (20 << 8) | (30 << 16) | (40 << 24)
+        inp = np.full((3, 2, 2), packed, dtype=np.uint32)
+        utils = _make_batched_utils()
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=utils._Utils__render_context.device)
+
+        out = utils.to_rgba_from_color(inp_wp)
+
+        got = out.numpy()
+        self.assertEqual(got.shape, (3, 2, 2, 4))
+        np.testing.assert_array_equal(got[..., 0], np.full((3, 2, 2), 10, dtype=np.uint8))
+        np.testing.assert_array_equal(got[..., 1], np.full((3, 2, 2), 20, dtype=np.uint8))
+        np.testing.assert_array_equal(got[..., 2], np.full((3, 2, 2), 30, dtype=np.uint8))
+        np.testing.assert_array_equal(got[..., 3], np.full((3, 2, 2), 40, dtype=np.uint8))
+
+    def test_flatten_color_image_uses_view_axis_only(self):
+        utils = _make_batched_utils()
+        device = utils._Utils__render_context.device
+        colors = np.array(
+            [
+                [[(1) | (10 << 8) | (100 << 16) | (255 << 24)]],
+                [[(2) | (20 << 8) | (110 << 16) | (255 << 24)]],
+                [[(3) | (30 << 8) | (120 << 16) | (255 << 24)]],
+            ],
+            dtype=np.uint32,
+        )
+        image = wp.from_numpy(colors, dtype=wp.uint32, device=device)
+        out_buffer = wp.zeros((2, 2, 4), dtype=wp.uint8, device=device)
+
+        out = utils.flatten_color_image_to_rgba(image, out_buffer=out_buffer, cameras_per_row=2)
+
+        got = out.numpy()
+        np.testing.assert_array_equal(got[0, 0], np.array([1, 10, 100, 255], dtype=np.uint8))
+        np.testing.assert_array_equal(got[0, 1], np.array([2, 20, 110, 255], dtype=np.uint8))
+        np.testing.assert_array_equal(got[1, 0], np.array([3, 30, 120, 255], dtype=np.uint8))
+
+    def test_normal_maps_vec3_to_rgb(self):
+        from newton._src.sensors.batched_camera_renderer.utils import unpack_normal_to_rgba_kernel  # noqa: PLC0415
+
+        inp = np.zeros((1, 2, 2, 3), dtype=np.float32)
+        inp[0, 0, 0] = (1.0, 0.0, 0.0)
+        inp[0, 0, 1] = (0.0, 1.0, 0.0)
+        inp[0, 1, 0] = (0.0, 0.0, 1.0)
+        inp[0, 1, 1] = (-1.0, -1.0, -1.0)
+        inp_wp = wp.from_numpy(inp, dtype=wp.vec3f, device=wp.get_preferred_device())
+
+        out = wp.empty((1, 2, 2, 4), dtype=wp.uint8, device=inp_wp.device)
+        wp.launch(
+            unpack_normal_to_rgba_kernel,
+            dim=(1, 2, 2),
+            inputs=[inp_wp],
+            outputs=[out],
+            device=inp_wp.device,
+        )
+        got = out.numpy()
+        self.assertEqual(got.shape, (1, 2, 2, 4))
+
+        self.assertEqual(got[0, 0, 0, 0], 255)
+        self.assertIn(got[0, 0, 0, 1], (127, 128))
+        self.assertIn(got[0, 0, 0, 2], (127, 128))
+        self.assertEqual(got[0, 0, 0, 3], 255)
+
+        self.assertIn(got[0, 0, 1, 0], (127, 128))
+        self.assertEqual(got[0, 0, 1, 1], 255)
+        self.assertIn(got[0, 0, 1, 2], (127, 128))
+        self.assertEqual(got[0, 0, 1, 3], 255)
+
+        self.assertIn(got[0, 1, 0, 0], (127, 128))
+        self.assertIn(got[0, 1, 0, 1], (127, 128))
+        self.assertEqual(got[0, 1, 0, 2], 255)
+        self.assertEqual(got[0, 1, 0, 3], 255)
+
+        self.assertEqual(got[0, 1, 1, 0], 0)
+        self.assertEqual(got[0, 1, 1, 1], 0)
+        self.assertEqual(got[0, 1, 1, 2], 0)
+        self.assertEqual(got[0, 1, 1, 3], 255)
+        self.assertGreater(got[0, 0, 0, 0], got[0, 0, 0, 2])
+
+    def test_depth_normalizes_to_grayscale(self):
+        from newton._src.sensors.batched_camera_renderer.utils import unpack_depth_to_rgba_kernel  # noqa: PLC0415
+
+        inp = np.array([[[1.0, 10.0, -1.0, 0.0]]], dtype=np.float32)
+        inp_wp = wp.from_numpy(inp, dtype=wp.float32, device=wp.get_preferred_device())
+        depth_range = wp.array([1.0, 10.0], dtype=wp.float32, device=inp_wp.device)
+
+        out = wp.empty((1, 1, 4, 4), dtype=wp.uint8, device=inp_wp.device)
+        wp.launch(
+            unpack_depth_to_rgba_kernel,
+            dim=(1, 1, 4),
+            inputs=[inp_wp, depth_range],
+            outputs=[out],
+            device=inp_wp.device,
+        )
+        got = out.numpy()
+        self.assertEqual(got.shape, (1, 1, 4, 4))
+
+        self.assertEqual(got[0, 0, 0, 0], 255)
+        self.assertEqual(got[0, 0, 0, 0], got[0, 0, 0, 1])
+        self.assertEqual(got[0, 0, 0, 1], got[0, 0, 0, 2])
+        self.assertEqual(got[0, 0, 0, 3], 255)
+
+        self.assertEqual(got[0, 0, 1, 0], 50)
+        self.assertEqual(got[0, 0, 1, 0], got[0, 0, 1, 1])
+        self.assertEqual(got[0, 0, 1, 1], got[0, 0, 1, 2])
+        self.assertEqual(got[0, 0, 1, 3], 255)
+
+        self.assertEqual(got[0, 0, 2, 0], 0)
+        self.assertEqual(got[0, 0, 2, 1], 0)
+        self.assertEqual(got[0, 0, 2, 2], 0)
+        self.assertEqual(got[0, 0, 2, 3], 255)
+
+        self.assertEqual(got[0, 0, 3, 0], 0)
+        self.assertEqual(got[0, 0, 3, 1], 0)
+        self.assertEqual(got[0, 0, 3, 2], 0)
+        self.assertEqual(got[0, 0, 3, 3], 255)
+        self.assertGreater(got[0, 0, 0, 0], got[0, 0, 1, 0])
+
+    def test_shape_index_hash_colors_differ_by_index(self):
+        from newton._src.sensors.batched_camera_renderer.utils import (  # noqa: PLC0415
+            unpack_shape_index_hash_to_rgba_kernel,
+        )
+
+        inp = np.array([[[1, 2], [3, 4]]], dtype=np.uint32)
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=wp.get_preferred_device())
+
+        out = wp.empty((1, 2, 2, 4), dtype=wp.uint8, device=inp_wp.device)
+        wp.launch(
+            unpack_shape_index_hash_to_rgba_kernel,
+            dim=(1, 2, 2),
+            inputs=[inp_wp],
+            outputs=[out],
+            device=inp_wp.device,
+        )
+        got = out.numpy()
+
+        rgbs = {
+            (int(got[0, 0, 0, 0]), int(got[0, 0, 0, 1]), int(got[0, 0, 0, 2])),
+            (int(got[0, 0, 1, 0]), int(got[0, 0, 1, 1]), int(got[0, 0, 1, 2])),
+            (int(got[0, 1, 0, 0]), int(got[0, 1, 0, 1]), int(got[0, 1, 0, 2])),
+            (int(got[0, 1, 1, 0]), int(got[0, 1, 1, 1]), int(got[0, 1, 1, 2])),
+        }
+        self.assertEqual(len(rgbs), 4, f"Expected 4 distinct hash colors, got: {rgbs}")
+
+        for y in range(2):
+            for x in range(2):
+                self.assertEqual(got[0, y, x, 3], 255)
+
+    def test_shape_index_hash_zero_is_not_black(self):
+        from newton._src.sensors.batched_camera_renderer.utils import (  # noqa: PLC0415
+            unpack_shape_index_hash_to_rgba_kernel,
+        )
+
+        inp = np.array([[[0, 0xFFFFFFFF]]], dtype=np.uint32)
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=wp.get_preferred_device())
+
+        out = wp.empty((1, 1, 2, 4), dtype=wp.uint8, device=inp_wp.device)
+        wp.launch(
+            unpack_shape_index_hash_to_rgba_kernel,
+            dim=(1, 1, 2),
+            inputs=[inp_wp],
+            outputs=[out],
+            device=inp_wp.device,
+        )
+        got = out.numpy()
+
+        zero_rgb = (int(got[0, 0, 0, 0]), int(got[0, 0, 0, 1]), int(got[0, 0, 0, 2]))
+        miss_rgb = (int(got[0, 0, 1, 0]), int(got[0, 0, 1, 1]), int(got[0, 0, 1, 2]))
+        self.assertNotEqual(zero_rgb, (0, 0, 0))
+        self.assertEqual(miss_rgb, (0, 0, 0))
+
+    def test_shape_index_palette_lookup(self):
+        from newton._src.sensors.batched_camera_renderer.utils import (  # noqa: PLC0415
+            colorize_shape_index_with_palette_kernel,
+        )
+
+        inp = np.array([[[0, 1, 2]]], dtype=np.uint32)
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=wp.get_preferred_device())
+
+        palette = np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255]], dtype=np.uint8)
+        palette_wp = wp.from_numpy(palette, dtype=wp.uint8, device=inp_wp.device)
+
+        out = wp.empty((1, 1, 3, 4), dtype=wp.uint8, device=inp_wp.device)
+        wp.launch(
+            colorize_shape_index_with_palette_kernel,
+            dim=(1, 1, 3),
+            inputs=[inp_wp, palette_wp],
+            outputs=[out],
+            device=inp_wp.device,
+        )
+        got = out.numpy()
+
+        self.assertEqual(got[0, 0, 0, 0], 255)
+        self.assertEqual(got[0, 0, 0, 1], 0)
+        self.assertEqual(got[0, 0, 0, 2], 0)
+        self.assertEqual(got[0, 0, 0, 3], 255)
+        self.assertEqual(got[0, 0, 1, 0], 0)
+        self.assertEqual(got[0, 0, 1, 1], 255)
+        self.assertEqual(got[0, 0, 1, 2], 0)
+        self.assertEqual(got[0, 0, 1, 3], 255)
+        self.assertEqual(got[0, 0, 2, 0], 0)
+        self.assertEqual(got[0, 0, 2, 1], 0)
+        self.assertEqual(got[0, 0, 2, 2], 255)
+        self.assertEqual(got[0, 0, 2, 3], 255)
+
+    def test_shape_index_palette_out_of_range_is_black(self):
+        from newton._src.sensors.batched_camera_renderer.utils import (  # noqa: PLC0415
+            colorize_shape_index_with_palette_kernel,
+        )
+
+        inp = np.array([[[5]]], dtype=np.uint32)
+        inp_wp = wp.from_numpy(inp, dtype=wp.uint32, device=wp.get_preferred_device())
+
+        palette = np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255]], dtype=np.uint8)
+        palette_wp = wp.from_numpy(palette, dtype=wp.uint8, device=inp_wp.device)
+
+        out = wp.empty((1, 1, 1, 4), dtype=wp.uint8, device=inp_wp.device)
+        wp.launch(
+            colorize_shape_index_with_palette_kernel,
+            dim=(1, 1, 1),
+            inputs=[inp_wp, palette_wp],
+            outputs=[out],
+            device=inp_wp.device,
+        )
+        got = out.numpy()
+        self.assertEqual(got[0, 0, 0, 0], 0)
+        self.assertEqual(got[0, 0, 0, 1], 0)
+        self.assertEqual(got[0, 0, 0, 2], 0)
+        self.assertEqual(got[0, 0, 0, 3], 255)
+
+    def test_color_returns_canonical_shape_and_dtype(self):
+        utils = _make_batched_utils()
+        inp = wp.zeros((3, 4, 4), dtype=wp.uint32, device=utils._Utils__render_context.device)
+        out = utils.to_rgba_from_color(inp)
+        self.assertEqual(tuple(out.shape), (3, 4, 4, 4))
+        self.assertEqual(out.dtype, wp.uint8)
+
+    def test_depth_accepts_tuple_range(self):
+        utils = _make_batched_utils()
+        device = utils._Utils__render_context.device
+        inp = wp.from_numpy(
+            np.array([[[1.0, 10.0]]], dtype=np.float32),
+            dtype=wp.float32,
+            device=device,
+        )
+        out = utils.to_rgba_from_depth(inp, depth_range=(1.0, 10.0))
+        got = out.numpy()
+        self.assertEqual(got[0, 0, 0, 0], 255)
+        self.assertEqual(got[0, 0, 1, 0], 50)
+
+    def test_depth_rejects_near_ge_far(self):
+        utils = _make_batched_utils()
+        device = utils._Utils__render_context.device
+        inp = wp.zeros((1, 2, 2), dtype=wp.float32, device=device)
+        with self.assertRaises(ValueError) as cm:
+            utils.to_rgba_from_depth(inp, depth_range=(5.0, 3.0))
+        self.assertIn("near < far", str(cm.exception))
+
+    def test_cameras_per_row_below_one_raises(self):
+        utils = _make_batched_utils()
+        device = utils._Utils__render_context.device
+        inp = wp.zeros((4, 3, 5), dtype=wp.uint32, device=device)
+        for invalid in (0, -1):
+            with self.assertRaises(ValueError):
+                utils.flatten_color_image_to_rgba(inp, cameras_per_row=invalid)
 
 
 class TestToRgbaFromNormal(unittest.TestCase):

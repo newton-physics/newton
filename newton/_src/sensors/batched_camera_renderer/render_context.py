@@ -11,8 +11,8 @@ import warp as wp
 from ...geometry import Gaussian, GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
-from ..batched_camera_renderer.types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
 from .render import create_kernel
+from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
 from .utils import Utils
 
 
@@ -151,22 +151,25 @@ class RenderContext:
         self,
         model: Model,
         state: State,
-        camera_transforms: wp.array2d[wp.transformf],
+        camera_transforms: wp.array[wp.transformf],
         camera_rays: wp.array4d[wp.vec3f],
-        color_image: wp.array4d[wp.uint32] | None = None,
-        depth_image: wp.array4d[wp.float32] | None = None,
-        shape_index_image: wp.array4d[wp.uint32] | None = None,
-        normal_image: wp.array4d[wp.vec3f] | None = None,
-        albedo_image: wp.array4d[wp.uint32] | None = None,
+        camera_indices: wp.array2d[wp.int32],
+        *,
+        color_image: wp.array3d[wp.uint32] | None = None,
+        depth_image: wp.array3d[wp.float32] | None = None,
+        shape_index_image: wp.array3d[wp.uint32] | None = None,
+        normal_image: wp.array3d[wp.vec3f] | None = None,
+        albedo_image: wp.array3d[wp.uint32] | None = None,
+        hdr_color_image: wp.array3d[wp.vec3f] | None = None,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
-        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         kernel_block_dim: int = 64,
     ):
         """Raytrace the scene into the provided output images.
 
-        At least one output image must be supplied. All non-``None``
-        output arrays must have shape
-        ``(world_count, camera_count, height, width)``.
+        All non-``None`` output arrays must have shape
+        ``(view_count, height, width)``, where
+        ``view_count == camera_indices.shape[0]``. Each output channel is
+        optional.
 
         Shape and particle BVHs on *model* are built for the initial state by
         :meth:`~newton.ModelBuilder.finalize`. Before later frames that change
@@ -178,10 +181,13 @@ class RenderContext:
         Args:
             model: Simulation model providing shape metadata and BVHs.
             state: Current simulation state (for particle positions).
-            camera_transforms: Per-camera transforms, shape
-                ``(camera_count, world_count)``.
+            camera_transforms: Per-view camera-to-world transforms, shape
+                ``(view_count)``.
             camera_rays: Ray origins and directions, shape
-                ``(camera_count, height, width, 2)``.
+                ``(ray_bundle_count, height, width, 2)``.
+            camera_indices: View mapping, shape ``(view_count, 2)``. Column 0
+                selects the world index, and column 1 selects the ray bundle
+                index from ``camera_rays``.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
             shape_index_image: Output shape-index buffer.
@@ -224,7 +230,7 @@ class RenderContext:
 
             width = camera_rays.shape[2]
             height = camera_rays.shape[1]
-            camera_count = camera_rays.shape[0]
+            camera_count = camera_indices.shape[0]
 
             if clear_data is None:
                 clear_data = RenderContext.DEFAULT_CLEAR_DATA
@@ -236,41 +242,37 @@ class RenderContext:
             self.state.render_albedo = albedo_image is not None
             self.state.render_hdr_color = hdr_color_image is not None
 
-            assert camera_transforms.shape == (camera_count, self.world_count), (
-                f"camera_transforms size must match {camera_count} x {self.world_count}"
-            )
-
-            assert camera_rays.shape == (camera_count, height, width, 2), (
-                f"camera_rays size must match {camera_count} x {height} x {width} x 2"
+            assert camera_transforms.shape == (camera_count,), (
+                f"camera_transforms size must match ({camera_count}), got {camera_transforms.shape}"
             )
 
             if color_image is not None:
-                assert color_image.shape == (self.world_count, camera_count, height, width), (
-                    f"color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                assert color_image.shape == (camera_count, height, width), (
+                    f"color_image size must match ({camera_count}, {height}, {width}), got {color_image.shape}"
                 )
 
             if depth_image is not None:
-                assert depth_image.shape == (self.world_count, camera_count, height, width), (
-                    f"depth_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                assert depth_image.shape == (camera_count, height, width), (
+                    f"depth_image size must match ({camera_count}, {height}, {width}), got {depth_image.shape}"
                 )
 
             if shape_index_image is not None:
-                assert shape_index_image.shape == (self.world_count, camera_count, height, width), (
-                    f"shape_index_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                assert shape_index_image.shape == (camera_count, height, width), (
+                    f"shape_index_image size must match ({camera_count}, {height}, {width}), got {shape_index_image.shape}"
                 )
 
             if normal_image is not None:
-                assert normal_image.shape == (self.world_count, camera_count, height, width), (
-                    f"normal_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                assert normal_image.shape == (camera_count, height, width), (
+                    f"normal_image size must match ({camera_count}, {height}, {width}), got {normal_image.shape}"
                 )
 
             if albedo_image is not None:
-                assert albedo_image.shape == (self.world_count, camera_count, height, width), (
-                    f"albedo_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                assert albedo_image.shape == (camera_count, height, width), (
+                    f"albedo_image size must match ({camera_count}, {height}, {width}), got {albedo_image.shape}"
                 )
             if hdr_color_image is not None:
-                assert hdr_color_image.shape == (self.world_count, camera_count, height, width), (
-                    f"hdr_color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                assert hdr_color_image.shape == (camera_count, height, width), (
+                    f"hdr_color_image size must match ({camera_count}, {height}, {width}), got {hdr_color_image.shape}"
                 )
 
             if self.config.render_order == RenderOrder.TILED:
@@ -279,17 +281,17 @@ class RenderContext:
 
             # Reshaping output images to one dimension, slightly improves performance in the Kernel.
             if color_image is not None:
-                color_image = color_image.reshape(self.world_count * camera_count * width * height)
+                color_image = color_image.reshape(camera_count * width * height)
             if depth_image is not None:
-                depth_image = depth_image.reshape(self.world_count * camera_count * width * height)
+                depth_image = depth_image.reshape(camera_count * width * height)
             if shape_index_image is not None:
-                shape_index_image = shape_index_image.reshape(self.world_count * camera_count * width * height)
+                shape_index_image = shape_index_image.reshape(camera_count * width * height)
             if normal_image is not None:
-                normal_image = normal_image.reshape(self.world_count * camera_count * width * height)
+                normal_image = normal_image.reshape(camera_count * width * height)
             if albedo_image is not None:
-                albedo_image = albedo_image.reshape(self.world_count * camera_count * width * height)
+                albedo_image = albedo_image.reshape(camera_count * width * height)
             if hdr_color_image is not None:
-                hdr_color_image = hdr_color_image.reshape(self.world_count * camera_count * width * height)
+                hdr_color_image = hdr_color_image.reshape(camera_count * width * height)
 
             kernel_cache_key = hash((self.config, self.state, clear_data))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
@@ -301,7 +303,7 @@ class RenderContext:
 
             wp.launch(
                 kernel=render_kernel,
-                dim=(self.world_count * camera_count * width * height),
+                dim=(camera_count * width * height),
                 inputs=[
                     # Model and config
                     self.world_count,
@@ -312,6 +314,7 @@ class RenderContext:
                     # Camera
                     camera_rays,
                     camera_transforms,
+                    camera_indices,
                     # Shape BVH
                     model.bvh_shape_count_enabled,
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
