@@ -591,21 +591,6 @@ def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     return _world_compatible_pairs(edge_world, model.shape_world.numpy(), world_count, device)
 
 
-def _build_soft_edge_tri_device(model: Model):
-    """The soft mesh's edge->owner-triangle map (``edge_tri_indices``) on the model device.
-
-    This is the only topology map the water-tight edge pass must upload: the edge's two vertices come
-    from ``model.edge_indices`` (already on device) and its local triangle slot is derived in-kernel.
-    The host :class:`~newton._src.utils.mesh.MeshAdjacency` keeps the map as NumPy, so upload it
-    directly with ``wp.array`` once at pipeline construction (topology is immutable after finalize).
-    Returns ``None`` when there is no soft mesh adjacency.
-    """
-    adj = getattr(model, "soft_mesh_adjacency", None)
-    if adj is None:
-        return None
-    return wp.array(np.ascontiguousarray(adj.edge_tri_indices, dtype=np.int32), dtype=wp.int32, device=model.device)
-
-
 class CollisionPipeline:
     """
     Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.
@@ -1005,7 +990,10 @@ class CollisionPipeline:
         if enable_water_tight_rigid_soft_contact:
             self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model)
             self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model)
-            self._soft_ef_edge_tri_indices = _build_soft_edge_tri_device(model)
+            # The edge pass's owner-triangle map comes from the model's shared device adjacency
+            # (built once at finalize) -- no separate upload here.
+            if model.soft_mesh_adjacency_device is not None:
+                self._soft_ef_edge_tri_indices = model.soft_mesh_adjacency_device.edge_tri_indices
         else:
             _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs

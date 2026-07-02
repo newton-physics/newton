@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, override
-from ..utils.mesh import MeshAdjacency
+from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
 from .state import State
@@ -1010,6 +1010,9 @@ class Model:
         """Lagrange multipliers for edge constraints (internal use)."""
         self.soft_mesh_adjacency: MeshAdjacency | None = None
         """Soft mesh topology and solver adjacency, or ``None`` before finalization."""
+        self.soft_mesh_adjacency_device: MeshAdjacencyData | None = None
+        """Device-uploaded :attr:`soft_mesh_adjacency`, built once at finalization and shared by all
+        consumers (VBD solver, collision pipeline). ``None`` before finalization."""
 
         self.tet_indices: wp.array[wp.int32] | None = None
         """Tetrahedral element indices, shape [tet_count*4], int."""

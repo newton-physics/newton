@@ -11351,9 +11351,7 @@ class ModelBuilder:
             )
             # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
             # keep the builder's edge numbering (it stays aligned with the bending materials) and
-            # derive the edge/triangle maps against the final triangles. Vertex adjacency stays
-            # unset until the solver builds it via init_vertex_adjacency; kernels get a device copy
-            # from MeshAdjacency.to.
+            # derive the edge/triangle maps against the final triangles.
             edge_indices = (
                 np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
                 if self.edge_indices
@@ -11365,6 +11363,11 @@ class ModelBuilder:
                 spring_indices=self.spring_indices,
                 tet_indices=self.tet_indices,
             )
+            # Build the vertex adjacency (cheap) and upload one device copy here, so every consumer
+            # (VBD solver, collision pipeline) shares a single MeshAdjacencyData rather than each
+            # running init_vertex_adjacency + .to() itself.
+            m.soft_mesh_adjacency.init_vertex_adjacency(self.particle_count)
+            m.soft_mesh_adjacency_device = m.soft_mesh_adjacency.to(device)
 
             # ---------------------
             # tetrahedra

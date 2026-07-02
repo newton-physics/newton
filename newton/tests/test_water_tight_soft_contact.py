@@ -32,7 +32,6 @@ from newton._src.geometry.soft_contacts_sdf import (
 )
 from newton._src.sim.collide import (
     _build_soft_edge_rigid_contact_pairs,
-    _build_soft_edge_tri_device,
     _build_soft_face_rigid_contact_pairs,
 )
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
@@ -324,7 +323,7 @@ def test_edge_face_passes_box(test, device):
     contacts.soft_contact_count.zero_()
     edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
     face_pairs = _build_soft_face_rigid_contact_pairs(model)
-    edge_tri = _build_soft_edge_tri_device(model)
+    edge_tri = model.soft_mesh_adjacency_device.edge_tri_indices
     launch_soft_ef_contacts(
         model=model,
         state=state,
@@ -835,7 +834,7 @@ def test_end_to_end_no_false_pos_neg(test, device):
     contacts.soft_contact_count.zero_()
     edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
     face_pairs = _build_soft_face_rigid_contact_pairs(model)
-    edge_tri = _build_soft_edge_tri_device(model)
+    edge_tri = model.soft_mesh_adjacency_device.edge_tri_indices
     launch_soft_ef_contacts(
         model=model,
         state=state,

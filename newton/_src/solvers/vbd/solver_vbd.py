@@ -518,8 +518,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         )  # per-substep previous q (for velocity)
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
 
-        # Particle adjacency info
-        self.particle_adjacency = self._compute_particle_force_element_adjacency().to(self.device)
+        # Particle adjacency info: reuse the shared device copy built once at finalize (the VBD
+        # solver and the collision pipeline both use it, so it is uploaded only once).
+        if self.model.soft_mesh_adjacency_device is None:
+            raise ValueError("model.soft_mesh_adjacency_device is missing; finalize the model with ModelBuilder.")
+        self.particle_adjacency = self.model.soft_mesh_adjacency_device
 
         # Self-contact settings
         self.particle_enable_self_contact = particle_enable_self_contact
