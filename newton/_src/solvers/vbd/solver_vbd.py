@@ -52,7 +52,6 @@ from .rigid_vbd_kernels import (
     _fill_adjacent_joints,
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_contacts_per_body,
-    accumulate_body_soft_ef_contacts,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     check_contact_overflow,
@@ -239,7 +238,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Deadzone snap angular threshold; 0 disables snap
         rigid_contact_k_start: float = 1.0e2,  # Body-body/body-particle penalty seed when ramping is enabled
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
-        rigid_body_particle_contact_buffer_size: int = 256,  # Per-body particle-contact list capacity
+        rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
         # Rigid body - joints
         rigid_joint_linear_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural linear joint constraints
         rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
@@ -345,7 +344,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the contact stiffness regardless of this value.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
-            rigid_body_particle_contact_buffer_size: Max body-particle contacts tracked per rigid body.
+            rigid_body_particle_contact_buffer_size: Max body-particle soft contacts tracked per rigid
+                body, covering both particle-vs-surface and water-tight edge/face contacts.
             rigid_joint_linear_ke: Penalty stiffness ceiling for non-cable structural linear joint slots.
             rigid_joint_angular_ke: Penalty stiffness ceiling for non-cable structural angular joint slots.
             rigid_joint_linear_k_start: Linear penalty seed for AVBD ramping. Used when
@@ -2685,10 +2685,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                         state_in.particle_q,
                         self.particle_q_prev,
                         model.particle_radius,
+                        model.tri_indices,
                         self.body_q_prev,
                         state_in.body_q,
+                        state_in.body_qd,
                         model.body_com,
                         self.body_inv_mass_effective,
+                        model.shape_body,
                         self.friction_epsilon,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
@@ -2700,54 +2703,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        contacts.soft_contact_barycentric,
                         model.shape_margin,
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
                         self.body_particle_contact_indices,
-                    ],
-                    outputs=[
-                        self.body_forces,
-                        self.body_torques,
-                        self.body_hessian_ll,
-                        self.body_hessian_al,
-                        self.body_hessian_aa,
-                    ],
-                    device=self.device,
-                )
-
-                # Body-side reaction for the water-tight EDGE/FACE soft contacts (one thread
-                # per slot, range-dispatched over the edge/face records). Empty when the flag
-                # is off (n_edge = n_face = 0).
-                wp.launch(
-                    kernel=accumulate_body_soft_ef_contacts,
-                    dim=contacts.soft_contact_max,
-                    inputs=[
-                        dt,
-                        color,
-                        state_in.particle_q,
-                        self.particle_q_prev,
-                        model.particle_radius,
-                        model.tri_indices,
-                        state_in.body_q,
-                        self.body_q_prev,
-                        state_in.body_qd,
-                        model.body_com,
-                        self.body_inv_mass_effective,
-                        model.body_colors,
-                        model.shape_body,
-                        self.friction_epsilon,
-                        self.body_particle_contact_penalty_k,
-                        self.body_particle_contact_material_kd,
-                        self.body_particle_contact_material_mu,
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_max,
-                        contacts.soft_contact_primitive,
-                        contacts.soft_contact_barycentric,
-                        contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
-                        contacts.soft_contact_body_vel,
-                        contacts.soft_contact_normal,
-                        model.shape_margin,
                     ],
                     outputs=[
                         self.body_forces,
