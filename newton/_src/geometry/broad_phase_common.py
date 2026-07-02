@@ -14,6 +14,8 @@ import warp as wp
 
 from .flags import ShapeFlags
 
+BODY_FLAG_KINEMATIC = wp.constant(1 << 1)
+
 
 @wp.func
 def check_aabb_overlap(
@@ -111,6 +113,45 @@ def is_pair_excluded(
         else:
             low = mid + 1
     return False
+
+
+@wp.func
+def is_shape_pair_immovable_filtered(
+    shape_a: int,
+    shape_b: int,
+    shape_body: wp.array[int],
+    body_flags: wp.array[int],
+    include_static_kinematic_pairs: bool,
+) -> bool:
+    """Return whether a shape pair should be skipped by immovable-body filtering."""
+    # Empty shape metadata is the expert-call opt-out. An empty body array,
+    # however, is valid for an all-static model and must still filter the pair.
+    if include_static_kinematic_pairs or shape_body.shape[0] == 0:
+        return False
+
+    body_a = shape_body[shape_a]
+    body_b = shape_body[shape_b]
+
+    static_a = body_a < 0
+    static_b = body_b < 0
+
+    if static_a and static_b:
+        return True
+
+    # Without body metadata we cannot distinguish dynamic from kinematic.
+    if body_flags.shape[0] == 0:
+        return False
+
+    kinematic_a = False
+    kinematic_b = False
+    if not static_a:
+        kinematic_a = (body_flags[body_a] & BODY_FLAG_KINEMATIC) != 0
+    if not static_b:
+        kinematic_b = (body_flags[body_b] & BODY_FLAG_KINEMATIC) != 0
+
+    immovable_a = static_a or kinematic_a
+    immovable_b = static_b or kinematic_b
+    return immovable_a and immovable_b
 
 
 @wp.func
