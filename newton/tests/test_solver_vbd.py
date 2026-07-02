@@ -1349,6 +1349,8 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 contact_material_kd,
                 contact_material_mu,
                 shape_material_mu,
+                shape_material_mu,  # shape_material_ke (section 2 inactive here: edge/face counts are 0)
+                shape_material_mu,  # shape_material_kd (section 2 inactive here)
                 shape_body,
                 body_q,
                 body_q_prev,

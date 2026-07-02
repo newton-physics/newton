@@ -218,6 +218,8 @@ def _run_face_section2(device, shape_margin):
             unused,  # body_particle_contact_material_kd
             unused,  # body_particle_contact_material_mu
             model.shape_material_mu,
+            model.shape_material_ke,
+            model.shape_material_kd,
             model.shape_body,
             body_q,
             body_q,
@@ -237,7 +239,10 @@ def _run_face_section2(device, shape_margin):
         outputs=[forces, hessians],
         device=device,
     )
-    return forces.numpy(), hessians.numpy(), float(model.soft_contact_ke), bary, (p0, p1, p2)
+    # Section 2 mixes the global soft material with the contacted shape's material (ke arithmetic
+    # mean); return that mixed ke so callers assert against the effective stiffness.
+    mixed_ke = 0.5 * (float(model.soft_contact_ke) + float(model.shape_material_ke.numpy()[0]))
+    return forces.numpy(), hessians.numpy(), mixed_ke, bary, (p0, p1, p2)
 
 
 def test_barycentric_force_distribution(test, device):
@@ -271,6 +276,28 @@ def test_edge_face_uses_shape_margin(test, device):
     verts = list(verts)
     np.testing.assert_allclose(f0[verts].sum(axis=0), [0.0, 0.0, 0.05 * ke], rtol=2e-4, atol=1e-4)
     np.testing.assert_allclose(fm[verts].sum(axis=0), [0.0, 0.0, (0.05 + m) * ke], rtol=2e-4, atol=1e-4)
+
+
+def test_edge_face_mixes_shape_material(test, device):
+    """Section 2 mixes the global soft material with the contacted shape's material (ke/kd arithmetic
+    mean, mu geometric mean), so per-shape tuning (grippy fingers, low-friction table) reaches
+    edge/face contacts. Regression guard: the path previously used only the global soft_contact_*.
+    """
+    f, _h, mixed_ke, _bary, verts = _run_face_section2(device, wp.array([0.0], dtype=float, device=device))
+    fz = float(f[list(verts)].sum(axis=0)[2])
+    # The normal force uses the *mixed* stiffness over the 0.05 penetration.
+    np.testing.assert_allclose(fz, mixed_ke * 0.05, rtol=2e-4, atol=1e-4)
+
+    # Precondition + regression guard: the box (shape 0) carries the default ShapeConfig.ke, distinct
+    # from the global soft_contact_ke, so the mix is observable and differs from a global-only result.
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=1.0, hy=1.0, hz=1.0)
+    m = builder.finalize(device=device)
+    global_ke = float(m.soft_contact_ke)
+    shape_ke = float(m.shape_material_ke.numpy()[0])
+    test.assertNotAlmostEqual(shape_ke, global_ke)
+    np.testing.assert_allclose(mixed_ke, 0.5 * (global_ke + shape_ke), rtol=1e-6)
+    test.assertGreater(abs(fz - global_ke * 0.05), 1e-3, "edge/face force must use the mixed ke, not global-only")
 
 
 def test_flag_off_is_inert(test, device):
@@ -331,6 +358,12 @@ add_function_test(
     TestVBDWaterTightContact,
     "test_edge_face_uses_shape_margin",
     test_edge_face_uses_shape_margin,
+    devices=devices,
+)
+add_function_test(
+    TestVBDWaterTightContact,
+    "test_edge_face_mixes_shape_material",
+    test_edge_face_mixes_shape_material,
     devices=devices,
 )
 add_function_test(

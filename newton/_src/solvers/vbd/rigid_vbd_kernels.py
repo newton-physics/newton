@@ -918,6 +918,9 @@ def _eval_soft_ef_contact(
     contact_ke: float,
     contact_kd: float,
     contact_mu: float,
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_mu: wp.array[float],
     friction_epsilon: float,
     shape_body: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -988,13 +991,24 @@ def _eval_soft_ef_contact(
 
         relative_translation = dx - bv * dt
 
+        # Mix the global soft-contact material with the contacted shape's material so per-shape
+        # tuning (grippy fingers, low-friction table) applies to edge/face contacts too:
+        # ke/kd arithmetic mean, mu geometric mean (same rule as the particle-vs-surface path).
+        mixed_ke, mixed_kd, mixed_mu = _average_contact_material(
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            shape_material_ke[shape_index],
+            shape_material_kd[shape_index],
+            shape_material_mu[shape_index],
+        )
         force, hessian = _compute_body_particle_contact_force(
             penetration_depth,
             n,
             relative_translation,
-            contact_ke,
-            contact_kd,
-            contact_mu,
+            mixed_ke,
+            mixed_kd,
+            mixed_mu,
             friction_epsilon,
             dt,
         )
@@ -3276,11 +3290,14 @@ def accumulate_body_soft_ef_contacts(
     body_inv_mass: wp.array[float],
     body_colors: wp.array[int],
     shape_body: wp.array[int],
-    # Contact material (water-tight edge/face uses fixed soft-contact stiffness)
+    # Contact material: global soft-contact scalars mixed per contact with the shape's material
     friction_epsilon: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
     soft_contact_mu: float,
+    shape_material_ke: wp.array[float],
+    shape_material_kd: wp.array[float],
+    shape_material_mu: wp.array[float],
     # Soft contact data (one thread per buffer slot)
     soft_contact_count: wp.array[int],
     soft_contact_max: int,
@@ -3340,6 +3357,9 @@ def accumulate_body_soft_ef_contacts(
         soft_contact_ke,
         soft_contact_kd,
         soft_contact_mu,
+        shape_material_ke,
+        shape_material_kd,
+        shape_material_mu,
         friction_epsilon,
         shape_body,
         body_q,
