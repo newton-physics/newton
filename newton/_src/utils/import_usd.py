@@ -1218,6 +1218,7 @@ def parse_usd(
             "parent_xform": parent_tf,
             "child_xform": child_tf,
             "label": joint_path,
+            "collision_filter_parent": parent_id != -1 and not joint_desc.collisionEnabled,
             "enabled": joint_desc.jointEnabled,
             "custom_attributes": joint_custom_attrs,
         }
@@ -1611,6 +1612,7 @@ def parse_usd(
         angular_initial_pos: list[float | None] = []
         angular_initial_vel: list[float | None] = []
         enabled_count = 0
+        collision_filter_parent = False
 
         # Find the first enabled joint to use as representative for transforms and metadata
         first_desc = None
@@ -1673,6 +1675,7 @@ def parse_usd(
             jd = joint_descriptions[jp]
             if not jd.jointEnabled and only_load_enabled_joints:
                 continue
+            collision_filter_parent = collision_filter_parent or not jd.collisionEnabled
             jp_prim = stage.GetPrimAtPath(jd.primPath)
             if collect_schema_attrs:
                 R.collect_prim_attrs(jp_prim)
@@ -1867,6 +1870,7 @@ def parse_usd(
             parent_xform=parent_tf,
             child_xform=child_tf,
             label=label,
+            collision_filter_parent=parent_id != -1 and collision_filter_parent,
             enabled=first_desc.jointEnabled,
             custom_attributes=joint_custom_attrs,
         )
