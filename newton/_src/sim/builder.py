@@ -1263,7 +1263,7 @@ class ModelBuilder:
         self.constraint_mimic_coef1: list[float] = []
         """Scale coefficients accumulated for :attr:`Model.constraint_mimic_coef1`."""
         self.constraint_mimic_stiffness: list[float] = []
-        """Stiffness values accumulated for :attr:`Model.constraint_mimic_stiffness` [N/m or N·m/rad]."""
+        """Stiffness values accumulated for :attr:`Model.constraint_mimic_stiffness` [N/m for prismatic joints or torque per radian for revolute joints]."""
         self.constraint_mimic_damping: list[float] = []
         """Damping values accumulated for :attr:`Model.constraint_mimic_damping` [N·s/m or N·m·s/rad]."""
         self.constraint_mimic_enabled: list[bool] = []
@@ -5072,7 +5072,7 @@ class ModelBuilder:
             enabled: Whether constraint is active
             label: Optional constraint label
             custom_attributes: Custom attributes to set on the constraint
-            stiffness: Constraint stiffness [N/m for prismatic joints or N·m/rad
+            stiffness: Constraint stiffness [N/m for prismatic joints or torque per radian
                 for revolute joints]. ``-inf`` uses the solver default.
             damping: Constraint damping [N·s/m for prismatic joints or N·m·s/rad
                 for revolute joints]. ``-inf`` uses the solver default.
@@ -11437,7 +11437,7 @@ class ModelBuilder:
             # Host-side flag so solvers can warn without a device copy at init.
             m._has_authored_mimic_compliance = any(
                 math.isfinite(s) and s > 0.0 and math.isfinite(d) and d > 0.0
-                for s, d in zip(self.constraint_mimic_stiffness, self.constraint_mimic_damping)
+                for s, d in zip(self.constraint_mimic_stiffness, self.constraint_mimic_damping, strict=True)
             )
             m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
             m.constraint_mimic_label = self.constraint_mimic_label
