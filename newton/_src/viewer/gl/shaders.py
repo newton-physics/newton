@@ -49,6 +49,7 @@ layout (location = 7) in vec3 aObjectColor;
 // material properties
 layout (location = 8) in vec4 aMaterial;
 
+
 uniform mat4 view;
 uniform mat4 projection;
 uniform mat4 light_space_matrix;
@@ -271,7 +272,7 @@ void main()
     float texture_enable = Material.w;
     float checker_scale = 1.0;
 
-    // convert to linear space
+    // convert to linear space (per-vertex color overrides instance color)
     vec3 albedo = pow(ObjectColor, vec3(2.2));
     if (texture_enable > 0.5)
     {

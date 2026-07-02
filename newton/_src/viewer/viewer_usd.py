@@ -265,6 +265,7 @@ class ViewerUSD(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Create a USD mesh prototype from vertex and index data.
@@ -284,6 +285,8 @@ class ViewerUSD(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            colors: Optional per-vertex colors as a warp array of wp.vec3,
+                authored as a time-sampled ``displayColor`` primvar.
         """
 
         name = self._qualify(name)
@@ -320,6 +323,18 @@ class ViewerUSD(ViewerBase):
             pv_api = UsdGeom.PrimvarsAPI(mesh_prim)
             st_pv = pv_api.CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
             st_pv.Set(uvs_np)
+
+        # Per-vertex colors as a time-sampled displayColor primvar.
+        if colors is not None:
+            colors_np = (
+                colors.numpy().astype(np.float32)
+                if isinstance(colors, wp.array)
+                else np.asarray(colors, dtype=np.float32)
+            )
+            color_pv = UsdGeom.PrimvarsAPI(mesh_prim).CreatePrimvar(
+                "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
+            )
+            color_pv.Set(colors_np, self._frame_index)
 
         # Create and bind a textured material only when both texture and UVs are
         # provided — a UsdUVTexture shader with no "st" primvar would sample

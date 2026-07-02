@@ -364,8 +364,13 @@ class MeshGL:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
             # Set per-mesh albedo and material (global state, not per-VAO).
+            # Enable texture sampling (material.w) whenever a texture is bound,
+            # so meshes logged via log_mesh(..., texture=...) are textured.
             gl.glVertexAttrib3f(7, *self.color)
-            gl.glVertexAttrib4f(8, *self.material)
+            material = self.material
+            if self.texture_id is not None:
+                material = (material[0], material[1], material[2], 1.0)
+            gl.glVertexAttrib4f(8, *material)
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)

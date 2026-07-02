@@ -255,6 +255,7 @@ class ViewerRerun(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         Log a mesh to rerun for visualization.
@@ -341,6 +342,10 @@ class ViewerRerun(ViewerBase):
             "triangle_indices": indices_np,
             "vertex_normals": self._meshes[name]["normals"],
         }
+        if colors is not None and self._mesh3d_supports("vertex_colors"):
+            colors_np = self._to_numpy(colors).astype(np.float32)
+            if len(colors_np) == len(points_np):
+                mesh_kwargs["vertex_colors"] = colors_np
         if uvs_np is not None and self._mesh3d_supports("vertex_texcoords"):
             mesh_kwargs["vertex_texcoords"] = uvs_np
         if texture_buffer is not None and texture_format is not None:

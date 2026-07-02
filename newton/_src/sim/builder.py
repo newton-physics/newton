@@ -27,6 +27,7 @@ from ..core.types import (
     Mat33,
     Quat,
     Transform,
+    Vec2,
     Vec3,
     Vec4,
     Vec6,
@@ -51,6 +52,7 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency
+from .deformable_render import DeformableRenderKind, DeformableRenderMesh
 from .enums import (
     BodyFlags,
     EqType,
@@ -1094,6 +1096,12 @@ class ModelBuilder:
         self.tet_materials: list[tuple[float, float, float]] = []
         """Tetrahedral material rows accumulated for :attr:`Model.tet_materials`."""
 
+        # deformable render meshes (visualization-only, skinned from sim state)
+        self._deformable_render_meshes: list[dict] = []
+        """Raw render-mesh specs accumulated for :attr:`Model.deformable_render_meshes`.
+        Each entry stores numpy asset data and per-vertex embedding; converted to
+        :class:`~newton.DeformableRenderMesh` objects in :meth:`finalize`."""
+
         # muscles
         self.muscle_start: list[int] = []
         """Muscle waypoint start indices accumulated for :attr:`Model.muscle_start`."""
@@ -1225,6 +1233,53 @@ class ModelBuilder:
         """Articulation labels accumulated for :attr:`Model.articulation_label`."""
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
+
+        # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
+        # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
+        # [start, end) into the corresponding builder arrays, and replicate()/add_builder() carry
+        # them per world so each group stays indexable by path.
+        self.cable_label: list[str] = []
+        """Prim-path labels of imported cable groups."""
+        self.cable_world: list[int] = []
+        """World index of each cable group."""
+        self.cable_body_start: list[int] = []
+        """Inclusive body-range start of each cable group."""
+        self.cable_body_end: list[int] = []
+        """Exclusive body-range end of each cable group."""
+        self.cable_joint_start: list[int] = []
+        """Inclusive joint-range start of each cable group."""
+        self.cable_joint_end: list[int] = []
+        """Exclusive joint-range end of each cable group."""
+
+        self.cloth_label: list[str] = []
+        """Prim-path labels of imported cloth groups."""
+        self.cloth_world: list[int] = []
+        """World index of each cloth group."""
+        self.cloth_particle_start: list[int] = []
+        """Inclusive particle-range start of each cloth group."""
+        self.cloth_particle_end: list[int] = []
+        """Exclusive particle-range end of each cloth group."""
+        self.cloth_tri_start: list[int] = []
+        """Inclusive triangle-range start of each cloth group."""
+        self.cloth_tri_end: list[int] = []
+        """Exclusive triangle-range end of each cloth group."""
+        self.cloth_edge_start: list[int] = []
+        """Inclusive edge-range start of each cloth group."""
+        self.cloth_edge_end: list[int] = []
+        """Exclusive edge-range end of each cloth group."""
+
+        self.soft_label: list[str] = []
+        """Prim-path labels of imported soft (volume) groups."""
+        self.soft_world: list[int] = []
+        """World index of each soft group."""
+        self.soft_particle_start: list[int] = []
+        """Inclusive particle-range start of each soft group."""
+        self.soft_particle_end: list[int] = []
+        """Exclusive particle-range end of each soft group."""
+        self.soft_tet_start: list[int] = []
+        """Inclusive tetrahedron-range start of each soft group."""
+        self.soft_tet_end: list[int] = []
+        """Exclusive tetrahedron-range end of each soft group."""
 
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
@@ -2610,6 +2665,51 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
+    def _record_cable_group(
+        self,
+        label: str,
+        body_range: tuple[int, int],
+        joint_range: tuple[int, int],
+    ) -> None:
+        """Register an imported cable as an addressable, world-tagged group (see cable_label)."""
+        self.cable_label.append(label)
+        self.cable_world.append(self.current_world)
+        self.cable_body_start.append(body_range[0])
+        self.cable_body_end.append(body_range[1])
+        self.cable_joint_start.append(joint_range[0])
+        self.cable_joint_end.append(joint_range[1])
+
+    def _record_cloth_group(
+        self,
+        label: str,
+        particle_range: tuple[int, int],
+        tri_range: tuple[int, int],
+        edge_range: tuple[int, int],
+    ) -> None:
+        """Register an imported cloth as an addressable, world-tagged group (see cloth_label)."""
+        self.cloth_label.append(label)
+        self.cloth_world.append(self.current_world)
+        self.cloth_particle_start.append(particle_range[0])
+        self.cloth_particle_end.append(particle_range[1])
+        self.cloth_tri_start.append(tri_range[0])
+        self.cloth_tri_end.append(tri_range[1])
+        self.cloth_edge_start.append(edge_range[0])
+        self.cloth_edge_end.append(edge_range[1])
+
+    def _record_soft_group(
+        self,
+        label: str,
+        particle_range: tuple[int, int],
+        tet_range: tuple[int, int],
+    ) -> None:
+        """Register an imported soft volume as an addressable, world-tagged group (see soft_label)."""
+        self.soft_label.append(label)
+        self.soft_world.append(self.current_world)
+        self.soft_particle_start.append(particle_range[0])
+        self.soft_particle_end.append(particle_range[1])
+        self.soft_tet_start.append(tet_range[0])
+        self.soft_tet_end.append(tet_range[1])
+
     # region importers
     def add_urdf(
         self,
@@ -2917,6 +3017,12 @@ class ModelBuilder:
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
         Returns:
+            Imported deformables (cable/cloth/volume) can be looked up by prim path through the
+            group registries on :class:`~newton.ModelBuilder` (e.g. :attr:`~newton.ModelBuilder.cable_label`
+            with the matching ``[start, end)`` range lists); :meth:`replicate` keeps the ranges
+            valid per world. The material attributes are returned as authored in the
+            ``path_*_attrs`` entries below.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -2936,6 +3042,16 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_cable_attrs"``
+                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist)
+                * - ``"path_cloth_attrs"``
+                  - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``)
+                * - ``"path_soft_attrs"``
+                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``)
+                * - ``"path_attachment_map"``
+                  - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping.
+                * - ``"path_attachment_attrs"``
+                  - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well.
                 * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - ``"linear_unit"``
@@ -3428,6 +3544,21 @@ class ModelBuilder:
         if builder.tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
 
+        for spec in builder._deformable_render_meshes:
+            # Re-base the per-vertex driver indices into the merged index space:
+            # cloth meshes point at particles, tet-embedded meshes point at tets,
+            # rigid meshes point at bodies.
+            merged = dict(spec)
+            parent = np.array(spec["parent"], dtype=np.int32)
+            if spec["kind"] == DeformableRenderKind.TET_EMBED:
+                parent = parent + start_tetrahedron_idx
+            elif spec["kind"] == DeformableRenderKind.RIGID_BODY:
+                parent = parent + start_body_idx
+            else:
+                parent = parent + start_particle_idx
+            merged["parent"] = parent
+            self._deformable_render_meshes.append(merged)
+
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
         self.particle_color_groups = combine_independent_particle_coloring(
             self.particle_color_groups, builder_coloring_translated
@@ -3543,6 +3674,29 @@ class ModelBuilder:
             articulation_groups = [self.current_world] * builder.articulation_count
             self.articulation_world.extend(articulation_groups)
 
+        # Deformable groups: shift each group's ranges by this builder's start offsets and tag each
+        # copy with the current world (labels ride the label_attrs handling below). Mirrors the
+        # articulation_start/end offset + articulation_world tagging above.
+        self.cable_body_start.extend([s + start_body_idx for s in builder.cable_body_start])
+        self.cable_body_end.extend([e + start_body_idx for e in builder.cable_body_end])
+        self.cable_joint_start.extend([s + start_joint_idx for s in builder.cable_joint_start])
+        self.cable_joint_end.extend([e + start_joint_idx for e in builder.cable_joint_end])
+        self.cable_world.extend([self.current_world] * len(builder.cable_label))
+
+        self.cloth_particle_start.extend([s + start_particle_idx for s in builder.cloth_particle_start])
+        self.cloth_particle_end.extend([e + start_particle_idx for e in builder.cloth_particle_end])
+        self.cloth_tri_start.extend([s + start_triangle_idx for s in builder.cloth_tri_start])
+        self.cloth_tri_end.extend([e + start_triangle_idx for e in builder.cloth_tri_end])
+        self.cloth_edge_start.extend([s + start_edge_idx for s in builder.cloth_edge_start])
+        self.cloth_edge_end.extend([e + start_edge_idx for e in builder.cloth_edge_end])
+        self.cloth_world.extend([self.current_world] * len(builder.cloth_label))
+
+        self.soft_particle_start.extend([s + start_particle_idx for s in builder.soft_particle_start])
+        self.soft_particle_end.extend([e + start_particle_idx for e in builder.soft_particle_end])
+        self.soft_tet_start.extend([s + start_tetrahedron_idx for s in builder.soft_tet_start])
+        self.soft_tet_end.extend([e + start_tetrahedron_idx for e in builder.soft_tet_end])
+        self.soft_world.extend([self.current_world] * len(builder.soft_label))
+
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
             constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
@@ -3566,7 +3720,15 @@ class ModelBuilder:
                 self.constraint_mimic_label.extend(builder.constraint_mimic_label)
 
         # Handle label attributes specially to support label_prefix
-        label_attrs = ["articulation_label", "body_label", "joint_label", "shape_label"]
+        label_attrs = [
+            "articulation_label",
+            "body_label",
+            "joint_label",
+            "shape_label",
+            "cable_label",
+            "cloth_label",
+            "soft_label",
+        ]
         for attr in label_attrs:
             src = getattr(builder, attr)
             dst = getattr(self, attr)
@@ -5613,6 +5775,28 @@ class ModelBuilder:
         self.articulation_end = new_articulation_end
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
+
+        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by cable
+        # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
+        # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
+        # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
+        def _remap_body_id(body_id: int) -> int:
+            if body_id in body_remap:
+                return body_remap[body_id]
+            if body_id in body_merged_parent:
+                parent = body_merged_parent[body_id]
+                return body_remap.get(parent, parent)
+            return body_id
+
+        for i in range(len(self.cable_label)):
+            if self.cable_body_end[i] > self.cable_body_start[i]:
+                new_start = _remap_body_id(self.cable_body_start[i])
+                self.cable_body_start[i] = new_start
+                self.cable_body_end[i] = _remap_body_id(self.cable_body_end[i] - 1) + 1
+            # A welded-graph curve owns no tree joints (empty range); leave it empty.
+            if self.cable_joint_end[i] > self.cable_joint_start[i]:
+                self.cable_joint_start[i] = joint_remap.get(self.cable_joint_start[i], self.cable_joint_start[i])
+                self.cable_joint_end[i] = joint_remap.get(self.cable_joint_end[i] - 1, self.cable_joint_end[i] - 1) + 1
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):
@@ -9193,6 +9377,223 @@ class ModelBuilder:
                     for o1, o2, v1, v2 in edge_indices:
                         self.add_edge(o1, o2, v1, v2, rest=None, edge_ke=edge_ke, edge_kd=edge_kd)
 
+    def add_deformable_render_mesh(
+        self,
+        vertices: list[Vec3] | np.ndarray,
+        indices: list[int] | np.ndarray,
+        *,
+        kind: str = "auto",
+        particle_indices: list[int] | np.ndarray | None = None,
+        particle_range: tuple[int, int] | None = None,
+        bodies: list[int] | np.ndarray | None = None,
+        uvs: list[Vec2] | np.ndarray | None = None,
+        normals: list[Vec3] | np.ndarray | None = None,
+        texture: np.ndarray | str | None = None,
+        label: str = "",
+    ) -> int:
+        """Attach a high-resolution render mesh to a deformable for visualization.
+
+        The render mesh is embedded in the coarse simulation deformable and
+        skinned from the simulation state each frame by the viewer; it never
+        participates in the solve. Vertices must be given in the same coordinate
+        frame as the simulation particles at rest (i.e. the deformed world-space
+        rest pose), so the embedding lines up with ``particle_q``.
+
+        Two embedding modes are supported (see :class:`~newton.DeformableRenderKind`):
+
+        - ``"cloth"`` — surface binding. Provide ``particle_indices`` mapping each
+          render vertex to a simulation particle; the deformed render vertex is
+          the particle position directly. Use for cloth/shells whose render mesh
+          shares (or maps 1:1 onto) the simulation topology.
+        - ``"tet"`` — volumetric embedding into a tetrahedral soft body via
+          barycentric weights (see :meth:`add_soft_mesh`). Restrict the search to
+          the body's tets with ``particle_range`` ``(start, count)``.
+        - ``"rigid"`` — rigid binding to a chain of rigid bodies (e.g. a cable or
+          rod from :meth:`add_rod`). Provide candidate ``bodies``; each render
+          vertex is bound to the nearest one by a body-local offset and follows
+          that body's pose.
+
+        Args:
+            vertices: Render vertex positions [m], shape [vertex_count, 3].
+            indices: Flattened triangle indices into ``vertices``, length
+                ``tri_count * 3``.
+            kind: ``"cloth"``, ``"tet"``, ``"rigid"``, or ``"auto"`` (cloth when
+                ``particle_indices`` is given, rigid when ``bodies`` is given,
+                otherwise tet).
+            particle_indices: Per-render-vertex simulation particle index (cloth
+                mode), shape [vertex_count].
+            particle_range: ``(start, count)`` particle range of the soft body to
+                embed into (tet mode); defaults to all particles.
+            bodies: Candidate rigid body indices to bind to (rigid mode); each
+                render vertex binds to the nearest one.
+            uvs: Per-render-vertex texture coordinates, shape [vertex_count, 2].
+            normals: Per-render-vertex bind-pose normals, shape [vertex_count, 3].
+            texture: Albedo texture image array (H, W, C) or path.
+            label: Display label used to build a stable viewer object name.
+
+        Returns:
+            The index of the new render mesh in
+            :attr:`~newton.Model.deformable_render_meshes`.
+        """
+        vertices = np.asarray(vertices, dtype=np.float32).reshape(-1, 3)
+        indices = np.asarray(indices, dtype=np.int32).reshape(-1)
+        vertex_count = len(vertices)
+        if vertex_count == 0 or len(indices) == 0:
+            raise ValueError("add_deformable_render_mesh requires non-empty vertices and indices")
+        if int(indices.max()) >= vertex_count or int(indices.min()) < 0:
+            raise ValueError("render mesh indices reference vertices outside the provided vertex array")
+
+        if kind == "auto":
+            if particle_indices is not None:
+                kind = "cloth"
+            elif bodies is not None:
+                kind = "rigid"
+            else:
+                kind = "tet"
+
+        if uvs is not None:
+            uvs = np.asarray(uvs, dtype=np.float32).reshape(-1, 2)
+            if len(uvs) != vertex_count:
+                raise ValueError("uvs length must match the number of render vertices")
+        if normals is not None:
+            normals = np.asarray(normals, dtype=np.float32).reshape(-1, 3)
+            if len(normals) != vertex_count:
+                raise ValueError("normals length must match the number of render vertices")
+
+        spec: dict = {
+            "rest_vertices": vertices,
+            "indices": indices,
+            "uvs": uvs,
+            "normals_rest": normals,
+            "texture": texture,
+            "label": label,
+            "weights": None,
+            "local_offsets": None,
+        }
+
+        if kind == "cloth":
+            if particle_indices is None:
+                raise ValueError('add_deformable_render_mesh(kind="cloth") requires particle_indices')
+            parent = np.asarray(particle_indices, dtype=np.int32).reshape(-1)
+            if len(parent) != vertex_count:
+                raise ValueError("particle_indices length must match the number of render vertices")
+            if len(parent) and (int(parent.max()) >= self.particle_count or int(parent.min()) < 0):
+                raise ValueError("particle_indices reference particles outside the current builder")
+            spec["kind"] = DeformableRenderKind.CLOTH_SHARED
+            spec["parent"] = parent
+        elif kind == "tet":
+            parent, weights = self._embed_render_vertices_in_tets(vertices, particle_range)
+            spec["kind"] = DeformableRenderKind.TET_EMBED
+            spec["parent"] = parent
+            spec["weights"] = weights
+        elif kind == "rigid":
+            if bodies is None:
+                raise ValueError('add_deformable_render_mesh(kind="rigid") requires bodies')
+            parent, local_offsets = self._bind_render_vertices_to_bodies(vertices, bodies)
+            spec["kind"] = DeformableRenderKind.RIGID_BODY
+            spec["parent"] = parent
+            spec["local_offsets"] = local_offsets
+        else:
+            raise ValueError(f"unknown render-mesh kind {kind!r}; expected 'cloth', 'tet', 'rigid', or 'auto'")
+
+        self._deformable_render_meshes.append(spec)
+        return len(self._deformable_render_meshes) - 1
+
+    def _embed_render_vertices_in_tets(
+        self, vertices: np.ndarray, particle_range: tuple[int, int] | None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the containing tet and barycentric weights for each render vertex.
+
+        Build-time, host-side embedding. For every render vertex the containing
+        tetrahedron is found via barycentric coordinates; vertices that fall
+        outside every tet (gaps, surface overhang) are clamped to the nearest tet
+        by centroid distance and a warning is emitted. Returns ``(parent, weights)``
+        where ``parent`` is the per-vertex tet index and ``weights`` are the four
+        barycentric coordinates (summing to one).
+        """
+        if self.tet_count == 0:
+            raise ValueError("add_deformable_render_mesh(kind='tet') requires tetrahedra; add a soft body first")
+
+        tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)
+        particles = np.asarray(self.particle_q, dtype=np.float64)
+
+        if particle_range is not None:
+            lo, hi = int(particle_range[0]), int(particle_range[0]) + int(particle_range[1])
+            keep = np.all((tet_idx >= lo) & (tet_idx < hi), axis=1)
+            tet_ids = np.nonzero(keep)[0]
+        else:
+            tet_ids = np.arange(len(tet_idx))
+        if len(tet_ids) == 0:
+            raise ValueError("no tetrahedra found in the requested particle_range for render-mesh embedding")
+
+        tets = tet_idx[tet_ids]
+        v0, v1, v2, v3 = (particles[tets[:, i]] for i in range(4))
+        # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
+        edge_mats = np.stack([v1 - v0, v2 - v0, v3 - v0], axis=2)
+        det = np.linalg.det(edge_mats)
+        nonsingular = np.abs(det) > 1.0e-20
+        inv_mats = np.zeros_like(edge_mats)
+        inv_mats[nonsingular] = np.linalg.inv(edge_mats[nonsingular])
+        centroids = 0.25 * (v0 + v1 + v2 + v3)
+
+        parent = np.empty(len(vertices), dtype=np.int32)
+        weights = np.empty((len(vertices), 4), dtype=np.float32)
+        eps = 1.0e-6
+        clamped = 0
+        for i, p in enumerate(np.asarray(vertices, dtype=np.float64)):
+            bary123 = np.einsum("tij,tj->ti", inv_mats, p - v0)
+            bary = np.column_stack([1.0 - bary123.sum(axis=1), bary123])
+            inside = nonsingular & np.all(bary >= -eps, axis=1)
+            if np.any(inside):
+                cand = np.nonzero(inside)[0]
+                best = cand[np.argmax(bary[cand].min(axis=1))]
+            else:
+                best = int(np.argmin(np.linalg.norm(centroids - p, axis=1)))
+                clamped += 1
+            w = np.clip(bary[best], 0.0, None)
+            total = w.sum()
+            weights[i] = w / total if total > 1.0e-12 else np.full(4, 0.25, dtype=np.float64)
+            parent[i] = tet_ids[best]
+
+        if clamped:
+            warnings.warn(
+                f"add_deformable_render_mesh: {clamped} of {len(vertices)} render vertices fell outside "
+                "the tet mesh and were clamped to the nearest tetrahedron.",
+                stacklevel=2,
+            )
+        return parent, weights
+
+    def _bind_render_vertices_to_bodies(
+        self, vertices: np.ndarray, bodies: list[int] | np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Bind each render vertex to its nearest rigid body.
+
+        Returns ``(parent, local_offsets)`` where ``parent`` is the per-vertex
+        body index and ``local_offsets`` is the bind-pose render vertex expressed
+        in that body's local frame, so the viewer can reconstruct the world
+        position from the body's current pose each frame.
+        """
+        bodies = np.asarray(bodies, dtype=np.int64).reshape(-1)
+        if len(bodies) == 0:
+            raise ValueError("rigid render mesh requires at least one body")
+        body_q = np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7)
+        pos = body_q[bodies, :3]
+        quat = body_q[bodies, 3:7]  # (x, y, z, w)
+        verts = np.asarray(vertices, dtype=np.float64)
+
+        # Nearest body per vertex (bodies count is small for a cable/rod).
+        dist = np.linalg.norm(verts[:, None, :] - pos[None, :, :], axis=2)
+        nearest = np.argmin(dist, axis=1)
+        parent = bodies[nearest].astype(np.int32)
+
+        # local_offset = conjugate(q) rotated (vertex - body_pos)
+        rel = verts - pos[nearest]
+        axis = -quat[nearest, :3]
+        w = quat[nearest, 3:4]
+        t = 2.0 * np.cross(axis, rel)
+        local = rel + w * t + np.cross(axis, t)
+        return parent, local.astype(np.float32)
+
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
         if i == -1:
@@ -10454,6 +10855,70 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
+    def _finalize_deformable_render_meshes(self) -> list[DeformableRenderMesh]:
+        """Convert accumulated render-mesh specs to device-resident objects.
+
+        Runs inside the :meth:`finalize` ``wp.ScopedDevice`` block so the created
+        :class:`warp.array` buffers land on the simulation device. The owning
+        world is derived from the first driver particle so it stays correct after
+        :meth:`add_builder` re-bases indices.
+        """
+        if not self._deformable_render_meshes:
+            return []
+
+        particle_world = np.array(self.particle_world, dtype=np.int32) if self.particle_world else None
+        tet_indices = np.array(self.tet_indices, dtype=np.int32).reshape(-1, 4) if self.tet_indices else None
+        body_world = np.array(self.body_world, dtype=np.int32) if self.body_world else None
+
+        def _world_of(kind: DeformableRenderKind, parent: np.ndarray) -> int:
+            if len(parent) == 0:
+                return -1
+            if kind == DeformableRenderKind.RIGID_BODY:
+                if body_world is None or not (0 <= int(parent[0]) < len(body_world)):
+                    return -1
+                return int(body_world[int(parent[0])])
+            if particle_world is None:
+                return -1
+            if kind == DeformableRenderKind.TET_EMBED:
+                if tet_indices is None:
+                    return -1
+                first_particle = int(tet_indices[int(parent[0]), 0])
+            else:
+                first_particle = int(parent[0])
+            if 0 <= first_particle < len(particle_world):
+                return int(particle_world[first_particle])
+            return -1
+
+        meshes: list[DeformableRenderMesh] = []
+        for spec in self._deformable_render_meshes:
+            parent = np.asarray(spec["parent"], dtype=np.int32)
+            weights = spec.get("weights")
+            local_offsets = spec.get("local_offsets")
+            uvs = spec.get("uvs")
+            normals_rest = spec.get("normals_rest")
+            meshes.append(
+                DeformableRenderMesh(
+                    kind=spec["kind"],
+                    rest_vertices=wp.array(spec["rest_vertices"], dtype=wp.vec3),
+                    indices=wp.array(np.asarray(spec["indices"], dtype=np.int32), dtype=wp.int32),
+                    parent=wp.array(parent, dtype=wp.int32),
+                    weights=wp.array(np.asarray(weights, dtype=np.float32), dtype=wp.vec4)
+                    if weights is not None
+                    else None,
+                    local_offsets=wp.array(np.asarray(local_offsets, dtype=np.float32), dtype=wp.vec3)
+                    if local_offsets is not None
+                    else None,
+                    uvs=wp.array(np.asarray(uvs, dtype=np.float32), dtype=wp.vec2) if uvs is not None else None,
+                    normals_rest=wp.array(np.asarray(normals_rest, dtype=np.float32), dtype=wp.vec3)
+                    if normals_rest is not None
+                    else None,
+                    texture=spec.get("texture"),
+                    world=_world_of(spec["kind"], parent),
+                    label=spec.get("label", ""),
+                )
+            )
+        return meshes
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -11230,6 +11695,11 @@ class ModelBuilder:
             m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
             m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
             m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
+
+            # ---------------------
+            # deformable render meshes
+            m.deformable_render_meshes = self._finalize_deformable_render_meshes()
+            m.deformable_render_mesh_count = len(m.deformable_render_meshes)
 
             # -----------------------
             # muscles

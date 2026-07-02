@@ -70,6 +70,7 @@ class ViewerNull(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        colors: wp.array[wp.vec3] | None = None,
     ):
         """
         No-op implementation for logging a mesh.
