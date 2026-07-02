@@ -5092,6 +5092,13 @@ class ModelBuilder:
                 f"current_world={self.current_world}."
             )
 
+        if math.isinf(stiffness) ^ math.isinf(damping):
+            warnings.warn(
+                "Mimic constraint compliance requires both stiffness and damping to be authored; "
+                "only one was provided and the constraint will use the solver default.",
+                stacklevel=2,
+            )
+
         self.constraint_mimic_joint0.append(joint0)
         self.constraint_mimic_joint1.append(joint1)
         self.constraint_mimic_coef0.append(coef0)

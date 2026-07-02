@@ -190,29 +190,17 @@ class SolverBase:
 
     def __init__(self, model: Model):
         self.model = model
-        self._warn_on_authored_mimic_compliance(model)
+        # SolverBase is also reused internally by Kamino with its own ModelKamino
+        if isinstance(model, Model):
+            self._warn_on_authored_mimic_compliance(model)
 
     def _warn_on_authored_mimic_compliance(self, model: Model) -> None:
-        # ``ModelKamino`` and similar backends do not carry mimic-constraint
-        # data, so ``constraint_mimic_count`` may be absent entirely; when it is
-        # (or is zero) there is nothing to validate.
-        if not getattr(model, "constraint_mimic_count", 0):
+        if self._supports_mimic_compliance or not model.constraint_mimic_count:
             return
 
         stiffness_authored = ~np.isneginf(model.constraint_mimic_stiffness.numpy())
         damping_authored = ~np.isneginf(model.constraint_mimic_damping.numpy())
-
-        # Both gains are required for portable compliance; a single authored
-        # gain is a misconfiguration for every solver, supported or not.
-        partial = np.flatnonzero(stiffness_authored ^ damping_authored)
-        if partial.size:
-            warnings.warn(
-                "Mimic constraint compliance requires both stiffness and damping to be authored; "
-                f"constraints {partial.tolist()} authored only one and will use the solver default.",
-                stacklevel=3,
-            )
-
-        if not self._supports_mimic_compliance and (stiffness_authored.any() or damping_authored.any()):
+        if stiffness_authored.any() or damping_authored.any():
             warnings.warn(
                 f"{type(self).__name__} does not support mimic constraint stiffness/damping; "
                 "authored values are retained but ignored.",
