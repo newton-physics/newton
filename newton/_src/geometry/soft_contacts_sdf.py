@@ -259,13 +259,11 @@ def _emit_soft_ef_contact(
 
 @wp.kernel
 def create_soft_face_contacts(
-    n_soft_tris: wp.int32,
+    face_pairs: wp.array[wp.vec2i],
     particle_q: wp.array[wp.vec3],
     particle_radius: wp.array[float],
-    particle_world: wp.array[wp.int32],
     tri_indices: wp.array2d[wp.int32],
     shape_body: wp.array[wp.int32],
-    shape_world: wp.array[wp.int32],
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
@@ -285,12 +283,12 @@ def create_soft_face_contacts(
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
 ):
-    """One thread per (shape, soft triangle). Minimizes the rigid SDF over the triangle interior and
-    emits a FACE record into slot 2 if within margin. ``shape = tid // n_soft_tris`` keeps the shape
-    uniform within a warp."""
-    tid = wp.tid()
-    shape_index = tid // n_soft_tris
-    t = tid % n_soft_tris
+    """One thread per world-compatible (soft triangle, shape) pair. Minimizes the rigid SDF over the
+    triangle interior and emits a FACE record into slot 2 if within margin. Pairs are precomputed
+    world-filtered (like ``soft_rigid_contact_pairs``), so no per-thread world check is needed."""
+    pair = face_pairs[wp.tid()]
+    t = pair[0]
+    shape_index = pair[1]
     if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
         return
     geo = shape_type[shape_index]
@@ -301,9 +299,6 @@ def create_soft_face_contacts(
     v0 = tri_indices[t, 0]
     v1 = tri_indices[t, 1]
     v2 = tri_indices[t, 2]
-    w = particle_world[v0]
-    if w != -1 and shape_world[shape_index] != -1 and w != shape_world[shape_index]:
-        return
     radius = wp.max(particle_radius[v0], wp.max(particle_radius[v1], particle_radius[v2]))
 
     X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
@@ -350,15 +345,13 @@ def create_soft_face_contacts(
 
 @wp.kernel
 def create_soft_edge_contacts(
-    n_soft_edges: wp.int32,
+    edge_pairs: wp.array[wp.vec2i],
     particle_q: wp.array[wp.vec3],
     particle_radius: wp.array[float],
-    particle_world: wp.array[wp.int32],
     tri_indices: wp.array2d[wp.int32],
     tri_edge_indices: wp.array2d[wp.int32],
     edge_tri_indices: wp.array2d[wp.int32],
     shape_body: wp.array[wp.int32],
-    shape_world: wp.array[wp.int32],
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
@@ -377,12 +370,13 @@ def create_soft_edge_contacts(
     soft_contact_body_vel: wp.array[wp.vec3],
     soft_contact_normal: wp.array[wp.vec3],
 ):
-    """One thread per (shape, unique soft edge). Minimizes the rigid SDF along the edge and emits an
-    EDGE record into slot 1 if within margin. Unique edges -> structural dedup; the record names the
-    owner triangle ``edge_tri_indices[e, 0]`` and the bary on its local corners ``k, (k+1)%3``."""
-    tid = wp.tid()
-    shape_index = tid // n_soft_edges
-    e = tid % n_soft_edges
+    """One thread per world-compatible (unique soft edge, shape) pair. Minimizes the rigid SDF along
+    the edge and emits an EDGE record into slot 1 if within margin. Unique edges -> structural dedup;
+    the record names the owner triangle ``edge_tri_indices[e, 0]`` and the bary on its local corners
+    ``k, (k+1)%3``. Pairs are precomputed world-filtered, so no per-thread world check is needed."""
+    pair = edge_pairs[wp.tid()]
+    e = pair[0]
+    shape_index = pair[1]
 
     t0 = edge_tri_indices[e, 0]  # owner triangle (always valid for a real edge)
     if t0 < 0:
@@ -403,9 +397,6 @@ def create_soft_edge_contacts(
     if (not _is_analytic(geo)) and sdf_idx < 0:
         return
 
-    w = particle_world[vk0]
-    if w != -1 and shape_world[shape_index] != -1 and w != shape_world[shape_index]:
-        return
     radius = wp.max(particle_radius[vk0], particle_radius[vk1])
 
     X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
@@ -449,16 +440,22 @@ def create_soft_edge_contacts(
         )
 
 
-def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device):
+def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, edge_pairs, face_pairs):
     """Launch the soft EDGE then FACE passes (the soft-particle pass is the legacy kernel).
+
+    ``edge_pairs`` / ``face_pairs`` are precomputed world-compatible (soft feature, shape) index
+    pairs (``wp.vec2i``), analogous to :func:`_build_soft_rigid_contact_pairs` for the particle
+    pass -- one thread per pair, so cross-world features never reach the kernel.
 
     Order matters: EDGE before FACE, because the face pass's write base reads the final edge count.
     """
     adj = model.soft_mesh_adjacency
     if adj is None or model.shape_count == 0:
         return
-    n_tris = model.tri_count
-    n_edges = int(adj.edge_indices.shape[0])
+    n_edge_pairs = int(edge_pairs.shape[0])
+    n_face_pairs = int(face_pairs.shape[0])
+    if n_edge_pairs == 0 and n_face_pairs == 0:
+        return
 
     # MeshAdjacency keeps the edge/edge-tri/tri-edge tables on the host (numpy); upload the two
     # the edge kernel needs to the device once and cache on the model (keyed by device). Built
@@ -475,7 +472,6 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device):
 
     shape_args = [
         model.shape_body,
-        model.shape_world,
         model.shape_type,
         model.shape_flags,
         model.shape_transform,
@@ -494,15 +490,14 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device):
         contacts.soft_contact_normal,
     ]
 
-    if n_edges > 0:
+    if n_edge_pairs > 0:
         wp.launch(
             create_soft_edge_contacts,
-            dim=model.shape_count * n_edges,
+            dim=n_edge_pairs,
             inputs=[
-                n_edges,
+                edge_pairs,
                 state.particle_q,
                 model.particle_radius,
-                model.particle_world,
                 model.tri_indices,
                 tri_edge_indices_dev,
                 edge_tri_indices_dev,
@@ -514,15 +509,14 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device):
             outputs=outputs,
             device=device,
         )
-    if n_tris > 0:
+    if n_face_pairs > 0:
         wp.launch(
             create_soft_face_contacts,
-            dim=model.shape_count * n_tris,
+            dim=n_face_pairs,
             inputs=[
-                n_tris,
+                face_pairs,
                 state.particle_q,
                 model.particle_radius,
-                model.particle_world,
                 model.tri_indices,
                 *shape_args,
                 SDF_FACE_ITERS,
