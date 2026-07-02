@@ -9831,10 +9831,12 @@ class ModelBuilder:
                 )
 
     def _validate_joints(self):
-        """Validate that all joints belong to an articulation, except for "loop joints".
+        """Validate that joints belong to an articulation, with two exceptions.
 
-        Loop joints connect two bodies that are already reachable via articulated joints
-        (used to create kinematic loops, converted to equality constraints by MuJoCo solver).
+        Loop-closing joints are allowed when their child is already reachable through
+        an articulation. Standalone world-root joints (``parent == -1``) are also
+        allowed without articulation metadata because supported solvers can consume
+        them directly or provide a topology-specific fallback.
 
         Raises:
             ValueError: If any validation check fails.
@@ -9858,9 +9860,9 @@ class ModelBuilder:
                     parent = self.joint_parent[i]
                     child = self.joint_child[i]
                     if parent == -1:
-                        # A root joint attaches the child directly to world.
-                        # Maximal-coordinate solvers can consume that joint
-                        # without reduced-coordinate articulation metadata.
+                        # Exception: a standalone world-root joint is valid without
+                        # articulation metadata. Supported solvers consume it directly
+                        # or provide a topology-specific fallback.
                         continue
                     if child not in articulated_bodies:
                         # This is a true orphan - the child body has no articulated path
@@ -10459,7 +10461,8 @@ class ModelBuilder:
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
                 you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
-            skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
+            skip_validation_joints: If True, skips articulation-membership validation. By default, non-root joints
+                must belong to an articulation or close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 array lengths, monotonicity). Default is False.

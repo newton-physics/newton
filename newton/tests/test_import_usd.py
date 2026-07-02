@@ -153,62 +153,25 @@ def Xform "Root" (
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("boxes_fourbar.usda")
-        with self.assertWarns(UserWarning) as cm:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             builder.add_usd(asset_path)
-        self.assertIn("No articulation was found but 4 joints were parsed", str(cm.warning))
+        self.assertFalse(any("articulation" in str(item.message).lower() for item in caught))
 
         self.assertEqual(builder.body_count, 4)
         self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 4)
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 0)
         self.assertTrue(all(art_id == -1 for art_id in builder.joint_articulation))
 
-        # finalize the builder and check the model
+        # Non-root orphan joints still require opting out of articulation validation.
         model = builder.finalize(skip_validation_joints=True)
-        # note we have to skip joint validation here because otherwise a ValueError would be
-        # raised because of the orphan joints that are not part of an articulation
         self.assertEqual(model.body_count, 4)
         self.assertEqual(model.joint_type.list().count(newton.JointType.REVOLUTE), 4)
         self.assertEqual(model.joint_type.list().count(newton.JointType.FREE), 0)
         self.assertTrue(all(art_id == -1 for art_id in model.joint_articulation.numpy()))
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_body_to_world_fixed_joint_without_articulation_root_stays_orphan(self):
-        """A USD fixed joint to world must not synthesize an articulation root."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Xform.Define(stage, "/World/Base")
-        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-        mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
-        mass_api.GetMassAttr().Set(1.0)
-        mass_api.GetCenterOfMassAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        mass_api.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
-
-        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/root_joint")
-        fixed.CreateBody1Rel().SetTargets([body.GetPath()])
-        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage, load_visual_shapes=False)
-
-        self.assertEqual(builder.articulation_count, 0)
-        self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.joint_label, ["/World/root_joint"])
-        self.assertEqual(builder.joint_articulation, [-1])
-
-        model = builder.finalize()
-        self.assertEqual(model.articulation_count, 0)
-        self.assertEqual(model.joint_articulation.numpy().tolist(), [-1])
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_rootless_mechanism_root_and_child_joints_stay_orphan(self):
-        """A root joint without ArticulationRootAPI must not split the mechanism."""
+    def _make_rootless_fixed_stage(self, *, with_child_joint: bool):
+        """Build a rootless USD mechanism with an optional articulated child."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -217,32 +180,61 @@ def Xform "Root" (
 
         base = UsdGeom.Xform.Define(stage, "/World/Base")
         UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
-        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+        base_mass = UsdPhysics.MassAPI.Apply(base.GetPrim())
+        base_mass.GetMassAttr().Set(1.0)
+        base_mass.GetCenterOfMassAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        base_mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
 
-        link = UsdGeom.Xform.Define(stage, "/World/Link")
-        link.AddTranslateOp().Set(Gf.Vec3d(1.0, 0.0, 0.0))
-        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
-        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(1.0)
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/RootJoint")
+        fixed.CreateBody1Rel().SetTargets([base.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
-        root_joint = UsdPhysics.FixedJoint.Define(stage, "/World/RootJoint")
-        root_joint.CreateBody1Rel().SetTargets([base.GetPath()])
-        root_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        root_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        root_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        root_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        if with_child_joint:
+            link = UsdGeom.Xform.Define(stage, "/World/Link")
+            link.AddTranslateOp().Set(Gf.Vec3d(1.0, 0.0, 0.0))
+            UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+            link_mass = UsdPhysics.MassAPI.Apply(link.GetPrim())
+            link_mass.GetMassAttr().Set(1.0)
+            link_mass.GetCenterOfMassAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            link_mass.GetDiagonalInertiaAttr().Set(Gf.Vec3f(1.0, 1.0, 1.0))
 
-        child_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/ChildJoint")
-        child_joint.CreateBody0Rel().SetTargets([base.GetPath()])
-        child_joint.CreateBody1Rel().SetTargets([link.GetPath()])
-        child_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0.0, 0.0))
-        child_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0.0, 0.0))
-        child_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        child_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        child_joint.CreateAxisAttr().Set("Z")
+            child_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/ChildJoint")
+            child_joint.CreateBody0Rel().SetTargets([base.GetPath()])
+            child_joint.CreateBody1Rel().SetTargets([link.GetPath()])
+            child_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0.0, 0.0))
+            child_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0.0, 0.0))
+            child_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            child_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            child_joint.CreateAxisAttr().Set("Z")
 
+        return stage
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_body_to_world_fixed_joint_without_articulation_root_stays_orphan(self):
+        """A USD fixed joint to world remains rootless and finalizes normally."""
+        stage = self._make_rootless_fixed_stage(with_child_joint=False)
         builder = newton.ModelBuilder()
-        with self.assertWarns(UserWarning):
-            builder.add_usd(stage, load_visual_shapes=False)
+        builder.add_usd(stage, load_visual_shapes=False)
+
+        self.assertEqual(builder.articulation_count, 0)
+        self.assertEqual(builder.joint_count, 1)
+        root_joint_idx = builder.joint_label.index("/World/RootJoint")
+        self.assertEqual(builder.joint_parent[root_joint_idx], -1)
+        self.assertEqual(builder.joint_articulation[root_joint_idx], -1)
+
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_articulation.numpy()[root_joint_idx], -1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rootless_mechanism_root_and_child_joints_stay_orphan(self):
+        """A root joint without ArticulationRootAPI must not split the mechanism."""
+        stage = self._make_rootless_fixed_stage(with_child_joint=True)
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, load_visual_shapes=False)
 
         self.assertEqual(builder.articulation_count, 0)
         self.assertEqual(set(builder.joint_label), {"/World/RootJoint", "/World/ChildJoint"})
@@ -258,6 +250,49 @@ def Xform "Root" (
         model_joint_articulation = model.joint_articulation.numpy().tolist()
         self.assertEqual(model_joint_articulation[root_joint_idx], -1)
         self.assertEqual(model_joint_articulation[child_joint_idx], -1)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rootless_multi_joint_body_is_merged(self):
+        """Multiple world joints on one orphan body retain all MJCF DOFs."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Cube.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        slide = UsdPhysics.PrismaticJoint.Define(stage, "/World/Body/slide")
+        slide.CreateBody1Rel().SetTargets([body.GetPath()])
+        slide.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        slide.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        slide.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        slide.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        slide.CreateAxisAttr().Set("X")
+
+        hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/Body/hinge")
+        hinge.CreateBody1Rel().SetTargets([body.GetPath()])
+        hinge.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        hinge.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        hinge.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        hinge.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        hinge.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=False)
+        self.assertEqual(builder.articulation_count, 0)
+        self.assertEqual(builder.joint_count, 1)
+        self.assertEqual(builder.joint_type, [newton.JointType.D6])
+        self.assertEqual(builder.joint_dof_dim, [(1, 1)])
+        self.assertEqual(builder.joint_articulation, [-1])
+        self.assertEqual(result["path_joint_map"][slide.GetPath().pathString], 0)
+        self.assertEqual(result["path_joint_map"][hinge.GetPath().pathString], 0)
+
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_dof_count, 2)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
@@ -298,7 +333,8 @@ def Xform "Root" (
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
-        # With no enabled mechanism joints, each standalone body gets its own articulation.
+        # Because the stage has no enabled mechanism joints, each body is treated
+        # as standalone and receives its own articulation.
         self.assertEqual(builder.articulation_count, 2)
         self.assertEqual(set(builder.joint_articulation), {0, 1})
 
@@ -428,18 +464,26 @@ def Xform "Root" (
         orphan_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
         orphan_joint.CreateAxisAttr().Set("Z")
 
+        # A standalone world joint must also remain an orphan when another
+        # authored articulation is present in the stage.
+        body_e = UsdGeom.Cube.Define(stage, "/World/BodyE")
+        UsdPhysics.RigidBodyAPI.Apply(body_e.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body_e.GetPrim())
+        body_e.AddTranslateOp().Set(Gf.Vec3d(8, 0, 0))
+        root_slide = UsdPhysics.PrismaticJoint.Define(stage, "/World/RootSlide")
+        root_slide.CreateBody1Rel().SetTargets([body_e.GetPath()])
+        root_slide.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+        root_slide.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        root_slide.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        root_slide.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        root_slide.CreateAxisAttr().Set("X")
+
         builder = newton.ModelBuilder()
-        with self.assertWarns(UserWarning) as cm:
-            builder.add_usd(stage)
-        warn_msg = str(cm.warning)
-        # Verify the warning mentions orphan joints and the specific joint path
-        self.assertIn("not included in any articulation", warn_msg.lower())
-        self.assertIn("/World/OrphanJoint", warn_msg)
-        self.assertIn("PhysicsArticulationRootAPI", warn_msg)
-        self.assertIn("skip_validation_joints=True", warn_msg)
+        builder.add_usd(stage)
 
         self.assertIn("/World/Arm/RevoluteJoint", builder.joint_label)
         self.assertIn("/World/OrphanJoint", builder.joint_label)
+        self.assertIn("/World/RootSlide", builder.joint_label)
 
         art_idx = builder.joint_label.index("/World/Arm/RevoluteJoint")
         orphan_idx = builder.joint_label.index("/World/OrphanJoint")
@@ -448,10 +492,13 @@ def Xform "Root" (
 
         # orphan joint stays without an articulation
         self.assertEqual(builder.joint_articulation[orphan_idx], -1)
+        root_slide_idx = builder.joint_label.index("/World/RootSlide")
+        self.assertEqual(builder.joint_type[root_slide_idx], newton.JointType.PRISMATIC)
+        self.assertEqual(builder.joint_parent[root_slide_idx], -1)
+        self.assertEqual(builder.joint_articulation[root_slide_idx], -1)
 
-        # finalize requires skip_validation_joints=True for orphan joints
         model = builder.finalize(skip_validation_joints=True)
-        self.assertEqual(model.body_count, 4)
+        self.assertEqual(model.body_count, 5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_stray_joint_does_not_strip_unrelated_floating_bodies(self):
@@ -485,8 +532,7 @@ def Xform "Root" (
         stray.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
 
         builder = newton.ModelBuilder()
-        with self.assertWarns(UserWarning):  # the orphan stray joint warns
-            builder.add_usd(stage)
+        builder.add_usd(stage)
 
         self.assertEqual(builder.body_count, 3)
 
@@ -685,8 +731,7 @@ def Xform "Root" (
         rev2.CreateAxisAttr().Set("Z")
 
         builder = newton.ModelBuilder()
-        with self.assertWarns(UserWarning):
-            builder.add_usd(stage, collapse_fixed_joints=True)
+        builder.add_usd(stage, collapse_fixed_joints=True)
 
         # All three bodies and both revolute joints must survive collapse
         self.assertEqual(builder.body_count, 3)
@@ -6423,6 +6468,9 @@ def Xform "Articulation" (
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+
         body0 = UsdGeom.Cube.Define(stage, "/World/Body0")
         body0.CreateSizeAttr(0.2)
         body0_prim = body0.GetPrim()
@@ -6457,6 +6505,9 @@ def Xform "Articulation" (
 
         connect_world = UsdPhysics.SphericalJoint.Define(stage, "/World/EqualityConnectBodyToWorld")
         connect_world.CreateBody0Rel().SetTargets([body0.GetPath()])
+        # The MJCF-to-USD converter represents world with the non-rigid default
+        # prim instead of leaving the relationship target empty.
+        connect_world.CreateBody1Rel().SetTargets([world.GetPath()])
         connect_world.CreateLocalPos0Attr().Set(Gf.Vec3f(0.25, -0.1, 0.3))
         connect_world.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
         connect_world.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
@@ -6569,6 +6620,9 @@ def Xform "Articulation" (
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+
         body0 = UsdGeom.Cube.Define(stage, "/World/Body0")
         body0.CreateSizeAttr(0.2)
         body0_prim = body0.GetPrim()
@@ -6599,6 +6653,16 @@ def Xform "Articulation" (
         weld_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityWeldAPI"]))
         weld_prim.CreateAttribute("mjc:torqueScale", Sdf.ValueTypeNames.Float).Set(2.5)
 
+        weld_world = UsdPhysics.FixedJoint.Define(stage, "/World/EqualityWeldBodyToWorld")
+        weld_world.CreateBody0Rel().SetTargets([body0.GetPath()])
+        weld_world.CreateBody1Rel().SetTargets([world.GetPath()])
+        weld_world.CreateLocalPos0Attr().Set(Gf.Vec3f(0.4, 0.5, 0.6))
+        weld_world.CreateLocalPos1Attr().Set(Gf.Vec3f(0.1, 0.2, 0.3))
+        weld_world.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        weld_world.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        weld_world.CreateExcludeFromArticulationAttr().Set(True)
+        weld_world.GetPrim().SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcEqualityWeldAPI"]))
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(
@@ -6615,11 +6679,13 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         self.assertNotIn("/World/EqualityWeld", result["path_joint_map"])
+        self.assertNotIn("/World/EqualityWeldBodyToWorld", result["path_joint_map"])
         self.assertEqual(model.joint_count, 2)
         self.assertEqual(model.joint_dof_count, 12)
         self.assertEqual(model.joint_coord_count, 14)
-        self.assertEqual(model.mujoco.equality_constraint_count, 1)
+        self.assertEqual(model.mujoco.equality_constraint_count, 2)
         weld_eq = model.mujoco.equality_constraint_label.index("/World/EqualityWeld")
+        world_eq = model.mujoco.equality_constraint_label.index("/World/EqualityWeldBodyToWorld")
         body0_idx = result["path_body_map"]["/World/Body0"]
         body1_idx = result["path_body_map"]["/World/Body1"]
         self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[weld_eq], body0_idx)
@@ -6643,6 +6709,20 @@ def Xform "Articulation" (
         np.testing.assert_allclose(
             model.mujoco.eq_solimp.numpy()[weld_eq],
             np.array([0.9, 0.95, 0.001, 0.5, 2.0], dtype=np.float32),
+        )
+        self.assertEqual(model.mujoco.equality_constraint_body1.numpy()[world_eq], body0_idx)
+        self.assertEqual(model.mujoco.equality_constraint_body2.numpy()[world_eq], -1)
+        np.testing.assert_allclose(
+            model.mujoco.equality_constraint_anchor.numpy()[world_eq],
+            np.array([0.1, 0.2, 0.3], dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            model.mujoco.equality_constraint_relpose.numpy()[world_eq],
+            np.array([0.3, 0.3, 0.3, 0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-6,
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

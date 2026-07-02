@@ -1659,7 +1659,8 @@ class TestModelJoints(unittest.TestCase):
         parent = builder.add_link()
         child = builder.add_link()
 
-        # Add a non-root joint but do NOT add it to an articulation.
+        # World-root joints are intentionally allowed without articulation
+        # metadata, so use a non-root joint to exercise orphan validation.
         builder.add_joint_revolute(parent=parent, child=child, label="orphan_joint")
 
         # finalize() should raise ValueError about orphan joints
@@ -1668,6 +1669,17 @@ class TestModelJoints(unittest.TestCase):
 
         self.assertIn("not belonging to any articulation", str(context.exception))
         self.assertIn("orphan_joint", str(context.exception))
+
+    def test_articulation_validation_allows_standalone_world_root(self):
+        """Test that a standalone world-root joint does not require an articulation."""
+        builder = ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_fixed(parent=-1, child=body, label="standalone_root")
+
+        model = builder.finalize()
+
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_articulation.numpy()[joint], -1)
 
     def test_articulation_validation_multiple_orphan_joints(self):
         """Test error message shows multiple orphan joints."""

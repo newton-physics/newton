@@ -1795,10 +1795,7 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
     robot_xml = "apptronik_apollo.xml"
     usd_asset_folder = "apptronik_apollo"
     usd_scene_file = "usd_structured/apptronik_apollo.usda"
-    skip_reason = (
-        "Apptronik Apollo USD imports non-articulated bodies; SolverMuJoCo requires selected bodies to be in "
-        "articulations."
-    )
+    allow_standalone_world_roots = True
 
     num_steps = 20
     fk_enabled = True
