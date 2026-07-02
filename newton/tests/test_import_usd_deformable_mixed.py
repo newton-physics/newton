@@ -7,8 +7,8 @@ The fixture mirrors the shape of Isaac Lab generated assets -- each deformable i
 ``PhysicsDeformableBodyAPI`` Xform with a simulation-geometry child and a bound family
 material -- without external references. This module owns the happy-path import contract
 for all three families and the single VBD simulation smoke test; per-family modules cover
-family-specific lowering, and ``test_import_usd_deformable_groups`` covers the finalized
-model's group-lookup API.
+family-specific lowering, and ``test_import_usd_deformable_groups`` covers the builder
+group registries across the model lifecycle.
 """
 
 import os

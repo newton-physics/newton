@@ -1,20 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lifecycle tests for the finalized model's deformable group-lookup API.
+"""Lifecycle tests for the builder's deformable group registries.
 
-This module is the only test surface that exercises the experimental ``Model`` group
-members (``cable_*`` / ``cloth_*`` / ``soft_*`` fields and the ``*_index()`` /
-``*_range()`` helpers) directly; every other deformable test locates groups through the
-builder-registry seam in ``_usd_deformable_test_utils``. If that ``Model`` API is
-removed or reshaped, this module changes with it and the rest of the suite stands.
+The importer records each deformable as a prim-path-labelled, world-tagged index range on
+:class:`ModelBuilder`. These tests cover how those registries behave across the model
+lifecycle: replication, heterogeneous worlds, and fixed-joint collapse.
 """
 
 import os
 import unittest
 
 import newton
-from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
+from newton.tests._usd_deformable_test_utils import (
+    _add_cable_curve,
+    _add_cloth_mesh,
+    _deformable_stage,
+    group_labels,
+    group_range,
+)
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 _MIXED_ASSET = os.path.join(os.path.dirname(__file__), "assets", "deformables_mixed.usda")
@@ -24,57 +28,51 @@ _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableGroups(unittest.TestCase):
-    """Prim-path group lookup on the finalized Model across lifecycle transformations."""
+    """Prim-path group registries across lifecycle transformations."""
 
-    def test_mixed_scene_groups_resolve_after_finalize(self):
-        """Every family of the mixed scene resolves by prim path on the finalized Model."""
+    def test_mixed_scene_groups_survive_finalize(self):
+        """The group registries describe the mixed scene and the model finalizes intact."""
         builder = newton.ModelBuilder()
         builder.add_usd(_MIXED_ASSET)
-        model = builder.finalize()
 
-        self.assertEqual((model.cable_count, model.cloth_count, model.soft_count), (2, 1, 2))
-        b0, b1 = model.cable_body_range(model.cable_index("/World/CableA/sim"))
+        b0, b1 = group_range(builder, "cable", "/World/CableA/sim", "body")
         self.assertEqual(b1 - b0, 3)
-        j0, j1 = model.cable_joint_range(model.cable_index("/World/CableA/sim"))
+        j0, j1 = group_range(builder, "cable", "/World/CableA/sim", "joint")
         self.assertEqual(j1 - j0, 2)  # open 3-segment chain
-        cloth = model.cloth_index("/World/Cloth/sim")
-        p0, p1 = model.cloth_particle_range(cloth)
+        p0, p1 = group_range(builder, "cloth", "/World/Cloth/sim", "particle")
         self.assertEqual(p1 - p0, 4)
-        self.assertEqual(model.cloth_tri_range(cloth), (0, 2))
-        soft_ranges = [model.soft_particle_range(model.soft_index(f"/World/Soft{s}/sim")) for s in ("A", "B")]
-        self.assertNotEqual(soft_ranges[0], soft_ranges[1])
-        t0, t1 = model.soft_tet_range(model.soft_index("/World/SoftA/sim"))
+        t0, t1 = group_range(builder, "soft", "/World/SoftA/sim", "tet")
         self.assertEqual(t1 - t0, 1)
         # No begin_world -> global groups.
-        self.assertEqual(int(model.cable_world.numpy()[0]), -1)
-        with self.assertRaises(KeyError):
-            model.cable_index("/World/DoesNotExist")
+        self.assertEqual(builder.cable_world, [-1, -1])
 
-    def test_replicated_groups_need_explicit_world(self):
-        """replicate() duplicates labels across worlds: ranges offset per world, lookup
-        without a world raises, and (label, world) resolves exactly."""
+        model = builder.finalize()
+        self.assertEqual((model.particle_count, model.body_count), (12, 6))
+        with self.assertRaises(LookupError):
+            group_range(builder, "cable", "/World/DoesNotExist", "body")
+
+    def test_replicated_groups_offset_ranges_per_world(self):
+        """replicate() repeats each group per world with offset ranges and world tags, so
+        a duplicated label resolves only with an explicit world."""
         stage = _deformable_stage()
         _add_cloth_mesh(stage, "/World/Cloth")
         sub = newton.ModelBuilder()
         sub.add_usd(stage)
         scene = newton.ModelBuilder()
         scene.replicate(sub, 3)
-        model = scene.finalize()
 
-        self.assertEqual(model.cloth_count, 3)
-        self.assertEqual(model.cloth_label, ["/World/Cloth"] * 3)
-        self.assertEqual(list(model.cloth_world.numpy()), [0, 1, 2])
+        self.assertEqual(group_labels(scene, "cloth"), ["/World/Cloth"] * 3)
+        self.assertEqual(scene.cloth_world, [0, 1, 2])
         for w in range(3):
-            self.assertEqual(model.cloth_particle_range(w), (4 * w, 4 * w + 4))
-        with self.assertRaisesRegex(ValueError, "pass world="):
-            model.cloth_index("/World/Cloth")
-        self.assertEqual(model.cloth_index("/World/Cloth", world=1), 1)
-        self.assertEqual(model.cloth_particle_range(model.cloth_index("/World/Cloth", world=2)), (8, 12))
-        with self.assertRaises(KeyError):
-            model.cloth_index("/World/Cloth", world=7)
+            self.assertEqual(group_range(scene, "cloth", "/World/Cloth", "particle", world=w), (4 * w, 4 * w + 4))
+        with self.assertRaises(LookupError):
+            group_range(scene, "cloth", "/World/Cloth", "particle")  # ambiguous without world
+        with self.assertRaises(LookupError):
+            group_range(scene, "cloth", "/World/Cloth", "particle", world=7)
+        scene.finalize()  # replicated groups do not break finalization
 
-    def test_heterogeneous_worlds_resolve_with_world_tags(self):
-        """Worlds holding different deformables each resolve with the right world tag."""
+    def test_heterogeneous_worlds_keep_world_tags(self):
+        """Worlds holding different deformables each keep their own group and world tag."""
         cloth_stage = _deformable_stage()
         _add_cloth_mesh(cloth_stage, "/World/Cloth")
         cable_stage = _deformable_stage()
@@ -87,14 +85,16 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene = newton.ModelBuilder()
         scene.add_world(cloth_sub)  # world 0: cloth only
         scene.add_world(cable_sub)  # world 1: cable only
-        model = scene.finalize()
 
-        self.assertEqual((model.cloth_count, model.cable_count), (1, 1))
-        self.assertEqual(int(model.cloth_world.numpy()[model.cloth_index("/World/Cloth")]), 0)
-        self.assertEqual(int(model.cable_world.numpy()[model.cable_index("/World/Cable")]), 1)
+        self.assertEqual(scene.cloth_world, [0])
+        self.assertEqual(scene.cable_world, [1])
+        self.assertEqual(group_range(scene, "cloth", "/World/Cloth", "particle", world=0), (0, 4))
+        b0, b1 = group_range(scene, "cable", "/World/Cable", "body", world=1)
+        self.assertEqual(b1 - b0, 3)
+        scene.finalize()
 
     def test_cable_group_survives_fixed_joint_collapse(self):
-        """Cable body ranges ride the reindexing of collapse_fixed_joints onto the Model."""
+        """Cable body ranges follow the renumbered bodies of collapse_fixed_joints."""
         from pxr import UsdGeom, UsdPhysics
 
         stage = _deformable_stage()
@@ -113,11 +113,11 @@ class TestUSDDeformableGroups(unittest.TestCase):
         # The two rigid bodies' fixed joint has no articulation root, so the importer warns.
         with self.assertWarnsRegex(UserWarning, "No articulation was found"):
             builder.add_usd(stage, collapse_fixed_joints=True)
-        model = builder.finalize()
 
-        b0, b1 = model.cable_body_range(model.cable_index("/World/Cable"))
+        b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertEqual(b1 - b0, 3)
-        self.assertTrue(all("/World/Cable" in model.body_label[b] for b in range(b0, b1)))
+        self.assertTrue(all("/World/Cable" in builder.body_label[b] for b in range(b0, b1)))
+        builder.finalize()
 
 
 if __name__ == "__main__":
