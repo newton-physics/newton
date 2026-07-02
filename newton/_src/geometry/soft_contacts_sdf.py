@@ -294,31 +294,34 @@ def create_soft_face_contacts(
     geo = shape_type[shape_index]
     sdf_idx = shape_sdf_index[shape_index]
     if (not _is_analytic(geo)) and sdf_idx < 0:
-        return  # mesh without a provisioned SDF -> the legacy per-particle path still covers it (the pipeline already warned once about this at construction)
+        # Mesh without a provisioned SDF: the legacy per-particle path still covers it, and the
+        # pipeline already warned once about this at construction.
+        return
 
-    v0 = tri_indices[t, 0]
-    v1 = tri_indices[t, 1]
-    v2 = tri_indices[t, 2]
-    radius = wp.max(particle_radius[v0], wp.max(particle_radius[v1], particle_radius[v2]))
+    a_idx = tri_indices[t, 0]
+    b_idx = tri_indices[t, 1]
+    c_idx = tri_indices[t, 2]
+    radius = wp.max(particle_radius[a_idx], wp.max(particle_radius[b_idx], particle_radius[c_idx]))
 
+    # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
     X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
-    a = wp.transform_point(X_sw, particle_q[v0])
-    b = wp.transform_point(X_sw, particle_q[v1])
-    c = wp.transform_point(X_sw, particle_q[v2])
+    a_s = wp.transform_point(X_sw, particle_q[a_idx])
+    b_s = wp.transform_point(X_sw, particle_q[b_idx])
+    c_s = wp.transform_point(X_sw, particle_q[c_idx])
     scale = shape_scale[shape_index]
     threshold = margin + radius
 
-    centroid = (a + b + c) / 3.0
-    phi_c, _grad_c = eval_shape_sdf(geo, scale, centroid, sdf_idx, texture_sdf_table)
+    centroid_s = (a_s + b_s + c_s) / 3.0
+    phi_c, _grad_c = eval_shape_sdf(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
     # Conservative cull: the SDF is ~1-Lipschitz, so the triangle's minimum is >= phi_c minus the
     # farthest centroid-to-point distance, which is always a vertex. circumradius can be smaller than
     # that for non-equilateral triangles (e.g. 3-4-5: R=2.5 vs 2.85) and would drop valid contacts.
-    reach = wp.max(wp.length(a - centroid), wp.max(wp.length(b - centroid), wp.length(c - centroid)))
+    reach = wp.max(wp.length(a_s - centroid_s), wp.max(wp.length(b_s - centroid_s), wp.length(c_s - centroid_s)))
     if phi_c > threshold + reach:
         return
 
     bary, x, phi, grad = optimize_face_sdf(
-        geo, scale, a, b, c, sdf_idx, texture_sdf_table, sdf_face_iters, sdf_ls_iters
+        geo, scale, a_s, b_s, c_s, sdf_idx, texture_sdf_table, sdf_face_iters, sdf_ls_iters
     )
     if phi < threshold:
         y = x - phi * grad
@@ -387,8 +390,8 @@ def create_soft_edge_contacts(
     elif tri_edge_indices[t0, 2] == e:
         k = 2
     i1 = (k + 1) % 3
-    vk0 = tri_indices[t0, k]
-    vk1 = tri_indices[t0, i1]
+    p_idx = tri_indices[t0, k]
+    q_idx = tri_indices[t0, i1]
 
     if (shape_flags[shape_index] & ShapeFlags.COLLIDE_PARTICLES) == 0:
         return
@@ -397,20 +400,21 @@ def create_soft_edge_contacts(
     if (not _is_analytic(geo)) and sdf_idx < 0:
         return
 
-    radius = wp.max(particle_radius[vk0], particle_radius[vk1])
+    radius = wp.max(particle_radius[p_idx], particle_radius[q_idx])
 
+    # _s suffix = shape-local frame (matching the X_*s transforms: b = body, w = world, s = shape).
     X_bs, X_ws, X_sw = _shape_frames(shape_body, body_q, shape_transform, shape_index)
-    p = wp.transform_point(X_sw, particle_q[vk0])
-    q = wp.transform_point(X_sw, particle_q[vk1])
+    p_s = wp.transform_point(X_sw, particle_q[p_idx])
+    q_s = wp.transform_point(X_sw, particle_q[q_idx])
     scale = shape_scale[shape_index]
     threshold = margin + radius
 
-    mid = 0.5 * (p + q)
-    phi_m, _grad_m = eval_shape_sdf(geo, scale, mid, sdf_idx, texture_sdf_table)
-    if phi_m > threshold + 0.5 * wp.length(q - p):
+    mid_s = 0.5 * (p_s + q_s)
+    phi_m, _grad_m = eval_shape_sdf(geo, scale, mid_s, sdf_idx, texture_sdf_table)
+    if phi_m > threshold + 0.5 * wp.length(q_s - p_s):
         return
 
-    u, x, phi, grad = optimize_edge_sdf(geo, scale, p, q, sdf_idx, texture_sdf_table, sdf_edge_iters)
+    u, x, phi, grad = optimize_edge_sdf(geo, scale, p_s, q_s, sdf_idx, texture_sdf_table, sdf_edge_iters)
     if phi < threshold:
         y = x - phi * grad
         if k == 0:
