@@ -572,9 +572,8 @@ def _build_soft_face_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
 
 def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     """World-compatible ``(soft edge, shape)`` candidate pairs for the water-tight EDGE pass,
-    mirroring :func:`_build_soft_particle_rigid_contact_pairs`. An edge's world is that of its owner
-    triangle's first vertex (same mesh => same world). Empty when there is no soft mesh, no edges,
-    or no shapes.
+    mirroring :func:`_build_soft_particle_rigid_contact_pairs`. An edge's world is that of one of its
+    endpoints. Empty when there is no soft mesh, no edges, or no shapes.
     """
     device = model.device
     empty = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=device)
@@ -586,8 +585,8 @@ def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     if shape_count == 0 or n_edges == 0:
         return empty
     world_count = int(getattr(model, "world_count", 0) or 0)
-    owner_tri = np.asarray(adj.edge_tri_indices)[:, 0]
-    edge_world = model.particle_world.numpy()[model.tri_indices.numpy()[owner_tri, 0]]
+    # edge_indices rows are [o0, o1, v0, v1]; col 2 (v0) is an endpoint, so its world is the edge's.
+    edge_world = model.particle_world.numpy()[np.asarray(adj.edge_indices)[:, 2]]
     return _world_compatible_pairs(edge_world, model.shape_world.numpy(), world_count, device)
 
 
