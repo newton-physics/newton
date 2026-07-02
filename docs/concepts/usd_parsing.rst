@@ -76,7 +76,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
 
 * Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
   deformable APIs, each with one bound simulation material.
-* The points and topology **as currently authored**. Newton builds the deformable at that pose.
+* The points and topology **as currently authored**. Newton builds the deformable at that pose;
+  a standalone cable's ``restShapePoints`` may affect stiffness normalization but never
+  establishes an initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
 * Every imported deformable can be found by prim path on the builder (see below).
@@ -92,9 +94,13 @@ Limitations
 
 Known gaps of the experimental importer, tracked as follow-ups:
 
-* **Rest state** -- authored rest geometry (``restShapePoints`` and related attributes) is not
-  used yet. Stiffness and mass are computed from the current points. A body saved in a deformed
-  pose therefore resumes relaxed at that pose instead of springing back.
+* **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
+  configuration. Cloth and volume rest attributes are ignored with a warning, and welded cable
+  graphs drop ``restShapePoints``. For a standalone cable, a valid ``restShapePoints`` supplies
+  only the segment lengths used to convert the material moduli into joint stiffness; the rod
+  itself is still built relaxed at the current ``points`` pose, and mass distribution also uses
+  the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
+  instead of springing back.
 * **Springy attachments** -- attachments with a finite stiffness or damping are not simulated.
   Supported attachments become hard constraints; the rest are kept in
   ``path_attachment_attrs``.
@@ -106,7 +112,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   deformable body is not imported or driven. The simulation geometry is what you get.
 * **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
   synthesized. One stiffness value, computed from the mean segment length, applies to a whole
-  curve or graph, so curves with very uneven segment lengths lose per-segment accuracy.
+  curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a
+  standalone cable authors valid ``restShapePoints``, its segment lengths are used for this
+  conversion; the current ``points`` still define the rod's constructed and relaxed pose.
 * **Cloth thickness fallback** -- without an authored thickness, a volumetric density
   (kg/m^3) cannot be converted to Newton's per-area density and is used as-is.
 
