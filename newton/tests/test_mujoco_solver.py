@@ -48,6 +48,26 @@ class TestMuJoCoSolver(unittest.TestCase):
             self.solver.step(self.state_in, self.state_out, self.control, self.contacts, sim_dt)
             self.state_in, self.state_out = self.state_out, self.state_in  # Output becomes input for next substep
 
+    def _build_two_world_mjcf_timestep_model(self):
+        builder = newton.ModelBuilder()
+
+        for name, timestep in [("a", "0.002"), ("b", "0.005")]:
+            robot = newton.ModelBuilder()
+            robot.add_mjcf(f"""
+<mujoco>
+    <option timestep="{timestep}"/>
+    <worldbody>
+        <body name="{name}" pos="0 0 1">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+""")
+            builder.add_world(robot)
+
+        return builder.finalize()
+
     def test_setup_completes(self):
         """
         Tests if the setUp method completes successfully.
@@ -108,36 +128,7 @@ class TestMuJoCoSolver(unittest.TestCase):
 
     def test_timestep_option_from_mjcf(self):
         """Test that MJCF timestep options propagate to per-world MuJoCo solver state."""
-        robot_a = newton.ModelBuilder()
-        robot_a.add_mjcf("""
-<mujoco>
-    <option timestep="0.002"/>
-    <worldbody>
-        <body name="a" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-""")
-
-        robot_b = newton.ModelBuilder()
-        robot_b.add_mjcf("""
-<mujoco>
-    <option timestep="0.005"/>
-    <worldbody>
-        <body name="b" pos="0 0 1">
-            <joint type="hinge" axis="0 0 1"/>
-            <geom type="sphere" size="0.1"/>
-        </body>
-    </worldbody>
-</mujoco>
-""")
-
-        builder = newton.ModelBuilder()
-        builder.add_world(robot_a)
-        builder.add_world(robot_b)
-        model = builder.finalize()
+        model = self._build_two_world_mjcf_timestep_model()
 
         with mock.patch.object(SolverMuJoCo, "_update_geom_properties", autospec=True, return_value=None):
             with mock.patch.object(SolverMuJoCo, "_update_pair_properties", autospec=True, return_value=None):
@@ -147,6 +138,48 @@ class TestMuJoCoSolver(unittest.TestCase):
         self.assertEqual(len(timestep), 2)
         self.assertAlmostEqual(float(timestep[0]), 0.002, places=6)
         self.assertAlmostEqual(float(timestep[1]), 0.005, places=6)
+
+    def test_step_without_dt_preserves_per_world_timestep(self):
+        """Test that a missing step dt keeps model-owned per-world timesteps."""
+        model = self._build_two_world_mjcf_timestep_model()
+
+        with mock.patch.object(SolverMuJoCo, "_update_geom_properties", autospec=True, return_value=None):
+            with mock.patch.object(SolverMuJoCo, "_update_pair_properties", autospec=True, return_value=None):
+                solver = SolverMuJoCo(model, disable_contacts=True)
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+
+        solver.step(state_in, state_out, control, None, None)
+
+        np.testing.assert_allclose(
+            solver.mjw_model.opt.timestep.numpy(),
+            [0.002, 0.005],
+            rtol=0.0,
+            atol=1e-7,
+        )
+
+    def test_step_dt_overrides_per_world_timestep(self):
+        """Test that an explicit step dt still overrides all world timesteps."""
+        model = self._build_two_world_mjcf_timestep_model()
+
+        with mock.patch.object(SolverMuJoCo, "_update_geom_properties", autospec=True, return_value=None):
+            with mock.patch.object(SolverMuJoCo, "_update_pair_properties", autospec=True, return_value=None):
+                solver = SolverMuJoCo(model, disable_contacts=True)
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+
+        solver.step(state_in, state_out, control, None, 0.01)
+
+        np.testing.assert_allclose(
+            solver.mjw_model.opt.timestep.numpy(),
+            [0.01, 0.01],
+            rtol=0.0,
+            atol=1e-7,
+        )
 
     @unittest.skip("Trajectory rendering for debugging")
     def test_render_trajectory(self):
