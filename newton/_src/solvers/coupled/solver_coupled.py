@@ -279,6 +279,17 @@ class SolverCoupled(SolverBase, CouplingInterface):
         substeps: int = 1
         in_place: bool = False
 
+    @staticmethod
+    def _positive_integer(value: int, label: str) -> int:
+        """Validate and return an integer greater than zero."""
+        try:
+            converted = int(value)
+        except (TypeError, ValueError, OverflowError) as err:
+            raise ValueError(f"{label} must be an integer >= 1, got {value!r}") from err
+        if isinstance(value, bool) or converted != value or converted < 1:
+            raise ValueError(f"{label} must be an integer >= 1, got {value!r}")
+        return converted
+
     def __init__(
         self,
         model: Model,

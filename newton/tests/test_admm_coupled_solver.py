@@ -836,6 +836,21 @@ class TestAdmmGraphCapture(unittest.TestCase):
 class TestAdmmModelJointInterface(unittest.TestCase):
     """Cross-solver model joints are converted to ADMM attachments."""
 
+    def test_revolute_axis_frames_handle_antiparallel_x_axis(self):
+        identity_row = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        axis = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+
+        frame_child, frame_parent = SolverCoupledADMM._revolute_axis_frames_from_rows(
+            identity_row,
+            identity_row,
+            axis,
+        )
+
+        for frame in (frame_child, frame_parent):
+            rotation = wp.transform_get_rotation(frame)
+            rotated_axis = wp.quat_rotate(rotation, wp.vec3(1.0, 0.0, 0.0))
+            np.testing.assert_allclose(np.asarray(rotated_axis), axis, atol=1.0e-6)
+
     def _build_two_body_joint_scene(
         self,
         joint_type: str = "ball",

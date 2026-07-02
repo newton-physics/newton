@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ...geometry.flags import ShapeFlags
+from ...math import quat_between_vectors_robust
 from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
 from .admm_contact_stream import (
     AdmmContactStream,
@@ -724,16 +725,6 @@ class SolverCoupledADMM(SolverCoupled):
                 lower_bound=-1.0,
                 upper_bound=1.0,
             )
-
-    @staticmethod
-    def _positive_integer(value: int, label: str) -> int:
-        try:
-            converted = int(value)
-        except (TypeError, ValueError, OverflowError) as err:
-            raise ValueError(f"{label} must be an integer >= 1, got {value!r}") from err
-        if isinstance(value, bool) or converted != value or converted < 1:
-            raise ValueError(f"{label} must be an integer >= 1, got {value!r}")
-        return converted
 
     @staticmethod
     def _finite_scalar(
@@ -2325,46 +2316,12 @@ class SolverCoupledADMM(SolverCoupled):
         return float(row[0]), float(row[1]), float(row[2])
 
     @staticmethod
-    def _quat_multiply_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        av = a[:3]
-        aw = float(a[3])
-        bv = b[:3]
-        bw = float(b[3])
-        out = np.empty(4, dtype=np.float32)
-        out[:3] = aw * bv + bw * av + np.cross(av, bv)
-        out[3] = aw * bw - float(np.dot(av, bv))
-        return out
-
-    @staticmethod
-    def _quat_inverse_np(q: np.ndarray) -> np.ndarray:
-        inv = np.array([-q[0], -q[1], -q[2], q[3]], dtype=np.float32)
-        norm_sq = float(np.dot(q, q))
-        if norm_sq > 0.0:
-            inv /= norm_sq
-        return inv
-
-    @staticmethod
-    def _quat_rotate_np(q: np.ndarray, v: np.ndarray) -> np.ndarray:
-        qv = q[:3]
-        qw = float(q[3])
-        return v + 2.0 * np.cross(qv, np.cross(qv, v) + qw * v)
-
-    @staticmethod
-    def _quat_from_x_axis_np(direction: np.ndarray) -> wp.quat:
-        direction = np.asarray(direction, dtype=np.float32)
-        length = float(np.linalg.norm(direction))
+    def _quat_from_x_axis(direction) -> wp.quat:
+        direction = wp.vec3(float(direction[0]), float(direction[1]), float(direction[2]))
+        length = float(wp.length(direction))
         if length <= 0.0:
             raise ValueError("Cannot build a revolute ADMM frame from a zero axis")
-        direction = direction / length
-        source = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        axis = np.cross(source, direction)
-        w = 1.0 + float(np.dot(source, direction))
-        if w < 1.0e-6:
-            axis = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-            w = 0.0
-        quat = np.array([axis[0], axis[1], axis[2], w], dtype=np.float32)
-        quat /= np.linalg.norm(quat)
-        return wp.quat(float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
+        return quat_between_vectors_robust(wp.vec3(1.0, 0.0, 0.0), direction / length)
 
     @classmethod
     def _revolute_axis_frames_from_rows(
@@ -2373,17 +2330,20 @@ class SolverCoupledADMM(SolverCoupled):
         joint_X_c_row,
         axis_parent: np.ndarray,
     ) -> tuple[wp.transform, wp.transform]:
-        q_parent = np.asarray(joint_X_p_row[3:7], dtype=np.float32)
-        q_child = np.asarray(joint_X_c_row[3:7], dtype=np.float32)
-        parent_to_child = cls._quat_multiply_np(cls._quat_inverse_np(q_child), q_parent)
-        axis_child = cls._quat_rotate_np(parent_to_child, np.asarray(axis_parent, dtype=np.float32))
+        q_parent = wp.quat(*(float(value) for value in joint_X_p_row[3:7]))
+        q_child = wp.quat(*(float(value) for value in joint_X_c_row[3:7]))
+        parent_to_child = wp.mul(wp.quat_inverse(q_child), q_parent)
+        axis_child = wp.quat_rotate(
+            parent_to_child,
+            wp.vec3(float(axis_parent[0]), float(axis_parent[1]), float(axis_parent[2])),
+        )
         frame_child = wp.transform(
             wp.vec3(float(joint_X_c_row[0]), float(joint_X_c_row[1]), float(joint_X_c_row[2])),
-            cls._quat_from_x_axis_np(axis_child),
+            cls._quat_from_x_axis(axis_child),
         )
         frame_parent = wp.transform(
             wp.vec3(float(joint_X_p_row[0]), float(joint_X_p_row[1]), float(joint_X_p_row[2])),
-            cls._quat_from_x_axis_np(axis_parent),
+            cls._quat_from_x_axis(axis_parent),
         )
         return frame_child, frame_parent
 

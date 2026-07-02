@@ -7,20 +7,18 @@ These kernels implement the core operations needed for staggered two-way
 coupling via proxy bodies or proxy particles:
 
 1. **Sync** -- copy poses/velocities from the driving solver to proxy bodies.
-2. **Smooth teleportation** -- encode position jumps as velocity corrections
-   to avoid discontinuities in penetration-free solvers.
-3. **Feedback cancellation** -- remove previously applied coupling forces,
+2. **Feedback cancellation** -- remove previously applied coupling forces,
    external force inputs, and gravity from proxy dynamics to prevent
    double-counting.
-4. **Harvest feedback** -- accumulate proxy feedback from destination solver
+3. **Harvest feedback** -- accumulate proxy feedback from destination solver
    momentum changes.
 """
 
 from __future__ import annotations
 
-import warp as wp
+from typing import Any
 
-from ...math import quat_velocity
+import warp as wp
 
 # ------------------------------------------------------------------
 # 1. Sync proxy states
@@ -72,65 +70,7 @@ def sync_proxy_particles_kernel(
 
 
 # ------------------------------------------------------------------
-# 2. Smooth teleportation
-# ------------------------------------------------------------------
-
-
-@wp.kernel(enable_backward=False)
-def smooth_proxy_teleportation_kernel(
-    dt: float,
-    proxy_body_ids_local: wp.array[int],
-    dst_body_q: wp.array[wp.transform],
-    dst_body_qd: wp.array[wp.spatial_vector],
-    dst_body_q_prev: wp.array[wp.transform],
-):
-    """Encode a proxy teleportation as a velocity correction and undo the position jump.
-
-    After :func:`sync_proxy_states_kernel` teleports proxy ``body_q`` to the
-    driving solver's begin-of-step pose, this kernel computes the residual
-    between the teleported pose and the destination solver's previous
-    end-of-step pose (``body_q_prev``), folds it into ``body_qd`` as a smooth
-    velocity correction, and resets ``body_q`` back to ``body_q_prev``.
-
-    This avoids a position discontinuity that would contaminate
-    finite-difference velocity estimates used for contact damping and friction
-    in penetration-free solvers (e.g. VBD).
-
-    Args:
-        dt: Substep time step [s].
-        proxy_body_ids_local: Compact list of proxy-local body ids.
-        dst_body_q: Destination body transforms (read then overwritten).
-        dst_body_qd: Destination body velocities (accumulated).
-        dst_body_q_prev: Destination solver's previous end-of-step body transforms.
-    """
-    i = wp.tid()
-    if i >= proxy_body_ids_local.shape[0]:
-        return
-
-    b = proxy_body_ids_local[i]
-    q_teleported = dst_body_q[b]
-    q_prev = dst_body_q_prev[b]
-
-    # Translational correction
-    p_teleported = wp.transform_get_translation(q_teleported)
-    p_prev = wp.transform_get_translation(q_prev)
-    dv = (p_teleported - p_prev) / dt
-
-    # Rotational correction
-    r_teleported = wp.transform_get_rotation(q_teleported)
-    r_prev = wp.transform_get_rotation(q_prev)
-    dw = quat_velocity(r_teleported, r_prev, dt)
-
-    # Add correction to the synced velocity
-    qd = dst_body_qd[b]
-    dst_body_qd[b] = qd + wp.spatial_vector(dv, dw)
-
-    # Reset position to previous end-of-step (no discontinuity)
-    dst_body_q[b] = q_prev
-
-
-# ------------------------------------------------------------------
-# 3. Rewind proxy velocities
+# 2. Rewind proxy velocities
 # ------------------------------------------------------------------
 
 
@@ -200,7 +140,7 @@ def subtract_proxy_particle_forces_kernel(
 
 
 # ------------------------------------------------------------------
-# 4. Harvest proxy feedback
+# 3. Harvest proxy feedback
 # ------------------------------------------------------------------
 
 
@@ -261,52 +201,26 @@ def harvest_proxy_particle_momentum_forces_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def stash_proxy_body_forces_kernel(
-    proxy_body_ids_global: wp.array[int],
-    coupling_forces: wp.array[wp.spatial_vector],
-    out_previous_coupling_forces: wp.array[wp.spatial_vector],
+def stash_proxy_forces_kernel(
+    proxy_ids_global: wp.array[int],
+    coupling_forces: wp.array[Any],
+    out_previous_coupling_forces: wp.array[Any],
 ):
-    """Save the current proxy-body feedback for a later relaxation blend."""
+    """Save the current proxy feedback for a later relaxation blend."""
     i = wp.tid()
-    out_previous_coupling_forces[i] = coupling_forces[proxy_body_ids_global[i]]
+    out_previous_coupling_forces[i] = coupling_forces[proxy_ids_global[i]]
 
 
 @wp.kernel(enable_backward=False)
-def stash_proxy_particle_forces_kernel(
-    proxy_particle_ids_global: wp.array[int],
-    coupling_forces: wp.array[wp.vec3],
-    out_previous_coupling_forces: wp.array[wp.vec3],
-):
-    """Save the current proxy-particle feedback for a later relaxation blend."""
-    i = wp.tid()
-    out_previous_coupling_forces[i] = coupling_forces[proxy_particle_ids_global[i]]
-
-
-@wp.kernel(enable_backward=False)
-def blend_proxy_body_forces_kernel(
+def blend_proxy_forces_kernel(
     proxy_relaxation: float,
-    proxy_body_ids_global: wp.array[int],
-    previous_coupling_forces: wp.array[wp.spatial_vector],
-    coupling_forces: wp.array[wp.spatial_vector],
+    proxy_ids_global: wp.array[int],
+    previous_coupling_forces: wp.array[Any],
+    coupling_forces: wp.array[Any],
 ):
-    """Blend harvested proxy-body feedback with the saved lagged value."""
+    """Blend harvested proxy feedback with the saved lagged value."""
     i = wp.tid()
-    global_id = proxy_body_ids_global[i]
-    coupling_forces[global_id] = (
-        proxy_relaxation * coupling_forces[global_id] + (1.0 - proxy_relaxation) * previous_coupling_forces[i]
-    )
-
-
-@wp.kernel(enable_backward=False)
-def blend_proxy_particle_forces_kernel(
-    proxy_relaxation: float,
-    proxy_particle_ids_global: wp.array[int],
-    previous_coupling_forces: wp.array[wp.vec3],
-    coupling_forces: wp.array[wp.vec3],
-):
-    """Blend harvested proxy-particle feedback with the saved lagged value."""
-    i = wp.tid()
-    global_id = proxy_particle_ids_global[i]
+    global_id = proxy_ids_global[i]
     coupling_forces[global_id] = (
         proxy_relaxation * coupling_forces[global_id] + (1.0 - proxy_relaxation) * previous_coupling_forces[i]
     )
