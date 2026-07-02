@@ -211,6 +211,73 @@ def test_finite_difference_collider_velocity(test, device):
     )
 
 
+def test_cg_rheology_whole_step_graph_capture(test, device):
+    """Capture a whole step with an iterative linear rheology solver.
+
+    Regression for newton-physics/newton#3155: the iterative linear solver synced
+    its device-side results to the host inside the capture, raising CUDA error 906.
+    Both verbose settings are covered, since the verbose report is what reads those
+    device-side results back. The scene has no colliders so ``solver="cg"`` is
+    admissible.
+    """
+    if not device.is_cuda:
+        test.skipTest("whole-step graph capture requires a CUDA device")
+    if not wp.is_conditional_graph_supported():
+        test.skipTest("whole-step graph capture requires conditional CUDA graph support")
+
+    voxel_size = 0.1
+    emit_lo = np.array([-0.15, -0.15, 0.1])
+    emit_hi = np.array([0.15, 0.15, 0.4])
+    dt = 1.0 / 120.0
+
+    builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(builder)
+
+    res = np.ceil(3 * (emit_hi - emit_lo) / voxel_size).astype(int)
+    cell = (emit_hi - emit_lo) / res
+    builder.add_particle_grid(
+        pos=wp.vec3(*emit_lo),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=int(res[0]) + 1,
+        dim_y=int(res[1]) + 1,
+        dim_z=int(res[2]) + 1,
+        cell_x=float(cell[0]),
+        cell_y=float(cell[1]),
+        cell_z=float(cell[2]),
+        mass=float(np.prod(cell) * 1000.0),
+        jitter=0.0,
+        radius_mean=float(np.max(cell) * 0.5),
+    )
+
+    model = builder.finalize(device=device)
+
+    # verbose=True is the path that reads the solver's device-side results back
+    # for its report; both settings must capture without forcing a host sync.
+    for verbose in (False, True):
+        with test.subTest(verbose=verbose):
+            options = SolverImplicitMPM.Config()
+            options.solver = "cg"
+            options.voxel_size = voxel_size
+            options.grid_type = "fixed"  # whole-step capture precondition
+            options.grid_padding = 8
+            options.max_active_cell_count = 1 << 15
+            options.max_iterations = 50
+            options.tolerance = 1.0e-4
+
+            solver = SolverImplicitMPM(model, options, verbose=verbose)
+            state_0, state_1 = model.state(), model.state()
+
+            with wp.ScopedCapture(device=device) as capture:
+                solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+
+            for _ in range(5):
+                wp.capture_launch(capture.graph)
+
+            # .numpy() performs the synchronous device-to-host copy that drains the replays.
+            test.assertTrue(np.all(np.isfinite(state_1.particle_q.numpy())))
+
+
 devices = get_test_devices()
 
 
@@ -226,6 +293,14 @@ add_function_test(
     TestImplicitMPM,
     "test_finite_difference_collider_velocity",
     test_finite_difference_collider_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_cg_rheology_whole_step_graph_capture",
+    test_cg_rheology_whole_step_graph_capture,
     devices=devices,
     check_output=False,
 )

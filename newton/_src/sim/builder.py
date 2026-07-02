@@ -257,6 +257,19 @@ class ModelBuilder:
         delay_args: list[dict[str, Any]]  # Per-actuator delay params (empty if no delay)
         clamping_args: list[list[dict[str, Any]]]  # Per-actuator per-clamping array params
 
+    @dataclass
+    class BvhConfig:
+        """Default BVH construction settings used during model finalization."""
+
+        mesh_constructor: str | None = None
+        """Warp mesh BVH constructor backend. If ``None``, Warp's default is used."""
+
+        gaussian_constructor: str | None = None
+        """Warp Gaussian BVH constructor backend. If ``None``, Warp's default is used."""
+
+        shape_constructor: str | None = None
+        """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
+
     @dataclass(kw_only=True)
     class ShapeConfig:
         """
@@ -867,6 +880,9 @@ class ModelBuilder:
         """Number of worlds accumulated for :attr:`Model.world_count`."""
 
         # region defaults
+        self.default_bvh_cfg = ModelBuilder.BvhConfig()
+        """Default BVH construction configuration used during model finalization."""
+
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
         Update this object before adding shapes to set default contact/material properties."""
@@ -6034,20 +6050,10 @@ class ModelBuilder:
                     "Mesh-backed shapes do not use cfg.sdf_* for SDF generation. "
                     "Build and attach an SDF on the mesh via mesh.build_sdf()."
                 )
-            if type == GeoType.CONVEX_MESH and cfg.is_hydroelastic:
-                # finalize() only consumes mesh-attached SDFs for GeoType.MESH;
-                # a hydroelastic CONVEX_MESH would fall into the primitive
-                # branch where _create_primitive_mesh returns None, leaving an
-                # invalid shape_sdf_index entry. Reject up front.
-                raise ValueError(
-                    "Hydroelastic is not supported on GeoType.CONVEX_MESH. "
-                    "Use add_shape_mesh() with a watertight Mesh whose mesh.sdf "
-                    "was built via Mesh.build_sdf()."
-                )
             if cfg.is_hydroelastic and (src is None or getattr(src, "sdf", None) is None):
                 raise ValueError(
                     "Hydroelastic mesh-backed shapes require mesh.sdf. "
-                    "Call mesh.build_sdf() before add_shape_mesh(..., cfg=...)."
+                    "Call mesh.build_sdf() before adding a mesh-backed hydroelastic shape."
                 )
         if scale is None:
             scale = (1.0, 1.0, 1.0)
@@ -10581,12 +10587,57 @@ class ModelBuilder:
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
+            def _shape_requests_planar_sdf(shape_idx: int) -> bool:
+                """Whether a shape needs texture SDF data for planar-faced contact."""
+                if not (self.shape_flags[shape_idx] & ShapeFlags.COLLIDE_SHAPES):
+                    return False
+                stype = self.shape_type[shape_idx]
+                if stype in (GeoType.MESH, GeoType.CONVEX_MESH):
+                    src = self.shape_source[shape_idx]
+                    return src is not None and (
+                        getattr(src, "sdf", None) is not None
+                        or self.shape_sdf_max_resolution[shape_idx] is not None
+                        or self.shape_sdf_target_voxel_size[shape_idx] is not None
+                    )
+                return stype == GeoType.BOX and (
+                    self.shape_sdf_max_resolution[shape_idx] is not None
+                    or self.shape_sdf_target_voxel_size[shape_idx] is not None
+                    or bool(self.shape_flags[shape_idx] & ShapeFlags.HYDROELASTIC)
+                )
+
+            generated_shape_sources = list(self.shape_source)
+            generated_sdf_edge_meshes = []
+            unit_box_edge_mesh = None
+            for shape_idx, shape_type in enumerate(self.shape_type):
+                if shape_type == GeoType.BOX and _shape_requests_planar_sdf(shape_idx):
+                    if unit_box_edge_mesh is None:
+                        # The edge mesh is intentionally unscaled; per-shape box
+                        # half-extents are still applied through shape_scale.
+                        unit_box_edge_mesh = Mesh.create_box(
+                            1.0,
+                            1.0,
+                            1.0,
+                            duplicate_vertices=False,
+                            compute_normals=False,
+                            compute_uvs=False,
+                            compute_inertia=False,
+                        )
+                        unit_box_edge_mesh._build_collision_edges(
+                            lower_angle_threshold_rad=1.0e-6,
+                            upper_angle_threshold_rad=math.pi,
+                            enable_box_absorption=False,
+                            half_normal=0.0,
+                            half_lateral=0.0,
+                        )
+                        generated_sdf_edge_meshes.append(unit_box_edge_mesh)
+                    generated_shape_sources[shape_idx] = unit_box_edge_mesh
+
             # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
             heightfield_meshes = []
-            for geo in self.shape_source:
+            for geo in generated_shape_sources:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if isinstance(geo, Heightfield):
                     if geo_hash not in finalized_geos:
@@ -10600,17 +10651,25 @@ class ModelBuilder:
                             ground_z=geo.min_z,
                             compute_inertia=False,
                         )
-                        finalized_geos[geo_hash] = hf_geo.finalize(device=device)
+                        finalized_geos[geo_hash] = hf_geo.finalize(
+                            device=device,
+                            bvh_constructor=self.default_bvh_cfg.mesh_constructor,
+                        )
                         # keep mesh alive for the model's lifetime
                         heightfield_meshes.append(hf_geo.mesh)
                     geo_sources.append(finalized_geos[geo_hash])
                 elif geo:
                     if geo_hash not in finalized_geos:
                         if isinstance(geo, Mesh):
-                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                            finalized_geos[geo_hash] = geo.finalize(
+                                device=device,
+                                bvh_constructor=self.default_bvh_cfg.mesh_constructor,
+                            )
                         elif isinstance(geo, Gaussian):
                             finalized_geos[geo_hash] = len(gaussians)
-                            gaussians.append(geo.finalize(device=device))
+                            gaussians.append(
+                                geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
+                            )
                         else:
                             finalized_geos[geo_hash] = geo.finalize()
                     geo_sources.append(finalized_geos[geo_hash])
@@ -10620,6 +10679,7 @@ class ModelBuilder:
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m.heightfield_meshes = heightfield_meshes
+            m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
@@ -10827,7 +10887,7 @@ class ModelBuilder:
             is_gpu = current_device.is_cuda
 
             has_mesh_sdf = any(
-                stype == GeoType.MESH
+                stype in (GeoType.MESH, GeoType.CONVEX_MESH)
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
                 and getattr(ssrc, "sdf", None) is not None
@@ -10836,14 +10896,14 @@ class ModelBuilder:
             # Catch meshes whose SDF is still deferred (built during finalize) so
             # the CPU-runs-into-build_sdf path also raises here, not deeper down.
             has_deferred_mesh_sdf = any(
-                stype == GeoType.MESH
+                stype in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
-                and getattr(ssrc, "sdf", None) is None
+                and (stype == GeoType.BOX or getattr(ssrc, "sdf", None) is None)
                 and (smax is not None or svox is not None)
                 for stype, ssrc, sflags, smax, svox in zip(
                     self.shape_type,
-                    self.shape_source,
+                    generated_shape_sources,
                     self.shape_flags,
                     self.shape_sdf_max_resolution,
                     self.shape_sdf_target_voxel_size,
@@ -10908,7 +10968,7 @@ class ModelBuilder:
                 cache_key = None
                 mesh_sdf = None
 
-                if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
+                if shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and has_shape_collision and shape_src is not None:
                     mesh_sdf = getattr(shape_src, "sdf", None)
                     # Build on a Mesh clone so shapes sharing one Mesh at different
                     # scale/margin/resolution end up with distinct SDFs.
@@ -10942,7 +11002,13 @@ class ModelBuilder:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         cache_key = ("mesh_sdf", id(mesh_sdf))
-                elif is_hydroelastic and has_shape_collision:
+                elif has_shape_collision and (
+                    is_hydroelastic
+                    or (
+                        shape_type == GeoType.BOX
+                        and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
+                    )
+                ):
                     effective_max_resolution = sdf_max_resolution
                     if sdf_target_voxel_size is None and effective_max_resolution is None:
                         effective_max_resolution = 64
@@ -11093,11 +11159,11 @@ class ModelBuilder:
 
             for i in range(len(self.shape_type)):
                 if (
-                    self.shape_type[i] == GeoType.MESH
-                    and self.shape_source[i] is not None
+                    self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH, GeoType.BOX)
+                    and generated_shape_sources[i] is not None
                     and (self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
-                    mesh = self.shape_source[i]
+                    mesh = generated_shape_sources[i]
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
                         mesh_key = ("deferred", id(deferred_edges))
@@ -11504,7 +11570,7 @@ class ModelBuilder:
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
-                m.bvh_build_shapes(m)
+                m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
                 m.bvh_build_particles(m)
                 return m
 
@@ -11611,7 +11677,7 @@ class ModelBuilder:
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
-            m.bvh_build_shapes(m)
+            m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
             m.bvh_build_particles(m)
             return m
 
@@ -11680,21 +11746,23 @@ class ModelBuilder:
         """
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
         contact_pairs: list[tuple[int, int]] = []
+        shape_world = self.shape_world
+        shape_collision_group = self.shape_collision_group
 
         # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
         colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
-        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_world[i])
+        sorted_indices = sorted(colliding_indices, key=shape_world.__getitem__)
 
         # Iterate over all pairs of colliding shapes
         for i1 in range(len(sorted_indices)):
             s1 = sorted_indices[i1]
-            world1 = self.shape_world[s1]
-            collision_group1 = self.shape_collision_group[s1]
+            world1 = shape_world[s1]
+            collision_group1 = shape_collision_group[s1]
 
             for i2 in range(i1 + 1, len(sorted_indices)):
                 s2 = sorted_indices[i2]
-                world2 = self.shape_world[s2]
-                collision_group2 = self.shape_collision_group[s2]
+                world2 = shape_world[s2]
+                collision_group2 = shape_collision_group[s2]
 
                 # Early break optimization: if both shapes are in non-global worlds and different worlds,
                 # they can never collide. Since shapes are sorted by world, all remaining shapes will also
@@ -11702,7 +11770,6 @@ class ModelBuilder:
                 if world1 != -1 and world2 != -1 and world1 != world2:
                     break
 
-                # Apply the exact same filtering logic as test_world_and_group_pair kernel
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
@@ -11715,7 +11782,9 @@ class ModelBuilder:
                 if (shape_a, shape_b) not in filters:
                     contact_pairs.append((shape_a, shape_b))
 
-        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
+        model.shape_contact_pairs = wp.array(
+            np.array(contact_pairs, dtype=np.int32).reshape((-1, 2)), dtype=wp.vec2i, device=model.device
+        )
         model.shape_contact_pair_count = len(contact_pairs)
 
 

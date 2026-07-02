@@ -2025,6 +2025,12 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 dof_to_body[dof_start : dof_start + dof_count] = int(joint_child[joint_idx])
         return dof_to_body
 
+    @staticmethod
+    def _get_meaninertia(solver: SolverMuJoCo) -> float:
+        if solver.use_mujoco_cpu:
+            return float(solver.mj_model.stat.meaninertia)
+        return float(solver.mjw_model.stat.meaninertia.numpy()[0])
+
     def _assert_armature_matches_flags(self, model: newton.Model, solver: SolverMuJoCo):
         dof_to_body = self._compute_dof_to_body(model)
         body_flags = model.body_flags.numpy()
@@ -2089,6 +2095,122 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         self._assert_armature_matches_flags(model, solver)
+
+    def test_kinematic_armature_does_not_affect_initial_meaninertia(self):
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                dynamic_model, _ = self._build_model(root_kinematic=False)
+                kinematic_model, _ = self._build_model(root_kinematic=True)
+                armature = np.linspace(
+                    0.1,
+                    0.1 * dynamic_model.joint_dof_count,
+                    dynamic_model.joint_dof_count,
+                    dtype=np.float32,
+                )
+                dynamic_model.joint_armature.assign(armature)
+                kinematic_model.joint_armature.assign(armature)
+
+                dynamic_solver = SolverMuJoCo(
+                    dynamic_model,
+                    iterations=1,
+                    disable_contacts=True,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                )
+                kinematic_solver = SolverMuJoCo(
+                    kinematic_model,
+                    iterations=1,
+                    disable_contacts=True,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                )
+
+                self.assertAlmostEqual(
+                    self._get_meaninertia(kinematic_solver),
+                    self._get_meaninertia(dynamic_solver),
+                    places=5,
+                )
+
+    def test_kinematic_meaninertia_tracks_inertial_updates(self):
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model, root_body = self._build_model(root_kinematic=False)
+                solver = SolverMuJoCo(
+                    model,
+                    iterations=1,
+                    disable_contacts=True,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                )
+                initial_meaninertia = self._get_meaninertia(solver)
+
+                body_flags = model.body_flags.numpy()
+                body_flags[root_body] = int(BodyFlags.KINEMATIC)
+                model.body_flags.assign(body_flags)
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                self.assertAlmostEqual(self._get_meaninertia(solver), initial_meaninertia, places=5)
+
+                body_mass = model.body_mass.numpy()
+                body_mass[root_body] *= 2.0
+                model.body_mass.assign(body_mass)
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                mass_meaninertia = self._get_meaninertia(solver)
+                self.assertNotAlmostEqual(mass_meaninertia, initial_meaninertia, places=5)
+
+                joint_armature = model.joint_armature.numpy()
+                joint_armature += 0.5
+                model.joint_armature.assign(joint_armature)
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                updated_meaninertia = self._get_meaninertia(solver)
+                self.assertNotAlmostEqual(updated_meaninertia, mass_meaninertia, places=5)
+
+                body_flags[root_body] = int(BodyFlags.DYNAMIC)
+                model.body_flags.assign(body_flags)
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                self.assertAlmostEqual(self._get_meaninertia(solver), updated_meaninertia, places=5)
+
+    def test_meaninertia_update_preserves_dampratio_resolution(self):
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="base">
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position joint="j1" kp="100" dampratio="1"/>
+            </actuator>
+        </mujoco>
+        """
+
+        def build_solver(use_mujoco_cpu: bool) -> SolverMuJoCo:
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(mjcf, ctrl_direct=True)
+            model = builder.finalize()
+            model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+            return SolverMuJoCo(model, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = build_solver(use_mujoco_cpu)
+                reference = build_solver(use_mujoco_cpu)
+
+                if use_mujoco_cpu:
+                    solver.mj_model.actuator_biasprm[0, 2] = 0.5
+                    reference.mj_model.actuator_biasprm[0, 2] = 0.5
+                    solver._set_const_0_with_physical_meaninertia()
+                    reference._mujoco.mj_setConst(reference.mj_model, reference.mj_data)
+                    actual = solver.mj_model.actuator_biasprm[0, 2]
+                    expected = reference.mj_model.actuator_biasprm[0, 2]
+                else:
+                    for current_solver in (solver, reference):
+                        biasprm = current_solver.mjw_model.actuator_biasprm.numpy()
+                        biasprm[0, 0, 2] = 0.5
+                        current_solver.mjw_model.actuator_biasprm.assign(biasprm)
+                    solver._set_const_0_with_physical_meaninertia()
+                    reference._mujoco_warp.set_const_0(reference.mjw_model, reference.mjw_data)
+                    actual = solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
+                    expected = reference.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
+
+                self.assertAlmostEqual(float(actual), float(expected), places=5)
 
     def test_body_properties_runtime_update_and_dof_updates(self):
         model, root_body = self._build_model(root_kinematic=False)
@@ -2736,6 +2858,22 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     places=5,
                     msg=f"Updated rolling friction mismatch for shape {shape_idx} in world {world_idx}",
                 )
+
+    def test_geom_group_conversion(self):
+        """Test that geom_group custom attributes are converted to MuJoCo."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        body = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=body, radius=0.1, custom_attributes={"mujoco:geom_group": 3})
+        builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:geom_group": 1})
+        joint = builder.add_joint_free(body)
+        builder.add_articulation([joint])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        np.testing.assert_array_equal(solver.mjw_model.geom_group.numpy(), [3, 1])
 
     def test_geom_priority_conversion(self):
         """Test that geom_priority custom attribute is properly converted to MuJoCo."""
