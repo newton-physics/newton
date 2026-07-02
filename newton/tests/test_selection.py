@@ -29,6 +29,27 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
 
 
 class TestSelection(unittest.TestCase):
+    def test_articulation_selector_lists(self):
+        builder = newton.ModelBuilder()
+        for label in ["robot_a", "robot_b", "prop"]:
+            body = builder.add_link(label=f"{label}/body")
+            joint = builder.add_joint_free(child=body, label=f"{label}/joint")
+            builder.add_articulation([joint], label=label)
+        model = builder.finalize()
+
+        pattern_view = ArticulationView(model, pattern=["robot_*", "prop"])
+        assert_np_equal(pattern_view.articulation_ids.numpy(), [[0, 1, 2]])
+
+        indices = [2, 0]
+        index_view = ArticulationView(model, pattern=indices)
+        assert_np_equal(index_view.articulation_ids.numpy(), [[0, 2]])
+        self.assertEqual(indices, [2, 0])
+
+        with self.assertRaisesRegex(ValueError, "must not contain duplicates"):
+            ArticulationView(model, pattern=[0, 0])
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 3\)"):
+            ArticulationView(model, pattern=[3])
+
     def test_no_match(self):
         builder = newton.ModelBuilder()
         builder.add_body()
