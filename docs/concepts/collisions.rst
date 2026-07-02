@@ -504,9 +504,9 @@ UsdPhysics ``physics:filteredPairs`` relationships).
 Filter pairs are automatically populated in several cases:
 
 - **Adjacent bodies**: Parent-child body pairs connected by joints (when
-  ``collision_filter_parent=True``). USD joint ``physics:collisionEnabled`` maps to the inverse of
-  this flag for joints with two explicit bodies. Articulation-wide self-collision filtering remains
-  additive. Also applies to max-coordinate jointed bodies.
+  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
+  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
+  create a body-pair filter. Also applies to max-coordinate jointed bodies.
 - **Same-body shapes**: Shapes attached to the same rigid body
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
