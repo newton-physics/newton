@@ -549,9 +549,7 @@ def _build_soft_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     if particle_count == 0 or shape_count == 0:
         return wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
     world_count = int(getattr(model, "world_count", 0) or 0)
-    return _world_compatible_pairs(
-        model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device
-    )
+    return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
 
 
 def _build_soft_ef_rigid_pairs(model: Model) -> tuple[wp.array[wp.vec2i], wp.array[wp.vec2i]]:
