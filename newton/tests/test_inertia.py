@@ -417,6 +417,19 @@ class TestInertia(unittest.TestCase):
                         thickness=thickness,
                     )
 
+    def test_hollow_primitive_thickness_must_be_finite(self):
+        for thickness in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(thickness=thickness):
+                with self.assertRaisesRegex(ValueError, "thickness must be finite"):
+                    compute_inertia_shape(
+                        GeoType.SPHERE,
+                        (0.5, 0.0, 0.0),
+                        None,
+                        1000.0,
+                        is_solid=False,
+                        thickness=thickness,
+                    )
+
     def test_hollow_primitive_valid_thickness_returns_positive_mass(self):
         mass, com, inertia = compute_inertia_shape(
             GeoType.SPHERE,

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import warnings
 from numbers import Real
 
@@ -51,6 +52,8 @@ def _validate_hollow_thickness(
         raise TypeError(f"thickness must be a real scalar for a hollow {shape_name} geom")
 
     thickness = float(thickness)
+    if not math.isfinite(thickness):
+        raise ValueError(f"thickness must be finite for a hollow {shape_name} geom; got {thickness}")
     if thickness <= 0.0:
         raise ValueError(f"thickness must be > 0 for a hollow {shape_name} geom; got {thickness}")
 
