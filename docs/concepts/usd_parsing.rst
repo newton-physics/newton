@@ -65,7 +65,9 @@ across three families:
 Material attributes are read from the standard ``physics:`` namespace, as the proposal defines.
 Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback. A schema
 resolver (e.g. ``SchemaResolverPhysx``) declares them, and they are consulted only for
-deformable attributes.
+deformable attributes. One temporary exception: a TetMesh material that authors its values only
+under the vendor namespaces is still read without a resolver, with a ``DeprecationWarning``,
+so existing assets keep their stiffness and density during the deprecation window.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
