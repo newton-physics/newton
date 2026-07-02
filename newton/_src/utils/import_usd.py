@@ -46,6 +46,15 @@ from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .import_usd_deformable_attachments import (
+    _deformable_import_attachments,
+    _deformable_import_element_collision_filters,
+    _deformable_remap_collapsed,
+)
+from .import_usd_deformable_cable import _deformable_import_cable, _deformable_import_cable_graphs
+from .import_usd_deformable_cloth import _deformable_import_cloth
+from .import_usd_deformable_utils import _DeformableImportContext, _scout_deformable_prims
+from .import_usd_deformable_volume import _deformable_import_volume
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -232,6 +241,13 @@ def parse_usd(
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
     Returns:
+        Imported deformables (cable/cloth/volume) can be looked up by prim path through the
+        group metadata on :class:`~newton.ModelBuilder` and the finalized
+        :class:`~newton.Model` (e.g. :attr:`~newton.Model.cable_label`,
+        :meth:`~newton.Model.cloth_index`, :meth:`~newton.Model.soft_particle_range`), whose index
+        ranges survive :meth:`~newton.ModelBuilder.finalize` and :meth:`~newton.ModelBuilder.replicate`.
+        The as-authored, solver-neutral attributes remain in the ``path_*_attrs`` entries below.
+
         The returned mapping has the following entries:
 
         .. list-table::
@@ -251,6 +267,16 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - ``"path_cable_attrs"``
+              - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist)
+            * - ``"path_cloth_attrs"``
+              - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``)
+            * - ``"path_soft_attrs"``
+              - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``)
+            * - ``"path_attachment_map"``
+              - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping.
+            * - ``"path_attachment_attrs"``
+              - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well.
             * - ``"mass_unit"``
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
             * - ``"linear_unit"``
@@ -375,6 +401,14 @@ def parse_usd(
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
 
+    # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
+    # fallback to the canonical physics: deformable schema. Empty unless a
+    # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
+    # import parses the AOUSD proposal as written.
+    deformable_compat_ns = R.deformable_compat_namespaces()
+    # Resolver-owned deformable read (physics: first, then opted-in vendor namespaces).
+    deformable_read = R.read_deformable_attr
+
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
@@ -386,6 +420,30 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
+    # Import-internal deformable index maps (not returned): the attachment and collapse passes
+    # look up a curve/cloth/soft prim's element indices by path while building. The equivalent
+    # per-group index ranges are recorded on the builder/Model registries for callers.
+    # cable prim path -> its (body indices, joint indices) from add_rod
+    path_cable_map: dict[str, tuple[list[int], list[int]]] = {}
+    # cloth prim path -> its particle / triangle / bending-edge [start, end) index ranges
+    path_cloth_map: dict[str, dict[str, tuple[int, int]]] = {}
+    # volume (TetMesh) soft-body prim path -> its particle / tet [start, end) index ranges
+    path_soft_map: dict[str, dict[str, tuple[int, int]]] = {}
+    # as-authored, solver-neutral deformable attributes per prim path (the parsed
+    # material moduli, incl. ones the VBD build ignores, and the resolved density),
+    # so a non-VBD consumer can rebuild the deformable without re-parsing the stage.
+    path_cable_attrs: dict[str, dict[str, Any]] = {}
+    path_cloth_attrs: dict[str, dict[str, Any]] = {}
+    path_soft_attrs: dict[str, dict[str, Any]] = {}
+    # mapping from PhysicsAttachment prim path to joint indices created for supported attachments.
+    path_attachment_map: dict[str, list[int]] = {}
+    # parsed attachment attributes are preserved even when the current builder cannot
+    # lower the attachment faithfully (e.g. cloth/volume feature attachments).
+    path_attachment_attrs: dict[str, dict[str, Any]] = {}
+    # Internal cable maps used by the PhysicsAttachment post-pass. Proposal
+    # point/segment indices are flattened across each BasisCurves prim in curve order.
+    path_cable_point_anchors: dict[str, dict[int, list[tuple[int, wp.vec3]]]] = {}
+    path_cable_segments: dict[str, dict[int, tuple[int, float]]] = {}
     # DOF offset within a merged D6 joint for each original prim path (only populated for merged joints)
     merged_dof_offset: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
@@ -748,13 +806,25 @@ def parse_usd(
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
-            tetmesh_cache[prim_path] = usd.get_tetmesh(prim)
+            # Pass the resolver-declared namespaces explicitly (never None), so the importer keeps the
+            # canonical physics: default and does not trip get_tetmesh()'s legacy-default deprecation.
+            compat_ns = deformable_compat_ns
+            if not compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
+                # Without this deprecation window, a vendor-only material would silently
+                # import with default stiffness/density instead of its authored values.
+                warnings.warn(
+                    f"{prim_path}: the bound material authors legacy vendor-namespaced deformable "
+                    f"material attributes (omniphysics: / physxDeformableBody:) without "
+                    f"PhysicsVolumeDeformableMaterialAPI. add_usd() still reads them, but this is "
+                    f"deprecated: author the canonical physics: attributes with the material API, or "
+                    f"pass schema_resolvers=[..., SchemaResolverPhysx()] to keep vendor namespaces "
+                    f"explicitly.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                compat_ns = usd.DEFORMABLE_LEGACY_NAMESPACES
+            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=compat_ns)
         return tetmesh_cache[prim_path]
-
-    def _is_uniform_scale(scale: wp.vec3) -> bool:
-        """Return whether a decomposed scale vector is effectively uniform."""
-        scale_np = np.array(scale, dtype=np.float32)
-        return bool(np.allclose(scale_np, scale_np[0], rtol=1e-6, atol=1e-6))
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
@@ -2799,6 +2869,10 @@ def parse_usd(
                 if any(re.match(p, path) for p in ignore_paths):
                     continue
                 prim = stage.GetPrimAtPath(xpath)
+                if key == UsdPhysics.ObjectType.MeshShape and usd.has_applied_api_schema(
+                    prim, "PhysicsSurfaceDeformableSimAPI"
+                ):
+                    continue
                 if path in path_shape_map:
                     if verbose:
                         print(f"Shape at {path} already added, skipping.")
@@ -3346,58 +3420,8 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
-    root_prim = stage.GetPrimAtPath(root_path)
-    if root_prim and root_prim.IsValid():
-        for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-            if not prim.IsA(UsdGeom.TetMesh):
-                continue
-
-            path = str(prim.GetPath())
-            if path.startswith("/Prototypes/"):
-                continue
-            if any(re.match(pattern, path) for pattern in ignore_paths):
-                continue
-
-            if collect_schema_attrs:
-                R.collect_prim_attrs(prim)
-
-            tetmesh = _get_tetmesh_cached(prim)
-            tetmesh_for_builder = tetmesh
-            if tetmesh.custom_attributes:
-                filtered_custom_attributes = {
-                    k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
-                }
-                if len(filtered_custom_attributes) != len(tetmesh.custom_attributes):
-                    # Preserve the cached TetMesh while keeping add_usd's
-                    # current behavior of dropping unregistered import attrs.
-                    tetmesh_for_builder = copy.copy(tetmesh)
-                    tetmesh_for_builder.custom_attributes = filtered_custom_attributes
-
-            soft_mesh_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
-            soft_mesh_pos, soft_mesh_rot, soft_mesh_scale = wp.transform_decompose(soft_mesh_mat)
-
-            add_soft_mesh_kwargs = {
-                "pos": soft_mesh_pos,
-                "rot": soft_mesh_rot,
-                "scale": 1.0,
-                "vel": wp.vec3(0.0, 0.0, 0.0),
-                "mesh": tetmesh_for_builder,
-                "label": path,
-            }
-            if _is_uniform_scale(soft_mesh_scale):
-                add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
-            else:
-                add_soft_mesh_kwargs["vertices"] = tetmesh_for_builder.vertices * np.array(
-                    soft_mesh_scale, dtype=np.float32
-                )
-
-            builder.add_soft_mesh(**add_soft_mesh_kwargs)
-
-            if verbose:
-                print(
-                    f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra."
-                )
-
+    # Mass precedence (proposal): per-point physics:masses > body mass > body density
+    # > material density; per-element weighting is left to the add_* builders.
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
         prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
@@ -3693,6 +3717,76 @@ def parse_usd(
         else:
             builder._add_base_joints_to_floating_bodies(bodies_to_articulate, floating=floating, base_joint=base_joint)
 
+    # Build deformables (cables/cloth/volume) after rigid bodies, their collider-mass computation,
+    # and the floating-body base-joint pass above. The importer wraps each cable into its own
+    # articulation, so building deformables last keeps those articulations after any
+    # importer-created ones (e.g. kinematic anchors), preserving ascending articulation order.
+    # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
+    # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
+    root_prim = stage.GetPrimAtPath(root_path)
+    # One scouting walk classifies every deformable candidate prim; the passes below iterate
+    # these buckets instead of each re-traversing the stage, so a stage without deformables
+    # pays a single walk and skips every pass (including the context construction).
+    _deformable_prims = _scout_deformable_prims(root_prim)
+    if _deformable_prims.has_candidates():
+        _deformable_ctx = _DeformableImportContext(
+            builder=builder,
+            stage=stage,
+            root_prim=root_prim,
+            resolver=R,
+            collect_schema_attrs=collect_schema_attrs,
+            deformable_read=deformable_read,
+            get_prim_world_mat=_get_prim_world_mat,
+            get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
+            get_first_target=_get_first_target,
+            get_tetmesh_cached=_get_tetmesh_cached,
+            incoming_world_xform=incoming_world_xform,
+            linear_unit=linear_unit,
+            ignore_paths=ignore_paths,
+            verbose=verbose,
+            path_body_map=path_body_map,
+            path_shape_map=path_shape_map,
+            path_cable_map=path_cable_map,
+            path_cable_attrs=path_cable_attrs,
+            path_cable_segments=path_cable_segments,
+            path_cable_point_anchors=path_cable_point_anchors,
+            path_cloth_map=path_cloth_map,
+            path_cloth_attrs=path_cloth_attrs,
+            path_soft_map=path_soft_map,
+            path_soft_attrs=path_soft_attrs,
+            path_attachment_map=path_attachment_map,
+            path_attachment_attrs=path_attachment_attrs,
+            prims=_deformable_prims,
+        )
+
+        # Curve-to-curve junctions weld into rod graphs before the per-curve cable pass, which skips
+        # the consumed curves; the attachment pass below skips the consumed junctions. Each pass runs
+        # only when its bucket has candidates; welding additionally needs attachments to weld with.
+        consumed_cable_curve_paths: set[str] = set()
+        consumed_junction_attachment_paths: set[str] = set()
+        if _deformable_prims.cables and _deformable_prims.attachments:
+            consumed_cable_curve_paths, consumed_junction_attachment_paths = _deformable_import_cable_graphs(
+                _deformable_ctx
+            )
+        if _deformable_prims.cables:
+            _deformable_import_cable(_deformable_ctx, consumed_cable_curve_paths)
+        if _deformable_prims.cloth:
+            _deformable_import_cloth(_deformable_ctx)
+        if _deformable_prims.tetmeshes:
+            _deformable_import_volume(_deformable_ctx)
+
+        # PhysicsAttachment prims from the AOUSD deformables proposal. The current
+        # builder can faithfully lower the cable/rod subset because imported cables
+        # are rigid capsule bodies. Surface/volume attachments require a separate
+        # deformable-site constraint model, so those are preserved as attrs and warned.
+        if _deformable_prims.attachments:
+            _deformable_import_attachments(_deformable_ctx, consumed_junction_attachment_paths)
+
+        # AOUSD PhysicsElementCollisionFilter prims: suppress collision between authored element
+        # groups (cable segments / collider shapes); runs after the cables and colliders exist.
+        if _deformable_prims.element_filters:
+            _deformable_import_element_collision_filters(_deformable_ctx)
+
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
     # for any bodies that get merged.
@@ -3945,6 +4039,17 @@ def parse_usd(
 
             path_body_map[path] = new_id
 
+        # Cable bodies/joints and attachment joints are addressed by index (not prim path), so
+        # remap them through the collapse maps to keep their path maps valid after collapsing.
+        path_cable_map, path_attachment_map = _deformable_remap_collapsed(
+            path_cable_map,
+            path_attachment_map,
+            path_attachment_attrs,
+            collapse_results["joint_remap"],
+            body_remap,
+            body_merged_parent,
+        )
+
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         # First rebuild the canonical label→index map, then re-add merged joint aliases.
         new_label_to_idx = {label: idx for idx, label in enumerate(builder.joint_label)}
@@ -4153,6 +4258,11 @@ def parse_usd(
         "up_axis": stage_up_axis,
         "path_body_map": path_body_map,
         "path_joint_map": path_joint_map,
+        "path_cable_attrs": path_cable_attrs,
+        "path_cloth_attrs": path_cloth_attrs,
+        "path_soft_attrs": path_soft_attrs,
+        "path_attachment_map": path_attachment_map,
+        "path_attachment_attrs": path_attachment_attrs,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
         "mass_unit": mass_unit,
