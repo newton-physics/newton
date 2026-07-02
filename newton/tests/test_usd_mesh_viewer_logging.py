@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Tests for USD mesh extraction and viewer mesh instance logging."""
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,7 @@ from newton.viewer import ViewerNull
 
 
 def _create_referenced_mesh_stage(tmpdir: str) -> Path:
+    """Create a USD stage with a referenced translated triangle mesh."""
     from pxr import Gf, Usd, UsdGeom
 
     asset_path = Path(tmpdir) / "asset.usda"
@@ -43,7 +46,10 @@ def _create_referenced_mesh_stage(tmpdir: str) -> Path:
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUsdMeshHelpers(unittest.TestCase):
+    """Tests for loading Newton meshes from USD source variants."""
+
     def test_get_mesh_accepts_usd_file_with_reference(self):
+        """Load a mesh from a USD file containing a referenced asset."""
         with tempfile.TemporaryDirectory() as tmpdir:
             stage_path = _create_referenced_mesh_stage(tmpdir)
 
@@ -64,6 +70,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
         assert_np_equal(mesh.indices, np.array([0, 1, 2], dtype=np.int32))
 
     def test_get_mesh_accepts_usd_stage_handle(self):
+        """Load a mesh from an already-open USD stage handle."""
         from pxr import Usd
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -77,10 +84,12 @@ class TestUsdMeshHelpers(unittest.TestCase):
         self.assertEqual(len(mesh.indices), 3)
 
     def test_get_mesh_rejects_http_urls(self):
+        """Reject cleartext HTTP USD asset URLs."""
         with self.assertRaisesRegex(ValueError, "HTTP USD URLs are not supported"):
             newton.usd.get_mesh("http://example.com/marker.usda", compute_inertia=False)
 
     def test_get_mesh_prim_source_keeps_authored_units(self):
+        """Keep authored coordinates when loading a single mesh prim."""
         from pxr import Gf, Usd, UsdGeom
 
         stage = Usd.Stage.CreateInMemory()
@@ -101,6 +110,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
         assert_np_equal(result.vertices[1], np.array([100.0, 0.0, 0.0], dtype=np.float32))
 
     def test_get_mesh_merges_multiple_mesh_prims(self):
+        """Merge multiple mesh prims under a selected root."""
         from pxr import Gf, Usd, UsdGeom
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -128,6 +138,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
         assert_np_equal(mesh.vertices[3:], np.array([[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 1.0, 0.0]]))
 
     def test_get_mesh_rejects_preserved_facevarying_uvs_for_merged_sources(self):
+        """Reject merged-source loads that request face-varying UV preservation."""
         with tempfile.TemporaryDirectory() as tmpdir:
             stage_path = _create_referenced_mesh_stage(tmpdir)
 
@@ -140,6 +151,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
                 )
 
     def test_get_mesh_applies_root_relative_transform_and_stage_units(self):
+        """Apply root-relative transforms and authored stage units."""
         from pxr import Gf, Usd, UsdGeom
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -169,6 +181,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
         )
 
     def test_get_mesh_flips_winding_for_negative_scale(self):
+        """Flip triangle winding when a merged transform mirrors handedness."""
         from pxr import Gf, Usd, UsdGeom
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -194,6 +207,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
         assert_np_equal(mesh.vertices[1], np.array([-1.0, 0.0, 0.0], dtype=np.float32))
 
     def test_get_mesh_transforms_normals_with_rotation(self):
+        """Transform authored normals with the same row-vector convention as points."""
         from pxr import Gf, Usd, UsdGeom
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -222,7 +236,10 @@ class TestUsdMeshHelpers(unittest.TestCase):
 
 
 class _MeshLoggingProbe(ViewerNull):
+    """ViewerNull probe that records mesh and instance logging calls."""
+
     def __init__(self):
+        """Initialize captured mesh and instance call lists."""
         super().__init__(num_frames=1)
         self.mesh_calls = []
         self.instance_calls = []
@@ -241,6 +258,7 @@ class _MeshLoggingProbe(ViewerNull):
         roughness=None,
         metallic=None,
     ):
+        """Record mesh prototype uploads."""
         self.mesh_calls.append(
             {
                 "name": name,
@@ -254,6 +272,7 @@ class _MeshLoggingProbe(ViewerNull):
         )
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        """Record mesh instance batch uploads."""
         self.instance_calls.append(
             {
                 "name": name,
@@ -268,7 +287,10 @@ class _MeshLoggingProbe(ViewerNull):
 
 
 class TestViewerMeshLogging(unittest.TestCase):
+    """Tests for logging Newton mesh prototypes and USD mesh instances."""
+
     def test_log_mesh_instances_accepts_newton_mesh(self):
+        """Register a Newton mesh and log a default instance batch."""
         viewer = _MeshLoggingProbe()
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -292,6 +314,7 @@ class TestViewerMeshLogging(unittest.TestCase):
         self.assertEqual(len(viewer.instance_calls[0]["scales"]), 1)
 
     def test_log_mesh_instances_qualifies_active_layer_name(self):
+        """Qualify mesh instance paths under the active viewer layer."""
         viewer = _MeshLoggingProbe()
         viewer.activate("markers")
         mesh = newton.Mesh(
@@ -305,6 +328,7 @@ class TestViewerMeshLogging(unittest.TestCase):
         self.assertEqual(viewer.instance_calls[0]["name"], "/layers/markers/debug/marker")
 
     def test_log_mesh_instances_rejects_mismatched_instance_arrays(self):
+        """Reject per-instance arrays that cannot broadcast to the transform count."""
         viewer = _MeshLoggingProbe()
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -320,6 +344,7 @@ class TestViewerMeshLogging(unittest.TestCase):
             viewer.log_mesh_instances("/debug/bad_materials", mesh, xforms=xforms, materials=np.ones((3, 4)))
 
     def test_log_mesh_instances_rejects_negative_determinant_scale(self):
+        """Reject mirrored instance scales that would need a flipped prototype."""
         viewer = _MeshLoggingProbe()
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -331,6 +356,7 @@ class TestViewerMeshLogging(unittest.TestCase):
             viewer.log_mesh_instances("/debug/mirrored", mesh, scales=(-1.0, 1.0, 1.0))
 
     def test_log_usd_caches_loaded_mesh_by_default(self):
+        """Reuse parsed USD meshes for repeated cached path-source logging."""
         viewer = _MeshLoggingProbe()
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -349,6 +375,7 @@ class TestViewerMeshLogging(unittest.TestCase):
         self.assertEqual(len(viewer.instance_calls), 3)
 
     def test_log_usd_does_not_cache_handle_sources(self):
+        """Avoid caching non-path USD handle sources by identity."""
         viewer = _MeshLoggingProbe()
         source = object()
         mesh_a = newton.Mesh(
@@ -372,6 +399,7 @@ class TestViewerMeshLogging(unittest.TestCase):
         self.assertEqual(viewer._usd_mesh_cache, {})
 
     def test_log_mesh_instances_cache_distinguishes_mesh_colors(self):
+        """Keep mesh prototype cache entries separate for different colors."""
         viewer = _MeshLoggingProbe()
         vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
         indices = np.array([0, 1, 2], dtype=np.int32)
@@ -386,6 +414,7 @@ class TestViewerMeshLogging(unittest.TestCase):
         self.assertEqual(viewer.mesh_calls[1]["color"], (0.0, 0.0, 1.0))
 
     def test_winding_flipped_mesh_preserves_material_fields(self):
+        """Preserve material fields when uploading a mirrored mesh prototype."""
         viewer = _MeshLoggingProbe()
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -413,6 +442,7 @@ class TestViewerMeshLogging(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_log_usd_loads_and_logs_mesh(self):
+        """Load a USD file and log the resulting mesh instances."""
         viewer = _MeshLoggingProbe()
         with tempfile.TemporaryDirectory() as tmpdir:
             stage_path = _create_referenced_mesh_stage(tmpdir)

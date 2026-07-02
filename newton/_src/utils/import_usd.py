@@ -16,7 +16,7 @@ import re
 import warnings
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -55,6 +55,12 @@ logger = logging.getLogger("newton")
 AttributeFrequency = Model.AttributeFrequency
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+
+def _validate_https_usd_url(url: str) -> None:
+    """Reject non-HTTPS URLs before USD asset downloads."""
+    if urlparse(url).scheme != "https":
+        raise ValueError(f"USD URL downloads require HTTPS: {url}")
 
 
 def _external_stacklevel() -> int:
@@ -4482,14 +4488,33 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    request_timeout_s = 30
-    response = requests.get(url, allow_redirects=True, timeout=request_timeout_s)
+    def _download_https_url(source_url: str):
+        """Download a URL while validating every redirect target is HTTPS."""
+        current_url = source_url
+        request_timeout_s = 30
+        for _ in range(10):
+            _validate_https_usd_url(current_url)
+            response = requests.get(current_url, allow_redirects=False, timeout=request_timeout_s)
+            if int(response.status_code) in {301, 302, 303, 307, 308}:
+                redirect_url = response.headers.get("Location")
+                if not redirect_url:
+                    return response, current_url
+                current_url = urljoin(current_url, redirect_url)
+                continue
+            final_url = getattr(response, "url", current_url)
+            if not isinstance(final_url, str):
+                final_url = current_url
+            _validate_https_usd_url(final_url)
+            return response, final_url
+        raise RuntimeError(f"Too many redirects while downloading USD file: {source_url}")
+
+    response, resolved_url = _download_https_url(url)
     if response.status_code != 200:
         raise RuntimeError(f"Failed to download USD file. Status code: {response.status_code}")
     file = response.content
     dot = os.path.extsep
-    base = os.path.basename(url)
-    url_folder = os.path.dirname(url)
+    base = os.path.basename(urlparse(resolved_url).path)
+    url_folder = os.path.dirname(resolved_url)
     base_name = dot.join(base.split(dot)[:-1])
     if target_folder_name is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -4510,7 +4535,7 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
 
     # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
     # Each entry in the queue is (resolved_url, cache_relative_path).
-    downloaded_urls: set[str] = {url}
+    downloaded_urls: set[str] = {url, resolved_url}
     pending: collections.deque[tuple[str, str]] = collections.deque()
 
     def _extract_references(layer_str, parent_url_folder, parent_local_folder):
@@ -4533,10 +4558,11 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             continue
         downloaded_urls.add(ref_url)
         try:
-            response = requests.get(ref_url, allow_redirects=True, timeout=request_timeout_s)
+            response, resolved_ref_url = _download_https_url(ref_url)
             if response.status_code != 200:
                 print(f"Failed to download reference {local_path}. Status code: {response.status_code}")
                 continue
+            downloaded_urls.add(resolved_ref_url)
             file = response.content
             local_dir = os.path.dirname(local_path)
             if local_dir:
@@ -4563,7 +4589,9 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                     print(f"Exported USDA file to {usda_filename}.")
 
             # Recurse: resolve references relative to this file's location
-            _extract_references(ref_stage_str, posixpath.dirname(ref_url), local_dir)
+            _extract_references(ref_stage_str, posixpath.dirname(resolved_ref_url), local_dir)
+        except ValueError:
+            raise
         except Exception:
             print(f"Failed to download {local_path}.")
     return target_filename

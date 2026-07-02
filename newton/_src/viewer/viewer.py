@@ -1348,10 +1348,12 @@ class ViewerBase(ABC):
         num_instances = len(xforms)
 
         def _validate_instance_count(count: int, dtype_name: str) -> None:
+            """Ensure optional per-instance arrays match the transform batch."""
             if count != num_instances:
                 raise ValueError(f"Expected 1 or {num_instances} {dtype_name} values, received {count}.")
 
         def _ensure_vec3_array(arr, default):
+            """Return a device vec3 array broadcast to the instance count."""
             if arr is None:
                 return wp.array([default] * num_instances, dtype=wp.vec3, device=self.device)
             if isinstance(arr, wp.array):
@@ -1371,6 +1373,7 @@ class ViewerBase(ABC):
             return wp.array([wp.vec3(*value) for value in arr_np], dtype=wp.vec3, device=self.device)
 
         def _ensure_vec4_array(arr):
+            """Return a device vec4 array broadcast to the instance count."""
             if arr is None:
                 return None
             if isinstance(arr, wp.array):
@@ -1473,6 +1476,7 @@ class ViewerBase(ABC):
 
     @staticmethod
     def _usd_mesh_cache_key(source, root_path: str | None, load_normals: bool, load_uvs: bool, apply_stage_units: bool):
+        """Return a stable cache key for path and URL USD mesh sources."""
         if isinstance(source, str | os.PathLike):
             source_key = os.fspath(source)
             if not source_key.startswith(("http://", "https://")):

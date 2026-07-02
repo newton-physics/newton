@@ -1040,7 +1040,7 @@ def _get_mesh_from_source(
 
 @overload
 def get_mesh(
-    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
+    source: Usd.Prim,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1068,7 +1068,7 @@ def get_mesh(
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
     return_uv_indices: Literal[True] = True,
-    root_path: str | None = None,
+    root_path: None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
 ) -> tuple[Mesh, np.ndarray | None]: ...
@@ -1150,7 +1150,8 @@ def get_mesh(
             where ``uv_indices`` is a flattened triangle index buffer for the
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
-            face-varying UV array.
+            face-varying UV array. Only supported for a single
+            ``UsdGeom.Mesh`` prim when ``root_path`` is None.
         root_path: USD prim path to use as the merge root for stage, file path,
             URL, or non-mesh prim sources. Defaults to the stage pseudo-root for
             stages and paths, or the provided prim for non-mesh prim sources.
