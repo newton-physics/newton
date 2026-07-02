@@ -308,11 +308,16 @@ class Example:
         max_pos = np.max(particle_q, axis=0)
         initial_min, initial_max = self.initial_particle_bounds
         bbox_limit = 0.8 if self.scenario == "harsh" else 0.35
-        lower_drift_limit = 0.16 if self.scenario == "harsh" else 0.06
-        upper_drift_limit = 0.16 if self.scenario == "harsh" else 0.08
-        assert np.linalg.norm(max_pos - min_pos) < bbox_limit, "Soft object expanded beyond expected bounds"
-        assert min_pos[2] > initial_min[2] - lower_drift_limit, "Soft object drifted unexpectedly below the gripper"
-        assert max_pos[2] < initial_max[2] + upper_drift_limit, "Soft object drifted unexpectedly above the gripper"
+        bbox_size = float(np.linalg.norm(max_pos - min_pos))
+        assert bbox_size < bbox_limit, f"Soft object expanded beyond expected bounds: size={bbox_size:.5f}"
+
+        center_z = float(np.mean(particle_q[:, 2]))
+        initial_center_z = float(0.5 * (initial_min[2] + initial_max[2]))
+        center_drift = abs(center_z - initial_center_z)
+        center_drift_limit = 0.16 if self.scenario == "harsh" else 0.06
+        assert center_drift < center_drift_limit, (
+            f"Soft object drifted unexpectedly from the gripper: center_drift={center_drift:.5f}"
+        )
 
     def render(self) -> None:
         self.viewer.begin_frame(self.sim_time)
