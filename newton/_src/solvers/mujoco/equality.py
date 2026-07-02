@@ -9,8 +9,7 @@ Equality constraints are MuJoCo-specific concepts that live on the model under
 the ``mujoco`` namespace. The public lower-level path for users is
 :meth:`ModelBuilder.add_custom_values` with ``mujoco:equality_constraint_*``
 keys; this module provides convenience used internally by the MJCF/USD
-importers and by tests during the deprecation window for
-``ModelBuilder.add_equality_constraint*``.
+importers and by tests.
 """
 
 from __future__ import annotations
@@ -21,8 +20,8 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 from ...core.types import Transform, Vec3, axis_to_vec3, vec5
-from ...sim.enums import EqType
 from ...sim.model import Model
+from .enums import EqType
 
 if TYPE_CHECKING:
     from ...sim.builder import ModelBuilder
@@ -50,10 +49,9 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
     under the ``mujoco`` namespace after :meth:`~newton.ModelBuilder.finalize`.
 
     Idempotent: re-registration with the same spec is a no-op. Called from
-    :meth:`SolverMuJoCo.register_custom_attributes`, and — for the duration of the
-    ``Model.equality_constraint_*`` deprecation window (removal in a future release) — lazily from
-    :meth:`ModelBuilder.__init__`, so the namespaced fields exist even for builders that never
-    register ``SolverMuJoCo``.
+    :meth:`ModelBuilder.__init__` so the namespaced equality fields exist independently of
+    :meth:`SolverMuJoCo.register_custom_attributes`, which also calls it when registering the
+    other MuJoCo custom attributes.
     """
     ca = type(builder).CustomAttribute
     eq_freq = "mujoco:equality_constraint"

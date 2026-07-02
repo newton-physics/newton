@@ -6852,12 +6852,12 @@ def Xform "Articulation" (
         self.assertEqual(converted_model.constraint_mimic_count, 1)
         eq_types = converted_model.mujoco.equality_constraint_type.numpy()
         target_kinds = converted_model.mujoco.equality_constraint_target_kind.numpy()
-        self.assertEqual(eq_types.tolist().count(int(newton.EqType.CONNECT)), 1)
-        self.assertEqual(eq_types.tolist().count(int(newton.EqType.WELD)), 1)
-        self.assertEqual(eq_types.tolist().count(int(newton.EqType.JOINT)), 1)
+        self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.CONNECT)), 1)
+        self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.WELD)), 1)
+        self.assertEqual(eq_types.tolist().count(int(newton.solvers.SolverMuJoCo.EqType.JOINT)), 1)
         self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.JOINT)), 2)
         self.assertEqual(target_kinds.tolist().count(int(MjcEqualityTargetKind.MIMIC)), 1)
-        joint_eq = int(np.flatnonzero(eq_types == int(newton.EqType.JOINT))[0])
+        joint_eq = int(np.flatnonzero(eq_types == int(newton.solvers.SolverMuJoCo.EqType.JOINT))[0])
         self.assertEqual(target_kinds[joint_eq], int(MjcEqualityTargetKind.MIMIC))
         np.testing.assert_allclose(
             converted_model.mujoco.equality_constraint_polycoef.numpy()[joint_eq],

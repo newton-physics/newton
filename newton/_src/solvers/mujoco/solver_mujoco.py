@@ -21,7 +21,6 @@ from ...sim import (
     BodyFlags,
     Contacts,
     Control,
-    EqType,
     JointTargetMode,
     JointType,
     Model,
@@ -49,6 +48,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from .enums import EqType as _EqType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
@@ -407,6 +407,9 @@ class SolverMuJoCo(SolverBase):
 
             solver.render_mujoco_viewer()
     """
+
+    EqType = _EqType
+    """MuJoCo equality constraint type."""
 
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
@@ -5837,7 +5840,7 @@ class SolverMuJoCo(SolverBase):
             elif target_kind == int(MjcEqualityTargetKind.MIMIC) and target >= 0:
                 converted_mimic_targets.add(target)
 
-            if constraint_type == EqType.CONNECT:
+            if constraint_type == _EqType.CONNECT:
                 self.has_connect_constraints = True
                 eq = add_body_equality(i)
                 eq.type = mujoco.mjtEq.mjEQ_CONNECT
@@ -5850,7 +5853,7 @@ class SolverMuJoCo(SolverBase):
                 if eq_constraint_solimp is not None:
                     eq.solimp = eq_constraint_solimp[i]
 
-            elif constraint_type == EqType.JOINT:
+            elif constraint_type == _EqType.JOINT:
                 eq = spec.add_equality()
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
@@ -5864,7 +5867,7 @@ class SolverMuJoCo(SolverBase):
                 if eq_constraint_solimp is not None:
                     eq.solimp = eq_constraint_solimp[i]
 
-            elif constraint_type == EqType.WELD:
+            elif constraint_type == _EqType.WELD:
                 eq = add_body_equality(i)
                 eq.type = mujoco.mjtEq.mjEQ_WELD
                 eq.active = eq_constraint_enabled[i]
