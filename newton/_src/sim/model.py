@@ -136,6 +136,10 @@ class Model:
             row_width: Number of flattened values stored for each entity row.
             requires_empty_sentinel: Whether empty compacted storage retains a
                 sentinel value.
+            deprecated: Whether the attribute is a deprecated compatibility
+                alias that generic consumers should skip.
+            alias_of: Canonical attribute name used when explicitly accessing
+                this alias through a model view.
             compaction_policy: Experimental policy used by coupled model
                 views. ``"generic"`` selects and remaps rows using this spec;
                 ``"end"`` remaps exclusive boundaries in the referenced
@@ -156,6 +160,8 @@ class Model:
         references: Model.AttributeFrequency | str | None = None
         row_width: int = 1
         requires_empty_sentinel: bool = False
+        deprecated: bool = False
+        alias_of: str | None = None
         compaction_policy: Literal["generic", "end", "start", "world_start", "color_groups", "passthrough"] = "generic"
 
         def __post_init__(self) -> None:
@@ -1103,8 +1109,16 @@ class Model:
 
         self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
         if not self.use_coord_layout_targets:
-            self.attribute_specs["joint_target_pos"] = Model.AttributeSpec(target_q_freq)
-            self.attribute_specs["joint_target_vel"] = Model.AttributeSpec(Model.AttributeFrequency.JOINT_DOF)
+            self.attribute_specs["joint_target_pos"] = Model.AttributeSpec(
+                target_q_freq,
+                deprecated=True,
+                alias_of="joint_target_q",
+            )
+            self.attribute_specs["joint_target_vel"] = Model.AttributeSpec(
+                Model.AttributeFrequency.JOINT_DOF,
+                deprecated=True,
+                alias_of="joint_target_qd",
+            )
 
         # Extended state attributes live on State and are allocated only when
         # explicitly requested via request_state_attributes().
@@ -1137,12 +1151,16 @@ class Model:
             return replace(spec, frequency=frequency, assignment=assignment)
         return spec
 
-    def _iter_attribute_specs(self) -> Iterator[tuple[str, Model.AttributeSpec]]:
-        """Yield unified metadata, including late legacy registrations."""
+    def _iter_attribute_specs(self, *, include_deprecated: bool = False) -> Iterator[tuple[str, Model.AttributeSpec]]:
+        """Yield unified metadata, including late legacy registrations.
+
+        Args:
+            include_deprecated: Whether to include deprecated compatibility aliases.
+        """
         names = dict.fromkeys((*self.attribute_specs, *self.attribute_frequency))
         for name in names:
             spec = self._attribute_spec(name)
-            if spec is not None:
+            if spec is not None and (include_deprecated or not spec.deprecated):
                 yield name, spec
 
     def _set_attribute_spec(self, name: str, spec: Model.AttributeSpec) -> None:

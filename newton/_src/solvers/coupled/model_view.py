@@ -85,13 +85,25 @@ class ModelView:
     # ------------------------------------------------------------------
 
     def __getattr__(self, name: str):
+        parent = object.__getattribute__(self, "_parent")
+        spec = parent._attribute_spec(name)
+        if spec is not None and spec.alias_of is not None:
+            getattr(parent, name)  # Validate availability and emit the deprecation warning.
+            return getattr(self, spec.alias_of)
+
         overrides = object.__getattribute__(self, "_overrides")
         if name in overrides:
             return self._count_limited_attribute(name, overrides[name])
-        return self._count_limited_attribute(name, getattr(object.__getattribute__(self, "_parent"), name))
+        return self._count_limited_attribute(name, getattr(parent, name))
 
     def __setattr__(self, name: str, value) -> None:
         parent = object.__getattribute__(self, "_parent")
+        spec = parent._attribute_spec(name)
+        if spec is not None and spec.alias_of is not None:
+            getattr(parent, name)  # Validate availability and emit the deprecation warning.
+            setattr(self, spec.alias_of, value)
+            return
+
         if not hasattr(parent, name):
             raise AttributeError(
                 f"ModelView {self.name!r} cannot override {name!r}: {type(parent).__name__} has no such attribute"
