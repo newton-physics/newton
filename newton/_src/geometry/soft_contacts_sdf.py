@@ -456,9 +456,8 @@ def launch_soft_ef_contacts(
 
     Order matters: EDGE before FACE, because the face pass's write base reads the final edge count.
     """
-    adj = model.soft_mesh_adjacency
-    if adj is None or model.shape_count == 0:
-        return
+    # Nothing to do when there are no candidate pairs -- covers the no-soft-mesh, no-shape, and
+    # flag-off cases, since the pairs are built from the mesh adjacency and shapes.
     n_edge_pairs = int(edge_pairs.shape[0])
     n_face_pairs = int(face_pairs.shape[0])
     if n_edge_pairs == 0 and n_face_pairs == 0:
