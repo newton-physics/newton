@@ -4660,10 +4660,10 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         min_distance: float = -1.0,
         max_distance: float = 1.0,
-        label: str | None = None,
         collision_filter_parent: bool | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        label: str | None = None,
     ) -> int:
         """Adds a distance joint to the model. The distance joint constraints the distance between the joint anchor points on the two bodies (see :ref:`FK-IK`) it connects to the interval [`min_distance`, `max_distance`].
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (first 3 linear and then 3 angular velocity dimensions).
@@ -4675,10 +4675,10 @@ class ModelBuilder:
             child_xform: The transform of the joint in the child body's local frame.
             min_distance: The minimum distance between the bodies (no limit if negative).
             max_distance: The maximum distance between the bodies (no limit if negative).
-            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
+            label: The label of the joint.
 
         Returns:
             The index of the added joint.
