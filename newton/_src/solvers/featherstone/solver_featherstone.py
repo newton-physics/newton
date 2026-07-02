@@ -575,6 +575,7 @@ class SolverFeatherstone(SolverBase):
                     eval_rigid_id,
                     dim=model.articulation_count,
                     inputs=[
+                        None,  # articulation_mask: solver runs on all articulations
                         model.articulation_start,
                         model.articulation_end,
                         model.joint_type,
@@ -671,6 +672,7 @@ class SolverFeatherstone(SolverBase):
                         eval_rigid_tau,
                         dim=model.articulation_count,
                         inputs=[
+                            None,  # articulation_mask: solver runs on all articulations
                             model.articulation_start,
                             model.articulation_end,
                             model.joint_type,
