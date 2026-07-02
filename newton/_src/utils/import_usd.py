@@ -42,6 +42,7 @@ from ..solvers.mujoco.utils import (
     mjc_add_equality_mimic,
     mjc_polycoef_has_higher_order,
 )
+from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
@@ -310,6 +311,7 @@ def parse_usd(
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
+    require_newton_usd_schemas(Usd)
 
     from .topology import topological_sort_undirected  # noqa: PLC0415
 
