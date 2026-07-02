@@ -53,6 +53,37 @@ AttributeFrequency = Model.AttributeFrequency
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
+# Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
+_HARD_LIMIT_KE = 1.0e8
+
+
+def _resolve_newton_limit_ke(limit_ke: float | None, fallback: float) -> float:
+    """Resolve a NewtonJointAPI ``newton:limitStiffness`` value.
+
+    ``limit_ke`` is the authored stiffness (``-inf``/``None`` when unset,
+    ``+inf`` for a hard limit). ``fallback`` is the per-DOF stiffness resolved from other
+    schemas (PhysX/MuJoCo) or the builder default. Values stay in the importer's working
+    units (per-degree for angular DOFs); unit conversion happens downstream.
+    """
+    if limit_ke is None or limit_ke == float("-inf"):
+        return fallback
+    if limit_ke == float("inf"):
+        return _HARD_LIMIT_KE
+    return limit_ke
+
+
+def _resolve_newton_limit_kd(limit_ke: float | None, limit_kd: float | None, fallback: float) -> float:
+    """Resolve a NewtonJointAPI ``newton:limitDamping`` value.
+
+    Hard limits (``limit_ke`` or ``limit_kd`` == ``+inf``) have no damping. Otherwise
+    ``-inf``/``None`` selects the ``fallback`` (engine default / other-schema value).
+    """
+    if limit_ke == float("inf") or limit_kd == float("inf"):
+        return 0.0
+    if limit_kd is None or limit_kd == float("-inf"):
+        return fallback
+    return limit_kd
+
 
 def _external_stacklevel() -> int:
     """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
@@ -303,6 +334,7 @@ def parse_usd(
 
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
+    default_joint_damping = builder.default_joint_cfg.damping
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
@@ -1129,6 +1161,9 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
+        joint_damping = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="damping", default=default_joint_damping, verbose=verbose
+        )
         joint_velocity_limit = R.get_value(
             joint_prim,
             prim_type=PrimType.JOINT,
@@ -1136,6 +1171,11 @@ def parse_usd(
             default=None,
             verbose=verbose,
         )
+        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
+        if joint_velocity_limit == float("inf"):
+            joint_velocity_limit = None
+        limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
+        limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -1161,21 +1201,24 @@ def parse_usd(
             else:
                 limit_gains_scaling = 1.0
 
-            # Resolve limit gains with precedence, fallback to builder defaults when missing
-            current_joint_limit_ke = R.get_value(
+            # Resolve limit gains: NewtonJointAPI values take precedence over per-DOF
+            # values from other schemas (PhysX/MuJoCo) or the builder default.
+            fallback_limit_ke = R.get_value(
                 joint_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
                 default=default_joint_limit_ke * limit_gains_scaling,
                 verbose=verbose,
             )
-            current_joint_limit_kd = R.get_value(
+            fallback_limit_kd = R.get_value(
                 joint_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
                 default=default_joint_limit_kd * limit_gains_scaling,
                 verbose=verbose,
             )
+            current_joint_limit_ke = _resolve_newton_limit_ke(limit_ke, fallback_limit_ke)
+            current_joint_limit_kd = _resolve_newton_limit_kd(limit_ke, limit_kd, fallback_limit_kd)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
@@ -1183,6 +1226,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
+            joint_params["damping"] = joint_damping
             joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
@@ -1236,6 +1280,7 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
+                joint_params["damping"] /= DegreesToRadian
                 if joint_params["velocity_limit"] is not None:
                     joint_params["velocity_limit"] *= DegreesToRadian
 
@@ -1336,20 +1381,22 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke = R.get_value(
+                    fallback_limit_ke = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_ke",
                         default=default_joint_limit_ke,
                         verbose=verbose,
                     )
-                    current_joint_limit_kd = R.get_value(
+                    fallback_limit_kd = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{trans_name}_kd",
                         default=default_joint_limit_kd,
                         verbose=verbose,
                     )
+                    current_joint_limit_ke = _resolve_newton_limit_ke(limit_ke, fallback_limit_ke)
+                    current_joint_limit_kd = _resolve_newton_limit_kd(limit_ke, limit_kd, fallback_limit_kd)
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_trans_axes[dof],
@@ -1361,6 +1408,7 @@ def parse_usd(
                             target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
+                            damping=joint_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit
@@ -1390,20 +1438,22 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke = R.get_value(
+                    fallback_limit_ke = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_ke",
                         default=default_joint_limit_ke * DegreesToRadian,
                         verbose=verbose,
                     )
-                    current_joint_limit_kd = R.get_value(
+                    fallback_limit_kd = R.get_value(
                         joint_prim,
                         prim_type=PrimType.JOINT,
                         key=f"limit_{rot_name}_kd",
                         default=default_joint_limit_kd * DegreesToRadian,
                         verbose=verbose,
                     )
+                    current_joint_limit_ke = _resolve_newton_limit_ke(limit_ke, fallback_limit_ke)
+                    current_joint_limit_kd = _resolve_newton_limit_kd(limit_ke, limit_kd, fallback_limit_kd)
 
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -1416,6 +1466,7 @@ def parse_usd(
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
+                            damping=joint_damping / DegreesToRadian,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -1625,24 +1676,37 @@ def parse_usd(
             j_friction = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
             )
+            j_damping = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="damping", default=default_joint_damping, verbose=verbose
+            )
             j_velocity_limit = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
+            if j_velocity_limit == float("inf"):
+                j_velocity_limit = None
 
-            limit_ke = R.get_value(
+            j_newton_limit_ke = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose
+            )
+            j_newton_limit_kd = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose
+            )
+            fallback_limit_ke = R.get_value(
                 jp_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_ke" if is_revolute else "limit_linear_ke",
                 default=default_joint_limit_ke * limit_gains_scaling,
                 verbose=verbose,
             )
-            limit_kd = R.get_value(
+            fallback_limit_kd = R.get_value(
                 jp_prim,
                 prim_type=PrimType.JOINT,
                 key="limit_angular_kd" if is_revolute else "limit_linear_kd",
                 default=default_joint_limit_kd * limit_gains_scaling,
                 verbose=verbose,
             )
+            limit_ke = _resolve_newton_limit_ke(j_newton_limit_ke, fallback_limit_ke)
+            limit_kd = _resolve_newton_limit_kd(j_newton_limit_ke, j_newton_limit_kd, fallback_limit_kd)
 
             limit_lower = jd.limit.lower
             limit_upper = jd.limit.upper
@@ -1688,6 +1752,7 @@ def parse_usd(
                 limit_upper *= DegreesToRadian
                 limit_ke /= DegreesToRadian
                 limit_kd /= DegreesToRadian
+                j_damping /= DegreesToRadian
                 if jd.drive.enabled:
                     target_pos *= DegreesToRadian
                     target_vel *= DegreesToRadian
@@ -1731,6 +1796,7 @@ def parse_usd(
                 target_vel=target_vel,
                 target_ke=target_ke,
                 target_kd=target_kd,
+                damping=j_damping,
                 armature=j_armature,
                 friction=j_friction,
                 effort_limit=effort_limit,
