@@ -299,14 +299,17 @@ class Example:
         nconmax=None,
         builder=None,
         cone=None,
+        fps=600,
+        sim_substeps=10,
     ):
         if _NEW_LAYOUT_AVAILABLE:
             newton.use_coord_layout_targets = True
-        fps = 600
+        if fps <= 0 or sim_substeps <= 0:
+            raise ValueError("fps and sim_substeps must be positive")
         self.sim_time = 0.0
         self.benchmark_time = 0.0
         self.frame_dt = 1.0 / fps
-        self.sim_substeps = 10
+        self.sim_substeps = sim_substeps
         self.contacts = None
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.world_count = world_count
