@@ -6520,6 +6520,8 @@ class SolverMuJoCo(SolverBase):
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
 
+        mj_model.stat.meaninertia = tile(mj_model.stat.meaninertia)
+
         for field in mj_model.opt.__dataclass_fields__:
             if field in opt_fields_to_expand:
                 array = getattr(mj_model.opt, field)

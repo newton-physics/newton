@@ -9592,7 +9592,7 @@ class TestActuatorLengthRangeRuntime(unittest.TestCase):
 
 
 class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
-    """Verify per-world dampratio resolution and actuator_acc0 after mass randomization."""
+    """Verify per-world derived quantities after mass randomization."""
 
     MJCF = """<?xml version="1.0" ?>
     <mujoco>
@@ -9637,11 +9637,14 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
 
         acc0 = self.solver.mjw_model.actuator_acc0.numpy()
         biasprm = self.solver.mjw_model.actuator_biasprm.numpy()
+        meaninertia = self.solver.mjw_model.stat.meaninertia.numpy()
 
         self.assertNotAlmostEqual(float(acc0[0, 0]), float(acc0[1, 0]), places=6)
         self.assertLess(float(biasprm[0, 0, 2]), 0.0)
         self.assertLess(float(biasprm[1, 0, 2]), 0.0)
         self.assertNotAlmostEqual(float(biasprm[0, 0, 2]), float(biasprm[1, 0, 2]), places=6)
+        self.assertEqual(meaninertia.shape, (self.model.world_count,))
+        np.testing.assert_allclose(meaninertia[1], 2.0 * meaninertia[0], rtol=1e-5)
 
 
 class TestActuatorInheritrange(unittest.TestCase):
