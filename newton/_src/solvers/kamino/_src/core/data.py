@@ -3,7 +3,10 @@
 
 """Defines the Kamino-specific data containers to hold time-varying simulation data."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import warp as wp
 
@@ -13,6 +16,9 @@ from .geometry import GeometriesData
 from .joints import JointsData
 from .state import StateKamino
 from .time import TimeData
+
+if TYPE_CHECKING:
+    from .model import ModelKamino
 
 ###
 # Module interface
@@ -232,7 +238,7 @@ class DataKamino:
         wp.copy(state.dq_j, self.joints.dq_j)
         wp.copy(state.lambda_j, self.joints.lambda_j)
 
-    def copy_joint_control_from(self, control: ControlKamino) -> None:
+    def copy_joint_control_from(self, control: ControlKamino, model: ModelKamino | None = None) -> None:
         """
         Copies the joint control inputs from the given :class:`ControlKamino`.
 
@@ -242,16 +248,38 @@ class DataKamino:
         - Joint velocity targets
         - Joint feedforward efforts
 
+        Any missing control inputs will be set to zero, or its initial value if
+        the :class:`ModelKamino` is provided.
+
         Args:
-            control (ControlKamino):
-                The control container holding the joint control inputs.
+            control: The control container holding the joint control inputs.
+            model: The model providing default values for any missing control
+                inputs.
+
         """
         # Ensure joints data has been allocated
         if self.joints is None:
             raise RuntimeError("DataKamino.joints is not finalized.")
 
-        # Copy joint control inputs from the source control container
-        wp.copy(self.joints.tau_j, control.tau_j)
-        wp.copy(self.joints.q_j_ref, control.q_j_ref)
-        wp.copy(self.joints.dq_j_ref, control.dq_j_ref)
-        wp.copy(self.joints.tau_j_ref, control.tau_j_ref)
+        # Copy joint control inputs from the source control container, with
+        # fallback options of copying the defaults from the model or zeroing them
+        if control.tau_j is not None:
+            wp.copy(self.joints.tau_j, control.tau_j)
+        else:
+            self.joints.tau_j.zero_()
+        if control.q_j_ref is not None:
+            wp.copy(self.joints.q_j_ref, control.q_j_ref)
+        elif model is not None:
+            wp.copy(self.joints.q_j_ref, model.joints.q_j_0)
+        else:
+            self.joints.q_j_ref.zero_()
+        if control.dq_j_ref is not None:
+            wp.copy(self.joints.dq_j_ref, control.dq_j_ref)
+        elif model is not None:
+            wp.copy(self.joints.dq_j_ref, model.joints.dq_j_0)
+        else:
+            self.joints.dq_j_ref.zero_()
+        if control.tau_j_ref is not None:
+            wp.copy(self.joints.tau_j_ref, control.tau_j_ref)
+        else:
+            self.joints.tau_j_ref.zero()
