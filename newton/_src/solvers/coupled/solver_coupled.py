@@ -149,31 +149,7 @@ class _AttributeProjection:
     references: Model.AttributeFrequency | str | None
     row_width: int
     requires_empty_sentinel: bool
-
-
-_DERIVED_PROJECTION_ATTRIBUTES = frozenset(
-    {
-        "joint_ancestor",
-        "shape_body",
-        "joint_q_start",
-        "joint_qd_start",
-        "articulation_start",
-        "articulation_end",
-        "particle_world_start",
-        "body_world_start",
-        "shape_world_start",
-        "joint_world_start",
-        "joint_dof_world_start",
-        "joint_coord_world_start",
-        "joint_constraint_world_start",
-        "articulation_world_start",
-        "particle_color_groups",
-        "body_color_groups",
-        "body_shapes",
-        "shape_collision_filter_pairs",
-        "shape_contact_pairs",
-    }
-)
+    compaction_policy: str
 
 
 def _compact_index_projection(local_to_global: Sequence[int], source_count: int) -> _CompactIndexProjection:
@@ -340,36 +316,20 @@ class SolverCoupled(SolverBase, CouplingInterface):
     # ------------------------------------------------------------------
 
     def _build_attribute_projections(self) -> tuple[_AttributeProjection, ...]:
-        """Build coupled-only projection rules from semantic model metadata."""
+        """Build coupled-only projection rules from unified model metadata."""
         model = self.model
-        projections = [
+        return tuple(
             _AttributeProjection(
                 name,
-                frequency,
-                model._attribute_reference_frequency(name),
-                model._attribute_row_width(name),
-                model._attribute_requires_empty_sentinel(name),
+                spec.frequency,
+                spec.references,
+                spec.row_width,
+                spec.requires_empty_sentinel,
+                spec.compaction_policy,
             )
-            for name, frequency in model.attribute_frequency.items()
-            if not self._is_deprecated_namespace_alias(name)
-        ]
-        explicit_names = set(model.attribute_frequency)
-        for name in model.__dict__:
-            if name in explicit_names:
-                continue
-            frequency = model._infer_attribute_frequency(name)
-            if frequency is None:
-                continue
-            projections.append(
-                _AttributeProjection(
-                    name,
-                    frequency,
-                    model._attribute_reference_frequency(name),
-                    model._attribute_row_width(name),
-                    model._attribute_requires_empty_sentinel(name),
-                )
-            )
-        return tuple(projections)
+            for name, spec in model._iter_attribute_specs()
+            if spec.compaction_policy in {"generic", "end"} and not self._is_deprecated_namespace_alias(name)
+        )
 
     def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
         """Return whether metadata names a warning-producing namespace alias."""
@@ -1216,22 +1176,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         projections_by_frequency = self._compact_projections_by_frequency(compact, shape_order=shape_order)
         self._set_compact_custom_frequency_counts(view, projections_by_frequency)
-        renamed_attrs = {"joint_target_pos", "joint_target_vel"}
         self._project_compact_attributes(
             view,
             projections_by_frequency,
-            exclude=_DERIVED_PROJECTION_ATTRIBUTES | renamed_attrs,
+            exclude=set(),
         )
         self._sync_custom_frequency_namespace_metadata(view)
-
-        joint_parent_local = view.joint_parent.numpy() if len(joint_order) else np.empty(0, dtype=np.int32)
-        joint_child_local = view.joint_child.numpy() if len(joint_order) else np.empty(0, dtype=np.int32)
-        child_to_joint = {int(child): joint for joint, child in enumerate(joint_child_local)}
-        view.joint_ancestor = wp.array(
-            [child_to_joint.get(int(parent), -1) for parent in joint_parent_local],
-            dtype=wp.int32,
-            device=device,
-        )
 
         view.joint_q_start = wp.array(
             self._rebased_joint_starts(model.joint_q_start.numpy(), joint_order),
@@ -1244,25 +1194,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             device=device,
         )
 
-        if model.shape_count and model.shape_body is not None:
-            visible_shapes = set(visible_shape_order)
-            shape_body = wp.empty(model.shape_count, dtype=int, device=device)
-            wp.launch(
-                _remap_shape_body_kernel,
-                dim=model.shape_count,
-                inputs=[
-                    model.shape_body,
-                    wp.array(compact.projections[frequency.BODY].global_to_local, dtype=int, device=device),
-                    wp.array(
-                        [int(shape in visible_shapes) for shape in range(model.shape_count)],
-                        dtype=int,
-                        device=device,
-                    ),
-                ],
-                outputs=[shape_body],
-                device=device,
-            )
-            view.shape_body = shape_body
         view.body_shapes = self._global_shape_body_shapes(
             model.body_shapes,
             body_global_to_local,
@@ -1272,7 +1203,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         articulation_starts = self._compact_articulation_starts(joint_order, articulation_order)
         view.articulation_start = wp.array(articulation_starts, dtype=wp.int32, device=device)
-        view.articulation_end = wp.array(articulation_starts[1:], dtype=wp.int32, device=device)
         self._set_compact_articulation_extents(view, articulation_order)
 
         # For VBD solver we require color groups to be compacted too.
@@ -1350,11 +1280,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         f"Cannot compact model attribute {full_name!r}: no projection for reference frequency "
                         f"{attribute.references!r}"
                     )
-                selected = self._remap_compact_reference_value(
-                    selected,
-                    reference_projection.global_to_local,
-                    full_name,
-                )
+                if attribute.compaction_policy == "end":
+                    selected = self._remap_compact_end_value(selected, reference_projection, full_name)
+                else:
+                    selected = self._remap_compact_reference_value(
+                        selected,
+                        reference_projection.global_to_local,
+                        full_name,
+                    )
             if update_existing:
                 self._update_view_attribute_value(view, full_name, selected)
             else:
@@ -1610,6 +1543,32 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return remap_array(value)
         if isinstance(value, list):
             return remap_array(np.asarray(value)).tolist()
+        return value
+
+    def _remap_compact_end_value(
+        self,
+        value,
+        projection: _CompactIndexProjection,
+        attribute_name: str,
+    ):
+        """Remap exclusive source-domain boundaries into compact indices."""
+        order = np.asarray(projection.local_to_global, dtype=np.int64)
+        if order.size > 1 and np.any(order[1:] < order[:-1]):
+            raise ValueError(f"Cannot compact end attribute {attribute_name!r}: reference order is not monotonic")
+
+        host = value.numpy() if isinstance(value, wp.array) else np.asarray(value)
+        source_count = len(projection.global_to_local)
+        if np.any(host < 0) or np.any(host > source_count):
+            raise ValueError(
+                f"Cannot compact end attribute {attribute_name!r}: boundaries must be within [0, {source_count}]"
+            )
+        remapped = np.searchsorted(order, host, side="left")
+        if isinstance(value, wp.array):
+            return wp.array(remapped, dtype=value.dtype, device=value.device)
+        if isinstance(value, np.ndarray):
+            return remapped.astype(value.dtype, copy=False)
+        if isinstance(value, list):
+            return remapped.tolist()
         return value
 
     def _sync_custom_frequency_namespace_metadata(self, view: ModelView) -> None:
@@ -2550,7 +2509,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             self._project_compact_attributes(
                 entry.view,
                 entry.attribute_projections,
-                exclude=_DERIVED_PROJECTION_ATTRIBUTES | {"joint_target_pos", "joint_target_vel"},
+                exclude=set(),
                 include=lambda attribute: self._attribute_matches_model_flags(attribute, flags),
                 source_model=True,
                 update_existing=True,
@@ -2680,11 +2639,10 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
     for name in ("tri_activations", "tet_activations", "muscle_activations"):
         _copy_control_prefix_float_array(src, dst, name)
     model = entry.view.parent
-    for full_name, assignment in model.attribute_assignment.items():
-        if assignment != model.AttributeAssignment.CONTROL:
+    for full_name, spec in model._iter_attribute_specs():
+        if spec.assignment != model.AttributeAssignment.CONTROL:
             continue
-        frequency = model.attribute_frequency[full_name]
-        mapping = entry.attribute_local_to_global.get(frequency)
+        mapping = entry.attribute_local_to_global.get(spec.frequency)
         if mapping is None:
             continue
         _copy_mapped_control_attribute(src, dst, full_name, mapping)

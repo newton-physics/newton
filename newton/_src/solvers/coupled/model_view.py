@@ -17,37 +17,6 @@ if TYPE_CHECKING:
     from ...sim import State
 
 
-_CORE_START_COUNT_ATTR_BY_NAME = {
-    "joint_q_start": "joint_count",
-    "joint_qd_start": "joint_count",
-    "articulation_start": "articulation_count",
-}
-
-
-_CORE_WORLD_START_TOTAL_ATTR_BY_NAME = {
-    "particle_world_start": "particle_count",
-    "shape_world_start": "shape_count",
-    "body_world_start": "body_count",
-    "joint_world_start": "joint_count",
-    "joint_dof_world_start": "joint_dof_count",
-    "joint_coord_world_start": "joint_coord_count",
-    "joint_constraint_world_start": "joint_constraint_count",
-    "articulation_world_start": "articulation_count",
-    "equality_constraint_world_start": "equality_constraint_count",
-}
-
-
-_COLOR_GROUP_COUNT_ATTR_BY_NAME = {
-    "particle_color_groups": "particle_count",
-    "body_color_groups": "body_count",
-}
-
-
-_COUNT_LIMIT_EXEMPT_ATTRIBUTES = {
-    "shape_contact_pairs",
-}
-
-
 def _types_compatible(current, value) -> bool:
     """Return True iff *value* is type-compatible with *current* for an override."""
     if isinstance(current, wp.array):
@@ -175,32 +144,38 @@ class ModelView:
 
     def _count_limited_attribute(self, name: str, value):
         """Return *value* sliced to the view-local frequency count when needed."""
-        if name in _COUNT_LIMIT_EXEMPT_ATTRIBUTES:
+        parent = object.__getattribute__(self, "_parent")
+        spec = parent._attribute_spec(name)
+        if spec is None or spec.compaction_policy == "passthrough":
             return value
 
-        color_group_count_attr = _COLOR_GROUP_COUNT_ATTR_BY_NAME.get(name)
-        if color_group_count_attr is not None:
+        if spec.compaction_policy == "color_groups":
             return self._count_limited_color_groups(
-                name, value, color_group_count_attr, int(getattr(self, color_group_count_attr))
+                name,
+                value,
+                spec.frequency,
+                self._attribute_frequency_count(spec.frequency),
             )
 
         if not isinstance(value, (wp.array, np.ndarray)):
             return value
 
-        start_count_attr = _CORE_START_COUNT_ATTR_BY_NAME.get(name)
-        if start_count_attr is not None:
-            count = int(getattr(self, start_count_attr)) + 1
-            if value.shape[0] == count:
+        if spec.compaction_policy == "start":
+            start_count = self._attribute_frequency_count(spec.frequency) + 1
+            if value.shape[0] == start_count:
                 return value
-            if value.shape[0] < count:
+            if value.shape[0] < start_count:
                 raise ValueError(
-                    f"ModelView '{self.name}' has {name} with length {value.shape[0]}, below count {count}"
+                    f"ModelView '{self.name}' has {name} with length {value.shape[0]}, below count {start_count}"
                 )
-            return value[:count]
+            return value[:start_count]
 
-        world_start_total_attr = _CORE_WORLD_START_TOTAL_ATTR_BY_NAME.get(name)
-        if world_start_total_attr is not None:
-            return self._count_limited_world_start(name, value, int(getattr(self, world_start_total_attr)))
+        if spec.compaction_policy == "world_start":
+            return self._count_limited_world_start(
+                name,
+                value,
+                self._attribute_frequency_count(spec.frequency),
+            )
 
         count = self._frequency_count_for_attribute(name)
         if count is None or value.shape[0] == count:
@@ -212,17 +187,14 @@ class ModelView:
     def _frequency_count_for_attribute(self, name: str) -> int | None:
         """Return the view-local count associated with a model attribute."""
         parent = object.__getattribute__(self, "_parent")
-        frequency = parent._resolve_attribute_frequency(name)
-        if frequency is None:
+        spec = parent._attribute_spec(name)
+        if spec is None or spec.compaction_policy not in {"generic", "end"}:
             return None
-        if isinstance(frequency, str):
-            count = self.custom_frequency_counts.get(frequency)
-            return None if count is None else int(count) * parent._attribute_row_width(name)
-
-        count_attr = Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.get(frequency)
-        if count_attr is None:
+        try:
+            count = self._attribute_frequency_count(spec.frequency)
+        except KeyError:
             return None
-        return int(getattr(self, count_attr)) * parent._attribute_row_width(name)
+        return count * spec.row_width
 
     def _count_limited_world_start(self, name: str, value, count: int):
         """Return a world-start array whose offsets do not exceed *count*."""
@@ -245,12 +217,18 @@ class ModelView:
         cache[cache_name] = cached
         return cached
 
-    def _count_limited_color_groups(self, name: str, value, count_attr: str, count: int):
+    def _count_limited_color_groups(
+        self,
+        name: str,
+        value,
+        frequency: Model.AttributeFrequency | str,
+        count: int,
+    ):
         """Return color groups filtered to ids visible in a prefix-limited view."""
         if not isinstance(value, list):
             return value
         parent = object.__getattribute__(self, "_parent")
-        if count >= int(getattr(parent, count_attr)):
+        if count >= parent._attribute_frequency_count(frequency):
             return value
 
         cache_name = f"__count_limited_{name}_{count}"

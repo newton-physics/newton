@@ -162,8 +162,10 @@ def _finalize_deprecated_dof_passive_damping(
         lambda model=model: model.joint_damping,
         _DEPRECATED_DOF_PASSIVE_DAMPING_MESSAGE,
     )
-    model.attribute_frequency[custom_attr.key] = custom_attr.frequency
-    model.attribute_assignment[custom_attr.key] = custom_attr.assignment
+    model._set_attribute_spec(
+        custom_attr.key,
+        Model.AttributeSpec(custom_attr.frequency, assignment=custom_attr.assignment),
+    )
 
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:

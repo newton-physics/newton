@@ -832,6 +832,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         view = coupled.view("revolute")
 
+        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [6.0, 7.0])
 
@@ -1684,6 +1685,33 @@ class TestSolverCoupledProxyJoints(unittest.TestCase):
 class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
     """Regression tests for multi-world MuJoCo/VBD solver partitions."""
 
+    def test_compacted_articulation_end_excludes_loop_joint(self):
+        builder = newton.ModelBuilder(gravity=0.0)
+        base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        root_joint = builder.add_joint_fixed(parent=-1, child=base)
+        link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        tree_joint = builder.add_joint_revolute(parent=base, child=link, axis=(0.0, 0.0, 1.0))
+        builder.add_articulation([root_joint, tree_joint])
+        loop_joint = builder.add_joint_fixed(parent=base, child=link)
+        builder.joint_articulation[loop_joint] = -1
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="loop",
+                    solver=SolverSemiImplicit,
+                    bodies=[base, link],
+                    joints=[root_joint, tree_joint, loop_joint],
+                )
+            ],
+        )
+
+        view = coupled.view("loop")
+        np.testing.assert_array_equal(view.articulation_start.numpy(), [0, 3])
+        np.testing.assert_array_equal(view.articulation_end.numpy(), [2])
+
     def test_compacted_multi_world_articulation_end_is_rebased(self):
         """articulation_end must be rebased to local joint ids, matching articulation_start.
 
@@ -2445,19 +2473,22 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
             model._attribute_reference_frequency("test:linkage_body0"),
             newton.Model.AttributeFrequency.BODY,
         )
+        linkage_spec = model._attribute_spec("test:linkage_bodies")
+        self.assertEqual(linkage_spec.frequency, "test:linkage")
+        self.assertEqual(linkage_spec.references, newton.Model.AttributeFrequency.BODY)
         self.assertEqual(model._attribute_reference_frequency("test:link_entity"), "test:entity")
         self.assertEqual(
             model.attribute_assignment.get("test:linkage_body0", newton.Model.AttributeAssignment.MODEL),
             newton.Model.AttributeAssignment.MODEL,
         )
-        self.assertFalse(hasattr(model, "_attribute_descriptors"))
+        self.assertIsInstance(model.attribute_specs["body_label"], newton.Model.AttributeSpec)
         for name, frequency in (
             ("body_label", newton.Model.AttributeFrequency.BODY),
             ("shape_color", newton.Model.AttributeFrequency.SHAPE),
             ("_shape_sdf_index", newton.Model.AttributeFrequency.SHAPE),
             ("tri_materials", newton.Model.AttributeFrequency.TRIANGLE),
         ):
-            with self.subTest(inferred_attribute=name):
+            with self.subTest(core_attribute=name):
                 self.assertEqual(model._resolve_attribute_frequency(name), frequency)
         self.assertEqual(
             model._resolve_attribute_frequency("joint_q"),
@@ -2509,12 +2540,62 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
 
         np.testing.assert_allclose(coupled.view("dst").extra_values.numpy(), [2.0])
 
-    def test_compaction_rejects_misaligned_inferred_attribute(self):
+    def test_compaction_projects_attribute_spec_registration(self):
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        model = builder.finalize(device="cpu")
+        model.spec_values = wp.array([1.0, 2.0], dtype=wp.float32, device="cpu")
+        model.attribute_specs["spec_values"] = newton.Model.AttributeSpec(newton.Model.AttributeFrequency.BODY)
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=SolverSemiImplicit, bodies=[0]),
+                SolverCoupled.Entry(name="dst", solver=SolverSemiImplicit, bodies=[1]),
+            ],
+        )
+
+        self.assertEqual(model.get_attribute_frequency("spec_values"), newton.Model.AttributeFrequency.BODY)
+        np.testing.assert_allclose(coupled.view("dst").spec_values.numpy(), [2.0])
+
+    def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        model = newton.Model(device="cpu")
+        prefixes = (
+            "_shape_",
+            "constraint_mimic_",
+            "articulation_",
+            "particle_",
+            "body_",
+            "shape_",
+            "joint_",
+            "spring_",
+            "edge_",
+            "tri_",
+            "tet_",
+        )
+        missing = [
+            name
+            for name, value in model.__dict__.items()
+            if name.startswith(prefixes)
+            and isinstance(value, (wp.array, np.ndarray, list))
+            and name not in model.attribute_specs
+        ]
+        self.assertEqual(missing, [])
+
+        for name, row_width in (("spring_indices", 2), ("tri_indices", 1), ("edge_indices", 1), ("tet_indices", 1)):
+            with self.subTest(name=name):
+                spec = model.attribute_specs[name]
+                self.assertEqual(spec.references, newton.Model.AttributeFrequency.PARTICLE)
+                self.assertEqual(spec.row_width, row_width)
+
+    def test_compaction_rejects_misaligned_late_registered_attribute(self):
         builder = newton.ModelBuilder()
         for _ in range(2):
             builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         model = builder.finalize(device="cpu")
         model.body_misaligned = wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device="cpu")
+        model.attribute_frequency["body_misaligned"] = newton.Model.AttributeFrequency.BODY
 
         with self.assertRaisesRegex(ValueError, "body_misaligned.*expected 2 values"):
             SolverCoupled(
