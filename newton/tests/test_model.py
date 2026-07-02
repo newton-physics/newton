@@ -822,6 +822,37 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_add_joint_free_initializes_relative_transform(self):
+        parent_body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.2, -0.3, 0.4))
+        child_body_xform = wp.transform(wp.vec3(-0.5, 1.5, 2.0), wp.quat_rpy(-0.4, 0.1, 0.3))
+        parent_xform = wp.transform(wp.vec3(0.3, -0.2, 0.1), wp.quat_rpy(0.1, 0.2, -0.1))
+        child_xform = wp.transform(wp.vec3(-0.1, 0.4, 0.2), wp.quat_rpy(-0.2, 0.3, 0.1))
+
+        builder = ModelBuilder()
+        parent = builder.add_link(xform=parent_body_xform)
+        child = builder.add_link(xform=child_body_xform)
+        joint = builder.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        builder.add_articulation([joint])
+
+        parent_anchor_world = parent_body_xform * parent_xform
+        expected_joint_q = wp.transform_inverse(parent_anchor_world) * child_body_xform * child_xform
+        q_start = builder.joint_q_start[joint]
+        assert_np_equal(
+            np.array(builder.joint_q[q_start : q_start + 7]),
+            np.array(expected_joint_q),
+            tol=1.0e-6,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
+
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
         """``joint_target_q`` follows ``joint_q`` (coord) under
         ``use_coord_layout_targets``; ``joint_target_qd`` always follows
@@ -997,11 +1028,13 @@ class TestModelJoints(unittest.TestCase):
 
         # a non-fixed joint followed by fixed joints
         free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
+        free_parent_xform = wp.transform(wp.vec3(0.0, -1.0, 0.0))
         b4 = builder.add_link(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
-        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=free_parent_xform)
         assert_np_equal(builder.body_q[b4], np.array(free_xform))
-        assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
+        expected_joint_q = wp.transform_inverse(free_parent_xform) * free_xform
+        assert_np_equal(builder.joint_q[-7:], np.array(expected_joint_q))
         assert builder.joint_count == 8
         assert builder.body_count == 8
         _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)

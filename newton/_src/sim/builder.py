@@ -4607,7 +4607,7 @@ class ModelBuilder:
     ) -> int:
         """Adds a free joint to the model.
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
-        The positional dofs are initialized by the child body's transform (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
+        The positional dofs are initialized so that forward kinematics reproduces the child body's transform, accounting for the parent body and both joint anchor transforms (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
 
         Args:
             child: The index of the child body.
@@ -4646,8 +4646,11 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
         q_start = self.joint_q_start[joint_id]
-        # set the positional dofs to the child body's transform
-        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
+        # Initialize the coordinates so FK preserves the authored child pose.
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
+        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(joint_q)
         return joint_id
 
     @deprecate_nonkeyword_arguments
