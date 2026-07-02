@@ -6214,7 +6214,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
         model = builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=False)
+        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+            solver = SolverMuJoCo(model, separate_worlds=False)
         assert hasattr(model, "mujoco")
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6])
