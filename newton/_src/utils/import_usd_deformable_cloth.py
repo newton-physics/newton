@@ -133,13 +133,13 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                 if float(shell_thickness_val) > 0.0:
                     thickness = float(shell_thickness_val)
 
-        # Map the surface material onto the SolverVBD / SolverSemiImplicit membrane, whose
-        # triangle has three parameters:
+        # Map the surface material onto Newton's isotropic triangle membrane (used by
+        # SolverVBD and SolverSemiImplicit), whose triangle has three parameters:
         #   tri_ke  = mu     -> in-plane elastic stiffness  <- stretchStiffness
         #   edge_ke          -> dihedral bending stiffness  <- bendStiffness
         #   tri_ka  = lambda -> area preservation (Poisson) <- (no proposal attribute)
-        # This membrane is isotropic, so stretch and shear are not separable: both live in mu.
-        # We therefore drive mu from stretchStiffness and drop shearStiffness (an anisotropic
+        # An isotropic membrane cannot separate stretch from shear: both live in mu. We
+        # therefore drive mu from stretchStiffness and drop shearStiffness (an anisotropic
         # membrane such as SolverStyle3D's tri_aniso_ke is needed to honor it). tri_ka encodes
         # the Poisson ratio nu = tri_ka / (tri_ka + 2*tri_ke); the surface material authors no
         # Poisson term, so tri_ka is set to 0 (nu = 0). Passing None instead would inject the
@@ -160,9 +160,9 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         tri_ka = 0.0  # see above: no proposal attribute -> no fabricated area term
         if "shearStiffness" in cloth_mat:
             warnings.warn(
-                f"{path}: shearStiffness is not applied -- SolverVBD / SolverSemiImplicit use an "
-                f"isotropic membrane where stretch and shear share one modulus. Use SolverStyle3D "
-                f"(tri_aniso_ke) for independent shear; the value is preserved in path_cloth_attrs.",
+                f"{path}: shearStiffness is not applied -- Newton's isotropic cloth membrane makes "
+                f"stretch and shear share one modulus. An anisotropic membrane (e.g. SolverStyle3D's "
+                f"tri_aniso_ke) can honor it; the value is preserved in path_cloth_attrs.",
                 stacklevel=2,
             )
         # Newton cloth density is areal; convert the volumetric material density with the

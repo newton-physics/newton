@@ -3,7 +3,8 @@
 
 """USD cable / curve-deformable import passes.
 
-Imports linear ``UsdGeom.BasisCurves`` deformables as VBD rods, welding curve-to-curve
+Imports linear ``UsdGeom.BasisCurves`` deformables as rods (chains of capsule bodies joined
+by cable joints, usable by any solver that supports them), welding curve-to-curve
 ``PhysicsAttachment`` junctions into shared rod graphs first, then importing remaining single
 curves. Driven by :func:`.import_usd.parse_usd` via a
 :class:`.import_usd_deformable_utils._DeformableImportContext`.
@@ -390,7 +391,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
 
 
 def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve_paths: set[str]) -> None:
-    """Import single-curve cable deformables (linear ``GeomBasisCurves`` -> VBD rod via ``add_rod``).
+    """Import single-curve cable deformables (linear ``GeomBasisCurves`` -> rod via ``add_rod``).
 
     Curves already welded into a rod graph (``consumed_cable_curve_paths``) are skipped. Each cable is
     wrapped into its own articulation so the model is finalize-ready. Results land in
@@ -536,8 +537,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         cable_cfg = replace(builder.default_shape_cfg, density=resolved_cable_density)
         if "shearStiffness" in cable_mat or "twistStiffness" in cable_mat:
             warnings.warn(
-                f"{path}: shearStiffness / twistStiffness are not yet mapped to the VBD cable "
-                f"(isotropic bend only); ignoring.",
+                f"{path}: shearStiffness / twistStiffness cannot be expressed by the rod's stretch and "
+                f"bend stiffness; ignoring them (they remain available in path_cable_attrs).",
                 stacklevel=2,
             )
 

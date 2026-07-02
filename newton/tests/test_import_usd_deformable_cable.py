@@ -26,7 +26,7 @@ from newton.usd import SchemaResolverPhysx
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCable(unittest.TestCase):
-    """Curve-deformable (cable) parsing into VBD rod bodies + cable joints."""
+    """Curve-deformable (cable) parsing into rods of capsule bodies + cable joints."""
 
     @staticmethod
     def _author_attached_cable_pair(*, gap, stiffness=None, damping=None):
@@ -145,8 +145,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         """Bound curve-deformable material -> radius + per-joint stretch/bend stiffness.
 
         Authored zero stiffness (range [0, inf)) is preserved, not replaced by add_rod's
-        default, and the shear/twist moduli the VBD rod ignores warn and surface as-authored
-        in path_cable_attrs so a non-VBD solver can consume them.
+        default, and the shear/twist moduli the rod cannot express warn and surface as-authored
+        in path_cable_attrs for solvers with richer cable models.
         """
         # 3 segments of length 0.1 along x.
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
@@ -168,8 +168,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
 
             builder = newton.ModelBuilder()
-            # shear / twist are preserved in the attrs but not mapped into the VBD rod, so the importer warns.
-            with self.assertWarnsRegex(UserWarning, "not yet mapped"):
+            # shear / twist are preserved in the attrs but cannot be expressed by the rod, so the importer warns.
+            with self.assertWarnsRegex(UserWarning, "cannot be expressed"):
                 result = builder.add_usd(stage)
             b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
             j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
