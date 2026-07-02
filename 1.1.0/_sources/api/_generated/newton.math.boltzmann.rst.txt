@@ -1,0 +1,6 @@
+﻿newton.math.boltzmann
+=====================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: boltzmann

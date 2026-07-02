@@ -1,0 +1,8 @@
+﻿newton.actuators.ControllerPID
+==============================
+
+.. autoclass:: newton.actuators.ControllerPID
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
