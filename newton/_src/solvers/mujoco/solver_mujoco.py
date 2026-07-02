@@ -4321,16 +4321,13 @@ class SolverMuJoCo(SolverBase):
         num_shapes = len(selected_shapes)
         shape_a, shape_b = np.triu_indices(num_shapes, k=1)
         shape_collision_group_np = model.shape_collision_group.numpy()
-        cgroup = [shape_collision_group_np[i] for i in selected_shapes]
+        cgroup = shape_collision_group_np[selected_shapes]
         # edges representing colliding shape pairs
-        graph_edges = [
-            (i, j)
-            for i, j in zip(shape_a, shape_b, strict=True)
-            if (
-                not model.shape_collision_filter_contains(selected_shapes[i], selected_shapes[j])
-                and (cgroup[i] == cgroup[j] or cgroup[i] == -1 or cgroup[j] == -1)
-            )
-        ]
+        candidate_pairs = np.stack((selected_shapes[shape_a], selected_shapes[shape_b]), axis=1)
+        filtered = model._shape_collision_filter_mask(candidate_pairs)  # pyright: ignore[reportPrivateUsage]
+        group_a, group_b = cgroup[shape_a], cgroup[shape_b]
+        edge_mask = ~filtered & ((group_a == group_b) | (group_a == -1) | (group_b == -1))
+        graph_edges = np.stack((shape_a[edge_mask], shape_b[edge_mask]), axis=1).astype(np.int32)
         shape_color = np.zeros(model.shape_count, dtype=np.int32)
         if len(graph_edges) > 0:
             color_groups = color_graph(

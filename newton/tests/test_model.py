@@ -876,7 +876,7 @@ class TestModelMesh(unittest.TestCase):
 
         internal_filters = object.__getattribute__(model, "__dict__")["shape_collision_filter_pairs"]
         self.assertFalse(internal_filters.is_materialized)
-        self.assertTrue(internal_filters.contains_compact(1, 2))
+        self.assertTrue(internal_filters.contains_packed(1, 2))
         self.assertFalse(internal_filters.is_materialized)
 
         filters = model.shape_collision_filter_pairs
@@ -1024,6 +1024,51 @@ class TestModelMesh(unittest.TestCase):
 
         self.assertIsInstance(restored_model.shape_collision_filter_pairs, set)
         self.assertEqual(restored_model.shape_collision_filter_pairs, expected_filters)
+
+    def test_collision_filter_array_queries_match_set(self):
+        """Packed-array membership and broad-phase pairs must match the public set."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.add_shape_collision_filter_pair(shape0, shape1)
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 4)
+        builder.add_shape_collision_filter_pair(ground, 1)
+
+        model = builder.finalize()
+
+        broad_phase_pairs = model.shape_collision_filter_pairs_for_broad_phase()
+        self.assertEqual(broad_phase_pairs.shape, (5, 2))
+        pair_list = [tuple(pair) for pair in broad_phase_pairs.tolist()]
+        self.assertEqual(pair_list, sorted(pair_list))
+
+        internal_filters = object.__getattribute__(model, "__dict__")["shape_collision_filter_pairs"]
+        self.assertFalse(internal_filters.is_materialized)
+
+        self.assertTrue(model.shape_collision_filter_contains(1, 2))
+        self.assertTrue(model.shape_collision_filter_contains(2, 1))
+        self.assertTrue(model.shape_collision_filter_contains(ground, 1))
+        self.assertFalse(model.shape_collision_filter_contains(ground, 2))
+        self.assertFalse(internal_filters.is_materialized)
+
+        candidates = np.array([[1, 2], [2, 1], [ground, 1], [ground, 2], [3, 4]], dtype=np.int32)
+        mask = model._shape_collision_filter_mask(candidates)  # pyright: ignore[reportPrivateUsage]
+        self.assertEqual(mask.tolist(), [True, True, True, False, True])
+
+        self.assertEqual(set(pair_list), set(model.shape_collision_filter_pairs))
+
+        # After deprecated mutation, queries fall back to native set semantics.
+        with self.assertWarns(DeprecationWarning):
+            model.shape_collision_filter_pairs.add((ground, 2))
+        self.assertTrue(model.shape_collision_filter_contains(ground, 2))
+        mask = model._shape_collision_filter_mask(candidates)  # pyright: ignore[reportPrivateUsage]
+        self.assertEqual(mask.tolist(), [True, True, True, True, True])
+        self.assertEqual(len(model.shape_collision_filter_pairs_for_broad_phase()), 6)
 
     def test_collision_filter_pairs_reject_invalid_shape_indices(self):
         """Invalid filters should fail consistently before contact generation."""

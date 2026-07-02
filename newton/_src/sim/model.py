@@ -40,67 +40,25 @@ _SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG = (
 )
 
 
-class _ShapeCollisionFilterSource:
-    """Compact replicated collision-filter source for internal consumers."""
-
-    def __init__(self, explicit_pairs: Iterable[tuple[int, int]], blocks: Iterable[Any]):
-        self._explicit_pairs = frozenset(self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in explicit_pairs)
-        block_specs = []
-        local_pair_sets = {}
-        for block in blocks:
-            local_pairs = tuple(block.local_pairs)
-            key = id(block.local_pairs)
-            local_pair_set = local_pair_sets.get(key)
-            if local_pair_set is None:
-                local_pair_set = frozenset(self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in local_pairs)
-                local_pair_sets[key] = local_pair_set
-            block_specs.append((block.shape_start, block.shape_count, local_pairs, local_pair_set))
-        self._block_specs = tuple(block_specs)
-
-    @staticmethod
-    def _canonical_pair(shape_a: int, shape_b: int) -> tuple[int, int]:
-        return (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
-
-    def __bool__(self) -> bool:
-        return bool(self._explicit_pairs) or bool(self._block_specs)
-
-    def contains(self, shape_a: int, shape_b: int) -> bool:
-        try:
-            canonical_pair = self._canonical_pair(shape_a, shape_b)
-
-            if canonical_pair in self._explicit_pairs:
-                return True
-
-            for shape_start, shape_count, _local_pairs, local_pair_set in self._block_specs:
-                if (
-                    shape_start <= shape_a < shape_start + shape_count
-                    and shape_start <= shape_b < shape_start + shape_count
-                ):
-                    local_shape_a = shape_a - shape_start
-                    local_shape_b = shape_b - shape_start
-                    if self._canonical_pair(local_shape_a, local_shape_b) in local_pair_set:
-                        return True
-        except (TypeError, ValueError):
-            return False
-
-        return False
-
-    def iter_pairs(self):
-        yield from self._explicit_pairs
-        for shape_start, _shape_count, local_pairs, _local_pair_set in self._block_specs:
-            for shape_a, shape_b in local_pairs:
-                yield self._canonical_pair(shape_start + shape_a, shape_start + shape_b)
-
-
 class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
-    """Compatibility set that can lazily materialize compact filter sources."""
+    """Mutation-deprecated compat view over the canonical filter-pair array.
+
+    The canonical store is ``packed``: a sorted, unique 1-D ``int64`` array of
+    ``(shape_a << 32) | shape_b`` codes with ``shape_a <= shape_b``. The public
+    :attr:`Model.shape_collision_filter_pairs` descriptor materializes this
+    view into native set contents on access, so plain ``set`` reads work
+    unchanged; internal consumers query the packed array directly and never
+    materialize. Mutation is deprecated: it materializes, drops the packed
+    array, and falls back to native set semantics.
+    """
 
     __hash__ = None
 
-    def __init__(self, pairs: Iterable[tuple[int, int]] = (), source: _ShapeCollisionFilterSource | None = None):
+    def __init__(self, pairs: Iterable[tuple[int, int]] = (), packed: np.ndarray | None = None):
         super().__init__((shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a) for shape_a, shape_b in pairs)
-        self._source = source
-        self._materialized = source is None
+        self._packed = packed
+        self._pairs_array: np.ndarray | None = None
+        self._materialized = packed is None
 
     @staticmethod
     def _canonical_pair(shape_a: int, shape_b: int) -> tuple[int, int]:
@@ -122,8 +80,9 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
 
     def _ensure_materialized(self) -> None:
         if not self._materialized:
-            if self._source is not None:
-                super().update(self._source.iter_pairs())
+            pairs = self.pairs_array()
+            if pairs is not None and pairs.shape[0] > 0:
+                super().update(map(tuple, pairs.tolist()))
             self._materialized = True
 
     @property
@@ -133,41 +92,46 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
     def materialize(self) -> None:
         self._ensure_materialized()
 
-    def contains_compact(self, shape_a: int, shape_b: int) -> bool | None:
-        if self._source is None:
-            return None
-        return self._source.contains(shape_a, shape_b)
+    def packed_pairs(self) -> np.ndarray | None:
+        """Sorted unique packed pair codes, or ``None`` after mutation."""
+        return self._packed
 
-    def iter_compact_pairs(self) -> Iterator[tuple[int, int]] | None:
-        if self._source is None:
+    def pairs_array(self) -> np.ndarray | None:
+        """Canonical pairs, shape [pair_count, 2], or ``None`` after mutation."""
+        if self._packed is None:
             return None
-        return self._source.iter_pairs()
+        if self._pairs_array is None:
+            pairs = np.empty((self._packed.shape[0], 2), dtype=np.int32)
+            pairs[:, 0] = self._packed >> 32
+            pairs[:, 1] = self._packed & 0xFFFFFFFF
+            self._pairs_array = pairs
+        return self._pairs_array
+
+    def contains_packed(self, shape_a: int, shape_b: int) -> bool | None:
+        """Packed-array membership, or ``None`` after mutation."""
+        if self._packed is None:
+            return None
+        try:
+            code = (shape_a << 32) | shape_b if shape_a <= shape_b else (shape_b << 32) | shape_a
+        except TypeError:
+            return False
+        index = int(np.searchsorted(self._packed, code))
+        return bool(index < self._packed.shape[0] and self._packed[index] == code)
 
     def _prepare_mutation(self) -> None:
         self._ensure_materialized()
-        self._source = None
+        self._packed = None
+        self._pairs_array = None
         warnings.warn(_SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
 
     def __bool__(self) -> bool:
-        if self._source is not None and bool(self._source):
+        if self._packed is not None and self._packed.shape[0] > 0:
             return True
         return super().__len__() != 0
 
-    @override
-    def __contains__(self, pair: object) -> bool:
-        if self._source is not None and not self._materialized:
-            if not isinstance(pair, tuple) or len(pair) != 2:
-                return False
-            try:
-                shape_a, shape_b = pair
-                return self._source.contains(shape_a, shape_b)
-            except (TypeError, ValueError):
-                return False
-        if not isinstance(pair, tuple) or len(pair) != 2:
-            return False
-        shape_a, shape_b = pair
-        return super().__contains__(self._canonical_pair(shape_a, shape_b))
-
+    # Generic consumers (viewer-file serialization, deepcopy) iterate the raw
+    # __dict__ value without the materializing descriptor; keep iteration and
+    # length lazy-safe so they never observe a half-empty set.
     @override
     def __iter__(self) -> Iterator[tuple[int, int]]:
         self._ensure_materialized()
@@ -177,101 +141,6 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
     def __len__(self) -> int:
         self._ensure_materialized()
         return super().__len__()
-
-    @override
-    def __repr__(self) -> str:
-        self._ensure_materialized()
-        return super().__repr__()
-
-    @override
-    def __eq__(self, other: object) -> bool:
-        self._ensure_materialized()
-        return super().__eq__(other)
-
-    @override
-    def __ne__(self, other: object) -> bool:
-        self._ensure_materialized()
-        return super().__ne__(other)
-
-    @override
-    def __le__(self, other: AbstractSet[object]) -> bool:
-        self._ensure_materialized()
-        return super().__le__(other)
-
-    @override
-    def __lt__(self, other: AbstractSet[object]) -> bool:
-        self._ensure_materialized()
-        return super().__lt__(other)
-
-    @override
-    def __ge__(self, other: AbstractSet[object]) -> bool:
-        self._ensure_materialized()
-        return super().__ge__(other)
-
-    @override
-    def __gt__(self, other: AbstractSet[object]) -> bool:
-        self._ensure_materialized()
-        return super().__gt__(other)
-
-    @override
-    def copy(self) -> set[tuple[int, int]]:
-        self._ensure_materialized()
-        return super().copy()
-
-    @override
-    def isdisjoint(self, other: Iterable[object]) -> bool:
-        self._ensure_materialized()
-        return super().isdisjoint(other)
-
-    @override
-    def issubset(self, other: Iterable[object]) -> bool:
-        self._ensure_materialized()
-        return super().issubset(other)
-
-    @override
-    def issuperset(self, other: Iterable[object]) -> bool:
-        self._ensure_materialized()
-        return super().issuperset(other)
-
-    @override
-    def union(self, *others: Iterable[Any]) -> set[Any]:
-        self._ensure_materialized()
-        return super().union(*others)
-
-    @override
-    def intersection(self, *others: Iterable[object]) -> set[tuple[int, int]]:
-        self._ensure_materialized()
-        return super().intersection(*others)
-
-    @override
-    def difference(self, *others: Iterable[object]) -> set[tuple[int, int]]:
-        self._ensure_materialized()
-        return super().difference(*others)
-
-    @override
-    def symmetric_difference(self, other: Iterable[Any]) -> set[Any]:
-        self._ensure_materialized()
-        return super().symmetric_difference(other)
-
-    @override
-    def __or__(self, other: AbstractSet[Any]) -> set[Any]:
-        self._ensure_materialized()
-        return super().__or__(other)
-
-    @override
-    def __and__(self, other: AbstractSet[object]) -> set[tuple[int, int]]:
-        self._ensure_materialized()
-        return super().__and__(other)
-
-    @override
-    def __sub__(self, other: AbstractSet[object]) -> set[tuple[int, int]]:
-        self._ensure_materialized()
-        return super().__sub__(other)
-
-    @override
-    def __xor__(self, other: AbstractSet[Any]) -> set[Any]:
-        self._ensure_materialized()
-        return super().__xor__(other)
 
     @override
     def add(self, element: tuple[int, int]) -> None:
@@ -1235,19 +1104,14 @@ class Model:
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
 
-    def _set_shape_collision_filter_pairs(self, pairs: Iterable[tuple[int, int]]) -> None:
-        self.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(pairs)
-
-    def _set_shape_collision_filter_source(
-        self, explicit_pairs: Iterable[tuple[int, int]], blocks: Iterable[Any]
-    ) -> None:
-        source = _ShapeCollisionFilterSource(explicit_pairs, blocks)
-        self.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(source=source)
+    def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
+        """Install the canonical filter store: sorted unique packed pair codes."""
+        self.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(packed=packed)
 
     def shape_collision_filter_contains(self, shape_a: int, shape_b: int) -> bool:
         """Return whether a canonicalized shape pair is collision-filtered.
 
-        This uses compact replicated filter metadata when available, avoiding
+        This queries the canonical filter-pair array when available, avoiding
         materialization of :attr:`shape_collision_filter_pairs`.
 
         Args:
@@ -1259,32 +1123,65 @@ class Model:
         """
         filters = object.__getattribute__(self, "__dict__").get("shape_collision_filter_pairs")
         if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
-            compact_result = filters.contains_compact(shape_a, shape_b)
-            if compact_result is not None:
-                return compact_result
+            packed_result = filters.contains_packed(shape_a, shape_b)
+            if packed_result is not None:
+                return packed_result
         if filters is None:
             return False
         pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
         return pair in filters
 
-    def shape_collision_filter_pairs_for_broad_phase(self) -> list[tuple[int, int]]:
+    def shape_collision_filter_pairs_for_broad_phase(self) -> np.ndarray:
         """Return sorted collision-filter pairs for broad-phase exclusion arrays.
 
-        ``"nxn"`` and ``"sap"`` broad phases currently consume a sorted device
-        array of excluded pairs. This method builds that list from compact
-        metadata when available without materializing the public set first.
+        ``"nxn"`` and ``"sap"`` broad phases consume a sorted device array of
+        excluded pairs. This method returns the canonical filter-pair array
+        without materializing the public set first.
 
         Returns:
-            Sorted shape index pairs for broad-phase exclusion arrays.
+            Canonical shape index pairs sorted lexicographically, shape
+            [pair_count, 2].
         """
         filters = object.__getattribute__(self, "__dict__").get("shape_collision_filter_pairs")
-        if not filters:
-            return []
         if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
-            compact_pairs = filters.iter_compact_pairs()
-            if compact_pairs is not None:
-                return sorted(set(compact_pairs))
-        return sorted(filters)
+            pairs = filters.pairs_array()
+            if pairs is not None:
+                return pairs
+        if not filters:
+            return np.empty((0, 2), dtype=np.int32)
+        return np.asarray(sorted(filters), dtype=np.int32).reshape((-1, 2))
+
+    def _shape_collision_filter_mask(self, pairs: np.ndarray) -> np.ndarray:
+        """Return a boolean mask of which shape pairs are collision-filtered.
+
+        Args:
+            pairs: Shape index pairs in any order, shape [pair_count, 2].
+
+        Returns:
+            Boolean mask, shape [pair_count].
+        """
+        pairs = np.asarray(pairs, dtype=np.int64).reshape((-1, 2))
+        if pairs.shape[0] == 0:
+            return np.zeros(0, dtype=bool)
+        lo = np.minimum(pairs[:, 0], pairs[:, 1])
+        hi = np.maximum(pairs[:, 0], pairs[:, 1])
+        codes = (lo << 32) | hi
+        filters = object.__getattribute__(self, "__dict__").get("shape_collision_filter_pairs")
+        if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
+            packed = filters.packed_pairs()
+            if packed is not None:
+                if packed.shape[0] == 0:
+                    return np.zeros(pairs.shape[0], dtype=bool)
+                index = np.searchsorted(packed, codes)
+                in_range = index < packed.shape[0]
+                return in_range & (packed[np.minimum(index, packed.shape[0] - 1)] == codes)
+        if not filters:
+            return np.zeros(pairs.shape[0], dtype=bool)
+        return np.fromiter(
+            ((int(a), int(b)) in filters for a, b in zip(lo, hi, strict=True)),
+            dtype=bool,
+            count=pairs.shape[0],
+        )
 
     # Deprecated equality-constraint arrays (removal in a future release).
     # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to

@@ -105,9 +105,14 @@ class _BuilderShapeCollisionFilterPairs:
         return tuple(entry for entry in self._entries if not isinstance(entry, _ShapeCollisionFilterBlock))
 
     @property
+    def blocks(self) -> tuple[_ShapeCollisionFilterBlock, ...]:
+        """All compact replicated blocks, regardless of world assignment."""
+        return tuple(entry for entry in self._entries if isinstance(entry, _ShapeCollisionFilterBlock))
+
+    @property
     def compact_contact_blocks(self) -> tuple[_ShapeCollisionFilterBlock, ...]:
         """Compact blocks suitable for the contact-pair fast path."""
-        blocks = tuple(entry for entry in self._entries if isinstance(entry, _ShapeCollisionFilterBlock))
+        blocks = self.blocks
         if not blocks or any(block.world is None for block in blocks):
             return ()
         return blocks
@@ -10661,34 +10666,14 @@ class ModelBuilder:
         # static particles (with zero mass) have zero inverse mass
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
-        filter_pairs = self._shape_collision_filter_pairs
-        compact_filter_blocks = (
-            filter_pairs.compact_contact_blocks if isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs) else ()
-        )
-        explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
-        shape_collision_filter_pairs: frozenset[tuple[int, int]] = frozenset()
-        if compact_filter_blocks:
-            assert isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
-            self._validate_compact_shape_collision_filter_blocks(compact_filter_blocks)
-            explicit_filter_pairs = tuple(
-                self._iter_validated_shape_collision_filter_pairs(filter_pairs.explicit_pairs)
-            )
-        else:
-            shape_collision_filter_pairs = frozenset(self._iter_validated_shape_collision_filter_pairs(filter_pairs))
+        shape_collision_filter_packed = self._build_shape_collision_filter_packed()
 
         with wp.ScopedDevice(device):
             # -------------------------------------
             # construct Model (non-time varying) data
 
             m = Model(device)
-            if compact_filter_blocks:
-                # Residual filters are arbitrary caller-provided pairs; validate them
-                # while leaving replicated block filters compact for internal consumers.
-                m._set_shape_collision_filter_source(  # pyright: ignore[reportPrivateUsage]
-                    explicit_filter_pairs, compact_filter_blocks
-                )
-            else:
-                m._set_shape_collision_filter_pairs(shape_collision_filter_pairs)  # pyright: ignore[reportPrivateUsage]
+            m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
@@ -11885,6 +11870,40 @@ class ModelBuilder:
                 )
             yield (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
 
+    def _build_shape_collision_filter_packed(self) -> np.ndarray:
+        """Build the canonical filter store handed to :class:`Model`.
+
+        Returns:
+            Sorted unique packed pair codes ``(shape_a << 32) | shape_b`` with
+            ``shape_a <= shape_b``, shape [pair_count].
+        """
+        filter_pairs = self._shape_collision_filter_pairs
+        chunks: list[np.ndarray] = []
+        if isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs):
+            explicit_pairs = tuple(self._iter_validated_shape_collision_filter_pairs(filter_pairs.explicit_pairs))
+            if explicit_pairs:
+                chunks.append(np.asarray(explicit_pairs, dtype=np.int64).reshape((-1, 2)))
+            blocks = filter_pairs.blocks
+            self._validate_compact_shape_collision_filter_blocks(blocks)
+            # Replicated blocks share one local-pair template; canonicalize it
+            # once and replay it per block as a broadcast offset add.
+            templates: dict[int, np.ndarray] = {}
+            for block in blocks:
+                template = templates.get(id(block.local_pairs))
+                if template is None:
+                    template = np.asarray(block.local_pairs, dtype=np.int64).reshape((-1, 2))
+                    template.sort(axis=1)
+                    templates[id(block.local_pairs)] = template
+                chunks.append(template + block.shape_start)
+        else:
+            pairs = tuple(self._iter_validated_shape_collision_filter_pairs(filter_pairs))
+            if pairs:
+                chunks.append(np.asarray(pairs, dtype=np.int64).reshape((-1, 2)))
+        if not chunks:
+            return np.empty(0, dtype=np.int64)
+        all_pairs = np.concatenate(chunks, axis=0)
+        return np.unique((all_pairs[:, 0] << 32) | all_pairs[:, 1])
+
     def _validate_compact_shape_collision_filter_blocks(self, compact_filter_blocks) -> None:
         shape_count = len(self.shape_type)
         validated_templates = set()
@@ -12011,6 +12030,7 @@ class ModelBuilder:
                             contact_pairs.append(pair)
 
                 template_cache = {}
+                template_runs: list[tuple[list[int], tuple[np.ndarray, np.ndarray]]] = []
                 global_groups_key = tuple(colliding_globals)
                 for world in range(self.world_count):
                     world_start = self.shape_world_start[world]
@@ -12074,24 +12094,47 @@ class ModelBuilder:
                                 if pair not in local_filters:
                                     local_pairs.append(pair)
 
-                        cached_pairs = (tuple(global_local_pairs), tuple(local_pairs))
+                        cached_pairs = (
+                            np.asarray(global_local_pairs, dtype=np.int32).reshape((-1, 2)),
+                            np.asarray(local_pairs, dtype=np.int32).reshape((-1, 2)),
+                        )
                         template_cache[cache_key] = cached_pairs
 
-                    global_local_pairs, local_pairs = cached_pairs
-                    for global_shape, local_shape in global_local_pairs:
-                        shape_b = world_start + local_shape
-                        contact_pairs.append(
-                            (global_shape, shape_b) if global_shape <= shape_b else (shape_b, global_shape)
-                        )
-                    # Local/local pairs are cached as world-local offsets and
-                    # shifted to absolute shape ids for the model array.
-                    contact_pairs.extend(
-                        (world_start + shape_a, world_start + shape_b) for shape_a, shape_b in local_pairs
-                    )
+                    # Group runs of consecutive worlds sharing one template so
+                    # the replay below is a broadcast add per run, not a Python
+                    # loop over millions of per-world tuples.
+                    if template_runs and template_runs[-1][1] is cached_pairs:
+                        template_runs[-1][0].append(world_start)
+                    else:
+                        template_runs.append(([world_start], cached_pairs))
 
-                pair_array = np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2))
+                chunks = []
+                if contact_pairs:
+                    chunks.append(np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2)))
+                for starts, (global_local_pairs, local_pairs) in template_runs:
+                    offsets = np.asarray(starts, dtype=np.int32)
+                    global_count = global_local_pairs.shape[0]
+                    pairs_per_world = global_count + local_pairs.shape[0]
+                    if pairs_per_world == 0:
+                        continue
+                    replay = np.empty((offsets.shape[0], pairs_per_world, 2), dtype=np.int32)
+                    if global_count:
+                        global_replay = replay[:, :global_count, :]
+                        global_replay[:, :, 0] = global_local_pairs[:, 0]
+                        # Cached global/local pairs hold an absolute global id
+                        # and a world-local id shifted per world during replay.
+                        global_replay[:, :, 1] = global_local_pairs[:, 1] + offsets[:, None]
+                        global_replay.sort(axis=2)
+                    if pairs_per_world > global_count:
+                        replay[:, global_count:, :] = local_pairs[None, :, :] + offsets[:, None, None]
+                    chunks.append(replay.reshape((-1, 2)))
+
+                if chunks:
+                    pair_array = np.concatenate(chunks, axis=0)
+                else:
+                    pair_array = np.empty((0, 2), dtype=np.int32)
                 model.shape_contact_pairs = wp.array(pair_array, dtype=wp.vec2i, device=model.device)
-                model.shape_contact_pair_count = len(contact_pairs)
+                model.shape_contact_pair_count = len(pair_array)
                 return
 
         contact_pairs: list[tuple[int, int]] = []
@@ -12127,14 +12170,17 @@ class ModelBuilder:
                 else:
                     shape_a, shape_b = s1, s2
 
-                # Skip if explicitly filtered
-                if not model.shape_collision_filter_contains(shape_a, shape_b):
-                    contact_pairs.append((shape_a, shape_b))
+                contact_pairs.append((shape_a, shape_b))
 
-        model.shape_contact_pairs = wp.array(
-            np.array(contact_pairs, dtype=np.int32).reshape((-1, 2)), dtype=wp.vec2i, device=model.device
-        )
-        model.shape_contact_pair_count = len(contact_pairs)
+        # Drop explicitly filtered pairs with one bulk query instead of a
+        # per-pair membership test inside the candidate loop.
+        candidate_pairs = np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2))
+        if candidate_pairs.shape[0] > 0:
+            filtered = model._shape_collision_filter_mask(candidate_pairs)  # pyright: ignore[reportPrivateUsage]
+            candidate_pairs = candidate_pairs[~filtered]
+
+        model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)
+        model.shape_contact_pair_count = len(candidate_pairs)
 
 
 ModelBuilder.ShapeConfig.__init__ = deprecate_nonkeyword_arguments(ModelBuilder.ShapeConfig.__init__)
