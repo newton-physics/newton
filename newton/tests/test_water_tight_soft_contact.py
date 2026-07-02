@@ -30,6 +30,7 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_edge_sdf,
     optimize_face_sdf,
 )
+from newton._src.sim.collide import _build_soft_ef_rigid_pairs
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -317,7 +318,16 @@ def test_edge_face_passes_box(test, device):
     contacts = pipeline.contacts()
     state = model.state()
     contacts.soft_contact_count.zero_()
-    launch_soft_ef_contacts(model=model, state=state, contacts=contacts, margin=0.1, device=device)
+    edge_pairs, face_pairs = _build_soft_ef_rigid_pairs(model)
+    launch_soft_ef_contacts(
+        model=model,
+        state=state,
+        contacts=contacts,
+        margin=0.1,
+        device=device,
+        edge_pairs=edge_pairs,
+        face_pairs=face_pairs,
+    )
 
     counts = contacts.soft_contact_count.numpy()
     c0, n_edge, n_face = int(counts[0]), int(counts[1]), int(counts[2])
@@ -816,7 +826,16 @@ def test_end_to_end_no_false_pos_neg(test, device):
     contacts = pipeline.contacts()
     state = model.state()
     contacts.soft_contact_count.zero_()
-    launch_soft_ef_contacts(model=model, state=state, contacts=contacts, margin=margin, device=device)
+    edge_pairs, face_pairs = _build_soft_ef_rigid_pairs(model)
+    launch_soft_ef_contacts(
+        model=model,
+        state=state,
+        contacts=contacts,
+        margin=margin,
+        device=device,
+        edge_pairs=edge_pairs,
+        face_pairs=face_pairs,
+    )
 
     counts = contacts.soft_contact_count.numpy()
     n_edge_rec, n_face_rec = int(counts[1]), int(counts[2])
@@ -981,6 +1000,72 @@ add_function_test(
     TestWaterTightSoftContact,
     "test_face_cull_uses_max_vertex_reach",
     test_face_cull_uses_max_vertex_reach,
+    devices=devices,
+)
+
+
+def test_edge_face_pairs_respect_worlds(test, device):
+    """Multi-world: the water-tight edge/face candidate pairs never cross worlds.
+
+    Two worlds, each a box + a triangle. ``_build_soft_ef_rigid_pairs`` must emit exactly the
+    world-compatible (feature, shape) pairs (same world, or either global -1) -- matching a
+    brute-force reference -- and must strictly exclude the cross-world combinations, mirroring the
+    particle path's ``_build_soft_rigid_contact_pairs``.
+    """
+
+    def _sub():
+        # A cloth grid (not a bare triangle) so finalize builds soft-mesh edge adjacency.
+        b = newton.ModelBuilder()
+        b.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5)
+        b.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.2,
+            cell_y=0.2,
+            mass=0.1,
+        )
+        return b
+
+    builder = newton.ModelBuilder()
+    builder.add_world(_sub())
+    builder.add_world(_sub())
+    model = builder.finalize(device=device)
+
+    edge_pairs, face_pairs = _build_soft_ef_rigid_pairs(model)
+    pw = model.particle_world.numpy()
+    sw = model.shape_world.numpy()
+    tri = model.tri_indices.numpy()
+    owner = np.asarray(model.soft_mesh_adjacency.edge_tri_indices)[:, 0]
+    n_shapes = int(model.shape_count)
+    n_tris = int(model.tri_count)
+    n_edges = int(model.soft_mesh_adjacency.edge_indices.shape[0])
+
+    # The setup must actually span multiple worlds, else there is nothing to isolate.
+    test.assertGreaterEqual(len(set(pw.tolist())), 2)
+
+    def _compat(feature_world, s):
+        return feature_world == sw[s] or feature_world < 0 or sw[s] < 0
+
+    face_world = pw[tri[:, 0]]
+    expected_face = {(t, s) for t in range(n_tris) for s in range(n_shapes) if _compat(face_world[t], s)}
+    test.assertEqual({tuple(int(v) for v in p) for p in face_pairs.numpy()}, expected_face)
+
+    edge_world = pw[tri[owner, 0]]
+    expected_edge = {(e, s) for e in range(n_edges) for s in range(n_shapes) if _compat(edge_world[e], s)}
+    test.assertEqual({tuple(int(v) for v in p) for p in edge_pairs.numpy()}, expected_edge)
+
+    # Filtering must drop the cross-world combinations (fewer than the naive full cross product).
+    test.assertLess(len(face_pairs), n_tris * n_shapes)
+    test.assertLess(len(edge_pairs), n_edges * n_shapes)
+
+
+add_function_test(
+    TestWaterTightSoftContact,
+    "test_edge_face_pairs_respect_worlds",
+    test_edge_face_pairs_respect_worlds,
     devices=devices,
 )
 
