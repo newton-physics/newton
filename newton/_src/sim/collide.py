@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import numpy as np
@@ -590,19 +591,22 @@ def _build_soft_ef_rigid_pairs(model: Model) -> tuple[wp.array[wp.vec2i], wp.arr
 
 
 def _build_soft_ef_device_adjacency(model: Model):
-    """Upload the soft mesh's ``tri_edge_indices`` / ``edge_tri_indices`` topology maps to the model
-    device for the water-tight edge pass (which resolves each edge's owner triangle + local slot on
-    device). The host :class:`~newton._src.utils.mesh.MeshAdjacency` keeps them as NumPy, so upload
-    once at pipeline construction (topology is immutable after finalize). Returns
-    ``(tri_edge_indices, edge_tri_indices)`` device arrays, or ``(None, None)`` if there is no soft
-    mesh adjacency.
+    """The soft mesh's ``tri_edge_indices`` / ``edge_tri_indices`` topology maps on the model device,
+    obtained from its own :class:`~newton._src.utils.mesh.MeshAdjacency` via ``.to()`` -- the single
+    host-to-device upload path (the host adjacency keeps the tables as NumPy). The water-tight edge
+    pass resolves each edge's owner triangle + local slot from these on device. Called once at
+    pipeline construction (topology is immutable after finalize). Only the topology maps are needed,
+    not the vertex-adjacency CSR the solver builds later, so silence ``to()``'s "vertex adjacency not
+    initialized" note. Returns ``(tri_edge_indices, edge_tri_indices)``, or ``(None, None)`` when
+    there is no soft mesh adjacency.
     """
     adj = getattr(model, "soft_mesh_adjacency", None)
     if adj is None:
         return None, None
-    tri_edge = wp.array(np.ascontiguousarray(adj.tri_edge_indices, dtype=np.int32), dtype=wp.int32, device=model.device)
-    edge_tri = wp.array(np.ascontiguousarray(adj.edge_tri_indices, dtype=np.int32), dtype=wp.int32, device=model.device)
-    return tri_edge, edge_tri
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        device_adjacency = adj.to(model.device)
+    return device_adjacency.tri_edge_indices, device_adjacency.edge_tri_indices
 
 
 class CollisionPipeline:
