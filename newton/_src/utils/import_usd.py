@@ -809,9 +809,8 @@ def parse_usd(
             # canonical physics: default and does not trip get_tetmesh()'s legacy-default deprecation.
             compat_ns = deformable_compat_ns
             if not compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
-                # Deprecation window: a material that authors only vendor-namespaced moduli
-                # imported with them before the canonical physics: default; dropping them
-                # silently would change existing assets' stiffness/density with no diagnostic.
+                # Without this deprecation window, a vendor-only material would silently
+                # import with default stiffness/density instead of its authored values.
                 warnings.warn(
                     f"{prim_path}: the bound material authors legacy vendor-namespaced deformable "
                     f"material attributes (omniphysics: / physxDeformableBody:) without "
