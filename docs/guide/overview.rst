@@ -134,6 +134,7 @@ Quick Links
 
 - :doc:`installation` — Setup Newton and run a first example in a couple of minutes
 - :doc:`tutorials` — Browse the guide's tutorial landing page
+- :doc:`examples` — Browse runnable simulation examples by workflow
 - :doc:`Introduction tutorial </tutorials/00_introduction>` — Walk through a first hands-on tutorial
 - :doc:`../faq` — Frequently asked questions
 - :doc:`development` — For developers and code contributors
