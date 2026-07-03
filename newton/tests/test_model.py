@@ -876,7 +876,7 @@ class TestModelMesh(unittest.TestCase):
 
         internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
         self.assertFalse(internal_filters.is_materialized)
-        self.assertTrue(internal_filters.contains_packed(1, 2))
+        self.assertTrue(internal_filters.contains_pair(1, 2))
         self.assertFalse(internal_filters.is_materialized)
 
         filters = model.shape_collision_filter_pairs
@@ -1054,7 +1054,15 @@ class TestModelMesh(unittest.TestCase):
         self.assertTrue(model.shape_collision_filter_contains(2, 1))
         self.assertTrue(model.shape_collision_filter_contains(ground, 1))
         self.assertFalse(model.shape_collision_filter_contains(ground, 2))
+        # NumPy integer indices (e.g. from .numpy() arrays) must not overflow
+        # the packed pair code.
+        self.assertTrue(model.shape_collision_filter_contains(np.int32(1), np.int32(2)))
+        self.assertTrue(model.shape_collision_filter_contains(1, np.int32(2)))
         self.assertFalse(internal_filters.is_materialized)
+
+        # The canonical array aliases internal state and must be read-only.
+        with self.assertRaises(ValueError):
+            broad_phase_pairs[0, 0] = 5
 
         candidates = np.array([[1, 2], [2, 1], [ground, 1], [ground, 2], [3, 4]], dtype=np.int32)
         mask = model.shape_collision_filter_mask(candidates)
@@ -1069,6 +1077,33 @@ class TestModelMesh(unittest.TestCase):
         mask = model.shape_collision_filter_mask(candidates)
         self.assertEqual(mask.tolist(), [True, True, True, True, True])
         self.assertEqual(len(model.shape_collision_filter_pairs_array()), 6)
+
+        # Rebuilding contact pairs after a (deprecated) mutation must honor
+        # the mutated model store rather than replaying stale builder filters.
+        builder.find_shape_contact_pairs(model)
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertNotIn((ground, 2), contact_pairs)
+
+    def test_mixed_replicated_and_global_builder_filters_preserve_contacts(self):
+        """Blocks without a world (global add_builder) must not disable the fast path."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.add_shape_collision_filter_pair(shape0, shape1)
+
+        builder = ModelBuilder()
+        builder.add_builder(robot)  # global world: filter block without world assignment
+        builder.replicate(robot, 2)
+
+        model = builder.finalize()
+
+        self.assertEqual(set(model.shape_collision_filter_pairs), {(0, 1), (2, 3), (4, 5)})
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        expected = {(g, s) for g in (0, 1) for s in (2, 3, 4, 5)}
+        self.assertEqual(contact_pairs, expected)
 
     def test_collision_filter_pairs_reject_invalid_shape_indices(self):
         """Invalid filters should fail consistently before contact generation."""

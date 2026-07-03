@@ -40,16 +40,41 @@ _SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG = (
 )
 
 
+def _pack_shape_pair_codes(shape_a: np.ndarray, shape_b: np.ndarray) -> np.ndarray:
+    """Pack shape index pairs into ``int64`` codes ordered like canonical tuples.
+
+    Args:
+        shape_a: First shape indices, shape [pair_count].
+        shape_b: Second shape indices, shape [pair_count].
+
+    Returns:
+        ``(min << 32) | max`` codes, shape [pair_count]. Sorting these codes
+        sorts the canonical ``(min, max)`` pairs lexicographically.
+    """
+    lo = np.minimum(shape_a, shape_b).astype(np.int64)
+    hi = np.maximum(shape_a, shape_b)
+    return (lo << 32) | hi
+
+
+def _unpack_shape_pair_codes(codes: np.ndarray) -> np.ndarray:
+    """Unpack ``int64`` pair codes into canonical pairs, shape [pair_count, 2]."""
+    pairs = np.empty((codes.shape[0], 2), dtype=np.int32)
+    pairs[:, 0] = codes >> 32
+    pairs[:, 1] = codes & 0xFFFFFFFF
+    return pairs
+
+
 class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
     """Mutation-deprecated compat view over the canonical filter-pair array.
 
     The canonical store is ``packed``: a sorted, unique 1-D ``int64`` array of
-    ``(shape_a << 32) | shape_b`` codes with ``shape_a <= shape_b``. The public
+    pair codes (see :func:`_pack_shape_pair_codes`). The public
     :attr:`Model.shape_collision_filter_pairs` descriptor materializes this
     view into native set contents on access, so plain ``set`` reads work
-    unchanged; internal consumers query the packed array directly and never
-    materialize. Mutation is deprecated: it materializes, drops the packed
-    array, and falls back to native set semantics.
+    unchanged; internal consumers use :meth:`contains_pair`,
+    :meth:`mask_pairs`, and :meth:`pairs_array`, which query the packed array
+    while it exists and transparently fall back to native set contents after a
+    deprecated mutation drops it.
     """
 
     __hash__ = None
@@ -80,9 +105,8 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
 
     def _ensure_materialized(self) -> None:
         if not self._materialized:
-            pairs = self.pairs_array()
-            if pairs is not None and pairs.shape[0] > 0:
-                super().update(map(tuple, pairs.tolist()))
+            if self._packed is not None and self._packed.shape[0] > 0:
+                super().update(map(tuple, _unpack_shape_pair_codes(self._packed).tolist()))
             self._materialized = True
 
     @property
@@ -96,27 +120,59 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
         """Sorted unique packed pair codes, or ``None`` after mutation."""
         return self._packed
 
-    def pairs_array(self) -> np.ndarray | None:
-        """Canonical pairs, shape [pair_count, 2], or ``None`` after mutation."""
-        if self._packed is None:
-            return None
-        if self._pairs_array is None:
-            pairs = np.empty((self._packed.shape[0], 2), dtype=np.int32)
-            pairs[:, 0] = self._packed >> 32
-            pairs[:, 1] = self._packed & 0xFFFFFFFF
-            self._pairs_array = pairs
-        return self._pairs_array
-
-    def contains_packed(self, shape_a: int, shape_b: int) -> bool | None:
-        """Packed-array membership, or ``None`` after mutation."""
-        if self._packed is None:
-            return None
+    def contains_pair(self, shape_a: int, shape_b: int) -> bool:
+        """Return membership of a shape pair in any argument order."""
         try:
-            code = (shape_a << 32) | shape_b if shape_a <= shape_b else (shape_b << 32) | shape_a
-        except TypeError:
+            # Normalize to Python ints: NumPy int32 inputs would overflow the
+            # 32-bit shift in the packed code and give wrong membership.
+            shape_a, shape_b = int(shape_a), int(shape_b)
+        except (TypeError, ValueError):
             return False
+        if shape_a > shape_b:
+            shape_a, shape_b = shape_b, shape_a
+        if self._packed is None:
+            return super().__contains__((shape_a, shape_b))
+        code = (shape_a << 32) | shape_b
         index = int(np.searchsorted(self._packed, code))
         return bool(index < self._packed.shape[0] and self._packed[index] == code)
+
+    def mask_pairs(self, pairs: np.ndarray) -> np.ndarray:
+        """Return a boolean membership mask for shape pairs in any order."""
+        pairs = np.asarray(pairs)
+        if pairs.dtype.kind != "i":
+            pairs = pairs.astype(np.int64)
+        pairs = pairs.reshape((-1, 2))
+        if pairs.shape[0] == 0:
+            return np.zeros(0, dtype=bool)
+        if self._packed is None:
+            return np.fromiter(
+                (self.contains_pair(shape_a, shape_b) for shape_a, shape_b in pairs),
+                dtype=bool,
+                count=pairs.shape[0],
+            )
+        if self._packed.shape[0] == 0:
+            return np.zeros(pairs.shape[0], dtype=bool)
+        codes = _pack_shape_pair_codes(pairs[:, 0], pairs[:, 1])
+        index = np.searchsorted(self._packed, codes)
+        in_range = index < self._packed.shape[0]
+        return in_range & (self._packed[np.minimum(index, self._packed.shape[0] - 1)] == codes)
+
+    def pairs_array(self) -> np.ndarray:
+        """Canonical pairs sorted lexicographically, shape [pair_count, 2].
+
+        The returned array is read-only: while the packed store exists it
+        aliases the cached canonical pairs, and mutating it would corrupt
+        every later filter query and the materialized public set.
+        """
+        if self._packed is None:
+            pairs = np.asarray(sorted(self), dtype=np.int32).reshape((-1, 2))
+        else:
+            if self._pairs_array is None:
+                self._pairs_array = _unpack_shape_pair_codes(self._packed)
+                self._pairs_array.setflags(write=False)
+            return self._pairs_array
+        pairs.setflags(write=False)
+        return pairs
 
     def _prepare_mutation(self) -> None:
         self._ensure_materialized()
@@ -1132,14 +1188,9 @@ class Model:
             Whether the pair is present in the collision filter.
         """
         filters = self._shape_collision_filter_store()
-        if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
-            packed_result = filters.contains_packed(shape_a, shape_b)
-            if packed_result is not None:
-                return packed_result
         if filters is None:
             return False
-        pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
-        return pair in filters
+        return filters.contains_pair(shape_a, shape_b)
 
     def shape_collision_filter_pairs_array(self) -> np.ndarray:
         """Return the collision-filter pairs as an array.
@@ -1154,13 +1205,9 @@ class Model:
             [pair_count, 2].
         """
         filters = self._shape_collision_filter_store()
-        if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
-            pairs = filters.pairs_array()
-            if pairs is not None:
-                return pairs
-        if not filters:
+        if filters is None:
             return np.empty((0, 2), dtype=np.int32)
-        return np.asarray(sorted(filters), dtype=np.int32).reshape((-1, 2))
+        return filters.pairs_array()
 
     def shape_collision_filter_mask(self, pairs: np.ndarray) -> np.ndarray:
         """Return a boolean mask of which shape pairs are collision-filtered.
@@ -1175,28 +1222,10 @@ class Model:
         Returns:
             Boolean mask of filtered pairs, shape [pair_count].
         """
-        pairs = np.asarray(pairs, dtype=np.int64).reshape((-1, 2))
-        if pairs.shape[0] == 0:
-            return np.zeros(0, dtype=bool)
-        lo = np.minimum(pairs[:, 0], pairs[:, 1])
-        hi = np.maximum(pairs[:, 0], pairs[:, 1])
-        codes = (lo << 32) | hi
         filters = self._shape_collision_filter_store()
-        if isinstance(filters, _DeprecatedShapeCollisionFilterSet):
-            packed = filters.packed_pairs()
-            if packed is not None:
-                if packed.shape[0] == 0:
-                    return np.zeros(pairs.shape[0], dtype=bool)
-                index = np.searchsorted(packed, codes)
-                in_range = index < packed.shape[0]
-                return in_range & (packed[np.minimum(index, packed.shape[0] - 1)] == codes)
-        if not filters:
-            return np.zeros(pairs.shape[0], dtype=bool)
-        return np.fromiter(
-            ((int(a), int(b)) in filters for a, b in zip(lo, hi, strict=True)),
-            dtype=bool,
-            count=pairs.shape[0],
-        )
+        if filters is None:
+            return np.zeros(np.asarray(pairs).reshape((-1, 2)).shape[0], dtype=bool)
+        return filters.mask_pairs(pairs)
 
     # Deprecated equality-constraint arrays (removal in a future release).
     # The legacy top-level ``Model.equality_constraint_*`` arrays are now read-only forwards to
