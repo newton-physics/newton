@@ -45,54 +45,54 @@ class DataKaminoInfo:
     # Total Constraints
     ###
 
-    num_total_cts: wp.array | None = None
+    num_total_cts: wp.array[wp.int32] | None = None
     """
-    The total number of active constraints.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The total number of active constraints.
+    Shape of ``(num_worlds,)``.
     """
 
     ###
     # Limits
     ###
 
-    num_limits: wp.array | None = None
+    num_limits: wp.array[wp.int32] | None = None
     """
-    The number of active limits in each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
-    """
-
-    num_limit_cts: wp.array | None = None
-    """
-    The number of active limit constraints.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active limits in each world.
+    Shape of ``(num_worlds,)``.
     """
 
-    limit_cts_group_offset: wp.array | None = None
+    num_limit_cts: wp.array[wp.int32] | None = None
     """
-    The index offset of the limit constraints group within the constraints block of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active limit constraints.
+    Shape of ``(num_worlds,)``.
+    """
+
+    limit_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the limit constraints group within the constraints block of each world.
+    Shape of ``(num_worlds,)``.
     """
 
     ###
     # Contacts
     ###
 
-    num_contacts: wp.array | None = None
+    num_contacts: wp.array[wp.int32] | None = None
     """
-    The number of active contacts in each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
-    """
-
-    num_contact_cts: wp.array | None = None
-    """
-    The number of active contact constraints.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active contacts in each world.
+    Shape of ``(num_worlds,)``.
     """
 
-    contact_cts_group_offset: wp.array | None = None
+    num_contact_cts: wp.array[wp.int32] | None = None
     """
-    The index offset of the contact constraints group within the constraints block of each world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The number of active contact constraints.
+    Shape of ``(num_worlds,)``.
+    """
+
+    contact_cts_group_offset: wp.array[wp.int32] | None = None
+    """
+    The index offset of the contact constraints group within the constraints block of each world.
+    Shape of ``(num_worlds,)``.
     """
 
     ###
@@ -161,8 +161,7 @@ class DataKamino:
         - Body twists
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure bodies data has been allocated
         if self.bodies is None:
@@ -182,8 +181,7 @@ class DataKamino:
         - Body wrenches
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure bodies data has been allocated
         if self.bodies is None:
@@ -203,8 +201,7 @@ class DataKamino:
         - Joint velocities
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure joints data has been allocated
         if self.joints is None:
@@ -225,8 +222,7 @@ class DataKamino:
         - Joint constraint reactions
 
         Args:
-            state (StateKamino):
-                The state container holding time-varying state of the simulation.
+            state: The state container holding time-varying state of the simulation.
         """
         # Ensure joints data has been allocated
         if self.joints is None:

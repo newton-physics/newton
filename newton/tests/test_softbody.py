@@ -278,8 +278,8 @@ def _expected_tet_adjacency(particle_count: int, tet_indices: np.ndarray) -> tup
 
 def _assert_adjacency_matches_tets(test, adjacency, tet_indices: np.ndarray):
     """Check each recorded (tet_id, local_order) really maps back to the vertex being visited."""
-    offsets = adjacency.v_adj_tets_offsets.numpy()
-    flat = adjacency.v_adj_tets.numpy()
+    offsets = adjacency.v_adj_tets_offsets
+    flat = adjacency.v_adj_tets
     particle_count = len(offsets) - 1
     for v in range(particle_count):
         start, end = offsets[v], offsets[v + 1]
@@ -341,8 +341,8 @@ def test_tet_adjacency_single_tet(test, device):
     adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(4, tet_indices)
-    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
-    np.testing.assert_array_equal(adjacency.v_adj_tets.numpy(), exp_flat)
+    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets, exp_offsets)
+    np.testing.assert_array_equal(adjacency.v_adj_tets, exp_flat)
     _assert_adjacency_matches_tets(test, adjacency, tet_indices)
 
 
@@ -354,8 +354,8 @@ def test_tet_adjacency_complex_pyramid(test, device):
     adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(len(PYRAMID_PARTICLES), PYRAMID_TET_INDICES)
-    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
-    np.testing.assert_array_equal(adjacency.v_adj_tets.numpy(), exp_flat)
+    np.testing.assert_array_equal(adjacency.v_adj_tets_offsets, exp_offsets)
+    np.testing.assert_array_equal(adjacency.v_adj_tets, exp_flat)
     _assert_adjacency_matches_tets(test, adjacency, PYRAMID_TET_INDICES)
 
 
