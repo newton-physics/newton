@@ -90,7 +90,13 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         if collect_schema_attrs:
             resolver.collect_prim_attrs(prim)
 
-        tetmesh = get_tetmesh_cached(prim)
+        try:
+            tetmesh = get_tetmesh_cached(prim)
+        except ValueError as exc:
+            # Malformed authored topology (e.g. out-of-range tet indices) must not abort the
+            # whole import; skip the prim like other broken deformable geometry.
+            warnings.warn(f"{path}: invalid TetMesh; skipping soft-body import ({exc}).", stacklevel=2)
+            continue
         tetmesh_for_builder = tetmesh
         if tetmesh.custom_attributes:
             filtered_custom_attributes = {

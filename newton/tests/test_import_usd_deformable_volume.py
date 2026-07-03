@@ -228,6 +228,25 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 self.assertAlmostEqual(k_mu, expected_mu, places=1)
                 self.assertAlmostEqual(k_lambda, expected_lambda, places=1)
 
+    def test_malformed_tetmesh_warns_and_spares_the_stage(self):
+        """A TetMesh whose indices exceed its point count warns and is skipped; the rest of
+        the stage (a valid soft body) still imports instead of the whole add_usd aborting."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        bad = UsdGeom.TetMesh.Define(stage, "/World/Bad")
+        bad.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+        bad.CreateTetVertexIndicesAttr([(0, 1, 2, 99)])
+        bad.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+        _author_unit_tet(stage, "/World/Good", sim_api=True)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "/World/Bad.*exceeds vertex count"):
+            builder.add_usd(stage)
+
+        self.assertEqual(group_labels(builder, "soft"), ["/World/Good"])
+        self.assertEqual(builder.particle_count, 4)
+
     def test_resolved_density_reports_builder_default_fallback(self):
         """With no authored or material density, add_soft_mesh falls back to the builder's
         default_tet_density; path_soft_attrs must report that actually-used value, not None."""
