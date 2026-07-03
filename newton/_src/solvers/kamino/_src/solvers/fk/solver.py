@@ -194,11 +194,11 @@ class ForwardKinematicsSolver:
             actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
             actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
         else:
-            num_coords = self.model.joints.num_coords.numpy()
-            num_dofs = self.model.joints.num_dofs.numpy()
-            actuator_mask = joints_act_type_prev != JointActuationType.PASSIVE
-            num_act_coords = num_coords[actuator_mask]
-            num_act_dofs = num_dofs[actuator_mask]
+            num_act_coords = self.model.joints.num_coords.numpy()
+            num_act_dofs = self.model.joints.num_dofs.numpy()
+            passive_mask = joints_act_type_prev == JointActuationType.PASSIVE
+            num_act_coords[passive_mask] = 0
+            num_act_dofs[passive_mask] = 0
             actuated_coord_offsets_prev = np.concatenate(([0], num_act_coords.cumsum()))
             actuated_dof_offsets_prev = np.concatenate(([0], num_act_dofs.cumsum()))
 
