@@ -2015,23 +2015,40 @@ def _scatter_group_spatial_kernel(
 
 
 class DeformableView:
-    """Batched access to imported deformables selected by label pattern.
+    """Batched access to deformable groups selected by label pattern.
 
-    Selects the cable, cloth, or soft-body groups whose prim-path label matches ``pattern``
-    and exposes their state as batched arrays of shape ``(count, elements_per_group)``, one
+    Selects the cable, cloth, or soft-body groups whose label matches ``pattern`` and
+    exposes their state as batched arrays of shape ``(count, elements_per_group)``, one
     row per selected group ordered world by world. This mirrors
-    :class:`~newton.selection.ArticulationView` for the deformable families that
-    :meth:`~newton.ModelBuilder.add_usd` imports.
+    :class:`~newton.selection.ArticulationView` for deformables.
+
+    Only groups recorded in the builder's group registries are selectable. The USD
+    importer (:meth:`~newton.ModelBuilder.add_usd`) records every imported deformable
+    under its prim-path label; deformables built through other builder methods are not
+    discoverable by this view unless a group was recorded for them.
 
     The selection must be homogeneous: the same number of matching groups in every world
     that has a match, and the same element count in every group (which
     :meth:`~newton.ModelBuilder.replicate` produces). Worlds without a match are skipped,
     so a family present in only some worlds of a heterogeneous scene is still selectable;
-    ragged selections raise ``ValueError``.
+    ragged selections raise ``ValueError``. Global groups (world ``-1``) cannot be mixed
+    with per-world groups in one selection.
+
+    An imported cable is also an articulation of segment bodies, so it is visible to
+    :class:`~newton.selection.ArticulationView` under its ``<path>_articulation`` label.
+    Use this view for cables: it batches state per cable in segment order, which is the
+    shape cable consumers want.
+
+    Setters accept a Warp array of the documented shape and dtype, or NumPy arrays and
+    nested lists (converted on the fly). Pass torch tensors through
+    :func:`warp.from_torch`; getters return Warp arrays that :func:`warp.to_torch` wraps
+    without a copy.
 
     Example:
 
     .. code-block:: python
+
+        import warp as wp
 
         import newton
 
@@ -2042,7 +2059,7 @@ class DeformableView:
         view.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
 
     Args:
-        model: The model containing the imported deformables.
+        model: The model containing the deformable groups.
         pattern: Pattern to match group labels (prim paths) — see :ref:`label-matching`.
         family: Deformable family to select: ``"cable"``, ``"cloth"``, or ``"soft"``.
         verbose: If True, prints a selection summary.
@@ -2174,18 +2191,24 @@ class DeformableView:
             raise AttributeError(f"{self.family} groups have no {kind} elements")
         return count
 
-    def _gather(self, kind, src, kernel, dtype):
+    def _gather(self, kind: str, src: wp.array, kernel, dtype) -> wp.array[Any]:
         count = self._element_count(kind)
         out = wp.empty((self.count, count), dtype=dtype, device=self.device)
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
-    def _scatter(self, kind, values, kernel, dst, dtype):
+    def _scatter(self, kind: str, values, kernel, dst: wp.array, dtype) -> None:
         count = self._element_count(kind)
         if not isinstance(values, wp.array):
             values = wp.array(values, dtype=dtype, shape=(self.count, count), device=self.device, copy=False)
         if values.shape != (self.count, count):
             raise ValueError(f"Expected values shape {(self.count, count)}, got {values.shape}")
+        # Validate Warp inputs eagerly so a mismatch reads as a contract error, not a
+        # kernel-launch failure.
+        if values.dtype is not dtype:
+            raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
+        if values.device != self.device:
+            raise ValueError(f"Expected values on device {self.device}, got {values.device}")
         wp.launch(kernel, dim=(self.count, count), inputs=[values, self._starts[kind], dst], device=self.device)
 
     # particle state (cloth / soft) -------------------------------------------
@@ -2195,7 +2218,7 @@ class DeformableView:
         """Particles in each selected cloth/soft group."""
         return self._element_count("particle")
 
-    def get_particle_positions(self, source: Model | State):
+    def get_particle_positions(self, source: Model | State) -> wp.array2d[wp.vec3]:
         """Particle positions [m] of each group, shape ``(count, particles_per_group)`` of vec3."""
         return self._gather("particle", source.particle_q, _gather_group_vec3_kernel, wp.vec3)
 
@@ -2203,7 +2226,7 @@ class DeformableView:
         """Write particle positions [m] from ``(count, particles_per_group)`` vec3 values."""
         self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_q, wp.vec3)
 
-    def get_particle_velocities(self, source: Model | State):
+    def get_particle_velocities(self, source: Model | State) -> wp.array2d[wp.vec3]:
         """Particle velocities [m/s] of each group, shape ``(count, particles_per_group)`` of vec3."""
         return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel, wp.vec3)
 
@@ -2218,7 +2241,7 @@ class DeformableView:
         """Segment bodies in each selected cable group."""
         return self._element_count("body")
 
-    def get_body_transforms(self, source: Model | State):
+    def get_body_transforms(self, source: Model | State) -> wp.array2d[wp.transform]:
         """Segment body transforms of each cable, shape ``(count, bodies_per_group)`` of transform."""
         return self._gather("body", source.body_q, _gather_group_transform_kernel, wp.transform)
 
@@ -2226,7 +2249,7 @@ class DeformableView:
         """Write segment body transforms from ``(count, bodies_per_group)`` transform values."""
         self._scatter("body", values, _scatter_group_transform_kernel, source.body_q, wp.transform)
 
-    def get_body_velocities(self, source: Model | State):
+    def get_body_velocities(self, source: Model | State) -> wp.array2d[wp.spatial_vector]:
         """Segment body spatial velocities of each cable, shape ``(count, bodies_per_group)``."""
         return self._gather("body", source.body_qd, _gather_group_spatial_kernel, wp.spatial_vector)
 
