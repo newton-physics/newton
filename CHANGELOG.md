@@ -54,6 +54,7 @@
 - Fix memory growth in the Style3D solver when CUDA Graph capture is disabled
 - Fix `newton.eval_jacobian`, `SolverFeatherstone`, and the IK analytic Jacobian building `JointType.D6` angular motion-subspace columns from raw axes, so `J @ joint_qd` now matches `State.body_qd` for two- or three-angular-DOF joints at non-identity configurations.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
+- Fix USD import of `MjcJointAPI` joints without authored `mjc:solreflimit` to use MuJoCo's `(0.02, 1)` default instead of `ModelBuilder` defaults. (#2929)
 - Fix `SolverImplicitMPM` whole-step CUDA graph capture failing when the rheology inner solver is an iterative linear method such as `solver="cg"`. (#3155)
 - Preserve MJCF geom visualization groups when constructing MuJoCo models. (#2492)
 - Fix USD import so non-unit `metersPerUnit` and `kilogramsPerUnit` warn as unsupported, and stop scaling `PhysicsScene` gravity magnitude by `metersPerUnit`.
