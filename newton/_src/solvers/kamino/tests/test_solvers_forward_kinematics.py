@@ -621,6 +621,51 @@ class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
         success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
         self.assertTrue(success)
 
+    def test_all_joints_example_asymmetric_frames_FK_random_poses(self):
+        # Initialize RNG
+        test_name = "All-joints example FK random poses check with asymmetric frames"
+        seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
+        rng = np.random.default_rng(seed)
+
+        # Build model with all joint types, unary and binary (actuated so the FK problem is well-posed)
+        builder = build_all_joints_test_model(unary_joints=True, binary_joints=True, actuated=True, floating_base=False)
+
+        # Set asymmetric joint frames (X_B != X_F) into joints (while preserving initial pose)
+        num_joints = builder.num_joints
+        random_quats = np.resize(rng.uniform(-1.0, 1.0, 4 * num_joints), (num_joints, 4))
+        random_quats /= np.linalg.norm(random_quats, axis=1)[:, None]
+        for jid, joint in enumerate(builder.all_joints):
+            wid = joint.wid
+            q_B = wp.transform_identity() if joint.bid_B < 0 else builder.bodies[wid][joint.bid_B].q_i_0
+            q_F = builder.bodies[wid][joint.bid_F].q_i_0
+            R_B = wp.quat_to_matrix(wp.transform_get_rotation(q_B))
+            R_F = wp.quat_to_matrix(wp.transform_get_rotation(q_F))
+            joint.X_Fj = wp.quat_to_matrix(wp.quatf(random_quats[jid]))
+            joint.X_Bj = wp.transpose(R_B) * R_F * joint.X_Fj  # Compute X_B given X_F to preserve a valid pose
+        model = builder.finalize(device=self.default_device)
+
+        # Generate helper function to simulate random poses
+        num_poses = 30
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            rng,
+            use_graph=self.has_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
+        )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
+        self.assertTrue(success)
+
 
 class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
     def setUp(self):
