@@ -471,8 +471,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             Reset option, to set a new pose for the base body, and transform all bodies accordingly.
             If a base joint is set, the prescribed pose is interpreted in the frame of the base joint;
             else it is directly interpreted as the new pose of the base body.
-            Note: if a base joint is set that is not a free joint, no check is made that the new pose is
-            compatible with the base joint's DoFs. To guarantee a feasible pose, use instead FromJointQ.
             """
 
             base_q: wp.array[wp.transformf]
@@ -484,8 +482,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             Reset option, to set a new velocity for the base body, and compose with body velocities accordingly.
             If a base joint is set, the prescribed velocity is interpreted in the frame of the base joint;
             else it is directly interpreted as the new velocity of the base body.
-            Note: if a base joint is set that is not a free joint, no check is made that the new velocity is
-            compatible with the base joint's DoFs. To guarantee a feasible velocity, use instead FromJointU.
             """
 
             base_u: wp.array[wp.spatial_vectorf]
@@ -530,6 +526,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         Body poses and velocities are transformed (if needed) to match the prescribed base pose, while
         preserving relative poses and velocities.
+        All options are ignored for worlds for which no base body is set.
         """
 
         base_velocity: ToDefault | Preserve | FromJointU | FromBaseU = ToDefault()
@@ -544,6 +541,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - FromBaseU: use the provided base velocity.
 
         Body velocities are updated to match the prescribed base velocity, while preserving relative velocities.
+        All options are ignored for worlds for which no base body is set.
         """
 
         @classmethod

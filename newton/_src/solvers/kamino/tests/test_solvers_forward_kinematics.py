@@ -252,28 +252,6 @@ def extract_segments(array, offsets, sizes):
     return np.array(res)
 
 
-def compute_constraint_residual_mask(model: ModelKamino):
-    """
-    Computes a boolean mask for constraint residuals, True for most constraints but False
-    for base joints (to filter out residuals for fixed base models if the base is reset
-    to a different pose)
-    """
-    mask = np.array(model.size.sum_of_num_joint_cts * [True])
-
-    # Exclude base joints
-    first_joint_ct_id = model.joints.kinematic_cts_offset.numpy().copy()  # Cts offset per joint
-    num_joint_cts = model.joints.num_kinematic_cts.numpy()  # Num cts per joint
-    base_joint_index = model.info.base_joint_index.numpy().tolist()
-    for wd_id in range(model.size.num_worlds):
-        if base_joint_index[wd_id] < 0:
-            continue
-        base_jt_id = base_joint_index[wd_id]
-        ct_offset = first_joint_ct_id[base_jt_id]
-        mask[ct_offset : ct_offset + num_joint_cts[base_jt_id]] = False
-
-    return mask
-
-
 def simulate_random_poses(
     model: ModelKamino,
     num_poses: int,
@@ -298,9 +276,6 @@ def simulate_random_poses(
     actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes, actuator_dof_types = (
         compute_actuated_coords_and_dofs_data(model)
     )
-
-    # Precompute boolean mask for extracting relevant constraint residuals
-    residual_mask = compute_constraint_residual_mask(model)
 
     # Run forward kinematics on all random poses
     config = ForwardKinematicsSolver.Config(**config_kwargs)
@@ -344,7 +319,7 @@ def simulate_random_poses(
         compute_joints_data(model=model, data=data, q_j_p=model.joints.q_j_0, correction=JointCorrectionMode.CONTINUOUS)
 
         # Validate positions computation
-        residual_ct_pos = np.max(np.abs(data.joints.r_j.numpy()[residual_mask]))
+        residual_ct_pos = np.max(np.abs(data.joints.r_j.numpy()))
         if residual_ct_pos > epsilon:
             print(f"Large constraint residual ({residual_ct_pos}) for pose {pose_id}")
             success_flags[-1] = False
@@ -359,7 +334,7 @@ def simulate_random_poses(
             success_flags[-1] = False
 
         # Validate velocities computation
-        residual_ct_vel = np.max(np.abs(data.joints.dr_j.numpy()[residual_mask]))
+        residual_ct_vel = np.max(np.abs(data.joints.dr_j.numpy()))
         if residual_ct_vel > epsilon:
             print(f"Large constraint velocity residual ({residual_ct_vel}) for pose {pose_id}")
             success_flags[-1] = False
@@ -399,7 +374,6 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Load model
         builder = USDImporter().import_from(asset_file)
-        builder.set_base_joint("base")
         model = builder.finalize(device=self.default_device, requires_grad=False)
 
         # Generate helper function to simulate random poses
@@ -495,7 +469,6 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
         asset_file_0 = str(asset_path / "dr_testmech" / "usd" / "dr_testmech.usda")
         asset_file_1 = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
         builder = USDImporter().import_from(asset_file_0)
-        builder.set_base_joint("base")
         builder1 = USDImporter().import_from(asset_file_1)
         builder1.set_base_body("pelvis")
         builder.add_builder(builder1)
@@ -689,7 +662,6 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
         asset_file_0 = str(asset_path / "dr_testmech" / "usd" / "dr_testmech.usda")
         asset_file_1 = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
         builder = USDImporter().import_from(asset_file_0)
-        builder.set_base_joint("base")
         builder1 = USDImporter().import_from(asset_file_1)
         builder1.set_base_body("pelvis")
         builder.add_builder(builder1)

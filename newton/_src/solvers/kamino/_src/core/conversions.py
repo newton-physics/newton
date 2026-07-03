@@ -12,6 +12,7 @@ import warp as wp
 
 from .....geometry import ShapeFlags
 from .....sim.model import Model
+from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -1014,35 +1015,45 @@ def convert_joints(
     if model.articulation_count > 0:
         articulation_start_np = model.articulation_start.numpy()
         articulation_world_np = model.articulation_world.numpy()
-        # For each articulation, assign its base body and joint to the corresponding world
+        # For each articulation, assign its base body and joint to the corresponding world,
+        # if the base joint is a unary free joint.
         # NOTE: We only assign the first articulation found in each world
+        has_non_free_root = False
         for aid in range(model.articulation_count):
             wid = articulation_world_np[aid]
             base_joint = articulation_start_np[aid]
             base_body = joint_child_np[base_joint]
             if base_body_idx_np[wid] == -1 and base_joint_idx_np[wid] == -1:
-                if joint_dof_type_np[base_joint] == JointDoFType.UNIVERSAL:
-                    raise RuntimeError(
-                        "Universal joint as the base joint of an articulation isn't supported in Kamino."
-                    )
+                if joint_dof_type_np[base_joint] != JointDoFType.FREE:
+                    has_non_free_root = True
+                    continue
                 base_body_idx_np[wid] = base_body
                 base_joint_idx_np[wid] = base_joint
+        if has_non_free_root:
+            msg.warning(
+                "Model has articulations with a non-free joint as root, disabling floating base resets for those worlds."
+            )
 
-    # For worlds without articulations, look for a unary joint, or else use the first body
+    # For worlds without articulations, look for a unary free joint, or use the first body
     for wid in range(model.world_count):
         if base_body_idx_np[wid] != -1:  # World already has a base body
             continue
-        # Look for a unary non-universal joint connecting the world to a follower body
+        # Look for a unary joint, and use it as base joint if it is a free joint
+        has_unary_joint = False
         for jid in range(joint_world_start_np[wid], joint_world_start_np[wid + 1]):
-            if joint_parent_np[jid] == -1 and joint_dof_type_np[jid] != JointDoFType.UNIVERSAL:
-                base_joint_idx_np[wid] = jid
-                base_body_idx_np[wid] = int(joint_child_np[jid])
-                break
-        # As a last fallback, set first body in that world as base body (no base joint)
-        if base_body_idx_np[wid] == -1:
-            base_body_idx_np[wid] = body_world_start_np[wid]
+            if joint_parent_np[jid] == -1:
+                has_unary_joint = True
+                if joint_dof_type_np[jid] == JointDoFType.FREE:
+                    base_joint_idx_np[wid] = jid
+                    base_body_idx_np[wid] = int(joint_child_np[jid])
+                    break
+        # As a last fallback, set first body in that world as base body (no base joint), if no unary
+        # joints were found (else this is not a floating-base model and we assign no base body).
+        if base_body_idx_np[wid] == -1 and not has_unary_joint:
             if body_world_start_np[wid] == body_world_start_np[wid + 1]:
-                raise RuntimeError(f"Zero bodies in world {wid}, cannot set base body.")
+                msg.warning(f"Zero bodies in world {wid}, no base body assigned.")
+                continue
+            base_body_idx_np[wid] = body_world_start_np[wid]
 
     # Update size object
     model_size.sum_of_num_joints = int(num_joints_np.sum())

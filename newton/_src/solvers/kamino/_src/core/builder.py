@@ -15,6 +15,7 @@ import warp as wp
 
 from .....core.types import Axis
 from .....geometry import ShapeFlags
+from ..utils import logger as msg
 from .bodies import RigidBodiesModel, RigidBodyDescriptor
 from .geometry import GeometriesModel, GeometryDescriptor
 from .gravity import GravityDescriptor, GravityModel
@@ -913,7 +914,10 @@ class ModelBuilderKamino:
         # Validate base body/joint data for each world, and fill in missing data if possible
         for w, world in enumerate(self._worlds):
             if world.has_base_joint:
-                follower_idx = self._joints[w][world.base_joint_idx].bid_F  # Note: index among world bodies
+                base_joint = self._joints[w][world.base_joint_idx]
+                if base_joint.dof_type != JointDoFType.FREE:
+                    raise ValueError(f"Invalid base joint for world {world.name} ({w}), must be a free joint.")
+                follower_idx = joint.bid_F  # Note: index among world bodies
                 if world.has_base_body:  # Ensure base joint & body are compatible if both were set
                     if world.base_body_idx != follower_idx:
                         raise ValueError(
@@ -922,16 +926,21 @@ class ModelBuilderKamino:
                 else:  # Set base body to be the follower of the base joint
                     world.set_base_body(follower_idx)
             elif not world.has_base_body and base_auto:
-                # Look for a non-universal unary joint connecting the world to a follower body
+                # Look for a unary free joint connecting the world to a follower body
+                has_unary_joint = False
                 for jt_idx, joint in enumerate(self._joints[w]):
-                    if joint.bid_B == -1 and joint.dof_type != JointDoFType.UNIVERSAL:
-                        world.set_base_joint(jt_idx)
-                        world.set_base_body(joint.bid_F)
-                        break
-                # As a last fallback, set body 0 in that world as base body (no base joint)
-                if not world.has_base_body:
+                    if joint.bid_B == -1:
+                        has_unary_joint = True
+                        if joint.dof_type == JointDoFType.FREE:
+                            world.set_base_joint(jt_idx)
+                            world.set_base_body(joint.bid_F)
+                            break
+                # As a last fallback, set body 0 in that world as base body (no base joint), if no unary
+                # joints were found (else this is not a floating-base model and we assign no base body).
+                if not world.has_base_body and not has_unary_joint:
                     if world.num_bodies == 0:
-                        raise RuntimeError(f"Zero bodies in world {w}, cannot set base body.")
+                        msg.warning(f"Zero bodies in world {w}, no base body assigned.")
+                        continue
                     world.set_base_body(0)
 
         ###
