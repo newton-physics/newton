@@ -200,6 +200,33 @@ class TestUSDDeformableVolume(unittest.TestCase):
         # Legacy mass distribution (density-derived), not the authored per-point values.
         self.assertNotEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
 
+    def test_volume_material_poisson_ratio_schema_fallback(self):
+        """A material authoring youngsModulus without poissonsRatio uses the proposal's
+        declared poissonsRatio fallback of 0.3 instead of silently discarding the authored
+        modulus. Canonical and vendor namespaces behave the same."""
+        youngs = 300000.0
+        nu = 0.3
+        expected_mu = youngs / (2.0 * (1.0 + nu))
+        expected_lambda = youngs * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+
+        for namespace in ("physics", "omniphysics"):
+            with self.subTest(namespace=namespace):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                _bind_deformable_material(
+                    stage, tet.GetPrim(), "/World/Mat", namespace=namespace, youngsModulus=youngs, density=10.0
+                )
+                builder = newton.ModelBuilder()
+                if namespace == "physics":
+                    builder.add_usd(stage)
+                else:
+                    from newton.usd import SchemaResolverPhysx
+
+                    builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+                k_mu, k_lambda, _k_damp = builder.tet_materials[0]
+                self.assertAlmostEqual(k_mu, expected_mu, places=1)
+                self.assertAlmostEqual(k_lambda, expected_lambda, places=1)
+
     def test_resolved_density_reports_builder_default_fallback(self):
         """With no authored or material density, add_soft_mesh falls back to the builder's
         default_tet_density; path_soft_attrs must report that actually-used value, not None."""

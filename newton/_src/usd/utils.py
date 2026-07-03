@@ -1354,14 +1354,29 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
         poissons = _read_physics_attr(material_prim, "poissonsRatio", compat_namespaces)
         density_val = _read_physics_attr(material_prim, "density", compat_namespaces)
 
-        if youngs is not None and poissons is not None:
+        # The proposal declares youngsModulus with a fallback of -inf, meaning "simulator
+        # default": treat it like an unauthored modulus rather than an invalid value.
+        if youngs is not None and float(youngs) == float("-inf"):
+            youngs = None
+        if youngs is not None:
             E = float(youngs)
-            nu = float(poissons)
-            # Clamp Poisson's ratio to the open interval (-1, 0.5) to avoid
-            # division by zero in the Lame parameter conversion.
-            nu = max(-0.999, min(nu, 0.499))
-            k_mu = E / (2.0 * (1.0 + nu))
-            k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+            # The proposal declares physics:poissonsRatio with a fallback of 0.3. The schema
+            # is not registered with USD, so the fallback cannot be injected by composition
+            # and must be applied here; otherwise an authored Young's modulus would be
+            # silently discarded whenever the ratio is left at its default.
+            nu = 0.3 if poissons is None else float(poissons)
+            if not (math.isfinite(E) and E >= 0.0 and math.isfinite(nu)):
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid volume material (youngsModulus={E}, "
+                    f"poissonsRatio={nu}); ignoring the authored elastic moduli.",
+                    stacklevel=2,
+                )
+            else:
+                # Clamp Poisson's ratio to the open interval (-1, 0.5) to avoid
+                # division by zero in the Lame parameter conversion.
+                nu = max(-0.999, min(nu, 0.499))
+                k_mu = E / (2.0 * (1.0 + nu))
+                k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
 
         if density_val is not None:
             density = float(density_val)
