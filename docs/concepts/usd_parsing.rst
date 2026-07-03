@@ -185,7 +185,9 @@ as authored, independent of any solver. The cable and cloth entries expose the p
 the built soft body and not repeated there). The cable and cloth ``material`` keeps moduli the
 imported rod and membrane cannot express -- for example cable ``shearStiffness`` /
 ``twistStiffness`` -- so a solver with a richer cable or surface model can rebuild the
-deformable from the import without re-parsing the stage.
+deformable from the import without re-parsing the stage. A cable entry carries a
+``graph_component`` identifier only when the curve was welded into a rod graph; curves of one
+graph share it, and independent or fallback cables have no such key.
 
 .. note::
 
