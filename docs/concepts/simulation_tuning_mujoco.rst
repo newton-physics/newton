@@ -209,10 +209,11 @@ goal that matches the actual failure, not the one that seems most intuitive.
      - Action
      - Cost
    * - Less penetration
-     - Reduce ``timeconst`` (raise ``kd``); raise ``ke``
+     - Raise ``ke`` and retune ``kd`` for the desired damping ratio
      - Stability margin; may require smaller ``dt``
    * - Faster error correction
-     - Reduce ``timeconst`` (raise ``kd``)
+     - Raise the active mode's natural frequency; for raw positive ``solref``,
+       reduce ``timeconst`` at fixed ``dampratio``
      - Stability margin; harder constraint rows
    * - Higher plateau impedance
      - Raise ``dmax`` in ``solimp``
@@ -236,7 +237,7 @@ goal that matches the actual failure, not the one that seems most intuitive.
    * - Less bounce without changing stiffness
      - Hold ``ke`` fixed; raise ``kd`` toward critical damping for the active
        ``solref_mode``
-     - Slightly slower error correction
+     - Less desired rebound; excessive ``kd`` can overdamp
    * - Eliminate NaN or energy injection
      - Reduce ``ke`` and ``dmax``; raise ``width``; reduce ``dt``
      - More penetration; runtime
@@ -256,6 +257,11 @@ goal that matches the actual failure, not the one that seems most intuitive.
 Hardness is mainly ``timeconst``/``ke`` and ``d(r)``; stability depends on
 ``timeconst``, ``ke``, ``kd``, ``d(r)``, ``dt``, solver, friction, cone,
 geometry, mass/inertia, and controller.
+
+Do not treat raising ``kd`` as equivalent to reducing an independently authored
+``timeconst``. In ``SOLREF_MODE_MJCF_DEFAULT``, raising ``kd`` also raises the
+mapped ``dampratio``. In ``SOLREF_MODE_FORCE_SPACE``, choose damping using the
+effective-mass check in :ref:`contact-stiffness-sanity-checks`.
 
 .. _friction-cone-choice:
 
@@ -291,10 +297,12 @@ practice:
   MuJoCo's own collision detection; ``False`` routes through Newton's collision
   pipeline, which honors the authored contact ``margin``/``gap``. Choose one and
   tune within it rather than mixing assumptions from both.
-- **Contact margin.** A small positive contact ``margin`` generates contacts
-  slightly before geometric touch, which stabilizes mesh and terrain contact;
-  the default is ``0``. Raise it when a robot fails to settle on a triangle-mesh
-  surface (with ``use_mujoco_contacts=False`` so the margin is applied).
+- **Contact margin and gap.** ``margin`` controls the force-active contact
+  envelope, while ``gap`` adds detection distance without expanding that
+  force-active region. With ``use_mujoco_contacts=False``, Newton's collision
+  pipeline applies both authored values. See
+  :ref:`margin and gap semantics <margin-gap-semantics>`; the MuJoCo integration
+  page linked above describes contact-path details.
 - **Armature as a stabilizer.** A small :attr:`~Model.joint_armature` on light,
   high-gain joints raises effective joint inertia and tames stiff drives on the
   MuJoCo path; justify the magnitude with actuator or gearbox data where
@@ -302,10 +310,10 @@ practice:
 
 ``nconmax`` and ``njmax`` size the **per-world** contact and constraint buffers.
 Set them for the busiest world, not the average: a buffer that fits a quiet
-world silently drops contacts in a heavier one, while an oversized buffer wastes
-GPU memory multiplied across every world. If left unset, they are estimated from
-the initial state; watch for contact or constraint overflow warnings and raise
-the relevant buffer when they appear.
+world can truncate contacts or constraints in a heavier one, while an oversized
+buffer wastes GPU memory multiplied across every world. If left unset, they are
+estimated from the initial state; monitor overflow counters or warnings and raise
+the relevant buffer when needed.
 
 In batched, many-world runs everything per step is multiplied by the world
 count: total buffer memory scales with ``nconmax``/``njmax`` times the number of
@@ -351,8 +359,10 @@ Tabletop Support / Pressing / Stacking
 
 *Goal: reduce penetration, keep support stable, and suppress bounce and chatter.*
 
-- Use medium-to-high ``ke``; use medium-to-high ``kd`` (target ``kd ≈ 2·√ke``
-  for near-critical contact).
+- Choose ``ke`` and ``kd`` together for the desired response. In
+  ``SOLREF_MODE_MJCF_DEFAULT``, ``kd ≈ 2·√ke`` gives nominal critical
+  damping; in ``SOLREF_MODE_FORCE_SPACE``, use
+  :ref:`contact-stiffness-sanity-checks`.
 - Raise ``dmax`` in ``solimp`` to cut deep penetration; raise ``d0`` only if
   shallow contact is also too soft.
 - Increase substeps if the contact must be hard and the timestep cannot shrink.
@@ -367,8 +377,9 @@ energy and velocity transfer.*
 
 - Raise stiffness (higher ``ke``, lower ``timeconst``) to limit penetration
   depth.
-- Lower damping (``dampratio`` toward 1, or lower ``kd``) to preserve rebound;
-  overdamped contact absorbs energy that should transfer.
+- If contact is overdamped, move ``dampratio`` toward 1 or reduce ``kd`` using
+  the active mode's mapping; overdamped contact absorbs energy that should
+  transfer.
 - Reduce ``dt`` or increase substeps — high stiffness is more stable at small
   timesteps.
 - Judge contact quality by energy retention and rebound height, not penetration
@@ -380,8 +391,8 @@ Grasping / Holding
 *Goal: prevent slipping, reduce stick-slip oscillation, and keep contact forces
 stable across the grasp.*
 
-- Check normal force first: insufficient normal force cannot be fixed by any
-  friction or stiffness setting.
+- Check commanded and clamped gripping force first: insufficient available
+  normal force cannot be replaced by friction or stiffness tuning.
 - Then check friction: raise ``mu`` before touching stiffness.
 - Then check contact stiffness: raise ``ke``/``kd`` to stiffen the contact
   patch if friction is adequate but the grasp deflects.
@@ -402,8 +413,9 @@ jitter; drives behave as intended.*
 - Add joint friction (``Model.joint_friction``; MJCF ``frictionloss``) so joints
   resist motion without a drive. This is Coulomb friction loss, not viscous
   damping; on solvers without it, approximate with damping.
-- Add armature to low-inertia joints to damp high-frequency oscillation; small
-  values (0.01–0.1 kg·m²) are often sufficient.
+- Add physically justified armature to low-inertia joints to damp high-frequency
+  oscillation. Scale it relative to reflected inertia; its units are ``kg·m²``
+  for revolute joints and ``kg`` for prismatic joints.
 - Add passive damping (``Model.joint_damping``; MJCF ``damping``) to prevent
   free-spinning at zero velocity.
 - Tune joint limit stiffness and damping separately from contact stiffness;
