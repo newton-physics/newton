@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import re
 import warnings
 from fnmatch import fnmatch
 from types import NoneType
@@ -2017,6 +2018,35 @@ def _scatter_group_spatial_kernel(
     dst[starts[groups[i]] + j] = values[i, j]
 
 
+def _find_matching_group_ids(pattern: str | re.Pattern[str], labels, world_ids, world_count: int):
+    """Group-id matching for DeformableView: fnmatch for str, fullmatch for re.Pattern.
+
+    Local to deformable selection so compiled-pattern support does not change the
+    string-glob semantics of :func:`find_matching_ids` shared with ArticulationView.
+    """
+    if isinstance(pattern, re.Pattern):
+
+        def matches(label: str) -> bool:
+            return pattern.fullmatch(label) is not None
+    else:
+
+        def matches(label: str) -> bool:
+            return fnmatch(label, pattern)
+
+    grouped_ids = [[] for _ in range(world_count)]
+    global_ids = []
+    for group_id, label in enumerate(labels):
+        if matches(label):
+            world = world_ids[group_id]
+            if world == -1:
+                global_ids.append(group_id)
+            elif 0 <= world < world_count:
+                grouped_ids[world].append(group_id)
+            else:
+                raise ValueError(f"World index out of range: {world}")
+    return grouped_ids, global_ids
+
+
 class DeformableView:
     """Batched access to deformable groups selected by label pattern.
 
@@ -2025,8 +2055,8 @@ class DeformableView:
     row per selected group ordered world by world. This mirrors
     :class:`~newton.selection.ArticulationView` for deformables.
 
-    Only groups recorded in the builder's group registries are selectable. The USD
-    importer (:meth:`~newton.ModelBuilder.add_usd`) records every imported deformable
+    Only groups recorded during building are selectable. The USD importer
+    (:meth:`~newton.ModelBuilder.add_usd`) records every imported deformable
     under its prim-path label, and the deformable builder helpers
     (:meth:`~newton.ModelBuilder.add_cloth_mesh`, :meth:`~newton.ModelBuilder.add_soft_mesh`,
     :meth:`~newton.ModelBuilder.add_rod`, :meth:`~newton.ModelBuilder.add_rod_graph`) record
@@ -2065,7 +2095,9 @@ class DeformableView:
 
     Args:
         model: The model containing the deformable groups.
-        pattern: Pattern to match group labels (prim paths) — see :ref:`label-matching`.
+        pattern: Pattern to match group labels (prim paths). A ``str`` is glob-matched
+            (see :ref:`label-matching`); a compiled :class:`re.Pattern` is matched with
+            ``fullmatch()`` against the complete label.
         family: Deformable family to select: ``"cable"``, ``"cloth"``, or ``"soft"``.
         verbose: If True, prints a selection summary.
     """
@@ -2080,7 +2112,7 @@ class DeformableView:
     def __init__(
         self,
         model: Model,
-        pattern: str,
+        pattern: str | re.Pattern[str],
         *,
         family: str,
         verbose: bool | None = None,
@@ -2100,7 +2132,7 @@ class DeformableView:
         labels = [g.label for g in groups]
         group_worlds = [g.world for g in groups]
 
-        group_ids, global_group_ids = find_matching_ids(pattern, labels, group_worlds, model.world_count)
+        group_ids, global_group_ids = _find_matching_group_ids(pattern, labels, group_worlds, model.world_count)
 
         # A heterogeneous scene may hold a family in only some worlds; worlds with no match
         # are skipped, and homogeneity is required across the worlds that do match.

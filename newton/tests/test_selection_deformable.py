@@ -3,6 +3,7 @@
 
 """Tests for DeformableView: batched selection over imported deformable groups."""
 
+import re
 import unittest
 
 import numpy as np
@@ -105,6 +106,45 @@ class TestDeformableView(unittest.TestCase):
         view = DeformableView(model, "/World/Cloth*", family="cloth")
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
+
+    def test_compiled_regex_pattern_selects_by_fullmatch(self):
+        """A compiled regular expression selects groups by fullmatch: alternation picks
+        two labels per replicated world, and a partial match selects nothing."""
+        stage = _deformable_stage()
+        _add_cloth_mesh(stage, "/World/ClothA")
+        _add_cloth_mesh(stage, "/World/ClothB")
+        sub = newton.ModelBuilder()
+        sub.add_usd(stage)
+        scene = newton.ModelBuilder()
+        scene.replicate(sub, 2)
+        model = scene.finalize()
+
+        view = DeformableView(model, re.compile(r"/World/Cloth(A|B)"), family="cloth")
+        self.assertEqual((view.count, view.count_per_world), (4, 2))
+        self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
+
+        # fullmatch: a prefix of the label is not a match.
+        with self.assertRaises(KeyError):
+            DeformableView(model, re.compile(r"/World/Cloth"), family="cloth")
+
+    def test_view_round_trip_on_cpu(self):
+        """The gather/scatter path works on a CPU-finalized model, not just CUDA."""
+        stage = _deformable_stage()
+        _add_cloth_mesh(stage, "/World/Cloth")
+        sub = newton.ModelBuilder()
+        sub.add_usd(stage)
+        scene = newton.ModelBuilder()
+        scene.replicate(sub, 2)
+        model = scene.finalize(device="cpu")
+        state = model.state()
+
+        view = DeformableView(model, "/World/Cloth", family="cloth")
+        positions = view.get_particle_positions(state)
+        self.assertTrue(positions.device.is_cpu)
+        lifted = positions.numpy()
+        lifted[..., 2] += 1.0
+        view.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3, device="cpu"))
+        np.testing.assert_allclose(view.get_particle_positions(state).numpy(), lifted, atol=1e-6)
 
     def test_selection_errors(self):
         """No match raises KeyError; ragged element counts and bad families raise ValueError."""
