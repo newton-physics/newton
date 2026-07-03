@@ -69,11 +69,6 @@ def make_correct_joint_coords(dof_type: JointDoFType):
             for i in range(4):
                 coords[3 + i] = quat_corrected[i]
 
-        elif wp.static(dof_type == JointDoFType.GIMBAL):  # Correct angles up to +/- 2 pi
-            coords[0] = _correct_joint_angle(coords[0], coords_ref[0])
-            coords[1] = _correct_joint_angle(coords[1], coords_ref[1])
-            coords[2] = _correct_joint_angle(coords[2], coords_ref[2])
-
         elif wp.static(dof_type == JointDoFType.REVOLUTE):  # Correct angle up to +/- 2 pi
             coords[0] = _correct_joint_angle(coords[0], coords_ref[0])
 
@@ -177,12 +172,6 @@ def _compute_and_write_joint_coords_and_vel(
     elif dof_type == JointDoFType.FREE:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.FREE))(r_j, q_j, coords_offset, joint_q_ref, joint_q)
         wp.static(make_compute_and_write_joint_vel(JointDoFType.FREE))(q_j, u_j, dofs_offset, joint_u)
-
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_compute_and_write_joint_coords(JointDoFType.GIMBAL))(
-            r_j, q_j, coords_offset, joint_q_ref, joint_q
-        )
-        wp.static(make_compute_and_write_joint_vel(JointDoFType.GIMBAL))(q_j, u_j, dofs_offset, joint_u)
 
     elif dof_type == JointDoFType.PRISMATIC:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.PRISMATIC))(
