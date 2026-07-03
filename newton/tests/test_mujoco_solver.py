@@ -7283,7 +7283,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         root_joint = builder.add_joint_free(body)
         builder.add_articulation([root_joint])
-        loop_joint = builder.add_joint_fixed(parent=-1, child=body)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*FREE joint parallel.*", category=UserWarning)
+            loop_joint = builder.add_joint_fixed(parent=-1, child=body)
 
         self.assertEqual(builder.joint_articulation[loop_joint], -1)
 
