@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Tests for SensorLidar."""
@@ -80,6 +80,10 @@ class TestSensorLidar(unittest.TestCase):
             SensorLidar(model, sites=[site], min_range=-1.0)
         with self.assertRaises(ValueError):
             SensorLidar(model, sites=[site], max_range=0.5, min_range=1.0)
+        with self.assertRaises(ValueError):
+            SensorLidar(model, sites=[site], azimuth_min=math.nan)
+        with self.assertRaises(ValueError):
+            SensorLidar(model, sites=[site], max_range=math.inf)
 
 
 def _add_lidar_body(builder: newton.ModelBuilder, label: str, site_xform: wp.transform | None = None) -> int:
@@ -231,6 +235,16 @@ def test_lidar_miss_and_range_limits(test: TestSensorLidar, device: str):
         sensor = _cardinal_lidar(model, [site], min_range=2.0, max_range=3.0)
         sensor.update(state)
         np.testing.assert_allclose(sensor.distances.numpy()[0], [-1.0, -1.0, -1.0, -1.0], atol=1e-5)
+
+    with test.subTest("max_range_is_an_exclusive_bound"):
+        # A hit at exactly max_range is a miss; just inside the bound it is reported.
+        sensor = _cardinal_lidar(model, [site], min_range=2.0, max_range=4.0)
+        sensor.update(state)
+        np.testing.assert_allclose(sensor.distances.numpy()[0], [-1.0, -1.0, -1.0, -1.0], atol=1e-5)
+
+        sensor = _cardinal_lidar(model, [site], min_range=2.0, max_range=4.001)
+        sensor.update(state)
+        np.testing.assert_allclose(sensor.distances.numpy()[0], [-1.0, -1.0, 4.0, -1.0], atol=1e-5)
 
 
 def test_lidar_attached_frame_moves_with_body(test: TestSensorLidar, device: str):

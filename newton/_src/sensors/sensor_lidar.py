@@ -1,9 +1,11 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Lidar Sensor - measures ray-hit distances along a spherical scan pattern around sensor sites."""
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import warp as wp
@@ -43,9 +45,9 @@ def compute_sensor_lidar_kernel(
 
     Rays are expressed in the sensor site frame and transformed to world space
     using the site's parent body transform from ``body_q``. Hits are found by
-    querying the model shape BVH and dispatching to
-    :func:`~newton._src.geometry.raycast.ray_intersect_geom` per candidate
-    shape, mirroring :func:`newton.intersect_ray`.
+    querying the model shape BVH and dispatching to the internal
+    ``ray_intersect_geom()`` helper per candidate shape, mirroring
+    :func:`newton.intersect_ray`.
 
     Args:
         sensor_sites: Site (shape) index per sensor.
@@ -113,6 +115,8 @@ def compute_sensor_lidar_kernel(
                     direction,
                     mesh_id,
                 )
+                # min_dist starts at max_range, so the upper bound is exclusive: a hit at
+                # exactly max_range is a miss (the BVH query also prunes at this bound).
                 if hit_dist >= min_range and hit_dist < min_dist:
                     min_dist = hit_dist
                     min_shape_id = shape_id
@@ -139,11 +143,12 @@ class SensorLidar:
     elevation limits. Ray ``r`` of ring ``e`` is stored at index
     ``e * azimuth_count + r``.
 
-    Hits farther than ``max_range`` are reported as misses (``-1.0``,
-    following the convention of :func:`newton.intersect_ray` and the tiled
-    camera depth channel). Hits closer than ``min_range`` are ignored and the
-    ray continues to farther geometry, which can be used to look past shapes
-    mounted near the sensor origin.
+    Hits at or farther than ``max_range`` (an exclusive bound) are reported
+    as misses (``-1.0``, following the convention of
+    :func:`newton.intersect_ray` and the tiled camera depth channel). Hits
+    closer than ``min_range`` are ignored and the ray continues to farther
+    geometry, which can be used to look past shapes mounted near the sensor
+    origin.
 
     Raycasting uses the model shape BVH built by
     :meth:`~newton.ModelBuilder.finalize` for the initial state. Before
@@ -180,7 +185,7 @@ class SensorLidar:
     """
 
     distances: wp.array2d[float]
-    """Hit distances [m] in the range ``[min_range, max_range]``, shape ``(n_sensors, n_rays)``; ``-1.0`` on miss."""
+    """Hit distances [m] in the range ``[min_range, max_range)``, shape ``(n_sensors, n_rays)``; ``-1.0`` on miss."""
 
     ray_directions: wp.array[wp.vec3]
     """Unit ray directions in the sensor site frame, shape ``(n_rays,)``."""
@@ -213,7 +218,7 @@ class SensorLidar:
             elevation_min: Elevation [rad] of the lowest ring; endpoint-inclusive.
             elevation_max: Elevation [rad] of the highest ring; endpoint-inclusive.
             min_range: Hits closer than this distance [m] are ignored.
-            max_range: Hits farther than this distance [m] are reported as misses.
+            max_range: Hits at or farther than this distance [m] (exclusive bound) are reported as misses.
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
 
@@ -237,6 +242,16 @@ class SensorLidar:
             raise ValueError(f"'azimuth_count' must be at least 1, got {azimuth_count}")
         if elevation_count < 1:
             raise ValueError(f"'elevation_count' must be at least 1, got {elevation_count}")
+        for name, value in (
+            ("azimuth_min", azimuth_min),
+            ("azimuth_max", azimuth_max),
+            ("elevation_min", elevation_min),
+            ("elevation_max", elevation_max),
+            ("min_range", min_range),
+            ("max_range", max_range),
+        ):
+            if not math.isfinite(value):
+                raise ValueError(f"'{name}' must be finite, got {value}")
         if azimuth_max < azimuth_min:
             raise ValueError(f"'azimuth_max' ({azimuth_max}) must not be less than 'azimuth_min' ({azimuth_min})")
         if elevation_max < elevation_min:
