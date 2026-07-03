@@ -654,7 +654,7 @@ class SolverKamino(SolverBase):
     def reset(
         self,
         state: State,
-        world_mask: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
         flags: StateFlags | int | None = None,
         *,
         config: SolverKamino.ResetConfig | None = None,
@@ -674,7 +674,7 @@ class SolverKamino(SolverBase):
             state: The simulation state to reset (modified in place).
             world_mask: Optional array of per-world masks indicating which
                 worlds should be reset.
-                Shape of ``(num_worlds,)`` and type :class:`wp.int8` | :class:`wp.bool`.
+                Shape of ``(num_worlds,)``.
             flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
@@ -730,7 +730,7 @@ class SolverKamino(SolverBase):
         # Cache fields excluded from the reset op, to restore them afterwards
         restore_after_reset: list[tuple[wp.array, wp.array]] = []
 
-        def _preserve_if_unset(array: wp.array | None, flag: int) -> None:
+        def _preserve_if_unset(array: wp.array[Any] | None, flag: int) -> None:
             if array is not None and not (state_flags & flag):
                 restore_after_reset.append((array, wp.clone(array, device=array.device)))
 

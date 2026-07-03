@@ -26,9 +26,9 @@ Layout assumptions
 - ``A_flat``: a flat ``wp.array`` containing all block matrices concatenated
   in row-major order. Block ``b``'s matrix starts at offset ``mio[b]`` with
   size ``dims[b] * dims[b]``.
-- ``perm_flat``: flat int32 permutation output. Block ``b``'s output starts
+- ``perm_flat``: flat wp.int32 permutation output. Block ``b``'s output starts
   at offset ``vio[b]`` with size ``dims[b]``.
-- ``dims``, ``mio``, ``vio``: ``wp.array[int32]`` of length
+- ``dims``, ``mio``, ``vio``: ``wp.array[wp.int32]`` of length
   ``num_blocks``, precomputed on the device.
 
 API
@@ -53,6 +53,8 @@ API
     )
     launch()  # one zero-arg callable; CUDA-graph capturable
 """
+
+from __future__ import annotations
 
 import math
 from collections.abc import Callable
@@ -433,11 +435,11 @@ def _default_bfs_iters(max_dim: int) -> int:
 
 
 def create_rcm_batch_launch(
-    A_flat: wp.array,
-    perm_flat: wp.array,
-    dims: wp.array,
-    mio: wp.array,
-    vio: wp.array,
+    A_flat: wp.array[wp.float32],
+    perm_flat: wp.array[wp.int32],
+    dims: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
     scratch: dict,
     num_blocks: int,
     max_dim: int,
@@ -454,7 +456,7 @@ def create_rcm_batch_launch(
     A_flat, perm_flat:
         Flat buffers for the concatenated block matrices and output permutations.
     dims, mio, vio:
-        ``int32`` arrays describing the per-block sizes and flat offsets.
+        ``wp.int32`` arrays describing the per-block sizes and flat offsets.
     scratch:
         Caller-owned scratch buffers from :func:`allocate_rcm_batch_scratch`.
         The caller must keep this dict alive for the lifetime of the returned
@@ -468,7 +470,7 @@ def create_rcm_batch_launch(
         Same semantics as :func:`rcm.create_rcm_launch`.
     """
     if perm_flat.dtype != wp.int32:
-        raise TypeError(f"perm_flat must be int32; got {perm_flat.dtype}")
+        raise TypeError(f"perm_flat must be wp.int32; got {perm_flat.dtype}")
     dtype = A_flat.dtype
 
     if device is None:
