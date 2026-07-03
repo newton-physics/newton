@@ -127,6 +127,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             parent[rb] = ra
 
     welds: list[tuple[str, int, str, int]] = []
+    weld_attachments: list[tuple[str, str]] = []  # (src0 curve path, attachment prim path)
     for prim in ctx.prims.attachments:
         # An ignored junction must not alter topology; leave its curves to the per-curve pass.
         if _is_ignored_path(str(prim.GetPath()), ignore_paths):
@@ -182,7 +183,10 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         union(src0, src1)
         for a, b in zip(idx0, idx1, strict=True):
             welds.append((src0, a, src1, b))
-        consumed_attachments.add(str(prim.GetPath()))
+        # Consumed only after the component actually builds (below): a failed graph falls back
+        # to the per-curve pass, and its junction must reach the attachment pass so the authored
+        # constraint is preserved instead of silently dropped.
+        weld_attachments.append((src0, str(prim.GetPath())))
 
     components: dict[str, list[str]] = {}
     for p in curve_recs:
@@ -190,8 +194,11 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
     welds_by_comp: dict[str, list[tuple[str, int, str, int]]] = {}
     for w in welds:
         welds_by_comp.setdefault(find(w[0]), []).append(w)
+    attachments_by_comp: dict[str, set[str]] = {}
+    for src0, att_path in weld_attachments:
+        attachments_by_comp.setdefault(find(src0), set()).add(att_path)
 
-    def _build_graph_component(cid, comp_paths, comp_welds):
+    def _build_graph_component(cid, comp_paths, comp_welds) -> bool:
         # Merge welded control points into shared graph nodes (union-find over (path, index)).
         node_parent: dict[tuple[str, int], tuple[str, int]] = {}
 
@@ -240,7 +247,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 edge_owner.append((key, seg))
 
         if len(node_positions) < 2 or not edges:
-            return
+            return False
 
         # A welded graph would abort inside add_rod_graph on a degenerate (near-zero-length) edge from
         # duplicate or collapsed points. Reject the component with a warning instead, leaving its curves
@@ -251,7 +258,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 f"points); skipping the welded component so its curves import individually.",
                 stacklevel=2,
             )
-            return
+            return False
 
         # add_rod_graph applies one scalar stiffness per component and auto-orients its segments, so a
         # welded curve's authored rest shape and per-point normals cannot be honored. Warn rather than
@@ -373,13 +380,15 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             consumed_curves.add(key)
         if verbose:
             print(f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves.")
+        return True
 
     for cid, comp_curves in components.items():
         comp_paths = sorted(comp_curves)
         comp_welds = welds_by_comp.get(cid, [])
         if len(comp_paths) == 1 and not comp_welds:
             continue  # plain single curve: leave it to the per-curve pass
-        _build_graph_component(cid, comp_paths, comp_welds)
+        if _build_graph_component(cid, comp_paths, comp_welds):
+            consumed_attachments.update(attachments_by_comp.get(cid, ()))
 
     return consumed_curves, consumed_attachments
 

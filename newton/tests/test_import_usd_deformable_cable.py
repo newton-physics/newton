@@ -737,6 +737,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         j0, j1 = group_range(builder, "cable", "/World/Trunk", "joint")
         self.assertNotEqual(j1 - j0, 0, "the skipped component leaves the trunk as a single cable")
         self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+        # The junction must not be silently consumed by the failed weld: it reaches the
+        # attachment pass, which preserves the authored constraint as unsupported.
+        self.assertNotIn("/World/Junction", result["path_attachment_map"])
+        junction = result["path_attachment_attrs"]["/World/Junction"]
+        self.assertIn("unsupported_reason", junction)
 
     def test_welded_graph_collapse_with_masses_falls_back(self):
         """Welding two adjacent points of one curve onto the same node collapses a segment. With
