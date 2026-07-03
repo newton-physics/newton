@@ -580,24 +580,12 @@ imported when loading an MJCF or USD asset into Newton, and that
 
 Smaller limitations are documented inline where they are most relevant —
 see `Caveats`_ below for collision-radius, convex-hull fallback, and
-velocity limits (and how ``gap`` is forwarded); and the unsupported rows
-in `Joint types`_ and `Geometry types`_.
+velocity limits; and the unsupported rows in `Joint types`_ and
+`Geometry types`_.
 
 
 Caveats
 -------
-
-**Gap is forwarded to MuJoCo.**
-  Under MuJoCo 3.9+ semantics, ``gap`` no longer affects force generation:
-  contacts in ``[margin, margin + gap)`` are detected and reported (for
-  sensing) but produce no constraint force. :class:`~newton.solvers.SolverMuJoCo`
-  therefore propagates the Newton model's
-  :attr:`~newton.ModelBuilder.ShapeConfig.gap` into MuJoCo's ``geom_gap`` and
-  ``pair_gap`` — at construction and after
-  :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` — so contact-detection
-  ranges authored on Newton shapes are honored by MuJoCo's broadphase. Set
-  ``shape_gap = 0`` to have MuJoCo ignore it. (Geom *margin*, by contrast, is
-  still zeroed model-wide under NATIVECCD/MULTICCD — see *Margin zeroing* above.)
 
 **shape_collision_radius is ignored.**
   MuJoCo computes bounding-sphere radii (``geom_rbound``) internally from
