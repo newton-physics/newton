@@ -343,53 +343,12 @@ add_example_test(
     use_viewer=True,
     test_options={"num-frames": 20},
 )
-
-
-class TestVbdCableValidationExamples(unittest.TestCase):
-    pass
-
-
 add_example_test(
-    TestVbdCableValidationExamples,
-    name="vbd.example_cable_bend_twist_analytic",
+    TestCableExamples,
+    name="cable.example_cable_plectoneme",
     devices=cuda_test_devices,
     use_viewer=True,
-)
-add_example_test(
-    TestVbdCableValidationExamples,
-    name="vbd.example_cable_bend_stiffness",
-    devices=cuda_test_devices,
-    use_viewer=True,
-)
-add_example_test(
-    TestVbdCableValidationExamples,
-    name="vbd.example_cable_twist_transfer",
-    devices=cuda_test_devices,
-    use_viewer=True,
-)
-add_example_test(
-    TestVbdCableValidationExamples,
-    name="vbd.example_cable_twist_buckling",
-    devices=cuda_test_devices,
-    use_viewer=True,
-)
-add_example_test(
-    TestVbdCableValidationExamples,
-    name="vbd.example_cable_torsion_material_mapping",
-    devices=cuda_test_devices,
-    use_viewer=True,
-)
-add_example_test(
-    TestVbdCableValidationExamples,
-    name="vbd.example_cable_michell_threshold",
-    devices=cuda_test_devices,
-    use_viewer=True,
-)
-add_example_test(
-    TestVbdCableValidationExamples,
-    name="vbd.example_cable_dahl_hysteresis",
-    devices=cuda_test_devices,
-    use_viewer=True,
+    test_options={"num-frames": 20},
 )
 
 

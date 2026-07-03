@@ -101,8 +101,6 @@ class Example:
     # Symmetry-breaking seed so the supercoil picks a deterministic handedness.
     SEED_BODY_OFFSET_Y = 1.0e-3
 
-    MIN_OUT_OF_PLANE_SPAN_RADII = 3.0
-
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.args = args
@@ -120,9 +118,7 @@ class Example:
 
         nodes = self._hanging_arc_nodes()
         seg_lengths = np.linalg.norm(np.diff(nodes, axis=0), axis=1)
-        self.rest_segment_lengths = seg_lengths.copy()
         self.segment_length = float(np.mean(seg_lengths))
-        self.cable_length = float(np.sum(seg_lengths))
         # Keep the capsule thinner than half a segment so neighbours are clear
         # at rest, but thick enough to form a visible, contact-bearing coil.
         self.cable_radius = 0.42 * self.segment_length
@@ -207,9 +203,9 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_picking_linear_only_bodies(self.bodies)
         if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=0.0, yaw=0.0)
+            self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
             if hasattr(self.viewer, "camera"):
-                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.05))
+                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
                 self.viewer.camera.fov = 35.0
 
         self.graph = None
@@ -239,15 +235,15 @@ class Example:
                     for shape_j in builder.body_shapes.get(body_j, []):
                         builder.add_shape_collision_filter_pair(int(shape_i), int(shape_j))
 
-    def _command(self, t: float) -> tuple[float, str]:
+    def _command(self, t: float) -> float:
         t = float(t)
         if t <= self.SETTLE_TIME:
-            return 0.0, "settle"
+            return 0.0
         t -= self.SETTLE_TIME
         a = self._smoothstep(t / self.TWIST_TIME)
         if t <= self.TWIST_TIME:
-            return self.target_twist * a, "twist"
-        return self.target_twist, "twist hold"
+            return self.target_twist * a
+        return self.target_twist
 
     def _apply_command(self) -> None:
         wp.launch(
@@ -291,57 +287,13 @@ class Example:
     def step(self):
         # The twist ramp is smooth, so a single per-frame angle (held across the
         # frame's substeps) is sufficient and lets the substep loop be a graph.
-        angle, _stage = self._command(self.sim_time)
+        angle = self._command(self.sim_time)
         self.twist_angle.assign(np.array([angle], dtype=np.float32))
         if self.graph is not None:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
         self.sim_time += self.frame_dt
-
-    # ------------------------------------------------------------------
-    # Measurement
-    # ------------------------------------------------------------------
-    def current_points(self) -> np.ndarray:
-        body_q = self.state_0.body_q.numpy()
-        return np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)
-
-    def _min_non_neighbor_distance(self, points: np.ndarray, span: int) -> float:
-        pts = np.asarray(points, dtype=np.float64)
-        best = float("inf")
-        n = len(pts)
-        for i in range(n):
-            for j in range(i + span + 1, n):
-                d = float(np.linalg.norm(pts[i] - pts[j]))
-                if d < best:
-                    best = d
-        return best
-
-    def metrics(self) -> dict[str, float]:
-        pts = self.current_points()
-        angle, _stage = self._command(self.sim_time)
-        min_strand = self._min_non_neighbor_distance(pts, self.CONTACT_TOPOLOGICAL_FILTER_SPAN)
-        out_of_plane_span = float(np.ptp(pts[:, 1]))
-        endpoint_drift = max(
-            float(np.linalg.norm(pts[0] - self.root_rest_pos)),
-            float(np.linalg.norm(pts[-1] - self.tip_rest_pos)),
-        )
-        seg_lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-        endpoint_segment_ratio = max(
-            float(seg_lengths[0] / max(self.rest_segment_lengths[0], 1.0e-12)),
-            float(seg_lengths[-1] / max(self.rest_segment_lengths[-1], 1.0e-12)),
-        )
-        return {
-            "twist_command_deg": math.degrees(float(angle)),
-            "target_twist_deg": math.degrees(self.target_twist),
-            "out_of_plane_span": out_of_plane_span,
-            "out_of_plane_span_radii": float(out_of_plane_span / max(self.cable_radius, 1.0e-12)),
-            "min_strand_distance": float(min_strand),
-            "min_strand_distance_radii": float(min_strand / max(self.cable_radius, 1.0e-12)),
-            "endpoint_drift": endpoint_drift,
-            "endpoint_segment_ratio": endpoint_segment_ratio,
-            "formation": min(1.0, out_of_plane_span / (self.MIN_OUT_OF_PLANE_SPAN_RADII * self.cable_radius)),
-        }
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -355,11 +307,10 @@ class Example:
     def test_final(self):
         body_q = self.state_0.body_q.numpy()
         body_qd = self.state_0.body_qd.numpy()
-        pts = self.current_points()
 
+        # Sanity only: the twisted cable stays finite and bounded (no NaN/Inf, no blow-up).
         assert np.isfinite(body_q).all(), "non-finite body transforms"
         assert np.isfinite(body_qd).all(), "non-finite body velocities"
-        assert np.isfinite(pts).all(), "non-finite cable centerline"
         assert np.max(np.abs(body_q[:, :3])) < 10.0, "body positions blew up"
         assert np.max(np.abs(body_qd)) < 1.0e3, "body velocities blew up"
 

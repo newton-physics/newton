@@ -184,6 +184,8 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.set_picking_linear_only_bodies(rod_bodies_all)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.fov = 40.0
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:

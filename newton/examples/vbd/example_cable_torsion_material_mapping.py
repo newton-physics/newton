@@ -137,7 +137,7 @@ class Example:
             poissons_ratio=self.POISSONS_RATIO,
         )
 
-        self.stretch_damping = self.stretch_stiffness
+        self.stretch_damping = 0.0
         self.bend_damping = 4.0 * self.bend_stiffness
         self.twist_damping = 4.0 * self.twist_stiffness
 

@@ -213,12 +213,6 @@ def compute_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: w
 
 
 @wp.func
-def _project_along_unit_axis(v: wp.vec3, axis: wp.vec3) -> wp.vec3:
-    """Project v onto an already-unit axis."""
-    return axis * wp.dot(v, axis)
-
-
-@wp.func
 def _quat_rotate_local_z(q: wp.quat) -> wp.vec3:
     """Rotate local +Z by a unit quaternion; the third rotation-matrix column."""
     x = q[0]
@@ -569,7 +563,14 @@ def _assemble_geometric_cable_kappa_z(
     bend_now_local = wp.quat_rotate(wp.quat_inverse(q_wp), kb_now_world)
     bend_residual_local = bend_now_local - kb_rest_local
     # In the local +Z convention, parent-frame x/y are bend and z is twist.
-    return wp.vec3(bend_residual_local[0], bend_residual_local[1], twist_now - twist_rest)
+    # Wrap the twist delta of two atan2 angles into [-pi, pi] to avoid a ~2*pi
+    # jump when rest/current straddle the branch cut (one revolution per joint).
+    twist_residual = twist_now - twist_rest
+    if twist_residual > wp.pi:
+        twist_residual -= 2.0 * wp.pi
+    elif twist_residual < -wp.pi:
+        twist_residual += 2.0 * wp.pi
+    return wp.vec3(bend_residual_local[0], bend_residual_local[1], twist_residual)
 
 
 @wp.func
@@ -982,48 +983,56 @@ def evaluate_cable_stretch_shear_force_hessian(
     parent_com: wp.vec3,
     child_com: wp.vec3,
     is_parent: bool,
-    K_linear: wp.mat33,
-    C0_force: wp.vec3,
-    lambda_projected: wp.vec3,
-    K_damp: wp.mat33,
+    k_diag: wp.vec3,
+    C0_force_local: wp.vec3,
+    lambda_local: wp.vec3,
+    kd_diag: wp.vec3,
     damping_active: bool,
     dt: float,
 ):
-    """Combined cable stretch/shear anchor force and VBD self-Hessian.
+    """Cable stretch/shear anchor force, torque, and PSD Gauss-Newton self-Hessian.
 
-    The caller supplies the current-frame split matrix
-    ``K = k_shear I + (k_stretch - k_shear) t t^T`` and mode-filtered
-    C0/lambda terms. The Hessian treats K as fixed for this local solve,
-    matching the generic linear projector path.
+    All inputs are parent-material: residual ``u = R_p^T (x_c - x_p) =
+    [shear_x, shear_y, stretch_z]``, diagonal ``k_diag = (k_shear, k_shear,
+    k_stretch)`` / ``kd_diag``, and local ``C0_force_local`` / ``lambda_local``.
+    Elastic and AL are energy gradients, damping is dissipative in ``u``, and both
+    bodies react at the shared child anchor, so the net internal wrench is zero.
     """
     x_p = wp.transform_get_translation(X_wp)
     x_c = wp.transform_get_translation(X_wc)
+    q_wp = wp.transform_get_rotation(X_wp)
 
     if is_parent:
         com_w = wp.transform_point(parent_pose, parent_com)
-        r = x_p - com_w
     else:
         com_w = wp.transform_point(child_pose, child_com)
-        r = x_c - com_w
+    r = x_c - com_w
 
     C_vec = x_c - x_p
-    f_attachment = K_linear * C_vec - C0_force + lambda_projected
-    K_eff = K_linear
+    u = wp.quat_rotate_inv(q_wp, C_vec)
+    psi = wp.cw_mul(k_diag, u) - C0_force_local + lambda_local
 
+    h_s = k_diag[0]
+    h_z = k_diag[2]
     if damping_active:
         inv_dt = 1.0 / dt
         x_p_prev = wp.transform_get_translation(X_wp_prev)
         x_c_prev = wp.transform_get_translation(X_wc_prev)
-        C_vec_prev = x_c_prev - x_p_prev
-        f_attachment = f_attachment + K_damp * ((C_vec - C_vec_prev) * inv_dt)
-        K_eff = K_eff + inv_dt * K_damp
+        u_prev = wp.quat_rotate_inv(wp.transform_get_rotation(X_wp_prev), x_c_prev - x_p_prev)
+        psi = psi + wp.cw_mul(kd_diag, (u - u_prev) * inv_dt)
+        h_s = h_s + kd_diag[0] * inv_dt
+        h_z = h_z + kd_diag[2] * inv_dt
 
+    f_world = wp.quat_rotate(q_wp, psi)
+    force = f_world if is_parent else -f_world
+
+    t = _quat_rotate_local_z(q_wp)
+    K_eff = h_s * wp.identity(3, float) + (h_z - h_s) * wp.outer(t, t)
     rx = wp.skew(r)
     H_ll = K_eff
     H_al = rx * K_eff
     H_aa = wp.transpose(rx) * K_eff * rx
 
-    force = f_attachment if is_parent else -f_attachment
     torque = wp.cross(r, force)
     return force, torque, H_ll, H_al, H_aa
 
@@ -1733,32 +1742,24 @@ def evaluate_joint_force_hessian(
         stretch_active = stretch_stiff or kd_stretch > 0.0
         shear_active = shear_stiff or kd_shear > 0.0
         if stretch_active or shear_active:
-            t_world = _quat_rotate_local_z(q_wp)
-            P_stretch = wp.outer(t_world, t_world)
-            P_I = wp.identity(3, float)
-
-            # K = k_shear I + (k_stretch - k_shear) t t^T.
-            K_linear = k_shear * P_I + (k_stretch - k_shear) * P_stretch
-            # kd_X is already 0 when its slot is inactive (X_active includes kd_X > 0),
-            # so use the damping coefficients directly, matching K_linear above.
-            K_damp = kd_shear * P_I + (kd_stretch - kd_shear) * P_stretch
+            # Parent-material diagonals for local u = [shear_x, shear_y, stretch_z].
+            k_diag = wp.vec3(k_shear, k_shear, k_stretch)
+            kd_diag = wp.vec3(kd_shear, kd_shear, kd_stretch)
             damping_active = kd_stretch > 0.0 or kd_shear > 0.0
 
-            lambda_projected = wp.vec3(0.0)
-            C0_force = wp.vec3(0.0)
+            lambda_local = wp.vec3(0.0)
+            C0_force_local = wp.vec3(0.0)
             stretch_hard = stretch_stiff and joint_is_hard[stretch_idx] == 1
             shear_hard = shear_stiff and joint_is_hard[shear_idx] == 1
             if stretch_hard or shear_hard:
                 lambda_lin = joint_lambda_lin[joint_index]
                 C0_lin = joint_C0_lin[joint_index]
-                lambda_stretch = _project_along_unit_axis(lambda_lin, t_world)
-                C0_stretch = _project_along_unit_axis(C0_lin, t_world)
                 if stretch_hard:
-                    lambda_projected = lambda_projected + lambda_stretch
-                    C0_force = C0_force + (k_stretch * avbd_alpha) * C0_stretch
+                    lambda_local = lambda_local + wp.vec3(0.0, 0.0, lambda_lin[2])
+                    C0_force_local = C0_force_local + (k_stretch * avbd_alpha) * wp.vec3(0.0, 0.0, C0_lin[2])
                 if shear_hard:
-                    lambda_projected = lambda_projected + (lambda_lin - lambda_stretch)
-                    C0_force = C0_force + (k_shear * avbd_alpha) * (C0_lin - C0_stretch)
+                    lambda_local = lambda_local + wp.vec3(lambda_lin[0], lambda_lin[1], 0.0)
+                    C0_force_local = C0_force_local + (k_shear * avbd_alpha) * wp.vec3(C0_lin[0], C0_lin[1], 0.0)
 
             f_l, t_l, Hll_l, Hal_l, Haa_l = evaluate_cable_stretch_shear_force_hessian(
                 X_wp,
@@ -1770,10 +1771,10 @@ def evaluate_joint_force_hessian(
                 parent_com,
                 child_com,
                 is_parent_body,
-                K_linear,
-                C0_force,
-                lambda_projected,
-                K_damp,
+                k_diag,
+                C0_force_local,
+                lambda_local,
+                kd_diag,
                 damping_active,
                 dt,
             )
@@ -2680,7 +2681,8 @@ def step_joint_C0_lambda(
         if has_linear_hard == 1:
             x_p = wp.transform_get_translation(X_wp)
             x_c = wp.transform_get_translation(X_wc)
-            joint_C0_lin[j] = x_c - x_p
+            # Store the parent-material residual [shear_x, shear_y, stretch_z].
+            joint_C0_lin[j] = wp.quat_rotate_inv(wp.transform_get_rotation(X_wp), x_c - x_p)
             joint_lambda_lin[j] = joint_lambda_lin[j] * lambda_decay
         else:
             joint_C0_lin[j] = zero
@@ -4024,22 +4026,21 @@ def update_duals_joint(
             joint_cable_rest_twist[j],
         )
 
-        # Linear penalty update: axial stretch / transverse shear.
+        # Linear penalty update in the parent-material frame: local
+        # u = [shear_x, shear_y, stretch_z], so stretch is z and shear is xy.
         stretch_idx = c_start
         shear_idx = c_start + 1
-        t_world = _quat_rotate_local_z(q_wp)
+        u = wp.quat_rotate_inv(q_wp, C_vec)
         lambda_lin = joint_lambda_lin[j]
         C0_lin = joint_C0_lin[j]
 
-        C_stretch = _project_along_unit_axis(C_vec, t_world)
-        C0_stretch = _project_along_unit_axis(C0_lin, t_world)
-        lambda_stretch = _project_along_unit_axis(lambda_lin, t_world)
+        u_stretch = wp.vec3(0.0, 0.0, u[2])
         lam_stretch = _update_dual_vec3(
-            C_stretch,
-            C0_stretch,
+            u_stretch,
+            wp.vec3(0.0, 0.0, C0_lin[2]),
             avbd_alpha,
             joint_penalty_k[stretch_idx],
-            lambda_stretch,
+            wp.vec3(0.0, 0.0, lambda_lin[2]),
             joint_is_hard[stretch_idx],
         )
         # Soft slots use pure penalty (no ALM); discard lambda so joint_lambda_* only
@@ -4047,23 +4048,23 @@ def update_duals_joint(
         if joint_is_hard[stretch_idx] == 0:
             lam_stretch = wp.vec3(0.0)
         joint_penalty_k[stretch_idx] = wp.min(
-            joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx] + beta_lin * wp.length(C_stretch)
+            joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx] + beta_lin * wp.abs(u[2])
         )
 
-        C_shear = C_vec - C_stretch
+        u_shear = wp.vec3(u[0], u[1], 0.0)
         lam_shear = _update_dual_vec3(
-            C_shear,
-            C0_lin - C0_stretch,
+            u_shear,
+            wp.vec3(C0_lin[0], C0_lin[1], 0.0),
             avbd_alpha,
             joint_penalty_k[shear_idx],
-            lambda_lin - lambda_stretch,
+            wp.vec3(lambda_lin[0], lambda_lin[1], 0.0),
             joint_is_hard[shear_idx],
         )
         if joint_is_hard[shear_idx] == 0:
             lam_shear = wp.vec3(0.0)
         joint_lambda_lin[j] = lam_stretch + lam_shear
         joint_penalty_k[shear_idx] = wp.min(
-            joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx] + beta_lin * wp.length(C_shear)
+            joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx] + beta_lin * wp.length(u_shear)
         )
 
         # Bend penalty update (first angular constraint slot)

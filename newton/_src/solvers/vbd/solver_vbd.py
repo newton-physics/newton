@@ -104,11 +104,13 @@ class SolverVBD(SolverBase):
     use augmented-Lagrangian state.
 
     Non-cable structural joint slots default to **hard mode** (augmented Lagrangian
-    with persistent lambda and C0 stabilization). Cable stretch, shear, bend,
-    and twist default to **soft mode**. Joint hard/soft mode is initialized from
-    the optional ``model.vbd.joint_is_hard`` custom attribute; author values at
-    joint creation, before constructing the solver. The hard/soft mode can also
-    be changed per slot at runtime via :meth:`set_joint_constraint_mode`.
+    with persistent lambda and C0 stabilization) and are initialized from the
+    optional ``model.vbd.joint_is_hard`` custom attribute; author values at joint
+    creation, before constructing the solver. Cable stretch, shear, bend, and
+    twist always initialize to **soft mode** regardless of ``joint_is_hard`` and
+    are switched only at runtime. The hard/soft mode can be changed per slot at
+    runtime via :meth:`set_joint_constraint_mode` (for both cable and non-cable
+    joints).
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, CABLE.
@@ -1189,7 +1191,7 @@ class SolverVBD(SolverBase):
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
-          - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode
+          - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-cable joints)
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional cable angular Dahl friction
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
@@ -1579,9 +1581,9 @@ class SolverVBD(SolverBase):
         By default, cable stretch, shear, bend, and twist slots are soft, while
         non-cable structural slots are hard.
 
-        Hard/soft mode can also be authored per joint at build time via the
-        ``vbd:joint_is_hard`` custom attribute, avoiding a runtime
-        :meth:`set_joint_constraint_mode` call::
+        For non-cable joints, hard/soft mode can also be authored per joint at
+        build time via the ``vbd:joint_is_hard`` custom attribute, avoiding a
+        runtime :meth:`set_joint_constraint_mode` call::
 
             SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)  # before adding joints
             builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
@@ -1635,7 +1637,9 @@ class SolverVBD(SolverBase):
                 for s in range(structural_count):
                     is_hard_np[c0 + s] = val
 
-            self.joint_is_hard = wp.array(is_hard_np, dtype=wp.int32, device=self.device)
+            # Mutate in place: a rebuilt wp.array would orphan pointers captured
+            # in existing CUDA graphs, silently ignoring the mode change on replay.
+            self.joint_is_hard.assign(is_hard_np)
 
     @override
     def step(

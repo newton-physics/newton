@@ -72,13 +72,13 @@ def create_cable_stiffness_from_elastic_moduli(
 
 
 def create_cable_stiffness_from_elastic_moduli(
-    youngs_modulus,
-    radius,
-    segment_length,
+    youngs_modulus: float,
+    radius: float,
+    segment_length: float,
     *,
     poissons_ratio: float | None = None,
     shear_modulus: float | None = None,
-):
+) -> tuple[float, float] | CableStiffness:
     """Create per-joint rod/cable stiffness from elastic moduli.
 
     For a circular cross-section, this computes material stiffnesses and
