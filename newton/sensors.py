@@ -16,6 +16,11 @@ from ._src.sensors.sensor_imu import (
     SensorIMU,
 )
 
+# Lidar sensors
+from ._src.sensors.sensor_lidar import (
+    SensorLidar,
+)
+
 # Tiled camera sensors
 from ._src.sensors.sensor_tiled_camera import (
     SensorTiledCamera,
@@ -25,5 +30,6 @@ __all__ = [
     "SensorContact",
     "SensorFrameTransform",
     "SensorIMU",
+    "SensorLidar",
     "SensorTiledCamera",
 ]

@@ -95,7 +95,7 @@ Examples::
 Available Sensors
 -----------------
 
-Newton provides five sensor types. See the
+Newton provides six sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
@@ -103,6 +103,7 @@ attributes, and usage examples.
   with optional per-counterpart breakdown.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
+* :class:`~newton.sensors.SensorLidar` -- ray-hit distances along a configurable spherical scan pattern at site frames.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
 
 Extended Attributes
@@ -139,4 +140,5 @@ See Also
 * :doc:`extended_attributes` -- optional ``State``/``Contacts`` arrays required by some sensors
 * ``newton.examples.sensors.example_sensor_contact`` -- SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` -- SensorIMU example
+* ``newton.examples.sensors.example_sensor_lidar`` -- SensorLidar example
 * ``newton.examples.sensors.example_sensor_tiled_camera`` -- SensorTiledCamera example
