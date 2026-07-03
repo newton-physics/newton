@@ -426,7 +426,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_poses.actuator_q,
                 "config.body_poses.actuator_q",
-                self._model.size.sum_of_num_actuated_joint_coords,
+                self._model.size.sum_of_num_fk_actuated_joint_coords,
             )
         if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromJointU):
             _check_length(
@@ -438,7 +438,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_velocities.actuator_u,
                 "config.body_velocities.actuator_u",
-                self._model.size.sum_of_num_actuated_joint_dofs,
+                self._model.size.sum_of_num_fk_actuated_joint_dofs,
             )
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromJointQ):
             _check_length(

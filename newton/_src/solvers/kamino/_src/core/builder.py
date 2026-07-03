@@ -1006,6 +1006,7 @@ class ModelBuilderKamino:
         joints_jid = []
         joints_dofid = []
         joints_actid = []
+        joints_fk_actid = []
         joints_q_j_0 = []
         joints_dq_j_0 = []
         joints_bid_B = []
@@ -1137,6 +1138,7 @@ class ModelBuilderKamino:
                 joints_jid.append(joint.jid)
                 joints_dofid.append(joint.dof_type.value)
                 joints_actid.append(joint.act_type.value)
+                joints_fk_actid.append(-1 if joint.fk_act_type is None else joint.fk_act_type.value)
                 joints_B_r_Bj.append(joint.B_r_Bj)
                 joints_F_r_Fj.append(joint.F_r_Fj)
                 joints_X_Bj.append(joint.X_Bj)
@@ -1275,6 +1277,10 @@ class ModelBuilderKamino:
             max_of_num_passive_joint_dofs=max([world.num_passive_joint_dofs for world in self._worlds]),
             sum_of_num_actuated_joint_coords=self._num_joint_actuated_coords,
             max_of_num_actuated_joint_coords=max([world.num_actuated_joint_coords for world in self._worlds]),
+            sum_of_num_fk_actuated_joint_coords=sum([world.num_fk_actuated_joint_coords for world in self._worlds]),
+            max_of_num_fk_actuated_joint_coords=max([world.num_fk_actuated_joint_coords for world in self._worlds]),
+            sum_of_num_fk_actuated_joint_dofs=sum([world.num_fk_actuated_joint_dofs for world in self._worlds]),
+            max_of_num_fk_actuated_joint_dofs=max([world.num_fk_actuated_joint_dofs for world in self._worlds]),
             sum_of_num_actuated_joint_dofs=self._num_joint_actuated_dofs,
             max_of_num_actuated_joint_dofs=max([world.num_actuated_joint_dofs for world in self._worlds]),
             sum_of_num_joint_cts=self._num_joint_cts,
@@ -1400,6 +1406,9 @@ class ModelBuilderKamino:
                 jid=to_warp_int32_array(joints_jid),
                 dof_type=to_warp_int32_array(joints_dofid),
                 act_type=to_warp_int32_array(joints_actid),
+                fk_act_type=to_warp_int32_array(joints_fk_actid)
+                if any(actid != -1 for actid in joints_fk_actid)
+                else None,
                 bid_B=to_warp_int32_array(joints_bid_B),
                 bid_F=to_warp_int32_array(joints_bid_F),
                 B_r_Bj=wp.array(joints_B_r_Bj, dtype=wp.vec3f, requires_grad=requires_grad),

@@ -309,6 +309,7 @@ def joint_indexing_kernel(
     joint_num_dofs: wp.array[wp.int32],
     joint_num_kinematic_cts: wp.array[wp.int32],
     joint_num_dynamic_cts: wp.array[wp.int32],
+    model_fk_act_type: wp.array[wp.int32],
     # Outputs:
     num_passive_joints: wp.array[wp.int32],
     num_actuated_joints: wp.array[wp.int32],
@@ -318,7 +319,9 @@ def joint_indexing_kernel(
     num_joint_passive_coords: wp.array[wp.int32],
     num_joint_passive_dofs: wp.array[wp.int32],
     num_joint_actuated_coords: wp.array[wp.int32],
+    num_joint_fk_actuated_coords: wp.array[wp.int32],
     num_joint_actuated_dofs: wp.array[wp.int32],
+    num_joint_fk_actuated_dofs: wp.array[wp.int32],
     num_joint_cts: wp.array[wp.int32],
     num_joint_dynamic_cts: wp.array[wp.int32],
     num_joint_kinematic_cts: wp.array[wp.int32],
@@ -344,7 +347,9 @@ def joint_indexing_kernel(
     num_coords = int(0)
     num_dofs = int(0)
     num_actuated_coords = int(0)
+    num_fk_actuated_coords = int(0)
     num_actuated_dofs = int(0)
+    num_fk_actuated_dofs = int(0)
     num_passive_coords = int(0)
     num_passive_dofs = int(0)
     num_cts = int(0)
@@ -383,10 +388,16 @@ def joint_indexing_kernel(
             num_actuated_j += 1
             num_actuated_coords += ncoords_j
             num_actuated_dofs += ndofs_j
+            if not model_fk_act_type or model_fk_act_type[joint_id] == -1:
+                num_fk_actuated_coords += ncoords_j
+                num_fk_actuated_dofs += ndofs_j
         else:
             num_passive_j += 1
             num_passive_coords += ncoords_j
             num_passive_dofs += ndofs_j
+        if model_fk_act_type and model_fk_act_type[joint_id] > JointActuationType.PASSIVE:
+            num_fk_actuated_coords += ncoords_j
+            num_fk_actuated_dofs += ndofs_j
 
         # Update sizes based on whether joint is dynamic
         if n_dyn_cts_j > 0:
@@ -404,7 +415,9 @@ def joint_indexing_kernel(
     num_joint_kinematic_cts[world_id] = num_kinematic_cts
     num_joint_dynamic_cts[world_id] = num_dynamic_cts
     num_joint_actuated_coords[world_id] = num_actuated_coords
+    num_joint_fk_actuated_coords[world_id] = num_fk_actuated_coords
     num_joint_actuated_dofs[world_id] = num_actuated_dofs
+    num_joint_fk_actuated_dofs[world_id] = num_fk_actuated_dofs
     num_joint_passive_coords[world_id] = num_passive_coords
     num_joint_passive_dofs[world_id] = num_passive_dofs
 
@@ -902,7 +915,9 @@ def convert_joints(
         num_joint_passive_coords = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_passive_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_actuated_coords = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_fk_actuated_coords = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_actuated_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_fk_actuated_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_dynamic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_kinematic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
@@ -926,6 +941,7 @@ def convert_joints(
             joint_num_dofs,
             joint_num_kinematic_cts,
             joint_num_dynamic_cts,
+            model.fk_actuation_type if hasattr(model, "fk_actuation_type") else None,
         ],
         outputs=[
             num_passive_joints,
@@ -936,7 +952,9 @@ def convert_joints(
             num_joint_passive_coords,
             num_joint_passive_dofs,
             num_joint_actuated_coords,
+            num_joint_fk_actuated_coords,
             num_joint_actuated_dofs,
+            num_joint_fk_actuated_dofs,
             num_joint_cts,
             num_joint_dynamic_cts,
             num_joint_kinematic_cts,
@@ -962,7 +980,9 @@ def convert_joints(
     num_joint_passive_coords_np = num_joint_passive_coords.numpy()
     num_joint_passive_dofs_np = num_joint_passive_dofs.numpy()
     num_joint_actuated_coords_np = num_joint_actuated_coords.numpy()
+    num_joint_fk_actuated_coords_np = num_joint_fk_actuated_coords.numpy()
     num_joint_actuated_dofs_np = num_joint_actuated_dofs.numpy()
+    num_joint_fk_actuated_dofs_np = num_joint_fk_actuated_dofs.numpy()
     num_joint_cts_np = num_joint_cts.numpy()
     num_joint_dynamic_cts_np = num_joint_dynamic_cts.numpy()
     num_joint_kinematic_cts_np = num_joint_kinematic_cts.numpy()
@@ -1074,8 +1094,12 @@ def convert_joints(
     model_size.max_of_num_passive_joint_dofs = int(num_joint_passive_dofs_np.max())
     model_size.sum_of_num_actuated_joint_coords = int(num_joint_actuated_coords_np.sum())
     model_size.max_of_num_actuated_joint_coords = int(num_joint_actuated_coords_np.max())
+    model_size.sum_of_num_fk_actuated_joint_coords = int(num_joint_fk_actuated_coords_np.sum())
+    model_size.max_of_num_fk_actuated_joint_coords = int(num_joint_fk_actuated_coords_np.max())
     model_size.sum_of_num_actuated_joint_dofs = int(num_joint_actuated_dofs_np.sum())
     model_size.max_of_num_actuated_joint_dofs = int(num_joint_actuated_dofs_np.max())
+    model_size.sum_of_num_fk_actuated_joint_dofs = int(num_joint_fk_actuated_dofs_np.sum())
+    model_size.max_of_num_fk_actuated_joint_dofs = int(num_joint_fk_actuated_dofs_np.max())
     model_size.sum_of_num_joint_cts = int(num_joint_cts_np.sum())
     model_size.max_of_num_joint_cts = int(num_joint_cts_np.max())
     model_size.sum_of_num_dynamic_joint_cts = int(num_joint_dynamic_cts_np.sum())
@@ -1207,6 +1231,7 @@ def convert_joints(
         jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
+        fk_act_type=model.fk_actuation_type if hasattr(model, "fk_actuation_type") else None,
         bid_B=model.joint_parent,
         bid_F=model.joint_child,
         B_r_Bj=joint_B_r_B,

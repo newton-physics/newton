@@ -1025,6 +1025,9 @@ class JointDescriptor(Descriptor):
     act_type: JointActuationType = JointActuationType.PASSIVE
     """Actuation type of the joint."""
 
+    fk_act_type: JointActuationType | None = None
+    """Actuation type of the joint for the FK solver, if it differs from `act_type`."""
+
     dof_type: JointDoFType = JointDoFType.FREE
     """DoF type of the joint."""
 
@@ -1499,6 +1502,7 @@ class JointDescriptor(Descriptor):
             f"uid: {self.uid},\n"
             "----------------------------------------------\n"
             f"act_type: {self.act_type},\n"
+            f"fk_act_type: {self.fk_act_type},\n"
             f"dof_type: {self.dof_type},\n"
             "----------------------------------------------\n"
             f"bid_B: {self.bid_B},\n"
@@ -1683,6 +1687,16 @@ class JointsModel:
     """
     Joint actuation type ID of each joint.
     Shape of ``(num_joints,)``.
+    """
+
+    fk_act_type: wp.array[wp.int32] | None = None
+    """
+    Joint actuation type ID of each joint for the FK solver.
+    A -1 entry is interpreted as equal to the corresponding entry in `act_type`.
+    If not set, considered to match `act_type` for all joints.
+    Shape of ``(num_joints,)``.
+
+    Actuating more joints in FK can be used, e.g., to make the FK problem well-posed for under-actuated systems.
     """
 
     bid_B: wp.array[wp.int32] | None = None

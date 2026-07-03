@@ -29,6 +29,7 @@ from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 
 if TYPE_CHECKING:
+    from ._src.core.joints import JointActuationType
     from .config import (
         CollisionDetectorConfig,
         ConfigBase,
@@ -949,12 +950,21 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @override
     @staticmethod
-    def register_custom_attributes(builder: ModelBuilder) -> None:
+    def register_custom_attributes(
+        builder: ModelBuilder,
+        *,
+        fk_actuation_types: dict[int, JointActuationType] | None = None,
+    ) -> None:
         """
         Register custom attributes for SolverKamino.
 
         Args:
             builder: The model builder to register the custom attributes to.
+            fk_actuation_types: Optional dictionary of {joint_index: new_actuation_type} custom actuation
+                types, that the FK solver should use during reset() operations.
+                This can be used e.g. for systems with under-actuated DoFs, to make the FK problem well-posed.
+                Note: only joints that the FK solver should consider to have a different actuation type
+                need to be listed; if unspecified, the joint actuation type from the model is used.
         """
         # Register State attributes
         builder.add_custom_attribute(
@@ -984,6 +994,19 @@ class SolverKamino(SolverBase, CouplingInterface):
                 default=0.0,
             )
         )
+
+        # Register FK custom actuation types
+        if fk_actuation_types is not None:
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="fk_actuation_type",
+                    assignment=Model.AttributeAssignment.MODEL,
+                    frequency=Model.AttributeFrequency.JOINT,
+                    dtype=wp.int32,
+                    default=-1,
+                    values=fk_actuation_types,
+                )
+            )
 
         # Register KaminoSceneAPI attributes so the USD importer will store them on the model
         SolverKamino.Config.register_custom_attributes(builder)
