@@ -9785,8 +9785,9 @@ class ModelBuilder:
         Call before :meth:`finalize <ModelBuilder.finalize>` when constructing a
         :class:`~newton.CollisionPipeline` with ``enable_water_tight_rigid_soft_contact=True``;
         :meth:`finalize <ModelBuilder.finalize>` does not build these implicitly (mirroring
-        :meth:`color`). Texture SDFs are CUDA-only, so on CPU (or on any per-mesh failure) the shape
-        falls back to the legacy per-particle soft-contact path.
+        :meth:`color`). Texture SDFs are CUDA-only, so on CPU (or on any per-mesh build failure)
+        the SDF is not provisioned; constructing a water-tight :class:`~newton.CollisionPipeline`
+        for such a shape then raises rather than silently degrading to the per-particle path.
         """
         self._enable_rigid_mesh_sdfs = True
 
@@ -11132,8 +11133,9 @@ class ModelBuilder:
             # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when
             # requested via ModelBuilder.enable_rigid_mesh_sdfs(). Built in unscaled mesh space
             # (scale_baked=False) and cached per source mesh; eval_shape_sdf applies the shape scale
-            # at query time. Texture SDFs are CUDA-only, so on CPU (or on any failure) the shape
-            # gracefully falls back to the legacy per-particle soft-contact path.
+            # at query time. Texture SDFs are CUDA-only, so on CPU (or on any build failure) the SDF
+            # is left unprovisioned; a water-tight CollisionPipeline then raises for that shape rather
+            # than silently degrading to the per-particle path.
             if self._enable_rigid_mesh_sdfs:
                 wt_sdf_cache = {}
                 for i in range(len(self.shape_type)):
