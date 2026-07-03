@@ -122,7 +122,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = builder.add_usd(stage)
+            result = builder.add_usd(stage, deformable_results=True)
         messages = [str(w.message) for w in caught]
         # Only the material that authors shearStiffness warns, attributed to its prim path.
         self.assertTrue(any("/World/ClothA" in m and "shearStiffness is not applied" in m for m in messages))
@@ -167,7 +167,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The bare cloth resolves no thickness, so its volumetric material values are used as
         # surface values unconverted; the importer must say so instead of converting silently.
         with self.assertWarnsRegex(UserWarning, "/World/ClothBare.*unconverted"):
-            result = builder.add_usd(stage)
+            result = builder.add_usd(stage, deformable_results=True)
 
         def total_mass(path):
             p0, p1 = group_range(builder, "cloth", path, "particle")

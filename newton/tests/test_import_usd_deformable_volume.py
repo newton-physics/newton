@@ -83,7 +83,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         stage = _deformable_stage()
         author_fn(stage)
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, deformable_results=True)
         return builder, result
 
     def test_volume_mass_precedence(self):
@@ -208,7 +208,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         builder.default_tet_density = 123.5
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, deformable_results=True)
 
         self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
 

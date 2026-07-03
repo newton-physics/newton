@@ -186,6 +186,31 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertEqual(group_labels(builder, "soft"), ["/World/BareTet"])  # legacy import
         self.assertEqual(builder.particle_count, 4)
 
+    def test_deformable_results_are_opt_in(self):
+        """The default add_usd return carries no deformable entries; deformable_results=True
+        adds exactly the documented map and attrs keys."""
+        keys = (
+            "path_cable_map",
+            "path_cloth_map",
+            "path_soft_map",
+            "path_attachment_map",
+            "path_cable_attrs",
+            "path_cloth_attrs",
+            "path_soft_attrs",
+            "path_attachment_attrs",
+        )
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(_ASSET)
+        for key in keys:
+            self.assertNotIn(key, result)
+
+        opt_in = newton.ModelBuilder()
+        result = opt_in.add_usd(_ASSET, deformable_results=True)
+        for key in keys:
+            self.assertIn(key, result)
+        self.assertIn("/World/CableA/sim", result["path_cable_map"])
+        self.assertEqual(result["path_cloth_map"]["/World/Cloth/sim"]["particle"], (0, 4))
+
     def test_rigid_only_stage_skips_deformable_passes(self):
         """A stage with only rigid bodies imports its rigid content unchanged and registers no
         deformable results (the deformable passes are skipped because no candidate prims exist)."""

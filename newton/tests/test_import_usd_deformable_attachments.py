@@ -50,7 +50,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, xform=wp.transform(wp.vec3(10.0, 0.0, 0.0), wp.quat_identity()))
+        result = builder.add_usd(
+            stage, xform=wp.transform(wp.vec3(10.0, 0.0, 0.0), wp.quat_identity()), deformable_results=True
+        )
 
         b0, _ = group_range(builder, "cable", "/World/Cable", "body")
         joints = result["path_attachment_map"]["/World/AttachMid"]
@@ -89,7 +91,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, deformable_results=True)
 
         rigid_body = result["path_body_map"]["/World/Rigid"]
         b0, _ = group_range(builder, "cable", "/World/Cable", "body")
@@ -135,7 +137,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, deformable_results=True)
         self.assertIn("/World/Cable_articulation", builder.articulation_label)
         self.assertIn("/World/AttachKinematic", result["path_attachment_map"])
 
@@ -173,7 +175,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "cloth/volume"):
-            result = builder.add_usd(stage)
+            result = builder.add_usd(stage, deformable_results=True)
 
         # Neither policy case lowers to a joint.
         self.assertNotIn("/World/AttachDisabled", result["path_attachment_map"])
@@ -196,7 +198,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, deformable_results=True)
         pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
         return builder, result, pairs
 
@@ -312,7 +314,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, deformable_results=True)
         seg_shapes = self._cable_seg_shapes(builder, "/World/Cable")
         pairs = {tuple(sorted(p)) for p in builder.shape_collision_filter_pairs}
 
