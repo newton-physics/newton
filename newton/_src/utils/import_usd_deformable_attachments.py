@@ -280,14 +280,22 @@ def _element_collision_filter_groups(
 
     Each count slices the next run of indices into one group; a count of ``0`` selects *all* elements
     of the source for that paired group (represented as an empty list, resolved downstream). With no
-    counts authored the whole index array is a single group (an empty array then meaning *all*).
+    counts authored, all elements of the source are selected and pair against every group of the
+    other side; group boundaries exist only through the counts array, so stray indices define no
+    subset and are ignored with a warning.
     Returns ``(groups, broadcast)``: ``broadcast`` is True only for the no-counts form, because the
     proposal reserves pairing a side against every group of the other side for that form -- an
     explicit single group must pair one-to-one like any other explicit list. Returns ``None`` (after
     warning) for malformed counts: negative, or a total that does not match the index-array length.
     """
     if not counts:
-        return [list(indices)], True  # single implicit group (empty indices -> all elements)
+        if indices:
+            warnings.warn(
+                f"{filter_path}: PhysicsElementCollisionFilter authors groupElemIndices{which} without "
+                f"groupElemCounts{which}; empty counts select all elements, so the indices are ignored.",
+                stacklevel=2,
+            )
+        return [[]], True  # all elements, paired against every group of the other side
     groups: list[list[int]] = []
     offset = 0
     for count in counts:

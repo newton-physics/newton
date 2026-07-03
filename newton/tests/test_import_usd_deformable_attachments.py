@@ -255,17 +255,28 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         cross = {tuple(sorted((sa, sb))) for sa in a for sb in b}
         self.assertTrue(cross.isdisjoint(pairs), "an explicit singleton group must not broadcast")
 
-    def test_element_collision_filter_indices_without_counts_broadcast(self):
-        """Indices authored with no groupElemCounts form one group of those elements that pairs
-        against every group on the other side (the proposal reserves all-group pairing for the
-        absent-counts form)."""
-        builder, _result, pairs = self._two_cable_filter_stage(indices0=[1], indices1=[0, 2], counts1=[1, 1])
-        a = self._cable_seg_shapes(builder, "/World/CableA")
-        b = self._cable_seg_shapes(builder, "/World/CableB")
-        self.assertIn(tuple(sorted((a[1], b[0]))), pairs)
-        self.assertIn(tuple(sorted((a[1], b[2]))), pairs)
-        self.assertNotIn(tuple(sorted((a[0], b[0]))), pairs, "unlisted src0 segment must stay collidable")
-        self.assertNotIn(tuple(sorted((a[1], b[1]))), pairs, "B segment 1 was not in any group")
+    def test_element_collision_filter_empty_counts_select_all_and_broadcast(self):
+        """Empty groupElemCounts means ALL elements of that source, paired against every group
+        of the other side (the proposal defines group boundaries only through the counts
+        array, so stray indices without counts define no subset and are ignored with a
+        warning)."""
+        with self.subTest(case="stray_indices_ignored"):
+            with self.assertWarnsRegex(UserWarning, "indices are ignored"):
+                builder, _result, pairs = self._two_cable_filter_stage(indices0=[1], indices1=[0, 2], counts1=[1, 1])
+            a = self._cable_seg_shapes(builder, "/World/CableA")
+            b = self._cable_seg_shapes(builder, "/World/CableB")
+            for sa in a:  # ALL of CableA, including segments not in the stray indices
+                self.assertIn(tuple(sorted((sa, b[0]))), pairs)
+                self.assertIn(tuple(sorted((sa, b[2]))), pairs)
+                self.assertNotIn(tuple(sorted((sa, b[1]))), pairs, "B segment 1 was not in any group")
+
+        with self.subTest(case="both_sides_empty"):
+            builder, _result, pairs = self._two_cable_filter_stage()
+            a = self._cable_seg_shapes(builder, "/World/CableA")
+            b = self._cable_seg_shapes(builder, "/World/CableB")
+            for sa in a:  # all elements vs all elements
+                for sb in b:
+                    self.assertIn(tuple(sorted((sa, sb))), pairs)
 
     def test_element_collision_filter_malformed_counts_warns_and_skips(self):
         """groupElemCounts whose sum exceeds the index array warns and applies no filter pairs."""
@@ -302,15 +313,28 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]  # 3 segments
         _add_cable_curve(stage, "/World/Cable", pts)
-        # Filter the cable's first two segments (0, 1) against all of the box; empty indices1 = all.
+        # Filter the cable's first two segments (0, 1) against all of the box (explicit counts
+        # select the subset; empty indices1 with no counts = all elements of the box).
         _add_element_collision_filter(
-            stage, "/World/FilterBox", src0="/World/Cable", src1="/World/Box", indices0=[0, 1], indices1=[]
+            stage, "/World/FilterBox", src0="/World/Cable", src1="/World/Box", indices0=[0, 1], counts0=[2], indices1=[]
         )
         _add_element_collision_filter(
-            stage, "/World/FilterChild", src0="/World/Cable", src1="/World/Rigid/Collider", indices0=[0], indices1=[]
+            stage,
+            "/World/FilterChild",
+            src0="/World/Cable",
+            src1="/World/Rigid/Collider",
+            indices0=[0],
+            counts0=[1],
+            indices1=[],
         )
         _add_element_collision_filter(
-            stage, "/World/FilterGround", src0="/World/Cable", src1="/World/Ground", indices0=[0], indices1=[]
+            stage,
+            "/World/FilterGround",
+            src0="/World/Cable",
+            src1="/World/Ground",
+            indices0=[0],
+            counts0=[1],
+            indices1=[],
         )
 
         builder = newton.ModelBuilder()
