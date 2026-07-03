@@ -156,10 +156,13 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             (soft_p0, builder.particle_count),
             (soft_t0, builder.tet_count),
         )
+        # The density actually used, mirroring add_soft_mesh's own resolution order:
+        # explicit override, else the TetMesh's material density, else the builder default.
+        effective_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)
+        if effective_density is None:
+            effective_density = builder.default_tet_density
         path_soft_attrs[path] = {
-            # The density actually used: the resolved override if present, else the
-            # TetMesh's own material density.
-            "resolved_density": add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density),
+            "resolved_density": effective_density,
         }
 
         if verbose:

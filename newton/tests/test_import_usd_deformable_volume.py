@@ -200,6 +200,18 @@ class TestUSDDeformableVolume(unittest.TestCase):
         # Legacy mass distribution (density-derived), not the authored per-point values.
         self.assertNotEqual([builder.particle_mass[i] for i in range(4)], [2.0, 4.0, 6.0, 8.0])
 
+    def test_resolved_density_reports_builder_default_fallback(self):
+        """With no authored or material density, add_soft_mesh falls back to the builder's
+        default_tet_density; path_soft_attrs must report that actually-used value, not None."""
+        stage = _deformable_stage()
+        _author_unit_tet(stage, "/World/Soft")
+
+        builder = newton.ModelBuilder()
+        builder.default_tet_density = 123.5
+        result = builder.add_usd(stage)
+
+        self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
+
     def test_volume_velocities_warn_and_do_not_crash(self):
         """Authored velocities are dropped with a warning (not silently), and must not crash the
         custom-attribute frequency inference on a single-tet mesh (vertex_count == tri_count)."""
