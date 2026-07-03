@@ -743,6 +743,64 @@ class TestUSDDeformableCable(unittest.TestCase):
         junction = result["path_attachment_attrs"]["/World/Junction"]
         self.assertIn("unsupported_reason", junction)
 
+    def test_curve_vertex_counts_partition_validation(self):
+        """curveVertexCounts that do not partition points (a mismatched total or a negative
+        count) warn and skip the whole prim before any builder mutation, instead of raising
+        out of add_usd(); a valid cable later in the stage still imports."""
+        pts2 = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)]
+        pts4 = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        pts5 = [*pts4, (0.4, 0.0, 1.0)]
+        cases = (
+            ("counts_exceed_points", pts2, [3]),
+            ("counts_below_points", pts4, [3]),
+            ("negative_count", pts4, [-2, 6]),
+            ("multi_curve_mismatch", pts5, [3, 3]),
+        )
+        for label, points, counts in cases:
+            with self.subTest(kind=label):
+                stage = _deformable_stage()
+                bad = _add_cable_curve(stage, "/World/Bad", points)
+                bad.GetCurveVertexCountsAttr().Set(counts)
+                _add_cable_curve(
+                    stage, "/World/Good", [(0.0, 1.0, 1.0), (0.1, 1.0, 1.0), (0.2, 1.0, 1.0), (0.3, 1.0, 1.0)]
+                )
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, "/World/Bad.*curveVertexCounts"):
+                    result = builder.add_usd(stage, deformable_results=True)
+                # The malformed prim mutates nothing; the valid cable is unaffected.
+                self.assertEqual(group_labels(builder, "cable"), ["/World/Good"])
+                self.assertNotIn("/World/Bad", result["path_cable_map"])
+                self.assertNotIn("/World/Bad", result["path_cable_attrs"])
+                self.assertEqual(builder.body_count, 3)
+                self.assertEqual(builder.joint_count, 2)
+                builder.finalize()
+
+    def test_malformed_curve_is_excluded_from_weld_prepass(self):
+        """A malformed curve cannot become a weld candidate: the graph prepass excludes it
+        before union-find, so the valid peer imports as an ordinary cable and the proposed
+        coincident junction is not realized as a weld or an attachment joint."""
+        stage = _deformable_stage()
+        bad = _add_cable_curve(stage, "/World/Bad", [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)])
+        bad.GetCurveVertexCountsAttr().Set([3])
+        _add_cable_curve(stage, "/World/Good", [(0.0, 0.0, 1.0), (0.0, 0.1, 1.0), (0.0, 0.2, 1.0), (0.0, 0.3, 1.0)])
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/Bad",
+            type0="points",
+            indices0=[0],
+            src1="/World/Good",
+            type1="points",
+            indices1=[0],
+        )
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "/World/Bad.*curveVertexCounts"):
+            result = builder.add_usd(stage, deformable_results=True)
+        self.assertEqual(group_labels(builder, "cable"), ["/World/Good"])
+        self.assertNotIn("/World/Bad", result["path_cable_attrs"])
+        self.assertNotIn("/World/Junction", result["path_attachment_map"])
+        builder.finalize()
+
     def test_two_point_curves(self):
         """An open two-point curve (one segment) warns and is skipped (the rod needs two
         segments); a periodic two-point curve closes into two segments and imports."""

@@ -34,6 +34,45 @@ from .import_usd_deformable_utils import (
 )
 
 
+def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
+    """Read a cable prim's ``points`` / ``curveVertexCounts`` after validating the partition.
+
+    Counts must be non-negative and sum to exactly ``len(points)``: Python slicing is
+    forgiving, so a mismatch would otherwise corrupt every later curve's point offset or
+    reach ``add_rod`` with fewer positions than declared (which raises out of the import).
+    Shared by the graph prepass and the per-curve pass so the two cannot diverge. Returns
+    ``(points, counts)`` with counts as Python ints, or ``None`` for a prim that must be
+    skipped whole (warned unless ``warn=False``; the prepass passes ``False`` because an
+    unconsumed prim always reaches the per-curve pass, which warns).
+    """
+    points = curves.GetPointsAttr().Get()
+    vertex_counts = curves.GetCurveVertexCountsAttr().Get()
+    if not points or not vertex_counts:
+        if warn:
+            warnings.warn(f"{path}: cable curve has no points / curveVertexCounts; skipping.", stacklevel=2)
+        return None
+    counts = [int(c) for c in vertex_counts]
+    for i, count in enumerate(counts):
+        if count < 0:
+            if warn:
+                warnings.warn(
+                    f"{path}: curveVertexCounts[{i}] is {count}; counts must be non-negative; "
+                    f"skipping malformed cable.",
+                    stacklevel=2,
+                )
+            return None
+    total = sum(counts)
+    if total != len(points):
+        if warn:
+            warnings.warn(
+                f"{path}: curveVertexCounts total {total} does not match points length {len(points)}; "
+                f"skipping malformed cable.",
+                stacklevel=2,
+            )
+        return None
+    return points, counts
+
+
 def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[str], set[str]]:
     """Weld curve deformables joined by curve-to-curve ``PhysicsAttachment`` prims into
     rod graphs via :meth:`ModelBuilder.add_rod_graph`.
@@ -95,9 +134,11 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         curves = UsdGeom.BasisCurves(prim)
         if curves.GetTypeAttr().Get() != UsdGeom.Tokens.linear:
             continue
-        pts = curves.GetPointsAttr().Get()
-        vcounts = curves.GetCurveVertexCountsAttr().Get()
-        if not pts or not vcounts or len(vcounts) != 1 or int(vcounts[0]) < 3:
+        topo = _read_validated_curve_topology(curves, path, warn=False)
+        if topo is None:
+            continue
+        pts, vcounts = topo
+        if len(vcounts) != 1 or vcounts[0] < 3:
             continue
         wmat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Apply the full world affine so non-uniform scale, shear, and reflections are exact.
@@ -463,11 +504,10 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 stacklevel=2,
             )
             continue
-        points = curves.GetPointsAttr().Get()
-        vertex_counts = curves.GetCurveVertexCountsAttr().Get()
-        if not points or not vertex_counts:
-            warnings.warn(f"{path}: cable curve has no points / curveVertexCounts; skipping.", stacklevel=2)
+        topo = _read_validated_curve_topology(curves, path)
+        if topo is None:
             continue
+        points, vertex_counts = topo
         closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
         # Rest centerline used for the rest length below (one point per vertex); restNormals
         # and rest bend angles are not imported yet.
