@@ -34,6 +34,7 @@ from newton._src.solvers.kamino.tests.utils.sampling import (
     sample_base_state,
     sample_body_poses,
 )
+from newton.tests.utils.basics import build_cartpole
 
 ###
 # Module configs
@@ -199,6 +200,11 @@ def compute_actuated_coords_and_dofs_data(model: ModelKamino):
 
     # Filter for actuators only
     joint_is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
+    if model.joints.fk_act_type is not None:
+        fk_act_type_np = model.joints.fk_act_type.numpy()
+        joint_is_actuator_fk = fk_act_type_np != JointActuationType.PASSIVE
+        overwrite_mask = fk_act_type_np != -1
+        joint_is_actuator[overwrite_mask] = joint_is_actuator_fk[overwrite_mask]
     actuated_coord_offsets = coord_offsets[joint_is_actuator]
     actuated_coords_sizes = joint_num_coords[joint_is_actuator]
     actuated_dof_offsets = dof_offsets[joint_is_actuator]
@@ -268,9 +274,11 @@ def simulate_random_poses(
     # Generate random inputs
     base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, num_poses)
     actuators_q_np = sample_actuator_coords(
-        model, rng, num_poses, max_pos=max_pos, max_angle=max_angle, max_quat=max_quat
+        model, rng, num_poses, max_pos=max_pos, max_angle=max_angle, max_quat=max_quat, use_fk_actuators=True
     )
-    actuators_u_np = sample_actuator_velocities(model, rng, num_poses, max_lin_vel=max_lin_vel, max_ang_vel=max_ang_vel)
+    actuators_u_np = sample_actuator_velocities(
+        model, rng, num_poses, max_lin_vel=max_lin_vel, max_ang_vel=max_ang_vel, use_fk_actuators=True
+    )
 
     # Precompute offset arrays for extracting actuator coordinates/dofs
     actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes, actuator_dof_types = (
@@ -616,6 +624,60 @@ class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
             joint.X_Fj = wp.quat_to_matrix(wp.quatf(random_quats[jid]))
             joint.X_Bj = wp.transpose(R_B) * R_F * joint.X_Fj  # Compute X_B given X_F to preserve a valid pose
         model = builder.finalize(device=self.default_device)
+
+        # Generate helper function to simulate random poses
+        num_poses = 30
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            rng,
+            use_graph=self.has_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
+        )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
+        self.assertTrue(success)
+
+
+class CarpoleRandomPosesCheckForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.has_cuda = self.default_device.is_cuda
+        self.verbose = test_context.verbose
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_cartpole_FK_random_poses(self):
+        # Initialize RNG
+        test_name = "Cartpole FK random poses check"
+        seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
+        rng = np.random.default_rng(seed)
+
+        # Get builder for the cartpole model
+        robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        fk_actuation_types = {1: JointActuationType.FORCE}  # Actuate the revolute joint for FK
+        newton.solvers.SolverKamino.register_custom_attributes(robot_builder, fk_actuation_types=fk_actuation_types)
+        build_cartpole(builder=robot_builder, ground=False)
+
+        # Finalize model and convert to ModelKamino
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        num_worlds = 10
+        for _ in range(num_worlds):
+            builder.add_world(robot_builder)
+        model_newton = builder.finalize(skip_validation_joints=True)
+        model = ModelKamino.from_newton(model_newton)
 
         # Generate helper function to simulate random poses
         num_poses = 30
