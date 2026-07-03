@@ -9659,6 +9659,7 @@ class TestActuatorDampratio(unittest.TestCase):
         builder.add_mjcf(cls.MJCF, ctrl_direct=True)
         cls.model = builder.finalize()
         cls.solver = SolverMuJoCo(cls.model)
+        cls.native_model = cls.solver._mujoco.MjModel.from_xml_string(cls.MJCF)
 
     def test_dampratio_biasprm2_nonzero(self):
         """Position actuator with dampratio should have nonzero biasprm[2]."""
@@ -9680,17 +9681,10 @@ class TestActuatorDampratio(unittest.TestCase):
         bp = self.solver.mj_model.actuator_biasprm
         np.testing.assert_allclose(bp[2], 0.0, atol=1e-6)
 
-    def test_mjw_model_matches_compiled(self):
-        """MjWarpModel biasprm should match compiled MjModel biasprm."""
-        mj_bp = self.solver.mj_model.actuator_biasprm
-        mjw_bp = self.solver.mjw_model.actuator_biasprm.numpy()
-        # Actuator 0 (dampratio): mjw must have compiler-computed value, not zero.
-        np.testing.assert_allclose(
-            mjw_bp[0, 0, :3],
-            mj_bp[0, :3],
-            atol=1e-4,
-            err_msg="MjWarpModel biasprm should match compiled MjModel (dampratio resolved)",
-        )
+    def test_dampratio_matches_native_compile(self):
+        expected = self.native_model.actuator_biasprm[0, :3]
+        np.testing.assert_allclose(self.solver.mj_model.actuator_biasprm[0, :3], expected, atol=1e-6)
+        np.testing.assert_allclose(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, :3], expected, atol=1e-6)
 
     def test_dampratio_custom_attribute_parsed(self):
         """dampratio should be encoded as unresolved biasprm[2] > 0."""

@@ -6204,12 +6204,26 @@ class SolverMuJoCo(SolverBase):
             self.mjc_actuator_to_target_q_axis_idx = None
             self.mjc_actuator_to_newton_ball_jnt = None
 
+        dampratio_actuators = [
+            (actuator.id, actuator.biasprm[2])
+            for actuator in spec.actuators
+            if actuator.biastype == mujoco.mjtBias.mjBIAS_AFFINE
+            and actuator.gaintype == mujoco.mjtGain.mjGAIN_FIXED
+            and actuator.gainprm[0] > 0.0
+            and actuator.biasprm[0] == 0.0
+            and abs(actuator.biasprm[1] + actuator.gainprm[0]) < 1e-8
+            and actuator.biasprm[2] > 0.0
+        ]
+
         self.mj_model = spec.compile()
         # Keep the compiled qM layout, but restore the physical COM and derived constants.
         for body_id, body, body_ipos in full_inertia_bodies:
             body.ipos = body_ipos
             self.mj_model.body_ipos[body_id] = body_ipos
             self.mj_model.body_sameframe[body_id] = mujoco.mjtSameFrame.mjSAMEFRAME_NONE
+        # mj_setConst only recomputes dampratio actuators from positive placeholders.
+        for actuator_id, dampratio in dampratio_actuators:
+            self.mj_model.actuator_biasprm[actuator_id, 2] = dampratio
         self.mj_data = mujoco.MjData(self.mj_model)
         mujoco.mj_setConst(self.mj_model, self.mj_data)
 
