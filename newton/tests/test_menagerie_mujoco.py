@@ -1411,6 +1411,7 @@ class TestMenagerieBase(unittest.TestCase):
         - num_steps: int - dynamics steps to run (default: 0, dynamics disabled)
         - dynamics_target: float - step-response target position offset (default: 0.3)
         - dynamics_tolerance: float - qpos/qvel comparison tolerance (default: 1e-6)
+        - allow_standalone_world_roots: bool - permit SolverMuJoCo's rootless-world-joint warning
         - skip_reason: str | None - if set, skip this test
     """
 
@@ -1427,6 +1428,7 @@ class TestMenagerieBase(unittest.TestCase):
     # a target position (wrapping with modulo). Collisions disabled.
     dynamics_target: float = 0.3  # Position offset for step-response target
     dynamics_tolerance: float = 1e-6  # Tolerance for qpos/qvel comparison
+    allow_standalone_world_roots: bool = False
 
     # Model comparison: fields to SKIP (substrings to match)
     # Override in subclass with: model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"extra", "fields"}
@@ -1678,6 +1680,11 @@ class TestMenagerieBase(unittest.TestCase):
         # than failing under strict warnings. Other warnings still surface.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=r"(Geom|Pair).* zeroed for NATIVECCD")
+            if self.allow_standalone_world_roots:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"SolverMuJoCo is converting .* outside articulations as standalone world roots",
+                )
             cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
         cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (
