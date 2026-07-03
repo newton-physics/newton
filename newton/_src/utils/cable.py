@@ -28,10 +28,8 @@ class CableStiffness(NamedTuple):
     (``EI1 == EI2 == EI``); the single ``bend`` field is used for both axes
     when assembling the per-joint cable stiffness vector.
 
-    No ``shear`` field, by design: this helper is not a full shearable-beam
-    material helper, so the builder defaults ``shear_stiffness`` to
-    ``stretch`` as an isotropic positional hold (a constraint stiffness, not a
-    transverse-shear material modulus).
+    No ``shear`` field, by design. Set a sufficiently large finite
+    ``shear_stiffness`` separately to approximate an unshearable Kirchhoff rod.
 
     Being a :class:`typing.NamedTuple`, instances support both attribute
     access (``stiffness.bend``) and tuple unpacking
