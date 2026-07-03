@@ -8,6 +8,7 @@ Cross-family happy-path, skip-policy, and lifecycle contracts live in
 owns the volume-specific lowering (mass precedence, deformable-body hierarchy, transforms).
 """
 
+import math
 import os
 import unittest
 import warnings
@@ -258,6 +259,36 @@ class TestUSDDeformableVolume(unittest.TestCase):
         result = builder.add_usd(stage, deformable_results=True)
 
         self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
+
+    def test_volume_material_density_validation(self):
+        """Negative and non-finite material densities warn and are ignored (the proposal's
+        range is (0, inf)); zero is the schema's "ignored" fallback and falls through
+        silently. Either way the import continues on the builder default and no imported or
+        finalized mass is negative or non-finite."""
+        for density in (-10.0, float("nan"), float("inf"), float("-inf"), 0.0):
+            with self.subTest(density=density):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=density)
+                builder = newton.ModelBuilder()
+                builder.default_tet_density = 123.5
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    result = builder.add_usd(stage, deformable_results=True)
+                invalid_warnings = [w for w in caught if "invalid volume material density" in str(w.message)]
+                if density == 0.0:
+                    self.assertEqual(invalid_warnings, [], "zero is the schema fallback, not an invalid value")
+                else:
+                    self.assertEqual(len(invalid_warnings), 1)
+                    self.assertIn("/World/Mat", str(invalid_warnings[0].message))
+                # Fell back to the builder default; the reported density is the value actually used.
+                self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
+                for i in range(4):
+                    m = builder.particle_mass[i]
+                    self.assertTrue(math.isfinite(m) and m > 0.0, f"particle mass {m}")
+                model = builder.finalize()
+                inv_mass = model.particle_inv_mass.numpy()
+                self.assertTrue(np.all(np.isfinite(inv_mass)) and np.all(inv_mass >= 0.0))
 
     def test_volume_velocities_warn_and_do_not_crash(self):
         """Authored velocities are dropped with a warning (not silently), and must not crash the

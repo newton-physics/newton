@@ -1379,7 +1379,18 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
                 k_lambda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
 
         if density_val is not None:
-            density = float(density_val)
+            authored_density = float(density_val)
+            # The proposal declares density with a range of (0, inf) and a fallback of 0
+            # meaning "ignored": zero falls through to the caller's density precedence
+            # (body override, then the builder default) without being an invalid value.
+            if math.isfinite(authored_density) and authored_density > 0.0:
+                density = authored_density
+            elif authored_density != 0.0:
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid volume material density "
+                    f"{authored_density}; expected a finite positive value, ignoring it.",
+                    stacklevel=2,
+                )
 
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
     # Primvar interpolation is used to determine the attribute frequency
