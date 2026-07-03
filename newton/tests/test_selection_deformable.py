@@ -135,5 +135,74 @@ class TestDeformableView(unittest.TestCase):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
 
 
+class TestDeformableViewBuilderGroups(unittest.TestCase):
+    """Groups recorded by labeled builder calls (no USD) are selectable through the view."""
+
+    def test_builder_built_prototype_clones_select_per_world(self):
+        """A labeled soft body and rod built in a prototype and cloned per world with
+        add_world stay selectable, with correctly offset ranges (the Isaac Lab pattern
+        of building deformables in per-world builder hooks)."""
+        proto = newton.ModelBuilder()
+        proto.add_soft_mesh(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+            indices=[0, 1, 2, 3],
+            density=100.0,
+            k_mu=1.0e4,
+            k_lambda=1.0e4,
+            k_damp=0.0,
+            label="soft_proto",
+        )
+        proto.add_rod(
+            positions=[(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)],
+            radius=0.02,
+            label="cable_proto",
+            wrap_in_articulation=True,
+            body_frame_origin="com",
+        )
+
+        scene = newton.ModelBuilder()
+        scene.add_world(proto)
+        scene.add_world(proto)
+        model = scene.finalize()
+        state = model.state()
+
+        soft = DeformableView(model, "soft_proto", family="soft")
+        self.assertEqual((soft.count, soft.worlds, soft.particles_per_group), (2, [0, 1], 4))
+        (r0, r1) = soft.ranges("particle")
+        self.assertEqual(r1[0] - r0[0], 4)
+        self.assertNotEqual(r0, r1)
+
+        cable = DeformableView(model, "cable_proto", family="cable")
+        self.assertEqual((cable.count, cable.worlds, cable.bodies_per_group), (2, [0, 1], 2))
+        self.assertEqual(cable.elements_per_group("joint"), 1)
+
+        # State access round-trips through the offset ranges.
+        positions = soft.get_particle_positions(state)
+        lifted = positions.numpy()
+        lifted[1, :, 2] += 3.0
+        soft.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
+        np.testing.assert_allclose(soft.get_particle_positions(state).numpy(), lifted, atol=1e-6)
+
+    def test_unlabeled_builder_deformables_record_no_group(self):
+        """Deformables built without a label stay undiscoverable (no accidental groups)."""
+        builder = newton.ModelBuilder()
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=0.1,
+        )
+        model = builder.finalize()
+        with self.assertRaises(KeyError):
+            DeformableView(model, "*", family="cloth")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

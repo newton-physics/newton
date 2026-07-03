@@ -2024,8 +2024,10 @@ class DeformableView:
 
     Only groups recorded in the builder's group registries are selectable. The USD
     importer (:meth:`~newton.ModelBuilder.add_usd`) records every imported deformable
-    under its prim-path label; deformables built through other builder methods are not
-    discoverable by this view unless a group was recorded for them.
+    under its prim-path label, and the deformable builder helpers
+    (:meth:`~newton.ModelBuilder.add_cloth_mesh`, :meth:`~newton.ModelBuilder.add_soft_mesh`,
+    :meth:`~newton.ModelBuilder.add_rod`, :meth:`~newton.ModelBuilder.add_rod_graph`) record
+    a group when given a ``label``. Deformables built without a label are not discoverable.
 
     The selection must be homogeneous: the same number of matching groups in every world
     that has a match, and the same element count in every group (which

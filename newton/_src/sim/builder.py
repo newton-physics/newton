@@ -2619,7 +2619,7 @@ class ModelBuilder:
         body_range: tuple[int, int],
         joint_range: tuple[int, int],
     ) -> None:
-        """Register an imported cable as an addressable, world-tagged group."""
+        """Register a cable as an addressable, world-tagged group."""
         self._cable_label.append(label)
         self._cable_world.append(self.current_world)
         self._cable_body_start.append(body_range[0])
@@ -2634,7 +2634,7 @@ class ModelBuilder:
         tri_range: tuple[int, int],
         edge_range: tuple[int, int],
     ) -> None:
-        """Register an imported cloth as an addressable, world-tagged group."""
+        """Register a cloth as an addressable, world-tagged group."""
         self._cloth_label.append(label)
         self._cloth_world.append(self.current_world)
         self._cloth_particle_start.append(particle_range[0])
@@ -2650,7 +2650,7 @@ class ModelBuilder:
         particle_range: tuple[int, int],
         tet_range: tuple[int, int],
     ) -> None:
-        """Register an imported soft volume as an addressable, world-tagged group."""
+        """Register a soft volume as an addressable, world-tagged group."""
         self._soft_label.append(label)
         self._soft_world.append(self.current_world)
         self._soft_particle_start.append(particle_range[0])
@@ -7278,6 +7278,7 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
+        record_group: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -7306,7 +7307,12 @@ class ModelBuilder:
                 defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints.
+            label: Optional label prefix for bodies, shapes, and joints. A labeled rod is also
+                recorded as a selectable cable group (see
+                :class:`~newton.selection.DeformableView`).
+            record_group: If True (default), a labeled rod is recorded as one selectable cable
+                group. Pass False when the caller records its own groups for the same bodies
+                (as :meth:`add_usd` does for multi-curve prims).
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -7394,6 +7400,8 @@ class ModelBuilder:
         # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
         # - open chains are wrapped into a single articulation (tree), and
         # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
+        start_body = self.body_count
+        start_joint = self.joint_count
         link_bodies, link_joints = self.add_rod_graph(
             node_positions=positions_wp,
             edges=edges,
@@ -7408,6 +7416,9 @@ class ModelBuilder:
             quaternions=quaternions,
             color=color,
             body_frame_origin=body_frame_origin,
+            # add_rod records its own group below, after the optional loop-closing joint,
+            # so a closed rod's group covers that joint too.
+            record_group=False,
         )
 
         # Wrap all joints into an articulation if requested.
@@ -7464,6 +7475,9 @@ class ModelBuilder:
                 )
                 link_joints.append(j_loop)
 
+        if label is not None and record_group:
+            self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+
         return link_bodies, link_joints
 
     @deprecate_nonkeyword_arguments
@@ -7484,6 +7498,7 @@ class ModelBuilder:
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
+        record_group: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -7521,7 +7536,9 @@ class ModelBuilder:
                 (torque per radian).
                 Defaults to 0.0.
             bend_damping: Bend/twist damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
+            label: Optional label prefix for bodies, shapes, joints, and articulations. A labeled
+                graph is also recorded as one selectable cable group (see
+                :class:`~newton.selection.DeformableView`).
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -7541,6 +7558,9 @@ class ModelBuilder:
                 origin and COM coincide. If None, preserves ``"start"`` for now with a
                 :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
                 pass ``"start"`` or ``"com"`` explicitly.
+            record_group: If True (default), a labeled graph is recorded as one selectable
+                cable group. Pass False when the caller records its own finer-grained groups
+                for the same bodies (as :meth:`add_usd` does for welded curves).
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
@@ -7549,6 +7569,8 @@ class ModelBuilder:
         Raises:
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
         """
+        start_body = self.body_count
+        start_joint = self.joint_count
         if cfg is None:
             cfg = self.default_shape_cfg
 
@@ -7854,6 +7876,9 @@ class ModelBuilder:
                         for si in self.body_shapes.get(bi, []):
                             for sj in self.body_shapes.get(bj, []):
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
+
+        if label is not None and record_group:
+            self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return edge_bodies, all_joints
 
@@ -8669,7 +8694,8 @@ class ModelBuilder:
             label: Optional name forwarded to
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify
-                this cloth.
+                this cloth. A labeled cloth is also recorded as a selectable group
+                (see :class:`~newton.selection.DeformableView`).
 
         Note:
             The mesh should be two-manifold.
@@ -8762,6 +8788,16 @@ class ModelBuilder:
 
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
+
+        if label is not None:
+            # A labeled cloth becomes a selectable group (newton.selection.DeformableView),
+            # matching what add_usd records for imported cloth.
+            self._record_cloth_group(
+                label,
+                (start_vertex, len(self.particle_q)),
+                (start_tri, end_tri),
+                (edge_range.start, edge_range.stop),
+            )
 
     @deprecate_nonkeyword_arguments
     def add_particle_grid(
@@ -9109,7 +9145,8 @@ class ModelBuilder:
             label: Optional name forwarded to
                 :func:`newton.utils.validate_tet_mesh` so a mesh-quality
                 warning emitted with ``validate_mesh=True`` can identify
-                this soft body.
+                this soft body. A labeled soft body is also recorded as a selectable group
+                (see :class:`~newton.selection.DeformableView`).
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
@@ -9193,6 +9230,7 @@ class ModelBuilder:
                     tri_custom[attr_name] = arr
 
         start_vertex = len(self.particle_q)
+        start_tet = self.tet_count
 
         pos = wp.vec3(pos[0], pos[1], pos[2])
         # add particles
@@ -9257,6 +9295,11 @@ class ModelBuilder:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
+
+        if label is not None:
+            # A labeled soft body becomes a selectable group (newton.selection.DeformableView),
+            # matching what add_usd records for imported volumes.
+            self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
