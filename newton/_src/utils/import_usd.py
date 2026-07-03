@@ -60,9 +60,7 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 _HARD_LIMIT_KE = 1.0e8
 
 
-def _resolve_newton_limit_ke(
-    limit_ke: float | None, fallback: float, fallback_source: str
-) -> tuple[float, str]:
+def _resolve_newton_limit_ke(limit_ke: float | None, fallback: float, fallback_source: str) -> tuple[float, str]:
     """Resolve a NewtonJointAPI ``newton:limitStiffness`` value.
 
     ``limit_ke`` is the authored stiffness (``-inf``/``None`` when unset,
@@ -1300,8 +1298,12 @@ def parse_usd(
                 f"{limit_key}_kd",
                 default_joint_limit_kd * limit_gains_scaling,
             )
-            current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(limit_ke, fallback_limit_ke, limit_ke_source)
-            current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(limit_ke, limit_kd, fallback_limit_kd, limit_kd_source)
+            current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                limit_ke, fallback_limit_ke, limit_ke_source
+            )
+            current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                limit_ke, limit_kd, fallback_limit_kd, limit_kd_source
+            )
             if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
@@ -1478,8 +1480,12 @@ def parse_usd(
                         f"limit_{trans_name}_kd",
                         default_joint_limit_kd,
                     )
-                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(limit_ke, fallback_limit_ke, limit_ke_source)
-                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(limit_ke, limit_kd, fallback_limit_kd, limit_kd_source)
+                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                        limit_ke, fallback_limit_ke, limit_ke_source
+                    )
+                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source
+                    )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
                             axis=_trans_axes[dof],
@@ -1532,8 +1538,12 @@ def parse_usd(
                         f"limit_{rot_name}_kd",
                         default_joint_limit_kd * DegreesToRadian,
                     )
-                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(limit_ke, fallback_limit_ke, limit_ke_source)
-                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(limit_ke, limit_kd, fallback_limit_kd, limit_kd_source)
+                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                        limit_ke, fallback_limit_ke, limit_ke_source
+                    )
+                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source
+                    )
 
                     angular_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -1789,7 +1799,9 @@ def parse_usd(
                 default_joint_limit_kd * limit_gains_scaling,
             )
             limit_ke, limit_ke_source = _resolve_newton_limit_ke(j_newton_limit_ke, fallback_limit_ke, limit_ke_source)
-            limit_kd, limit_kd_source = _resolve_newton_limit_kd(j_newton_limit_ke, j_newton_limit_kd, fallback_limit_kd, limit_kd_source)
+            limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                j_newton_limit_ke, j_newton_limit_kd, fallback_limit_kd, limit_kd_source
+            )
 
             limit_lower = jd.limit.lower
             limit_upper = jd.limit.upper
