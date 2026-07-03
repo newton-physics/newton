@@ -107,7 +107,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * ``UsdPhysicsCollisionGroup`` membership is **not** applied to deformables; deformable
   collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
   ``PhysicsElementCollisionFilter`` support above).
-* Every imported deformable can be found by prim path in the import results (see below).
+* Every imported deformable can be found by prim path in the import results and,
+  after ``finalize()``, through the selection view (see below).
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
@@ -180,7 +181,16 @@ Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
 ``path_cable_map`` holds each cable's body and joint indices, and ``path_cloth_map`` /
 ``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
-ranges. Without the flag the return shape carries no deformable entries.
+ranges. Without the flag the return shape carries no deformable entries. On the finalized
+:class:`~newton.Model`, select groups by label pattern with
+:class:`~newton.selection.DeformableView` (following
+:class:`~newton.selection.ArticulationView`): it batches each group's state as
+``(count, elements_per_group)`` arrays and exposes the raw per-group ranges
+(:meth:`~newton.selection.DeformableView.ranges`) for consumers that need each group's slice of
+the flat model arrays. The ranges stay valid through :meth:`~newton.ModelBuilder.finalize`,
+:meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
+one group per world), and ``collapse_fixed_joints`` (cable ranges follow the renumbered bodies
+and joints).
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -220,9 +230,12 @@ close a loop, so they stay outside the articulation.
 .. code-block:: python
 
     result = builder.add_usd("cables.usda", return_deformable_results=True)
-    # Look up an imported cable by prim path:
+    # Build-time lookup by prim path (attach joints, pin particles):
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
+    # Post-finalize selection by label pattern:
+    cable = newton.selection.DeformableView(model, "/World/Cable", family="cable")
+    ((body_start, body_end),) = cable.ranges("body")
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly

@@ -63,7 +63,7 @@ from .graph_coloring import (
     combine_independent_particle_coloring,
     construct_particle_graph,
 )
-from .model import Model, _pack_shape_pair_codes
+from .model import Model, _DeformableGroup, _pack_shape_pair_codes
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -1340,8 +1340,8 @@ class ModelBuilder:
 
         # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
         # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
-        # [start, end) into the corresponding builder arrays, and replicate()/add_builder() carry
-        # them per world so each group stays indexable by path.
+        # [start, end) into the corresponding builder arrays; finalize() copies them onto the Model,
+        # and replicate()/add_builder() carry them per world so each group stays indexable by path.
         self._cable_label: list[str] = []
         """Prim-path labels of imported cable groups."""
         self._cable_world: list[int] = []
@@ -11583,6 +11583,34 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
+
+            # Deformable groups (cable/cloth/volume): snapshot the builder's per-group registries
+            # as private records; newton.selection.DeformableView is the public way to address
+            # them after finalization.
+            def _deformable_group_records(family: str, kinds: tuple[str, ...]) -> list[_DeformableGroup]:
+                labels = getattr(self, f"_{family}_label")
+                worlds = getattr(self, f"_{family}_world")
+                return [
+                    _DeformableGroup(
+                        family=family,
+                        label=labels[i],
+                        world=worlds[i],
+                        ranges={
+                            kind: (
+                                getattr(self, f"_{family}_{kind}_start")[i],
+                                getattr(self, f"_{family}_{kind}_end")[i],
+                            )
+                            for kind in kinds
+                        },
+                    )
+                    for i in range(len(labels))
+                ]
+
+            m._deformable_groups = tuple(
+                _deformable_group_records("cable", ("body", "joint"))
+                + _deformable_group_records("cloth", ("particle", "tri", "edge"))
+                + _deformable_group_records("soft", ("particle", "tet"))
+            )
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
