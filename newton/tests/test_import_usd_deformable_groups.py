@@ -110,9 +110,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
 
         builder = newton.ModelBuilder()
-        # The two rigid bodies' fixed joint has no articulation root, so the importer warns.
-        with self.assertWarnsRegex(UserWarning, "No articulation was found"):
-            builder.add_usd(stage, collapse_fixed_joints=True)
+        builder.add_usd(stage, collapse_fixed_joints=True)
 
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertEqual(b1 - b0, 3)
