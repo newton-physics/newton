@@ -512,8 +512,22 @@ def parse_usd(
             current = current.GetParent()
         return None
 
-    def _get_target_body_and_local_pos(target_path: str) -> tuple[int, wp.vec3] | None:
+    def _is_world_target(target_path: str) -> bool:
+        """Return whether the target path represents the world body."""
         if target_path in ("", "/"):
+            return True
+
+        default_prim = stage.GetDefaultPrim()
+        return bool(
+            default_prim
+            and default_prim.IsValid()
+            and target_path == str(default_prim.GetPath())
+            and target_path not in path_body_map
+        )
+
+    def _get_target_body_and_local_pos(target_path: str) -> tuple[int, wp.vec3] | None:
+        """Resolve a target to its body index and body-local position."""
+        if _is_world_target(target_path):
             return (-1, wp.vec3())
 
         target_prim = stage.GetPrimAtPath(target_path)
@@ -2145,6 +2159,12 @@ def parse_usd(
     # This allows us to parse orphan joints (joints not included in any articulation)
     # even when articulations are present in the USD.
     processed_joints: set[str] = set()
+    authored_articulation_root_paths = [
+        str(prim.GetPath())
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies())
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
+    authored_articulation_root_paths.sort(key=len, reverse=True)
 
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
@@ -2606,7 +2626,7 @@ def parse_usd(
     )
 
     # insert remaining bodies that were not part of any articulation so far
-    # (joints for these bodies will be added later by _add_base_joints_to_floating_bodies)
+    # (root joints for these bodies will be added after mass properties are resolved)
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
@@ -2620,33 +2640,48 @@ def parse_usd(
     # This can happen when:
     # 1. No articulations are defined in the USD (no_articulations == True)
     # 2. A joint connects bodies that are not under any PhysicsArticulationRootAPI
-    orphan_joints = []
+    orphan_joints_by_body_pair: dict[tuple[str, str], list[str]] = {}
     for joint_path, joint_desc in joint_descriptions.items():
-        # Skip joints that were already processed as part of an articulation
+        # Earlier passes already own articulation and equality joints.
         if joint_path in processed_joints:
             continue
         if joint_path in mjc_equality_connect_or_weld_paths:
             if verbose:
                 print(f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
             continue
-        # Skip disabled joints if only_load_enabled_joints is True
+
+        # Apply the importer filters before grouping the remaining candidates.
         if only_load_enabled_joints and not joint_desc.jointEnabled:
             continue
         if any(re.match(p, joint_path) for p in ignore_paths):
             continue
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
             continue
-        # Skip body-to-world joints (where one body is empty/world) only when
-        # FREE joints will be auto-inserted for remaining bodies — but always
-        # keep body-to-world FIXED joints so the body is properly welded to
-        # world instead of receiving an incorrect FREE base joint.
+
+        # Shared endpoints identify joints that may form one compound joint.
+        body_pair = (str(joint_desc.body0), str(joint_desc.body1))
+        orphan_joints_by_body_pair.setdefault(body_pair, []).append(joint_path)
+
+    # A multi-axis D6 joint may be authored as stacked 1-DOF joints between the same bodies.
+    mergeable_joint_types = {UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint}
+    orphan_joint_groups: list[list[str]] = []
+    for joint_group in orphan_joints_by_body_pair.values():
+        if len(joint_group) > 1 and all(
+            joint_descriptions[joint_path].type in mergeable_joint_types for joint_path in joint_group
+        ):
+            orphan_joint_groups.append(joint_group)
+        else:
+            # Normalize non-mergeable joints to singleton groups for the parsing pass below.
+            orphan_joint_groups.extend([[joint_path] for joint_path in joint_group])
+
+    for joint_group in orphan_joint_groups:
+        # All members of a merged group share these endpoints, so the first is representative.
+        joint_path = joint_group[0]
+        joint_desc = joint_descriptions[joint_path]
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
+        # World-connected joints need a reconstructed parent frame before they can be parsed.
         is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
-        is_fixed_joint = joint_desc.type == UsdPhysics.ObjectType.FixedJoint
-        free_joints_auto_inserted = not (no_articulations and has_joints)
-        if is_body_to_world and free_joints_auto_inserted and not is_fixed_joint:
-            continue
         try:
             # Body-to-world joints (the world side may be body0 or body1) have no
             # world-side prim to inherit a frame from, and authoring tools often
@@ -2673,37 +2708,13 @@ def parse_usd(
                     child_world_xform_o = usd.get_transform(child_prim_o, local=False, xform_cache=xform_cache)
                     world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
                     orphan_incoming_xform = incoming_world_xform * world_body_xform_o
-            joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
-            # Handle body-to-world FIXED joints separately to ensure proper welding.
-            # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
-            if joint_index is not None and is_body_to_world and is_fixed_joint:
-                child_body = builder.joint_child[joint_index]
-                builder.add_articulation([joint_index], label=builder.body_label[child_body])
+            if len(joint_group) > 1:
+                parse_merged_joints(joint_group, incoming_xform=orphan_incoming_xform)
             else:
-                orphan_joints.append(joint_path)
+                parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
         except ValueError as exc:
             if verbose:
-                print(f"Skipping joint {joint_path}: {exc}")
-
-    if len(orphan_joints) > 0:
-        if no_articulations:
-            warn_str = (
-                f"No articulation was found but {len(orphan_joints)} joints were parsed: [{', '.join(orphan_joints)}]. "
-            )
-            warn_str += (
-                "Make sure your USD asset includes an articulation root prim with the PhysicsArticulationRootAPI.\n"
-            )
-        else:
-            warn_str = (
-                f"{len(orphan_joints)} joints were not included in any articulation and were parsed as orphan joints: "
-                f"[{', '.join(orphan_joints)}]. "
-            )
-            warn_str += (
-                "This can happen when a joint connects bodies that are not under any PhysicsArticulationRootAPI.\n"
-            )
-        warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=True) "
-        warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
-        warnings.warn(warn_str, stacklevel=2)
+                print(f"Skipping joint group {joint_group}: {exc}")
 
     def _build_mass_info_from_authored_properties(
         prim: Usd.Prim,
@@ -3714,7 +3725,31 @@ def parse_usd(
                     articulation_label=None,
                 )
         else:
-            builder._add_base_joints_to_floating_bodies(bodies_to_articulate, floating=floating, base_joint=base_joint)
+            joint_children = set(builder.joint_child)
+            for body_id in bodies_to_articulate:
+                if body_id in joint_children:
+                    continue
+                if builder.body_mass[body_id] <= 0:
+                    continue
+
+                joint_id = builder._add_base_joint(body_id, floating=floating, base_joint=base_joint)
+                body_path = builder.body_label[body_id]
+                articulation_root_path = next(
+                    (
+                        root
+                        for root in authored_articulation_root_paths
+                        if body_path == root or body_path.startswith("/" if root == "/" else f"{root}/")
+                    ),
+                    None,
+                )
+                if articulation_root_path is not None:
+                    builder._finalize_imported_articulation(
+                        joint_indices=[joint_id],
+                        parent_body=parent_body,
+                        articulation_label=articulation_root_path,
+                    )
+                else:
+                    builder.add_articulation([joint_id], label=body_path)
 
     # Build deformables (cables/cloth/volume) after rigid bodies, their collider-mass computation,
     # and the floating-body base-joint pass above. The importer wraps each cable into its own
@@ -3874,7 +3909,7 @@ def parse_usd(
                     # only when target0 is a site prim that is not itself a body.
                     anchor = (
                         wp.vec3(*joint_desc.localPose0Position)
-                        if (target0 in ("", "/") or target0 in path_body_map)
+                        if (_is_world_target(target0) or target0 in path_body_map)
                         else site0_local_pos
                     )
                     if convert_mjc_equality_constraints:
@@ -3909,7 +3944,7 @@ def parse_usd(
                     # body/world targets use localPose1; site targets use the site position.
                     anchor = (
                         wp.vec3(*joint_desc.localPose1Position)
-                        if (target1 in ("", "/") or target1 in path_body_map)
+                        if (_is_world_target(target1) or target1 in path_body_map)
                         else site1_local_pos
                     )
                     relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)

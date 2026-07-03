@@ -3,9 +3,9 @@
 
 """Defines mathematical operations used by the Proximal-ADMM solver."""
 
-import warp as wp
+from __future__ import annotations
 
-from ...core.types import float32, int32, vec3f
+import warp as wp
 
 ###
 # Module interface
@@ -45,17 +45,17 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
-def project_to_coulomb_cone(x: vec3f, mu: float32, epsilon: float32 = 0.0) -> vec3f:
+def project_to_coulomb_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float32 = 0.0) -> wp.vec3f:
     """
     Projects a 3D vector `x` onto an isotropic Coulomb friction cone defined by the friction coefficient `mu`.
 
     Args:
-        x (vec3f): The input vector to be projected.
-        mu (float32): The friction coefficient defining the aperture of the cone.
-        epsilon (float32, optional): A numerical tolerance applied to the cone boundary. Defaults to 0.0.
+        x: The input vector to be projected.
+        mu: The friction coefficient defining the aperture of the cone.
+        epsilon: A numerical tolerance applied to the cone boundary. Defaults to 0.0.
 
     Returns:
-        vec3f: The vector projected onto the Coulomb cone.
+        The vector projected onto the Coulomb cone.
     """
     xn = x[2]
     xt_norm = wp.sqrt(x[0] * x[0] + x[1] * x[1])
@@ -73,18 +73,18 @@ def project_to_coulomb_cone(x: vec3f, mu: float32, epsilon: float32 = 0.0) -> ve
 
 
 @wp.func
-def project_to_coulomb_dual_cone(x: vec3f, mu: float32, epsilon: float32 = 0.0) -> vec3f:
+def project_to_coulomb_dual_cone(x: wp.vec3f, mu: wp.float32, epsilon: wp.float32 = 0.0) -> wp.vec3f:
     """
     Projects a 3D vector `x` onto the dual of an isotropic Coulomb
     friction cone defined by the friction coefficient `mu`.
 
     Args:
-        x (vec3f): The input vector to be projected.
-        mu (float32): The friction coefficient defining the aperture of the cone.
-        epsilon (float32, optional): A numerical tolerance applied to the cone boundary. Defaults to 0.0.
+        x: The input vector to be projected.
+        mu: The friction coefficient defining the aperture of the cone.
+        epsilon: A numerical tolerance applied to the cone boundary. Defaults to 0.0.
 
     Returns:
-        vec3f: The vector projected onto the dual Coulomb cone.
+        The vector projected onto the dual Coulomb cone.
     """
     xn = x[2]
     xt_norm = wp.sqrt(x[0] * x[0] + x[1] * x[1])
@@ -110,10 +110,10 @@ def project_to_coulomb_dual_cone(x: vec3f, mu: float32, epsilon: float32 = 0.0) 
 
 @wp.func
 def compute_inf_norm(
-    dim: int32,
-    vio: int32,
-    x: wp.array[float32],
-) -> float32:
+    dim: wp.int32,
+    vio: wp.int32,
+    x: wp.array[wp.float32],
+) -> wp.float32:
     norm = float(0.0)
     for i in range(dim):
         norm = wp.max(norm, wp.abs(x[vio + i]))
@@ -122,10 +122,10 @@ def compute_inf_norm(
 
 @wp.func
 def compute_l1_norm(
-    dim: int32,
-    vio: int32,
-    x: wp.array[float32],
-) -> float32:
+    dim: wp.int32,
+    vio: wp.int32,
+    x: wp.array[wp.float32],
+) -> wp.float32:
     sum = float(0.0)
     for i in range(dim):
         sum += wp.abs(x[vio + i])
@@ -134,10 +134,10 @@ def compute_l1_norm(
 
 @wp.func
 def compute_l2_norm(
-    dim: int32,
-    vio: int32,
-    x: wp.array[float32],
-) -> float32:
+    dim: wp.int32,
+    vio: wp.int32,
+    x: wp.array[wp.float32],
+) -> wp.float32:
     sum = float(0.0)
     for i in range(dim):
         x_i = x[vio + i]
@@ -147,23 +147,23 @@ def compute_l2_norm(
 
 @wp.func
 def compute_dot_product(
-    dim: int32,
-    vio: int32,
-    x: wp.array[float32],
-    y: wp.array[float32],
-) -> float32:
+    dim: wp.int32,
+    vio: wp.int32,
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
+) -> wp.float32:
     """
-    Computes the dot (i.e. inner) product between two vectors `x` and `y` stored in flat arrays.\n
+    Computes the dot (i.e. inner) product between two vectors `x` and `y` stored in flat arrays.
     Both vectors are of dimension `dim`, starting from the vector index offset `vio`.
 
     Args:
-        dim (int32): The dimension (i.e. size) of the vectors.
-        vio (int32): The vector index offset (i.e. start index).
-        x (wp.array[float32]): The first vector.
-        y (wp.array[float32]): The second vector.
+        dim: The dimension (i.e. size) of the vectors.
+        vio: The vector index offset (i.e. start index).
+        x: The first vector.
+        y: The second vector.
 
     Returns:
-        float32: The dot product of the two vectors.
+        The dot product of the two vectors.
     """
     product = float(0.0)
     for i in range(dim):
@@ -174,25 +174,25 @@ def compute_dot_product(
 
 @wp.func
 def compute_double_dot_product(
-    dim: int32,
-    vio: int32,
-    x: wp.array[float32],
-    y: wp.array[float32],
-    z: wp.array[float32],
-) -> float32:
+    dim: wp.int32,
+    vio: wp.int32,
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
+    z: wp.array[wp.float32],
+) -> wp.float32:
     """
-    Computes the the inner product `x.T @ (y + z)` between a vector `x` and the sum of two vectors `y` and `z`.\n
+    Computes the the inner product `x.T @ (y + z)` between a vector `x` and the sum of two vectors `y` and `z`.
     All vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.
 
     Args:
-        dim (int32): The dimension (i.e. size) of the vectors.
-        vio (int32): The vector index offset (i.e. start index).
-        x (wp.array[float32]): The first vector.
-        y (wp.array[float32]): The second vector.
-        z (wp.array[float32]): The third vector.
+        dim: The dimension (i.e. size) of the vectors.
+        vio: The vector index offset (i.e. start index).
+        x: The first vector.
+        y: The second vector.
+        z: The third vector.
 
     Returns:
-        float32: The inner product of `x` with the sum of `y` and `z`.
+        The inner product of `x` with the sum of `y` and `z`.
     """
     product = float(0.0)
     for i in range(dim):
@@ -202,20 +202,22 @@ def compute_double_dot_product(
 
 
 @wp.func
-def compute_vector_sum(dim: int32, vio: int32, x: wp.array[float32], y: wp.array[float32], z: wp.array[float32]):
+def compute_vector_sum(
+    dim: wp.int32, vio: wp.int32, x: wp.array[wp.float32], y: wp.array[wp.float32], z: wp.array[wp.float32]
+):
     """
-    Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.\n
+    Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.
     All vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.
 
     Args:
-        dim (int32): The dimension (i.e. size) of the vectors.
-        vio (int32): The vector index offset (i.e. start index).
-        x (wp.array[float32]): The first vector.
-        y (wp.array[float32]): The second vector.
-        z (wp.array[float32]): The output vector where the sum is stored.
+        dim: The dimension (i.e. size) of the vectors.
+        vio: The vector index offset (i.e. start index).
+        x: The first vector.
+        y: The second vector.
+        z: The output vector where the sum is stored.
 
     Returns:
-        None: The result is stored in the output vector `z`.
+        The result is stored in the output vector `z`.
     """
     for i in range(dim):
         v_i = vio + i
@@ -224,21 +226,21 @@ def compute_vector_sum(dim: int32, vio: int32, x: wp.array[float32], y: wp.array
 
 @wp.func
 def compute_cwise_vec_mul(
-    dim: int32,
-    vio: int32,
-    a: wp.array[float32],
-    x: wp.array[float32],
-    y: wp.array[float32],
+    dim: wp.int32,
+    vio: wp.int32,
+    a: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
 ):
     """
-    Computes the coefficient-wise vector-vector product `y =  a * x`.\n
+    Computes the coefficient-wise vector-vector product `y =  a * x`.
 
     Args:
-        dim (int32): The dimension (i.e. size) of the vectors.
-        vio (int32): The vector index offset (i.e. start index).
-        a (wp.array[float32]): Input array containing the first set of vectors.
-        x (wp.array[float32]): Input array containing the second set of vectors.
-        y (wp.array[float32]): Output array where the result is stored.
+        dim: The dimension (i.e. size) of the vectors.
+        vio: The vector index offset (i.e. start index).
+        a: Input array containing the first set of vectors.
+        x: Input array containing the second set of vectors.
+        y: Output array where the result is stored.
     """
     for i in range(dim):
         v_i = vio + i
@@ -247,21 +249,21 @@ def compute_cwise_vec_mul(
 
 @wp.func
 def compute_cwise_vec_div(
-    dim: int32,
-    vio: int32,
-    a: wp.array[float32],
-    x: wp.array[float32],
-    y: wp.array[float32],
+    dim: wp.int32,
+    vio: wp.int32,
+    a: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
 ):
     """
-    Computes the coefficient-wise vector-vector division `y =  a / x`.\n
+    Computes the coefficient-wise vector-vector division `y =  a / x`.
 
     Args:
-        dim (int32): The dimension (i.e. size) of the vectors.
-        vio (int32): The vector index offset (i.e. start index).
-        a (wp.array[float32]): Input array containing the first set of vectors.
-        x (wp.array[float32]): Input array containing the second set of vectors.
-        y (wp.array[float32]): Output array where the result is stored.
+        dim: The dimension (i.e. size) of the vectors.
+        vio: The vector index offset (i.e. start index).
+        a: Input array containing the first set of vectors.
+        x: Input array containing the second set of vectors.
+        y: Output array where the result is stored.
     """
     for i in range(dim):
         v_i = vio + i
@@ -270,18 +272,18 @@ def compute_cwise_vec_div(
 
 @wp.func
 def compute_gemv(
-    dim: int32,
-    vio: int32,
-    mio: int32,
-    sigma: float32,
-    P: wp.array[float32],
-    A: wp.array[float32],
-    x: wp.array[float32],
-    b: wp.array[float32],
-    c: wp.array[float32],
+    dim: wp.int32,
+    vio: wp.int32,
+    mio: wp.int32,
+    sigma: wp.float32,
+    P: wp.array[wp.float32],
+    A: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    b: wp.array[wp.float32],
+    c: wp.array[wp.float32],
 ):
     """
-    Computes the generalized matrix-vector product `c =  b + (A - sigma * I_n)@ x`.\n
+    Computes the generalized matrix-vector product `c =  b + (A - sigma * I_n)@ x`.
 
     The matrix `A` is stored using row-major order in flat array with allocation size `maxdim x maxdim`,
     starting from the matrix index offset `mio`. The active dimensions of the matrix are `dim x dim`,
@@ -289,18 +291,14 @@ def compute_gemv(
     dimensions `dim`, starting from the vector index offset `vio`.
 
     Args:
-        maxdim (int32): The maximum dimension of the matrix `A`.
-        dim (int32): The active dimension of the matrix `A` and the vectors `x, b, c`.
-        vio (int32): The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        mio (int32): The matrix index offset (i.e. start index) for the matrix `A`.
-        A (wp.array[float32]):
-            Input matrix `A` stored in row-major order.
-        x (wp.array[float32]):
-            Input array `x` to be multiplied with the matrix `A`.
-        b (wp.array[float32]):
-            Input array `b` to be added to the product `A @ x`.
-        c (wp.array[float32]):
-            Output array `c` where the result of the operation is stored.
+        maxdim: The maximum dimension of the matrix `A`.
+        dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
+        vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
+        mio: The matrix index offset (i.e. start index) for the matrix `A`.
+        A: Input matrix `A` stored in row-major order.
+        x: Input array `x` to be multiplied with the matrix `A`.
+        b: Input array `b` to be added to the product `A @ x`.
+        c: Output array `c` where the result of the operation is stored.
     """
     b_i = float(0.0)
     x_j = float(0.0)
@@ -317,13 +315,13 @@ def compute_gemv(
 
 @wp.func
 def compute_desaxce_corrections(
-    nc: int32,
-    cio: int32,
-    vio: int32,
-    ccgo: int32,
-    mu: wp.array[float32],
-    v_plus: wp.array[float32],
-    s: wp.array[float32],
+    nc: wp.int32,
+    cio: wp.int32,
+    vio: wp.int32,
+    ccgo: wp.int32,
+    mu: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
+    s: wp.array[wp.float32],
 ):
     """
     Computes the De Saxce correction for each active contact.
@@ -331,22 +329,19 @@ def compute_desaxce_corrections(
     `s = G(v) := [ 0, 0 , mu * || vt ||_2,]^T, where v := [vtx, vty, vn]^T, vt := [vtx, vty]^T`
 
     Args:
-        nc (int32): The number of active contact constraints.
-        cio (int32): The contact index offset (i.e. start index) for the contacts.
-        vio (int32): The vector index offset (i.e. start index)
-        ccgo (int32): The contact constraint group offset (i.e. start index)
-        mu (wp.array[float32]):
-            The array of friction coefficients for each contact constraint.
-        v_plus (wp.array[float32]):
-            The post-event constraint-space velocities array, which contains the tangential velocities `vtx`
+        nc: The number of active contact constraints.
+        cio: The contact index offset (i.e. start index) for the contacts.
+        vio: The vector index offset (i.e. start index)
+        ccgo: The contact constraint group offset (i.e. start index)
+        mu: The array of friction coefficients for each contact constraint.
+        v_plus: The post-event constraint-space velocities array, which contains the tangential velocities `vtx`
             and `vty` for each contact constraint.
-        s (wp.array[float32]):
-            The output array where the De Saxce corrections are stored.\n
+        s: The output array where the De Saxce corrections are stored.
             The size of this array should be at least `vio + ccgo + 3 * nc`, where `vio` is the vector index offset,
             `ccgo` is the contact constraint group offset, and `nc` is the number of active contact constraints.
 
     Returns:
-        None: The De Saxce corrections are stored in the output array `s`.
+        The De Saxce corrections are stored in the output array `s`.
     """
     # Iterate over each active contact
     for k in range(nc):
@@ -372,15 +367,15 @@ def compute_desaxce_corrections(
 
 @wp.func
 def compute_ncp_primal_residual(
-    nl: int32,
-    nc: int32,
-    vio: int32,
-    lcgo: int32,
-    ccgo: int32,
-    cio: int32,
-    mu: wp.array[float32],
-    lambdas: wp.array[float32],
-) -> tuple[float32, int32]:
+    nl: wp.int32,
+    nc: wp.int32,
+    vio: wp.int32,
+    lcgo: wp.int32,
+    ccgo: wp.int32,
+    cio: wp.int32,
+    mu: wp.array[wp.float32],
+    lambdas: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32]:
     """
     Computes the NCP primal residual as: `r_p := || lambda - proj_K(lambda) ||_inf`, where:
     - `lambda` is the vector of constraint reactions (i.e. impulses)
@@ -394,24 +389,22 @@ def compute_ncp_primal_residual(
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`
 
     Args:
-        nl (int32): The number of active limit constraints.
-        nc (int32): The number of active contact constraints.
-        vio (int32): The vector index offset (i.e. start index) for the constraints.
-        lcgo (int32): The limit constraint group offset (i.e. start index).
-        ccgo (int32): The contact constraint group offset (i.e. start index).
-        cio (int32): The contact index offset (i.e. start index) for the contacts.
-        mu (wp.array[float32]):
-            The array of friction coefficients for each contact.
-        lambdas (wp.array[float32]):
-            The array of constraint reactions (i.e. impulses).
+        nl: The number of active limit constraints.
+        nc: The number of active contact constraints.
+        vio: The vector index offset (i.e. start index) for the constraints.
+        lcgo: The limit constraint group offset (i.e. start index).
+        ccgo: The contact constraint group offset (i.e. start index).
+        cio: The contact index offset (i.e. start index) for the contacts.
+        mu: The array of friction coefficients for each contact.
+        lambdas: The array of constraint reactions (i.e. impulses).
 
     Returns:
-        float32: The maximum primal residual across all constraints, computed as the infinity norm.
-        int32: The index of the constraint with the maximum primal residual.
+        The maximum primal residual across all constraints, computed as the infinity norm,
+        and the index of the constraint with the maximum primal residual.
     """
     # Initialize the primal residual
     r_ncp_p = float(0.0)
-    r_ncp_p_argmax = int32(-1)
+    r_ncp_p_argmax = wp.int32(-1)
 
     # NOTE: We skip the joint constraint reactions are not bounded, the cone is all of R^njc
 
@@ -432,7 +425,7 @@ def compute_ncp_primal_residual(
         # Retrieve the friction coefficient for this contact
         mu_c = mu[cio + cid]
         # Compute the primal residual for the contact constraints
-        lambda_c = vec3f(lambdas[ccio], lambdas[ccio + 1], lambdas[ccio + 2])
+        lambda_c = wp.vec3f(lambdas[ccio], lambdas[ccio + 1], lambdas[ccio + 2])
         lambda_c -= project_to_coulomb_cone(lambda_c, mu_c)
         r_c = wp.max(wp.abs(lambda_c))
         r_ncp_p = wp.max(r_ncp_p, r_c)
@@ -445,16 +438,16 @@ def compute_ncp_primal_residual(
 
 @wp.func
 def compute_ncp_dual_residual(
-    njc: int32,
-    nl: int32,
-    nc: int32,
-    vio: int32,
-    lcgo: int32,
-    ccgo: int32,
-    cio: int32,
-    mu: wp.array[float32],
-    v_aug: wp.array[float32],
-) -> tuple[float32, int32]:
+    njc: wp.int32,
+    nl: wp.int32,
+    nc: wp.int32,
+    vio: wp.int32,
+    lcgo: wp.int32,
+    ccgo: wp.int32,
+    cio: wp.int32,
+    mu: wp.array[wp.float32],
+    v_aug: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32]:
     """
     Computes the NCP dual residual as: `r_d := || v_aug - proj_K^*(v_aug) ||_inf`, where:
     - `v_aug` is the vector of augmented constraint velocities: v_aug := v_plus + s
@@ -470,25 +463,23 @@ def compute_ncp_dual_residual(
     - For contact constraints, the cone is defined as `K_c := { lambda | || lambda ||_2 <= mu * || vn ||_2 }`
 
     Args:
-        njc (int32): The number of joint constraints.
-        nl (int32): The number of active limit constraints.
-        nc (int32): The number of active contact constraints.
-        vio (int32): The vector index offset (i.e. start index) for the constraints.
-        lcgo (int32): The limit constraint group offset (i.e. start index).
-        ccgo (int32): The contact constraint group offset (i.e. start index).
-        cio (int32): The contact index offset (i.e. start index) for the contacts.
-        mu (wp.array[float32]):
-            The array of friction coefficients for each contact constraint.
-        v_aug (wp.array[float32]):
-            The array of augmented constraint velocities.
+        njc: The number of joint constraints.
+        nl: The number of active limit constraints.
+        nc: The number of active contact constraints.
+        vio: The vector index offset (i.e. start index) for the constraints.
+        lcgo: The limit constraint group offset (i.e. start index).
+        ccgo: The contact constraint group offset (i.e. start index).
+        cio: The contact index offset (i.e. start index) for the contacts.
+        mu: The array of friction coefficients for each contact constraint.
+        v_aug: The array of augmented constraint velocities.
 
     Returns:
-        float32: The maximum dual residual across all constraints, computed as the infinity norm.
-        int32: The index of the constraint with the maximum dual residual.
+        The maximum dual residual across all constraints, computed as the infinity norm,
+        and the index of the constraint with the maximum dual residual.
     """
     # Initialize the dual residual
     r_ncp_d = float(0.0)
-    r_ncp_d_argmax = int32(-1)
+    r_ncp_d_argmax = wp.int32(-1)
 
     for jid in range(njc):
         # Compute the joint constraint index offset
@@ -521,7 +512,7 @@ def compute_ncp_dual_residual(
         mu_c = mu[cio + cid]
         # Compute the dual residual for the contact constraints
         # NOTE: Each constraint-space velocity should be lie in the dual of the Coulomb friction cone
-        v_c = vec3f(v_aug[ccio_c], v_aug[ccio_c + 1], v_aug[ccio_c + 2])
+        v_c = wp.vec3f(v_aug[ccio_c], v_aug[ccio_c + 1], v_aug[ccio_c + 2])
         v_c -= project_to_coulomb_dual_cone(v_c, mu_c)
         r_c = wp.max(wp.abs(v_c))
         r_ncp_d = wp.max(r_ncp_d, r_c)
@@ -534,14 +525,14 @@ def compute_ncp_dual_residual(
 
 @wp.func
 def compute_ncp_complementarity_residual(
-    nl: int32,
-    nc: int32,
-    vio: int32,
-    lcgo: int32,
-    ccgo: int32,
-    v_aug: wp.array[float32],
-    lambdas: wp.array[float32],
-) -> tuple[float32, int32]:
+    nl: wp.int32,
+    nc: wp.int32,
+    vio: wp.int32,
+    lcgo: wp.int32,
+    ccgo: wp.int32,
+    v_aug: wp.array[wp.float32],
+    lambdas: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32]:
     """
     Computes the NCP complementarity residual as `r_c := || lambda.dot(v_plus + s) ||_inf`
 
@@ -551,23 +542,21 @@ def compute_ncp_complementarity_residual(
     constraint `k`, we compute `v_k.dot(lambda_k)`.
 
     Args:
-        nl (int32): The number of active limit constraints.
-        nc (int32): The number of active contact constraints.
-        vio (int32): The vector index offset (i.e. start index) for the constraints.
-        lcgo (int32): The limit constraint group offset (i.e. start index).
-        ccgo (int32): The contact constraint group offset (i.e. start index).
-        v_aug (wp.array[float32]):
-            The array of augmented constraint velocities.
-        lambdas (wp.array[float32]):
-            The array of constraint reactions (i.e. impulses).
+        nl: The number of active limit constraints.
+        nc: The number of active contact constraints.
+        vio: The vector index offset (i.e. start index) for the constraints.
+        lcgo: The limit constraint group offset (i.e. start index).
+        ccgo: The contact constraint group offset (i.e. start index).
+        v_aug: The array of augmented constraint velocities.
+        lambdas: The array of constraint reactions (i.e. impulses).
 
     Returns:
-        float32: The maximum complementarity residual across all constraints, computed as the infinity norm.
-        int32: The index of the constraint with the maximum complementarity residual.
+        The maximum complementarity residual across all constraints, computed as the infinity norm,
+        and the index of the constraint with the maximum complementarity residual.
     """
     # Initialize the complementarity residual
     r_ncp_c = float(0.0)
-    r_ncp_c_argmax = int32(-1)
+    r_ncp_c_argmax = wp.int32(-1)
 
     for lid in range(nl):
         # Compute the limit constraint index offset
@@ -584,8 +573,8 @@ def compute_ncp_complementarity_residual(
         # Compute the contact constraint index offset
         ccio = vio + ccgo + 3 * cid
         # Compute the complementarity residual for the contact constraints
-        v_c = vec3f(v_aug[ccio], v_aug[ccio + 1], v_aug[ccio + 2])
-        lambda_c = vec3f(lambdas[ccio], lambdas[ccio + 1], lambdas[ccio + 2])
+        v_c = wp.vec3f(v_aug[ccio], v_aug[ccio + 1], v_aug[ccio + 2])
+        lambda_c = wp.vec3f(lambdas[ccio], lambdas[ccio + 1], lambdas[ccio + 2])
         r_c = wp.abs(wp.dot(v_c, lambda_c))
         r_ncp_c = wp.max(r_ncp_c, r_c)
         if r_ncp_c == r_c:
@@ -597,41 +586,38 @@ def compute_ncp_complementarity_residual(
 
 @wp.func
 def compute_ncp_natural_map_residual(
-    nl: int32,
-    nc: int32,
-    vio: int32,
-    lcgo: int32,
-    ccgo: int32,
-    cio: int32,
-    mu: wp.array[float32],
-    v_aug: wp.array[float32],
-    lambdas: wp.array[float32],
-) -> tuple[float32, int32]:
+    nl: wp.int32,
+    nc: wp.int32,
+    vio: wp.int32,
+    lcgo: wp.int32,
+    ccgo: wp.int32,
+    cio: wp.int32,
+    mu: wp.array[wp.float32],
+    v_aug: wp.array[wp.float32],
+    lambdas: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32]:
     """
     Computes the natural-map residuals as: `r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf`
 
     Args:
-        nl (int32): The number of active limit constraints.
-        nc (int32): The number of active contact constraints.
-        vio (int32): The vector index offset (i.e. start index) for the constraints.
-        lcgo (int32): The limit constraint group offset (i.e. start index).
-        ccgo (int32): The contact constraint group offset (i.e. start index).
-        cio (int32): The contact index offset (i.e. start index) for the contacts.
-        mu (wp.array[float32]):
-            The array of friction coefficients for each contact.
-        v_aug (wp.array[float32]):
-            The array of augmented constraint velocities.
-        lambdas (wp.array[float32]):
-            The array of constraint reactions (i.e. impulses).
+        nl: The number of active limit constraints.
+        nc: The number of active contact constraints.
+        vio: The vector index offset (i.e. start index) for the constraints.
+        lcgo: The limit constraint group offset (i.e. start index).
+        ccgo: The contact constraint group offset (i.e. start index).
+        cio: The contact index offset (i.e. start index) for the contacts.
+        mu: The array of friction coefficients for each contact.
+        v_aug: The array of augmented constraint velocities.
+        lambdas: The array of constraint reactions (i.e. impulses).
 
     Returns:
-        float32: The maximum natural-map residual across all constraints, computed as the infinity norm.
-        int32: The index of the constraint with the maximum natural-map residual.
+        The maximum natural-map residual across all constraints, computed as the infinity norm,
+        and the index of the constraint with the maximum natural-map residual.
     """
 
     # Initialize the natural-map residual
     r_ncp_natmap = float(0.0)
-    r_ncp_natmap_argmax = int32(-1)
+    r_ncp_natmap_argmax = wp.int32(-1)
 
     for lid in range(nl):
         # Compute the limit constraint index offset
@@ -651,8 +637,8 @@ def compute_ncp_natural_map_residual(
         # Retrieve the friction coefficient for this contact
         mu_c = mu[cio + cid]
         # Compute the natural-map residual for the contact constraints
-        v_c = vec3f(v_aug[ccio], v_aug[ccio + 1], v_aug[ccio + 2])
-        lambda_c = vec3f(lambdas[ccio], lambdas[ccio + 1], lambdas[ccio + 2])
+        v_c = wp.vec3f(v_aug[ccio], v_aug[ccio + 1], v_aug[ccio + 2])
+        lambda_c = wp.vec3f(lambdas[ccio], lambdas[ccio + 1], lambdas[ccio + 2])
         lambda_c -= project_to_coulomb_cone(lambda_c - v_c, mu_c)
         lambda_c = wp.abs(lambda_c)
         lambda_c_max = wp.max(lambda_c)
@@ -666,21 +652,19 @@ def compute_ncp_natural_map_residual(
 
 @wp.func
 def compute_preconditioned_iterate_residual(
-    ncts: int32, vio: int32, P: wp.array[float32], x: wp.array[float32], x_p: wp.array[float32]
-) -> float32:
+    ncts: wp.int32, vio: wp.int32, P: wp.array[wp.float32], x: wp.array[wp.float32], x_p: wp.array[wp.float32]
+) -> wp.float32:
     """
     Computes the iterate residual as: `r_dx := || P @ (x - x_p) ||_inf`
 
     Args:
-        ncts (int32): The number of active constraints in the world.
-        vio (int32): The vector index offset (i.e. start index) for the constraints.
-        x (wp.array[float32]):
-            The current solution vector.
-        x_p (wp.array[float32]):
-            The previous solution vector.
+        ncts: The number of active constraints in the world.
+        vio: The vector index offset (i.e. start index) for the constraints.
+        x: The current solution vector.
+        x_p: The previous solution vector.
 
     Returns:
-        float32: The maximum iterate residual across all active constraints, computed as the infinity norm.
+        The maximum iterate residual across all active constraints, computed as the infinity norm.
     """
     # Initialize the iterate residual
     r_dx = float(0.0)
@@ -695,21 +679,19 @@ def compute_preconditioned_iterate_residual(
 
 @wp.func
 def compute_inverse_preconditioned_iterate_residual(
-    ncts: int32, vio: int32, P: wp.array[float32], x: wp.array[float32], x_p: wp.array[float32]
-) -> float32:
+    ncts: wp.int32, vio: wp.int32, P: wp.array[wp.float32], x: wp.array[wp.float32], x_p: wp.array[wp.float32]
+) -> wp.float32:
     """
     Computes the iterate residual as: `r_dx := || P^{-1} @ (x - x_p) ||_inf`
 
     Args:
-        ncts (int32): The number of active constraints in the world.
-        vio (int32): The vector index offset (i.e. start index) for the constraints.
-        x (wp.array[float32]):
-            The current solution vector.
-        x_p (wp.array[float32]):
-            The previous solution vector.
+        ncts: The number of active constraints in the world.
+        vio: The vector index offset (i.e. start index) for the constraints.
+        x: The current solution vector.
+        x_p: The previous solution vector.
 
     Returns:
-        float32: The maximum iterate residual across all active constraints, computed as the infinity norm.
+        The maximum iterate residual across all active constraints, computed as the infinity norm.
     """
     # Initialize the iterate residual
     r_dx = float(0.0)

@@ -14,8 +14,6 @@ from ...core.model import ModelKamino
 from ...core.time import TimeData
 from ...core.types import (
     assign_to_warp_int32_array,
-    float32,
-    int32,
     to_warp_int32_array,
 )
 
@@ -66,80 +64,71 @@ class AnimationJointReferenceData:
     reaching the end, or stop at the last frame.
 
     Attributes:
-        num_actuated_joint_dofs: wp.array
-            The number of actuated joint DoFs per world.
-        actuated_joint_dofs_offset: wp.array
-            The offset indices for the actuated joint DoFs per world.
-        q_j_ref: wp.array
-            The reference actuator joint positions.
-        dq_j_ref: wp.array
-            The reference actuator joint velocities.
-        loop: wp.array
-            Flag indicating whether the animation should loop.
-        rate: wp.array
-            The rate at which to progress the animation sequence.
-        decimation: wp.array
-            The decimation factor for extracting references from the animation sequence.
-        length: wp.array
-            The length of the animation sequence.
-        frame: wp.array
-            The current frame index in the animation sequence that is active.
+        num_actuated_joint_dofs: The number of actuated joint DoFs per world.
+        actuated_joint_dofs_offset: The offset indices for the actuated joint DoFs per world.
+        q_j_ref: The reference actuator joint positions.
+        dq_j_ref: The reference actuator joint velocities.
+        loop: Flag indicating whether the animation should loop.
+        rate: The rate at which to progress the animation sequence.
+        decimation: The decimation factor for extracting references from the animation sequence.
+        length: The length of the animation sequence.
+        frame: The current frame index in the animation sequence that is active.
     """
 
-    num_actuated_joint_dofs: wp.array | None = None
+    num_actuated_joint_dofs: wp.array[wp.int32] | None = None
     """
-    Number of actuated joint DoFs per world.\n
-    Shape is ``(num_worlds,)`` and dtype is :class:`int32`.
-    """
-
-    actuated_joint_dofs_offset: wp.array | None = None
-    """
-    Offset indices for the actuated joint DoFs per world.\n
-    Shape is ``(num_worlds,)`` and dtype is :class:`int32`.
+    Number of actuated joint DoFs per world.
+    Shape of ``(num_worlds,)``.
     """
 
-    q_j_ref: wp.array | None = None
+    actuated_joint_dofs_offset: wp.array[wp.int32] | None = None
     """
-    Sequence of reference joint actuator positions.\n
-    Shape is ``(max_of_num_actuated_joint_coords, sequence_length)`` and dtype is :class:`float32`.
-    """
-
-    dq_j_ref: wp.array | None = None
-    """
-    Sequence of reference joint actuator velocities.\n
-    Shape is ``(max_of_num_actuated_joint_dofs, sequence_length)`` and dtype is :class:`float32`.
+    Offset indices for the actuated joint DoFs per world.
+    Shape of ``(num_worlds,)``.
     """
 
-    length: wp.array | None = None
+    q_j_ref: wp.array2d[wp.float32] | None = None
     """
-    Integer length of the animation sequence.\n
-    Shape is ``(num_worlds,)`` and dtype is :class:`int32`.
-    """
-
-    decimation: wp.array | None = None
-    """
-    Integer decimation factor by which references are extracted from the animation sequence.\n
-    Shape is ``(num_worlds,)`` and dtype is :class:`int32`.
+    Sequence of reference joint actuator positions.
+    Shape of ``(max_of_num_actuated_joint_coords, sequence_length)``.
     """
 
-    rate: wp.array | None = None
+    dq_j_ref: wp.array2d[wp.float32] | None = None
     """
-    Integer rate by which to progress the active frame of the animation sequence at each step.\n
-    Shape is ``(num_worlds,)`` and dtype is :class:`int32`.
+    Sequence of reference joint actuator velocities.
+    Shape of ``(max_of_num_actuated_joint_dofs, sequence_length)``.
     """
 
-    loop: wp.array | None = None
+    length: wp.array[wp.int32] | None = None
     """
-    Integer flag to indicate if the animation should loop.\n
-    Shape is ``(num_worlds,)`` and dtype is :class:`int32`.\n
-    If `1`, the animation will restart from the beginning after reaching the end.\n
+    Integer length of the animation sequence.
+    Shape of ``(num_worlds,)``.
+    """
+
+    decimation: wp.array[wp.int32] | None = None
+    """
+    Integer decimation factor by which references are extracted from the animation sequence.
+    Shape of ``(num_worlds,)``.
+    """
+
+    rate: wp.array[wp.int32] | None = None
+    """
+    Integer rate by which to progress the active frame of the animation sequence at each step.
+    Shape of ``(num_worlds,)``.
+    """
+
+    loop: wp.array[wp.int32] | None = None
+    """
+    Integer flag to indicate if the animation should loop.
+    Shape of ``(num_worlds,)``.
+    If `1`, the animation will restart from the beginning after reaching the end.
     If `0`, the animation will stop at the last frame.
     """
 
-    frame: wp.array | None = None
+    frame: wp.array[wp.int32] | None = None
     """
-    Integer index indicating the active frame of the animation sequence.\n
-    Shape is ``(num_worlds,)`` and dtype is :class:`int32`.
+    Integer index indicating the active frame of the animation sequence.
+    Shape of ``(num_worlds,)``.
     """
 
 
@@ -151,13 +140,13 @@ class AnimationJointReferenceData:
 @wp.kernel
 def _advance_animation_frame(
     # Inputs
-    time_steps: wp.array[int32],
-    animation_length: wp.array[int32],
-    animation_decimation: wp.array[int32],
-    animation_rate: wp.array[int32],
-    animation_loop: wp.array[int32],
+    time_steps: wp.array[wp.int32],
+    animation_length: wp.array[wp.int32],
+    animation_decimation: wp.array[wp.int32],
+    animation_rate: wp.array[wp.int32],
+    animation_loop: wp.array[wp.int32],
     # Outputs
-    animation_frame: wp.array[int32],
+    animation_frame: wp.array[wp.int32],
 ):
     """
     A kernel to advance the animation frame index for each world
@@ -201,14 +190,14 @@ def _advance_animation_frame(
 @wp.kernel
 def _extract_animation_references(
     # Inputs
-    num_actuated_joint_dofs: wp.array[int32],
-    actuated_joint_dofs_offset: wp.array[int32],
-    animation_frame: wp.array[int32],
-    animation_q_j_ref: wp.array2d[float32],
-    animation_dq_j_ref: wp.array2d[float32],
+    num_actuated_joint_dofs: wp.array[wp.int32],
+    actuated_joint_dofs_offset: wp.array[wp.int32],
+    animation_frame: wp.array[wp.int32],
+    animation_q_j_ref: wp.array2d[wp.float32],
+    animation_dq_j_ref: wp.array2d[wp.float32],
     # Outputs
-    q_j_ref_active: wp.array[float32],
-    dq_j_ref_active: wp.array[float32],
+    q_j_ref_active: wp.array[wp.float32],
+    dq_j_ref_active: wp.array[wp.float32],
 ):
     """
     A kernel to extract the active joint-space references from the animation data.
@@ -260,20 +249,20 @@ class AnimationJointReference:
         Initialize the animation joint reference interface.
 
         Args:
-            model (ModelKamino | None): The model container used to determine the required allocation sizes.
+            model: The model container used to determine the required allocation sizes.
                 If None, calling ``finalize()`` later can be used for deferred allocation.
-            data (np.ndarray | None): The input animation reference data as a 2D numpy array.
+            data: The input animation reference data as a 2D numpy array.
                 If None, calling ``finalize()`` later can be used for deferred allocation.
-            data_dt (float | None): The time-step between frames in the input data.
-            target_dt (float | None): The desired time-step between frames in the animation reference.
+            data_dt: The time-step between frames in the input data.
+            target_dt: The desired time-step between frames in the animation reference.
                 If None, defaults to ``data_dt``.
-            decimation (int | list[int]): Decimation factor(s) defining the rate at which the animation
+            decimation: Decimation factor(s) defining the rate at which the animation
                 frame index is updated w.r.t the simulation step. If a list of integers, then frame
                 progression can proceed independently in each world. Defaults to 1 for all worlds.
-            rate (int | list[int]): Rate(s) by which to progress the animation frame index each time
+            rate: Rate(s) by which to progress the animation frame index each time
                 the simulation step matches the set decimation. Defaults to 1 for all worlds.
-            loop (bool | list[bool]): Flag(s) indicating whether the animation should loop.
-            use_fd (bool): Whether to compute finite-difference velocities from the input coordinates.
+            loop: Flag(s) indicating whether the animation should loop.
+            use_fd: Whether to compute finite-difference velocities from the input coordinates.
         """
 
         # Declare the device cache
@@ -343,16 +332,16 @@ class AnimationJointReference:
         Upsample the given reference joint coordinates from the input time-step to the output time-step.
 
         Args:
-            q_ref (np.ndarray): Reference joint positions of shape (sequence_length, num_actuated_dofs).
-            dt_in (float): Input time step between frames.
-            dt_out (float): Output time step between frames.
-            t0 (float): Initial time corresponding to the first frame.
-            t_start (float | None): Start time for the up-sampled reference. If None, uses t0.
-            t_end (float | None): End time for the up-sampled reference. If None, uses the last input frame time.
-            extrapolate (bool): Whether to allow extrapolation beyond the input time range.
+            q_ref: Reference joint positions of shape (sequence_length, num_actuated_dofs).
+            dt_in: Input time step between frames.
+            dt_out: Output time step between frames.
+            t0: Initial time corresponding to the first frame.
+            t_start: Start time for the up-sampled reference. If None, uses t0.
+            t_end: End time for the up-sampled reference. If None, uses the last input frame time.
+            extrapolate: Whether to allow extrapolation beyond the input time range.
 
         Returns:
-            np.ndarray: Up-sampled reference joint positions of shape (new_sequence_length, num_actuated_dofs).
+            Up-sampled reference joint positions of shape (new_sequence_length, num_actuated_dofs).
         """
         # Attempt to import the required interpolation function from scipy,
         # and raise an informative error if scipy is not installed
@@ -395,11 +384,11 @@ class AnimationJointReference:
         Compute finite-difference velocities for the given reference positions.
 
         Args:
-            q_ref (np.ndarray): Reference joint positions of shape (sequence_length, num_actuated_dofs).
-            dt (float): Time step between frames.
+            q_ref: Reference joint positions of shape (sequence_length, num_actuated_dofs).
+            dt: Time step between frames.
 
         Returns:
-            np.ndarray: Reference joint velocities of shape (sequence_length, num_actuated_dofs).
+            Reference joint velocities of shape (sequence_length, num_actuated_dofs).
         """
         # TODO: Try this instead (it might be more robust):
         # _compute_finite_difference_velocities = staticmethod(lambda q_ref_np, dt: np.gradient(q_ref_np, dt, axis=0))
@@ -446,18 +435,18 @@ class AnimationJointReference:
         Allocate the animation joint reference data.
 
         Args:
-            model (ModelKamino): The model container used to determine the required allocation sizes.
-            data (np.ndarray): The input animation reference data as a 2D numpy array.
-            data_dt (float): The time-step between frames in the input data.
-            target_dt (float | None): The desired time-step between frames in the animation reference.
+            model: The model container used to determine the required allocation sizes.
+            data: The input animation reference data as a 2D numpy array.
+            data_dt: The time-step between frames in the input data.
+            target_dt: The desired time-step between frames in the animation reference.
                 If None, defaults to ``data_dt``.
-            decimation (int | list[int]): Decimation factor(s) defining the rate at which the animation
+            decimation: Decimation factor(s) defining the rate at which the animation
                 frame index is updated w.r.t the simulation step. If a list of integers, then frame
                 progression can proceed independently in each world. Defaults to 1 for all worlds.
-            rate (int | list[int]): Rate(s) by which to progress the animation frame index each time
+            rate: Rate(s) by which to progress the animation frame index each time
                 the simulation step matches the set decimation. Defaults to 1 for all worlds.
-            loop (bool | list[bool]): Flag(s) indicating whether the animation should loop.
-            use_fd (bool): Whether to compute finite-difference velocities from the input coordinates.
+            loop: Flag(s) indicating whether the animation should loop.
+            use_fd: Whether to compute finite-difference velocities from the input coordinates.
 
         Raises:
             ValueError: If the model is not valid or actuated DoFs are not properly configured.
@@ -564,13 +553,13 @@ class AnimationJointReference:
             self._data = AnimationJointReferenceData(
                 num_actuated_joint_dofs=model.info.num_actuated_joint_dofs,
                 actuated_joint_dofs_offset=model.info.joint_actuated_dofs_offset,
-                q_j_ref=wp.array(q_j_ref_np, dtype=float32),
-                dq_j_ref=wp.array(dq_j_ref_np, dtype=float32),
+                q_j_ref=wp.array(q_j_ref_np, dtype=wp.float32),
+                dq_j_ref=wp.array(dq_j_ref_np, dtype=wp.float32),
                 length=to_warp_int32_array(length_np),
                 decimation=to_warp_int32_array(decimation_np),
                 rate=to_warp_int32_array(rate_np),
                 loop=to_warp_int32_array(loop_np),
-                frame=wp.zeros(self._num_worlds, dtype=int32),
+                frame=wp.zeros(self._num_worlds, dtype=wp.int32),
             )
 
     def plot(self, path: str | None = None, show: bool = False) -> None:
@@ -612,7 +601,7 @@ class AnimationJointReference:
         Enable or disable looping of the animation sequence.
 
         Args:
-            enabled (bool | list[bool]): If True, enable looping. If False, disable looping.
+            enabled: If True, enable looping. If False, disable looping.
         """
         # Ensure the animation data container is allocated
         if self._data is None:
@@ -635,7 +624,7 @@ class AnimationJointReference:
         decimation and rate, in accordance with the current simulation time-step.
 
         Args:
-            time (TimeData): The time data container holding the current simulation time.
+            time: The time data container holding the current simulation time.
         """
         self._assert_has_data()
         wp.launch(
@@ -654,13 +643,13 @@ class AnimationJointReference:
             device=self._device,
         )
 
-    def extract(self, q_j_ref_out: wp.array, dq_j_ref_out: wp.array) -> None:
+    def extract(self, q_j_ref_out: wp.array[wp.float32], dq_j_ref_out: wp.array[wp.float32]) -> None:
         """
         Extract the reference arrays from the animation sequence at the current frame index.
 
         Args:
-            q_j_ref_out (wp.array): Output array for the reference joint positions.
-            dq_j_ref_out (wp.array): Output array for the reference joint velocities.
+            q_j_ref_out: Output array for the reference joint positions.
+            dq_j_ref_out: Output array for the reference joint velocities.
         """
         self._assert_has_data()
         wp.launch(
@@ -680,20 +669,20 @@ class AnimationJointReference:
             device=self._device,
         )
 
-    def reset(self, q_j_ref_out: wp.array, dq_j_ref_out: wp.array) -> None:
+    def reset(self, q_j_ref_out: wp.array[wp.float32], dq_j_ref_out: wp.array[wp.float32]) -> None:
         """
         Reset the active frame index of the animation sequence to zero
         and extracts the initial references into the output arrays.
 
         Args:
-            q_j_ref_out (wp.array): Output array for the reference joint positions.
-            dq_j_ref_out (wp.array): Output array for the reference joint velocities.
+            q_j_ref_out: Output array for the reference joint positions.
+            dq_j_ref_out: Output array for the reference joint velocities.
         """
         self._assert_has_data()
         self._data.frame.fill_(0)
         self.extract(q_j_ref_out, dq_j_ref_out)
 
-    def step(self, time: TimeData, q_j_ref_out: wp.array, dq_j_ref_out: wp.array) -> None:
+    def step(self, time: TimeData, q_j_ref_out: wp.array[wp.float32], dq_j_ref_out: wp.array[wp.float32]) -> None:
         """
         Advances the animation sequence by the configured decimation and
         rate, and extracts the reference arrays at the active frame index.
@@ -702,9 +691,9 @@ class AnimationJointReference:
         ``advance()`` and ``extract()`` into a single operation.
 
         Args:
-            time (TimeData): The time data container holding the current simulation time.
-            q_j_ref_out (wp.array): Output array for the reference joint positions.
-            dq_j_ref_out (wp.array): Output array for the reference joint velocities.
+            time: The time data container holding the current simulation time.
+            q_j_ref_out: Output array for the reference joint positions.
+            dq_j_ref_out: Output array for the reference joint velocities.
         """
         self.advance(time)
         self.extract(q_j_ref_out, dq_j_ref_out)
