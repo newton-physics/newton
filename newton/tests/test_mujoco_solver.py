@@ -5617,17 +5617,9 @@ class TestMuJoCoConversion(unittest.TestCase):
             err_msg="Child body quaternion should match composed joint transforms (with joint_q and translations)",
         )
 
-    def test_diagonal_inertia_preserves_sameframe(self):
-        """Regression: diagonal inertia exported as diaginertia preserves body_simple=1.
-
-        When a free body has diagonal inertia (zero off-diagonals), the solver
-        must emit diaginertia (not fullinertia) so that MuJoCo keeps body_simple=1.
-        fullinertia triggers eigendecomposition that reorders eigenvalues and applies
-        a permutation rotation, causing body_simple=0 even with zero off-diagonals.
-        """
+    def test_diagonal_inertia_uses_full_storage(self):
+        """Diagonal inertia uses storage that remains valid after randomization."""
         builder = newton.ModelBuilder()
-        # Asymmetric diagonal so eigenvalues are NOT in descending order: I_zz > I_xx > I_yy.
-        # This is what triggers the permutation rotation when using fullinertia.
         inertia_3x3 = np.diag([4.0e-5, 2.6e-5, 5.0e-5]).astype(np.float64)
         body = builder.add_link(
             mass=0.1,
@@ -5638,17 +5630,47 @@ class TestMuJoCoConversion(unittest.TestCase):
         joint = builder.add_joint_free(child=body)
         builder.add_articulation([joint])
         model = builder.finalize()
-        try:
-            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        except ImportError as e:
-            self.skipTest(f"MuJoCo not installed: {e}")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            xml_path = os.path.join(tmpdir, "model.xml")
+            try:
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+            except ImportError as e:
+                self.skipTest(f"MuJoCo not installed: {e}")
+            inertial = ET.parse(xml_path).find(".//body/inertial")
+            saved_ipos = np.fromstring(inertial.get("pos", "0 0 0"), sep=" ")
+            np.testing.assert_allclose(saved_ipos, model.body_com.numpy()[body])
+        mujoco, _ = SolverMuJoCo.import_mujoco()
         mjc_body_id = 1  # body 0 = world
+        self.assertEqual(int(solver.mj_model.body_simple[mjc_body_id]), 0)
         self.assertEqual(
-            int(solver.mj_model.body_simple[mjc_body_id]),
-            1,
-            "Free body with diagonal inertia (zero off-diagonals) must have body_simple=1; "
-            "solver should emit diaginertia, not fullinertia.",
+            int(solver.mj_model.body_sameframe[mjc_body_id]),
+            int(mujoco.mjtSameFrame.mjSAMEFRAME_NONE),
         )
+        np.testing.assert_array_equal(solver.mj_model.dof_simplenum, np.zeros(6, dtype=np.int32))
+        np.testing.assert_array_equal(solver.mj_model.M_rownnz, np.arange(1, 7, dtype=np.int32))
+        np.testing.assert_allclose(solver.mj_model.body_iquat[mjc_body_id], [1.0, 0.0, 0.0, 0.0])
+        np.testing.assert_allclose(
+            solver.mj_model.body_inertia[mjc_body_id],
+            np.diag(model.body_inertia.numpy()[body]),
+        )
+
+        principal = solver.mj_model.body_inertia[mjc_body_id].copy()
+        angle = np.pi / 6.0
+        rotation = np.array(
+            [
+                [np.cos(angle), -np.sin(angle), 0.0],
+                [np.sin(angle), np.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        model.body_inertia.assign((rotation @ np.diag(principal) @ rotation.T)[None, ...])
+        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+        state_in = model.state()
+        state_out = model.state()
+        solver.step(state_in, state_out, model.control(), None, 0.01)
+        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
 
     def test_global_joint_solver_params(self):
         """Test that global joint solver parameters affect joint limit behavior."""

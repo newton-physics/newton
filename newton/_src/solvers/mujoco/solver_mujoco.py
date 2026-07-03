@@ -4696,6 +4696,8 @@ class SolverMuJoCo(SolverBase):
             spec.option.magnetic = np.array(magnetic)
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
+        # alignfree would erase the offset used below to force general qM storage.
+        spec.compiler.alignfree = False
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
             spec.compiler.autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
 
@@ -4851,6 +4853,7 @@ class SolverMuJoCo(SolverBase):
         }
 
         mj_bodies = [spec.worldbody]
+        full_inertia_bodies = []
         # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom name
@@ -5404,12 +5407,11 @@ class SolverMuJoCo(SolverBase):
                 body_kwargs["gravcomp"] = float(body_gravcomp[child])
             if mass > 0.0:
                 body_kwargs["mass"] = mass
-                body_kwargs["ipos"] = body_com[child, :]
-                # Use diaginertia when off-diagonals are exactly zero to preserve
-                # MuJoCo's sameframe optimization (body_simple=1).  fullinertia
-                # triggers eigendecomposition that reorders eigenvalues and applies
-                # a permutation rotation, setting body_simple=0 even for diagonal
-                # matrices whose entries are not in descending order.
+                body_ipos = body_com[child, :].copy()
+                compile_ipos = body_ipos.copy()
+                compile_ipos[0] += 1.0e-3 if compile_ipos[0] >= 0.0 else -1.0e-3
+                # A temporary COM offset forces qM storage that remains valid after inertia edits.
+                body_kwargs["ipos"] = compile_ipos
                 if inertia[0, 1] == 0.0 and inertia[0, 2] == 0.0 and inertia[1, 2] == 0.0:
                     body_kwargs["inertia"] = [inertia[0, 0], inertia[1, 1], inertia[2, 2]]
                 else:
@@ -5424,6 +5426,8 @@ class SolverMuJoCo(SolverBase):
                 body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
+            if mass > 0.0:
+                full_inertia_bodies.append((body_mapping[child], body, body_ipos))
 
             # add joint
             qd_start = joint_qd_start[j]
@@ -6113,7 +6117,13 @@ class SolverMuJoCo(SolverBase):
             self.mjc_actuator_to_newton_ball_jnt = None
 
         self.mj_model = spec.compile()
+        # Keep the compiled qM layout, but restore the physical COM and derived constants.
+        for body_id, body, body_ipos in full_inertia_bodies:
+            body.ipos = body_ipos
+            self.mj_model.body_ipos[body_id] = body_ipos
+            self.mj_model.body_sameframe[body_id] = mujoco.mjtSameFrame.mjSAMEFRAME_NONE
         self.mj_data = mujoco.MjData(self.mj_model)
+        mujoco.mj_setConst(self.mj_model, self.mj_data)
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
         # These map Newton template joint index → MuJoCo qpos/qvel start.
