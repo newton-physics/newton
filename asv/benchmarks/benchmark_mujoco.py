@@ -238,7 +238,7 @@ def _setup_quadruped(articulation_builder):
 def _setup_allegro(articulation_builder):
     asset_path = newton.utils.download_asset("wonik_allegro")
     asset_file = str(asset_path / "usd" / "allegro_left_hand_with_cube.usda")
-    articulation_builder.default_shape_cfg.gap = 0.0
+    articulation_builder.rigid_gap = 0.0
     articulation_builder.add_usd(
         asset_file,
         xform=wp.transform(wp.vec3(0, 0, 0.5)),
@@ -455,6 +455,7 @@ class Example:
             custom_setup_fn(articulation_builder)
 
         builder = newton.ModelBuilder()
+        builder.rigid_gap = articulation_builder.rigid_gap
         builder.replicate(articulation_builder, world_count)
         if randomize:
             njoint = len(articulation_builder.joint_q)
