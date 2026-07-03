@@ -1468,6 +1468,33 @@ def update_velocity(dt: float, pos_prev: wp.array[wp.vec3], pos: wp.array[wp.vec
 
 
 @wp.kernel
+def reset_particle_state(
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    particle_world: wp.array[wp.int32],
+    model_particle_q: wp.array[wp.vec3],
+    model_particle_qd: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    particle_qd: wp.array[wp.vec3],
+):
+    """Copy model-default particle state into selected worlds' State arrays."""
+    particle = wp.tid()
+    # reset_all includes global particles (world == -1); an explicit mask excludes them.
+    selected = reset_all
+    if not reset_all:
+        world = particle_world[particle]
+        selected = False
+        if world >= 0:
+            selected = world_mask[world]
+    if selected:
+        # A non-null output is the caller's request to reset that field.
+        if particle_q:
+            particle_q[particle] = model_particle_q[particle]
+        if particle_qd:
+            particle_qd[particle] = model_particle_qd[particle]
+
+
+@wp.kernel
 def convert_body_particle_contact_data_kernel(
     # inputs
     body_particle_contact_buffer_pre_alloc: int,

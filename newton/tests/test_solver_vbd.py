@@ -1958,6 +1958,147 @@ def _rigid_contact_reset_lifecycle(test, device):
     np.testing.assert_allclose(lam3, expected3, atol=1.0e-3)
 
 
+def _particle_reset_state_flags_and_masks(test, device):
+    """Masked particle reset: flag selectivity, world masks, and global-particle semantics."""
+    template = newton.ModelBuilder(gravity=0.0)
+    template.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_particle(pos=wp.vec3(-1.0, 0.0, 1.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0)  # Global (world -1).
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+
+    particle_world = model.particle_world.numpy()
+    world0 = particle_world == 0
+    global_particles = particle_world == -1
+    test.assertTrue(np.any(world0) and np.any(particle_world == 1) and np.any(global_particles))
+
+    dt = 1.0e-2
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+    state = model.state()
+    state_out = model.state()
+    model_q = model.particle_q.numpy()
+    model_qd = model.particle_qd.numpy()
+    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+
+    # Establish mid-simulation history before resetting.
+    solver.step(state, state_out, None, None, dt)
+    state, state_out = state_out, state
+
+    def perturb():
+        state.particle_q.assign(model_q + 1.0)
+        state.particle_qd.assign(model_qd + 2.0)
+
+    # Masked full reset restores world 0 only.
+    perturb()
+    solver.reset(state, world_mask=world_mask)
+    q = state.particle_q.numpy()
+    qd = state.particle_qd.numpy()
+    np.testing.assert_allclose(q[world0], model_q[world0])
+    np.testing.assert_allclose(qd[world0], model_qd[world0])
+    np.testing.assert_allclose(q[~world0], model_q[~world0] + 1.0)
+    np.testing.assert_allclose(qd[~world0], model_qd[~world0] + 2.0)
+
+    # PARTICLE_Q resets positions only.
+    perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_Q)
+    np.testing.assert_allclose(state.particle_q.numpy()[world0], model_q[world0])
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_qd + 2.0)
+
+    # PARTICLE_QD resets velocities only.
+    perturb()
+    solver.reset(state, world_mask=world_mask, flags=newton.StateFlags.PARTICLE_QD)
+    qd = state.particle_qd.numpy()
+    np.testing.assert_allclose(state.particle_q.numpy(), model_q + 1.0)
+    np.testing.assert_allclose(qd[world0], model_qd[world0])
+    np.testing.assert_allclose(qd[~world0], model_qd[~world0] + 2.0)
+
+    # flags=0 changes no particle state.
+    perturb()
+    solver.reset(state, world_mask=world_mask, flags=0)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_q + 1.0)
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_qd + 2.0)
+
+    # An explicit all-true mask excludes global particles.
+    perturb()
+    solver.reset(state, world_mask=wp.array([True, True], dtype=wp.bool, device=device))
+    q = state.particle_q.numpy()
+    np.testing.assert_allclose(q[global_particles], model_q[global_particles] + 1.0)
+    np.testing.assert_allclose(q[~global_particles], model_q[~global_particles])
+
+    # world_mask=None also resets global particles.
+    perturb()
+    solver.reset(state)
+    np.testing.assert_allclose(state.particle_q.numpy(), model_q)
+    np.testing.assert_allclose(state.particle_qd.numpy(), model_qd)
+
+    # History self-heals: a post-reset step runs and stays finite.
+    solver.step(state, state_out, None, None, dt)
+    test.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
+    test.assertTrue(np.isfinite(state_out.particle_qd.numpy()).all())
+
+
+def _particle_reset_soft_body(test, device):
+    """Masked reset restores tet softbody particles for selected worlds only."""
+    template = newton.ModelBuilder(gravity=0.0)
+    template.add_soft_grid(
+        pos=wp.vec3(0.0, 0.0, 0.5),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        dim_z=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        cell_z=0.1,
+        density=100.0,
+        k_mu=1000.0,
+        k_lambda=1000.0,
+        k_damp=0.0,
+    )
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+
+    world1 = model.particle_world.numpy() == 1
+    test.assertTrue(np.any(world1) and not np.all(world1))
+
+    dt = 1.0e-2
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+    state = model.state()
+    state_out = model.state()
+    model_q = model.particle_q.numpy()
+    model_qd = model.particle_qd.numpy()
+
+    state.particle_q.assign(model_q + 0.5)
+    state.particle_qd.assign(model_qd + 1.0)
+    solver.reset(state, world_mask=wp.array([False, True], dtype=wp.bool, device=device))
+    q = state.particle_q.numpy()
+    qd = state.particle_qd.numpy()
+    np.testing.assert_allclose(q[world1], model_q[world1])
+    np.testing.assert_allclose(qd[world1], model_qd[world1])
+    np.testing.assert_allclose(q[~world1], model_q[~world1] + 0.5)
+    np.testing.assert_allclose(qd[~world1], model_qd[~world1] + 1.0)
+
+    solver.step(state, state_out, None, None, dt)
+    test.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
+    test.assertTrue(np.isfinite(state_out.particle_qd.numpy()).all())
+
+
 def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     del device
 
@@ -2577,6 +2718,18 @@ add_function_test(
     TestSolverVBD,
     "test_rigid_contact_reset_lifecycle",
     _rigid_contact_reset_lifecycle,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_particle_reset_state_flags_and_masks",
+    _particle_reset_state_flags_and_masks,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_particle_reset_soft_body",
+    _particle_reset_soft_body,
     devices=devices,
 )
 add_function_test(
