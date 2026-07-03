@@ -3539,7 +3539,7 @@ def parse_usd(
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for path, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
+        for path, rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
@@ -3686,7 +3686,18 @@ def parse_usd(
 
             # Center of mass: authored value takes precedence over mass computer.
             if has_authored_com:
-                builder.body_com[body_id] = wp.vec3(*mass_api.GetCenterOfMassAttr().Get())
+                # RigidBodyDesc excludes scale, so retain the prim's scale relative to that body frame.
+                body_xform = wp.transform(
+                    rigid_body_desc.position,
+                    usd.value_to_warp(rigid_body_desc.rotation),
+                )
+                prim_to_body_mat = wp.inverse(_xform_to_mat44(body_xform)) @ usd.get_transform_matrix(
+                    prim, local=False, xform_cache=xform_cache
+                )
+                builder.body_com[body_id] = wp.transform_point(
+                    prim_to_body_mat,
+                    usd.value_to_warp(mass_api.GetCenterOfMassAttr().Get()),
+                )
             else:
                 builder.body_com[body_id] = wp.vec3(*cmp_com)
 

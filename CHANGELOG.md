@@ -61,6 +61,7 @@
 - Fix `SolverMuJoCo` reporting incorrect `State.body_qd` angular velocity for `JointType.D6` joints with two or three angular DOFs at non-identity configurations.
 - Fix `SolverMuJoCo` loading USD models with supported standalone body-to-world joints outside an authored articulation, including Apptronik Apollo; warn when using this fallback and report unsupported rootless mechanisms explicitly.
 - Fix USD import of MJCF weld and connect equalities that represent world with the stage's non-rigid default prim.
+- Fix USD import of authored rigid-body centers of mass to apply inherited transform scale. (#3332)
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
 - Fix multi-world soft contact filtering to avoid cross-world rigid-soft particle-shape pairs and VBD soft-soft triangle/edge candidates.
 - Fix `ModelBuilder.add_usd` so a stray authored joint outside any articulation root no longer suppresses base-joint (articulation) creation for unrelated floating rigid bodies in the same call. (#3002)

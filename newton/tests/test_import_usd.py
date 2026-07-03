@@ -6114,6 +6114,41 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_com_applies_ancestor_scale(self):
+        """Authored body COM follows scale inherited from ancestor prims."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        parent = UsdGeom.Xform.Define(stage, "/World/Scaled")
+        parent.AddScaleOp().Set(Gf.Vec3d(2.0))
+
+        for name, author_all_mass_properties in (("Complete", True), ("Partial", False)):
+            body = UsdGeom.Xform.Define(stage, f"/World/Scaled/{name}")
+            body_prim = body.GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(body_prim)
+            mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+            mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.3, 0.0, 0.0))
+            if author_all_mass_properties:
+                mass_api.CreateMassAttr().Set(1.0)
+                mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.01))
+
+            collider = UsdGeom.Cube.Define(stage, f"/World/Scaled/{name}/Collider")
+            collider.AddTranslateOp().Set(Gf.Vec3d(0.3, 0.0, 0.0))
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        for name in ("Complete", "Partial"):
+            with self.subTest(name=name):
+                body_idx = result["path_body_map"][f"/World/Scaled/{name}"]
+                np.testing.assert_allclose(builder.body_com[body_idx], [0.6, 0.0, 0.0], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
         """If body has authored mass+diagonalInertia, use them directly without compute fallback."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
