@@ -6163,6 +6163,28 @@ def Xform "Articulation" (
                     np.testing.assert_allclose(builder.body_com[body_idx], shape_pos, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_com_survives_failed_mass_computation(self):
+        """Authored body COM survives fallback when mass properties cannot be computed."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        parent = UsdGeom.Xform.Define(stage, "/World/Scaled")
+        parent.AddScaleOp().Set(Gf.Vec3d(2.0))
+
+        body = UsdGeom.Xform.Define(stage, "/World/Scaled/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+        mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.3, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "zero mass and zero inertia"):
+            result = builder.add_usd(stage)
+
+        body_idx = result["path_body_map"]["/World/Scaled/Body"]
+        np.testing.assert_allclose(builder.body_com[body_idx], [0.3, 0.0, 0.0], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
         """If body has authored mass+diagonalInertia, use them directly without compute fallback."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

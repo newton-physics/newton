@@ -3600,7 +3600,10 @@ def parse_usd(
                     # created by schema resolvers are not real USD prims). Fall back to
                     # builder-accumulated mass properties from add_shape_*() calls.
                     cmp_mass = builder.body_mass[body_id]
-                    cmp_com = builder.body_com[body_id]
+                    if has_authored_com:
+                        cmp_com = mass_api.GetCenterOfMassAttr().Get()
+                    else:
+                        cmp_com = builder.body_com[body_id]
                     # When the body has an authored density, rescale accumulated mass
                     # and inertia from the builder's default shape density to the
                     # body-level density (USD body density overrides per-shape density).
