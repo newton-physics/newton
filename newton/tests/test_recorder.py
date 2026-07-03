@@ -249,6 +249,11 @@ def test_viewer_file_playback(test: TestRecorder, device):
 
         test.assertEqual(restored_model.body_count, model.body_count)
         test.assertEqual(restored_model.shape_count, model.shape_count)
+        test.assertIsInstance(restored_model.attribute_specs["body_q"], newton.Model.AttributeSpec)
+        test.assertIs(
+            restored_model.attribute_specs["body_q"].frequency,
+            newton.Model.AttributeFrequency.BODY,
+        )
 
         for frame_id in range(3):
             restored_state = restored_model.state()

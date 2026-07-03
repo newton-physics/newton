@@ -922,6 +922,14 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
+    name="multiphysics.example_softbody_dropping_to_cloth",
+    devices=test_devices,
+    test_options={"num-frames": 2, "solver": "coupled", "vbd-iterations": 2},
+    use_viewer=True,
+    test_suffix="coupled",
+)
+add_example_test(
+    TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
     devices=cuda_test_devices,
     test_options={"num-frames": 180, "solver": "xpbd"},
@@ -943,6 +951,109 @@ add_example_test(
     test_options={"num-frames": 180, "solver": "vbd"},
     use_viewer=True,
     test_suffix="vbd",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=test_devices,
+    test_options={"num-frames": 2, "solver": "coupled", "rigid-solver": "mjc", "vbd-iterations": 1},
+    use_viewer=True,
+    test_suffix="coupled_mjc",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_vbd_admm_solver",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_admm_contact_solver",
+    devices=test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_kamino_mujoco_admm_solver",
+    devices=["cpu"],
+    test_options={"num-frames": 30, "world-count": 4, "graph-capture": False},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_xpbd_vbd_coupled_solver",
+    devices=test_devices,
+    test_options={"num-frames": 5, "xpbd-iterations": 4, "vbd-iterations": 2},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_franka_vbd_cable_admm_solver",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 2,
+        "world-count": 1,
+        "substeps": 1,
+        "admm-iterations": 1,
+        "payload-segments": 3,
+        "xpbd-iterations": 2,
+        "graph-capture": False,
+    },
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_mpm_coupled_solver",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_vbd_coupled_solver",
+    devices=test_devices,
+    test_options={"num-frames": 2, "proxy-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_xpbd_coupled_solver",
+    devices=test_devices,
+    test_options={"num-frames": 2, "proxy-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_proxy_joint_gripper",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_vbd_mpm_coupled_solver",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 2, "proxy-iterations": 1, "vbd-iterations": 2, "mpm-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_xpbd_mpm_coupled_solver",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 2,
+        "proxy-iterations": 1,
+        "xpbd-iterations": 2,
+        "xpbd-dim-x": 2,
+        "xpbd-dim-y": 2,
+        "xpbd-dim-z": 2,
+        "mpm-iterations": 1,
+        "grid-padding": 8,
+        "substeps": 1,
+    },
+    use_viewer=True,
 )
 
 
