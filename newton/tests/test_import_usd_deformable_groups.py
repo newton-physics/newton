@@ -15,6 +15,7 @@ import newton
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
+    _add_physics_attachment,
     _deformable_stage,
     group_labels,
     group_range,
@@ -115,6 +116,42 @@ class TestUSDDeformableGroups(unittest.TestCase):
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertEqual(b1 - b0, 3)
         self.assertTrue(all("/World/Cable" in builder.body_label[b] for b in range(b0, b1)))
+        builder.finalize()
+
+    def test_welded_graph_empty_joint_ranges_survive_collapse(self):
+        """A welded-graph curve records an empty joint range at its insertion boundary; when
+        an earlier fixed joint is collapsed away, that boundary must shift with the retained
+        joints instead of pointing past the final joint array."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        for name in ("A", "B"):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Fix")
+        fixed.CreateBody0Rel().SetTargets(["/World/A"])
+        fixed.CreateBody1Rel().SetTargets(["/World/B"])
+        _add_cable_curve(stage, "/World/Trunk", _CABLE_PTS)
+        _add_cable_curve(stage, "/World/Branch", [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)])
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/Branch",
+            src1="/World/Trunk",
+            type0="point",
+            type1="point",
+            indices0=[0],
+            indices1=[1],
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, collapse_fixed_joints=True)
+
+        for path in ("/World/Trunk", "/World/Branch"):
+            j0, j1 = group_range(builder, "cable", path, "joint")
+            self.assertEqual(j0, j1, "welded-graph curves own no tree joints")
+            self.assertLessEqual(j1, builder.joint_count, f"{path}: empty range points past the joint array")
         builder.finalize()
 
 

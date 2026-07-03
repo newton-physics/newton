@@ -5437,12 +5437,19 @@ class ModelBuilder:
                 new_start = _remap_body_id(self._cable_body_start[i])
                 self._cable_body_start[i] = new_start
                 self._cable_body_end[i] = _remap_body_id(self._cable_body_end[i] - 1) + 1
-            # A welded-graph curve owns no tree joints (empty range); leave it empty.
             if self._cable_joint_end[i] > self._cable_joint_start[i]:
                 self._cable_joint_start[i] = joint_remap.get(self._cable_joint_start[i], self._cable_joint_start[i])
                 self._cable_joint_end[i] = (
                     joint_remap.get(self._cable_joint_end[i] - 1, self._cable_joint_end[i] - 1) + 1
                 )
+            else:
+                # A welded-graph curve owns no tree joints, but its empty [b, b) boundary must
+                # still shift with the retained joints, else it can point past the collapsed
+                # joint array. Map b to the number of retained joints below it.
+                boundary = self._cable_joint_start[i]
+                new_boundary = sum(1 for old_joint in joint_remap if old_joint < boundary)
+                self._cable_joint_start[i] = new_boundary
+                self._cable_joint_end[i] = new_boundary
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):
