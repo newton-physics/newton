@@ -2841,16 +2841,29 @@ class ModelBuilder:
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
-            deformable_results: If True, the returned mapping additionally carries the deformable
-                entries (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+            deformable_results: If True, include the experimental deformable entries in the
+                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
 
         Returns:
+            .. experimental::
+
+               ``deformable_results`` and its conditional result entries are experimental.
+               A replacement will follow Newton's normal deprecation policy.
+
             When ``deformable_results=True``, imported deformable (cable/cloth/volume) element
             ranges are returned by prim path in the ``path_cable_map`` / ``path_cloth_map`` /
             ``path_soft_map`` entries below, and the material attributes as authored in the
-            matching ``path_*_attrs`` entries.
+            matching ``path_*_attrs`` entries. The map entries are build-time snapshots of the
+            builder immediately after this call (already remapped when this call collapses fixed
+            joints); they are not live selections, and a later ``replicate()``, ``add_builder()``,
+            or other structural mutation is outside their contract. The ``path_*_attrs`` entries
+            hold authored or resolved source values (``material`` as authored,
+            ``resolved_density`` as used), while the map entries and ``joint_indices`` inside
+            ``path_attachment_attrs`` are realized builder indices; ``unsupported_reason`` is
+            diagnostic text, not a stable code, and a prim absent from a realized map may still
+            appear in the authored metadata.
 
             The returned mapping has the following entries:
 
@@ -2872,17 +2885,17 @@ class ModelBuilder:
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
                 * - ``"path_cable_map"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation) Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``deformable_results=True``.
                 * - ``"path_cloth_map"``
-                  - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"`` Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``deformable_results=True``.
                 * - ``"path_soft_map"``
-                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"`` Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``deformable_results=True``.
                 * - ``"path_cable_attrs"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist) Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist). Present only with ``deformable_results=True``.
                 * - ``"path_cloth_attrs"``
-                  - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``) Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``deformable_results=True``.
                 * - ``"path_soft_attrs"``
-                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``) Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``deformable_results=True``.
                 * - ``"path_attachment_map"``
                   - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``deformable_results=True``.
                 * - ``"path_attachment_attrs"``

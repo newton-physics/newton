@@ -58,9 +58,11 @@ across three families:
 * **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
   cloth: particles with FEM triangles and bending edges. Polygonal faces (such as quads) are
   fan-triangulated on import.
-* **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` (or one under a
-  ``PhysicsDeformableBodyAPI`` prim) becomes a soft body. A bare ``UsdGeom.TetMesh`` without
-  these APIs keeps the older material-density import.
+* **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` becomes a soft
+  body. Under a ``PhysicsDeformableBodyAPI`` ancestor exactly one simulation TetMesh is
+  selected; other TetMeshes in that hierarchy are graphics/collision geometry and are not
+  simulated. A bare ``UsdGeom.TetMesh`` without these APIs keeps the older material-density
+  import.
 
 Material attributes are read from the standard ``physics:`` namespace, as the proposal defines.
 Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback. A schema
