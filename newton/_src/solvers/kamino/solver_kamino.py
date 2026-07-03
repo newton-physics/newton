@@ -671,6 +671,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         flags: StateFlags | int | None = None,
         *,
         config: SolverKamino.ResetConfig | None = None,
+        success_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -697,6 +698,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
+            success_mask: Optional mask, filled with a success boolean per world if provided
+                (True if reset successfully, False if not reset due to world_mask, or if reset
+                was unsuccessful, e.g. due to an unconverged FK solve).
         """
         if state is None:
             raise ValueError("'state' argument is required.")
@@ -759,6 +763,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             state=state_kamino,
             world_mask=world_mask,
             config=config,
+            success_mask=success_mask,
         )
 
         # Restore fields excluded from the reset op
