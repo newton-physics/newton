@@ -4138,6 +4138,13 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             actual = float(shape_gap[shape_idx])
             self.assertAlmostEqual(actual, expected, places=4)
 
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        geom_to_shape = solver.mjc_geom_to_newton_shape.numpy()[0]
+        geom_gap = solver.mjw_model.geom_gap.numpy()[0]
+        for geom_idx, shape_idx in enumerate(geom_to_shape):
+            if shape_idx >= 0:
+                self.assertAlmostEqual(float(geom_gap[geom_idx]), float(shape_gap[shape_idx]), places=4)
+
     def test_margin_gap_combined_conversion(self):
         """Test MuJoCo 3.9 identity import when both margin and gap are set.
 

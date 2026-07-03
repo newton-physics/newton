@@ -3022,78 +3022,11 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                         msg=f"Updated geom_solimp[{i}] mismatch for shape {shape_idx} in world {world_idx}",
                     )
 
-    def test_geom_gap_forwarded_from_shape_gap(self):
-        """Verify MuJoCo geom_gap reflects Newton shape_gap (MuJoCo 3.9 semantics).
+    def test_geom_margin_and_gap_from_shape_properties(self):
+        """Verify shape margin and gap conversion and runtime updates.
 
-        Under MuJoCo 3.9, geom_gap is an additional contact-detection distance
-        with the same meaning as Newton's shape_gap. Newton forwards it through
-        at solver initialization and after runtime updates via
-        notify_model_changed."""
-
-        world_count = 2
-        template_builder = newton.ModelBuilder()
-        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
-
-        body1 = template_builder.add_link(mass=0.1)
-        template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
-        joint1 = template_builder.add_joint_free(child=body1)
-
-        body2 = template_builder.add_link(mass=0.1)
-        template_builder.add_shape_sphere(body=body2, radius=0.1, cfg=shape_cfg)
-        joint2 = template_builder.add_joint_revolute(parent=body1, child=body2, axis=(0.0, 0.0, 1.0))
-
-        template_builder.add_articulation([joint1, joint2])
-
-        builder = newton.ModelBuilder()
-        builder.replicate(template_builder, world_count)
-        model = builder.finalize()
-
-        non_zero_gap = np.array([0.03 + i * 0.01 for i in range(model.shape_count)], dtype=np.float32)
-        model.shape_gap.assign(wp.array(non_zero_gap, dtype=wp.float32, device=model.device))
-
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        to_newton_shape_index = solver.mjc_geom_to_newton_shape.numpy()
-        num_geoms = solver.mj_model.ngeom
-
-        geom_gap = solver.mjw_model.geom_gap.numpy()
-        tested_count = 0
-        for world_idx in range(model.world_count):
-            for geom_idx in range(num_geoms):
-                shape_idx = to_newton_shape_index[world_idx, geom_idx]
-                if shape_idx < 0:
-                    continue
-                tested_count += 1
-                self.assertAlmostEqual(
-                    float(geom_gap[world_idx, geom_idx]),
-                    float(non_zero_gap[shape_idx]),
-                    places=5,
-                    msg=f"geom_gap should equal shape_gap for shape {shape_idx} in world {world_idx}",
-                )
-
-        self.assertGreater(tested_count, 0, "Should have tested at least one shape")
-
-        updated_gap = non_zero_gap * 2.0
-        model.shape_gap.assign(wp.array(updated_gap, dtype=wp.float32, device=model.device))
-        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
-        geom_gap_updated = solver.mjw_model.geom_gap.numpy()
-        for world_idx in range(model.world_count):
-            for geom_idx in range(num_geoms):
-                shape_idx = to_newton_shape_index[world_idx, geom_idx]
-                if shape_idx < 0:
-                    continue
-                self.assertAlmostEqual(
-                    float(geom_gap_updated[world_idx, geom_idx]),
-                    float(updated_gap[shape_idx]),
-                    places=5,
-                    msg=f"geom_gap should track shape_gap after runtime update for shape {shape_idx}",
-                )
-
-    def test_geom_margin_from_shape_margin(self):
-        """Verify shape_margin to geom_margin conversion and runtime updates.
-
-        Confirms that shape_margin values are propagated to geom_margin during
-        solver initialization and after runtime updates via
-        notify_model_changed across multiple worlds.
+        Confirms that shape properties are propagated during solver initialization
+        and after runtime updates across multiple worlds.
 
         Uses use_mujoco_contacts=False because geom_margin is kept at zero
         when MuJoCo handles collisions (NATIVECCD compatibility, #2106).
@@ -3127,6 +3060,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify initial conversion: geom_margin should match shape_margin (not margin + gap)
         shape_margin = model.shape_margin.numpy()
         geom_margin = solver.mjw_model.geom_margin.numpy()
+        geom_gap = solver.mjw_model.geom_gap.numpy()
         tested_count = 0
         for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
@@ -3140,16 +3074,23 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     places=5,
                     msg=f"Initial geom_margin mismatch for shape {shape_idx} in world {world_idx}",
                 )
+                self.assertAlmostEqual(
+                    float(geom_gap[world_idx, geom_idx]),
+                    float(non_zero_gap[shape_idx]),
+                    places=5,
+                    msg=f"Initial geom_gap mismatch for shape {shape_idx} in world {world_idx}",
+                )
         self.assertGreater(tested_count, 0)
 
-        # Update margin values at runtime (keep non-zero shape_gap)
         new_margin = np.array([0.02 + i * 0.005 for i in range(model.shape_count)], dtype=np.float32)
+        new_gap = non_zero_gap * 2.0
         model.shape_margin.assign(wp.array(new_margin, dtype=wp.float32, device=model.device))
-        model.shape_gap.assign(wp.array(non_zero_gap * 2.0, dtype=wp.float32, device=model.device))
+        model.shape_gap.assign(wp.array(new_gap, dtype=wp.float32, device=model.device))
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
 
         # Verify runtime update
         updated_margin = solver.mjw_model.geom_margin.numpy()
+        updated_gap = solver.mjw_model.geom_gap.numpy()
         for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton[world_idx, geom_idx]
@@ -3160,6 +3101,12 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     float(new_margin[shape_idx]),
                     places=5,
                     msg=f"Updated geom_margin mismatch for shape {shape_idx} in world {world_idx}",
+                )
+                self.assertAlmostEqual(
+                    float(updated_gap[world_idx, geom_idx]),
+                    float(new_gap[shape_idx]),
+                    places=5,
+                    msg=f"Updated geom_gap mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
     def test_geom_solmix_conversion_and_update(self):
@@ -8027,10 +7974,12 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
 
         # Add a body with three shapes for creating pairs
         body_idx = template_builder.add_body()
-        shape1_idx = template_builder.add_shape_sphere(
+        shape1_idx = template_builder.add_shape_box(
             body=body_idx,
             xform=wp.transform(wp.vec3(-0.5, 0.0, 0.5), wp.quat_identity()),
-            radius=0.1,
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
         )
         shape2_idx = template_builder.add_shape_sphere(
             body=body_idx,
@@ -8249,6 +8198,34 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         self.assertFalse(
             np.allclose(mjw_pair_solref_updated[0, 0], mjw_pair_solref[0, 0]),
             "pair_solref should have changed after update!",
+        )
+
+        with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
+            mujoco_contacts_solver = SolverMuJoCo(
+                model,
+                separate_worlds=True,
+                iterations=1,
+                use_mujoco_contacts=True,
+            )
+        np.testing.assert_allclose(
+            mujoco_contacts_solver.mjw_model.pair_gap.numpy(),
+            new_gap.reshape(world_count, pairs_per_world),
+        )
+        np.testing.assert_array_equal(
+            mujoco_contacts_solver.mjw_model.pair_margin.numpy(),
+            np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
+        )
+
+        final_gap = new_gap + 0.01
+        model.mujoco.pair_gap.assign(wp.array(final_gap, dtype=wp.float32, device=model.device))
+        mujoco_contacts_solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_allclose(
+            mujoco_contacts_solver.mjw_model.pair_gap.numpy(),
+            final_gap.reshape(world_count, pairs_per_world),
+        )
+        np.testing.assert_array_equal(
+            mujoco_contacts_solver.mjw_model.pair_margin.numpy(),
+            np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
         )
 
     def test_global_pair_exported_to_spec(self):
