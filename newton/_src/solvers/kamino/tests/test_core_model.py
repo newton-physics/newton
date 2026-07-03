@@ -182,14 +182,14 @@ class TestModelConversions(unittest.TestCase):
         """
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0: ModelBuilder = basics_newton.build_boxes_fourbar(
-            builder=builder_0,
+        basics_newton.build_boxes_fourbar(
+            builder=builder_newton,
             z_offset=0.0,
             fixedbase=False,
             floatingbase=True,
@@ -202,15 +202,15 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Overwriting mu = 0.7 to match Kamino's default material properties
-        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
 
         # Duplicate the world to test multi-world handling
-        builder_0.begin_world()
-        builder_0.add_builder(copy.deepcopy(builder_0))
-        builder_0.end_world()
+        builder_newton.begin_world()
+        builder_newton.add_builder(copy.deepcopy(builder_newton))
+        builder_newton.end_world()
 
         # Create a fourbar using Kamino's ModelBuilderKamino
-        builder_1: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
+        builder_kamino: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
             builder=None,
             z_offset=0.0,
             fixedbase=False,
@@ -224,14 +224,14 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Duplicate the world to test multi-world handling
-        builder_1.add_builder(copy.deepcopy(builder_1))
+        builder_kamino.add_builder(copy.deepcopy(builder_kamino))
 
         # Create models from the builders and conversion operations, and check for consistency
         # TODO: re-enable the check below once the free-joint handling is fixed in Newton
-        # model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        # model_1: ModelKamino = builder_1.finalize()
-        # model_2: ModelKamino = ModelKamino.from_newton(model_0)
-        # test_util_checks.assert_model_equal(self, model_2, model_1)
+        # model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        # model_kamino: ModelKamino = builder_kamino.finalize()
+        # model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
+        # test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino)
 
     def test_01_model_conversions_fourbar_from_usd(self):
         """
@@ -243,27 +243,27 @@ class TestModelConversions(unittest.TestCase):
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0.begin_world()
-        builder_0.add_usd(
+        builder_newton.begin_world()
+        builder_newton.add_usd(
             source=asset_file,
             joint_ordering=None,
             force_show_colliders=True,
             force_position_velocity_actuation=True,
         )
-        builder_0.end_world()
+        builder_newton.end_world()
 
         # Overwriting mu = 0.7 to match Kamino's default material properties
-        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
 
         # Import the same fourbar using Kamino's USDImporter and ModelBuilderKamino
         importer = USDImporter()
-        builder_1: ModelBuilderKamino = importer.import_from(
+        builder_kamino: ModelBuilderKamino = importer.import_from(
             source=asset_file,
             load_drive_dynamics=True,
             load_static_geometry=True,
@@ -273,20 +273,20 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Create models from the builders and conversion operations, and check for consistency
-        model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        model_1: ModelKamino = builder_1.finalize()
-        model_2: ModelKamino = ModelKamino.from_newton(model_0)
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino: ModelKamino = builder_kamino.finalize()
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
         excluded = ["base_joint_index"]
-        test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded)
+        test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino, excluded=excluded)
 
         # TODO: IMPLEMENT THIS CHECK: We wanna see if the both generate
         # the same data containers and unilateral constraint info
-        # data_1: DataKamino = model_1.data()
-        # data_2: DataKamino = model_2.data()
-        # make_unilateral_constraints_info(model=model_1, data=data_1)
-        # make_unilateral_constraints_info(model=model_2, data=data_2)
-        # test_util_checks.assert_model_equal(self, model_2, model_1)
-        # test_util_checks.assert_data_equal(self, data_2, data_1)
+        # data_kamino: DataKamino = model_kamino.data()
+        # data_kamino_converted: DataKamino = model_kamino_converted.data()
+        # make_unilateral_constraints_info(model=model_kamino, data=data_kamino)
+        # make_unilateral_constraints_info(model=model_kamino_converted, data=data_kamino_converted)
+        # test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino)
+        # test_util_checks.assert_data_equal(self, data_kamino_converted, data_kamino)
 
     def test_02_model_conversions_dr_testmech_from_usd(self):
         """
@@ -299,26 +299,26 @@ class TestModelConversions(unittest.TestCase):
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0.begin_world()
-        builder_0.add_usd(
+        builder_newton.begin_world()
+        builder_newton.add_usd(
             source=asset_file,
             joint_ordering=None,
             force_show_colliders=True,
         )
-        builder_0.end_world()
+        builder_newton.end_world()
 
         # Overwriting mu = 0.7 to match Kamino's default material properties
-        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
 
         # Import the same fourbar using Kamino's USDImporter and ModelBuilderKamino
         importer = USDImporter()
-        builder_1: ModelBuilderKamino = importer.import_from(
+        builder_kamino: ModelBuilderKamino = importer.import_from(
             source=asset_file,
             load_static_geometry=True,
             retain_joint_ordering=False,
@@ -328,16 +328,18 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Create models from the builders and conversion operations, and check for consistency
-        model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        model_1: ModelKamino = builder_1.finalize()
-        model_2: ModelKamino = ModelKamino.from_newton(model_0)
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino: ModelKamino = builder_kamino.finalize()
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
         # NOTE: We don't check:
         # - mesh geometry pointers since they have been loaded separately
         # Inversion of the inertia matrix amplifies small floating-point differences,
         # so inv_i_I_i needs a somewhat higher tolerance.
         rtol = {"inv_i_I_i": 1e-5}
         atol = {"inv_i_I_i": 1e-6}
-        test_util_checks.assert_model_equal(self, model_2, model_1, excluded=["ptr"], rtol=rtol, atol=atol)
+        test_util_checks.assert_model_equal(
+            self, model_kamino_converted, model_kamino, excluded=["ptr"], rtol=rtol, atol=atol
+        )
 
     def test_03_model_conversions_dr_legs_from_usd(self):
         """
@@ -350,27 +352,27 @@ class TestModelConversions(unittest.TestCase):
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0.begin_world()
-        builder_0.add_usd(
+        builder_newton.begin_world()
+        builder_newton.add_usd(
             source=asset_file,
             joint_ordering=None,
             force_show_colliders=True,
             force_position_velocity_actuation=True,
         )
-        builder_0.end_world()
+        builder_newton.end_world()
 
         # Overwriting mu = 0.7 to match Kamino's default material properties
-        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
 
         # Import the same fourbar using Kamino's USDImporter and ModelBuilderKamino
         importer = USDImporter()
-        builder_1: ModelBuilderKamino = importer.import_from(
+        builder_kamino: ModelBuilderKamino = importer.import_from(
             source=asset_file,
             load_drive_dynamics=True,
             force_show_colliders=True,
@@ -379,9 +381,9 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Create models from the builders and conversion operations, and check for consistency
-        model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        model_1: ModelKamino = builder_1.finalize()
-        model_2: ModelKamino = ModelKamino.from_newton(model_0)
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino: ModelKamino = builder_kamino.finalize()
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
         # NOTE: We don't check:
         # - mesh geometry pointers since they have been loaded separately
         # - the shape contact group (TODO @nvtw: investigate why) because newton.ModelBuilder
@@ -395,7 +397,9 @@ class TestModelConversions(unittest.TestCase):
         excluded = ["base_joint_index", "ptr", "group", "gap", "num_excluded_pairs", "excluded_pairs"]
         rtol = {"inv_i_I_i": 1e-5}
         atol = {"inv_i_I_i": 1e-6}
-        test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded, rtol=rtol, atol=atol)
+        test_util_checks.assert_model_equal(
+            self, model_kamino_converted, model_kamino, excluded=excluded, rtol=rtol, atol=atol
+        )
 
     def test_04_model_conversions_anymal_d_from_usd(self):
         """
@@ -408,27 +412,27 @@ class TestModelConversions(unittest.TestCase):
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0.begin_world()
-        builder_0.add_usd(
+        builder_newton.begin_world()
+        builder_newton.add_usd(
             source=asset_file,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             force_show_colliders=True,
         )
-        builder_0.end_world()
+        builder_newton.end_world()
 
         # Overwriting mu = 0.7 to match Kamino's default material properties
-        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
 
         # Import the same fourbar using Kamino's USDImporter and ModelBuilderKamino
         importer = USDImporter()
-        builder_1: ModelBuilderKamino = importer.import_from(
+        builder_kamino: ModelBuilderKamino = importer.import_from(
             source=asset_file,
             load_static_geometry=True,
             retain_geom_ordering=False,
@@ -439,9 +443,9 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Create models from the builders and conversion operations, and check for consistency
-        model_0: Model = builder_0.finalize()
-        model_1: ModelKamino = builder_1.finalize()
-        model_2: ModelKamino = ModelKamino.from_newton(model_0)
+        model_newton: Model = builder_newton.finalize()
+        model_kamino: ModelKamino = builder_kamino.finalize()
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
         # NOTE: We don't check mesh geometry pointers since they have been loaded separately
         excluded = [
             "i_r_com_i",  # TODO: Investigate if the difference is expected or not
@@ -463,40 +467,40 @@ class TestModelConversions(unittest.TestCase):
             "collidable_pairs",  # TODO @nvtw: not sure why these are different
             "excluded_pairs",  # TODO: newton.ModelBuilder preemptively adding geom-pairs to shape_collision_filter_pairs
         ]
-        test_util_checks.assert_model_equal(self, model_2, model_1, excluded=excluded)
+        test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino, excluded=excluded)
 
-    def test_05_model_conversions_arbitrary_axis(self):
+    def test_10_model_conversions_arbitrary_axis(self):
         """
         Test that Newton→Kamino conversion succeeds for a revolute joint
         with an arbitrary (non-canonical) axis, e.g. ``(1, 1, 0)``.
         """
-        builder: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder)
-        builder.default_shape_cfg.margin = 0.0
-        builder.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
-        builder.begin_world()
+        builder_newton.begin_world()
 
         # Parent body at origin
-        bid0 = builder.add_link(
+        bid0 = builder_newton.add_link(
             label="base",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box_base", body=bid0, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_shape_box(label="box_base", body=bid0, hx=0.05, hy=0.05, hz=0.05)
 
         # Child body offset along z
-        bid1 = builder.add_link(
+        bid1 = builder_newton.add_link(
             label="pendulum",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.5), wp.quat_identity(dtype=wp.float32)),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box_pend", body=bid1, hx=0.05, hy=0.05, hz=0.25)
+        builder_newton.add_shape_box(label="box_pend", body=bid1, hx=0.05, hy=0.05, hz=0.25)
 
         # Fix the base to the world
-        builder.add_joint_fixed(
+        builder_newton.add_joint_fixed(
             label="world_to_base",
             parent=-1,
             child=bid0,
@@ -506,7 +510,7 @@ class TestModelConversions(unittest.TestCase):
 
         # Diagonal revolute axis (non-canonical)
         axis_vec = wp.vec3(1.0, 1.0, 0.0)
-        builder.add_joint_revolute(
+        builder_newton.add_joint_revolute(
             label="base_to_pendulum",
             parent=bid0,
             child=bid1,
@@ -515,16 +519,16 @@ class TestModelConversions(unittest.TestCase):
             child_xform=wp.transformf(wp.vec3f(0.0, 0.0, -0.25), wp.quat_identity(dtype=wp.float32)),
         )
 
-        builder.end_world()
+        builder_newton.end_world()
 
-        model: Model = builder.finalize(skip_validation_joints=True)
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
 
         # Conversion must succeed (previously raised ValueError)
-        kamino_model: ModelKamino = ModelKamino.from_newton(model)
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
 
         # Verify that X_Bj's and X_Fj's first column is aligned with the expected axis direction
-        X_Bj = kamino_model.joints.X_Bj.numpy()
-        X_Fj = kamino_model.joints.X_Fj.numpy()
+        X_Bj = model_kamino_converted.joints.X_Bj.numpy()
+        X_Fj = model_kamino_converted.joints.X_Fj.numpy()
         # X_Bj has shape (num_joints, 3, 3); the revolute joint is the second one (index 1)
         R_B = X_Bj[1]  # 3x3 rotation matrix
         R_F = X_Fj[1]
@@ -535,52 +539,52 @@ class TestModelConversions(unittest.TestCase):
         np.testing.assert_allclose(ax_col_B, expected_ax, atol=1e-6)
         np.testing.assert_allclose(ax_col_F, expected_ax, atol=1e-6)
 
-    def test_06_model_conversions_q_i_0_com_frame(self):
+    def test_11_model_conversions_q_i_0_com_frame(self):
         """
         Test that ``q_i_0`` stores COM world poses (not body-origin poses)
         after Newton→Kamino conversion for bodies with non-zero COM offsets.
         """
-        builder: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder)
-        builder.default_shape_cfg.margin = 0.0
-        builder.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
-        builder.begin_world()
+        builder_newton.begin_world()
 
         # Body 0: at origin, identity rotation, COM offset along x
-        bid0 = builder.add_link(
+        bid0 = builder_newton.add_link(
             label="body0",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box0", body=bid0, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_shape_box(label="box0", body=bid0, hx=0.05, hy=0.05, hz=0.05)
 
         # Body 1: at (0,0,1), rotated 90° about z-axis, single-axis COM offset
         rot_90z = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), np.pi / 2.0)
-        bid1 = builder.add_link(
+        bid1 = builder_newton.add_link(
             label="body1",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), rot_90z),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box1", body=bid1, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_shape_box(label="box1", body=bid1, hx=0.05, hy=0.05, hz=0.05)
 
         # Body 2: at (1,0,0), rotated 90° about x-axis, 3D COM offset
         rot_90x = wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), np.pi / 2.0)
-        bid2 = builder.add_link(
+        bid2 = builder_newton.add_link(
             label="body2",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(1.0, 0.0, 0.0), rot_90x),
             com=wp.vec3f(0.1, 0.2, 0.3),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box2", body=bid2, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_shape_box(label="box2", body=bid2, hx=0.05, hy=0.05, hz=0.05)
 
         # Fix body 0 to world
-        builder.add_joint_fixed(
+        builder_newton.add_joint_fixed(
             label="world_to_body0",
             parent=-1,
             child=bid0,
@@ -589,7 +593,7 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Revolute joint: body 0 → body 1
-        builder.add_joint_revolute(
+        builder_newton.add_joint_revolute(
             label="body0_to_body1",
             parent=bid0,
             child=bid1,
@@ -599,7 +603,7 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Revolute joint: body 1 → body 2
-        builder.add_joint_revolute(
+        builder_newton.add_joint_revolute(
             label="body1_to_body2",
             parent=bid1,
             child=bid2,
@@ -608,13 +612,13 @@ class TestModelConversions(unittest.TestCase):
             child_xform=wp.transformf(wp.vec3f(-0.5, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
         )
 
-        builder.end_world()
+        builder_newton.end_world()
 
-        model: Model = builder.finalize(skip_validation_joints=True)
-        kamino_model: ModelKamino = ModelKamino.from_newton(model)
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
 
-        q_i_0_np = kamino_model.bodies.q_i_0.numpy()  # shape (N, 7)
-        body_q_np = model.body_q.numpy()
+        q_i_0_np = model_kamino_converted.bodies.q_i_0.numpy()  # shape (N, 7)
+        body_q_np = model_newton.body_q.numpy()
 
         # Body 0: identity rotation, origin (0,0,0), COM (0.1,0,0) → world (0.1, 0, 0)
         np.testing.assert_allclose(q_i_0_np[0, :3], [0.1, 0.0, 0.0], atol=1e-6)
@@ -629,58 +633,59 @@ class TestModelConversions(unittest.TestCase):
         np.testing.assert_allclose(q_i_0_np[2, :3], [1.1, -0.3, 0.2], atol=1e-6)
         np.testing.assert_allclose(q_i_0_np[2, 3:7], body_q_np[2, 3:7], atol=1e-6)
 
-    def _build_com_offset_model(self):
+    def _build_com_offset_model(self, with_base_joint: bool = True):
         """Build a 3-body chain with non-zero COM offsets for reset tests."""
-        builder: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder)
-        builder.default_shape_cfg.margin = 0.0
-        builder.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
-        builder.begin_world()
+        builder_newton.begin_world()
 
         # Body 0: at origin, identity rotation, COM offset along x
-        bid0 = builder.add_link(
+        bid0 = builder_newton.add_link(
             label="body0",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box0", body=bid0, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_shape_box(label="box0", body=bid0, hx=0.05, hy=0.05, hz=0.05)
 
         # Body 1: at (0,0,1), rotated 90° about z-axis, single-axis COM offset
         rot_90z = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), np.pi / 2.0)
-        bid1 = builder.add_link(
+        bid1 = builder_newton.add_link(
             label="body1",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), rot_90z),
             com=wp.vec3f(0.1, 0.0, 0.0),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box1", body=bid1, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_shape_box(label="box1", body=bid1, hx=0.05, hy=0.05, hz=0.05)
 
         # Body 2: at (1,0,0), rotated 90° about x-axis, 3D COM offset
         rot_90x = wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), np.pi / 2.0)
-        bid2 = builder.add_link(
+        bid2 = builder_newton.add_link(
             label="body2",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(1.0, 0.0, 0.0), rot_90x),
             com=wp.vec3f(0.1, 0.2, 0.3),
             lock_inertia=True,
         )
-        builder.add_shape_box(label="box2", body=bid2, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_shape_box(label="box2", body=bid2, hx=0.05, hy=0.05, hz=0.05)
 
         # Fix body 0 to world
-        builder.add_joint_fixed(
-            label="world_to_body0",
-            parent=-1,
-            child=bid0,
-            parent_xform=wp.transform_identity(dtype=wp.float32),
-            child_xform=wp.transform_identity(dtype=wp.float32),
-        )
+        if with_base_joint:
+            builder_newton.add_joint_fixed(
+                label="world_to_body0",
+                parent=-1,
+                child=bid0,
+                parent_xform=wp.transform_identity(dtype=wp.float32),
+                child_xform=wp.transform_identity(dtype=wp.float32),
+            )
 
         # Revolute joint: body 0 -> body 1
-        builder.add_joint_revolute(
+        builder_newton.add_joint_revolute(
             label="body0_to_body1",
             parent=bid0,
             child=bid1,
@@ -690,7 +695,7 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Revolute joint: body 1 -> body 2
-        builder.add_joint_revolute(
+        builder_newton.add_joint_revolute(
             label="body1_to_body2",
             parent=bid1,
             child=bid2,
@@ -699,125 +704,135 @@ class TestModelConversions(unittest.TestCase):
             child_xform=wp.transformf(wp.vec3f(-0.5, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
         )
 
-        builder.end_world()
+        builder_newton.end_world()
 
-        return builder.finalize(skip_validation_joints=True)
+        return builder_newton.finalize(skip_validation_joints=True)
 
-    def test_07_reset_produces_body_origin_frame(self):
+    def test_12_reset_produces_body_origin_frame(self):
         """
         Test that ``SolverKamino.reset()`` writes body-origin frame poses
         into ``state.body_q``, not COM-frame poses, for bodies with non-zero
         COM offsets.
         """
-        model = self._build_com_offset_model()
-        body_q_expected = model.body_q.numpy().copy()
+        for with_base_joint in [False, True]:  # Test both the base joint and base body case
+            model = self._build_com_offset_model(with_base_joint=with_base_joint)
+            body_q_expected = model.body_q.numpy().copy()
 
-        solver = SolverKamino(model)
+            solver = SolverKamino(model)
 
-        # Default reset (no args) should restore body-origin poses
-        state_out: State = model.state()
-        solver.reset(state=state_out)
-        body_q_after = state_out.body_q.numpy()
+            # Default reset (no args) should restore body-origin poses
+            state_out: State = model.state()
+            solver.reset(state=state_out)
+            body_q_after = state_out.body_q.numpy()
 
-        for i in range(model.body_count):
+            for i in range(model.body_count):
+                np.testing.assert_allclose(
+                    body_q_after[i],
+                    body_q_expected[i],
+                    atol=1e-6,
+                    err_msg=f"Default reset: body {i} pose is not in body-origin frame",
+                )
+
+            # Velocities should be zero after default reset
+            body_qd_after = state_out.body_qd.numpy()
             np.testing.assert_allclose(
-                body_q_after[i],
-                body_q_expected[i],
+                body_qd_after,
+                0.0,
                 atol=1e-6,
-                err_msg=f"Default reset: body {i} pose is not in body-origin frame",
+                err_msg="Default reset: body velocities should be zero",
             )
 
-        # Velocities should be zero after default reset
-        body_qd_after = state_out.body_qd.numpy()
-        np.testing.assert_allclose(
-            body_qd_after,
-            0.0,
-            atol=1e-6,
-            err_msg="Default reset: body velocities should be zero",
-        )
-
-    def test_08_base_reset_produces_body_origin_frame(self):
+    def test_13_base_reset_produces_body_origin_frame(self):
         """
         Test that ``SolverKamino.reset(base_q=..., base_u=...)`` writes
         body-origin frame poses and velocities into ``state.body_q`` and
         ``state.body_qd`` for bodies with non-zero COM offsets.
         """
-        model = self._build_com_offset_model()
-        body_q_expected = model.body_q.numpy().copy()
+        for with_base_joint in [False, True]:  # Test both the base joint and base body case
+            model = self._build_com_offset_model(with_base_joint=with_base_joint)
+            body_q_expected = model.body_q.numpy().copy()
 
-        solver = SolverKamino(model)
+            solver = SolverKamino(model)
 
-        # --- Base reset with identity base pose should restore body-origin poses ---
-        state_out: State = model.state()
-        base_q = wp.array(
-            [wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32))],
-            dtype=wp.transformf,
-        )
-        base_u = wp.zeros(1, dtype=wp.spatial_vectorf)
-        solver.reset(state=state_out, base_q=base_q, base_u=base_u)
-        body_q_after = state_out.body_q.numpy()
+            # --- Base reset with identity base pose should restore body-origin poses ---
+            state_out: State = model.state()
+            base_q = wp.array(
+                [wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32))],
+                dtype=wp.transformf,
+            )
+            base_u = wp.zeros(1, dtype=wp.spatial_vectorf)
+            reset_config = SolverKamino.ResetConfig(
+                base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q),
+                base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u),
+            )
+            solver.reset(state=state_out, config=reset_config)
+            body_q_after = state_out.body_q.numpy()
 
-        for i in range(model.body_count):
+            for i in range(model.body_count):
+                np.testing.assert_allclose(
+                    body_q_after[i],
+                    body_q_expected[i],
+                    atol=1e-6,
+                    err_msg=f"Base reset (identity): body {i} pose is not in body-origin frame",
+                )
+
+            # Velocities should be zero with zero base twist
+            body_qd_after = state_out.body_qd.numpy()
             np.testing.assert_allclose(
-                body_q_after[i],
-                body_q_expected[i],
+                body_qd_after,
+                0.0,
                 atol=1e-6,
-                err_msg=f"Base reset (identity): body {i} pose is not in body-origin frame",
+                err_msg="Base reset (identity): body velocities should be zero",
             )
 
-        # Velocities should be zero with zero base twist
-        body_qd_after = state_out.body_qd.numpy()
-        np.testing.assert_allclose(
-            body_qd_after,
-            0.0,
-            atol=1e-6,
-            err_msg="Base reset (identity): body velocities should be zero",
-        )
-
-        # --- Base reset with a translated base pose ---
-        offset = np.array([2.0, 3.0, 5.0])
-        base_q_shifted = wp.array(
-            [wp.transformf(wp.vec3f(*offset), wp.quat_identity(dtype=wp.float32))],
-            dtype=wp.transformf,
-        )
-        solver.reset(state=state_out, base_q=base_q_shifted, base_u=base_u)
-        body_q_shifted = state_out.body_q.numpy()
-
-        for i in range(model.body_count):
-            np.testing.assert_allclose(
-                body_q_shifted[i, :3],
-                body_q_expected[i, :3] + offset,
-                atol=1e-6,
-                err_msg=f"Base reset (translated): body {i} position mismatch",
+            # --- Base reset with a translated base pose ---
+            offset = np.array([2.0, 3.0, 5.0])
+            base_q_shifted = wp.array(
+                [wp.transformf(wp.vec3f(*offset), wp.quat_identity(dtype=wp.float32))],
+                dtype=wp.transformf,
             )
-            np.testing.assert_allclose(
-                body_q_shifted[i, 3:7],
-                body_q_expected[i, 3:7],
-                atol=1e-6,
-                err_msg=f"Base reset (translated): body {i} rotation mismatch",
+            reset_config = SolverKamino.ResetConfig(
+                base_pose=SolverKamino.ResetConfig.FromBaseQ(base_q_shifted),
+                base_velocity=SolverKamino.ResetConfig.FromBaseU(base_u),
             )
+            solver.reset(state=state_out, config=reset_config)
+            body_q_shifted = state_out.body_q.numpy()
 
-    def test_09_model_conversions_shape_offset_com_relative(self):
+            for i in range(model.body_count):
+                np.testing.assert_allclose(
+                    body_q_shifted[i, :3],
+                    body_q_expected[i, :3] + offset,
+                    atol=1e-6,
+                    err_msg=f"Base reset (translated): body {i} position mismatch",
+                )
+                np.testing.assert_allclose(
+                    body_q_shifted[i, 3:7],
+                    body_q_expected[i, 3:7],
+                    atol=1e-6,
+                    err_msg=f"Base reset (translated): body {i} rotation mismatch",
+                )
+
+    def test_14_model_conversions_shape_offset_com_relative(self):
         """
         Test that ``geoms.offset`` stores COM-relative shape positions
         after Newton→Kamino conversion, while ground shapes are unchanged.
         """
-        builder: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder)
-        builder.default_shape_cfg.margin = 0.0
-        builder.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
-        builder.begin_world()
+        builder_newton.begin_world()
 
         # Body with COM=(0.1, 0.2, 0.0), shape at (0.5, 0.0, 0.0)
-        bid = builder.add_link(
+        bid = builder_newton.add_link(
             label="body0",
             mass=1.0,
             xform=wp.transformf(wp.vec3f(0.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
             com=wp.vec3f(0.1, 0.2, 0.0),
             lock_inertia=True,
         )
-        builder.add_shape_box(
+        builder_newton.add_shape_box(
             label="box0",
             body=bid,
             hx=0.05,
@@ -826,7 +841,7 @@ class TestModelConversions(unittest.TestCase):
             xform=wp.transformf(wp.vec3f(0.5, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
         )
         # Ground shape (bid=-1) — should be left unchanged
-        builder.add_shape_box(
+        builder_newton.add_shape_box(
             label="ground_box",
             body=-1,
             hx=1.0,
@@ -835,25 +850,25 @@ class TestModelConversions(unittest.TestCase):
             xform=wp.transformf(wp.vec3f(1.0, 0.0, 0.0), wp.quat_identity(dtype=wp.float32)),
         )
 
-        builder.add_joint_fixed(
+        builder_newton.add_joint_fixed(
             label="fix",
             parent=-1,
             child=bid,
             parent_xform=wp.transform_identity(dtype=wp.float32),
             child_xform=wp.transform_identity(dtype=wp.float32),
         )
-        builder.end_world()
+        builder_newton.end_world()
 
-        model: Model = builder.finalize(skip_validation_joints=True)
-        kamino_model: ModelKamino = ModelKamino.from_newton(model)
-        offset_np = kamino_model.geoms.offset.numpy()
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
+        offset_np = model_kamino_converted.geoms.offset.numpy()
 
         # Shape on body: pos should be (0.5-0.1, 0.0-0.2, 0.0) = (0.4, -0.2, 0.0)
         np.testing.assert_allclose(offset_np[0, :3], [0.4, -0.2, 0.0], atol=1e-6)
         # Ground shape: pos unchanged at (1.0, 0.0, 0.0)
         np.testing.assert_allclose(offset_np[1, :3], [1.0, 0.0, 0.0], atol=1e-6)
 
-    def test_10_origin_com_roundtrip(self):
+    def test_20_origin_com_roundtrip(self):
         """
         Test that origin→COM→origin is the identity on body_q.
         """
@@ -866,21 +881,21 @@ class TestModelConversions(unittest.TestCase):
 
         np.testing.assert_allclose(body_q.numpy(), q_orig, atol=1e-6, err_msg="body_q roundtrip failed")
 
-    def test_11_model_conversions_material_fourbar_from_builder(self):
+    def test_21_model_conversions_material_fourbar_from_builder(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on a simple fourbar model with different materials, created explicitly using the builder.
         """
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0: ModelBuilder = basics_newton.build_boxes_fourbar(
-            builder=builder_0,
+        builder_newton: ModelBuilder = basics_newton.build_boxes_fourbar(
+            builder=builder_newton,
             z_offset=0.0,
             fixedbase=False,
             floatingbase=True,
@@ -895,16 +910,16 @@ class TestModelConversions(unittest.TestCase):
         # Setting material properties
         restitution = [0.1, 0.2, 0.3, 0.4, 0.5]
         mu = [0.5, 0.6, 0.7, 0.8, 0.9]
-        builder_0.shape_material_restitution = list(restitution)
-        builder_0.shape_material_mu = list(mu)
+        builder_newton.shape_material_restitution = list(restitution)
+        builder_newton.shape_material_mu = list(mu)
 
         # Duplicate the world to test multi-world handling
-        builder_0.begin_world()
-        builder_0.add_builder(copy.deepcopy(builder_0))
-        builder_0.end_world()
+        builder_newton.begin_world()
+        builder_newton.add_builder(copy.deepcopy(builder_newton))
+        builder_newton.end_world()
 
         # Create a fourbar using Kamino's ModelBuilderKamino
-        builder_1: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
+        builder_kamino: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
             builder=None,
             z_offset=0.0,
             fixedbase=False,
@@ -919,7 +934,7 @@ class TestModelConversions(unittest.TestCase):
 
         # Setting material properties
         for i in range(len(mu)):
-            mid = builder_1.add_material(
+            mid = builder_kamino.add_material(
                 MaterialDescriptor(
                     name=f"mat{i}",
                     restitution=restitution[i],
@@ -927,20 +942,20 @@ class TestModelConversions(unittest.TestCase):
                     dynamic_friction=mu[i],
                 )
             )
-            builder_1.geoms[0][i].material = mid
-            builder_1.geoms[0][i].mid = mid
+            builder_kamino.geoms[0][i].material = mid
+            builder_kamino.geoms[0][i].mid = mid
 
         # Duplicate the world to test multi-world handling
-        builder_1.add_builder(copy.deepcopy(builder_1))
+        builder_kamino.add_builder(copy.deepcopy(builder_kamino))
 
         # Create models from the builders and conversion operations, and check for consistency
         # TODO: re-enable the check below once the free-joint handling is fixed in Newton
-        # model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        # model_1: ModelKamino = builder_1.finalize()
-        # model_2: ModelKamino = ModelKamino.from_newton(model_0)
-        # test_util_checks.assert_model_equal(self, model_2, model_1)
+        # model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        # model_kamino: ModelKamino = builder_kamino.finalize()
+        # model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
+        # test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino)
 
-    def test_12_model_conversions_material_box_on_plane_from_usd(self):
+    def test_22_model_conversions_material_box_on_plane_from_usd(self):
         """
         Test the conversion operations between newton.Model and kamino.ModelKamino
         on a simple box on plane model loaded from USD, containing different materials.
@@ -950,29 +965,29 @@ class TestModelConversions(unittest.TestCase):
 
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0.begin_world()
-        builder_0.add_usd(
+        builder_newton.begin_world()
+        builder_newton.add_usd(
             source=asset_file,
             joint_ordering=None,
             force_show_colliders=True,
             force_position_velocity_actuation=True,
         )
-        builder_0.end_world()
+        builder_newton.end_world()
 
         # Duplicate the world to test multi-world handling
-        builder_0.begin_world()
-        builder_0.add_builder(copy.deepcopy(builder_0))
-        builder_0.end_world()
+        builder_newton.begin_world()
+        builder_newton.add_builder(copy.deepcopy(builder_newton))
+        builder_newton.end_world()
 
         # Import the same fourbar using Kamino's USDImporter and ModelBuilderKamino
         importer = USDImporter()
-        builder_1: ModelBuilderKamino = importer.import_from(
+        builder_kamino: ModelBuilderKamino = importer.import_from(
             source=asset_file,
             load_drive_dynamics=True,
             load_static_geometry=True,
@@ -982,44 +997,44 @@ class TestModelConversions(unittest.TestCase):
 
         # Resetting default material parameters, since the Newton USD importer does not import a
         # default material and therefore does not have a non-standard default material
-        builder_1.materials[0].dynamic_friction = 0.7
+        builder_kamino.materials[0].dynamic_friction = 0.7
 
         # Overwriting dynamic friction with static friction, since the Newton USD importer only
         # imports static friction and the Kamino conversion uses this to initialize both parameters
-        for mat in builder_1.materials:
+        for mat in builder_kamino.materials:
             mat.static_friction = mat.dynamic_friction
 
         # Duplicate the world to test multi-world handling
-        builder_1.add_builder(copy.deepcopy(builder_1))
+        builder_kamino.add_builder(copy.deepcopy(builder_kamino))
 
         # Create models from the builders and conversion operations, and check for consistency
-        model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        model_1: ModelKamino = builder_1.finalize()
-        model_2: ModelKamino = ModelKamino.from_newton(model_0)
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino: ModelKamino = builder_kamino.finalize()
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
 
-        test_util_checks.assert_model_geoms_equal(self, model_2.geoms, model_1.geoms)
-        test_util_checks.assert_model_materials_equal(self, model_2.materials, model_1.materials)
+        test_util_checks.assert_model_geoms_equal(self, model_kamino_converted.geoms, model_kamino.geoms)
+        test_util_checks.assert_model_materials_equal(self, model_kamino_converted.materials, model_kamino.materials)
         # TODO: Material pairs are currently not checked. The Kamino USD importer will set material
         #       pair properties based on the list of materials, using the average of the material
         #       properties. The Newton-to-Kamino conversion will leave the material pair properties
         #       uninitialized, leaving the choice of how to combine materials for a pair to the
         #       runtime material resolution system (see :class:`MaterialMuxMode`).
-        # test_util_checks.assert_model_material_pairs_equal(self, model_2.material_pairs, model_1.material_pairs)
+        # test_util_checks.assert_model_material_pairs_equal(self, model_kamino_converted.material_pairs, model_kamino.material_pairs)
 
-    def test_20_state_conversions(self):
+    def test_30_state_conversions(self):
         """
         Test the conversion operations between newton.State and kamino.StateKamino.
         """
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0: ModelBuilder = basics_newton.build_boxes_fourbar(
-            builder=builder_0,
+        builder_newton: ModelBuilder = basics_newton.build_boxes_fourbar(
+            builder=builder_newton,
             z_offset=0.0,
             fixedbase=False,
             floatingbase=True,
@@ -1030,15 +1045,15 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Overwriting mu = 0.7 to match Kamino's default material properties
-        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
 
         # Duplicate the world to test multi-world handling
-        builder_0.begin_world()
-        builder_0.add_builder(copy.deepcopy(builder_0))
-        builder_0.end_world()
+        builder_newton.begin_world()
+        builder_newton.add_builder(copy.deepcopy(builder_newton))
+        builder_newton.end_world()
 
         # Create a fourbar using Kamino's ModelBuilderKamino
-        builder_1: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
+        builder_kamino: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
             builder=None,
             z_offset=0.0,
             fixedbase=False,
@@ -1050,73 +1065,75 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Duplicate the world to test multi-world handling
-        builder_1.add_builder(copy.deepcopy(builder_1))
+        builder_kamino.add_builder(copy.deepcopy(builder_kamino))
 
         # Create models from the builders and conversion operations, and check for consistency
-        model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        model_1: ModelKamino = builder_1.finalize()
-        model_2: ModelKamino = ModelKamino.from_newton(model_0)
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino: ModelKamino = builder_kamino.finalize()
+        model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
         # TODO: re-enable the check below once the free-joint handling is fixed in Newton
-        # test_util_checks.assert_model_equal(self, model_1, model_2)
+        # test_util_checks.assert_model_equal(self, model_kamino, model_kamino_converted)
 
         # Create a Newton state container
-        state_0: State = model_0.state()
-        self.assertIsInstance(state_0.body_q, wp.array)
-        self.assertEqual(state_0.body_q.size, model_0.body_count)
-        self.assertIsNotNone(state_0.joint_q_prev)
-        self.assertEqual(state_0.joint_q_prev.size, model_0.joint_coord_count)
-        self.assertIsNotNone(state_0.joint_lambdas)
-        self.assertEqual(state_0.joint_lambdas.size, model_0.joint_constraint_count)
+        state_newton: State = model_newton.state()
+        self.assertIsInstance(state_newton.body_q, wp.array)
+        self.assertEqual(state_newton.body_q.size, model_newton.body_count)
+        self.assertIsNotNone(state_newton.joint_q_prev)
+        self.assertEqual(state_newton.joint_q_prev.size, model_newton.joint_coord_count)
+        self.assertIsNotNone(state_newton.joint_lambdas)
+        self.assertEqual(state_newton.joint_lambdas.size, model_newton.joint_constraint_count)
 
         # Create a Kamino state container
-        state_1: StateKamino = model_1.state()
-        self.assertIsInstance(state_1.q_i, wp.array)
-        self.assertEqual(state_1.q_i.size, model_1.size.sum_of_num_bodies)
+        state_kamino: StateKamino = model_kamino.state()
+        self.assertIsInstance(state_kamino.q_i, wp.array)
+        self.assertEqual(state_kamino.q_i.size, model_kamino.size.sum_of_num_bodies)
 
-        state_2: StateKamino = StateKamino.from_newton(model_2.size, model_0, state_0, True, False)
-        self.assertIsInstance(state_2.q_i, wp.array)
-        self.assertEqual(state_2.q_i.size, model_1.size.sum_of_num_bodies)
+        state_kamino_converted: StateKamino = StateKamino.from_newton(
+            model_kamino_converted.size, model_newton, state_newton, True, False
+        )
+        self.assertIsInstance(state_kamino_converted.q_i, wp.array)
+        self.assertEqual(state_kamino_converted.q_i.size, model_kamino.size.sum_of_num_bodies)
         # NOTE: Check ptr due to conversion from wp.spatial_vectorf
-        self.assertIs(state_2.u_i.ptr, state_0.body_qd.ptr)
-        self.assertIs(state_2.w_i_e.ptr, state_0.body_f.ptr)
-        self.assertIs(state_2.w_i.ptr, state_0.body_f_total.ptr)
+        self.assertIs(state_kamino_converted.u_i.ptr, state_newton.body_qd.ptr)
+        self.assertIs(state_kamino_converted.w_i_e.ptr, state_newton.body_f.ptr)
+        self.assertIs(state_kamino_converted.w_i.ptr, state_newton.body_f_total.ptr)
         # NOTE: Check that the same arrays because these should be pure references
-        self.assertIs(state_2.q_i, state_0.body_q)
-        self.assertIs(state_2.q_j, state_0.joint_q)
-        self.assertIs(state_2.dq_j, state_0.joint_qd)
-        self.assertIs(state_2.q_j_p, state_0.joint_q_prev)
-        self.assertIs(state_2.lambda_j, state_0.joint_lambdas)
+        self.assertIs(state_kamino_converted.q_i, state_newton.body_q)
+        self.assertIs(state_kamino_converted.q_j, state_newton.joint_q)
+        self.assertIs(state_kamino_converted.dq_j, state_newton.joint_qd)
+        self.assertIs(state_kamino_converted.q_j_p, state_newton.joint_q_prev)
+        self.assertIs(state_kamino_converted.lambda_j, state_newton.joint_lambdas)
         # TODO: re-enable the check below once the free-joint handling is fixed in Newton
-        # test_util_checks.assert_state_equal(self, state_2, state_1)
+        # test_util_checks.assert_state_equal(self, state_kamino_converted, state_kamino)
 
-        state_3: State = StateKamino.to_newton(model_0, state_2)
-        self.assertIsInstance(state_3.body_q, wp.array)
-        self.assertEqual(state_3.body_q.size, model_0.body_count)
-        # NOTE: Check ptr due to conversion from vec6f
-        self.assertIs(state_3.body_qd.ptr, state_2.u_i.ptr)
-        self.assertIs(state_3.body_f.ptr, state_2.w_i_e.ptr)
-        self.assertIs(state_3.body_f_total.ptr, state_2.w_i.ptr)
+        state_newton_converted: State = StateKamino.to_newton(model_newton, state_kamino_converted)
+        self.assertIsInstance(state_newton_converted.body_q, wp.array)
+        self.assertEqual(state_newton_converted.body_q.size, model_newton.body_count)
+        # NOTE: Check ptr due to conversion from wp.spatial_vectorf
+        self.assertIs(state_newton_converted.body_qd.ptr, state_kamino_converted.u_i.ptr)
+        self.assertIs(state_newton_converted.body_f.ptr, state_kamino_converted.w_i_e.ptr)
+        self.assertIs(state_newton_converted.body_f_total.ptr, state_kamino_converted.w_i.ptr)
         # NOTE: Check that the same arrays because these should be pure references
-        self.assertIs(state_3.body_q, state_2.q_i)
-        self.assertIs(state_3.joint_q, state_2.q_j)
-        self.assertIs(state_3.joint_qd, state_2.dq_j)
-        self.assertIs(state_3.joint_q_prev, state_2.q_j_p)
-        self.assertIs(state_3.joint_lambdas, state_2.lambda_j)
+        self.assertIs(state_newton_converted.body_q, state_kamino_converted.q_i)
+        self.assertIs(state_newton_converted.joint_q, state_kamino_converted.q_j)
+        self.assertIs(state_newton_converted.joint_qd, state_kamino_converted.dq_j)
+        self.assertIs(state_newton_converted.joint_q_prev, state_kamino_converted.q_j_p)
+        self.assertIs(state_newton_converted.joint_lambdas, state_kamino_converted.lambda_j)
 
-    def test_30_control_conversions(self):
+    def test_40_control_conversions(self):
         """
         Test the conversions between newton.Control and kamino.ControlKamino.
         """
         # Create a fourbar using Newton's ModelBuilder and
         # register Kamino-specific custom attributes
-        builder_0: ModelBuilder = ModelBuilder()
-        SolverKamino.register_custom_attributes(builder_0)
-        builder_0.default_shape_cfg.margin = 0.0
-        builder_0.default_shape_cfg.gap = 0.0
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
 
         # Create a fourbar using Newton's ModelBuilder
-        builder_0: ModelBuilder = basics_newton.build_boxes_fourbar(
-            builder=builder_0,
+        basics_newton.build_boxes_fourbar(
+            builder=builder_newton,
             z_offset=0.0,
             fixedbase=False,
             floatingbase=True,
@@ -1129,15 +1146,15 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Overwriting mu = 0.7 to match Kamino's default material properties
-        builder_0.shape_material_mu = [0.7] * len(builder_0.shape_material_mu)
+        builder_newton.shape_material_mu = [0.7] * len(builder_newton.shape_material_mu)
 
         # Duplicate the world to test multi-world handling
-        builder_0.begin_world()
-        builder_0.add_builder(copy.deepcopy(builder_0))
-        builder_0.end_world()
+        builder_newton.begin_world()
+        builder_newton.add_builder(copy.deepcopy(builder_newton))
+        builder_newton.end_world()
 
         # Create a fourbar using Kamino's ModelBuilderKamino
-        builder_1: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
+        builder_kamino: ModelBuilderKamino = basics_kamino.build_boxes_fourbar(
             builder=None,
             z_offset=0.0,
             fixedbase=False,
@@ -1151,42 +1168,48 @@ class TestModelConversions(unittest.TestCase):
         )
 
         # Duplicate the world to test multi-world handling
-        builder_1.add_builder(copy.deepcopy(builder_1))
+        builder_kamino.add_builder(copy.deepcopy(builder_kamino))
 
         # Create models from the builders and conversion operations, and check for consistency
-        model_0: Model = builder_0.finalize(skip_validation_joints=True)
-        model_1: ModelKamino = builder_1.finalize()
+        model_newton: Model = builder_newton.finalize(skip_validation_joints=True)
+        model_kamino: ModelKamino = builder_kamino.finalize()
         # TODO: re-enable the below check once the free-joint handling is fixed in Newton
-        # model_2: ModelKamino = ModelKamino.from_newton(model_0)
-        # test_util_checks.assert_model_equal(self, model_2, model_1)
+        # model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
+        # test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino)
 
         # Create a Newton control container
-        control_0: Control = model_0.control()
-        self.assertIsInstance(control_0.joint_f, wp.array)
-        self.assertEqual(control_0.joint_f.size, model_0.joint_dof_count)
+        control_newton: Control = model_newton.control()
+        self.assertIsInstance(control_newton.joint_f, wp.array)
+        self.assertEqual(control_newton.joint_f.size, model_newton.joint_dof_count)
 
         # Create a Kamino control container
-        control_1: ControlKamino = model_1.control()
-        self.assertIsInstance(control_1.tau_j, wp.array)
-        self.assertEqual(control_1.tau_j.size, model_1.size.sum_of_num_joint_dofs)
+        control_kamino: ControlKamino = model_kamino.control()
+        self.assertIsInstance(control_kamino.tau_j, wp.array)
+        self.assertEqual(control_kamino.tau_j.size, model_kamino.size.sum_of_num_joint_dofs)
 
-        # Create a Kamino control container
-        control_2: ControlKamino = ControlKamino()
-        control_2.finalize(model_1)
-        control_2.from_newton(control_0, model_1)
-        self.assertIsInstance(control_2.tau_j, wp.array)
-        self.assertIs(control_2.tau_j, control_0.joint_f)
-        self.assertEqual(control_2.tau_j.size, model_0.joint_dof_count)
-        test_util_checks.assert_control_equal(self, control_2, control_1)
+        control_kamino_converted = ControlKamino()
+        control_kamino_converted.finalize(model_kamino)
+        control_kamino_converted.from_newton(control_newton, model_kamino)
+        self.assertIsInstance(control_kamino_converted.tau_j, wp.array)
+        self.assertIs(control_kamino_converted.tau_j, control_newton.joint_f)
+        self.assertEqual(control_kamino_converted.tau_j.size, model_newton.joint_dof_count)
+        self.assertIsNone(control_kamino_converted.tau_j_ref)
+        test_util_checks.assert_control_equal(self, control_kamino_converted, control_kamino, excluded=["tau_j_ref"])
 
         # Convert back to a Newton control container.
-        control_3: Control = model_0.control()
-        control_2.to_newton(control_3, model_1)
-        self.assertIsInstance(control_3.joint_f, wp.array)
-        self.assertIs(control_3.joint_f, control_2.tau_j)
-        self.assertEqual(control_3.joint_f.size, model_0.joint_dof_count)
+        control_newton.joint_act.fill_(42.0)
+        control_newton_converted: Control = model_newton.control()
+        joint_act_before = control_newton_converted.joint_act.numpy().copy()
+        control_kamino_converted.to_newton(control_newton_converted, model_kamino)
+        self.assertIsInstance(control_newton_converted.joint_f, wp.array)
+        self.assertIs(control_newton_converted.joint_f, control_kamino_converted.tau_j)
+        self.assertEqual(control_newton_converted.joint_f.size, model_newton.joint_dof_count)
+        np.testing.assert_array_equal(control_newton_converted.joint_act.numpy(), joint_act_before)
         test_util_checks.assert_array_attributes_equal(
-            self, control_3, control_0, ["joint_f", "joint_target_pos", "joint_target_vel", "joint_act"]
+            self,
+            control_newton_converted,
+            control_newton,
+            attributes=["joint_f", "joint_target_pos", "joint_target_vel"],
         )
 
 

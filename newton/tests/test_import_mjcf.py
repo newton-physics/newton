@@ -3767,6 +3767,32 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         joint_type3 = model3.joint_type.numpy()[0]
         self.assertEqual(joint_type3, newton.JointType.FREE)
 
+    def test_geom_group_parsing(self):
+        """Test parsing of geom visualization groups from MJCF."""
+        mjcf_content = """<mujoco>
+    <default>
+        <default class="group3">
+            <geom group="3"/>
+        </default>
+    </default>
+    <worldbody>
+        <body name="body">
+            <freejoint/>
+            <geom type="sphere" size="0.1" class="group3"/>
+            <geom type="box" size="0.1 0.1 0.1" group="1"/>
+            <geom type="capsule" size="0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        self.assertTrue(hasattr(model.mujoco, "geom_group"))
+        np.testing.assert_array_equal(model.mujoco.geom_group.numpy(), [3, 1, 0])
+
     def test_geom_priority_parsing(self):
         """Test parsing of geom priority from MJCF"""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -4462,7 +4488,13 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertEqual(converted_model.constraint_mimic_count, 1)
         np.testing.assert_array_equal(
             converted_model.mujoco.equality_constraint_type.numpy(),
-            np.array([int(newton.EqType.CONNECT), int(newton.EqType.WELD), int(newton.EqType.JOINT)]),
+            np.array(
+                [
+                    int(newton.solvers.SolverMuJoCo.EqType.CONNECT),
+                    int(newton.solvers.SolverMuJoCo.EqType.WELD),
+                    int(newton.solvers.SolverMuJoCo.EqType.JOINT),
+                ]
+            ),
         )
         np.testing.assert_array_equal(
             converted_model.mujoco.equality_constraint_target_kind.numpy(),
@@ -8013,6 +8045,114 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertEqual(solver.mj_model.npair, 1, "Explicit pair should be in MuJoCo spec")
         solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
+
+    def test_explicit_pair_retains_unclassified_geoms_without_visuals(self):
+        """Pair-referenced zero-mask geoms survive parse_visuals=False."""
+        mjcf = """<mujoco>
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <geom name="floor_geom" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.05">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="ball_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor_geom" geom2="ball_geom" condim="3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(builder.shape_count, 2)
+        self.assertEqual(builder.shape_collision_group, [0, 0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model)
+
+        self.assertEqual(solver.mj_model.npair, 1)
+        solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        self.assertGreater(solver.mj_data.ncon, 0)
+
+    def test_explicit_pairs_across_contact_sections_without_visuals(self):
+        """Pairs and excludes are parsed from every top-level contact section."""
+        mjcf = """<mujoco>
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <body name="body1" pos="0 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom1" type="sphere" size="0.1"/>
+                </body>
+                <body name="body2" pos="1 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom2" type="sphere" size="0.1"/>
+                </body>
+                <body name="body3" pos="2 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="geom3" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="geom1" geom2="geom2"/>
+            </contact>
+            <contact>
+                <pair geom1="geom2" geom2="geom3"/>
+                <exclude body1="body1" body2="body3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(builder.shape_count, 3)
+        self.assertEqual(builder.shape_collision_group, [0, 0, 0])
+
+        model = builder.finalize(device="cpu")
+        geom1_idx = builder.shape_label.index("worldbody/body1/geom1")
+        geom3_idx = builder.shape_label.index("worldbody/body3/geom3")
+        filter_pairs = set(model.shape_collision_filter_pairs)
+        self.assertTrue((geom1_idx, geom3_idx) in filter_pairs or (geom3_idx, geom1_idx) in filter_pairs)
+
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 2)
+
+    def test_explicit_pair_hierarchical_labels_without_visuals(self):
+        """Pair-referenced geoms match their hierarchical Newton labels."""
+        mjcf = """<mujoco model="hierarchical_pair">
+            <default><geom contype="0" conaffinity="0"/></default>
+            <worldbody>
+                <body name="body1">
+                    <geom name="geom1" type="sphere" size="0.1"/>
+                </body>
+                <body name="body2">
+                    <geom name="geom2" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair
+                    geom1="hierarchical_pair/worldbody/body1/geom1"
+                    geom2="hierarchical_pair/worldbody/body2/geom2"
+                />
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, parse_visuals=False)
+
+        self.assertEqual(
+            builder.shape_label,
+            [
+                "hierarchical_pair/worldbody/body1/geom1",
+                "hierarchical_pair/worldbody/body2/geom2",
+            ],
+        )
+        self.assertEqual(builder.shape_collision_group, [0, 0])
+
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.npair, 1)
 
 
 class TestMjcfPlaneInfinite(unittest.TestCase):

@@ -11,12 +11,15 @@ Depending on the particular solver implementation, both inter- and
 intra-system parallelism may be exploited.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any
 
 import warp as wp
 
-from ..core.types import FloatType, float32, override
+from .....core.types import override
+from ..core.types import FloatType
 from . import conjugate, factorize
 from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance
 from .sparse_matrix import (
@@ -56,7 +59,7 @@ class LinearSolver(ABC):
         operator: DenseLinearOperatorData | None = None,
         atol: float | None = None,
         rtol: float | None = None,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
@@ -186,7 +189,7 @@ class DirectSolver(LinearSolver):
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
@@ -268,17 +271,17 @@ class IterativeSolver(LinearSolver):
         operator: conjugate.BatchedLinearOperator | DenseLinearOperatorData | BlockSparseLinearOperators | None = None,
         atol: float | wp.array | None = None,
         rtol: float | wp.array | None = None,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         maxiter: int | wp.array | None = None,
-        world_active: wp.array | None = None,
+        world_active: wp.array[wp.bool] | None = None,
         preconditioner: Any = None,
         loop_granularity: int = 1,
         **kwargs: dict[str, Any],
     ):
         self._maxiter: int | wp.array | None = maxiter
         self._preconditioner: Any = preconditioner
-        self._world_active: wp.array | None = world_active
+        self._world_active: wp.array[wp.bool] | None = world_active
         self.atol: float | wp.array | None = atol
         self.rtol: float | wp.array | None = rtol
 
@@ -324,7 +327,7 @@ class IterativeSolver(LinearSolver):
         self,
         operator: conjugate.BatchedLinearOperator | DenseLinearOperatorData | BlockSparseLinearOperators,
         maxiter: int | wp.array | None = None,
-        world_active: wp.array | None = None,
+        world_active: wp.array[wp.bool] | None = None,
         preconditioner: Any = None,
         **kwargs: dict[str, Any],
     ) -> None:
@@ -427,9 +430,9 @@ class IterativeSolver(LinearSolver):
 
 class LLTSequentialSolver(DirectSolver):
     """
-    A LLT (i.e. Cholesky) factorization class computing each matrix block sequentially.\n
-    This parallelizes the factorization and solve operations over each block\n
-    and supports heterogeneous matrix block sizes.\n
+    A LLT (i.e. Cholesky) factorization class computing each matrix block sequentially.
+    This parallelizes the factorization and solve operations over each block
+    and supports heterogeneous matrix block sizes.
     """
 
     def __init__(
@@ -438,7 +441,7 @@ class LLTSequentialSolver(DirectSolver):
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
@@ -544,7 +547,7 @@ class LLTSequentialSolver(DirectSolver):
 
 class LLTBlockedSolver(DirectSolver):
     """
-    A Blocked LLT (i.e. Cholesky) factorization class computing each matrix block with Tile-based parallelism.\n
+    A Blocked LLT (i.e. Cholesky) factorization class computing each matrix block with Tile-based parallelism.
     """
 
     def __init__(
@@ -556,7 +559,7 @@ class LLTBlockedSolver(DirectSolver):
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):

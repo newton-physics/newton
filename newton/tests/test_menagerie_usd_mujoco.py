@@ -1319,17 +1319,11 @@ class TestMenagerieUSD(TestMenagerieBase):
         "actuator_lengthrange",
     }
 
-    # Per-actuator and per-joint fields the USD parser doesn't populate to match
-    # native MJCF compilation, but which step-response dynamics depends on.
-    # Empirically pinned down on ShadowHand: without these, qfrc_actuator
-    # diverges at step 0 (actuator clipping fields), and qfrc_constraint
-    # diverges at step 1+ (joint-limit solref + actfrc).
-    usd_actuator_backfill_fields: ClassVar[list[str]] = [
-        "actuator_ctrlrange",
-        "actuator_ctrllimited",
-        "actuator_forcerange",
-        "actuator_forcelimited",
-    ]
+    # Per-joint fields the USD parser doesn't populate to match native MJCF, but
+    # which step-response dynamics depend on (joint-limit solref + actfrc range).
+    # Without them, qfrc_constraint diverges from step 1 onward.
+    # Actuator ctrl/force ranges are not listed: the solver re-attaches them when
+    # rebuilding JOINT_TARGET actuators, so no backfill is needed.
     usd_joint_backfill_fields: ClassVar[list[str]] = [
         "jnt_solref",
         "jnt_actfrclimited",
@@ -1380,8 +1374,6 @@ class TestMenagerieUSD(TestMenagerieBase):
                     out[nw] = m[ni]
             getattr(newton_mjw, field).assign(out)
 
-        for field in self.usd_actuator_backfill_fields:
-            _backfill_permuted(field, self._actuator_map)
         for field in self.usd_joint_backfill_fields:
             _backfill_permuted(field, self._jnt_map)
         for field in self.usd_body_backfill_fields:
@@ -1795,6 +1787,7 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
     robot_xml = "apptronik_apollo.xml"
     usd_asset_folder = "apptronik_apollo"
     usd_scene_file = "usd_structured/apptronik_apollo.usda"
+    allow_standalone_world_roots = True
 
     num_steps = 20
     fk_enabled = True
@@ -1886,18 +1879,7 @@ class TestMenagerieUSD_UR5e(TestMenagerieUSD):
     usd_asset_folder = "universal_robots_ur5e"
     usd_scene_file = "usd_structured/ur5e.usda"
 
-    # TODO(#2420): re-enable step-response dynamics. UR5e USD MjcActuator rows
-    # match the position-shortcut pattern, so they're imported as JOINT_TARGET
-    # (see parse_usd's MjcActuator post-process). _init_actuators rebuilds
-    # JOINT_TARGET actuators with no per-actuator forcerange and instead clamps
-    # at the joint via jnt_actfrcrange. Native MJCF UR5e uses per-actuator
-    # forcerange. Both clip at the same magnitude, but mujoco-warp routes them
-    # through different code paths (joint-level becomes a solver constraint),
-    # producing small qpos diffs (~1e-3) at step 0 that exceed the 1e-6
-    # tolerance. The fix is to also set actuator_forcerange on JOINT_TARGET-
-    # built actuators in _init_actuators so the clipping path matches native;
-    # that affects the MJCF JOINT_TARGET path too and is out of scope here.
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
     backfill_model = True
 
