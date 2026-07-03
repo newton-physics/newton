@@ -202,7 +202,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
         def import_cloth(masses):
             stage = _deformable_stage(up_axis="y")
             mesh = _add_cloth_mesh(stage, "/World/Cloth")
-            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0)
+            # thickness keeps the volumetric density convertible (no unrelated warning under
+            # --strict-warnings); per-point masses take precedence over it either way.
+            _bind_deformable_material(stage, mesh.GetPrim(), "/World/ClothMat", density=1000.0, thickness=0.1)
             mesh.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
