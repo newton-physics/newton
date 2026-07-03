@@ -12,9 +12,11 @@
 
 import numpy as np
 import warp as wp
+from newton.solvers.experimental.coupled import SolverCoupledProxy
 
 import newton
 import newton.examples
+from newton.solvers import SolverKamino, SolverMuJoCo, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton.viewer import ViewerBase
 
 GRID_DIM_X = 20
@@ -37,20 +39,81 @@ RIGID_SOFT_CONTACT_MU = 1.0
 GROUND_CONTACT_KE = 2.0e5
 
 
+def _normalized_rigid_solver_name(rigid_solver: str) -> str:
+    if rigid_solver == "mujoco":
+        return "mjc"
+    return rigid_solver
+
+
+def _register_rigid_solver_custom_attributes(builder: newton.ModelBuilder, rigid_solver: str) -> None:
+    if _normalized_rigid_solver_name(rigid_solver) == "kamino":
+        SolverKamino.register_custom_attributes(builder)
+
+
+def _make_kamino_config() -> SolverKamino.Config:
+    config = SolverKamino.Config()
+    config.use_collision_detector = False
+    config.use_fk_solver = False
+    config.dynamics.preconditioning = True
+    config.padmm.max_iterations = 80
+    config.padmm.primal_tolerance = 1.0e-5
+    config.padmm.dual_tolerance = 1.0e-5
+    config.padmm.compl_tolerance = 1.0e-5
+    config.padmm.rho_0 = 0.1
+    config.padmm.use_acceleration = True
+    config.padmm.warmstart_mode = "containers"
+    return config
+
+
+def _rigid_solver_entry_args(rigid_solver: str):
+    rigid_solver = _normalized_rigid_solver_name(rigid_solver)
+    if rigid_solver == "vbd":
+        return "avbd", SolverVBD, {"iterations": 10}
+    if rigid_solver == "kamino":
+        return "kamino", SolverKamino, {"config": _make_kamino_config()}
+    if rigid_solver == "mjc":
+        return "mjc", SolverMuJoCo, {"use_mujoco_contacts": False, "njmax": 64}
+    raise ValueError(f"Unsupported rigid solver {rigid_solver!r}")
+
+
+def _soft_solver_entry_args(soft_solver: str, args):
+    if soft_solver == "semi_implicit":
+        return "semi_implicit", SolverSemiImplicit, {}
+    if soft_solver == "xpbd":
+        return "xpbd", SolverXPBD, {"iterations": args.xpbd_iterations}
+    if soft_solver == "vbd":
+        return (
+            "vbd",
+            SolverVBD,
+            {
+                "iterations": args.vbd_iterations,
+                "particle_enable_self_contact": False,
+                "particle_enable_tile_solve": False,
+                "rigid_contact_hard": False,
+                "rigid_body_particle_contact_buffer_size": 512,
+            },
+        )
+    raise ValueError(f"Unsupported soft solver {soft_solver!r}")
+
+
 class Example:
     def __init__(self, viewer: ViewerBase, args):
         self.viewer = viewer
         self.solver_type = args.solver
+        self.rigid_solver = _normalized_rigid_solver_name(args.rigid_solver)
+        self.soft_solver = args.soft_solver if self.solver_type == "coupled" else self.solver_type
         self.sim_time = 0.0
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 32
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        if self.solver_type not in {"semi_implicit", "xpbd", "vbd"}:
-            raise ValueError("The rigid soft contact example supports the semi_implicit, xpbd, and vbd solvers.")
+        if self.solver_type not in {"semi_implicit", "xpbd", "vbd", "coupled"}:
+            raise ValueError(
+                "The rigid soft contact example supports the semi_implicit, xpbd, vbd, and coupled solvers."
+            )
 
-        if self.solver_type in {"semi_implicit", "xpbd"}:
+        if self.soft_solver in {"semi_implicit", "xpbd"}:
             # Share the same scene material for force-based and XPBD solves.
             # XPBD rigid-soft contact is a positional projection and ignores
             # the normal contact stiffness, but SemiImplicit uses it as a
@@ -78,6 +141,8 @@ class Example:
             ground_contact_cfg.mu = 0.5
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "coupled":
+            _register_rigid_solver_custom_attributes(builder, self.rigid_solver)
         builder.default_particle_radius = 0.01
         builder.particle_max_velocity = 50.0
         builder.add_ground_plane(cfg=ground_contact_cfg)
@@ -99,10 +164,14 @@ class Example:
         )
 
         # Warp's original example is y-up; Newton examples are z-up.
-        sphere_body = builder.add_body(
-            xform=wp.transform(wp.vec3(0.2, 0.5, SPHERE_INITIAL_Z), wp.quat_identity()),
-            label="sphere",
-        )
+        sphere_xform = wp.transform(wp.vec3(0.2, 0.5, SPHERE_INITIAL_Z), wp.quat_identity())
+        if self.solver_type == "coupled":
+            sphere_body = builder.add_link(xform=sphere_xform, label="sphere")
+            sphere_joint = builder.add_joint_free(child=sphere_body, label="sphere_free")
+            builder.add_articulation([sphere_joint], label="sphere")
+        else:
+            sphere_body = builder.add_body(xform=sphere_xform, label="sphere")
+            sphere_joint = None
         builder.add_shape_sphere(
             sphere_body,
             radius=SPHERE_RADIUS,
@@ -111,30 +180,30 @@ class Example:
             label="rigid_sphere",
         )
 
-        if self.solver_type == "vbd":
+        if "vbd" in (self.soft_solver, self.rigid_solver):
             builder.color()
 
         self.model = builder.finalize()
-        if self.solver_type in {"semi_implicit", "xpbd"}:
+        if self.soft_solver in {"semi_implicit", "xpbd"}:
             self.model.soft_contact_ke = RIGID_SOFT_CONTACT_KE
             self.model.soft_contact_kd = RIGID_SOFT_CONTACT_KD
             self.model.soft_contact_kf = RIGID_SOFT_CONTACT_KF
             self.model.soft_contact_mu = RIGID_SOFT_CONTACT_MU
-        elif self.solver_type == "vbd":
+        elif self.soft_solver == "vbd":
             self.model.soft_contact_ke = 1.0e5
             self.model.soft_contact_kd = 1.0e-4
             self.model.soft_contact_kf = 1.0e3
             self.model.soft_contact_mu = 0.3
 
         if self.solver_type == "semi_implicit":
-            self.solver = newton.solvers.SolverSemiImplicit(model=self.model)
+            self.solver = SolverSemiImplicit(model=self.model)
         elif self.solver_type == "xpbd":
-            self.solver = newton.solvers.SolverXPBD(
+            self.solver = SolverXPBD(
                 model=self.model,
                 iterations=10,
             )
         elif self.solver_type == "vbd":
-            self.solver = newton.solvers.SolverVBD(
+            self.solver = SolverVBD(
                 model=self.model,
                 iterations=10,
                 particle_enable_self_contact=False,
@@ -142,13 +211,47 @@ class Example:
                 rigid_contact_hard=False,
                 rigid_body_particle_contact_buffer_size=512,
             )
+        elif self.solver_type == "coupled":
+            rigid_name, rigid_solver, rigid_kwargs = _rigid_solver_entry_args(self.rigid_solver)
+            soft_name, soft_solver, soft_kwargs = _soft_solver_entry_args(self.soft_solver, args)
+            particle_indices = list(range(self.model.particle_count))
+            self.solver = SolverCoupledProxy(
+                model=self.model,
+                entries=[
+                    SolverCoupledProxy.Entry(
+                        name=rigid_name,
+                        solver=lambda v: rigid_solver(model=v, **rigid_kwargs),
+                        bodies=[sphere_body],
+                        joints=[sphere_joint],
+                    ),
+                    SolverCoupledProxy.Entry(
+                        name=soft_name,
+                        solver=lambda v: soft_solver(model=v, **soft_kwargs),
+                        particles=particle_indices,
+                    ),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[
+                        SolverCoupledProxy.Proxy(
+                            source=rigid_name,
+                            destination=soft_name,
+                            bodies=[sphere_body],
+                            mass_scale=args.mass_scale,
+                            mode=args.coupling_mode,
+                            collision_pipeline=lambda model: newton.examples.create_collision_pipeline(model, args),
+                            collide_interval=1,
+                        )
+                    ],
+                    iterations=args.proxy_iterations,
+                ),
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
 
-        self.viewer.set_model(self.model)
+        newton.examples.configure_coupled_view(self, args)
         self.viewer.set_camera(
             pos=wp.vec3(1.0, -6.4, 3.0),
             pitch=-14.0,
@@ -169,7 +272,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            self.viewer.apply_forces(self.state_0)
+            newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -240,19 +343,65 @@ class Example:
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        newton.examples.log_coupled_view(self, self.contacts)
         self.viewer.end_frame()
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        newton.examples.add_coupled_view_args(parser)
         parser.add_argument(
             "--solver",
             help="Type of solver",
             type=str,
-            choices=["semi_implicit", "xpbd", "vbd"],
+            choices=["semi_implicit", "xpbd", "vbd", "coupled"],
             default="xpbd",
+        )
+        parser.add_argument(
+            "--rigid-solver",
+            help="Rigid solver used by --solver coupled",
+            type=str,
+            choices=["mjc", "mujoco", "kamino", "vbd"],
+            default="mjc",
+        )
+        parser.add_argument(
+            "--soft-solver",
+            help="Soft-body solver used by --solver coupled",
+            type=str,
+            choices=["semi_implicit", "xpbd", "vbd"],
+            default="vbd",
+        )
+        parser.add_argument(
+            "--coupling-mode",
+            help="Proxy state transfer mode",
+            type=str,
+            choices=["lagged", "staggered"],
+            default="lagged",
+        )
+        parser.add_argument(
+            "--mass-scale",
+            "-pmr",
+            help="Scale factor for rigid effective mass/inertia used by the soft-solver proxy",
+            type=float,
+            default=1.0,
+        )
+        parser.add_argument(
+            "--proxy-iterations",
+            help="Number of proxy relaxation passes per substep",
+            type=int,
+            default=1,
+        )
+        parser.add_argument(
+            "--xpbd-iterations",
+            help="XPBD solver iterations per substep in coupled mode",
+            type=int,
+            default=10,
+        )
+        parser.add_argument(
+            "--vbd-iterations",
+            help="VBD solver iterations per substep in coupled mode",
+            type=int,
+            default=10,
         )
         return parser
 
