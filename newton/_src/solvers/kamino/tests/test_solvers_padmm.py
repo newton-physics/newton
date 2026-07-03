@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.math import screw, vec3f
+from newton._src.solvers.kamino._src.core.math import screw
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
@@ -52,7 +52,7 @@ class TestSetup:
         # Set ad-hoc configurations
         self.builder.gravity[0].enabled = gravity
         if perturb:
-            u_0 = screw(vec3f(+10.0, 0.0, 0.0), vec3f(0.0, 0.0, 0.0))
+            u_0 = screw(wp.vec3f(+10.0, 0.0, 0.0), wp.vec3f(0.0, 0.0, 0.0))
             for body in self.builder.all_bodies:
                 body.u_i_0 = u_0
 

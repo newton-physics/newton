@@ -25,16 +25,6 @@ from ..xpbd.kernels import apply_joint_forces
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
-    ParticleForceElementAdjacencyInfo,
-    # Adjacency building kernels
-    _count_num_adjacent_edges,
-    _count_num_adjacent_faces,
-    _count_num_adjacent_springs,
-    _count_num_adjacent_tets,
-    _fill_adjacent_edges,
-    _fill_adjacent_faces,
-    _fill_adjacent_springs,
-    _fill_adjacent_tets,
     # Topological filtering helper functions
     accumulate_particle_body_contact_force_and_hessian,
     accumulate_self_contact_force_and_hessian,
@@ -42,11 +32,8 @@ from .particle_vbd_kernels import (
     # Planar DAT (Divide and Truncate) kernels
     apply_planar_truncation_parallel_by_collision,
     apply_truncation_ts,
-    build_edge_n_ring_edge_collision_filter,
-    build_vertex_n_ring_tris_collision_filter,
     # Solver kernels (particle VBD)
     forward_step,
-    set_to_csr,
     solve_elasticity,
     solve_elasticity_tile,
     update_velocity,
@@ -491,17 +478,9 @@ class SolverVBD(SolverBase):
                 vertex_collision_buffer_pre_alloc=particle_vertex_contact_buffer_size,
                 edge_collision_buffer_pre_alloc=particle_edge_contact_buffer_size,
                 edge_edge_parallel_epsilon=particle_edge_parallel_epsilon,
-            )
-
-            self._compute_particle_contact_filtering_list(
-                particle_external_vertex_contact_filtering_map, particle_external_edge_contact_filtering_map
-            )
-
-            self.trimesh_collision_detector.set_collision_filter_list(
-                self.particle_vertex_triangle_contact_filtering_list,
-                self.particle_vertex_triangle_contact_filtering_list_offsets,
-                self.particle_edge_edge_contact_filtering_list,
-                self.particle_edge_edge_contact_filtering_list_offsets,
+                topological_contact_filter_threshold=particle_topological_contact_filter_threshold,
+                external_vertex_triangle_filtering_map=particle_external_vertex_contact_filtering_map,
+                external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,
             )
 
             self.trimesh_collision_info = wp.array(
@@ -1165,233 +1144,9 @@ class SolverVBD(SolverBase):
     # =====================================================
 
     def _compute_particle_force_element_adjacency(self):
-        particle_adjacency = ParticleForceElementAdjacencyInfo()
-
-        with wp.ScopedDevice("cpu"):
-            if self.model.edge_indices:
-                edges_array = self.model.edge_indices.to("cpu")
-                # build vertex-edge particle_adjacency data
-                num_vertex_adjacent_edges = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_count_num_adjacent_edges,
-                    inputs=[edges_array, num_vertex_adjacent_edges],
-                    dim=1,
-                    device="cpu",
-                )
-
-                num_vertex_adjacent_edges = num_vertex_adjacent_edges.numpy()
-                vertex_adjacent_edges_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
-                vertex_adjacent_edges_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_edges)[:]
-                vertex_adjacent_edges_offsets[0] = 0
-                particle_adjacency.v_adj_edges_offsets = wp.array(vertex_adjacent_edges_offsets, dtype=wp.int32)
-
-                # temporal variables to record how much adjacent edges has been filled to each vertex
-                vertex_adjacent_edges_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-
-                edge_particle_adjacency_array_size = 2 * num_vertex_adjacent_edges.sum()
-                # vertex order: o0: 0, o1: 1, v0: 2, v1: 3,
-                particle_adjacency.v_adj_edges = wp.empty(shape=(edge_particle_adjacency_array_size,), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_fill_adjacent_edges,
-                    inputs=[
-                        edges_array,
-                        particle_adjacency.v_adj_edges_offsets,
-                        vertex_adjacent_edges_fill_count,
-                        particle_adjacency.v_adj_edges,
-                    ],
-                    dim=1,
-                    device="cpu",
-                )
-            else:
-                particle_adjacency.v_adj_edges_offsets = wp.empty(shape=(0,), dtype=wp.int32)
-                particle_adjacency.v_adj_edges = wp.empty(shape=(0,), dtype=wp.int32)
-
-            if self.model.tri_indices:
-                face_indices = self.model.tri_indices.to("cpu")
-                # compute adjacent triangles
-                # count number of adjacent faces for each vertex
-                num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32, device="cpu")
-                wp.launch(
-                    kernel=_count_num_adjacent_faces,
-                    inputs=[face_indices, num_vertex_adjacent_faces],
-                    dim=1,
-                    device="cpu",
-                )
-
-                # preallocate memory based on counting results
-                num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
-                vertex_adjacent_faces_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
-                vertex_adjacent_faces_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_faces)[:]
-                vertex_adjacent_faces_offsets[0] = 0
-                particle_adjacency.v_adj_faces_offsets = wp.array(vertex_adjacent_faces_offsets, dtype=wp.int32)
-
-                vertex_adjacent_faces_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-
-                face_particle_adjacency_array_size = 2 * num_vertex_adjacent_faces.sum()
-                # (face, vertex_order) * num_adj_faces * num_particles
-                # vertex order: v0: 0, v1: 1, o0: 2, v2: 3
-                particle_adjacency.v_adj_faces = wp.empty(shape=(face_particle_adjacency_array_size,), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_fill_adjacent_faces,
-                    inputs=[
-                        face_indices,
-                        particle_adjacency.v_adj_faces_offsets,
-                        vertex_adjacent_faces_fill_count,
-                        particle_adjacency.v_adj_faces,
-                    ],
-                    dim=1,
-                    device="cpu",
-                )
-            else:
-                particle_adjacency.v_adj_faces_offsets = wp.empty(shape=(0,), dtype=wp.int32)
-                particle_adjacency.v_adj_faces = wp.empty(shape=(0,), dtype=wp.int32)
-
-            if self.model.tet_indices:
-                tet_indices = self.model.tet_indices.to("cpu")
-                num_vertex_adjacent_tets = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_count_num_adjacent_tets,
-                    inputs=[tet_indices, num_vertex_adjacent_tets],
-                    dim=1,
-                    device="cpu",
-                )
-
-                num_vertex_adjacent_tets = num_vertex_adjacent_tets.numpy()
-                vertex_adjacent_tets_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
-                vertex_adjacent_tets_offsets[1:] = np.cumsum(2 * num_vertex_adjacent_tets)[:]
-                vertex_adjacent_tets_offsets[0] = 0
-                particle_adjacency.v_adj_tets_offsets = wp.array(vertex_adjacent_tets_offsets, dtype=wp.int32)
-
-                vertex_adjacent_tets_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-
-                tet_particle_adjacency_array_size = 2 * num_vertex_adjacent_tets.sum()
-                particle_adjacency.v_adj_tets = wp.empty(shape=(tet_particle_adjacency_array_size,), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_fill_adjacent_tets,
-                    inputs=[
-                        tet_indices,
-                        particle_adjacency.v_adj_tets_offsets,
-                        vertex_adjacent_tets_fill_count,
-                        particle_adjacency.v_adj_tets,
-                    ],
-                    dim=1,
-                    device="cpu",
-                )
-            else:
-                particle_adjacency.v_adj_tets_offsets = wp.empty(shape=(0,), dtype=wp.int32)
-                particle_adjacency.v_adj_tets = wp.empty(shape=(0,), dtype=wp.int32)
-
-            if self.model.spring_indices:
-                spring_array = self.model.spring_indices.to("cpu")
-                # build vertex-springs particle_adjacency data
-                num_vertex_adjacent_spring = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_count_num_adjacent_springs,
-                    inputs=[spring_array, num_vertex_adjacent_spring],
-                    dim=1,
-                    device="cpu",
-                )
-
-                num_vertex_adjacent_spring = num_vertex_adjacent_spring.numpy()
-                vertex_adjacent_springs_offsets = np.empty(shape=(self.model.particle_count + 1,), dtype=wp.int32)
-                vertex_adjacent_springs_offsets[1:] = np.cumsum(num_vertex_adjacent_spring)[:]
-                vertex_adjacent_springs_offsets[0] = 0
-                particle_adjacency.v_adj_springs_offsets = wp.array(vertex_adjacent_springs_offsets, dtype=wp.int32)
-
-                # temporal variables to record how much adjacent springs has been filled to each vertex
-                vertex_adjacent_springs_fill_count = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-                particle_adjacency.v_adj_springs = wp.empty(shape=(num_vertex_adjacent_spring.sum(),), dtype=wp.int32)
-
-                wp.launch(
-                    kernel=_fill_adjacent_springs,
-                    inputs=[
-                        spring_array,
-                        particle_adjacency.v_adj_springs_offsets,
-                        vertex_adjacent_springs_fill_count,
-                        particle_adjacency.v_adj_springs,
-                    ],
-                    dim=1,
-                    device="cpu",
-                )
-
-            else:
-                particle_adjacency.v_adj_springs_offsets = wp.empty(shape=(0,), dtype=wp.int32)
-                particle_adjacency.v_adj_springs = wp.empty(shape=(0,), dtype=wp.int32)
-
-        return particle_adjacency
-
-    def _compute_particle_contact_filtering_list(
-        self, external_vertex_contact_filtering_map, external_edge_contact_filtering_map
-    ):
-        if self.model.tri_count:
-            v_tri_filter_sets = None
-            edge_edge_filter_sets = None
-            if self.particle_topological_contact_filter_threshold >= 2:
-                if self.particle_adjacency.v_adj_faces_offsets.size > 0:
-                    v_tri_filter_sets = build_vertex_n_ring_tris_collision_filter(
-                        self.particle_topological_contact_filter_threshold,
-                        self.model.particle_count,
-                        self.model.edge_indices.numpy(),
-                        self.particle_adjacency.v_adj_edges.numpy(),
-                        self.particle_adjacency.v_adj_edges_offsets.numpy(),
-                        self.particle_adjacency.v_adj_faces.numpy(),
-                        self.particle_adjacency.v_adj_faces_offsets.numpy(),
-                    )
-                if self.particle_adjacency.v_adj_edges_offsets.size > 0:
-                    edge_edge_filter_sets = build_edge_n_ring_edge_collision_filter(
-                        self.particle_topological_contact_filter_threshold,
-                        self.model.edge_indices.numpy(),
-                        self.particle_adjacency.v_adj_edges.numpy(),
-                        self.particle_adjacency.v_adj_edges_offsets.numpy(),
-                    )
-
-            if external_vertex_contact_filtering_map is not None:
-                if v_tri_filter_sets is None:
-                    v_tri_filter_sets = [set() for _ in range(self.model.particle_count)]
-                for vertex_id, filter_set in external_vertex_contact_filtering_map.items():
-                    v_tri_filter_sets[vertex_id].update(filter_set)
-
-            if external_edge_contact_filtering_map is not None:
-                if edge_edge_filter_sets is None:
-                    edge_edge_filter_sets = [set() for _ in range(self.model.edge_indices.shape[0])]
-                for edge_id, filter_set in external_edge_contact_filtering_map.items():
-                    edge_edge_filter_sets[edge_id].update(filter_set)
-
-            if v_tri_filter_sets is None:
-                self.particle_vertex_triangle_contact_filtering_list = None
-                self.particle_vertex_triangle_contact_filtering_list_offsets = None
-            else:
-                (
-                    self.particle_vertex_triangle_contact_filtering_list,
-                    self.particle_vertex_triangle_contact_filtering_list_offsets,
-                ) = set_to_csr(v_tri_filter_sets)
-                self.particle_vertex_triangle_contact_filtering_list = wp.array(
-                    self.particle_vertex_triangle_contact_filtering_list, dtype=int, device=self.device
-                )
-                self.particle_vertex_triangle_contact_filtering_list_offsets = wp.array(
-                    self.particle_vertex_triangle_contact_filtering_list_offsets, dtype=int, device=self.device
-                )
-
-            if edge_edge_filter_sets is None:
-                self.particle_edge_edge_contact_filtering_list = None
-                self.particle_edge_edge_contact_filtering_list_offsets = None
-            else:
-                (
-                    self.particle_edge_edge_contact_filtering_list,
-                    self.particle_edge_edge_contact_filtering_list_offsets,
-                ) = set_to_csr(edge_edge_filter_sets)
-                self.particle_edge_edge_contact_filtering_list = wp.array(
-                    self.particle_edge_edge_contact_filtering_list, dtype=int, device=self.device
-                )
-                self.particle_edge_edge_contact_filtering_list_offsets = wp.array(
-                    self.particle_edge_edge_contact_filtering_list_offsets, dtype=int, device=self.device
-                )
+        if self.model.soft_mesh_adjacency is None:
+            raise ValueError("model.soft_mesh_adjacency is missing; finalize the model with ModelBuilder.")
+        return self.model.soft_mesh_adjacency.init_vertex_adjacency(self.model.particle_count)
 
     def _compute_rigid_force_element_adjacency(self, model):
         """
