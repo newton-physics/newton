@@ -53,14 +53,15 @@ class RobotComposerSim:
         # Build the scene
         builder = newton.ModelBuilder()
         self._build_scene(builder)
+        builder.shape_gap[:] = [0.0] * len(builder.shape_gap)
 
         # Replicate for parallel simulation
         scene = newton.ModelBuilder()
+        scene.default_shape_cfg.gap = 0.0
         scene.replicate(builder, self.world_count)
         scene.add_ground_plane()
 
         self.model = scene.finalize(device=device)
-        self.model.shape_gap.zero_()
 
         # Initialize states and control
         self.state_0 = self.model.state()

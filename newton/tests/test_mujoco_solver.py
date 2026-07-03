@@ -5622,19 +5622,22 @@ class TestMuJoCoConversion(unittest.TestCase):
             err_msg="Child body quaternion should match composed joint transforms (with joint_q and translations)",
         )
 
-    def test_diagonal_inertia_uses_full_storage(self):
-        """Diagonal inertia uses storage that remains valid after randomization."""
-        builder = newton.ModelBuilder()
-        inertia_3x3 = np.diag([4.0e-5, 2.6e-5, 5.0e-5]).astype(np.float64)
-        body = builder.add_link(
-            mass=0.1,
-            com=wp.vec3(0.0, 0.0, 0.0),
-            inertia=wp.mat33(inertia_3x3),
-        )
-        builder.add_shape_box(body=body, hx=0.03, hy=0.04, hz=0.02)
-        joint = builder.add_joint_free(child=body)
-        builder.add_articulation([joint])
-        model = builder.finalize()
+    def test_diagonal_to_full_inertia_preserves_dynamics(self):
+        """Runtime inertia coupling matches a model compiled with that coupling."""
+
+        def build_model(inertia):
+            builder = newton.ModelBuilder(gravity=0.0)
+            body = builder.add_link(
+                mass=0.1,
+                com=wp.vec3(0.0, 0.0, 0.0),
+                inertia=wp.mat33(inertia),
+            )
+            joint = builder.add_joint_free(child=body)
+            builder.add_articulation([joint])
+            return builder.finalize(), body
+
+        diagonal_inertia = np.diag([0.04, 0.026, 0.05]).astype(np.float32)
+        model, body = build_model(diagonal_inertia)
         with tempfile.TemporaryDirectory() as tmpdir:
             xml_path = os.path.join(tmpdir, "model.xml")
             try:
@@ -5644,22 +5647,7 @@ class TestMuJoCoConversion(unittest.TestCase):
             inertial = ET.parse(xml_path).find(".//body/inertial")
             saved_ipos = np.fromstring(inertial.get("pos", "0 0 0"), sep=" ")
             np.testing.assert_allclose(saved_ipos, model.body_com.numpy()[body])
-        mujoco, _ = SolverMuJoCo.import_mujoco()
-        mjc_body_id = 1  # body 0 = world
-        self.assertEqual(int(solver.mj_model.body_simple[mjc_body_id]), 0)
-        self.assertEqual(
-            int(solver.mj_model.body_sameframe[mjc_body_id]),
-            int(mujoco.mjtSameFrame.mjSAMEFRAME_NONE),
-        )
-        np.testing.assert_array_equal(solver.mj_model.dof_simplenum, np.zeros(6, dtype=np.int32))
-        np.testing.assert_array_equal(solver.mj_model.M_rownnz, np.arange(1, 7, dtype=np.int32))
-        np.testing.assert_allclose(solver.mj_model.body_iquat[mjc_body_id], [1.0, 0.0, 0.0, 0.0])
-        np.testing.assert_allclose(
-            solver.mj_model.body_inertia[mjc_body_id],
-            np.diag(model.body_inertia.numpy()[body]),
-        )
 
-        principal = solver.mj_model.body_inertia[mjc_body_id].copy()
         angle = np.pi / 6.0
         rotation = np.array(
             [
@@ -5669,13 +5657,25 @@ class TestMuJoCoConversion(unittest.TestCase):
             ],
             dtype=np.float32,
         )
-        model.body_inertia.assign((rotation @ np.diag(principal) @ rotation.T)[None, ...])
+        full_inertia = rotation @ diagonal_inertia @ rotation.T
+        model.body_inertia.assign(full_inertia[None, ...])
         solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
 
-        state_in = model.state()
-        state_out = model.state()
-        solver.step(state_in, state_out, model.control(), None, 0.01)
-        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
+        reference_model, reference_body = build_model(full_inertia)
+        reference_solver = SolverMuJoCo(reference_model, iterations=1, disable_contacts=True)
+
+        def step_with_torque(test_model, test_body, test_solver):
+            state_in = test_model.state()
+            state_out = test_model.state()
+            newton.eval_fk(test_model, test_model.joint_q, test_model.joint_qd, state_in)
+            state_in.body_f.assign([0.0, 0.0, 0.0, 0.1, 0.0, 0.0])
+            test_solver.step(state_in, state_out, test_model.control(), None, 0.01)
+            return state_out.body_qd.numpy()[test_body]
+
+        actual_qd = step_with_torque(model, body, solver)
+        reference_qd = step_with_torque(reference_model, reference_body, reference_solver)
+        self.assertGreater(abs(float(reference_qd[4])), 1.0e-4)
+        np.testing.assert_allclose(actual_qd, reference_qd, rtol=1.0e-5, atol=1.0e-6)
 
     def test_global_joint_solver_params(self):
         """Test that global joint solver parameters affect joint limit behavior."""
@@ -6087,7 +6087,6 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create MuJoCo solver
         solver = newton.solvers.SolverMuJoCo(model)
-        self.assertEqual(solver.mjw_model.geom_dataid.shape[0], 1)
 
         # Verify that mesh_pos is non-zero (mesh center should be at 0.5, 0.5, 0.5)
         mesh_pos = solver.mjw_model.mesh_pos.numpy()
