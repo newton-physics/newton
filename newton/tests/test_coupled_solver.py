@@ -2394,8 +2394,18 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         builder = newton.ModelBuilder()
         for _ in range(4):
             builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        _add_equality_constraint(builder, constraint_type=newton.EqType.CONNECT, body1=0, body2=1)
-        _add_equality_constraint(builder, constraint_type=newton.EqType.CONNECT, body1=2, body2=3)
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
+            body1=0,
+            body2=1,
+        )
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
+            body1=2,
+            body2=3,
+        )
         model = builder.finalize(device="cpu")
 
         coupled = SolverCoupled(
