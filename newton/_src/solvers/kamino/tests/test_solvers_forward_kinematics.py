@@ -19,6 +19,7 @@ from newton._src.solvers.kamino._src.core.joints import JointActuationType, Join
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
+from newton._src.solvers.kamino._src.models.builders.testing import build_all_joints_test_model
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.fk import ForwardKinematicsSolver
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
@@ -574,6 +575,50 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Simulate random poses, using regularization to handle tie rod (sparse solver)
         success = simulate_function(add_axis_joints=False, use_regularization=True, tolerance=1e-5, use_sparsity=True)
+        self.assertTrue(success)
+
+
+class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+        self.has_cuda = self.default_device.is_cuda
+        self.verbose = test_context.verbose
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_all_joints_example_FK_random_poses(self):
+        # Initialize RNG
+        test_name = "All-joints example FK random poses check"
+        seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
+        rng = np.random.default_rng(seed)
+
+        # Build model with all joint types, unary and binary (actuated so the FK problem is well-posed)
+        builder = build_all_joints_test_model(unary_joints=True, binary_joints=True, actuated=True, floating_base=False)
+        model = builder.finalize(device=self.default_device)
+
+        # Generate helper function to simulate random poses
+        num_poses = 30
+        simulate_function = partial(
+            simulate_random_poses,
+            model,
+            num_poses,
+            rng,
+            use_graph=self.has_cuda,
+            verbose=self.verbose,
+            reset_state=True,
+            use_incremental_solve=True,
+            tolerance=1e-6,
+        )
+
+        # Simulate random poses with dense solver
+        success = simulate_function(use_sparsity=False)
+        self.assertTrue(success)
+
+        # Simulate random poses with sparse solver
+        success = simulate_function(use_sparsity=True, preconditioner="jacobi_block_diagonal")
         self.assertTrue(success)
 
 
