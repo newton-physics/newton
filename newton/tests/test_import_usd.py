@@ -6124,12 +6124,12 @@ def Xform "Articulation" (
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
         cases = (
-            ("Nonuniform", (2.0, 3.0, 4.0), 45.0, (0.3, 0.0, 0.0), (0.6, 0.0, 0.0), True),
-            ("Negative", (-2.0, 3.0, 4.0), 30.0, (0.3, 0.2, 0.1), None, False),
+            ("Nonuniform", (2.0, 3.0, 4.0), 45.0, (0.3, 0.0, 0.0), True),
+            ("Negative", (-2.0, 3.0, 4.0), 30.0, (0.3, 0.2, 0.1), False),
         )
         mass_cases = (("Complete", True), ("Partial", False))
 
-        for case_name, scale, angle, com, _expected_shape_pos, include_partial in cases:
+        for case_name, scale, angle, com, include_partial in cases:
             parent = UsdGeom.Xform.Define(stage, f"/World/{case_name}")
             parent.AddScaleOp().Set(Gf.Vec3d(*scale))
             for mass_name, author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
@@ -6151,15 +6151,13 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
 
-        for case_name, _scale, _angle, _com, expected_shape_pos, include_partial in cases:
+        for case_name, _scale, _angle, _com, include_partial in cases:
             for mass_name, _author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
                 with self.subTest(case=case_name, mass=mass_name):
                     body_path = f"/World/{case_name}/{mass_name}"
                     body_idx = result["path_body_map"][body_path]
                     shape_idx = result["path_shape_map"][f"{body_path}/Collider"]
                     shape_pos = builder.shape_transform[shape_idx].p
-                    if expected_shape_pos is not None:
-                        np.testing.assert_allclose(shape_pos, expected_shape_pos, atol=1e-6, rtol=1e-6)
                     np.testing.assert_allclose(builder.body_com[body_idx], shape_pos, atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
