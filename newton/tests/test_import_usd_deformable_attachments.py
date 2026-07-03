@@ -240,6 +240,31 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     self.assertIn(tuple(sorted((sa, b[1]))), pairs)
                     self.assertNotIn(tuple(sorted((sa, b[2]))), pairs, "B segment 2 was not in any group")
 
+    def test_element_collision_filter_explicit_singleton_does_not_broadcast(self):
+        """An explicit single group (counts=[n]) must pair one-to-one, not broadcast: against
+        two groups on the other side it is a group-count mismatch that warns and skips. Only
+        the empty-counts form (no groupElemCounts authored) pairs against all groups."""
+        with self.assertWarnsRegex(UserWarning, "pair one-to-one"):
+            builder, _result, pairs = self._two_cable_filter_stage(
+                indices0=[0], counts0=[1], indices1=[0, 1], counts1=[1, 1]
+            )
+        a = self._cable_seg_shapes(builder, "/World/CableA")
+        b = self._cable_seg_shapes(builder, "/World/CableB")
+        cross = {tuple(sorted((sa, sb))) for sa in a for sb in b}
+        self.assertTrue(cross.isdisjoint(pairs), "an explicit singleton group must not broadcast")
+
+    def test_element_collision_filter_indices_without_counts_broadcast(self):
+        """Indices authored with no groupElemCounts form one group of those elements that pairs
+        against every group on the other side (the proposal reserves all-group pairing for the
+        absent-counts form)."""
+        builder, _result, pairs = self._two_cable_filter_stage(indices0=[1], indices1=[0, 2], counts1=[1, 1])
+        a = self._cable_seg_shapes(builder, "/World/CableA")
+        b = self._cable_seg_shapes(builder, "/World/CableB")
+        self.assertIn(tuple(sorted((a[1], b[0]))), pairs)
+        self.assertIn(tuple(sorted((a[1], b[2]))), pairs)
+        self.assertNotIn(tuple(sorted((a[0], b[0]))), pairs, "unlisted src0 segment must stay collidable")
+        self.assertNotIn(tuple(sorted((a[1], b[1]))), pairs, "B segment 1 was not in any group")
+
     def test_element_collision_filter_malformed_counts_warns_and_skips(self):
         """groupElemCounts whose sum exceeds the index array warns and applies no filter pairs."""
         with self.assertWarnsRegex(UserWarning, "sum exceeds"):

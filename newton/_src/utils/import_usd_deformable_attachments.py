@@ -275,17 +275,19 @@ def _deformable_remap_collapsed(
 
 def _element_collision_filter_groups(
     counts: Sequence[int], indices: Sequence[int], which: str, filter_path: str
-) -> list[list[int]] | None:
+) -> tuple[list[list[int]], bool] | None:
     """Partition a source's flat ``groupElemIndices`` into per-group index lists by ``groupElemCounts``.
 
     Each count slices the next run of indices into one group; a count of ``0`` selects *all* elements
     of the source for that paired group (represented as an empty list, resolved downstream). With no
     counts authored the whole index array is a single group (an empty array then meaning *all*).
-    Returns ``None`` (after warning) for malformed counts: negative, or a total that does not match
-    the index-array length.
+    Returns ``(groups, broadcast)``: ``broadcast`` is True only for the no-counts form, because the
+    proposal reserves pairing a side against every group of the other side for that form -- an
+    explicit single group must pair one-to-one like any other explicit list. Returns ``None`` (after
+    warning) for malformed counts: negative, or a total that does not match the index-array length.
     """
     if not counts:
-        return [list(indices)]  # single implicit group (empty indices -> all elements)
+        return [list(indices)], True  # single implicit group (empty indices -> all elements)
     groups: list[list[int]] = []
     offset = 0
     for count in counts:
@@ -315,7 +317,7 @@ def _element_collision_filter_groups(
             stacklevel=2,
         )
         return None
-    return groups
+    return groups, False
 
 
 def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) -> None:
@@ -325,8 +327,8 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
     ``groupElemCounts0`` / ``groupElemCounts1`` slice the flat ``groupElemIndices0`` /
     ``groupElemIndices1`` arrays into groups that pair up element-wise; collisions are filtered only
     within each paired group (not across the full Cartesian product). A count of ``0`` -- or an empty
-    counts array -- means *all* elements of that source. When one side has a single group it is
-    broadcast against every group of the other side.
+    counts array -- means *all* elements of that source. Only a side that authors no
+    ``groupElemCounts`` pairs against every group of the other side.
 
     Supported element sources are imported cables (indices select the cable's segments), rigid bodies
     (all of the body's collider shapes), and collider prims (the exact shape, e.g. a child collider
@@ -405,23 +407,26 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         idx1 = [int(i) for i in (deformable_read(prim, "groupElemIndices1") or [])]
         counts0 = [int(c) for c in (deformable_read(prim, "groupElemCounts0") or [])]
         counts1 = [int(c) for c in (deformable_read(prim, "groupElemCounts1") or [])]
-        groups0 = _element_collision_filter_groups(counts0, idx0, "0", path)
-        groups1 = _element_collision_filter_groups(counts1, idx1, "1", path)
-        if groups0 is None or groups1 is None:
+        parsed0 = _element_collision_filter_groups(counts0, idx0, "0", path)
+        parsed1 = _element_collision_filter_groups(counts1, idx1, "1", path)
+        if parsed0 is None or parsed1 is None:
             continue
-        # Pair groups element-wise; a single group on one side broadcasts against all groups of the
-        # other (covers the "all elements of this source" case authored as an empty counts array).
-        if len(groups0) == len(groups1):
-            pairs = list(zip(groups0, groups1, strict=True))
-        elif len(groups0) == 1:
+        groups0, broadcast0 = parsed0
+        groups1, broadcast1 = parsed1
+        # Pair explicit groups element-wise. Only the no-counts form pairs its single group
+        # against every group of the other side; an explicit single group (counts=[n]) must
+        # pair one-to-one like any other explicit list, so a group-count mismatch is malformed.
+        if broadcast0 and not broadcast1:
             pairs = [(groups0[0], g1) for g1 in groups1]
-        elif len(groups1) == 1:
+        elif broadcast1 and not broadcast0:
             pairs = [(g0, groups1[0]) for g0 in groups0]
+        elif len(groups0) == len(groups1):
+            pairs = list(zip(groups0, groups1, strict=True))
         else:
             warnings.warn(
                 f"{path}: PhysicsElementCollisionFilter has {len(groups0)} src0 group(s) but "
-                f"{len(groups1)} src1 group(s); groups must pair one-to-one (or one side be a single "
-                "group); skipping.",
+                f"{len(groups1)} src1 group(s); groups must pair one-to-one (or a side must author "
+                "no groupElemCounts to pair against all groups); skipping.",
                 stacklevel=2,
             )
             continue
