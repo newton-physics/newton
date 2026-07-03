@@ -134,6 +134,33 @@ class TestDeformableView(unittest.TestCase):
         with self.assertRaises(ValueError):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
 
+    def test_indexed_partial_writes_touch_only_selected_groups(self):
+        """indices= scatters into the selected groups only, from host and device index
+        forms, and cable body velocities round-trip through an indexed write."""
+        model = _replicated_model(3)
+        state = model.state()
+
+        cloth = DeformableView(model, "/World/Cloth", family="cloth")
+        before = cloth.get_particle_positions(state).numpy()
+        moved = before[[1]].copy()
+        moved[..., 2] += 5.0
+        cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), indices=[1])
+        after = cloth.get_particle_positions(state).numpy()
+        np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
+        np.testing.assert_allclose(after[1], moved[0], atol=1e-6)
+
+        cable = DeformableView(model, "/World/Cable", family="cable")
+        velocities = np.zeros((1, cable.bodies_per_group, 6), dtype=np.float32)
+        velocities[..., 3] = 2.0
+        device_indices = wp.array([2], dtype=wp.int32, device=model.device)
+        cable.set_body_velocities(state, wp.array(velocities, dtype=wp.spatial_vector), indices=device_indices)
+        out = cable.get_body_velocities(state).numpy()
+        np.testing.assert_allclose(out[2], velocities[0], atol=1e-6)
+        np.testing.assert_array_equal(out[:2], np.zeros_like(out[:2]))
+
+        with self.assertRaisesRegex(ValueError, "must be in"):
+            cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), indices=[3])
+
 
 class TestDeformableViewBuilderGroups(unittest.TestCase):
     """Groups recorded by labeled builder calls (no USD) are selectable through the view."""

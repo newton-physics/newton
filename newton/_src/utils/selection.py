@@ -1968,10 +1968,11 @@ def _gather_group_vec3_kernel(
 def _scatter_group_vec3_kernel(
     values: wp.array2d[wp.vec3],
     starts: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
     dst: wp.array[wp.vec3],
 ):
-    group, i = wp.tid()
-    dst[starts[group] + i] = values[group, i]
+    i, j = wp.tid()
+    dst[starts[groups[i]] + j] = values[i, j]
 
 
 @wp.kernel
@@ -1988,10 +1989,11 @@ def _gather_group_transform_kernel(
 def _scatter_group_transform_kernel(
     values: wp.array2d[wp.transform],
     starts: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
     dst: wp.array[wp.transform],
 ):
-    group, i = wp.tid()
-    dst[starts[group] + i] = values[group, i]
+    i, j = wp.tid()
+    dst[starts[groups[i]] + j] = values[i, j]
 
 
 @wp.kernel
@@ -2008,10 +2010,11 @@ def _gather_group_spatial_kernel(
 def _scatter_group_spatial_kernel(
     values: wp.array2d[wp.spatial_vector],
     starts: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
     dst: wp.array[wp.spatial_vector],
 ):
-    group, i = wp.tid()
-    dst[starts[group] + i] = values[group, i]
+    i, j = wp.tid()
+    dst[starts[groups[i]] + j] = values[i, j]
 
 
 class DeformableView:
@@ -2139,6 +2142,7 @@ class DeformableView:
         """World index of each selected group."""
 
         # Element ranges per kind; the selection must be homogeneous per kind.
+        self._all_groups: wp.array | None = None  # lazy identity indices for full-selection writes
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array] = {}
         self._counts: dict[str, int] = {}
@@ -2199,19 +2203,38 @@ class DeformableView:
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
-    def _scatter(self, kind: str, values, kernel, dst: wp.array, dtype) -> None:
+    def _resolve_group_indices(self, indices) -> wp.array[wp.int32]:
+        if indices is None:
+            if self._all_groups is None:
+                self._all_groups = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
+            return self._all_groups
+        if isinstance(indices, wp.array):
+            # A device-resident index array is used as-is (no host sync, so no bounds check).
+            if indices.dtype is not wp.int32:
+                raise ValueError(f"Expected indices dtype int32, got {indices.dtype.__name__}")
+            if indices.device != self.device:
+                raise ValueError(f"Expected indices on device {self.device}, got {indices.device}")
+            return indices
+        idx = [int(i) for i in indices]
+        if any(i < 0 or i >= self.count for i in idx):
+            raise ValueError(f"Group indices must be in [0, {self.count}), got {idx}")
+        return wp.array(idx, dtype=wp.int32, device=self.device)
+
+    def _scatter(self, kind: str, values, kernel, dst: wp.array, dtype, indices=None) -> None:
         count = self._element_count(kind)
+        groups = self._resolve_group_indices(indices)
+        rows = groups.shape[0]
         if not isinstance(values, wp.array):
-            values = wp.array(values, dtype=dtype, shape=(self.count, count), device=self.device, copy=False)
-        if values.shape != (self.count, count):
-            raise ValueError(f"Expected values shape {(self.count, count)}, got {values.shape}")
+            values = wp.array(values, dtype=dtype, shape=(rows, count), device=self.device, copy=False)
+        if values.shape != (rows, count):
+            raise ValueError(f"Expected values shape {(rows, count)}, got {values.shape}")
         # Validate Warp inputs eagerly so a mismatch reads as a contract error, not a
         # kernel-launch failure.
         if values.dtype is not dtype:
             raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
-        wp.launch(kernel, dim=(self.count, count), inputs=[values, self._starts[kind], dst], device=self.device)
+        wp.launch(kernel, dim=(rows, count), inputs=[values, self._starts[kind], groups, dst], device=self.device)
 
     # particle state (cloth / soft) -------------------------------------------
 
@@ -2224,17 +2247,27 @@ class DeformableView:
         """Particle positions [m] of each group, shape ``(count, particles_per_group)`` of vec3."""
         return self._gather("particle", source.particle_q, _gather_group_vec3_kernel, wp.vec3)
 
-    def set_particle_positions(self, source: Model | State, values):
-        """Write particle positions [m] from ``(count, particles_per_group)`` vec3 values."""
-        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_q, wp.vec3)
+    def set_particle_positions(self, source: Model | State, values, indices=None):
+        """Write particle positions [m] from ``(rows, particles_per_group)`` vec3 values.
+
+        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
+        groups to write (remaining groups are untouched). A host index sequence is
+        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        """
+        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_q, wp.vec3, indices)
 
     def get_particle_velocities(self, source: Model | State) -> wp.array2d[wp.vec3]:
         """Particle velocities [m/s] of each group, shape ``(count, particles_per_group)`` of vec3."""
         return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel, wp.vec3)
 
-    def set_particle_velocities(self, source: Model | State, values):
-        """Write particle velocities [m/s] from ``(count, particles_per_group)`` vec3 values."""
-        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_qd, wp.vec3)
+    def set_particle_velocities(self, source: Model | State, values, indices=None):
+        """Write particle velocities [m/s] from ``(rows, particles_per_group)`` vec3 values.
+
+        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
+        groups to write (remaining groups are untouched). A host index sequence is
+        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        """
+        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_qd, wp.vec3, indices)
 
     # body state (cable) -------------------------------------------------------
 
@@ -2247,14 +2280,24 @@ class DeformableView:
         """Segment body transforms of each cable, shape ``(count, bodies_per_group)`` of transform."""
         return self._gather("body", source.body_q, _gather_group_transform_kernel, wp.transform)
 
-    def set_body_transforms(self, source: Model | State, values):
-        """Write segment body transforms from ``(count, bodies_per_group)`` transform values."""
-        self._scatter("body", values, _scatter_group_transform_kernel, source.body_q, wp.transform)
+    def set_body_transforms(self, source: Model | State, values, indices=None):
+        """Write segment body transforms from ``(rows, bodies_per_group)`` transform values.
+
+        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
+        groups to write (remaining groups are untouched). A host index sequence is
+        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        """
+        self._scatter("body", values, _scatter_group_transform_kernel, source.body_q, wp.transform, indices)
 
     def get_body_velocities(self, source: Model | State) -> wp.array2d[wp.spatial_vector]:
         """Segment body spatial velocities of each cable, shape ``(count, bodies_per_group)``."""
         return self._gather("body", source.body_qd, _gather_group_spatial_kernel, wp.spatial_vector)
 
-    def set_body_velocities(self, source: Model | State, values):
-        """Write segment body spatial velocities from ``(count, bodies_per_group)`` values."""
-        self._scatter("body", values, _scatter_group_spatial_kernel, source.body_qd, wp.spatial_vector)
+    def set_body_velocities(self, source: Model | State, values, indices=None):
+        """Write segment body spatial velocities from ``(rows, bodies_per_group)`` values.
+
+        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
+        groups to write (remaining groups are untouched). A host index sequence is
+        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        """
+        self._scatter("body", values, _scatter_group_spatial_kernel, source.body_qd, wp.spatial_vector, indices)
