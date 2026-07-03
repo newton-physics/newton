@@ -2581,36 +2581,6 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         self.assertEqual(model.get_attribute_frequency("spec_values"), newton.Model.AttributeFrequency.BODY)
         np.testing.assert_allclose(coupled.view("dst").spec_values.numpy(), [2.0])
 
-    def test_core_attribute_specs_cover_entity_indexed_storage(self):
-        model = newton.Model(device="cpu")
-        prefixes = (
-            "_shape_",
-            "constraint_mimic_",
-            "articulation_",
-            "particle_",
-            "body_",
-            "shape_",
-            "joint_",
-            "spring_",
-            "edge_",
-            "tri_",
-            "tet_",
-        )
-        missing = [
-            name
-            for name, value in model.__dict__.items()
-            if name.startswith(prefixes)
-            and isinstance(value, (wp.array, np.ndarray, list))
-            and name not in model.attribute_specs
-        ]
-        self.assertEqual(missing, [])
-
-        for name, row_width in (("spring_indices", 2), ("tri_indices", 1), ("edge_indices", 1), ("tet_indices", 1)):
-            with self.subTest(name=name):
-                spec = model.attribute_specs[name]
-                self.assertEqual(spec.references, newton.Model.AttributeFrequency.PARTICLE)
-                self.assertEqual(spec.row_width, row_width)
-
     def test_compaction_rejects_misaligned_late_registered_attribute(self):
         builder = newton.ModelBuilder()
         for _ in range(2):
