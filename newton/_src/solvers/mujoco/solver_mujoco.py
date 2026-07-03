@@ -4699,7 +4699,7 @@ class SolverMuJoCo(SolverBase):
             spec.option.magnetic = np.array(magnetic)
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
-        # alignfree would undo the temporary inertial-frame offset below.
+        # alignfree would erase the offset used below to force general qM storage.
         spec.compiler.alignfree = False
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
             spec.compiler.autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
@@ -5413,7 +5413,7 @@ class SolverMuJoCo(SolverBase):
                 body_ipos = body_com[child, :].copy()
                 compile_ipos = body_ipos.copy()
                 compile_ipos[0] += 1.0e-3 if compile_ipos[0] >= 0.0 else -1.0e-3
-                # Runtime inertia edits require MuJoCo's general mass-matrix storage.
+                # A temporary COM offset forces qM storage that remains valid after inertia edits.
                 body_kwargs["ipos"] = compile_ipos
                 if inertia[0, 1] == 0.0 and inertia[0, 2] == 0.0 and inertia[1, 2] == 0.0:
                     body_kwargs["inertia"] = [inertia[0, 0], inertia[1, 1], inertia[2, 2]]
@@ -6120,6 +6120,7 @@ class SolverMuJoCo(SolverBase):
             self.mjc_actuator_to_newton_ball_jnt = None
 
         self.mj_model = spec.compile()
+        # Keep the compiled qM layout, but restore the physical COM and derived constants.
         for body_id, body, body_ipos in full_inertia_bodies:
             body.ipos = body_ipos
             self.mj_model.body_ipos[body_id] = body_ipos
