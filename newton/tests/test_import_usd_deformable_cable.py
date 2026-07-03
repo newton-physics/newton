@@ -743,6 +743,43 @@ class TestUSDDeformableCable(unittest.TestCase):
         junction = result["path_attachment_attrs"]["/World/Junction"]
         self.assertIn("unsupported_reason", junction)
 
+    def test_welded_periodic_curve_rejects_cycle_and_falls_back(self):
+        """Welding a branch onto a periodic curve creates a cycle that add_rod_graph cannot
+        close; importing it as a graph would silently open the authored loop. The component
+        is rejected with a warning, both curves import individually (the loop keeps its
+        closing joint), and the junction is preserved as unsupported."""
+        stage = _deformable_stage()
+        loop_pts = [(0.0, 0.0, 1.0), (0.3, 0.0, 1.0), (0.15, 0.3, 1.0)]
+        _add_cable_curve(stage, "/World/Loop", loop_pts, periodic=True)
+        _add_cable_curve(stage, "/World/Branch", [(0.0, 0.0, 1.0), (0.0, -0.2, 1.0), (0.0, -0.4, 1.0)])
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/Branch",
+            src1="/World/Loop",
+            type0="point",
+            type1="point",
+            indices0=[0],
+            indices1=[0],
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "cycle"):
+            result = builder.add_usd(stage, deformable_results=True)
+
+        # Both curves import individually: 3 loop bodies + 2 branch bodies, two articulations.
+        lb0, lb1 = group_range(builder, "cable", "/World/Loop", "body")
+        self.assertEqual(lb1 - lb0, 3)
+        lj0, lj1 = group_range(builder, "cable", "/World/Loop", "joint")
+        self.assertEqual(lj1 - lj0, 3, "the periodic loop keeps its closing joint")
+        bb0, bb1 = group_range(builder, "cable", "/World/Branch", "body")
+        self.assertEqual(bb1 - bb0, 2)
+        self.assertEqual(builder.articulation_count, 2)
+        # The junction is preserved as unsupported, not consumed by the failed weld.
+        self.assertNotIn("/World/Junction", result["path_attachment_map"])
+        self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Junction"])
+        builder.finalize()
+
     def test_welded_graph_collapse_with_masses_falls_back(self):
         """Welding two adjacent points of one curve onto the same node collapses a segment. With
         authored physics:masses the surviving body count no longer matches the per-point lumping; the

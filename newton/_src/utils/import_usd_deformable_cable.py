@@ -249,6 +249,19 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         if len(node_positions) < 2 or not edges:
             return False
 
+        # A connected component with as many edges as merged nodes contains a cycle (e.g. a
+        # welded periodic curve). add_rod_graph builds a spanning tree and cannot close the
+        # loop, which would silently change the authored topology; reject the weld instead so
+        # the curves import individually (a periodic curve keeps its loop-closing joint) and
+        # the junction reaches the attachment pass.
+        if len(edges) >= len(node_positions):
+            warnings.warn(
+                f"cable graph '{cid}': the welded component contains a cycle, which a rod graph "
+                f"cannot close; skipping the weld so its curves import individually.",
+                stacklevel=2,
+            )
+            return False
+
         # A welded graph would abort inside add_rod_graph on a degenerate (near-zero-length) edge from
         # duplicate or collapsed points. Reject the component with a warning instead, leaving its curves
         # to the per-curve pass (which warns and skips any individually-degenerate curve).
