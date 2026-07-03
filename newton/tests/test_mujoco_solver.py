@@ -8385,13 +8385,22 @@ def Xform "R" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
 class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
     """Tests for mimic constraint support in SolverMuJoCo."""
 
-    def _make_two_revolute_model(self, coef0=0.0, coef1=1.0, enabled=True):
+    def _make_two_revolute_model(
+        self,
+        coef0=0.0,
+        coef1=1.0,
+        enabled=True,
+        stiffness=-np.inf,
+        damping=-np.inf,
+    ):
         """Create a model with two revolute joints and a mimic constraint.
 
         Args:
             coef0: Offset coefficient for the mimic constraint (joint0 = coef0 + coef1 * joint1).
             coef1: Scale coefficient for the mimic constraint.
             enabled: Whether the mimic constraint is active.
+            stiffness: Mimic constraint stiffness [N·m/rad].
+            damping: Mimic constraint damping [N·m·s/rad].
 
         Returns:
             Finalized Newton Model with two revolute joints linked by a mimic constraint.
@@ -8404,8 +8413,45 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         builder.add_articulation([j1, j2])
-        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=coef0, coef1=coef1, enabled=enabled)
+        builder.add_constraint_mimic(
+            joint0=j2,
+            joint1=j1,
+            coef0=coef0,
+            coef1=coef1,
+            stiffness=stiffness,
+            damping=damping,
+            enabled=enabled,
+        )
         return builder.finalize()
+
+    def _assert_mimic_solref(self, solver, stiffness, damping, world=0):
+        """Assert force-space mimic gains were scaled using MuJoCo's effective inverse weight."""
+        mimic_map = solver.mjc_eq_to_newton_mimic.numpy()[world]
+        eq_id = int(np.flatnonzero(mimic_map >= 0)[0])
+        joint0 = int(solver.mj_model.eq_obj1id[eq_id])
+        joint1 = int(solver.mj_model.eq_obj2id[eq_id])
+        dof0 = int(solver.mj_model.jnt_dofadr[joint0])
+        dof1 = int(solver.mj_model.jnt_dofadr[joint1])
+
+        if solver.use_mujoco_cpu:
+            invweight = solver.mj_model.dof_invweight0
+            dmax = solver.mj_model.eq_solimp[eq_id, 1]
+        else:
+            invweight = solver.mjw_model.dof_invweight0.numpy()[world]
+            dmax = solver.mjw_model.eq_solimp.numpy()[world, eq_id, 1]
+        factor = (invweight[dof0] + invweight[dof1]) * (1.0 - dmax)
+        direct_stiffness = stiffness * factor
+        direct_damping = damping * factor
+        expected = np.array(
+            [
+                2.0 / direct_damping,
+                direct_damping / 2.0 * np.sqrt(1.0 / direct_stiffness),
+            ]
+        )
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[world, eq_id], expected, rtol=1e-5)
+        if solver.use_mujoco_cpu:
+            np.testing.assert_allclose(solver.mj_model.eq_solref[eq_id], expected, rtol=1e-5)
+        return expected
 
     def test_mimic_constraint_conversion(self):
         """Test that mimic constraints are converted to MuJoCo mjEQ_JOINT constraints."""
@@ -8424,6 +8470,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         self.assertIsNotNone(solver.mjc_eq_to_newton_mimic)
         mimic_map = solver.mjc_eq_to_newton_mimic.numpy()
         self.assertEqual(mimic_map[0, 0], 0)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[0, 0], [0.02, 1.0], rtol=1e-6)
 
     def test_mimic_constraint_runtime_update(self):
         """Test that mimic constraint properties can be updated at runtime."""
@@ -8444,6 +8491,43 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         np.testing.assert_allclose(eq_data[0, 0, 1], 3.0, rtol=1e-5)
         eq_active = solver.mjw_data.eq_active.numpy()
         self.assertFalse(eq_active[0, 0])
+
+    def run_mimic_constraint_compliance_updates(self, use_mujoco_cpu):
+        """Exercise gain and effective-inverse-weight updates for one backend."""
+        model = self._make_two_revolute_model(stiffness=100.0, damping=10.0)
+        solver = SolverMuJoCo(
+            model,
+            iterations=1,
+            disable_contacts=True,
+            use_mujoco_cpu=use_mujoco_cpu,
+        )
+
+        initial = self._assert_mimic_solref(solver, 100.0, 10.0)
+
+        model.constraint_mimic_stiffness.assign(np.array([400.0], dtype=np.float32))
+        model.constraint_mimic_damping.assign(np.array([40.0], dtype=np.float32))
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+        gain_update = self._assert_mimic_solref(solver, 400.0, 40.0)
+        self.assertFalse(np.allclose(initial, gain_update))
+
+        model.body_mass.assign(model.body_mass.numpy() * 4.0)
+        model.body_inertia.assign(model.body_inertia.numpy() * 4.0)
+        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        inertia_update = self._assert_mimic_solref(solver, 400.0, 40.0)
+        self.assertFalse(np.allclose(gain_update, inertia_update))
+
+        model.constraint_mimic_stiffness.assign(np.array([-np.inf], dtype=np.float32))
+        model.constraint_mimic_damping.assign(np.array([-np.inf], dtype=np.float32))
+        solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.eq_solref.numpy()[0, 0], [0.02, 1.0], rtol=1e-6)
+        if use_mujoco_cpu:
+            np.testing.assert_allclose(solver.mj_model.eq_solref[0], [0.02, 1.0], rtol=1e-6)
+
+    def test_mimic_constraint_compliance_updates_mjwarp(self):
+        self.run_mimic_constraint_compliance_updates(use_mujoco_cpu=False)
+
+    def test_mimic_constraint_compliance_updates_mujoco_cpu(self):
+        self.run_mimic_constraint_compliance_updates(use_mujoco_cpu=True)
 
     def test_preserved_mimic_runtime_update_keeps_mujoco_data(self):
         """Preserved MuJoCo mimic equalities sync active state without flattening polycoef."""
@@ -8480,6 +8564,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
                 joint1=j1,
                 coef0=10.0 + world,
                 coef1=20.0 + world,
+                stiffness=1000.0 + world,
+                damping=100.0 + world,
                 enabled=world == 0,
             )
             _add_equality_constraint(
@@ -8513,6 +8599,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         # Normal Newton mimic coefficients must not overwrite preserved MuJoCo polycoef data.
         model.constraint_mimic_coef0.assign(np.array([100.0, 200.0], dtype=np.float32))
         model.constraint_mimic_coef1.assign(np.array([300.0, 400.0], dtype=np.float32))
+        model.constraint_mimic_stiffness.assign(np.array([500.0, 600.0], dtype=np.float32))
+        model.constraint_mimic_damping.assign(np.array([50.0, 60.0], dtype=np.float32))
         model.constraint_mimic_enabled.assign(np.array([False, True], dtype=bool))
         model.mujoco.equality_constraint_enabled.assign(np.array([False, True], dtype=bool))
         solver.notify_model_changed(ModelFlags.CONSTRAINT_PROPERTIES)

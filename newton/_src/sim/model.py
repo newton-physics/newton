@@ -717,6 +717,10 @@ class Model:
         """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
         self.constraint_mimic_coef1: wp.array[wp.float32] | None = None
         """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        self.constraint_mimic_stiffness: wp.array[wp.float32] | None = None
+        """Constraint stiffness [N/m or N·m/rad], shape [constraint_mimic_count], float."""
+        self.constraint_mimic_damping: wp.array[wp.float32] | None = None
+        """Constraint damping [N·s/m or N·m·s/rad], shape [constraint_mimic_count], float."""
         self.constraint_mimic_enabled: wp.array[wp.bool] | None = None
         """Whether constraint is active, shape [constraint_mimic_count], bool."""
         self.constraint_mimic_label: list[str] = []
@@ -875,6 +879,10 @@ class Model:
         self.attribute_frequency["shape_source_ptr"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
+
+        # attributes per mimic constraint
+        self.attribute_frequency["constraint_mimic_stiffness"] = Model.AttributeFrequency.CONSTRAINT_MIMIC
+        self.attribute_frequency["constraint_mimic_damping"] = Model.AttributeFrequency.CONSTRAINT_MIMIC
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""

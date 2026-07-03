@@ -32,7 +32,7 @@ class ModelFlags(IntEnum):
     """Indicates model property updates: gravity and other global parameters."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled)."""
+    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_stiffness, constraint_mimic_damping, constraint_mimic_enabled)."""
 
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
