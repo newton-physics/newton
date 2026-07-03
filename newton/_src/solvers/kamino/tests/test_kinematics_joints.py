@@ -12,7 +12,6 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp, screw, screw_angular, screw_linear
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.types import float32, int32, mat33f, transformf, vec3f, vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
@@ -32,9 +31,9 @@ wp.set_module_options({"enable_backward": False})
 Q_X_J = 0.5 * math.pi
 THETA_Y_J = 0.1
 THETA_Z_J = -0.2
-J_DR_J = vec3f(0.01, 0.02, 0.03)
-J_DV_J = vec3f(0.1, -0.2, 0.3)
-J_DOMEGA_J = vec3f(-1.0, 0.04, -0.05)
+J_DR_J = wp.vec3f(0.01, 0.02, 0.03)
+J_DV_J = wp.vec3f(0.1, -0.2, 0.3)
+J_DOMEGA_J = wp.vec3f(-1.0, 0.04, -0.05)
 
 # Compute revolute joint rotational residual: sin(angle) * axis
 ROT_RES_VEC = np.array([0.0, THETA_Y_J, THETA_Z_J])
@@ -48,13 +47,13 @@ ROT_RES = (np.sin(ROT_RES_ANGLE) / ROT_RES_ANGLE) * ROT_RES_VEC
 
 @wp.kernel
 def _set_joint_follower_body_state(
-    model_joint_bid_F: wp.array[int32],
-    model_joint_B_r_Bj: wp.array[vec3f],
-    model_joint_F_r_Fj: wp.array[vec3f],
-    model_joint_X_Bj: wp.array[mat33f],
-    model_joint_X_Fj: wp.array[mat33f],
-    state_body_q_i: wp.array[transformf],
-    state_body_u_i: wp.array[vec6f],
+    model_joint_bid_F: wp.array[wp.int32],
+    model_joint_B_r_Bj: wp.array[wp.vec3f],
+    model_joint_F_r_Fj: wp.array[wp.vec3f],
+    model_joint_X_Bj: wp.array[wp.mat33f],
+    model_joint_X_Fj: wp.array[wp.mat33f],
+    state_body_q_i: wp.array[wp.transformf],
+    state_body_u_i: wp.array[wp.spatial_vectorf],
 ):
     """
     Set the state of the bodies to a certain values in order to check computations of joint states.
@@ -70,8 +69,8 @@ def _set_joint_follower_body_state(
     X_Fj = model_joint_X_Fj[jid]
 
     # The base body is assumed to be at the origin with no rotation or twist
-    p_B = transformf(vec3f(0.0), wp.quat_identity())
-    u_B = vec6f(0.0)
+    p_B = wp.transformf(wp.vec3f(0.0), wp.quat_identity())
+    u_B = wp.spatial_vectorf(0.0)
     r_B = wp.transform_get_translation(p_B)
     q_B = wp.transform_get_rotation(p_B)
     R_B = wp.quat_to_matrix(q_B)
@@ -79,8 +78,8 @@ def _set_joint_follower_body_state(
     omega_B = screw_angular(u_B)
 
     # Define the joint rotation offset
-    j_dR_yz_j = vec3f(0.0, THETA_Y_J, THETA_Z_J)  # Joint residual as rotation vector
-    j_dR_x_j = vec3f(Q_X_J, 0.0, 0.0)  # Joint dof rotation as rotation vector
+    j_dR_yz_j = wp.vec3f(0.0, THETA_Y_J, THETA_Z_J)  # Joint residual as rotation vector
+    j_dR_x_j = wp.vec3f(Q_X_J, 0.0, 0.0)  # Joint dof rotation as rotation vector
     q_jq = quat_exp(j_dR_yz_j) * quat_exp(j_dR_x_j)  # Total joint offset
     R_jq = wp.quat_to_matrix(q_jq)  # Joint offset as rotation matrix
 
@@ -107,7 +106,7 @@ def _set_joint_follower_body_state(
     v_F_new = R_B_X_j @ j_dv_j + v_B + wp.cross(omega_B, r_Bj) - wp.cross(omega_F_new, r_Fj)
 
     # Offset the bose of the body by a fixed amount
-    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=float32)
+    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
     state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
 
 

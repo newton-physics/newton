@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the LLTSequentialSolver from linalg/linear.py"""
+"""Unit tests for the LLTBlockedRCMSolver from linalg/linear.py"""
 
 import unittest
 
@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
-from newton._src.solvers.kamino._src.linalg.linear import LLTSequentialSolver
+from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils.extract import get_matrix_block, get_vector_block
@@ -21,7 +21,7 @@ from newton._src.solvers.kamino.tests.utils.rand import RandomProblemLLT
 ###
 
 
-class TestLinAlgLLTSequentialSolver(unittest.TestCase):
+class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
     def setUp(self):
         # Configs
         if not test_context.setup_done:
@@ -44,20 +44,20 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
 
     def test_00_make_default_solver(self):
         """
-        Test the default constructor of the LLTSequentialSolver class.
+        Test the default constructor of the LLTBlockedRCMSolver class.
         """
-        llt = LLTSequentialSolver(device=self.default_device)
+        llt = LLTBlockedRCMSolver(device=self.default_device)
         self.assertIsNone(llt._operator)
         self.assertEqual(llt.dtype, wp.float32)
         self.assertEqual(llt.device, self.default_device)
 
     def test_01_single_problem_dims_all_active(self):
         """
-        Test the sequential LLT solver on a single small problem.
+        Test the blocked LLT solver on a single small problem.
         """
         # Constants
-        N = 12  # Use this for unit testing with small matrices
-        # N = 2000  # Use this for performance testing with large matrices
+        # N = 12  # Use this for visual debugging with small matrices
+        N = 2000  # Use this for performance testing with large matrices
 
         # Create a single-instance problem
         problem = RandomProblemLLT(
@@ -89,7 +89,7 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         msg.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N, N)))
 
         # Create a SequentialCholeskyFactorizer instance
-        llt = LLTSequentialSolver(operator=operator, device=self.default_device)
+        llt = LLTBlockedRCMSolver(operator=operator, device=self.default_device)
         self.assertIsNotNone(llt._operator)
         self.assertEqual(llt.dtype, problem.wp_dtype)
         self.assertEqual(llt.device, self.default_device)
@@ -106,18 +106,15 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         llt.compute(A=problem.A_wp)
         msg.info("llt.L (%s):\n%s\n", llt.L.shape, llt.L.numpy().reshape((N, N)))
 
-        # Convert the warp array to numpy for verification
+        # Extract L, P from warp to numpy
+        P_wp_np = get_vector_block(0, llt.P.numpy(), problem.dims, problem.maxdims)
+        msg.info("P_wp_np (%s):\n%s\n", P_wp_np.shape, P_wp_np)
         L_wp_np = get_matrix_block(0, llt.L.numpy(), problem.dims, problem.maxdims)
         msg.info("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
 
-        # Check matrix factorization against numpy
-        is_L_close = np.allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4)
-        if not is_L_close or self.verbose:
-            print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
-        self.assertTrue(is_L_close)
-
         # Reconstruct the original matrix A from the factorization
-        A_wp_np = L_wp_np @ L_wp_np.T
+        A_hat_wp_np = L_wp_np @ L_wp_np.T
+        A_wp_np = A_hat_wp_np[P_wp_np][:, P_wp_np]
         msg.info("A_np (%s):\n%s\n", problem.A_np[0].shape, problem.A_np[0])
         msg.info("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
 
@@ -138,18 +135,9 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         llt.solve(b=problem.b_wp, x=x_wp)
 
         # Convert the warp array to numpy for verification
-        y_wp_np = get_vector_block(0, llt.y.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_np (%s):\n%s\n", problem.y_np[0].shape, problem.y_np[0])
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
         msg.debug("x_np (%s):\n%s\n", problem.x_np[0].shape, problem.x_np[0])
         msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-
-        # Assert the result is as expected
-        is_y_close = np.allclose(y_wp_np, problem.y_np[0], rtol=1e-3, atol=1e-4)
-        if not is_y_close or self.verbose:
-            print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
-        self.assertTrue(is_y_close)
 
         # Assert the result is as expected
         is_x_close = np.allclose(x_wp_np, problem.x_np[0], rtol=1e-3, atol=1e-4)
@@ -169,16 +157,8 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         llt.solve_inplace(x=x_wp)
 
         # Convert the warp array to numpy for verification
-        y_wp_np = get_vector_block(0, llt.y.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
         msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-
-        # Assert the result is as expected
-        is_y_close = np.allclose(y_wp_np, problem.y_np[0], rtol=1e-3, atol=1e-4)
-        if not is_y_close or self.verbose:
-            print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
-        self.assertTrue(is_y_close)
 
         # Assert the result is as expected
         is_x_close = np.allclose(x_wp_np, problem.x_np[0], rtol=1e-3, atol=1e-4)
@@ -188,13 +168,13 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
 
     def test_02_single_problem_dims_partially_active(self):
         """
-        Test the sequential LLT solver on a single small problem.
+        Test the blocked LLT solver on a single small problem.
         """
         # Constants
-        N_max = 16  # Use this for unit testing with small matrices
-        N_act = 11
-        # N_max = 2000  # Use this for performance testing with large matrices
-        # N_act = 1537
+        # N_max = 16  # Use this for visual debugging with small matrices
+        # N_act = 11
+        N_max = 2000  # Use this for performance testing with large matrices
+        N_act = 1537
 
         # Create a single-instance problem
         problem = RandomProblemLLT(
@@ -227,7 +207,7 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         msg.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N_max, N_max)))
 
         # Create a SequentialCholeskyFactorizer instance
-        llt = LLTSequentialSolver(operator=operator, device=self.default_device)
+        llt = LLTBlockedRCMSolver(operator=operator, device=self.default_device)
         self.assertIsNotNone(llt._operator)
         self.assertEqual(llt.dtype, problem.wp_dtype)
         self.assertEqual(llt.device, self.default_device)
@@ -247,18 +227,15 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         llt.compute(A=problem.A_wp)
         msg.info("llt.L (%s):\n%s\n", llt.L.shape, llt.L.numpy().reshape((N_max, N_max)))
 
-        # Convert the warp array to numpy for verification
+        # Extract L, P from warp to numpy
+        P_wp_np = get_vector_block(0, llt.P.numpy(), problem.dims, problem.maxdims)
+        msg.info("P_wp_np (%s):\n%s\n", P_wp_np.shape, P_wp_np)
         L_wp_np = get_matrix_block(0, llt.L.numpy(), problem.dims, problem.maxdims)
         msg.info("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
 
-        # Check matrix factorization against numpy
-        is_L_close = np.allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4)
-        if not is_L_close or self.verbose:
-            print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
-        self.assertTrue(is_L_close)
-
         # Reconstruct the original matrix A from the factorization
-        A_wp_np = L_wp_np @ L_wp_np.T
+        A_hat_wp_np = L_wp_np @ L_wp_np.T
+        A_wp_np = A_hat_wp_np[P_wp_np][:, P_wp_np]
         msg.info("A_np (%s):\n%s\n", problem.A_np[0].shape, problem.A_np[0])
         msg.info("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
 
@@ -279,16 +256,8 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         llt.solve(b=problem.b_wp, x=x_wp)
 
         # Convert the warp array to numpy for verification
-        y_wp_np = get_vector_block(0, llt.y.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
         msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-
-        # Assert the result is as expected
-        is_y_close = np.allclose(y_wp_np, problem.y_np[0], rtol=1e-3, atol=1e-4)
-        if not is_y_close or self.verbose:
-            print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
-        self.assertTrue(is_y_close)
 
         # Assert the result is as expected
         is_x_close = np.allclose(x_wp_np, problem.x_np[0], rtol=1e-3, atol=1e-4)
@@ -308,16 +277,8 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         llt.solve_inplace(x=x_wp)
 
         # Convert the warp array to numpy for verification
-        y_wp_np = get_vector_block(0, llt.y.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
         msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-
-        # Assert the result is as expected
-        is_y_close = np.allclose(y_wp_np, problem.y_np[0], rtol=1e-3, atol=1e-4)
-        if not is_y_close or self.verbose:
-            print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
-        self.assertTrue(is_y_close)
 
         # Assert the result is as expected
         is_x_close = np.allclose(x_wp_np, problem.x_np[0], rtol=1e-3, atol=1e-4)
@@ -327,11 +288,11 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
 
     def test_03_multiple_problems_dims_all_active(self):
         """
-        Test the sequential LLT solver on multiple small problems.
+        Test the blocked LLT solver on multiple small problems.
         """
         # Constants
-        N = [7, 8, 9, 10, 11]  # Use this for unit testing with small matrices
-        # N = [16, 64, 128, 512, 1024]  # Use this for performance testing with large matrices
+        N = [7, 8, 9, 10, 11]
+        # N = [16, 64, 128, 512, 1024]
 
         # Create a single-instance problem
         problem = RandomProblemLLT(
@@ -366,7 +327,7 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         msg.debug("operator.mat shape:\n%s\n", operator.mat.shape)
 
         # Create a SequentialCholeskyFactorizer instance
-        llt = LLTSequentialSolver(operator=operator, device=self.default_device)
+        llt = LLTBlockedRCMSolver(operator=operator, device=self.default_device)
         self.assertIsNotNone(llt._operator)
         self.assertEqual(llt.dtype, problem.wp_dtype)
         self.assertEqual(llt.device, self.default_device)
@@ -384,19 +345,15 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
 
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
-            # Convert the warp array to numpy for verification
+            # Extract L, P from warp to numpy
+            P_wp_np = get_vector_block(i, llt.P.numpy(), problem.dims, problem.maxdims)
+            msg.info("P_wp_np (%s):\n%s\n", P_wp_np.shape, P_wp_np)
             L_wp_np = get_matrix_block(i, llt.L.numpy(), problem.dims, problem.maxdims)
             msg.info("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
-            msg.info("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
-
-            # Check matrix factorization against numpy
-            is_L_close = np.allclose(L_wp_np, problem.X_np[i], rtol=1e-3, atol=1e-4)
-            if not is_L_close or self.verbose:
-                print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])
-            self.assertTrue(is_L_close)
 
             # Reconstruct the original matrix A from the factorization
-            A_wp_np = L_wp_np @ L_wp_np.T
+            A_hat_wp_np = L_wp_np @ L_wp_np.T
+            A_wp_np = A_hat_wp_np[P_wp_np][:, P_wp_np]
             msg.info("A_np (%s):\n%s\n", problem.A_np[i].shape, problem.A_np[i])
             msg.info("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
 
@@ -419,18 +376,9 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Convert the warp array to numpy for verification
-            y_wp_np = get_vector_block(i, llt.y.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
             msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
             msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
-
-            # Assert the result is as expected
-            is_y_close = np.allclose(y_wp_np, problem.y_np[i], rtol=1e-3, atol=1e-4)
-            if not is_y_close or self.verbose:
-                print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])
-            self.assertTrue(is_y_close)
 
             # Assert the result is as expected
             is_x_close = np.allclose(x_wp_np, problem.x_np[i], rtol=1e-3, atol=1e-4)
@@ -452,18 +400,9 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Convert the warp array to numpy for verification
-            y_wp_np = get_vector_block(i, llt.y.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
             msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
             msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
-
-            # Assert the result is as expected
-            is_y_close = np.allclose(y_wp_np, problem.y_np[i], rtol=1e-3, atol=1e-4)
-            if not is_y_close or self.verbose:
-                print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])
-            self.assertTrue(is_y_close)
 
             # Assert the result is as expected
             is_x_close = np.allclose(x_wp_np, problem.x_np[i], rtol=1e-3, atol=1e-4)
@@ -473,13 +412,13 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
 
     def test_04_multiple_problems_dims_partially_active(self):
         """
-        Test the sequential LLT solver on multiple small problems.
+        Test the blocked LLT solver on multiple small problems.
         """
         # Constants
-        N_max = [7, 8, 9, 14, 21]  # Use this for unit testing with small matrices
-        N_act = [5, 6, 4, 11, 17]
-        # N_max = [16, 64, 128, 512, 1024]  # Use this for performance testing with large matrices
-        # N_act = [11, 51, 101, 376, 999]
+        # N_max = [7, 8, 9, 14, 21]  # Use this for visual debugging with small matrices
+        # N_act = [5, 6, 4, 11, 17]
+        N_max = [16, 64, 128, 512, 1024]  # Use this for performance testing with large matrices
+        N_act = [11, 51, 101, 376, 999]
 
         # Create a single-instance problem
         problem = RandomProblemLLT(
@@ -515,7 +454,7 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         msg.debug("operator.mat shape:\n%s\n", operator.mat.shape)
 
         # Create a SequentialCholeskyFactorizer instance
-        llt = LLTSequentialSolver(operator=operator, device=self.default_device)
+        llt = LLTBlockedRCMSolver(operator=operator, device=self.default_device)
         self.assertIsNotNone(llt._operator)
         self.assertEqual(llt.dtype, problem.wp_dtype)
         self.assertEqual(llt.device, self.default_device)
@@ -536,19 +475,16 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
 
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
-            # Convert the warp array to numpy for verification
+            # Extract L, P from warp to numpy
+            P_wp_np = get_vector_block(i, llt.P.numpy(), problem.dims, problem.maxdims)
+            msg.info("P_wp_np (%s):\n%s\n", P_wp_np.shape, P_wp_np)
             L_wp_np = get_matrix_block(i, llt.L.numpy(), problem.dims, problem.maxdims)
             msg.info("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
             msg.info("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
 
-            # Check matrix factorization against numpy
-            is_L_close = np.allclose(L_wp_np, problem.X_np[i], rtol=1e-3, atol=1e-4)
-            if not is_L_close or self.verbose:
-                print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])
-            self.assertTrue(is_L_close)
-
             # Reconstruct the original matrix A from the factorization
-            A_wp_np = L_wp_np @ L_wp_np.T
+            A_hat_wp_np = L_wp_np @ L_wp_np.T
+            A_wp_np = A_hat_wp_np[P_wp_np][:, P_wp_np]
             msg.info("A_np (%s):\n%s\n", problem.A_np[i].shape, problem.A_np[i])
             msg.info("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
 
@@ -571,18 +507,9 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Convert the warp array to numpy for verification
-            y_wp_np = get_vector_block(i, llt.y.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
             msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
             msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
-
-            # Assert the result is as expected
-            is_y_close = np.allclose(y_wp_np, problem.y_np[i], rtol=1e-3, atol=1e-4)
-            if not is_y_close or self.verbose:
-                print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])
-            self.assertTrue(is_y_close)
 
             # Assert the result is as expected
             is_x_close = np.allclose(x_wp_np, problem.x_np[i], rtol=1e-3, atol=1e-4)
@@ -604,18 +531,9 @@ class TestLinAlgLLTSequentialSolver(unittest.TestCase):
         # Iterate over all problems for verification
         for i in range(problem.num_blocks):
             # Convert the warp array to numpy for verification
-            y_wp_np = get_vector_block(i, llt.y.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
             msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
             msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
-
-            # Assert the result is as expected
-            is_y_close = np.allclose(y_wp_np, problem.y_np[i], rtol=1e-3, atol=1e-4)
-            if not is_y_close or self.verbose:
-                print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])
-            self.assertTrue(is_y_close)
 
             # Assert the result is as expected
             is_x_close = np.allclose(x_wp_np, problem.x_np[i], rtol=1e-3, atol=1e-4)
