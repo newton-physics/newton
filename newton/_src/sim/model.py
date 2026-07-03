@@ -388,11 +388,6 @@ class Model:
             AttributeFrequency.CONSTRAINT_MIMIC,
             references=AttributeFrequency.WORLD,
         ),
-        # deprecated equality-constraint view alias
-        "equality_constraint_world_start": AttributeSpec(
-            AttributeFrequency.EQUALITY_CONSTRAINT,
-            compaction_policy="world_start",
-        ),
     }
 
     _ATTRIBUTE_FREQUENCY_COUNT_ATTRS: ClassVar[dict[AttributeFrequency, str]] = {
@@ -403,7 +398,6 @@ class Model:
         AttributeFrequency.BODY: "body_count",
         AttributeFrequency.SHAPE: "shape_count",
         AttributeFrequency.ARTICULATION: "articulation_count",
-        AttributeFrequency.EQUALITY_CONSTRAINT: "equality_constraint_count",
         AttributeFrequency.PARTICLE: "particle_count",
         AttributeFrequency.EDGE: "edge_count",
         AttributeFrequency.TRIANGLE: "tri_count",
