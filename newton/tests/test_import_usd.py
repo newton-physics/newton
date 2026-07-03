@@ -3022,6 +3022,7 @@ def PhysicsRevoluteJoint "Joint2"
         col1.GetAttribute("size").Set(0.2)
         col1.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.5)
         col1.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Double).Set(0.2)
+        col1.CreateAttribute("newton:contactMargin", Sdf.ValueTypeNames.Double).Set(0.7)
 
         # Body 2: only mjc:margin authored (gap defaults to 0)
         prim2 = stage.DefinePrim("/Body2", "Xform")
@@ -3037,11 +3038,15 @@ def PhysicsRevoluteJoint "Joint2"
         joint.GetBody1Rel().SetTargets(["/Body2"])
         joint.GetAxisAttr().Set("Z")
 
-        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()], legacy_margin_gap=True)
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            legacy_margin_gap=True,
+        )
         model = builder.finalize()
 
         shape_margin = model.shape_margin.numpy()
@@ -3061,6 +3066,16 @@ def PhysicsRevoluteJoint "Joint2"
             for i in range(model.shape_count)
         )
         self.assertTrue(found_margin_only, "Expected margin=0.4 with gap=0.0 when only margin authored")
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],
+            legacy_margin_gap=True,
+        )
+        shape_idx = builder.shape_label.index("/Body1/Collision1")
+        self.assertAlmostEqual(builder.shape_margin[shape_idx], 0.7)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_margin_gap_identity_import(self):

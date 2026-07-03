@@ -2864,7 +2864,7 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
-                margin_val = R.get_value(
+                margin_val, margin_resolver = R.get_value_with_resolver(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="margin",
@@ -2879,21 +2879,18 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
-                if legacy_margin_gap:
+                if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
                     # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
-                    # Only prims that author mjc:margin need the subtraction.
-                    mjc_margin = usd.get_attribute(prim, "mjc:margin")
-                    if mjc_margin is not None:
-                        mjc_gap = usd.get_attribute(prim, "mjc:gap")
-                        mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
-                        newton_margin = float(mjc_margin) - mjc_gap
-                        if newton_margin < 0.0:
-                            warnings.warn(
-                                f"Prim '{prim.GetPath()}': legacy translation yields "
-                                f"negative margin (mjc_margin={mjc_margin}, mjc_gap={mjc_gap}).",
-                                stacklevel=2,
-                            )
-                        margin_val = newton_margin
+                    mjc_gap = usd.get_attribute(prim, "mjc:gap")
+                    mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
+                    newton_margin = float(margin_val) - mjc_gap
+                    if newton_margin < 0.0:
+                        warnings.warn(
+                            f"Prim '{prim.GetPath()}': legacy translation yields "
+                            f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
+                            stacklevel=2,
+                        )
+                    margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
