@@ -11434,11 +11434,6 @@ class ModelBuilder:
             m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
             m.constraint_mimic_stiffness = wp.array(self.constraint_mimic_stiffness, dtype=wp.float32)
             m.constraint_mimic_damping = wp.array(self.constraint_mimic_damping, dtype=wp.float32)
-            # Host-side flag so solvers can warn without a device copy at init.
-            m._has_authored_mimic_compliance = any(
-                math.isfinite(s) and s > 0.0 and math.isfinite(d) and d > 0.0
-                for s, d in zip(self.constraint_mimic_stiffness, self.constraint_mimic_damping, strict=True)
-            )
             m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
             m.constraint_mimic_label = self.constraint_mimic_label
             m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)

@@ -409,8 +409,6 @@ class SolverMuJoCo(SolverBase):
             solver.render_mujoco_viewer()
     """
 
-    _supports_mimic_compliance = True
-
     class CtrlSource(IntEnum):
         """Control source for MuJoCo actuators.
 
