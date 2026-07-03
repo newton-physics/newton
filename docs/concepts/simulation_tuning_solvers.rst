@@ -282,6 +282,8 @@ For grippers and manipulation, set actuator limits before increasing gains:
 - Prefer better contact geometry over extreme stiffness when the object twists,
   rocks, or slips due to sparse contacts.
 
+.. _contact-stiffness-sanity-checks:
+
 Contact Stiffness Sanity Checks
 -------------------------------
 

@@ -94,14 +94,57 @@ its geom ``solref`` at model build, as positive-format ``solref``:
    \mathtt{timeconst} = \frac{2}{k_d}, \qquad
    \mathtt{dampratio} = \frac{k_d}{2\sqrt{k_e}}
 
-So ``√ke`` is the nominal constraint-space natural frequency and ``kd / (2√ke)``
-the damping ratio. To compare damping at fixed stiffness, hold ``ke`` and set
-``kd = 2·ζ·√ke``; do not raise ``ke`` or ``kd`` alone. (Newton's
+In this default mapping, ``√ke`` is the nominal constraint-space natural
+frequency and ``kd / (2√ke)`` the nominal damping ratio. To compare damping at
+fixed stiffness, hold ``ke`` and set ``kd = 2·ζ·√ke``; do not raise ``ke``
+or ``kd`` alone. (Newton's
 ``convert_solref`` carries internal ``d_width``/``d_r`` arguments, but they are
 fixed at ``1`` on every current path, so they are not tuning knobs.) The realized
 response still depends on ``solimp``, ``dmax``, the current impedance ``d(r)``,
 constraint inverse inertia, the friction cone, solver convergence, and the
 timestep.
+
+Choosing ``solref_mode``
+------------------------
+
+``model.mujoco.solref_mode`` selects how each shape's contact parameters are
+interpreted:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Mode
+     - Choose when
+   * - ``SOLREF_MODE_MJCF_DEFAULT``
+     - Using Newton's default shape mapping shown above.
+   * - ``SOLREF_MODE_RAW``
+     - Preserving authored MJCF/USD ``solref`` values, calibration, or system
+       identification parameters without Newton force-space scaling.
+   * - ``SOLREF_MODE_FORCE_SPACE``
+     - Treating Newton ``ke``/``kd`` as physical contact gains across bodies with
+       different effective masses using per-contact inverse-weight scaling.
+
+Force-space mode can make normal-contact tuning more transferable across objects
+with different masses, which is useful for grasping and mass-randomized scenes.
+It does not increase friction, normal force, contact count, or controller effort;
+check those separately when a grasp slips. Use
+:ref:`contact-stiffness-sanity-checks` to evaluate force-space damping and
+timestep safety using the contact effective mass.
+
+The full force-space contact mapping applies only when both contacting shapes
+select ``SOLREF_MODE_FORCE_SPACE``, Newton contacts are enabled
+(``use_mujoco_contacts=False``), and the MuJoCo-Warp GPU backend is used. The
+MuJoCo-contact and CPU paths fall back to the legacy per-geometry approximation.
+For the mode definitions, mapping, and fallback behavior, see
+:ref:`shape-material-contact-stiffness-and-damping`.
+
+Scaled force-space gains use positive ``(timeconst, dampratio)`` values, allowing
+MuJoCo's default ``refsafe`` guard to soften contacts that are too stiff for the
+timestep. This can prevent divergence but changes the requested hardness. If the
+guard activates, reduce ``dt`` or increase substeps instead of only raising
+``ke``. See MuJoCo's `refsafe option
+<https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
 
 ``solref`` Formats
 ------------------
@@ -191,7 +234,8 @@ goal that matches the actual failure, not the one that seems most intuitive.
      - Action
      - Cost
    * - Less bounce without changing stiffness
-     - Hold ``ke`` fixed; raise ``kd`` so ``kd = 2·ζ·√ke`` with ``ζ ≥ 1``
+     - Hold ``ke`` fixed; raise ``kd`` toward critical damping for the active
+       ``solref_mode``
      - Slightly slower error correction
    * - Eliminate NaN or energy injection
      - Reduce ``ke`` and ``dmax``; raise ``width``; reduce ``dt``
@@ -366,10 +410,3 @@ jitter; drives behave as intended.*
   limit jitter usually requires raising ``kd`` on the limit, not on the contact.
 - Clip controller targets to the joint range; drives that demand positions beyond
   the limits fight the limit constraint and destabilize the joint.
-
-Further Reading
----------------
-
-- :doc:`MuJoCo Integration </integrations/mujoco>`
-- `MuJoCo Modeling: Solver Parameters <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-parameters>`__
-- `MuJoCo Modeling: Solver Settings <https://mujoco.readthedocs.io/en/stable/modeling.html#solver-settings>`__
