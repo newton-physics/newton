@@ -578,9 +578,14 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             local_pts = points[start : start + n]
             offset += n
             curve_segment_count = n if closed else max(0, n - 1)
-            # add_rod needs >= 2 segments, i.e. >= 3 centerline points.
-            if n < 3:
-                warnings.warn(f"{path}: curve {ci} has {n} points (need >= 3); skipping that curve.", stacklevel=2)
+            # add_rod needs >= 2 segments: >= 3 centerline points for an open curve, while a
+            # periodic 2-point curve closes into 2 segments and is representable.
+            min_points = 2 if closed else 3
+            if n < min_points:
+                warnings.warn(
+                    f"{path}: curve {ci} has {n} points (need >= {min_points}); skipping that curve.",
+                    stacklevel=2,
+                )
                 flat_segment_index += curve_segment_count
                 continue
             positions = [

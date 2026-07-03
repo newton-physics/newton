@@ -743,6 +743,28 @@ class TestUSDDeformableCable(unittest.TestCase):
         junction = result["path_attachment_attrs"]["/World/Junction"]
         self.assertIn("unsupported_reason", junction)
 
+    def test_two_point_curves(self):
+        """An open two-point curve (one segment) warns and is skipped (the rod needs two
+        segments); a periodic two-point curve closes into two segments and imports."""
+        with self.subTest(wrap="open"):
+            stage = _deformable_stage()
+            _add_cable_curve(stage, "/World/Two", [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0)])
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "need >= 3"):
+                builder.add_usd(stage)
+            self.assertEqual(builder.body_count, 0)
+
+        with self.subTest(wrap="periodic"):
+            stage = _deformable_stage()
+            _add_cable_curve(stage, "/World/Loop2", [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0)], periodic=True)
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            b0, b1 = group_range(builder, "cable", "/World/Loop2", "body")
+            self.assertEqual(b1 - b0, 2, "two segments after closure")
+            j0, j1 = group_range(builder, "cable", "/World/Loop2", "joint")
+            self.assertEqual(j1 - j0, 2, "one chain joint plus the loop-closing joint")
+            builder.finalize()
+
     def test_welded_periodic_curve_rejects_cycle_and_falls_back(self):
         """Welding a branch onto a periodic curve creates a cycle that add_rod_graph cannot
         close; importing it as a graph would silently open the authored loop. The component

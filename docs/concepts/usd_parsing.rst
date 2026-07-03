@@ -119,6 +119,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   conversion; the current ``points`` still define the rod's constructed and relaxed pose.
 * **Cloth thickness fallback** -- without an authored thickness, a volumetric density
   (kg/m^3) cannot be converted to Newton's per-area density and is used as-is.
+* **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
+  the rod representation needs at least two segments. A periodic two-point curve closes into
+  two segments and imports.
 
 **Mass distribution** follows the proposal's precedence order. Per-point ``physics:masses`` on
 the simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` total, then
