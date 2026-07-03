@@ -12,7 +12,6 @@ import warp as wp
 from .....sim import Model, State
 from .bodies import convert_body_com_to_origin, convert_body_origin_to_com
 from .size import SizeKamino
-from .types import vec6f
 
 ###
 # Module interface
@@ -66,56 +65,56 @@ class StateKamino:
     # Attributes
     ###
 
-    q_i: wp.array | None = None
+    q_i: wp.array[wp.transformf] | None = None
     """
-    Array of absolute body CoM poses expressed in world coordinates.\n
-    Each element is a 7D transform consisting of a 3D position + 4D unit quaternion.\n
-    Shape is ``(num_bodies,)`` and dtype is :class:`transformf`.
-    """
-
-    u_i: wp.array | None = None
-    """
-    Array of absolute body CoM twists expressed in world coordinates.\n
-    Each element is a 6D vector comprising a 3D linear + 3D angular components.\n
-    Shape is ``(num_bodies,)`` and dtype is :class:`vec6f`.
+    Array of absolute body CoM poses expressed in world coordinates.
+    Each element is a 7D transform consisting of a 3D position + 4D unit quaternion.
+    Shape of ``(num_bodies,)``.
     """
 
-    w_i: wp.array | None = None
+    u_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Array of total body CoM wrenches expressed in world coordinates.\n
-    Each element is a 6D vector comprising a 3D linear + 3D angular components.\n
-    Shape is ``(num_bodies,)`` and dtype is :class:`vec6f`.
-    """
-
-    w_i_e: wp.array | None = None
-    """
-    Array of external body CoM wrenches expressed in world coordinates.\n
-    Each element is a 6D vector comprising a 3D linear + 3D angular components.\n
-    Shape is ``(num_bodies,)`` and dtype is :class:`vec6f`.
+    Array of absolute body CoM twists expressed in world coordinates.
+    Each element is a 6D vector comprising a 3D linear + 3D angular components.
+    Shape of ``(num_bodies,)``.
     """
 
-    q_j: wp.array | None = None
+    w_i: wp.array[wp.spatial_vectorf] | None = None
     """
-    Array of generalized joint coordinates.\n
-    Shape is ``(sum_of_num_joint_coords,)`` and dtype is :class:`float32`.
-    """
-
-    q_j_p: wp.array | None = None
-    """
-    Array of previous generalized joint coordinates.\n
-    Shape is ``(sum_of_num_joint_coords,)`` and dtype is :class:`float32`.
+    Array of total body CoM wrenches expressed in world coordinates.
+    Each element is a 6D vector comprising a 3D linear + 3D angular components.
+    Shape of ``(num_bodies,)``.
     """
 
-    dq_j: wp.array | None = None
+    w_i_e: wp.array[wp.spatial_vectorf] | None = None
     """
-    Array of generalized joint velocities.\n
-    Shape is ``(sum_of_num_joint_dofs,)`` and dtype is :class:`float32`.
+    Array of external body CoM wrenches expressed in world coordinates.
+    Each element is a 6D vector comprising a 3D linear + 3D angular components.
+    Shape of ``(num_bodies,)``.
     """
 
-    lambda_j: wp.array | None = None
+    q_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint constraint forces.\n
-    Shape is ``(sum_of_num_joint_cts,)`` and dtype is :class:`float32`.
+    Array of generalized joint coordinates.
+    Shape of ``(sum_of_num_joint_coords,)``.
+    """
+
+    q_j_p: wp.array[wp.float32] | None = None
+    """
+    Array of previous generalized joint coordinates.
+    Shape of ``(sum_of_num_joint_coords,)``.
+    """
+
+    dq_j: wp.array[wp.float32] | None = None
+    """
+    Array of generalized joint velocities.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    lambda_j: wp.array[wp.float32] | None = None
+    """
+    Array of generalized joint constraint forces.
+    Shape of ``(sum_of_num_joint_cts,)``.
     """
 
     ###
@@ -162,18 +161,17 @@ class StateKamino:
     def convert_to_body_com_state(
         self,
         model: Model,
-        world_mask: wp.array | None = None,
-        body_wid: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
+        body_wid: wp.array[wp.int32] | None = None,
     ) -> None:
         """
         Convert the body-frame state to body center-of-mass (CoM)
         state using the provided body center-of-mass offsets.
 
         Args:
-            model (Model):
-                The model container holding the time-invariant parameters of the simulation.
-            world_mask: optional per-world mask selecting which worlds to process.
-            body_wid: body-to-world index mapping, required when ``world_mask`` is given.
+            model: The model container holding the time-invariant parameters of the simulation.
+            world_mask: Optional per-world mask selecting which worlds to process.
+            body_wid: Body-to-world index mapping, required when ``world_mask`` is given.
         """
         # Ensure the model is valid
         if model is None:
@@ -194,18 +192,17 @@ class StateKamino:
     def convert_to_body_frame_state(
         self,
         model: Model,
-        world_mask: wp.array | None = None,
-        body_wid: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
+        body_wid: wp.array[wp.int32] | None = None,
     ) -> None:
         """
         Convert the body center-of-mass (CoM) state to body-frame
         state using the provided body center-of-mass offsets.
 
         Args:
-            model (Model):
-                The model container holding the time-invariant parameters of the simulation.
-            world_mask: optional per-world mask selecting which worlds to process.
-            body_wid: body-to-world index mapping, required when ``world_mask`` is given.
+            model: The model container holding the time-invariant parameters of the simulation.
+            world_mask: Optional per-world mask selecting which worlds to process.
+            body_wid: Body-to-world index mapping, required when ``world_mask`` is given.
         """
         # Ensure the model is valid
         if model is None:
@@ -238,16 +235,14 @@ class StateKamino:
         :class:`newton.State`, effectively creating an alias without copying data.
 
         Args:
-            state (State):
-                The source :class:`newton.State` object to be adapted.
-            initialize_state_prev (bool):
-                If True, initialize the `joint_q_prev` attribute to
-                match the current `joint_q` from the newton.State.
-            convert_to_com_frame (bool):
-                If True, convert body poses to local center-of-mass frames.
+            size: Kamino size metadata for the model.
+            model: The source Newton model.
+            state: The source :class:`newton.State` object to be adapted.
+            initialize_state_prev: If True, initialize ``joint_q_prev`` to match the current ``joint_q``.
+            convert_to_com_frame: If True, convert body poses to local center-of-mass frames.
 
         Returns:
-            A :class:`kamino.StateKamino` object that aliases the data of the input :class:`newton.State` object.
+            A :class:`StateKamino` object that aliases the data of the input :class:`newton.State`.
         """
         # Ensure the state is valid
         if state is None:
@@ -300,9 +295,9 @@ class StateKamino:
         # Create a new StateKamino object, aliasing the relevant data from the input newton.State
         state_kamino = StateKamino(
             q_i=state.body_q,
-            u_i=state.body_qd.view(dtype=vec6f),  # TODO: change to wp.spatial_vector
-            w_i=body_f_total.view(dtype=vec6f),  # TODO: change to wp.spatial_vector
-            w_i_e=state.body_f.view(dtype=vec6f),  # TODO: change to wp.spatial_vector
+            u_i=state.body_qd.view(dtype=wp.spatial_vectorf),
+            w_i=body_f_total.view(dtype=wp.spatial_vectorf),
+            w_i_e=state.body_f.view(dtype=wp.spatial_vectorf),
             q_j=state.joint_q,
             q_j_p=joint_q_prev,
             dq_j=state.joint_qd,
@@ -326,13 +321,12 @@ class StateKamino:
         :class:`kamino.StateKamino`, effectively creating an alias without copying data.
 
         Args:
-            state (StateKamino):
-                The source :class:`kamino.StateKamino` object to be adapted.
-            convert_to_body_frame (bool):
-                If True, convert body poses to body-local frames.
+            model: The Newton model associated with the state.
+            state: The source :class:`StateKamino` object to be adapted.
+            convert_to_body_frame: If True, convert body poses to body-local frames.
 
         Returns:
-            A :class:`newton.State` object that aliases the data of the input :class:`kamino.StateKamino` object.
+            A :class:`newton.State` object that aliases the data of the input :class:`StateKamino`.
         """
         # Ensure the model is valid
         if model is None:

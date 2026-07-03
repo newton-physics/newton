@@ -3,6 +3,8 @@
 
 """KAMINO: Linear Algebra: Blocked Semi-Sparse LLT (i.e. Cholesky) factorization using Warp's Tile API."""
 
+from __future__ import annotations
+
 from functools import cache
 
 import numpy as np
@@ -63,10 +65,10 @@ def compute_inverse_ordering(ordering):
     Computes the inverse permutation of the given ordering.
 
     Args:
-        ordering (np.ndarray): The permutation array used for reordering (length n).
+        ordering: The permutation array used for reordering (length n).
 
     Returns:
-        inv_ordering (np.ndarray): The inverse permutation array.
+        The inverse permutation array.
     """
     inv_ordering = np.empty_like(ordering)
     inv_ordering[ordering] = np.arange(len(ordering))
@@ -80,7 +82,7 @@ def reorder_rows_kernel(
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
     n_cols_arr: wp.array[int],
-    batch_mask: wp.array[bool],
+    batch_mask: wp.array[wp.bool],
 ):
     batch_id, i, j = wp.tid()  # 2D launch: (n_rows, n_cols)
     n_rows = n_rows_arr[batch_id]
@@ -97,7 +99,7 @@ def reorder_rows_kernel_col_vector(
     dst: wp.array3d[float],
     ordering: wp.array2d[int],
     n_rows_arr: wp.array[int],
-    batch_mask: wp.array[bool],
+    batch_mask: wp.array[wp.bool],
 ):
     batch_id, i = wp.tid()
     n_rows = n_rows_arr[batch_id]
@@ -176,7 +178,7 @@ def create_blocked_cholesky_kernel(block_size: int):
         L_batched: wp.array3d[float],
         L_tile_pattern_batched: wp.array3d[int],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[bool],
+        batch_mask: wp.array[wp.bool],
     ):
         """
         Batched Cholesky factorization of symmetric positive definite matrices in blocks.
@@ -311,7 +313,7 @@ def create_blocked_cholesky_solve_kernel(block_size: int):
         x_batched: wp.array3d[float],
         y_batched: wp.array3d[float],
         active_matrix_size_arr: wp.array[int],
-        batch_mask: wp.array[bool],
+        batch_mask: wp.array[wp.bool],
     ):
         """
         Batched blocked Cholesky solver kernel. For each batch, solves A x = b using L L^T = A.
@@ -449,18 +451,15 @@ class SemiSparseBlockCholeskySolverBatched:
         Captures sparsity pattern and computes fill-reducing ordering for batched matrices.
 
         Args:
-        A (np.ndarray):
-            Input SPD matrices as float arrays or directly as binary 0/1 matrices indicating the sparsity
-            pattern (float arrays are converted to binary automatically).
-            Shape of (batch_size, n, n); or of (num_classes, n, n) if eq_classes is provided.
-        A_reorder_size (np.ndarray):
-            Size of the active top-left block per matrix, to reorder for sparsity.
-            Shape of (batch_size,); or of (num_classes,) if eq_classes is provided.
-        eq_classes (list[list[int]], optional):
-            List of list of matrix indices (along the batch dimension) that form equivalence classes with
-            the same sparsity pattern.
-            If provided, only one sparsity pattern per class should be provided in `A`.
-            The computed ordering will then be broadcast to all matrices in each class.
+            A: Input SPD matrices as float arrays or directly as binary 0/1 matrices indicating the sparsity
+                pattern (float arrays are converted to binary automatically).
+                Shape of (batch_size, n, n); or of (num_classes, n, n) if eq_classes is provided.
+            A_reorder_size: Size of the active top-left block per matrix, to reorder for sparsity.
+                Shape of (batch_size,); or of (num_classes,) if eq_classes is provided.
+            eq_classes: List of list of matrix indices (along the batch dimension) that form equivalence classes with
+                the same sparsity pattern.
+                If provided, only one sparsity pattern per class should be provided in `A`.
+                The computed ordering will then be broadcast to all matrices in each class.
 
         Computes Cuthill-McKee ordering on top-left block, analyzes symbolic Cholesky factorization,
         and stores tile-level sparsity patterns. Tiles beyond A_reorder_size are treated as dense.
@@ -523,7 +522,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         A: wp.array3d[float],
         num_active_equations: wp.array[int],
-        batch_mask: wp.array[bool],
+        batch_mask: wp.array[wp.bool],
     ):
         """
         Computes the Cholesky factorization of a symmetric positive definite matrix A in blocks.
@@ -566,7 +565,7 @@ class SemiSparseBlockCholeskySolverBatched:
         self,
         rhs: wp.array3d[float],
         result: wp.array3d[float],
-        batch_mask: wp.array[bool],
+        batch_mask: wp.array[wp.bool],
     ):
         """
         Solves A x = b given the Cholesky factor L (A = L L^T) using

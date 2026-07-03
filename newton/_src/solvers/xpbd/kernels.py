@@ -276,7 +276,7 @@ def solve_particle_particle_contacts(
             w2 = particle_invmass[index]
             denom = w1 + w2
 
-            if err <= k_cohesion and denom > 0.0:
+            if err <= k_cohesion and denom > 0.0 and d > 0.0:
                 n = n / d
                 vrel = v - particle_v[index]
 
