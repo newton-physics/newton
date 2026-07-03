@@ -164,7 +164,10 @@ class TestUSDDeformableCloth(unittest.TestCase):
         _bind_deformable_material(stage, bare.GetPrim(), "/World/MatBare", density=1000.0)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        # The bare cloth resolves no thickness, so its volumetric material values are used as
+        # surface values unconverted; the importer must say so instead of converting silently.
+        with self.assertWarnsRegex(UserWarning, "/World/ClothBare.*unconverted"):
+            result = builder.add_usd(stage)
 
         def total_mass(path):
             p0, p1 = group_range(builder, "cloth", path, "particle")

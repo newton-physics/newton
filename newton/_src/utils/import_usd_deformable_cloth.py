@@ -127,6 +127,18 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
                 if float(shell_thickness_val) > 0.0:
                     thickness = float(shell_thickness_val)
+        if thickness is None and any(
+            key in cloth_mat for key in ("stretchStiffness", "bendStiffness", "shearStiffness", "density")
+        ):
+            # The proposal authors volumetric quantities; without a thickness there is no
+            # physical surface conversion, so say the values pass through unconverted.
+            warnings.warn(
+                f"{path}: the surface material authors volumetric values but no thickness is "
+                f"resolvable; stiffness moduli and density are used as surface values unconverted. "
+                f"Author physics:thickness on the material (or a shell mass model) for the "
+                f"physical conversion.",
+                stacklevel=2,
+            )
 
         # Map the surface material onto Newton's isotropic triangle membrane (used by
         # SolverVBD and SolverSemiImplicit), whose triangle has three parameters:
