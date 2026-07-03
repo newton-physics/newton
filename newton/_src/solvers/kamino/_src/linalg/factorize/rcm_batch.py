@@ -54,8 +54,6 @@ API
     launch()  # one zero-arg callable; CUDA-graph capturable
 """
 
-from __future__ import annotations
-
 import math
 from collections.abc import Callable
 from functools import cache
