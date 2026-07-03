@@ -23,6 +23,7 @@ from newton.tests._usd_deformable_test_utils import (
     group_range,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.usd import SchemaResolverPhysx
 
 
 def _author_tet_cube(stage, path, z0=0.0):
@@ -164,7 +165,9 @@ class TestUSDDeformableVolume(unittest.TestCase):
             builder.add_usd(stage)
         messages = [str(w.message) for w in caught]
         self.assertTrue(any("/World/Body/Graphics" in m and "graphics/collision geometry" in m for m in messages))
-        self.assertTrue(any("/World/Body/SimB" in m and "skipping additional simulation mesh" in m for m in messages))
+        self.assertTrue(
+            any("/World/Body/SimB" in m and "skipping additional simulation geometry" in m for m in messages)
+        )
 
         # Only the first simulation mesh is imported; the extras are skipped, not simulated.
         self.assertEqual(group_labels(builder, "soft"), ["/World/Body/Sim"])
@@ -220,8 +223,6 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 if namespace == "physics":
                     builder.add_usd(stage)
                 else:
-                    from newton.usd import SchemaResolverPhysx
-
                     builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
                 k_mu, k_lambda, _k_damp = builder.tet_materials[0]
                 self.assertAlmostEqual(k_mu, expected_mu, places=1)

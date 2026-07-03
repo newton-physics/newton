@@ -22,6 +22,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
+    _skip_for_deformable_body_owner,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_unsupported_rest_fields,
@@ -62,6 +63,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
         if skip_reason is not None:
             warnings.warn(f"{path}: {skip_reason}; skipping cloth import.", stacklevel=2)
+            continue
+        if _skip_for_deformable_body_owner(ctx, prim, path):
             continue
 
         mesh = UsdGeom.Mesh(prim)

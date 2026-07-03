@@ -48,6 +48,30 @@ def _validate_mass_array(values: Iterable[float], path: str) -> list[float] | No
     return masses
 
 
+def _skip_for_deformable_body_owner(ctx, prim, path: str, warn: bool = True) -> bool:
+    """True when another simulation geometry already owns this prim's deformable body.
+
+    A ``PhysicsDeformableBodyAPI`` body governs exactly one simulation geometry across all
+    families (else its authored mass would be applied once per family). The owner is the
+    first candidate in stage traversal order, resolved by the scout.
+    """
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    body_root = usd._find_deformable_body_prim(prim)
+    if body_root is None:
+        return False
+    owner = ctx.prims.body_owner.get(str(body_root.GetPath()))
+    if owner is None or owner == path:
+        return False
+    if warn:
+        warnings.warn(
+            f"{path}: deformable body {body_root.GetPath()} already has simulation geometry "
+            f"{owner}; skipping additional simulation geometry.",
+            stacklevel=2,
+        )
+    return True
+
+
 def _is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
     """Return whether ``path`` matches any of the ``ignore_paths`` regular expressions."""
     return any(re.match(pattern, path) for pattern in ignore_paths)
@@ -485,6 +509,10 @@ class _DeformablePrimBuckets:
     tetmeshes: list[Usd.Prim] = field(default_factory=list)
     attachments: list[Usd.Prim] = field(default_factory=list)
     element_filters: list[Usd.Prim] = field(default_factory=list)
+    # PhysicsDeformableBodyAPI prim path -> the single simulation geometry it governs (the
+    # first candidate of any family in traversal order); a body's mass must not be applied
+    # once per family, so the passes skip every other candidate under the same body.
+    body_owner: dict[str, str] = field(default_factory=dict)
 
     def has_candidates(self) -> bool:
         """Whether any deformable lowering pass has candidate prims.
@@ -511,6 +539,12 @@ def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
     buckets = _DeformablePrimBuckets()
     if not (root_prim and root_prim.IsValid()):
         return buckets
+
+    def claim_body(prim: Usd.Prim) -> None:
+        body_root = usd._find_deformable_body_prim(prim)
+        if body_root is not None:
+            buckets.body_owner.setdefault(str(body_root.GetPath()), str(prim.GetPath()))
+
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         type_name = str(prim.GetTypeName())
         if type_name == "PhysicsAttachment":
@@ -519,12 +553,16 @@ def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
             buckets.element_filters.append(prim)
         elif prim.IsA(UsdGeom.TetMesh):
             buckets.tetmeshes.append(prim)
+            if usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI"):
+                claim_body(prim)
         elif prim.IsA(UsdGeom.BasisCurves):
             if usd.has_applied_api_schema(prim, "PhysicsCurvesDeformableSimAPI"):
                 buckets.cables.append(prim)
+                claim_body(prim)
         elif prim.IsA(UsdGeom.Mesh):
             if usd.has_applied_api_schema(prim, "PhysicsSurfaceDeformableSimAPI"):
                 buckets.cloth.append(prim)
+                claim_body(prim)
     return buckets
 
 

@@ -186,6 +186,30 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertEqual(group_labels(builder, "soft"), ["/World/BareTet"])  # legacy import
         self.assertEqual(builder.particle_count, 4)
 
+    def test_one_simulation_geometry_per_body_across_families(self):
+        """A deformable body governs exactly one simulation geometry across ALL families:
+        a body-level mass must not be applied once per family. The first candidate in
+        traversal order wins; the others warn and are skipped."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        from pxr import Sdf
+
+        body.GetPrim().CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(10.0)
+        _add_cloth_mesh(stage, "/World/Body/Cloth")  # first in traversal order -> owner
+        _add_cable_curve(stage, "/World/Body/Cable", _CABLE_PTS)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "already has simulation geometry"):
+            builder.add_usd(stage)
+
+        self.assertEqual(group_labels(builder, "cloth"), ["/World/Body/Cloth"])
+        self.assertEqual(group_labels(builder, "cable"), [], "the second family must be skipped")
+        self.assertAlmostEqual(sum(builder.particle_mass), 10.0, places=4)
+        self.assertEqual(builder.body_count, 0, "no cable bodies: mass is counted once")
+
     def test_deformable_results_are_opt_in(self):
         """The default add_usd return carries no deformable entries; deformable_results=True
         adds exactly the documented map and attrs keys."""

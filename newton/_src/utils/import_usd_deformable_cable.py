@@ -26,6 +26,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
+    _skip_for_deformable_body_owner,
     _validate_attachment_index_pairs,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
@@ -86,6 +87,10 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             continue
         # Disabled/kinematic curves must not be welded into a graph; the per-curve pass warns.
         if _deformable_body_skip_reason(prim, deformable_read) is not None:
+            continue
+        # A non-owner curve under a governed deformable body is skipped by the per-curve pass
+        # (which warns); it must not silently join a welded graph either.
+        if _skip_for_deformable_body_owner(ctx, prim, path, warn=False):
             continue
         curves = UsdGeom.BasisCurves(prim)
         if curves.GetTypeAttr().Get() != UsdGeom.Tokens.linear:
@@ -444,6 +449,8 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
         if skip_reason is not None:
             warnings.warn(f"{path}: {skip_reason}; skipping cable import.", stacklevel=2)
+            continue
+        if _skip_for_deformable_body_owner(ctx, prim, path):
             continue
 
         curves = UsdGeom.BasisCurves(prim)
