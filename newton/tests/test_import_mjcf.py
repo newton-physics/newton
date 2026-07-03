@@ -318,21 +318,41 @@ class TestImportMjcfBasic(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "diaginertia or fullinertia"):
             parse_mjcf(builder, mjcf)
 
-    def test_inertial_fullinertia_requires_six_values(self):
-        mjcf = """
+    def test_inertial_diaginertia_requires_three_values(self):
+        for diaginertia in ("1 2", "1 2 3 4"):
+            with self.subTest(diaginertia=diaginertia):
+                mjcf = f"""
 <mujoco>
     <worldbody>
         <body name="body">
-            <inertial pos="0 0 0" mass="1.0" fullinertia="1 2 3"/>
+            <inertial pos="0 0 0" mass="1.0" diaginertia="{diaginertia}"/>
             <geom type="sphere" size="0.1"/>
         </body>
     </worldbody>
 </mujoco>
 """
-        builder = newton.ModelBuilder()
+                builder = newton.ModelBuilder()
 
-        with self.assertRaisesRegex(ValueError, "fullinertia.*6 values"):
-            parse_mjcf(builder, mjcf)
+                with self.assertRaisesRegex(ValueError, "diaginertia.*3 values"):
+                    parse_mjcf(builder, mjcf)
+
+    def test_inertial_fullinertia_requires_six_values(self):
+        for fullinertia in ("1 2 3", "1 2 3 4 5 6 7"):
+            with self.subTest(fullinertia=fullinertia):
+                mjcf = f"""
+<mujoco>
+    <worldbody>
+        <body name="body">
+            <inertial pos="0 0 0" mass="1.0" fullinertia="{fullinertia}"/>
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+
+                with self.assertRaisesRegex(ValueError, "fullinertia.*6 values"):
+                    parse_mjcf(builder, mjcf)
 
     def test_inertia_rotation(self):
         """Test that inertia tensors are properly rotated using sandwich product R @ I @ R.T"""
