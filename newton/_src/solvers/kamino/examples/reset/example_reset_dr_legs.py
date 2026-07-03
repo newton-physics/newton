@@ -11,7 +11,6 @@ from scipy.spatial.transform import Rotation  # noqa: TID253
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.types import float32, int32, transformf, vec6f
 from newton._src.solvers.kamino._src.models.builders.utils import (
     make_homogeneous_builder,
     set_uniform_body_pose_offset,
@@ -32,9 +31,9 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 def _test_control_callback(
     sim_has_started_resets: wp.array[wp.bool],
     sim_reset_index: wp.array[wp.int32],
-    actuated_joint_idx: wp.array[int32],
-    state_t: wp.array[float32],
-    control_tau_j: wp.array[float32],
+    actuated_joint_idx: wp.array[wp.int32],
+    state_t: wp.array[wp.float32],
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     An example control callback kernel.
@@ -49,8 +48,8 @@ def _test_control_callback(
         joint_reset_index = actuated_joint_idx.shape[0] - 1
 
     # Define the time window for the active external force profile
-    t_start = float32(0.0)
-    t_end = float32(0.5)
+    t_start = wp.float32(0.0)
+    t_end = wp.float32(0.5)
 
     # Get the current time
     t = state_t[0]
@@ -126,7 +125,7 @@ class Example:
 
         # Offset the model to place it above the ground
         # NOTE: The USD model is centered at the origin
-        q_base = wp.transformf((0.0, 0.0, 0.265), wp.quat_identity(dtype=float32))
+        q_base = wp.transformf((0.0, 0.0, 0.265), wp.quat_identity(dtype=wp.float32))
         set_uniform_body_pose_offset(builder=self.builder, offset=q_base)
 
         # Set gravity
@@ -167,13 +166,13 @@ class Example:
 
         # Allocate utility arrays for resetting
         with wp.ScopedDevice(self.device):
-            self.base_q = wp.zeros(shape=(self.sim.model.size.num_worlds,), dtype=transformf)
-            self.base_u = wp.zeros(shape=(self.sim.model.size.num_worlds,), dtype=vec6f)
-            self.joint_q = wp.zeros(shape=(self.sim.model.size.sum_of_num_joint_coords,), dtype=float32)
-            self.joint_u = wp.zeros(shape=(self.sim.model.size.sum_of_num_joint_dofs,), dtype=float32)
-            self.actuator_q = wp.zeros(shape=(self.sim.model.size.sum_of_num_actuated_joint_coords,), dtype=float32)
-            self.actuator_u = wp.zeros(shape=(self.sim.model.size.sum_of_num_actuated_joint_dofs,), dtype=float32)
-            self.actuated_joint_idx = wp.array(self.actuated_joint_idx_np, dtype=int32)
+            self.base_q = wp.zeros(shape=(self.sim.model.size.num_worlds,), dtype=wp.transformf)
+            self.base_u = wp.zeros(shape=(self.sim.model.size.num_worlds,), dtype=wp.spatial_vectorf)
+            self.joint_q = wp.zeros(shape=(self.sim.model.size.sum_of_num_joint_coords,), dtype=wp.float32)
+            self.joint_u = wp.zeros(shape=(self.sim.model.size.sum_of_num_joint_dofs,), dtype=wp.float32)
+            self.actuator_q = wp.zeros(shape=(self.sim.model.size.sum_of_num_actuated_joint_coords,), dtype=wp.float32)
+            self.actuator_u = wp.zeros(shape=(self.sim.model.size.sum_of_num_actuated_joint_dofs,), dtype=wp.float32)
+            self.actuated_joint_idx = wp.array(self.actuated_joint_idx_np, dtype=wp.int32)
             self.sim_has_started_resets = wp.full(shape=(1,), dtype=wp.bool, value=False)
             self.sim_reset_index = wp.full(shape=(1,), dtype=wp.int32, value=-1)
 
@@ -314,7 +313,7 @@ class Example:
             R_b = Rotation.from_rotvec(np.pi / 4 * np.array([0, 0, 1]))
             q_b = R_b.as_quat()  # x, y, z, w
             q_base = wp.transformf((0.1, 0.1, 0.3), q_b)
-            u_base = vec6f(0.0, 0.0, 0.05, 0.0, 0.0, 0.3)
+            u_base = wp.spatial_vectorf(0.0, 0.0, 0.05, 0.0, 0.0, 0.3)
             self.base_q.assign([q_base] * self.sim.model.size.num_worlds)
             self.base_u.assign([u_base] * self.sim.model.size.num_worlds)
             reset_config = SolverKamino.ResetConfig(
@@ -333,7 +332,7 @@ class Example:
             R_b = Rotation.from_rotvec(np.pi / 4 * np.array([0, 0, 1]))
             q_b = R_b.as_quat()  # x, y, z, w
             q_base = wp.transformf((0.1, 0.1, 0.3), q_b)
-            u_base = vec6f(0.0, 0.0, -0.05, 0.0, 0.0, 0.3)
+            u_base = wp.spatial_vectorf(0.0, 0.0, -0.05, 0.0, 0.0, 0.3)
             self.base_q.assign([q_base] * self.sim.model.size.num_worlds)
             self.base_u.assign([u_base] * self.sim.model.size.num_worlds)
             actuated_joint_config = np.array(
@@ -374,7 +373,7 @@ class Example:
             R_b = Rotation.from_rotvec(np.pi / 4 * np.array([0, 0, 1]))
             q_b = R_b.as_quat()  # x, y, z, w
             q_base = wp.transformf((0.1, 0.1, 0.3), q_b)
-            u_base = vec6f(0.0, 0.0, -0.05, 0.0, 0.0, -0.3)
+            u_base = wp.spatial_vectorf(0.0, 0.0, -0.05, 0.0, 0.0, -0.3)
             self.base_q.assign([q_base] * self.sim.model.size.num_worlds)
             self.base_u.assign([u_base] * self.sim.model.size.num_worlds)
             actuated_joint_config = np.array(

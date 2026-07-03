@@ -10,7 +10,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import BodyFlags, EqType, JointTargetMode, JointType
+from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
@@ -24,6 +24,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from .enums import EqType
 
 
 def _import_contact_force_fn():

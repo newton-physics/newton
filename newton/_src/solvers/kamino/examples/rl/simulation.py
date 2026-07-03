@@ -27,7 +27,6 @@ from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_orig
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.core.types import float32, transformf, vec6f
 from newton._src.solvers.kamino._src.geometry import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
@@ -459,10 +458,10 @@ class RigidBodySim:
         self._world_mask = wp.to_torch(self._world_mask_wp)
 
         # Reset buffers
-        self._reset_base_q_wp = wp.zeros(nw, dtype=transformf, device=self._device)
-        self._reset_base_u_wp = wp.zeros(nw, dtype=vec6f, device=self._device)
-        self._reset_q_j_wp = wp.zeros(nw * njc, dtype=float32, device=self._device)
-        self._reset_dq_j_wp = wp.zeros(nw * njd, dtype=float32, device=self._device)
+        self._reset_base_q_wp = wp.zeros(nw, dtype=wp.transformf, device=self._device)
+        self._reset_base_u_wp = wp.zeros(nw, dtype=wp.spatial_vectorf, device=self._device)
+        self._reset_q_j_wp = wp.zeros(nw * njc, dtype=wp.float32, device=self._device)
+        self._reset_dq_j_wp = wp.zeros(nw * njd, dtype=wp.float32, device=self._device)
         self._reset_base_q = wp.to_torch(self._reset_base_q_wp).reshape(nw, 7)
         self._reset_base_u = wp.to_torch(self._reset_base_u_wp).reshape(nw, 6)
         self._reset_q_j = wp.to_torch(self._reset_q_j_wp).reshape(nw, njc)
