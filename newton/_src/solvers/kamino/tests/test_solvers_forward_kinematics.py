@@ -17,7 +17,6 @@ import newton
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointCorrectionMode, JointDoFType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
@@ -310,8 +309,8 @@ def simulate_random_poses(
         bodies_q = wp.array(shape=(model.size.sum_of_num_bodies), dtype=wp.transformf)
         base_q = wp.array(shape=(model.size.num_worlds), dtype=wp.transformf)
         actuators_q = wp.array(shape=(actuators_q_np.shape[1]), dtype=wp.float32)
-        bodies_u = wp.array(shape=(model.size.sum_of_num_bodies), dtype=vec6f)
-        base_u = wp.array(shape=(model.size.num_worlds), dtype=vec6f)
+        bodies_u = wp.array(shape=(model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf)
+        base_u = wp.array(shape=(model.size.num_worlds), dtype=wp.spatial_vectorf)
         actuators_u = wp.array(shape=(actuators_u_np.shape[1]), dtype=wp.float32)
     data = model.data(device=model.device)
     epsilon = 1e-3 if config.use_regularization else 1e-4
