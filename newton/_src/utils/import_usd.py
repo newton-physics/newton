@@ -1449,11 +1449,8 @@ def parse_usd(
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
-            distance_joint = UsdPhysics.DistanceJoint(joint_prim)
-            min_attr = distance_joint.GetMinDistanceAttr()
-            max_attr = distance_joint.GetMaxDistanceAttr()
-            min_dist = min_attr.Get() if min_attr.HasAuthoredValue() else -1.0
-            max_dist = max_attr.Get() if max_attr.HasAuthoredValue() else -1.0
+            min_dist = joint_desc.limit.lower if joint_desc.minEnabled else -1.0
+            max_dist = joint_desc.limit.upper if joint_desc.maxEnabled else -1.0
             joint_index = builder.add_joint_distance(**joint_params, min_distance=min_dist, max_distance=max_dist)
         else:
             raise NotImplementedError(f"Unsupported joint type {key}")
