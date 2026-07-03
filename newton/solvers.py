@@ -1,17 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+# Source for the detailed solver guide: docs/solvers/index.rst
 """
 Solvers integrate the dynamics of a :class:`~newton.Model` through the common
 :class:`~newton.solvers.SolverBase` interface. Newton provides backends for
 rigid articulated systems, maximal-coordinate constraints, particles, and
 deformable simulation.
 
-See ``docs/solvers/index.rst`` for solver-selection guidance and the feature,
-contact-material, joint-support, and differentiability comparisons. Installed
-wheel users can read the rendered guide at
-https://newton-physics.github.io/newton/latest/solvers/index.html or through
-the :doc:`Solvers guide </solvers/index>` in this documentation.
+For solver-selection guidance and the feature, contact-material, joint-support,
+and differentiability comparisons, see the :doc:`Solvers guide </solvers/index>`.
+Installed-wheel users can use the stable hosted guide at
+https://newton-physics.github.io/newton/stable/solvers/index.html.
 """
 
 # solver types

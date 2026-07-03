@@ -11,8 +11,9 @@ contacts, and restitutive impacts.
 
 Unlike the other maximal-coordinate solvers, Kamino focuses on constrained
 rigid mechanical assemblies rather than particle or deformable simulation.
-Consider it when kinematic loops and hard contact constraints are primary
-requirements and an experimental solver is acceptable.
+Kamino is currently in BETA 1, and Newton users are discouraged from depending
+on it. Evaluate it only when kinematic loops and hard contact constraints are
+primary requirements and an experimental solver is acceptable.
 
 .. experimental::
 

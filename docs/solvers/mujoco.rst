@@ -3,8 +3,8 @@
 
 .. currentmodule:: newton
 
-MuJoCo Integration
-==================
+MuJoCo Solver
+=============
 
 :class:`~newton.solvers.SolverMuJoCo` wraps `mujoco_warp
 <https://github.com/google-deepmind/mujoco_warp>`_ behind Newton's standard

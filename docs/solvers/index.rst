@@ -142,8 +142,8 @@ Supported Features
      - 🟨 experimental
      - ❌
 
-| :sup:`1` Uses its own collision pipeline from MuJoCo/mujoco_warp by default,
-  unless ``use_mujoco_contacts`` is set to ``False``.
+| :sup:`1` Uses MuJoCo's built-in collision pipeline by default.
+  Set ``use_mujoco_contacts=False`` to use Newton's collision pipeline.
 | :sup:`2` ``basic`` means Newton includes several examples that use these solvers in diffsim workflows,
   see :ref:`Differentiability` for further details.
 
