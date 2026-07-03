@@ -1230,47 +1230,47 @@ class ModelBuilder:
         # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
         # [start, end) into the corresponding builder arrays, and replicate()/add_builder() carry
         # them per world so each group stays indexable by path.
-        self.cable_label: list[str] = []
+        self._cable_label: list[str] = []
         """Prim-path labels of imported cable groups."""
-        self.cable_world: list[int] = []
+        self._cable_world: list[int] = []
         """World index of each cable group."""
-        self.cable_body_start: list[int] = []
+        self._cable_body_start: list[int] = []
         """Inclusive body-range start of each cable group."""
-        self.cable_body_end: list[int] = []
+        self._cable_body_end: list[int] = []
         """Exclusive body-range end of each cable group."""
-        self.cable_joint_start: list[int] = []
+        self._cable_joint_start: list[int] = []
         """Inclusive joint-range start of each cable group."""
-        self.cable_joint_end: list[int] = []
+        self._cable_joint_end: list[int] = []
         """Exclusive joint-range end of each cable group."""
 
-        self.cloth_label: list[str] = []
+        self._cloth_label: list[str] = []
         """Prim-path labels of imported cloth groups."""
-        self.cloth_world: list[int] = []
+        self._cloth_world: list[int] = []
         """World index of each cloth group."""
-        self.cloth_particle_start: list[int] = []
+        self._cloth_particle_start: list[int] = []
         """Inclusive particle-range start of each cloth group."""
-        self.cloth_particle_end: list[int] = []
+        self._cloth_particle_end: list[int] = []
         """Exclusive particle-range end of each cloth group."""
-        self.cloth_tri_start: list[int] = []
+        self._cloth_tri_start: list[int] = []
         """Inclusive triangle-range start of each cloth group."""
-        self.cloth_tri_end: list[int] = []
+        self._cloth_tri_end: list[int] = []
         """Exclusive triangle-range end of each cloth group."""
-        self.cloth_edge_start: list[int] = []
+        self._cloth_edge_start: list[int] = []
         """Inclusive edge-range start of each cloth group."""
-        self.cloth_edge_end: list[int] = []
+        self._cloth_edge_end: list[int] = []
         """Exclusive edge-range end of each cloth group."""
 
-        self.soft_label: list[str] = []
+        self._soft_label: list[str] = []
         """Prim-path labels of imported soft (volume) groups."""
-        self.soft_world: list[int] = []
+        self._soft_world: list[int] = []
         """World index of each soft group."""
-        self.soft_particle_start: list[int] = []
+        self._soft_particle_start: list[int] = []
         """Inclusive particle-range start of each soft group."""
-        self.soft_particle_end: list[int] = []
+        self._soft_particle_end: list[int] = []
         """Exclusive particle-range end of each soft group."""
-        self.soft_tet_start: list[int] = []
+        self._soft_tet_start: list[int] = []
         """Inclusive tetrahedron-range start of each soft group."""
-        self.soft_tet_end: list[int] = []
+        self._soft_tet_end: list[int] = []
         """Exclusive tetrahedron-range end of each soft group."""
 
         self.joint_dof_count: int = 0
@@ -2664,12 +2664,12 @@ class ModelBuilder:
         joint_range: tuple[int, int],
     ) -> None:
         """Register an imported cable as an addressable, world-tagged group (see cable_label)."""
-        self.cable_label.append(label)
-        self.cable_world.append(self.current_world)
-        self.cable_body_start.append(body_range[0])
-        self.cable_body_end.append(body_range[1])
-        self.cable_joint_start.append(joint_range[0])
-        self.cable_joint_end.append(joint_range[1])
+        self._cable_label.append(label)
+        self._cable_world.append(self.current_world)
+        self._cable_body_start.append(body_range[0])
+        self._cable_body_end.append(body_range[1])
+        self._cable_joint_start.append(joint_range[0])
+        self._cable_joint_end.append(joint_range[1])
 
     def _record_cloth_group(
         self,
@@ -2679,14 +2679,14 @@ class ModelBuilder:
         edge_range: tuple[int, int],
     ) -> None:
         """Register an imported cloth as an addressable, world-tagged group (see cloth_label)."""
-        self.cloth_label.append(label)
-        self.cloth_world.append(self.current_world)
-        self.cloth_particle_start.append(particle_range[0])
-        self.cloth_particle_end.append(particle_range[1])
-        self.cloth_tri_start.append(tri_range[0])
-        self.cloth_tri_end.append(tri_range[1])
-        self.cloth_edge_start.append(edge_range[0])
-        self.cloth_edge_end.append(edge_range[1])
+        self._cloth_label.append(label)
+        self._cloth_world.append(self.current_world)
+        self._cloth_particle_start.append(particle_range[0])
+        self._cloth_particle_end.append(particle_range[1])
+        self._cloth_tri_start.append(tri_range[0])
+        self._cloth_tri_end.append(tri_range[1])
+        self._cloth_edge_start.append(edge_range[0])
+        self._cloth_edge_end.append(edge_range[1])
 
     def _record_soft_group(
         self,
@@ -2695,12 +2695,12 @@ class ModelBuilder:
         tet_range: tuple[int, int],
     ) -> None:
         """Register an imported soft volume as an addressable, world-tagged group (see soft_label)."""
-        self.soft_label.append(label)
-        self.soft_world.append(self.current_world)
-        self.soft_particle_start.append(particle_range[0])
-        self.soft_particle_end.append(particle_range[1])
-        self.soft_tet_start.append(tet_range[0])
-        self.soft_tet_end.append(tet_range[1])
+        self._soft_label.append(label)
+        self._soft_world.append(self.current_world)
+        self._soft_particle_start.append(particle_range[0])
+        self._soft_particle_end.append(particle_range[1])
+        self._soft_tet_start.append(tet_range[0])
+        self._soft_tet_end.append(tet_range[1])
 
     # region importers
     def add_urdf(
@@ -3009,11 +3009,9 @@ class ModelBuilder:
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
         Returns:
-            Imported deformables (cable/cloth/volume) can be looked up by prim path through the
-            group registries on :class:`~newton.ModelBuilder` (e.g. :attr:`~newton.ModelBuilder.cable_label`
-            with the matching ``[start, end)`` range lists); :meth:`replicate` keeps the ranges
-            valid per world. The material attributes are returned as authored in the
-            ``path_*_attrs`` entries below.
+            Imported deformable (cable/cloth/volume) element ranges are returned by prim path in
+            the ``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` entries below, and the
+            material attributes as authored in the matching ``path_*_attrs`` entries.
 
             The returned mapping has the following entries:
 
@@ -3034,6 +3032,12 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_cable_map"``
+                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation)
+                * - ``"path_cloth_map"``
+                  - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``
+                * - ``"path_soft_map"``
+                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``
                 * - ``"path_cable_attrs"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist)
                 * - ``"path_cloth_attrs"``
@@ -3654,25 +3658,25 @@ class ModelBuilder:
         # Deformable groups: shift each group's ranges by this builder's start offsets and tag each
         # copy with the current world (labels ride the label_attrs handling below). Mirrors the
         # articulation_start/end offset + articulation_world tagging above.
-        self.cable_body_start.extend([s + start_body_idx for s in builder.cable_body_start])
-        self.cable_body_end.extend([e + start_body_idx for e in builder.cable_body_end])
-        self.cable_joint_start.extend([s + start_joint_idx for s in builder.cable_joint_start])
-        self.cable_joint_end.extend([e + start_joint_idx for e in builder.cable_joint_end])
-        self.cable_world.extend([self.current_world] * len(builder.cable_label))
+        self._cable_body_start.extend([s + start_body_idx for s in builder._cable_body_start])
+        self._cable_body_end.extend([e + start_body_idx for e in builder._cable_body_end])
+        self._cable_joint_start.extend([s + start_joint_idx for s in builder._cable_joint_start])
+        self._cable_joint_end.extend([e + start_joint_idx for e in builder._cable_joint_end])
+        self._cable_world.extend([self.current_world] * len(builder._cable_label))
 
-        self.cloth_particle_start.extend([s + start_particle_idx for s in builder.cloth_particle_start])
-        self.cloth_particle_end.extend([e + start_particle_idx for e in builder.cloth_particle_end])
-        self.cloth_tri_start.extend([s + start_triangle_idx for s in builder.cloth_tri_start])
-        self.cloth_tri_end.extend([e + start_triangle_idx for e in builder.cloth_tri_end])
-        self.cloth_edge_start.extend([s + start_edge_idx for s in builder.cloth_edge_start])
-        self.cloth_edge_end.extend([e + start_edge_idx for e in builder.cloth_edge_end])
-        self.cloth_world.extend([self.current_world] * len(builder.cloth_label))
+        self._cloth_particle_start.extend([s + start_particle_idx for s in builder._cloth_particle_start])
+        self._cloth_particle_end.extend([e + start_particle_idx for e in builder._cloth_particle_end])
+        self._cloth_tri_start.extend([s + start_triangle_idx for s in builder._cloth_tri_start])
+        self._cloth_tri_end.extend([e + start_triangle_idx for e in builder._cloth_tri_end])
+        self._cloth_edge_start.extend([s + start_edge_idx for s in builder._cloth_edge_start])
+        self._cloth_edge_end.extend([e + start_edge_idx for e in builder._cloth_edge_end])
+        self._cloth_world.extend([self.current_world] * len(builder._cloth_label))
 
-        self.soft_particle_start.extend([s + start_particle_idx for s in builder.soft_particle_start])
-        self.soft_particle_end.extend([e + start_particle_idx for e in builder.soft_particle_end])
-        self.soft_tet_start.extend([s + start_tetrahedron_idx for s in builder.soft_tet_start])
-        self.soft_tet_end.extend([e + start_tetrahedron_idx for e in builder.soft_tet_end])
-        self.soft_world.extend([self.current_world] * len(builder.soft_label))
+        self._soft_particle_start.extend([s + start_particle_idx for s in builder._soft_particle_start])
+        self._soft_particle_end.extend([e + start_particle_idx for e in builder._soft_particle_end])
+        self._soft_tet_start.extend([s + start_tetrahedron_idx for s in builder._soft_tet_start])
+        self._soft_tet_end.extend([e + start_tetrahedron_idx for e in builder._soft_tet_end])
+        self._soft_world.extend([self.current_world] * len(builder._soft_label))
 
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
@@ -3702,9 +3706,9 @@ class ModelBuilder:
             "body_label",
             "joint_label",
             "shape_label",
-            "cable_label",
-            "cloth_label",
-            "soft_label",
+            "_cable_label",
+            "_cloth_label",
+            "_soft_label",
         ]
         for attr in label_attrs:
             src = getattr(builder, attr)
@@ -5768,15 +5772,17 @@ class ModelBuilder:
                 return body_remap.get(parent, parent)
             return body_id
 
-        for i in range(len(self.cable_label)):
-            if self.cable_body_end[i] > self.cable_body_start[i]:
-                new_start = _remap_body_id(self.cable_body_start[i])
-                self.cable_body_start[i] = new_start
-                self.cable_body_end[i] = _remap_body_id(self.cable_body_end[i] - 1) + 1
+        for i in range(len(self._cable_label)):
+            if self._cable_body_end[i] > self._cable_body_start[i]:
+                new_start = _remap_body_id(self._cable_body_start[i])
+                self._cable_body_start[i] = new_start
+                self._cable_body_end[i] = _remap_body_id(self._cable_body_end[i] - 1) + 1
             # A welded-graph curve owns no tree joints (empty range); leave it empty.
-            if self.cable_joint_end[i] > self.cable_joint_start[i]:
-                self.cable_joint_start[i] = joint_remap.get(self.cable_joint_start[i], self.cable_joint_start[i])
-                self.cable_joint_end[i] = joint_remap.get(self.cable_joint_end[i] - 1, self.cable_joint_end[i] - 1) + 1
+            if self._cable_joint_end[i] > self._cable_joint_start[i]:
+                self._cable_joint_start[i] = joint_remap.get(self._cable_joint_start[i], self._cable_joint_start[i])
+                self._cable_joint_end[i] = (
+                    joint_remap.get(self._cable_joint_end[i] - 1, self._cable_joint_end[i] - 1) + 1
+                )
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):

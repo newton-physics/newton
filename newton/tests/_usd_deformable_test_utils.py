@@ -161,7 +161,7 @@ def group_labels(builder, family):
     registries, so a change to how group metadata is stored or exposed only touches this
     helper, not the tests.
     """
-    return list(getattr(builder, f"{family}_label"))
+    return list(getattr(builder, f"_{family}_label"))
 
 
 def group_range(builder, family, label, kind, world=None):
@@ -171,12 +171,12 @@ def group_range(builder, family, label, kind, world=None):
     ``particle``/``tet`` for soft volumes. See :func:`group_labels` for why tests must resolve
     ranges through this seam.
     """
-    labels = getattr(builder, f"{family}_label")
-    worlds = getattr(builder, f"{family}_world")
+    labels = getattr(builder, f"_{family}_label")
+    worlds = getattr(builder, f"_{family}_world")
     matches = [i for i, group_label in enumerate(labels) if group_label == label]
     if world is not None:
         matches = [i for i in matches if worlds[i] == world]
     if len(matches) != 1:
         raise LookupError(f"{len(matches)} {family} groups labelled '{label}' (world={world})")
     (i,) = matches
-    return getattr(builder, f"{family}_{kind}_start")[i], getattr(builder, f"{family}_{kind}_end")[i]
+    return getattr(builder, f"_{family}_{kind}_start")[i], getattr(builder, f"_{family}_{kind}_end")[i]

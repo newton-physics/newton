@@ -125,16 +125,10 @@ geometry (segment lengths, triangle areas, tet volumes). The proposal spreads th
 shape instead, but rest state is not imported yet (see the limitations above), so a deformed
 saved pose shifts mass with it.
 
-Every imported deformable can be looked up by its prim path. Per family,
-:class:`~newton.ModelBuilder` stores a label list (e.g.
-:attr:`~newton.ModelBuilder.cloth_label`), a world index, and ``[start, end)`` index ranges
-into the per-element arrays: body/joint ranges for cables, particle/triangle/edge ranges for
-cloth, and particle/tet ranges for volumes (soft bodies). Find a group by its position in the
-label list and read the matching range lists (e.g. ``cloth_particle_start`` /
-``cloth_particle_end``). The ranges stay valid through :meth:`~newton.ModelBuilder.replicate`
-(each copy is tagged with its world index) and ``collapse_fixed_joints`` (cable ranges follow
-the renumbered bodies and joints). Replication repeats a label in every world, so match on the
-label and the world index together.
+Every imported deformable can be looked up by its prim path in the mapping
+:meth:`~newton.ModelBuilder.add_usd` returns: ``path_cable_map`` holds each cable's body and
+joint indices, and ``path_cloth_map`` / ``path_soft_map`` hold each cloth's and soft body's
+``[start, end)`` particle and topology ranges.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
@@ -172,10 +166,9 @@ close a loop, so they stay outside the articulation.
 
 .. code-block:: python
 
-    builder.add_usd("cables.usda")
+    result = builder.add_usd("cables.usda")
     # Look up an imported cable by prim path:
-    c = builder.cable_label.index("/World/Cable")
-    body_start, body_end = builder.cable_body_start[c], builder.cable_body_end[c]
+    cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,

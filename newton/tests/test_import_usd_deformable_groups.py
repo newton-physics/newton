@@ -44,7 +44,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         t0, t1 = group_range(builder, "soft", "/World/SoftA/sim", "tet")
         self.assertEqual(t1 - t0, 1)
         # No begin_world -> global groups.
-        self.assertEqual(builder.cable_world, [-1, -1])
+        self.assertEqual(builder._cable_world, [-1, -1])
 
         model = builder.finalize()
         self.assertEqual((model.particle_count, model.body_count), (12, 6))
@@ -62,7 +62,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.replicate(sub, 3)
 
         self.assertEqual(group_labels(scene, "cloth"), ["/World/Cloth"] * 3)
-        self.assertEqual(scene.cloth_world, [0, 1, 2])
+        self.assertEqual(scene._cloth_world, [0, 1, 2])
         for w in range(3):
             self.assertEqual(group_range(scene, "cloth", "/World/Cloth", "particle", world=w), (4 * w, 4 * w + 4))
         with self.assertRaises(LookupError):
@@ -86,8 +86,8 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.add_world(cloth_sub)  # world 0: cloth only
         scene.add_world(cable_sub)  # world 1: cable only
 
-        self.assertEqual(scene.cloth_world, [0])
-        self.assertEqual(scene.cable_world, [1])
+        self.assertEqual(scene._cloth_world, [0])
+        self.assertEqual(scene._cable_world, [1])
         self.assertEqual(group_range(scene, "cloth", "/World/Cloth", "particle", world=0), (0, 4))
         b0, b1 = group_range(scene, "cable", "/World/Cable", "body", world=1)
         self.assertEqual(b1 - b0, 3)

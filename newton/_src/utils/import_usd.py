@@ -241,11 +241,9 @@ def parse_usd(
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
     Returns:
-        Imported deformables (cable/cloth/volume) can be looked up by prim path through the
-        group registries on :class:`~newton.ModelBuilder` (e.g. :attr:`~newton.ModelBuilder.cable_label`
-        with the matching ``[start, end)`` range lists); :meth:`replicate` keeps the ranges
-        valid per world. The material attributes are returned as authored in the
-        ``path_*_attrs`` entries below.
+        Imported deformable (cable/cloth/volume) element ranges are returned by prim path in
+        the ``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` entries below, and the
+        material attributes as authored in the matching ``path_*_attrs`` entries.
 
         The returned mapping has the following entries:
 
@@ -266,6 +264,12 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - ``"path_cable_map"``
+              - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation)
+            * - ``"path_cloth_map"``
+              - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``
+            * - ``"path_soft_map"``
+              - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``
             * - ``"path_cable_attrs"``
               - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist)
             * - ``"path_cloth_attrs"``
@@ -4292,6 +4296,9 @@ def parse_usd(
         "up_axis": stage_up_axis,
         "path_body_map": path_body_map,
         "path_joint_map": path_joint_map,
+        "path_cable_map": path_cable_map,
+        "path_cloth_map": path_cloth_map,
+        "path_soft_map": path_soft_map,
         "path_cable_attrs": path_cable_attrs,
         "path_cloth_attrs": path_cloth_attrs,
         "path_soft_attrs": path_soft_attrs,
