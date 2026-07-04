@@ -1421,7 +1421,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             device=state.mpm.particle_qd_grad.device,
         )
 
-    def sample_render_grains(self, state: newton.State, grains_per_particle: int) -> wp.array:
+    def sample_render_grains(self, state: newton.State, grains_per_particle: int) -> wp.array2d[wp.vec3]:
         """Generate per-particle point samples used for high-resolution rendering.
 
         Args:
@@ -1439,7 +1439,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         state_prev: newton.State,
         state: newton.State,
-        grains: wp.array,
+        grains: wp.array2d[wp.vec3],
         dt: float,
     ) -> None:
         """Advect grain samples with the grid velocity and keep them inside the deformed particle.
@@ -1478,7 +1478,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         collider_extrapolation_depth: float | None = None,
         collider_extrapolation_onset: float = 0.0,
         particle_flags: wp.array[wp.int32] | None = None,
-    ) -> tuple[wp.array | None, wp.array | None, wp.array | None]:
+    ) -> tuple[wp.array[wp.vec3] | None, wp.array[wp.int32] | None, wp.array[wp.vec3] | None]:
         """Extract a triangle mesh from the current particle state.
 
         Args:
@@ -1497,20 +1497,26 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 particles to surface.  Defaults to the model particle flags.
 
         Returns:
-            Tuple of ``(vertices, indices, normals)``.  All ``None`` when
-            no surface can be extracted.
+            Tuple of vertex positions [m], triangle indices, and unit-length
+            vertex normals. All entries are ``None`` when no surface can be
+            extracted.
         """
         if particle_flags is None:
             particle_flags = self.model.particle_flags
+        if extrapolate_into_colliders and surface.field_mode != "sdf":
+            raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
 
         verts, indices, normals = surface.extract(
             state.particle_q,
             radii=self._mpm_model.particle_radius,
-            compute_normals=compute_normals,
+            compute_normals=compute_normals and not extrapolate_into_colliders,
             particle_flags=particle_flags,
+            compute_mesh=not extrapolate_into_colliders,
         )
-        if verts is None or not extrapolate_into_colliders:
+        if not extrapolate_into_colliders:
             return verts, indices, normals
+        if surface.field is None:
+            return None, None, None
 
         return extrapolate_surface_sdf_into_colliders(
             surface,

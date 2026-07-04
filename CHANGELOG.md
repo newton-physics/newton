@@ -16,6 +16,7 @@
 - Add viewer layer system to overlay multiple solvers/models in supported rendering viewers; call `ViewerBase.activate(layer_id)` to route subsequent `set_model` / `log_state` / `log_*` calls into a named layer, `ViewerBase.set_layer_visible()` to toggle layers independently, and `ViewerBase.set_layer_transform()` to position layers side-by-side. See `example_basic_multi_solver_overlay.py`
 - Add `viewer.set_picking_linear_only_bodies()` and `viewer.clear_picking_linear_only_bodies()` to mark bodies that should receive only the linear component of mouse-picking force, suppressing offset-induced torque.
 - Add SDF contact support for convex-hull shapes with mesh-attached SDFs and opt-in SDF contact generation for box shapes.
+- Add public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs for particle surface extraction, including fixed-grid graph-capturable field updates, optional SDF redistancing, and MPM collider extrapolation.
 - Add opt-in filtering of static-static, static-kinematic, and kinematic-kinematic contacts during broad-phase collision detection. Set `CollisionPipeline(include_static_kinematic_pairs=False)` to enable filtering; the default preserves existing contact generation. `Model.shape_contact_pairs` remains an unfiltered superset for direct consumers such as `SolverKamino` and hydroelastic SDF setup.
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
 - Add `Model.shape_collision_filter_contains()`, `Model.shape_collision_filter_mask()`, and `Model.shape_collision_filter_pairs_array()` for solver integrations that need collision-filter queries.
@@ -26,6 +27,7 @@
 - Add support for pt2 neural-network checkpoints (saved via `torch.export.save`) in `ControllerNeuralMLP` and `ControllerNeuralLSTM`.
 - Add `SensorContact.position_matrix` alongside `force_matrix`, reporting per-counterpart world-frame contact positions (force-weighted average of contact midpoints).
 - Forward `--warp-config KEY=VALUE` from `python -m newton.tests` to example subprocesses so `warp.config` overrides apply during example tests.
+- Add an `mpm_water_dam_break` example that renders a water-like MPM simulation as a dynamic surface mesh.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Add `basic_dzhanibekov` example demonstrating free rigid-body intermediate-axis instability across VBD, XPBD, and MuJoCo solvers
 - Add inverse-dynamics evaluation for articulated systems: `Model.inverse_dynamics()` returns an `InverseDynamics` container that `eval_inverse_dynamics` populates with the joint-space mass matrix `M(q)`, gravity bias `g(q)`, and Coriolis bias `C(q, q_dot)*q_dot` (selected via `InverseDynamics.EvalType` flags); `eval_inverse_dynamics_force` combines them with a user-supplied `qddot` into the manipulator-equation joint force `tau = M*qddot + C*q_dot + g`; `ArticulationView.eval_inverse_dynamics` masks the computation to a selected subset of articulations via the selection API
@@ -81,10 +83,6 @@
 - Deprecate the `indices` argument of `MeshAdjacency` in favor of `tri_indices`
 - Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
 - `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
-- Rename the MPM grain rendering example to `mpm_particle_rendering` and render separate particle groups with grains and extracted surfaces; run `python -m newton.examples mpm_particle_rendering` instead of `mpm_grain_rendering`.
-- Lower the default particle surface extraction density threshold and smoothing strength, use a slightly finer default MPM surface voxel size, add a direct particle SDF union surface method, and expose droplet-oriented smoothing plus descriptive anisotropy controls in the MPM examples; pass `threshold=0.5`, `smooth_lambda=0.9`, `field_smooth_iterations=1`, `field_smooth_radius=2`, and `voxel_size=0.5 * solver_voxel_size` to restore the previous defaults.
-- Replace paper-style particle surface parameters with descriptive names and tie anisotropic kernel scale to the base `kernel_scale`; use `kernel_scale`, `anisotropy_ratio`, `anisotropy_scale`, `anisotropy_min_neighbors`, and `surface_method` instead of `k_n`, `k_r`, `k_s`, `n_epsilon`, and `field_source`.
-- Remove the `cbor2` `<6` dependency ceiling after updating recorder deserialization to accept mapping-like decoded containers
 
 ### Deprecated
 
