@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import unittest
 from unittest.mock import Mock, patch
 
@@ -44,6 +45,7 @@ class _RecordingViewer(ViewerNull):
         color=None,
         roughness=None,
         metallic=None,
+        dynamic=False,
     ):
         self.mesh_calls.append((name, hidden))
 
@@ -83,6 +85,25 @@ class _MinimalRTXViewer(ViewerRTX):
 
 
 class TestViewerLayers(unittest.TestCase):
+    def test_rtx_log_mesh_accepts_dynamic_topology_flag(self):
+        self.assertIn("dynamic", inspect.signature(ViewerRTX.log_mesh).parameters)
+
+    def test_rtx_log_mesh_queues_dynamic_topology(self):
+        viewer = _MinimalRTXViewer()
+        viewer._phase = viewer._PHASE_RENDER
+        viewer._mesh_prim_paths = {"surface": "/surface"}
+        viewer._pending_mesh_points = {}
+        viewer._pending_mesh_normals = {}
+        viewer._pending_mesh_topology = {}
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        viewer.log_mesh("surface", points, indices, dynamic=True)
+
+        face_counts, face_indices = viewer._pending_mesh_topology["surface"]
+        self.assertEqual(face_counts.tolist(), [3])
+        self.assertEqual(face_indices.tolist(), [0, 1, 2])
+
     def test_default_layer_uses_unprefixed_names(self):
         """Without activate(), object names remain unprefixed (legacy behavior)."""
         viewer = _RecordingViewer()

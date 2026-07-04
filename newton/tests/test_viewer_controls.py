@@ -5,7 +5,7 @@ import sys
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -188,6 +188,19 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
         """Verify a negative num_frames raises ValueError rather than silently rendering nothing."""
         with self.assertRaises(ValueError):
             ViewerGL(num_frames=-1)
+
+
+class TestViewerGLParticles(unittest.TestCase):
+    def test_hidden_particles_skip_instance_updates(self):
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer.show_particles = False
+        viewer._layer_force_hidden = Mock(return_value=False)
+        viewer._qualify = Mock(side_effect=lambda name: name)
+        viewer.log_points = Mock()
+
+        viewer._log_particles(SimpleNamespace())
+
+        viewer.log_points.assert_called_once_with("/model/particles", points=None, hidden=True)
 
 
 if __name__ == "__main__":

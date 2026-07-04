@@ -236,9 +236,14 @@ class MeshGL:
         self.color = (0.7, 0.5, 0.3)
         self.material = (0.5, 0.0, 0.0, 0.0)
 
-        # Create CUDA-GL interop buffer for efficient updates
-        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
-            self.vertex_cuda_buffer = wp.RegisteredGLBuffer(int(self.vbo.value), self.device)
+        # Dynamic CUDA meshes avoid a device-host-device round trip even when
+        # interop remains disabled for the viewer's legacy static paths.
+        if (ENABLE_CUDA_INTEROP or self.dynamic) and self.device.is_cuda:
+            self.vertex_cuda_buffer = wp.RegisteredGLBuffer(
+                int(self.vbo.value),
+                self.device,
+                flags=wp.RegisteredGLBuffer.WRITE_DISCARD,
+            )
         else:
             self.vertex_cuda_buffer = None
         self._points = None
@@ -247,6 +252,8 @@ class MeshGL:
         """Clean up OpenGL resources."""
         gl = RendererGL.gl
         try:
+            # CUDA must release the registration before OpenGL deletes the buffer.
+            self.vertex_cuda_buffer = None
             if hasattr(self, "vao"):
                 gl.glDeleteVertexArrays(1, self.vao)
             if hasattr(self, "vbo"):
@@ -297,7 +304,7 @@ class MeshGL:
         )
 
         # upload vertices to GL
-        if ENABLE_CUDA_INTEROP and self.vertices.device.is_cuda:
+        if self.vertex_cuda_buffer is not None:
             # upload points via CUDA if possible
             vbo_vertices = self.vertex_cuda_buffer.map(dtype=RenderVertex, shape=self.vertices.shape)
             wp.copy(vbo_vertices, self.vertices)

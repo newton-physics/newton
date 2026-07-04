@@ -102,6 +102,120 @@ def _compute_aabb_tiled(
         wp.atomic_max(upper, 0, wp.vec3(tile_max_x[0], tile_max_y[0], tile_max_z[0]))
 
 
+@wp.func
+def _kernel_reach(
+    i: int,
+    radii: wp.array[float],
+    det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
+    particle_sdf_radius_scale: float,
+    particle_sdf_band: float,
+    particle_sdf: int,
+    anisotropic: int,
+) -> wp.vec3:
+    reach = density_reach[i]
+    if particle_sdf != 0 and anisotropic == 0:
+        r = radii[i] * particle_sdf_radius_scale * particle_sdf_band
+        reach = wp.vec3(r)
+    elif particle_sdf != 0:
+        r = wp.max(radii[i] * particle_sdf_radius_scale, 1.0e-8)
+        det_root = wp.pow(wp.max(det_G[i], 1.0e-24), 1.0 / 3.0)
+        reach = density_reach[i] * (0.5 * particle_sdf_band * det_root * r)
+    return reach
+
+
+@wp.kernel
+def _compute_kernel_aabb(
+    positions: wp.array[wp.vec3],
+    radii: wp.array[float],
+    det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
+    particle_sdf_radius_scale: float,
+    particle_sdf_band: float,
+    particle_sdf: int,
+    anisotropic: int,
+    lower: wp.array[wp.vec3],
+    upper: wp.array[wp.vec3],
+):
+    """Compute exact world-space bounds of particle kernel supports."""
+    i = wp.tid()
+    p = positions[i]
+    reach = _kernel_reach(
+        i,
+        radii,
+        det_G,
+        density_reach,
+        particle_sdf_radius_scale,
+        particle_sdf_band,
+        particle_sdf,
+        anisotropic,
+    )
+
+    wp.atomic_min(lower, 0, p - reach)
+    wp.atomic_max(upper, 0, p + reach)
+
+
+@wp.kernel
+def _compute_kernel_aabb_tiled(
+    positions: wp.array[wp.vec3],
+    radii: wp.array[float],
+    det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
+    particle_sdf_radius_scale: float,
+    particle_sdf_band: float,
+    particle_sdf: int,
+    anisotropic: int,
+    n: int,
+    lower: wp.array[wp.vec3],
+    upper: wp.array[wp.vec3],
+):
+    tile, lane = wp.tid()
+    tile_size = wp.static(_REDUCTION_TILE_SIZE)
+    i = tile * tile_size + lane
+    valid = i < n
+
+    min_x = wp.tile_full(shape=tile_size, value=1.0e30, dtype=float, storage="shared")
+    min_y = wp.tile_full(shape=tile_size, value=1.0e30, dtype=float, storage="shared")
+    min_z = wp.tile_full(shape=tile_size, value=1.0e30, dtype=float, storage="shared")
+    max_x = wp.tile_full(shape=tile_size, value=-1.0e30, dtype=float, storage="shared")
+    max_y = wp.tile_full(shape=tile_size, value=-1.0e30, dtype=float, storage="shared")
+    max_z = wp.tile_full(shape=tile_size, value=-1.0e30, dtype=float, storage="shared")
+
+    lo = wp.vec3(0.0)
+    hi = wp.vec3(0.0)
+    if valid:
+        p = positions[i]
+        reach = _kernel_reach(
+            i,
+            radii,
+            det_G,
+            density_reach,
+            particle_sdf_radius_scale,
+            particle_sdf_band,
+            particle_sdf,
+            anisotropic,
+        )
+        lo = p - reach
+        hi = p + reach
+
+    wp.tile_scatter_masked(min_x, lane, lo[0], valid)
+    wp.tile_scatter_masked(min_y, lane, lo[1], valid)
+    wp.tile_scatter_masked(min_z, lane, lo[2], valid)
+    wp.tile_scatter_masked(max_x, lane, hi[0], valid)
+    wp.tile_scatter_masked(max_y, lane, hi[1], valid)
+    wp.tile_scatter_masked(max_z, lane, hi[2], valid)
+
+    tile_min_x = wp.tile_min(min_x)
+    tile_min_y = wp.tile_min(min_y)
+    tile_min_z = wp.tile_min(min_z)
+    tile_max_x = wp.tile_max(max_x)
+    tile_max_y = wp.tile_max(max_y)
+    tile_max_z = wp.tile_max(max_z)
+    if lane == 0:
+        wp.atomic_min(lower, 0, wp.vec3(tile_min_x[0], tile_min_y[0], tile_min_z[0]))
+        wp.atomic_max(upper, 0, wp.vec3(tile_max_x[0], tile_max_y[0], tile_max_z[0]))
+
+
 @wp.kernel
 def _compute_max_radius(
     radii: wp.array[float],
@@ -160,30 +274,45 @@ def _compact_active_particles(
 @wp.kernel
 def _blur_axis_x(src: wp.array3d[wp.float32], dst: wp.array3d[wp.float32], weights: wp.array[float], hw: int):
     i, j, k = wp.tid()
-    val = float(0.0)
-    for di in range(-hw, hw + 1):
-        ii = wp.clamp(i + di, 0, src.shape[0] - 1)
-        val += src[ii, j, k] * weights[wp.abs(di)]
+    val = src[i, j, k] * weights[0]
+    if i >= hw and i + hw < src.shape[0]:
+        for di in range(1, hw + 1):
+            val += (src[i - di, j, k] + src[i + di, j, k]) * weights[di]
+    else:
+        for di in range(1, hw + 1):
+            i_lo = wp.max(i - di, 0)
+            i_hi = wp.min(i + di, src.shape[0] - 1)
+            val += (src[i_lo, j, k] + src[i_hi, j, k]) * weights[di]
     dst[i, j, k] = val
 
 
 @wp.kernel
 def _blur_axis_y(src: wp.array3d[wp.float32], dst: wp.array3d[wp.float32], weights: wp.array[float], hw: int):
     i, j, k = wp.tid()
-    val = float(0.0)
-    for dj in range(-hw, hw + 1):
-        jj = wp.clamp(j + dj, 0, src.shape[1] - 1)
-        val += src[i, jj, k] * weights[wp.abs(dj)]
+    val = src[i, j, k] * weights[0]
+    if j >= hw and j + hw < src.shape[1]:
+        for dj in range(1, hw + 1):
+            val += (src[i, j - dj, k] + src[i, j + dj, k]) * weights[dj]
+    else:
+        for dj in range(1, hw + 1):
+            j_lo = wp.max(j - dj, 0)
+            j_hi = wp.min(j + dj, src.shape[1] - 1)
+            val += (src[i, j_lo, k] + src[i, j_hi, k]) * weights[dj]
     dst[i, j, k] = val
 
 
 @wp.kernel
 def _blur_axis_z(src: wp.array3d[wp.float32], dst: wp.array3d[wp.float32], weights: wp.array[float], hw: int):
     i, j, k = wp.tid()
-    val = float(0.0)
-    for dk in range(-hw, hw + 1):
-        kk = wp.clamp(k + dk, 0, src.shape[2] - 1)
-        val += src[i, j, kk] * weights[wp.abs(dk)]
+    val = src[i, j, k] * weights[0]
+    if k >= hw and k + hw < src.shape[2]:
+        for dk in range(1, hw + 1):
+            val += (src[i, j, k - dk] + src[i, j, k + dk]) * weights[dk]
+    else:
+        for dk in range(1, hw + 1):
+            k_lo = wp.max(k - dk, 0)
+            k_hi = wp.min(k + dk, src.shape[2] - 1)
+            val += (src[i, j, k_lo] + src[i, j, k_hi]) * weights[dk]
     dst[i, j, k] = val
 
 
@@ -201,12 +330,12 @@ def _is_active_particle(flags: wp.array[wp.int32], use_flags: int, i: int) -> bo
 
 
 @wp.func
-def _weight(dist: float, radius: float) -> float:
+def _weight_squared(dist_sq: float, inv_radius_sq: float) -> float:
     """Cubic falloff weight: w = (1 - (d/r)^3) for d < r."""
-    if dist >= radius:
+    q_sq = dist_sq * inv_radius_sq
+    if q_sq >= 1.0:
         return 0.0
-    q = dist / radius
-    return 1.0 - q * q * q
+    return 1.0 - q_sq * wp.sqrt(q_sq)
 
 
 @wp.func
@@ -244,35 +373,67 @@ def _copy_active_or_sentinel_positions(
 def _smooth_positions(
     grid: wp.uint64,
     positions: wp.array[wp.vec3],
+    search_radius: float,
+    smooth_lambda: float,
+    smoothed: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    xi = positions[i]
+    offset_sum = wp.vec3(0.0)
+    w_sum = float(0.0)
+    radius_sq = search_radius * search_radius
+    inv_radius_sq = 1.0 / radius_sq
+
+    query = wp.hash_grid_query(grid, xi, search_radius)
+    idx = int(0)
+    while wp.hash_grid_query_next(query, idx):
+        offset = positions[idx] - xi
+        dist_sq = wp.dot(offset, offset)
+        if dist_sq < radius_sq:
+            w = _weight_squared(dist_sq, inv_radius_sq)
+            offset_sum += w * offset
+            w_sum += w
+
+    if w_sum > 0.0:
+        smoothed[i] = xi + (smooth_lambda / w_sum) * offset_sum
+    else:
+        smoothed[i] = xi
+
+
+@wp.kernel
+def _smooth_positions_flagged(
+    grid: wp.uint64,
+    positions: wp.array[wp.vec3],
     flags: wp.array[wp.int32],
-    use_flags: int,
     inactive_position: wp.vec3,
     search_radius: float,
     smooth_lambda: float,
     smoothed: wp.array[wp.vec3],
 ):
     i = wp.tid()
-    if not _is_active_particle(flags, use_flags, i):
+    if not _is_active_particle(flags, 1, i):
         smoothed[i] = inactive_position
         return
 
     xi = positions[i]
-
-    avg = wp.vec3(0.0)
+    offset_sum = wp.vec3(0.0)
     w_sum = float(0.0)
+    radius_sq = search_radius * search_radius
+    inv_radius_sq = 1.0 / radius_sq
 
     query = wp.hash_grid_query(grid, xi, search_radius)
     idx = int(0)
     while wp.hash_grid_query_next(query, idx):
-        if _is_active_particle(flags, use_flags, idx):
-            dist = wp.length(xi - positions[idx])
-            w = _weight(dist, search_radius)
-            avg += w * positions[idx]
-            w_sum += w
+        if _is_active_particle(flags, 1, idx):
+            offset = positions[idx] - xi
+            dist_sq = wp.dot(offset, offset)
+            if dist_sq < radius_sq:
+                w = _weight_squared(dist_sq, inv_radius_sq)
+                offset_sum += w * offset
+                w_sum += w
 
     if w_sum > 0.0:
-        avg = avg / w_sum
-        smoothed[i] = (1.0 - smooth_lambda) * xi + smooth_lambda * avg
+        smoothed[i] = xi + (smooth_lambda / w_sum) * offset_sum
     else:
         smoothed[i] = xi
 
@@ -296,6 +457,7 @@ def _compute_anisotropy(
     anisotropy_strength: float,
     G_out: wp.array[wp.mat33],
     det_G_out: wp.array[float],
+    density_reach_out: wp.array[wp.vec3],
 ):
     i = wp.tid()
     xi = smoothed[i]
@@ -305,19 +467,33 @@ def _compute_anisotropy(
         inv_h = 1.0 / h
         G_out[i] = wp.identity(n=3, dtype=float) * inv_h
         det_G_out[i] = inv_h * inv_h * inv_h
+        density_reach_out[i] = wp.vec3(_DENSITY_KERNEL_SUPPORT * h)
         return
 
-    x_w = wp.vec3(0.0)
+    mean_offset = wp.vec3(0.0)
+    moment_xx = float(0.0)
+    moment_xy = float(0.0)
+    moment_xz = float(0.0)
+    moment_yy = float(0.0)
+    moment_yz = float(0.0)
+    moment_zz = float(0.0)
     w_sum = float(0.0)
     count = int(0)
+    inv_radius_sq = 1.0 / (search_radius * search_radius)
 
     query = wp.hash_grid_query(grid, xi, search_radius)
     idx = int(0)
     while wp.hash_grid_query_next(query, idx):
         if _is_active_particle(flags, use_flags, idx):
-            dist = wp.length(xi - smoothed[idx])
-            w = _weight(dist, search_radius)
-            x_w += w * smoothed[idx]
+            offset = smoothed[idx] - xi
+            w = _weight_squared(wp.dot(offset, offset), inv_radius_sq)
+            mean_offset += w * offset
+            moment_xx += w * offset[0] * offset[0]
+            moment_xy += w * offset[0] * offset[1]
+            moment_xz += w * offset[0] * offset[2]
+            moment_yy += w * offset[1] * offset[1]
+            moment_yz += w * offset[1] * offset[2]
+            moment_zz += w * offset[2] * offset[2]
             w_sum += w
             if w > 0.0:
                 count += 1
@@ -326,25 +502,24 @@ def _compute_anisotropy(
     G = wp.identity(n=3, dtype=float) * inv_h
     det_g = inv_h * inv_h * inv_h
 
+    # ``count`` includes the particle itself, so this requires at least
+    # ``anisotropy_min_neighbors`` other particles.
     if count > anisotropy_min_neighbors and w_sum > 0.0:
-        x_w = x_w / w_sum
+        mean_offset = mean_offset / w_sum
+        inv_w_sum = 1.0 / w_sum
+        C = wp.mat33(
+            moment_xx * inv_w_sum - mean_offset[0] * mean_offset[0],
+            moment_xy * inv_w_sum - mean_offset[0] * mean_offset[1],
+            moment_xz * inv_w_sum - mean_offset[0] * mean_offset[2],
+            moment_xy * inv_w_sum - mean_offset[0] * mean_offset[1],
+            moment_yy * inv_w_sum - mean_offset[1] * mean_offset[1],
+            moment_yz * inv_w_sum - mean_offset[1] * mean_offset[2],
+            moment_xz * inv_w_sum - mean_offset[0] * mean_offset[2],
+            moment_yz * inv_w_sum - mean_offset[1] * mean_offset[2],
+            moment_zz * inv_w_sum - mean_offset[2] * mean_offset[2],
+        )
 
-        C = wp.mat33(0.0)
-        query2 = wp.hash_grid_query(grid, xi, search_radius)
-        idx2 = int(0)
-        while wp.hash_grid_query_next(query2, idx2):
-            if _is_active_particle(flags, use_flags, idx2):
-                dist2 = wp.length(xi - smoothed[idx2])
-                w2 = _weight(dist2, search_radius)
-                if w2 > 0.0:
-                    d = smoothed[idx2] - x_w
-                    C += w2 * wp.outer(d, d)
-        C = C / w_sum
-
-        U = wp.mat33()
-        sigma = wp.vec3()
-        V = wp.mat33()
-        wp.svd3(C, U, sigma, V)
+        U, sigma, _V = wp.svd3(C)
 
         # Erratum fix: covariance eigenvalues are variances; sqrt for axis lengths
         s1 = wp.sqrt(wp.max(sigma[0], 1.0e-10))
@@ -367,7 +542,7 @@ def _compute_anisotropy(
         # Blend inverse kernel radii in the PCA frame.  Full strength
         # preserves the WPCA ellipsoid for every particle with enough
         # neighbors; sparse particles still use the isotropic fallback below.
-        blend = wp.clamp(anisotropy_strength, 0.0, 1.0)
+        blend = anisotropy_strength
 
         iso_scale = 1.0 / (kernel_scale * h)
         if blend <= 0.0:
@@ -386,6 +561,12 @@ def _compute_anisotropy(
 
     G_out[i] = G
     det_G_out[i] = det_g
+    G_inv = wp.inverse(G)
+    density_reach_out[i] = _DENSITY_KERNEL_SUPPORT * wp.vec3(
+        wp.length(wp.vec3(G_inv[0, 0], G_inv[1, 0], G_inv[2, 0])),
+        wp.length(wp.vec3(G_inv[0, 1], G_inv[1, 1], G_inv[2, 1])),
+        wp.length(wp.vec3(G_inv[0, 2], G_inv[1, 2], G_inv[2, 2])),
+    )
 
 
 @wp.kernel
@@ -394,12 +575,14 @@ def _fill_isotropic_G(
     kernel_scale: float,
     G_out: wp.array[wp.mat33],
     det_G_out: wp.array[float],
+    density_reach_out: wp.array[wp.vec3],
 ):
     """Fill all particles with the same isotropic G = (1/(kernel_scale*h)) * I."""
     i = wp.tid()
     scale = 1.0 / (kernel_scale * kernel_radius)
     G_out[i] = wp.identity(n=3, dtype=float) * scale
     det_G_out[i] = scale * scale * scale
+    density_reach_out[i] = wp.vec3(_DENSITY_KERNEL_SUPPORT / scale)
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +598,7 @@ def _eval_scalar_field(
     use_flags: int,
     G_matrices: wp.array[wp.mat33],
     det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
     grid_origin: wp.vec3,
     inv_voxel_size: float,
     nx: int,
@@ -441,10 +625,10 @@ def _eval_scalar_field(
     weight = volume * sigma * dG
 
     # Axis-aligned bounding box of the kernel support (||G*r|| < 2).
-    G_inv = wp.inverse(G)
-    reach_x = 2.0 * wp.length(wp.vec3(G_inv[0, 0], G_inv[1, 0], G_inv[2, 0]))
-    reach_y = 2.0 * wp.length(wp.vec3(G_inv[0, 1], G_inv[1, 1], G_inv[2, 1]))
-    reach_z = 2.0 * wp.length(wp.vec3(G_inv[0, 2], G_inv[1, 2], G_inv[2, 2]))
+    reach = density_reach[pid]
+    reach_x = reach[0]
+    reach_y = reach[1]
+    reach_z = reach[2]
 
     lo_x = wp.max(int(wp.ceil((x_p[0] - reach_x - grid_origin[0]) * inv_voxel_size)), 0)
     lo_y = wp.max(int(wp.ceil((x_p[1] - reach_y - grid_origin[1]) * inv_voxel_size)), 0)
@@ -454,25 +638,82 @@ def _eval_scalar_field(
     hi_z = wp.min(int(wp.floor((x_p[2] + reach_z - grid_origin[2]) * inv_voxel_size)), nz - 1)
 
     voxel_size = 1.0 / inv_voxel_size
+    d_lo = grid_origin + voxel_size * wp.vec3(float(lo_x), float(lo_y), float(lo_z)) - x_p
+    Gd_i = G * d_lo
+    step_x = voxel_size * wp.vec3(G[0, 0], G[1, 0], G[2, 0])
+    step_y = voxel_size * wp.vec3(G[0, 1], G[1, 1], G[2, 1])
+    step_z = voxel_size * wp.vec3(G[0, 2], G[1, 2], G[2, 2])
     for i in range(lo_x, hi_x + 1):
+        Gd_j = Gd_i
         for j in range(lo_y, hi_y + 1):
+            Gd = Gd_j
             for k in range(lo_z, hi_z + 1):
-                x_node = grid_origin + voxel_size * wp.vec3(float(i), float(j), float(k))
-                Gr = G * (x_node - x_p)
-                q = wp.length(Gr)
-                val = weight * _cubic_bspline(q)
-                if val > 0.0:
-                    wp.atomic_add(field, i, j, k, val)
+                q_sq = wp.dot(Gd, Gd)
+                if q_sq < 4.0:
+                    wp.atomic_add(field, i, j, k, weight * _cubic_bspline(wp.sqrt(q_sq)))
+                Gd += step_z
+            Gd_j += step_y
+        Gd_i += step_x
 
 
 @wp.kernel
-def _eval_particle_sdf_union(
+def _eval_particle_sdf_union_isotropic(
+    smoothed: wp.array[wp.vec3],
+    radii: wp.array[float],
+    flags: wp.array[wp.int32],
+    use_flags: int,
+    sdf_radius_scale: float,
+    sdf_band: float,
+    grid_origin: wp.vec3,
+    inv_voxel_size: float,
+    nx: int,
+    ny: int,
+    nz: int,
+    field: wp.array3d[wp.float32],
+):
+    """Particle-centric spherical SDF union."""
+    pid = wp.tid()
+    if not _is_active_particle(flags, use_flags, pid):
+        return
+
+    x_p = smoothed[pid]
+    r_p = wp.max(radii[pid] * sdf_radius_scale, 1.0e-8)
+    reach = sdf_band * r_p
+
+    lo_x = wp.max(int(wp.ceil((x_p[0] - reach - grid_origin[0]) * inv_voxel_size)), 0)
+    lo_y = wp.max(int(wp.ceil((x_p[1] - reach - grid_origin[1]) * inv_voxel_size)), 0)
+    lo_z = wp.max(int(wp.ceil((x_p[2] - reach - grid_origin[2]) * inv_voxel_size)), 0)
+    hi_x = wp.min(int(wp.floor((x_p[0] + reach - grid_origin[0]) * inv_voxel_size)), nx - 1)
+    hi_y = wp.min(int(wp.floor((x_p[1] + reach - grid_origin[1]) * inv_voxel_size)), ny - 1)
+    hi_z = wp.min(int(wp.floor((x_p[2] + reach - grid_origin[2]) * inv_voxel_size)), nz - 1)
+
+    voxel_size = 1.0 / inv_voxel_size
+    reach_sq = reach * reach
+    dx = grid_origin[0] + voxel_size * float(lo_x) - x_p[0]
+    for i in range(lo_x, hi_x + 1):
+        dy = grid_origin[1] + voxel_size * float(lo_y) - x_p[1]
+        dx_sq = dx * dx
+        for j in range(lo_y, hi_y + 1):
+            dz = grid_origin[2] + voxel_size * float(lo_z) - x_p[2]
+            dxy_sq = dx_sq + dy * dy
+            for k in range(lo_z, hi_z + 1):
+                dist_sq = dxy_sq + dz * dz
+                if dist_sq <= reach_sq:
+                    wp.atomic_min(field, i, j, k, wp.sqrt(dist_sq) - r_p)
+                dz += voxel_size
+            dy += voxel_size
+        dx += voxel_size
+
+
+@wp.kernel
+def _eval_particle_sdf_union_anisotropic(
     smoothed: wp.array[wp.vec3],
     radii: wp.array[float],
     flags: wp.array[wp.int32],
     use_flags: int,
     G_matrices: wp.array[wp.mat33],
     det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
     sdf_radius_scale: float,
     sdf_band: float,
     grid_origin: wp.vec3,
@@ -495,12 +736,13 @@ def _eval_particle_sdf_union(
     # axis ratios and orientation without inheriting density-kernel volume.
     G = G_matrices[pid]
     det_root = wp.pow(wp.max(det_G[pid], 1.0e-24), 1.0 / 3.0)
-    H = G * (1.0 / (det_root * r_p))
-    H_inv = wp.inverse(H)
+    radius_normalization = det_root * r_p
+    H = G * (1.0 / radius_normalization)
 
-    reach_x = sdf_band * wp.length(wp.vec3(H_inv[0, 0], H_inv[1, 0], H_inv[2, 0]))
-    reach_y = sdf_band * wp.length(wp.vec3(H_inv[0, 1], H_inv[1, 1], H_inv[2, 1]))
-    reach_z = sdf_band * wp.length(wp.vec3(H_inv[0, 2], H_inv[1, 2], H_inv[2, 2]))
+    reach = density_reach[pid] * (0.5 * sdf_band * radius_normalization)
+    reach_x = reach[0]
+    reach_y = reach[1]
+    reach_z = reach[2]
 
     lo_x = wp.max(int(wp.ceil((x_p[0] - reach_x - grid_origin[0]) * inv_voxel_size)), 0)
     lo_y = wp.max(int(wp.ceil((x_p[1] - reach_y - grid_origin[1]) * inv_voxel_size)), 0)
@@ -510,19 +752,29 @@ def _eval_particle_sdf_union(
     hi_z = wp.min(int(wp.floor((x_p[2] + reach_z - grid_origin[2]) * inv_voxel_size)), nz - 1)
 
     voxel_size = 1.0 / inv_voxel_size
+    d_lo = grid_origin + voxel_size * wp.vec3(float(lo_x), float(lo_y), float(lo_z)) - x_p
+    Hd_i = H * d_lo
+    step_x = voxel_size * wp.vec3(H[0, 0], H[1, 0], H[2, 0])
+    step_y = voxel_size * wp.vec3(H[0, 1], H[1, 1], H[2, 1])
+    step_z = voxel_size * wp.vec3(H[0, 2], H[1, 2], H[2, 2])
+    H_t = wp.transpose(H)
+    band_sq = sdf_band * sdf_band
     for i in range(lo_x, hi_x + 1):
+        Hd_j = Hd_i
         for j in range(lo_y, hi_y + 1):
+            Hd = Hd_j
             for k in range(lo_z, hi_z + 1):
-                x_node = grid_origin + voxel_size * wp.vec3(float(i), float(j), float(k))
-                d = x_node - x_p
-                Hd = H * d
-                q = wp.length(Hd)
-                if q <= sdf_band:
+                q_sq = wp.dot(Hd, Hd)
+                if q_sq <= band_sq:
                     sdf = -r_p
-                    if q > 1.0e-8:
-                        grad_q = wp.transpose(H) * (Hd / q)
-                        sdf = (q - 1.0) / wp.max(wp.length(grad_q), 1.0e-8)
+                    if q_sq > 1.0e-16:
+                        q = wp.sqrt(q_sq)
+                        grad_norm_times_q = wp.length(H_t * Hd)
+                        sdf = (q - 1.0) * q / wp.max(grad_norm_times_q, 1.0e-8 * q)
                     wp.atomic_min(field, i, j, k, sdf)
+                Hd += step_z
+            Hd_j += step_y
+        Hd_i += step_x
 
 
 @wp.kernel
@@ -695,8 +947,8 @@ class ParticleSurface:
         anisotropy_scale: Relative multiplier for anisotropic kernel radii.
             Values greater than 1 widen anisotropic kernels without changing
             the isotropic fallback scale.  Defaults to 1.
-        anisotropy_min_neighbors: Minimum neighbor count for anisotropic kernels.
-            Particles with fewer neighbors use isotropic kernels.
+        anisotropy_min_neighbors: Minimum number of other particles required
+            for anisotropic kernels. Sparser particles use isotropic kernels.
         anisotropy_strength: Blend from isotropic kernels to anisotropic
             kernels [0, 1].  Lower values preserve more normal support from
             boundary particles back into the interior.
@@ -750,21 +1002,21 @@ class ParticleSurface:
         particle_sdf_radius_scale: float = 1.0,
         particle_sdf_band: float = 2.0,
     ):
-        if voxel_size <= 0.0:
+        if not math.isfinite(voxel_size) or voxel_size <= 0.0:
             raise ValueError("voxel_size must be positive")
         if kernel_radius is None:
             kernel_radius = 3.0 * voxel_size
-        elif kernel_radius <= 0.0:
+        elif not math.isfinite(kernel_radius) or kernel_radius <= 0.0:
             raise ValueError("kernel_radius must be positive")
-        if threshold < 0.0:
+        if not math.isfinite(threshold) or threshold < 0.0:
             raise ValueError("threshold must be non-negative")
         if not 0.0 <= smooth_lambda <= 1.0:
             raise ValueError("smooth_lambda must be in [0, 1]")
-        if anisotropy_ratio < 1.0:
+        if not math.isfinite(anisotropy_ratio) or anisotropy_ratio < 1.0:
             raise ValueError("anisotropy_ratio must be at least 1")
-        if kernel_scale <= 0.0:
+        if not math.isfinite(kernel_scale) or kernel_scale <= 0.0:
             raise ValueError("kernel_scale must be positive")
-        if anisotropy_scale <= 0.0:
+        if not math.isfinite(anisotropy_scale) or anisotropy_scale <= 0.0:
             raise ValueError("anisotropy_scale must be positive")
         if anisotropy_min_neighbors < 0:
             raise ValueError("anisotropy_min_neighbors must be non-negative")
@@ -782,9 +1034,9 @@ class ParticleSurface:
             raise ValueError("mesh_smooth_iterations must be non-negative")
         if not 0.0 <= mesh_smooth_lambda <= 1.0:
             raise ValueError("mesh_smooth_lambda must be in [0, 1]")
-        if particle_sdf_radius_scale <= 0.0:
+        if not math.isfinite(particle_sdf_radius_scale) or particle_sdf_radius_scale <= 0.0:
             raise ValueError("particle_sdf_radius_scale must be positive")
-        if particle_sdf_band <= 0.0:
+        if not math.isfinite(particle_sdf_band) or particle_sdf_band <= 0.0:
             raise ValueError("particle_sdf_band must be positive")
         if surface_method not in ("density", "particle_sdf"):
             raise ValueError(f"Unsupported surface_method {surface_method!r}; expected 'density' or 'particle_sdf'")
@@ -823,9 +1075,9 @@ class ParticleSurface:
         # Cached objects (allocated lazily)
         self._mc: wp.MarchingCubes | None = None
         self._hash_grid: wp.HashGrid | None = None
-        self._blur_temp: wp.array | None = None
-        self._blur_weights: wp.array | None = None
-        self._field: wp.array | None = None
+        self._blur_temp: wp.array3d[wp.float32] | None = None
+        self._blur_weights: wp.array[float] | None = None
+        self._field: wp.array3d[wp.float32] | None = None
         self._grid_dims: tuple[int, int, int] | None = None
         self._grid_origin: wp.vec3 | None = None
         self._inactive_position: wp.vec3 = wp.vec3(0.0)
@@ -833,44 +1085,45 @@ class ParticleSurface:
         self._resource_device: wp.Device | None = None
 
         # Per-particle temporaries
-        self._smoothed: wp.array | None = None
-        self._G: wp.array | None = None
-        self._det_G: wp.array | None = None
-        self._hash_positions: wp.array | None = None
-        self._all_particle_flags: wp.array | None = None
+        self._smoothed: wp.array[wp.vec3] | None = None
+        self._G: wp.array[wp.mat33] | None = None
+        self._det_G: wp.array[float] | None = None
+        self._density_reach: wp.array[wp.vec3] | None = None
+        self._hash_positions: wp.array[wp.vec3] | None = None
+        self._all_particle_flags: wp.array[wp.int32] | None = None
         self._n_particles: int = 0
         self._max_particles: int = 0
 
         # Last extraction results
-        self._verts: wp.array | None = None
-        self._indices: wp.array | None = None
-        self._normals: wp.array | None = None
+        self._verts: wp.array[wp.vec3] | None = None
+        self._indices: wp.array[wp.int32] | None = None
+        self._normals: wp.array[wp.vec3] | None = None
 
     # -- Public properties --
 
     @property
-    def verts(self) -> wp.array | None:
-        """Vertex positions from the last extraction."""
+    def verts(self) -> wp.array[wp.vec3] | None:
+        """Vertex positions from the last extraction [m]."""
         return self._verts
 
     @property
-    def indices(self) -> wp.array | None:
-        """Triangle indices from the last extraction."""
+    def indices(self) -> wp.array[wp.int32] | None:
+        """Triangle indices from the last extraction, shape ``(3 * triangle_count,)``."""
         return self._indices
 
     @property
-    def normals(self) -> wp.array | None:
-        """Per-vertex normals from the last extraction."""
+    def normals(self) -> wp.array[wp.vec3] | None:
+        """Unit-length per-vertex normals from the last extraction."""
         return self._normals
 
     @property
-    def field(self) -> wp.array | None:
-        """Dense scalar field from the last extraction, shape ``(nx, ny, nz)``."""
+    def field(self) -> wp.array3d[wp.float32] | None:
+        """Scalar field, shape ``(nx, ny, nz)``; SDF samples use meters."""
         return self._field
 
     @property
     def grid_origin(self) -> wp.vec3 | None:
-        """World-space position of grid node ``(0, 0, 0)``."""
+        """World-space position of grid node ``(0, 0, 0)`` [m]."""
         return self._grid_origin
 
     @property
@@ -879,18 +1132,18 @@ class ParticleSurface:
         return self._grid_dims
 
     @property
-    def smoothed_positions(self) -> wp.array | None:
-        """Smoothed particle positions from the last extraction."""
+    def smoothed_positions(self) -> wp.array[wp.vec3] | None:
+        """Smoothed particle positions from the last extraction [m]."""
         return self._smoothed
 
     @property
-    def anisotropy_matrices(self) -> wp.array | None:
-        """Per-particle anisotropy matrices G from the last extraction."""
+    def anisotropy_matrices(self) -> wp.array[wp.mat33] | None:
+        """Per-particle inverse kernel transforms ``G`` [1/m]."""
         return self._G
 
     @property
-    def anisotropy_det(self) -> wp.array | None:
-        """Per-particle ``det(G)`` from the last extraction."""
+    def anisotropy_det(self) -> wp.array[float] | None:
+        """Per-particle ``det(G)`` values [1/m³]."""
         return self._det_G
 
     def configure_field_grid(
@@ -900,7 +1153,7 @@ class ParticleSurface:
         max_particles: int,
         device: wp.DeviceLike = None,
         hash_grid_dim: int | None = None,
-    ):
+    ) -> ParticleSurface:
         """Preallocate fixed scalar-field resources for CUDA graph capture.
 
         The configured grid is reused by :meth:`update_field`, avoiding the
@@ -976,6 +1229,7 @@ class ParticleSurface:
             self._smoothed = wp.empty(alloc_particles, dtype=wp.vec3, device=device_obj)
             self._G = wp.empty(alloc_particles, dtype=wp.mat33, device=device_obj)
             self._det_G = wp.empty(alloc_particles, dtype=float, device=device_obj)
+            self._density_reach = wp.empty(alloc_particles, dtype=wp.vec3, device=device_obj)
             self._hash_positions = wp.empty(alloc_particles, dtype=wp.vec3, device=device_obj)
             self._all_particle_flags = wp.empty(alloc_particles, dtype=wp.int32, device=device_obj)
             self._n_particles = alloc_particles
@@ -987,10 +1241,10 @@ class ParticleSurface:
 
     def update_field(
         self,
-        positions: wp.array,
-        radii: wp.array,
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
         particle_flags: wp.array[wp.int32] | None = None,
-    ) -> wp.array:
+    ) -> wp.array3d[wp.float32]:
         """Update the fixed scalar field without extracting a mesh.
 
         This method is intended for CUDA graph capture after
@@ -999,8 +1253,8 @@ class ParticleSurface:
         the host, or allocate output mesh buffers.
 
         Args:
-            positions: Particle positions, shape ``(N,)``, dtype ``wp.vec3``.
-            radii: Per-particle radius [m].
+            positions: Particle positions [m], shape ``(N,)``, dtype ``wp.vec3``.
+            radii: Per-particle radii [m], shape ``(N,)``, dtype ``wp.float32``.
             particle_flags: Optional per-particle flags.  Particles without
                 :attr:`~newton.ParticleFlags.ACTIVE` are skipped without
                 compacting the particle arrays.
@@ -1011,6 +1265,7 @@ class ParticleSurface:
         if self._field is None or self._grid_dims is None or self._grid_origin is None:
             raise RuntimeError("configure_field_grid() must be called before update_field()")
 
+        self._validate_positions_layout(positions)
         n = positions.shape[0]
         device = positions.device
         if wp.get_device(device) != self._resource_device:
@@ -1036,11 +1291,14 @@ class ParticleSurface:
         or ``surface_method="particle_sdf"``, negative values are inside the
         particle surface and positive values are outside.
 
-        Must be called after :meth:`extract`.
+        Must be called after :meth:`extract` or :meth:`update_field`.
 
         Returns:
             A :class:`warp.fem.DiscreteField` with scalar ``float`` DOFs.
         """
+        if self._field is None or self._grid_dims is None or self._grid_origin is None:
+            raise RuntimeError("extract() or update_field() must populate the field before fem_field()")
+
         nx, ny, nz = self._grid_dims
         grid = fem.Grid3D(
             bounds_lo=self._grid_origin,
@@ -1060,28 +1318,35 @@ class ParticleSurface:
 
     def extract(
         self,
-        positions: wp.array,
-        radii: wp.array,
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
         compute_normals: bool = True,
         particle_flags: wp.array[wp.int32] | None = None,
-    ) -> tuple[wp.array | None, wp.array | None, wp.array | None]:
+        compute_mesh: bool = True,
+    ) -> tuple[wp.array[wp.vec3] | None, wp.array[wp.int32] | None, wp.array[wp.vec3] | None]:
         """Extract a triangle mesh from particle positions.
 
         Args:
-            positions: Particle positions, shape ``(N,)``, dtype ``wp.vec3``.
-            radii: Per-particle radius [m].
+            positions: Particle positions [m], shape ``(N,)``, dtype ``wp.vec3``.
+            radii: Per-particle radii [m], shape ``(N,)``, dtype ``wp.float32``.
             compute_normals: Whether to compute per-vertex normals.
             particle_flags: Optional per-particle flags.  Particles without
                 :attr:`~newton.ParticleFlags.ACTIVE` are skipped.
+            compute_mesh: Whether to run Marching Cubes and mesh post-processing.
+                Set to ``False`` to update only :attr:`field`, for example before
+                modifying the field and calling :meth:`resurface`.
 
         Returns:
-            Tuple of ``(vertices, indices, normals)``.  All ``None`` when no
-            surface can be extracted.
+            Tuple of vertex positions [m], triangle indices, and unit-length
+            vertex normals. All entries are ``None`` when no surface can be
+            extracted.
         """
+        self._validate_positions_layout(positions)
         n = positions.shape[0]
         device = positions.device
         self._device = wp.get_device(device)
         self._validate_radii_layout(positions, radii, n)
+        self._validate_particle_flags_layout(particle_flags, n, device)
         if n == 0:
             self._clear_results(clear_field=True)
             return None, None, None
@@ -1110,20 +1375,60 @@ class ParticleSurface:
         aabb_min = lower.numpy()[0]
         aabb_max = upper.numpy()[0]
 
-        pad = self._grid_padding(radii, device)
-        grid_min = np.floor((aabb_min - pad) / self.voxel_size) * self.voxel_size
-        grid_max = np.ceil((aabb_max + pad) / self.voxel_size) * self.voxel_size
+        # Prepare anisotropy before sizing the field so the dynamic grid only
+        # covers supports that actually occur, rather than reserving the
+        # theoretical maximum axis ratio in every direction.
+        particle_extent = float(np.max(aabb_max - aabb_min)) + 2.0 * self.kernel_radius
+        self._ensure_particle_resources(n, particle_extent, device)
+        flags, use_flags = self._prepare_particle_values(positions, n, None, device)
+
+        kernel_lower = wp.array([wp.vec3(1e30, 1e30, 1e30)], dtype=wp.vec3, device=device)
+        kernel_upper = wp.array([wp.vec3(-1e30, -1e30, -1e30)], dtype=wp.vec3, device=device)
+        isotropic_sdf = not self.anisotropic or self.anisotropy_strength <= 0.0 or self.anisotropy_ratio <= 1.0
+        kernel_aabb_inputs = [
+            self._smoothed[:n],
+            radii,
+            self._det_G[:n],
+            self._density_reach[:n],
+            self.particle_sdf_radius_scale,
+            self.particle_sdf_band,
+            int(self.surface_method == "particle_sdf"),
+            int(not isotropic_sdf),
+        ]
+        if _use_cuda_tile_kernels(device):
+            wp.launch_tiled(
+                _compute_kernel_aabb_tiled,
+                dim=_reduction_tile_dim(n),
+                inputs=[*kernel_aabb_inputs, n, kernel_lower, kernel_upper],
+                block_dim=_REDUCTION_TILE_SIZE,
+                device=device,
+            )
+        else:
+            wp.launch(
+                _compute_kernel_aabb,
+                dim=n,
+                inputs=[*kernel_aabb_inputs, kernel_lower, kernel_upper],
+                device=device,
+            )
+
+        pad = self.voxel_size * self.padding
+        grid_min = np.floor((kernel_lower.numpy()[0] - pad) / self.voxel_size) * self.voxel_size
+        grid_max = np.ceil((kernel_upper.numpy()[0] + pad) / self.voxel_size) * self.voxel_size
         dims = np.round((grid_max - grid_min) / self.voxel_size).astype(int) + 1
 
         nx, ny, nz = int(dims[0]), int(dims[1]), int(dims[2])
         grid_origin = wp.vec3(float(grid_min[0]), float(grid_min[1]), float(grid_min[2]))
         grid_end = wp.vec3(float(grid_max[0]), float(grid_max[1]), float(grid_max[2]))
 
-        # Step 2: Allocate / resize cached objects
-        self._ensure_resources(nx, ny, nz, grid_origin, grid_end, n, device)
+        # Step 2: Allocate / resize cached field objects.
+        self._ensure_field_resources(nx, ny, nz, grid_origin, grid_end, device)
 
-        # Step 3: Update the scalar field.
-        self._update_field_values(positions, radii, n, None, device)
+        # Step 3: Evaluate the scalar field from the prepared particles.
+        self._evaluate_field_values(radii, n, flags, use_flags, device)
+
+        if not compute_mesh:
+            self._verts = self._indices = self._normals = None
+            return None, None, None
 
         # Step 4: Marching cubes.
         self._mc.surface(self._field, self._marching_threshold())
@@ -1172,7 +1477,7 @@ class ParticleSurface:
         self._normals = normals
         return verts, indices, normals
 
-    def redistance(self, iterations: int | None = None):
+    def redistance(self, iterations: int | None = None) -> None:
         """Apply Eikonal redistancing to the current SDF field.
 
         Args:
@@ -1204,7 +1509,7 @@ class ParticleSurface:
     def resurface(
         self,
         compute_normals: bool = True,
-    ) -> tuple[wp.array | None, wp.array | None, wp.array | None]:
+    ) -> tuple[wp.array[wp.vec3] | None, wp.array[wp.int32] | None, wp.array[wp.vec3] | None]:
         """Re-run marching cubes on the current field.
 
         Use after externally modifying :attr:`field`, for example to
@@ -1279,6 +1584,7 @@ class ParticleSurface:
         self._smoothed = None
         self._G = None
         self._det_G = None
+        self._density_reach = None
         self._hash_positions = None
         self._all_particle_flags = None
         self._n_particles = 0
@@ -1286,13 +1592,22 @@ class ParticleSurface:
 
     def _update_field_values(
         self,
-        positions: wp.array,
-        radii: wp.array,
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
         n: int,
         particle_flags: wp.array[wp.int32] | None,
         device: wp.DeviceLike,
     ):
-        nx, ny, nz = self._grid_dims
+        flags, use_flags = self._prepare_particle_values(positions, n, particle_flags, device)
+        self._evaluate_field_values(radii, n, flags, use_flags, device)
+
+    def _prepare_particle_values(
+        self,
+        positions: wp.array[wp.vec3],
+        n: int,
+        particle_flags: wp.array[wp.int32] | None,
+        device: wp.DeviceLike,
+    ) -> tuple[wp.array[wp.int32], int]:
         flags, use_flags = self._field_flag_args(particle_flags, n, device)
 
         hash_positions = positions
@@ -1310,25 +1625,39 @@ class ParticleSurface:
         smoothed = self._smoothed[:n]
         G = self._G[:n]
         det_G = self._det_G[:n]
+        density_reach = self._density_reach[:n]
 
         # Smooth particle positions.
         if self.smooth_lambda > 1.0e-6 and n > 0:
-            self._hash_grid.build(hash_positions, 1.5 * self.kernel_radius)
-            wp.launch(
-                _smooth_positions,
-                dim=n,
-                inputs=[
-                    self._hash_grid.id,
-                    hash_positions,
-                    flags,
-                    use_flags,
-                    self._inactive_position,
-                    self.kernel_radius,
-                    self.smooth_lambda,
-                    smoothed,
-                ],
-                device=device,
-            )
+            self._hash_grid.build(hash_positions, self.kernel_radius)
+            if use_flags != 0:
+                wp.launch(
+                    _smooth_positions_flagged,
+                    dim=n,
+                    inputs=[
+                        self._hash_grid.id,
+                        hash_positions,
+                        flags,
+                        self._inactive_position,
+                        self.kernel_radius,
+                        self.smooth_lambda,
+                        smoothed,
+                    ],
+                    device=device,
+                )
+            else:
+                wp.launch(
+                    _smooth_positions,
+                    dim=n,
+                    inputs=[
+                        self._hash_grid.id,
+                        hash_positions,
+                        self.kernel_radius,
+                        self.smooth_lambda,
+                        smoothed,
+                    ],
+                    device=device,
+                )
         elif n > 0:
             if use_flags != 0:
                 wp.launch(
@@ -1342,7 +1671,7 @@ class ParticleSurface:
 
         # Compute per-particle anisotropy.
         if self.anisotropic and n > 0:
-            self._hash_grid.build(smoothed, 1.5 * self.kernel_radius)
+            self._hash_grid.build(smoothed, self.kernel_radius)
             wp.launch(
                 _compute_anisotropy,
                 dim=n,
@@ -1359,6 +1688,7 @@ class ParticleSurface:
                     self.anisotropy_strength,
                     G,
                     det_G,
+                    density_reach,
                 ],
                 device=device,
             )
@@ -1366,36 +1696,75 @@ class ParticleSurface:
             wp.launch(
                 _fill_isotropic_G,
                 dim=n,
-                inputs=[self.kernel_radius, self.kernel_scale, G, det_G],
+                inputs=[self.kernel_radius, self.kernel_scale, G, det_G, density_reach],
                 device=device,
             )
+
+        return flags, use_flags
+
+    def _evaluate_field_values(
+        self,
+        radii: wp.array[float],
+        n: int,
+        flags: wp.array[wp.int32],
+        use_flags: int,
+        device: wp.DeviceLike,
+    ):
+        nx, ny, nz = self._grid_dims
+        smoothed = self._smoothed[:n]
+        G = self._G[:n]
+        det_G = self._det_G[:n]
+        density_reach = self._density_reach[:n]
 
         # Evaluate scalar field.
         if self.surface_method == "particle_sdf":
             far_sdf = self.kernel_radius * self.particle_sdf_band
             wp.launch(_fill_field, dim=(nx, ny, nz), inputs=[self._field, far_sdf], device=device)
             if n > 0:
-                wp.launch(
-                    _eval_particle_sdf_union,
-                    dim=n,
-                    inputs=[
-                        smoothed,
-                        radii,
-                        flags,
-                        use_flags,
-                        G,
-                        det_G,
-                        self.particle_sdf_radius_scale,
-                        self.particle_sdf_band,
-                        self._grid_origin,
-                        1.0 / self.voxel_size,
-                        nx,
-                        ny,
-                        nz,
-                        self._field,
-                    ],
-                    device=device,
-                )
+                isotropic_sdf = not self.anisotropic or self.anisotropy_strength <= 0.0 or self.anisotropy_ratio <= 1.0
+                if isotropic_sdf:
+                    wp.launch(
+                        _eval_particle_sdf_union_isotropic,
+                        dim=n,
+                        inputs=[
+                            smoothed,
+                            radii,
+                            flags,
+                            use_flags,
+                            self.particle_sdf_radius_scale,
+                            self.particle_sdf_band,
+                            self._grid_origin,
+                            1.0 / self.voxel_size,
+                            nx,
+                            ny,
+                            nz,
+                            self._field,
+                        ],
+                        device=device,
+                    )
+                else:
+                    wp.launch(
+                        _eval_particle_sdf_union_anisotropic,
+                        dim=n,
+                        inputs=[
+                            smoothed,
+                            radii,
+                            flags,
+                            use_flags,
+                            G,
+                            det_G,
+                            density_reach,
+                            self.particle_sdf_radius_scale,
+                            self.particle_sdf_band,
+                            self._grid_origin,
+                            1.0 / self.voxel_size,
+                            nx,
+                            ny,
+                            nz,
+                            self._field,
+                        ],
+                        device=device,
+                    )
         else:
             wp.launch(_fill_field, dim=(nx, ny, nz), inputs=[self._field, 0.0], device=device)
             if n > 0:
@@ -1409,6 +1778,7 @@ class ParticleSurface:
                         use_flags,
                         G,
                         det_G,
+                        density_reach,
                         self._grid_origin,
                         1.0 / self.voxel_size,
                         nx,
@@ -1484,7 +1854,9 @@ class ParticleSurface:
     def _grid_padding(self, radii: wp.array, device: wp.DeviceLike) -> float:
         support = _DENSITY_KERNEL_SUPPORT * self.kernel_scale * self.kernel_radius
         if self.anisotropic:
-            axis_ratio = max(float(self.anisotropy_ratio), 1.0)
+            # Volume normalization limits the longest ellipsoid axis to R^(2/3)
+            # when the shortest-to-longest axis ratio is clamped to 1/R.
+            axis_ratio = max(float(self.anisotropy_ratio), 1.0) ** (2.0 / 3.0)
             density_support = (
                 _DENSITY_KERNEL_SUPPORT
                 * float(self.kernel_scale)
@@ -1510,7 +1882,7 @@ class ParticleSurface:
                 float(max_radius.numpy()[0]) * self.particle_sdf_radius_scale * self.particle_sdf_band
             )
             if self.anisotropic:
-                particle_sdf_support *= max(float(self.anisotropy_ratio), 1.0)
+                particle_sdf_support *= max(float(self.anisotropy_ratio), 1.0) ** (2.0 / 3.0)
             support = max(support, particle_sdf_support)
 
         return support + self.voxel_size * self.padding
@@ -1542,17 +1914,27 @@ class ParticleSurface:
             effective_threshold = max(self.threshold - shrink / self.kernel_radius, _MIN_DENSITY_MARCHING_THRESHOLD)
         return effective_threshold
 
-    def _validate_radii_layout(self, positions: wp.array, radii: wp.array, n: int):
+    def _validate_radii_layout(self, positions: wp.array[wp.vec3], radii: wp.array[float], n: int):
+        if not isinstance(radii, wp.array):
+            raise TypeError(f"radii must be a Warp array, got {type(radii).__name__}")
         if radii.ndim != 1:
             raise ValueError(f"radii must be a 1-D array, got shape {radii.shape}")
         if radii.shape[0] != n:
             raise ValueError(f"radii length ({radii.shape[0]}) must match positions length ({n})")
         if radii.device != positions.device:
             raise ValueError(f"radii device ({radii.device}) must match positions device ({positions.device})")
-        if not wp.types.type_is_float(radii.dtype):
-            raise TypeError(f"radii must have a floating-point dtype, got {radii.dtype}")
+        if radii.dtype != wp.float32:
+            raise TypeError(f"radii must have dtype wp.float32, got {radii.dtype}")
 
-    def _validate_radii_values(self, radii: wp.array, device: wp.DeviceLike):
+    def _validate_positions_layout(self, positions: wp.array[wp.vec3]):
+        if not isinstance(positions, wp.array):
+            raise TypeError(f"positions must be a Warp array, got {type(positions).__name__}")
+        if positions.ndim != 1:
+            raise ValueError(f"positions must be a 1-D array, got shape {positions.shape}")
+        if positions.dtype != wp.vec3:
+            raise TypeError(f"positions must have dtype wp.vec3, got {positions.dtype}")
+
+    def _validate_radii_values(self, radii: wp.array[float], device: wp.DeviceLike):
         invalid = wp.zeros(1, dtype=wp.int32, device=device)
         if _use_cuda_tile_kernels(device):
             wp.launch_tiled(
@@ -1569,11 +1951,11 @@ class ParticleSurface:
 
     def _filter_active_particles(
         self,
-        positions: wp.array,
-        radii: wp.array,
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
         particle_flags: wp.array[wp.int32] | None,
         device: wp.DeviceLike,
-    ) -> tuple[wp.array | None, wp.array | None]:
+    ) -> tuple[wp.array[wp.vec3] | None, wp.array[float] | None]:
         if particle_flags is None:
             return positions, radii
 
@@ -1599,14 +1981,37 @@ class ParticleSurface:
         wp.launch(_compact_active_particles, dim=n, inputs=[radii, mask, offsets, active_radii], device=device)
         return active_positions, active_radii
 
-    def _ensure_resources(
+    def _ensure_particle_resources(
+        self,
+        n_particles: int,
+        extent: float,
+        device: wp.DeviceLike,
+    ):
+        device_obj = wp.get_device(device)
+
+        if self._resource_device != device_obj:
+            self._clear_device_resources()
+            self._resource_device = device_obj
+
+        hash_dim = max(16, int(math.ceil(extent / self.kernel_radius)))
+        if self._hash_grid is None or self._hash_grid_dim != hash_dim:
+            self._hash_grid = wp.HashGrid(hash_dim, hash_dim, hash_dim, device=device)
+            self._hash_grid_dim = hash_dim
+
+        if self._n_particles != n_particles:
+            self._smoothed = wp.empty(n_particles, dtype=wp.vec3, device=device)
+            self._G = wp.empty(n_particles, dtype=wp.mat33, device=device)
+            self._det_G = wp.empty(n_particles, dtype=float, device=device)
+            self._density_reach = wp.empty(n_particles, dtype=wp.vec3, device=device)
+            self._n_particles = n_particles
+
+    def _ensure_field_resources(
         self,
         nx: int,
         ny: int,
         nz: int,
         grid_origin: wp.vec3,
         grid_end: wp.vec3,
-        n_particles: int,
         device: wp.DeviceLike,
     ):
         new_dims = (nx, ny, nz)
@@ -1621,27 +2026,13 @@ class ParticleSurface:
             self._field = wp.empty((nx, ny, nz), dtype=wp.float32, device=device)
             if self.field_smooth_iterations > 0 and self.field_smooth_radius > 0:
                 self._blur_temp = wp.empty((nx, ny, nz), dtype=wp.float32, device=device)
+            else:
+                self._blur_temp = None
             self._grid_dims = new_dims
 
         self._mc.domain_bounds_lower_corner = grid_origin
         self._mc.domain_bounds_upper_corner = grid_end
         self._grid_origin = grid_origin
-
-        extent = max(
-            float(grid_end[0] - grid_origin[0]),
-            float(grid_end[1] - grid_origin[1]),
-            float(grid_end[2] - grid_origin[2]),
-        )
-        hash_dim = max(16, int(math.ceil(extent / self.kernel_radius)))
-        if self._hash_grid is None or self._hash_grid_dim != hash_dim:
-            self._hash_grid = wp.HashGrid(hash_dim, hash_dim, hash_dim, device=device)
-            self._hash_grid_dim = hash_dim
-
-        if self._n_particles != n_particles:
-            self._smoothed = wp.empty(n_particles, dtype=wp.vec3, device=device)
-            self._G = wp.empty(n_particles, dtype=wp.mat33, device=device)
-            self._det_G = wp.empty(n_particles, dtype=float, device=device)
-            self._n_particles = n_particles
 
     def _apply_field_blur(self, nx: int, ny: int, nz: int, device: wp.DeviceLike):
         """Separable Gaussian blur on the scalar field."""
@@ -1663,9 +2054,10 @@ class ParticleSurface:
 
 
 def extract_particle_surface(
-    positions: wp.array,
-    radii: wp.array,
+    positions: wp.array[wp.vec3],
+    radii: wp.array[float],
     voxel_size: float,
+    *,
     kernel_radius: float | None = None,
     threshold: float = 0.25,
     smooth_lambda: float = 0.5,
@@ -1685,12 +2077,12 @@ def extract_particle_surface(
     surface_method: Literal["density", "particle_sdf"] = "density",
     particle_sdf_radius_scale: float = 1.0,
     particle_sdf_band: float = 2.0,
-) -> tuple[wp.array | None, wp.array | None, wp.array | None]:
+) -> tuple[wp.array[wp.vec3] | None, wp.array[wp.int32] | None, wp.array[wp.vec3] | None]:
     """Extract a triangle mesh from particle positions (one-shot convenience).
 
     Args:
-        positions: Particle positions, shape ``(N,)``, dtype ``wp.vec3``.
-        radii: Per-particle radius [m].
+        positions: Particle positions [m], shape ``(N,)``, dtype ``wp.vec3``.
+        radii: Per-particle radii [m], shape ``(N,)``, dtype ``wp.float32``.
         voxel_size: Edge length of each grid voxel [m].
         kernel_radius: Search radius [m].  Defaults to ``3 * voxel_size``.
         threshold: Isosurface level.
@@ -1708,7 +2100,8 @@ def extract_particle_surface(
         anisotropy_ratio: Maximum anisotropic kernel axis ratio.
         kernel_scale: Kernel radius multiplier relative to ``kernel_radius``.
         anisotropy_scale: Relative multiplier for anisotropic kernel radii.
-        anisotropy_min_neighbors: Minimum neighbor count for anisotropic kernels.
+        anisotropy_min_neighbors: Minimum number of other particles required
+            for anisotropic kernels.
         anisotropy_strength: Blend from isotropic kernels to anisotropic
             kernels [0, 1].
         field_smooth_iterations: Number of separable Gaussian blur passes
@@ -1722,7 +2115,9 @@ def extract_particle_surface(
             coordinates for ``surface_method="particle_sdf"``.
 
     Returns:
-        Tuple of ``(vertices, indices, normals)``.
+        Tuple of vertex positions [m], triangle indices, and unit-length
+        vertex normals. All entries are ``None`` when no surface can be
+        extracted.
     """
     ctx = ParticleSurface(
         voxel_size=voxel_size,
