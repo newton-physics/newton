@@ -251,6 +251,7 @@ class TestViewerUSD(unittest.TestCase):
         visibility = UsdGeom.Imageable(prim).GetVisibilityAttr().Get(viewer._frame_index)
 
         self.assertEqual(visibility, "invisible")
+
     def test_log_mesh_dynamic_time_samples_topology(self):
         viewer = self._make_viewer()
 

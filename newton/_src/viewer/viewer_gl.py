@@ -879,7 +879,9 @@ class ViewerGL(ViewerBase):
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
         if name in self.objects and (
-            len(points) != self.objects[name].num_points or len(indices) != self.objects[name].num_indices
+            len(points) != self.objects[name].num_points
+            or len(indices) != self.objects[name].num_indices
+            or dynamic != self.objects[name].dynamic
         ):
             self.objects[name].destroy()
             del self.objects[name]
@@ -1255,6 +1257,13 @@ class ViewerGL(ViewerBase):
         for owner in self._wireframe_vbo_owners.values():
             owner.destroy()
         self._wireframe_vbo_owners.clear()
+
+    @override
+    def _log_particles(self, state: nt.State):
+        if not self.show_particles or self._layer_force_hidden():
+            self.log_points(self._qualify("/model/particles"), points=None, hidden=True)
+            return
+        super()._log_particles(state)
 
     @override
     def log_points(

@@ -82,14 +82,14 @@ def extrapolate_surface_sdf_into_colliders(
     surface: ParticleSurface,
     collider: Collider,
     body_q: wp.array[wp.transform],
-    body_qd: wp.array[wp.spatial_vector] = None,
-    body_q_prev: wp.array[wp.transform] = None,
+    body_qd: wp.array[wp.spatial_vector] | None = None,
+    body_q_prev: wp.array[wp.transform] | None = None,
     *,
     max_depth: float | None = None,
     onset: float = 0.0,
     redistance: bool = True,
     compute_normals: bool = True,
-) -> tuple[wp.array | None, wp.array | None, wp.array | None]:
+) -> tuple[wp.array[wp.vec3] | None, wp.array[wp.int32] | None, wp.array[wp.vec3] | None]:
     """Mirror-extrapolate a particle SDF into MPM collider interiors.
 
     This is intentionally an MPM adapter, not part of

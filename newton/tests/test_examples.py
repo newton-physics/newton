@@ -884,9 +884,22 @@ add_example_test(
 
 add_example_test(
     TestMPMExamples,
-    name="mpm.example_mpm_particle_rendering",
+    name="mpm.example_mpm_grain_rendering",
     devices=cuda_test_devices,
-    test_options={"num-frames": 6},
+    test_options={"num-frames": 10},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_water_dam_break",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 10,
+        "voxel-size": 0.15,
+        "surface-voxel-size": 0.075,
+        "particles-per-cell": 1,
+    },
     use_viewer=True,
 )
 

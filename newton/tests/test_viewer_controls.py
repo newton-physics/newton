@@ -5,7 +5,7 @@ import sys
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -108,6 +108,19 @@ class TestViewerGLShouldStep(unittest.TestCase):
         v._step_requested = True
         self.assertTrue(ViewerGL.should_step(v))
         self.assertFalse(ViewerGL.should_step(v))
+
+
+class TestViewerGLParticles(unittest.TestCase):
+    def test_hidden_particles_skip_instance_updates(self):
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer.show_particles = False
+        viewer._layer_force_hidden = Mock(return_value=False)
+        viewer._qualify = Mock(side_effect=lambda name: name)
+        viewer.log_points = Mock()
+
+        viewer._log_particles(SimpleNamespace())
+
+        viewer.log_points.assert_called_once_with("/model/particles", points=None, hidden=True)
 
 
 if __name__ == "__main__":

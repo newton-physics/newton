@@ -96,6 +96,52 @@ def test_reusable_context(test, device):
     test.assertIsNotNone(verts2)
 
 
+def test_field_only_extraction(test, device):
+    positions, radii = _make_sphere_particles(device=device)
+    ctx = ParticleSurface(voxel_size=0.05, kernel_radius=0.15, device=device)
+    verts, indices, normals = ctx.extract(positions, radii=radii, compute_mesh=False)
+
+    test.assertIsNone(verts)
+    test.assertIsNone(indices)
+    test.assertIsNone(normals)
+    test.assertIsNotNone(ctx.field)
+
+    verts, indices, normals = ctx.resurface()
+    test.assertIsNotNone(verts)
+    test.assertGreater(verts.shape[0], 0)
+    test.assertEqual(indices.shape[0] % 3, 0)
+    test.assertEqual(normals.shape[0], verts.shape[0])
+
+
+def test_dynamic_grid_uses_realized_support(test, device):
+    positions = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    radii = wp.array([0.05], dtype=wp.float32, device=device)
+    ctx = ParticleSurface(
+        voxel_size=0.02,
+        kernel_radius=0.2,
+        smooth_lambda=0.0,
+        anisotropic=True,
+        anisotropy_ratio=16.0,
+        anisotropy_scale=2.0,
+        anisotropy_min_neighbors=4,
+        field_smooth_iterations=0,
+        mesh_smooth_iterations=0,
+        device=device,
+    )
+    ctx.extract(positions, radii=radii, compute_mesh=False)
+
+    G = ctx.anisotropy_matrices.numpy()[0]
+    reach = 2.0 * np.linalg.norm(np.linalg.inv(G), axis=0)
+    grid_min = np.array([ctx.grid_origin[i] for i in range(3)])
+    grid_max = grid_min + (np.array(ctx.grid_dims) - 1) * ctx.voxel_size
+    test.assertTrue(np.all(grid_min <= -reach))
+    test.assertTrue(np.all(grid_max >= reach))
+
+    actual_extent = grid_max - grid_min
+    conservative_extent = 2.0 * ctx._grid_padding(radii, device)
+    test.assertTrue(np.all(actual_extent < conservative_extent))
+
+
 def test_mesh_smoothing(test, device):
     positions, radii = _make_sphere_particles(device=device)
     ctx = ParticleSurface(voxel_size=0.05, kernel_radius=0.15, mesh_smooth_iterations=3, device=device)
@@ -145,6 +191,21 @@ def test_radii_device_mismatch(test, device):
 
     with test.assertRaisesRegex(ValueError, "radii device"):
         ctx.extract(positions, radii=radii, compute_normals=False)
+
+
+def test_array_layout_validation(test, device):
+    positions = wp.zeros(4, dtype=wp.vec3, device=device)
+    radii = wp.full(4, value=0.05, dtype=wp.float32, device=device)
+    ctx = ParticleSurface(voxel_size=0.1, device=device)
+
+    with test.assertRaisesRegex(ValueError, "positions must be a 1-D array"):
+        ctx.extract(wp.zeros((4, 3), dtype=wp.float32, device=device), radii=radii)
+    with test.assertRaisesRegex(TypeError, "positions must have dtype wp.vec3"):
+        ctx.extract(wp.zeros(4, dtype=wp.float32, device=device), radii=radii)
+    with test.assertRaisesRegex(TypeError, "radii must have dtype wp.float32"):
+        ctx.extract(positions, radii=wp.full(4, value=0.05, dtype=wp.float64, device=device))
+    with test.assertRaisesRegex(TypeError, "particle_flags must have dtype wp.int32"):
+        ctx.extract(positions, radii=radii, particle_flags=wp.ones(4, dtype=wp.float32, device=device))
 
 
 def test_fem_field(test, device):
@@ -389,6 +450,28 @@ def test_particle_sdf_surface_method(test, device):
     test.assertEqual(ctx._marching_threshold(), 0.0)
 
 
+def test_isotropic_particle_sdf_values(test, device):
+    positions = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    radii = wp.array([0.5], dtype=wp.float32, device=device)
+    ctx = ParticleSurface(
+        voxel_size=1.0,
+        kernel_radius=3.0,
+        smooth_lambda=0.0,
+        surface_method="particle_sdf",
+        particle_sdf_band=2.0,
+        device=device,
+    )
+    ctx.configure_field_grid((-1.0, -1.0, -1.0), (3, 3, 3), max_particles=1, device=device)
+    ctx.update_field(positions, radii)
+
+    field = ctx.field.numpy()
+    test.assertAlmostEqual(float(field[1, 1, 1]), -0.5)
+    test.assertAlmostEqual(float(field[0, 1, 1]), 0.5)
+    test.assertAlmostEqual(float(field[1, 0, 1]), 0.5)
+    test.assertAlmostEqual(float(field[1, 1, 0]), 0.5)
+    test.assertAlmostEqual(float(field[0, 0, 0]), 6.0)
+
+
 def test_anisotropy_scale(test, device):
     positions, radii = _make_disk_particles(device=device)
     ctx_tight = ParticleSurface(
@@ -616,6 +699,11 @@ def test_solver_extract_particle_surface(test, device):
 
 
 class TestParticleSurface(unittest.TestCase):
+    def test_fem_field_requires_populated_field(self):
+        ctx = ParticleSurface(voxel_size=0.1, device="cpu")
+        with self.assertRaisesRegex(RuntimeError, r"extract\(\) or update_field\(\)"):
+            ctx.fem_field()
+
     def test_defaults_are_inclusive(self):
         ctx = ParticleSurface(voxel_size=0.1, device="cpu")
         self.assertEqual(ctx.threshold, 0.25)
@@ -660,7 +748,9 @@ class TestParticleSurface(unittest.TestCase):
     def test_constructor_rejects_invalid_parameters(self):
         invalid_cases = [
             ({"voxel_size": 0.0}, "voxel_size"),
+            ({"voxel_size": np.nan}, "voxel_size"),
             ({"voxel_size": 0.1, "kernel_radius": 0.0}, "kernel_radius"),
+            ({"voxel_size": 0.1, "threshold": np.nan}, "threshold"),
             ({"voxel_size": 0.1, "smooth_lambda": -0.1}, "smooth_lambda"),
             ({"voxel_size": 0.1, "anisotropy_ratio": 0.5}, "anisotropy_ratio"),
             ({"voxel_size": 0.1, "kernel_scale": 0.0}, "kernel_scale"),
@@ -692,7 +782,7 @@ class TestParticleSurface(unittest.TestCase):
             device="cpu",
         )
         expected_density_support = (
-            2.0 * ctx.kernel_scale * ctx.anisotropy_scale * ctx.anisotropy_ratio * ctx.kernel_radius
+            2.0 * ctx.kernel_scale * ctx.anisotropy_scale * ctx.anisotropy_ratio ** (2.0 / 3.0) * ctx.kernel_radius
         )
         self.assertAlmostEqual(ctx._grid_padding(radii, "cpu"), expected_density_support + 2 * ctx.voxel_size)
 
@@ -708,7 +798,10 @@ class TestParticleSurface(unittest.TestCase):
             device="cpu",
         )
         expected_sdf_support = (
-            0.05 * sdf_ctx.particle_sdf_radius_scale * sdf_ctx.particle_sdf_band * sdf_ctx.anisotropy_ratio
+            0.05
+            * sdf_ctx.particle_sdf_radius_scale
+            * sdf_ctx.particle_sdf_band
+            * sdf_ctx.anisotropy_ratio ** (2.0 / 3.0)
         )
         self.assertAlmostEqual(sdf_ctx._grid_padding(radii, "cpu"), expected_sdf_support + 2 * sdf_ctx.voxel_size)
 
@@ -748,11 +841,19 @@ devices = get_test_devices(mode="basic")
 
 add_function_test(TestParticleSurface, "test_one_shot", test_one_shot, devices=devices)
 add_function_test(TestParticleSurface, "test_reusable_context", test_reusable_context, devices=devices)
+add_function_test(TestParticleSurface, "test_field_only_extraction", test_field_only_extraction, devices=devices)
+add_function_test(
+    TestParticleSurface,
+    "test_dynamic_grid_uses_realized_support",
+    test_dynamic_grid_uses_realized_support,
+    devices=devices,
+)
 add_function_test(TestParticleSurface, "test_mesh_smoothing", test_mesh_smoothing, devices=devices)
 add_function_test(TestParticleSurface, "test_empty_particles", test_empty_particles, devices=devices)
 add_function_test(TestParticleSurface, "test_radii_length_mismatch", test_radii_length_mismatch, devices=devices)
 add_function_test(TestParticleSurface, "test_invalid_radii_values", test_invalid_radii_values, devices=devices)
 add_function_test(TestParticleSurface, "test_radii_device_mismatch", test_radii_device_mismatch, devices=devices)
+add_function_test(TestParticleSurface, "test_array_layout_validation", test_array_layout_validation, devices=devices)
 # fem_field test uses Grid3D which doesn't support multi-GPU partitioning;
 # run only on the first selected test device.
 add_function_test(TestParticleSurface, "test_fem_field", test_fem_field, devices=devices[:1])
@@ -774,6 +875,9 @@ add_function_test(
 add_function_test(TestParticleSurface, "test_update_field_cuda_graph", test_update_field_cuda_graph, devices=devices)
 add_function_test(
     TestParticleSurface, "test_particle_sdf_surface_method", test_particle_sdf_surface_method, devices=devices
+)
+add_function_test(
+    TestParticleSurface, "test_isotropic_particle_sdf_values", test_isotropic_particle_sdf_values, devices=devices
 )
 add_function_test(TestParticleSurface, "test_anisotropy_scale", test_anisotropy_scale, devices=devices)
 add_function_test(
