@@ -16,6 +16,17 @@ from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
 from .utils import Utils
 
 
+@wp.kernel(enable_backward=False)
+def _scatter_shape_texture_ids_kernel(
+    shape_indices: wp.array[wp.int32],
+    texture_ids: wp.array[wp.int32],
+    shape_texture_ids: wp.array[wp.int32],
+):
+    """Scatter ``texture_ids[i]`` into ``shape_texture_ids[shape_indices[i]]``."""
+    tid = wp.tid()
+    shape_texture_ids[shape_indices[tid]] = texture_ids[tid]
+
+
 class RenderContext:
     Config = RenderConfig
     ClearData = ClearData
@@ -131,6 +142,110 @@ class RenderContext:
         self.gaussians_data = model.gaussians_data
 
         self.__load_texture_and_mesh_data(model, load_textures)
+
+    def register_textures(self, sources: list[str | np.ndarray]) -> list[int]:
+        """Append textures to the texture pool and return their pool indices.
+
+        The returned indices are valid targets for :meth:`set_shape_texture_ids`.
+        Registration reallocates the pool array once per call, so register all
+        candidate textures up front (e.g. at scene construction); per-frame swaps
+        then reduce to index writes with no texture I/O.
+
+        Args:
+            sources: Texture sources. Each entry is either a filesystem path
+                accepted by :func:`newton.utils.load_texture` or an RGBA/RGB
+                ``np.ndarray`` of pixels.
+
+        Returns:
+            Pool index of each registered texture, aligned with ``sources``.
+
+        Raises:
+            RuntimeError: If called before :meth:`init_from_model`.
+            ValueError: If a texture source cannot be loaded.
+        """
+        if self.texture_data is None:
+            raise RuntimeError("register_textures() requires init_from_model() to have been called first.")
+
+        indices = []
+        for source in sources:
+            if isinstance(source, np.ndarray):
+                pixels = source
+            else:
+                pixels = load_texture(source)
+                if pixels is None:
+                    raise ValueError(f"Failed to load texture: {source}")
+            pixels = normalize_texture(pixels, require_channels=True)
+            if pixels.dtype != np.uint8:
+                pixels = pixels.astype(np.uint8, copy=False)
+
+            data = TextureData()
+            data.texture = wp.Texture2D(
+                pixels,
+                filter_mode=wp.TextureFilterMode.LINEAR,
+                address_mode=wp.TextureAddressMode.WRAP,
+                normalized_coords=True,
+                dtype=wp.uint8,
+                num_channels=4,
+                device=self.device,
+            )
+            data.repeat = wp.vec2f(1.0, 1.0)
+            indices.append(len(self.__texture_data))
+            self.__texture_data.append(data)
+
+        self.texture_data = wp.array(self.__texture_data, dtype=TextureData, device=self.device)
+        # sampling registered textures requires the textured kernel variant; the config
+        # is part of the kernel cache key, so this at most compiles once on next render.
+        self.config.enable_textures = True
+        return indices
+
+    def set_shape_texture_ids(
+        self,
+        shape_indices: wp.array | np.ndarray | list[int],
+        texture_ids: wp.array | np.ndarray | list[int],
+    ):
+        """Reassign texture-pool indices for a subset of shapes in place.
+
+        When both arguments are device-resident ``wp.array[wp.int32]``, this
+        is a single scatter-kernel launch with no host synchronization — suitable
+        for per-reset randomization loops. NumPy arrays or sequences are validated
+        and uploaded for convenience.
+
+        Args:
+            shape_indices: Shape indices to modify, shape (K,), int32.
+            texture_ids: Texture-pool index per shape (from :meth:`register_textures`
+                or ``-1`` for untextured), shape (K,), int32.
+
+        Raises:
+            RuntimeError: If called before :meth:`init_from_model`.
+            ValueError: If host-provided indices are out of range or lengths differ.
+        """
+        if self.shape_texture_ids is None:
+            raise RuntimeError("set_shape_texture_ids() requires init_from_model() to have been called first.")
+
+        if not isinstance(shape_indices, wp.array):
+            shape_indices = np.asarray(shape_indices, dtype=np.int32).reshape(-1)
+            texture_ids_np = np.asarray(texture_ids, dtype=np.int32).reshape(-1)
+            if shape_indices.shape != texture_ids_np.shape:
+                raise ValueError("shape_indices and texture_ids must have the same length")
+            if ((shape_indices < 0) | (shape_indices >= self.shape_count_total)).any():
+                raise ValueError("shape_indices contains an out-of-range shape index")
+            if ((texture_ids_np < -1) | (texture_ids_np >= len(self.__texture_data))).any():
+                raise ValueError("texture_ids contains an out-of-range texture-pool index")
+            shape_indices = wp.array(shape_indices, dtype=wp.int32, device=self.device)
+            texture_ids = wp.array(texture_ids_np, dtype=wp.int32, device=self.device)
+        elif not isinstance(texture_ids, wp.array):
+            texture_ids = wp.array(
+                np.asarray(texture_ids, dtype=np.int32).reshape(-1), dtype=wp.int32, device=self.device
+            )
+        if shape_indices.shape[0] != texture_ids.shape[0]:
+            raise ValueError("shape_indices and texture_ids must have the same length")
+
+        wp.launch(
+            _scatter_shape_texture_ids_kernel,
+            dim=shape_indices.shape[0],
+            inputs=[shape_indices, texture_ids, self.shape_texture_ids],
+            device=self.shape_texture_ids.device,
+        )
 
     def update(self, model: Model, state: State):
         """Synchronize triangle-mesh points from the current simulation state.
