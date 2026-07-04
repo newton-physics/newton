@@ -428,31 +428,31 @@ class Example:
             help="Kernel support scale relative to --surface-kernel-radius",
         )
         parser.add_argument("--surface-threshold", type=float, default=0.25)
-        parser.add_argument("--surface-smoothing", type=float, default=0.5)
+        parser.add_argument("--surface-smoothing", type=float, default=0.0)
         parser.add_argument("--field-smooth-iterations", type=int, default=1)
         parser.add_argument("--field-smooth-radius", type=int, default=2)
         parser.add_argument(
             "--anisotropy-ratio",
             type=float,
-            default=4.0,
+            default=16.0,
             help="Maximum anisotropic kernel axis ratio",
         )
         parser.add_argument(
             "--anisotropy-scale",
             type=float,
-            default=1.1,
+            default=2.0,
             help="Anisotropic kernel width multiplier; wider kernels improve continuity",
         )
         parser.add_argument(
             "--anisotropy-min-neighbors",
             type=int,
-            default=20,
+            default=4,
             help="Minimum neighbors required for anisotropy; sparse particles remain isotropic",
         )
         parser.add_argument(
             "--anisotropy-strength",
             type=float,
-            default=0.75,
+            default=0.95,
             help="Blend from isotropic to fully anisotropic kernels",
         )
         parser.add_argument("--mesh-smooth-iterations", type=int, default=1)

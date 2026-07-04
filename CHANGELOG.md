@@ -30,6 +30,7 @@
 - Forward `--warp-config KEY=VALUE` from `python -m newton.tests` to example subprocesses so `warp.config` overrides apply during example tests.
 - Add a `deterministic` constructor argument to `SolverXPBD`, `SolverSemiImplicit`, `SolverFeatherstone`, `SolverVBD`, and `SolverMuJoCo` to opt into deterministic solver execution.
 - Add an `mpm_water_dam_break` example that renders a water-like MPM simulation as a dynamic surface mesh.
+- Add an `mpm_water_dam_break` example that renders a water-like MPM simulation as a dynamic surface mesh with high-anisotropy defaults tuned for visual continuity.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Add `basic_dzhanibekov` example demonstrating free rigid-body intermediate-axis instability across VBD, XPBD, and MuJoCo solvers
 - Add experimental inverse-dynamics evaluation for articulated systems: `eval_inverse_dynamics_passive` writes requested passive terms into caller-allocated arrays, while `eval_inverse_dynamics_force` combines them with a user-supplied `joint_qdd`; both operations support articulation masks directly and through `ArticulationView`
