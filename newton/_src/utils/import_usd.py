@@ -6,6 +6,7 @@ from __future__ import annotations
 import collections
 import copy
 import datetime
+import hashlib
 import inspect
 import itertools
 import logging
@@ -61,6 +62,14 @@ def _validate_https_usd_url(url: str) -> None:
     """Reject non-HTTPS URLs before USD asset downloads."""
     if urlparse(url).scheme != "https":
         raise ValueError(f"USD URL downloads require HTTPS: {url}")
+
+
+def _cache_path_for_absolute_usd_reference(url: str) -> str:
+    """Return a safe cache-relative path for an absolute USD reference URL."""
+    parsed = urlparse(url)
+    basename = posixpath.basename(parsed.path) or "reference.usd"
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    return posixpath.join("_external_usd", digest, basename)
 
 
 def _external_stacklevel() -> int:
@@ -4513,8 +4522,8 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         raise RuntimeError(f"Failed to download USD file. Status code: {response.status_code}")
     file = response.content
     dot = os.path.extsep
-    base = os.path.basename(urlparse(resolved_url).path)
-    url_folder = os.path.dirname(resolved_url)
+    base = posixpath.basename(urlparse(resolved_url).path)
+    url_folder = posixpath.dirname(resolved_url)
     base_name = dot.join(base.split(dot)[:-1])
     if target_folder_name is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -4525,32 +4534,56 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         f.write(file)
 
     stage = Usd.Stage.Open(target_filename, Usd.Stage.LoadNone)
-    stage_str = stage.GetRootLayer().ExportToString()
+    root_layer = stage.GetRootLayer()
+    stage_str = root_layer.ExportToString()
     print(f"Downloaded USD file to {target_filename}.")
-    if export_usda:
-        usda_filename = os.path.join(target_folder_name, base_name + ".usda")
-        with open(usda_filename, "w") as f:
-            f.write(stage_str)
-            print(f"Exported USDA file to {usda_filename}.")
 
     # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
     # Each entry in the queue is (resolved_url, cache_relative_path).
     downloaded_urls: set[str] = {url, resolved_url}
     pending: collections.deque[tuple[str, str]] = collections.deque()
 
+    def _write_layer_string(filename: str, layer, layer_str: str) -> None:
+        """Persist rewritten USDA text to both the layer and cache file."""
+        import_from_string = getattr(layer, "ImportFromString", None)
+        if callable(import_from_string):
+            import_from_string(layer_str)
+            save = getattr(layer, "Save", None)
+            if callable(save):
+                save()
+        with open(filename, "w") as f:
+            f.write(layer_str)
+
     def _extract_references(layer_str, parent_url_folder, parent_local_folder):
-        """Extract reference paths from a USD layer string and queue them for download."""
+        """Extract references, queue downloads, and return rewritten layer text."""
+        rewritten_layer_str = layer_str
         for match in re.finditer(r"references.=.@(.*?)@", layer_str):
             raw_ref = match.group(1)
             ref_url = urljoin(parent_url_folder + "/", raw_ref)
-            local_path = os.path.normpath(os.path.join(parent_local_folder, raw_ref))
-            if os.path.isabs(local_path) or local_path.startswith(".."):
+            raw_ref_scheme = urlparse(raw_ref).scheme
+            if raw_ref_scheme in {"http", "https"}:
+                _validate_https_usd_url(ref_url)
+                local_path = _cache_path_for_absolute_usd_reference(ref_url)
+                rewritten_layer_str = rewritten_layer_str.replace(f"@{raw_ref}@", f"@{local_path}@")
+            else:
+                local_path = posixpath.normpath(posixpath.join(parent_local_folder, raw_ref))
+            if posixpath.isabs(local_path) or local_path == ".." or local_path.startswith("../"):
                 print(f"Skipping reference that escapes target folder: {raw_ref}")
                 continue
             if ref_url not in downloaded_urls:
                 pending.append((ref_url, local_path))
+        return rewritten_layer_str
 
-    _extract_references(stage_str, url_folder, "")
+    rewritten_stage_str = _extract_references(stage_str, url_folder, "")
+    if rewritten_stage_str != stage_str:
+        _write_layer_string(target_filename, root_layer, rewritten_stage_str)
+        stage_str = rewritten_stage_str
+
+    if export_usda:
+        usda_filename = os.path.join(target_folder_name, base_name + ".usda")
+        with open(usda_filename, "w") as f:
+            f.write(stage_str)
+            print(f"Exported USDA file to {usda_filename}.")
 
     while pending:
         ref_url, local_path = pending.popleft()
@@ -4564,7 +4597,7 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                 continue
             downloaded_urls.add(resolved_ref_url)
             file = response.content
-            local_dir = os.path.dirname(local_path)
+            local_dir = posixpath.dirname(local_path)
             if local_dir:
                 os.makedirs(os.path.join(target_folder_name, local_dir), exist_ok=True)
             ref_filename = os.path.join(target_folder_name, local_path)
@@ -4574,7 +4607,13 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             print(f"Downloaded USD reference {local_path} to {ref_filename}.")
 
             ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
-            ref_stage_str = ref_stage.GetRootLayer().ExportToString()
+            ref_layer = ref_stage.GetRootLayer()
+            ref_stage_str = ref_layer.ExportToString()
+
+            rewritten_ref_stage_str = _extract_references(ref_stage_str, posixpath.dirname(resolved_ref_url), local_dir)
+            if rewritten_ref_stage_str != ref_stage_str:
+                _write_layer_string(ref_filename, ref_layer, rewritten_ref_stage_str)
+                ref_stage_str = rewritten_ref_stage_str
 
             if export_usda:
                 ref_base = os.path.basename(ref_filename)
@@ -4587,9 +4626,6 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                 with open(usda_filename, "w") as f:
                     f.write(ref_stage_str)
                     print(f"Exported USDA file to {usda_filename}.")
-
-            # Recurse: resolve references relative to this file's location
-            _extract_references(ref_stage_str, posixpath.dirname(resolved_ref_url), local_dir)
         except ValueError:
             raise
         except Exception:

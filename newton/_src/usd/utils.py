@@ -1040,7 +1040,7 @@ def _get_mesh_from_source(
 
 @overload
 def get_mesh(
-    source: Usd.Prim,
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1058,7 +1058,7 @@ def get_mesh(
 
 @overload
 def get_mesh(
-    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
+    source: Usd.Prim,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,

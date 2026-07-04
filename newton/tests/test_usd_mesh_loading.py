@@ -1,20 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for USD mesh extraction and viewer mesh instance logging."""
+"""Tests for USD mesh extraction from stage, path, URL, and prim sources."""
 
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
-import warp as wp
 
 import newton
 import newton.usd
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
-from newton.viewer import ViewerNull
 
 
 def _create_referenced_mesh_stage(tmpdir: str) -> Path:
@@ -233,226 +230,6 @@ class TestUsdMeshHelpers(unittest.TestCase):
 
         self.assertIsNotNone(mesh.normals)
         np.testing.assert_allclose(mesh.normals[0], np.array([0.0, 1.0, 0.0], dtype=np.float32), atol=1e-6)
-
-
-class _MeshLoggingProbe(ViewerNull):
-    """ViewerNull probe that records mesh and instance logging calls."""
-
-    def __init__(self):
-        """Initialize captured mesh and instance call lists."""
-        super().__init__(num_frames=1)
-        self.mesh_calls = []
-        self.instance_calls = []
-
-    def log_mesh(
-        self,
-        name,
-        points,
-        indices,
-        normals=None,
-        uvs=None,
-        texture=None,
-        hidden=False,
-        backface_culling=True,
-        color=None,
-        roughness=None,
-        metallic=None,
-    ):
-        """Record mesh prototype uploads."""
-        self.mesh_calls.append(
-            {
-                "name": name,
-                "points": points,
-                "indices": indices,
-                "hidden": hidden,
-                "color": color,
-                "roughness": roughness,
-                "metallic": metallic,
-            }
-        )
-
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
-        """Record mesh instance batch uploads."""
-        self.instance_calls.append(
-            {
-                "name": name,
-                "mesh": mesh,
-                "xforms": xforms,
-                "scales": scales,
-                "colors": colors,
-                "materials": materials,
-                "hidden": hidden,
-            }
-        )
-
-
-class TestViewerMeshLogging(unittest.TestCase):
-    """Tests for logging Newton mesh prototypes and USD mesh instances."""
-
-    def test_log_mesh_instances_accepts_newton_mesh(self):
-        """Register a Newton mesh and log a default instance batch."""
-        viewer = _MeshLoggingProbe()
-        mesh = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-            color=(0.2, 0.4, 0.6),
-            roughness=0.7,
-            metallic=0.1,
-        )
-
-        viewer.log_mesh_instances("/debug/marker", mesh)
-
-        self.assertEqual(len(viewer.mesh_calls), 1)
-        self.assertEqual(len(viewer.instance_calls), 1)
-        self.assertTrue(viewer.mesh_calls[0]["hidden"])
-        self.assertEqual(viewer.mesh_calls[0]["color"], (0.2, 0.4, 0.6))
-        self.assertEqual(viewer.mesh_calls[0]["roughness"], 0.7)
-        self.assertEqual(viewer.mesh_calls[0]["metallic"], 0.1)
-        self.assertEqual(viewer.instance_calls[0]["name"], "/debug/marker")
-        self.assertEqual(len(viewer.instance_calls[0]["xforms"]), 1)
-        self.assertEqual(len(viewer.instance_calls[0]["scales"]), 1)
-
-    def test_log_mesh_instances_qualifies_active_layer_name(self):
-        """Qualify mesh instance paths under the active viewer layer."""
-        viewer = _MeshLoggingProbe()
-        viewer.activate("markers")
-        mesh = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-        )
-
-        viewer.log_mesh_instances("/debug/marker", mesh)
-
-        self.assertEqual(viewer.instance_calls[0]["name"], "/layers/markers/debug/marker")
-
-    def test_log_mesh_instances_rejects_mismatched_instance_arrays(self):
-        """Reject per-instance arrays that cannot broadcast to the transform count."""
-        viewer = _MeshLoggingProbe()
-        mesh = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-        )
-        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
-
-        with self.assertRaisesRegex(ValueError, "Expected 1 or 2 vec3 values"):
-            viewer.log_mesh_instances("/debug/bad_scales", mesh, xforms=xforms, scales=np.ones((3, 3)))
-
-        with self.assertRaisesRegex(ValueError, "Expected 1 or 2 vec4 values"):
-            viewer.log_mesh_instances("/debug/bad_materials", mesh, xforms=xforms, materials=np.ones((3, 4)))
-
-    def test_log_mesh_instances_rejects_negative_determinant_scale(self):
-        """Reject mirrored instance scales that would need a flipped prototype."""
-        viewer = _MeshLoggingProbe()
-        mesh = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-        )
-
-        with self.assertRaisesRegex(ValueError, "negative-determinant scales"):
-            viewer.log_mesh_instances("/debug/mirrored", mesh, scales=(-1.0, 1.0, 1.0))
-
-    def test_log_usd_caches_loaded_mesh_by_default(self):
-        """Reuse parsed USD meshes for repeated cached path-source logging."""
-        viewer = _MeshLoggingProbe()
-        mesh = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-        )
-
-        with mock.patch("newton.usd.get_mesh", return_value=mesh) as get_mesh:
-            first = viewer.log_usd("/debug/marker_a", "marker.usda")
-            second = viewer.log_usd("/debug/marker_b", "marker.usda")
-            uncached = viewer.log_usd("/debug/marker_c", "marker.usda", cache_mesh=False)
-
-        self.assertIs(first, second)
-        self.assertIs(first, uncached)
-        self.assertEqual(get_mesh.call_count, 2)
-        self.assertEqual(len(viewer.instance_calls), 3)
-
-    def test_log_usd_does_not_cache_handle_sources(self):
-        """Avoid caching non-path USD handle sources by identity."""
-        viewer = _MeshLoggingProbe()
-        source = object()
-        mesh_a = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-        )
-        mesh_b = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-        )
-
-        with mock.patch("newton.usd.get_mesh", side_effect=[mesh_a, mesh_b]) as get_mesh:
-            first = viewer.log_usd("/debug/marker_a", source)
-            second = viewer.log_usd("/debug/marker_b", source)
-
-        self.assertIs(first, mesh_a)
-        self.assertIs(second, mesh_b)
-        self.assertEqual(get_mesh.call_count, 2)
-        self.assertEqual(viewer._usd_mesh_cache, {})
-
-    def test_log_mesh_instances_cache_distinguishes_mesh_colors(self):
-        """Keep mesh prototype cache entries separate for different colors."""
-        viewer = _MeshLoggingProbe()
-        vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-        indices = np.array([0, 1, 2], dtype=np.int32)
-        red = newton.Mesh(vertices=vertices, indices=indices, compute_inertia=False, color=(1.0, 0.0, 0.0))
-        blue = newton.Mesh(vertices=vertices, indices=indices, compute_inertia=False, color=(0.0, 0.0, 1.0))
-
-        viewer.log_mesh_instances("/debug/red", red)
-        viewer.log_mesh_instances("/debug/blue", blue)
-
-        self.assertEqual(len(viewer.mesh_calls), 2)
-        self.assertEqual(viewer.mesh_calls[0]["color"], (1.0, 0.0, 0.0))
-        self.assertEqual(viewer.mesh_calls[1]["color"], (0.0, 0.0, 1.0))
-
-    def test_winding_flipped_mesh_preserves_material_fields(self):
-        """Preserve material fields when uploading a mirrored mesh prototype."""
-        viewer = _MeshLoggingProbe()
-        mesh = newton.Mesh(
-            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-            indices=np.array([0, 1, 2], dtype=np.int32),
-            compute_inertia=False,
-            color=(0.2, 0.4, 0.6),
-            roughness=0.7,
-            metallic=0.1,
-        )
-
-        viewer._populate_geometry(
-            int(newton.GeoType.MESH),
-            (1.0, 1.0, 1.0),
-            0.0,
-            True,
-            geo_src=mesh,
-            mirror=True,
-        )
-
-        self.assertEqual(len(viewer.mesh_calls), 1)
-        assert_np_equal(viewer.mesh_calls[0]["indices"].numpy(), np.array([0, 2, 1], dtype=np.int32))
-        self.assertEqual(viewer.mesh_calls[0]["color"], (0.2, 0.4, 0.6))
-        self.assertEqual(viewer.mesh_calls[0]["roughness"], 0.7)
-        self.assertEqual(viewer.mesh_calls[0]["metallic"], 0.1)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_log_usd_loads_and_logs_mesh(self):
-        """Load a USD file and log the resulting mesh instances."""
-        viewer = _MeshLoggingProbe()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            stage_path = _create_referenced_mesh_stage(tmpdir)
-
-            mesh = viewer.log_usd("/debug/usd_marker", stage_path, root_path="/Marker")
-
-        self.assertIsInstance(mesh, newton.Mesh)
-        self.assertEqual(len(viewer.mesh_calls), 1)
-        self.assertEqual(len(viewer.instance_calls), 1)
-        self.assertEqual(viewer.instance_calls[0]["name"], "/debug/usd_marker")
 
 
 if __name__ == "__main__":

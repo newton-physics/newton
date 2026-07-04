@@ -517,7 +517,6 @@ class ViewerBase(ABC):
 
         # Geometry mesh cache (geometry hash -> mesh path)
         layer._geometry_cache: dict[int, str] = {}
-        layer._usd_mesh_cache: dict[tuple, newton.Mesh] = {}
 
         # Contact line vertices
         layer._contact_points0 = None
@@ -1315,181 +1314,6 @@ class ViewerBase(ABC):
         # finally, log the instances
         self.log_instances(name, mesh_path, xforms, scales, colors, materials, hidden=hidden)
 
-    def log_mesh_instances(
-        self,
-        name: str,
-        mesh: newton.Mesh,
-        xforms: wp.array[wp.transform] | None = None,
-        scales: wp.array[wp.vec3] | tuple[float, float, float] | list[float] | np.ndarray | None = None,
-        colors: wp.array[wp.vec3] | tuple[float, float, float] | list[float] | np.ndarray | None = None,
-        materials: wp.array[wp.vec4] | np.ndarray | None = None,
-        hidden: bool = False,
-    ) -> None:
-        """Log one or more instances of a :class:`newton.Mesh`.
-
-        Args:
-            name: Unique path/name for the instance batch.
-            mesh: Mesh asset to register and instance.
-            xforms: Optional per-instance transforms. Defaults to one identity
-                transform.
-            scales: Optional per-instance scale vectors. Defaults to unit scale.
-            colors: Optional per-instance RGB colors.
-            materials: Optional per-instance material parameters.
-            hidden: Whether the instance batch should be hidden.
-        """
-        if not isinstance(mesh, newton.Mesh):
-            raise TypeError(f"log_mesh_instances expected newton.Mesh, received {type(mesh).__name__}.")
-
-        if xforms is None:
-            xforms = wp.array([wp.transform_identity()], dtype=wp.transform, device=self.device)
-        elif not isinstance(xforms, wp.array):
-            xforms = wp.array(xforms, dtype=wp.transform, device=self.device)
-
-        num_instances = len(xforms)
-
-        def _validate_instance_count(count: int, dtype_name: str) -> None:
-            """Ensure optional per-instance arrays match the transform batch."""
-            if count != num_instances:
-                raise ValueError(f"Expected 1 or {num_instances} {dtype_name} values, received {count}.")
-
-        def _ensure_vec3_array(arr, default):
-            """Return a device vec3 array broadcast to the instance count."""
-            if arr is None:
-                return wp.array([default] * num_instances, dtype=wp.vec3, device=self.device)
-            if isinstance(arr, wp.array):
-                if len(arr) == 1 and num_instances > 1:
-                    val = wp.vec3(*arr.numpy()[0])
-                    return wp.array([val] * num_instances, dtype=wp.vec3, device=self.device)
-                _validate_instance_count(len(arr), "vec3")
-                return arr
-            arr_np = np.asarray(arr, dtype=np.float32)
-            if arr_np.shape == (3,):
-                arr_np = np.tile(arr_np, (num_instances, 1))
-            else:
-                arr_np = arr_np.reshape(-1, 3)
-                if len(arr_np) == 1 and num_instances > 1:
-                    arr_np = np.tile(arr_np, (num_instances, 1))
-            _validate_instance_count(len(arr_np), "vec3")
-            return wp.array([wp.vec3(*value) for value in arr_np], dtype=wp.vec3, device=self.device)
-
-        def _ensure_vec4_array(arr):
-            """Return a device vec4 array broadcast to the instance count."""
-            if arr is None:
-                return None
-            if isinstance(arr, wp.array):
-                if len(arr) == 1 and num_instances > 1:
-                    val = wp.vec4(*arr.numpy()[0])
-                    return wp.array([val] * num_instances, dtype=wp.vec4, device=self.device)
-                _validate_instance_count(len(arr), "vec4")
-                return arr
-            arr_np = np.asarray(arr, dtype=np.float32)
-            if arr_np.shape == (4,):
-                arr_np = np.tile(arr_np, (num_instances, 1))
-            else:
-                arr_np = arr_np.reshape(-1, 4)
-                if len(arr_np) == 1 and num_instances > 1:
-                    arr_np = np.tile(arr_np, (num_instances, 1))
-            _validate_instance_count(len(arr_np), "vec4")
-            return wp.array([wp.vec4(*value) for value in arr_np], dtype=wp.vec4, device=self.device)
-
-        scales = _ensure_vec3_array(scales, wp.vec3(1.0, 1.0, 1.0))
-        colors = None if colors is None else _ensure_vec3_array(colors, wp.vec3(1.0, 1.0, 1.0))
-        materials = _ensure_vec4_array(materials)
-        scale_values = scales.numpy()
-        if np.any(np.prod(scale_values, axis=1) < 0.0):
-            raise ValueError(
-                "log_mesh_instances does not support negative-determinant scales; "
-                "pre-flip the mesh winding or use non-negative per-axis scales."
-            )
-
-        name = self._qualify(name)
-        mesh_path = self._populate_geometry(
-            int(newton.GeoType.MESH),
-            (1.0, 1.0, 1.0),
-            0.0,
-            bool(mesh.is_solid),
-            geo_src=mesh,
-        )
-        self.log_instances(name, mesh_path, xforms, scales, colors, materials, hidden=hidden)
-
-    def log_usd(
-        self,
-        name: str,
-        source,
-        xforms: wp.array[wp.transform] | None = None,
-        scales: wp.array[wp.vec3] | tuple[float, float, float] | list[float] | np.ndarray | None = None,
-        colors: wp.array[wp.vec3] | tuple[float, float, float] | list[float] | np.ndarray | None = None,
-        materials: wp.array[wp.vec4] | np.ndarray | None = None,
-        root_path: str | None = None,
-        load_normals: bool = True,
-        load_uvs: bool = True,
-        apply_stage_units: bool = True,
-        cache_mesh: bool = True,
-        hidden: bool = False,
-    ) -> newton.Mesh:
-        """Load a USD mesh asset and log one or more viewer instances.
-
-        Args:
-            name: Unique path/name for the instance batch.
-            source: USD mesh prim, stage, file path, or URL.
-            xforms: Optional per-instance transforms. Defaults to one identity
-                transform.
-            scales: Optional per-instance scale vectors.
-            colors: Optional per-instance RGB colors.
-            materials: Optional per-instance material parameters.
-            root_path: USD prim path to load from when ``source`` is a stage,
-                file path, URL, or non-mesh prim.
-            load_normals: Whether to load USD normals.
-            load_uvs: Whether to load USD texture coordinates.
-            apply_stage_units: Whether to convert authored USD distance units
-                to meters for stage, file path, URL, or non-mesh prim sources.
-            cache_mesh: Whether to cache the parsed USD mesh on the active
-                viewer layer for repeated calls.
-            hidden: Whether the instance batch should be hidden.
-
-        Returns:
-            The loaded :class:`newton.Mesh`.
-        """
-        cache_key = self._usd_mesh_cache_key(source, root_path, load_normals, load_uvs, apply_stage_units)
-        mesh = self._usd_mesh_cache.get(cache_key) if cache_mesh and cache_key is not None else None
-        if mesh is None:
-            mesh = newton.usd.get_mesh(
-                source,
-                load_normals=load_normals,
-                load_uvs=load_uvs,
-                root_path=root_path,
-                compute_inertia=False,
-                apply_stage_units=apply_stage_units,
-            )
-            if cache_mesh and cache_key is not None:
-                self._usd_mesh_cache[cache_key] = mesh
-        self.log_mesh_instances(
-            name,
-            mesh,
-            xforms=xforms,
-            scales=scales,
-            colors=colors,
-            materials=materials,
-            hidden=hidden,
-        )
-        return mesh
-
-    @staticmethod
-    def _usd_mesh_cache_key(source, root_path: str | None, load_normals: bool, load_uvs: bool, apply_stage_units: bool):
-        """Return a stable cache key for path and URL USD mesh sources."""
-        if isinstance(source, str | os.PathLike):
-            source_key = os.fspath(source)
-            if not source_key.startswith(("http://", "https://")):
-                try:
-                    stat = os.stat(source_key)
-                except OSError:
-                    stat = None
-                if stat is not None:
-                    source_key = (os.path.abspath(source_key), stat.st_mtime_ns, stat.st_size)
-        else:
-            return None
-        return source_key, root_path, bool(load_normals), bool(load_uvs), bool(apply_stage_units)
-
     def log_geo(
         self,
         name: str,
@@ -1588,9 +1412,6 @@ class ViewerBase(ABC):
                 uvs,
                 hidden=hidden,
                 texture=texture,
-                color=geo_src.color,
-                roughness=geo_src.roughness,
-                metallic=geo_src.metallic,
             )
             return
 
@@ -2086,13 +1907,7 @@ class ViewerBase(ABC):
     def _hash_geometry(
         self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None, mirror: bool = False
     ) -> int:
-        appearance_key = None
-        if isinstance(geo_src, newton.Mesh):
-            color_key = None if geo_src.color is None else tuple(float(c) for c in geo_src.color[:3])
-            appearance_key = (color_key, geo_src.roughness, geo_src.metallic)
-        return hash(
-            (int(geo_type), geo_src, appearance_key, *geo_scale, float(thickness), bool(is_solid), bool(mirror))
-        )
+        return hash((int(geo_type), geo_src, *geo_scale, float(thickness), bool(is_solid), bool(mirror)))
 
     def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
         return hash((geo_hash, shape_static, shape_flags))
@@ -2228,9 +2043,6 @@ class ViewerBase(ABC):
             uvs_wp,
             hidden=hidden,
             texture=getattr(src, "texture", None),
-            color=src.color,
-            roughness=src.roughness,
-            metallic=src.metallic,
         )
 
     # creates meshes and instances for each shape in the Model

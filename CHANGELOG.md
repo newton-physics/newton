@@ -32,6 +32,7 @@
   - Add `--coupled-view` to coupled multiphysics examples and expose `SolverCoupled` entry view/state helpers for rendering individual sub-solver views.
 - Add `BODY_F`, `PARTICLE_F`, and `JOINT_F` to `StateFlags`.
 - Add USD mesh marker logging via `newton.usd.get_mesh()` support for USD stages, file paths, and URLs plus `ViewerBase.log_usd()` and `ViewerBase.log_mesh_instances()`.
+- Add `newton.usd.get_mesh()` support for USD stages, file paths, and URLs.
 
 ### Changed
 
