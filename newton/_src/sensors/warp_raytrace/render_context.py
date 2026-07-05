@@ -166,7 +166,9 @@ class RenderContext:
         if self.texture_data is None:
             raise RuntimeError("register_textures() requires init_from_model() to have been called first.")
 
-        indices = []
+        # build locally and commit after the loop, so a failing source leaves the pool
+        # (and the indices handed to earlier callers) untouched
+        new_entries = []
         for source in sources:
             if isinstance(source, np.ndarray):
                 pixels = source
@@ -189,9 +191,10 @@ class RenderContext:
                 device=self.device,
             )
             data.repeat = wp.vec2f(1.0, 1.0)
-            indices.append(len(self.__texture_data))
-            self.__texture_data.append(data)
+            new_entries.append(data)
 
+        indices = list(range(len(self.__texture_data), len(self.__texture_data) + len(new_entries)))
+        self.__texture_data.extend(new_entries)
         self.texture_data = wp.array(self.__texture_data, dtype=TextureData, device=self.device)
         # sampling registered textures requires the textured kernel variant; the config
         # is part of the kernel cache key, so this at most compiles once on next render.
@@ -222,21 +225,18 @@ class RenderContext:
         if self.shape_texture_ids is None:
             raise RuntimeError("set_shape_texture_ids() requires init_from_model() to have been called first.")
 
+        # host inputs are bounds-checked before upload: the scatter kernel writes (and the
+        # render kernel reads) unguarded, so out-of-range indices would corrupt GPU memory
         if not isinstance(shape_indices, wp.array):
-            shape_indices = np.asarray(shape_indices, dtype=np.int32).reshape(-1)
-            texture_ids_np = np.asarray(texture_ids, dtype=np.int32).reshape(-1)
-            if shape_indices.shape != texture_ids_np.shape:
-                raise ValueError("shape_indices and texture_ids must have the same length")
-            if ((shape_indices < 0) | (shape_indices >= self.shape_count_total)).any():
+            host_indices = np.asarray(shape_indices, dtype=np.int32).reshape(-1)
+            if ((host_indices < 0) | (host_indices >= self.shape_count_total)).any():
                 raise ValueError("shape_indices contains an out-of-range shape index")
-            if ((texture_ids_np < -1) | (texture_ids_np >= len(self.__texture_data))).any():
+            shape_indices = wp.array(host_indices, dtype=wp.int32, device=self.device)
+        if not isinstance(texture_ids, wp.array):
+            host_ids = np.asarray(texture_ids, dtype=np.int32).reshape(-1)
+            if ((host_ids < -1) | (host_ids >= len(self.__texture_data))).any():
                 raise ValueError("texture_ids contains an out-of-range texture-pool index")
-            shape_indices = wp.array(shape_indices, dtype=wp.int32, device=self.device)
-            texture_ids = wp.array(texture_ids_np, dtype=wp.int32, device=self.device)
-        elif not isinstance(texture_ids, wp.array):
-            texture_ids = wp.array(
-                np.asarray(texture_ids, dtype=np.int32).reshape(-1), dtype=wp.int32, device=self.device
-            )
+            texture_ids = wp.array(host_ids, dtype=wp.int32, device=self.device)
         if shape_indices.shape[0] != texture_ids.shape[0]:
             raise ValueError("shape_indices and texture_ids must have the same length")
 
