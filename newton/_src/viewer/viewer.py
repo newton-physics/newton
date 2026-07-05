@@ -1968,8 +1968,7 @@ class ViewerBase(ABC):
         """
         layer = self._texture_pool_layer(str(texture)) if isinstance(texture, (str, bytes)) else None
         if layer is None:
-            shape_mesh_names = getattr(self, "_shape_mesh_names", {})
-            names = {shape_mesh_names.get(int(s)) for s in shape_indices}
+            names = {self._shape_mesh_names.get(int(s)) for s in shape_indices}
             names.discard(None)
             for name in sorted(names):
                 self.update_mesh_texture(name, texture)

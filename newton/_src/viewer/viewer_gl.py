@@ -1624,15 +1624,17 @@ class ViewerGL(ViewerBase):
         """
         gl = RendererGL.gl
         for shapes in self._shape_instances.values():
-            if not getattr(shapes, "materials_changed", False):
+            if not shapes.materials_changed:
                 continue
-            shapes.materials_changed = False
             instancer = self.objects.get(shapes.name)
-            if not isinstance(instancer, MeshInstancerGL) or shapes.materials is None:
+            if instancer is None:
+                # not uploadable under this name (e.g. capsule batches render through split
+                # instancers); leave the flag set so the write is not silently dropped
                 continue
             host_materials = shapes.materials.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_material_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
+            shapes.materials_changed = False
 
     @override
     def log_state(self, state: nt.State):
