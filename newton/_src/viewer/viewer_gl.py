@@ -228,6 +228,10 @@ class ViewerGL(ViewerBase):
         self._array_buffers: dict[str, np.ndarray] = {}
         self._array_dirty: set[str] = set()
         self._array_textures: dict[str, dict[str, Any]] = {}
+        # Shared texture-array pool (see register_textures): source key -> layer, plus the
+        # decoded layer pixels kept for rebuilds when new sources are registered.
+        self._texture_pool_layers: dict[str, int] = {}
+        self._texture_pool_pixels: list[Any] = []
         self._heatmap_min_cell_pixels = 3.0
         self._heatmap_nan_rgba = np.array([51, 51, 51, 255], dtype=np.uint8)
         self._heatmap_color_lut = self._build_heatmap_color_lut()
@@ -897,6 +901,74 @@ class ViewerGL(ViewerBase):
                 m = float(metallic)
             self.objects[name].material = (r, m, c, t)
 
+    def register_textures(self, sources, size: int = 1024) -> None:
+        """Upload candidate textures to a shared GPU texture-array pool, once each.
+
+        Registered sources make later :meth:`update_shape_textures` calls with the same source a
+        pure per-instance index write with no decode or upload — the same pay-at-registration
+        contract as the tiled-camera sensor's texture pool. Layers are sampled per instance, so
+        shapes that share deduplicated geometry can still show different pool textures.
+
+        Args:
+            sources: Texture paths/URLs to preload.
+            size: Square resolution every pool layer is resampled to (array textures require
+                uniform dimensions; the viewer is a preview, so a fixed cap is acceptable).
+        """
+        from PIL import Image
+
+        from ..utils.texture import load_texture  # noqa: PLC0415
+
+        layers = list(self._texture_pool_pixels)
+        for source in sources:
+            key = str(source)
+            if key in self._texture_pool_layers:
+                continue
+            pixels = load_texture(key)
+            if pixels is None:
+                continue
+            if pixels.shape[0] != size or pixels.shape[1] != size:
+                pixels = np.asarray(Image.fromarray(pixels).resize((size, size)), dtype=np.uint8)
+            self._texture_pool_layers[key] = len(layers)
+            layers.append(np.ascontiguousarray(pixels))
+        if len(layers) == len(self._texture_pool_pixels):
+            return
+        self._texture_pool_pixels = layers
+
+        gl = RendererGL.gl
+        if RendererGL.texture_pool_array_id is not None:
+            gl.glDeleteTextures(1, RendererGL.texture_pool_array_id)
+        texture_id = gl.GLuint()
+        gl.glGenTextures(1, texture_id)
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, texture_id)
+        stacked = np.stack(layers)
+        gl.glTexImage3D(
+            gl.GL_TEXTURE_2D_ARRAY,
+            0,
+            gl.GL_RGBA8,
+            size,
+            size,
+            len(layers),
+            0,
+            gl.GL_RGBA,
+            gl.GL_UNSIGNED_BYTE,
+            stacked.ctypes.data,
+        )
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
+        RendererGL.texture_pool_array_id = texture_id
+
+    def _texture_pool_layer(self, key: str) -> int | None:
+        """Return the pool layer registered for a texture source, if any."""
+        return self._texture_pool_layers.get(key)
+
+    def update_mesh_texture(self, name: str, texture) -> None:
+        """Replace the texture of an already-logged mesh (decode + upload per call)."""
+        mesh = self.objects.get(self._qualify(name))
+        if mesh is not None:
+            mesh.update_texture(texture)
+
     @override
     def log_instances(
         self,
@@ -1543,6 +1615,25 @@ class ViewerGL(ViewerBase):
 
         self._scalar_arrays[name] = None
 
+    def _flush_changed_instance_materials(self) -> None:
+        """Re-upload per-instance materials for batches whose materials changed.
+
+        The batched CUDA state path uploads transforms directly and syncs colors from the model,
+        bypassing :meth:`log_instances` — so material edits (e.g. per-instance texture-layer
+        swaps from :meth:`~newton.viewer.ViewerBase.update_shape_textures`) must be flushed here.
+        """
+        gl = RendererGL.gl
+        for shapes in self._shape_instances.values():
+            if not getattr(shapes, "materials_changed", False):
+                continue
+            shapes.materials_changed = False
+            instancer = self.objects.get(shapes.name)
+            if not isinstance(instancer, MeshInstancerGL) or shapes.materials is None:
+                continue
+            host_materials = shapes.materials.numpy()
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, instancer.instance_material_buffer)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
+
     @override
     def log_state(self, state: nt.State):
         """
@@ -1561,6 +1652,7 @@ class ViewerGL(ViewerBase):
             return
 
         self._sync_shape_colors_from_model()
+        self._flush_changed_instance_materials()
 
         if self._packed_vbo_xforms is not None and self.device.is_cuda:
             # ---- Single kernel over all model shapes, scatter-write to grouped output ----
@@ -1881,6 +1973,15 @@ class ViewerGL(ViewerBase):
 
     @override
     def close(self):
+        gl = getattr(RendererGL, "gl", None)
+        if gl is not None and RendererGL.texture_pool_array_id is not None:
+            try:
+                gl.glDeleteTextures(1, RendererGL.texture_pool_array_id)
+            except Exception:
+                pass
+            RendererGL.texture_pool_array_id = None
+        self._texture_pool_layers.clear()
+        self._texture_pool_pixels = []
         """
         Close the viewer and clean up resources.
         """
