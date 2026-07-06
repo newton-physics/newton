@@ -1378,6 +1378,176 @@ def eval_articulation_mass_matrix(
                 H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
 
 
+@wp.kernel
+def eval_articulation_inverse_dynamics_force_kernel(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    articulation_count: int,
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    H: wp.array3d[float],
+    qddot: wp.array[float],
+    coriolis_force: wp.array[float],
+    gravity_force: wp.array[float],
+    # outputs
+    tau: wp.array[float],
+):
+    """Compute the manipulator-equation joint force per articulation.
+
+    Evaluates ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` per DOF, with the
+    ``M(q)*qddot`` term taken from ``H @ qddot`` and the bias terms from the
+    values :func:`eval_inverse_dynamics` populates into
+    :attr:`InverseDynamics.coriolis_force` and
+    :attr:`InverseDynamics.gravity_force`.
+
+    For any FREE/DISTANCE joint, ``H`` is in the joint's parent frame while the
+    bias terms are in world frame, so the six ``H @ qddot`` components are
+    rotated to world before summing.
+
+    Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
+    mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
+    internal DOFs) articulations is handled uniformly.
+    """
+    art_idx = wp.tid()
+
+    if art_idx >= articulation_count:
+        return
+
+    joint_start = articulation_start[art_idx]
+    joint_end = articulation_end[art_idx]
+    dof_start = joint_qd_start[joint_start]
+    dof_end = joint_qd_start[joint_end]
+    dof_count = dof_end - dof_start
+
+    # Mass-matrix term M(q)*qddot, stored into tau as scratch.
+    for i in range(dof_count):
+        sum_val = float(0.0)
+        for j in range(dof_count):
+            sum_val += H[art_idx, i, j] * qddot[dof_start + j]
+        tau[dof_start + i] = sum_val
+
+    # Rotate every FREE/DISTANCE wrench from parent frame to world so it
+    # matches the world-frame bias terms. H @ qddot is conjugate to the
+    # parent-frame qddot convention used internally; coriolis_force and
+    # gravity_force already use the world-frame CoM-wrench convention of
+    # Control.joint_f. Any FREE/DISTANCE joint in the articulation tree
+    # (not only the root) needs this rotation.
+    for ji in range(joint_start, joint_end):
+        jtype = joint_type[ji]
+        if jtype == JointType.FREE or jtype == JointType.DISTANCE:
+            jdof = joint_qd_start[ji]
+            X_wpj = joint_X_p[ji]
+            parent = joint_parent[ji]
+            if parent >= 0:
+                X_wpj = body_q[parent] * X_wpj
+            q_p = wp.transform_get_rotation(X_wpj)
+            f_lin = wp.quat_rotate(q_p, wp.vec3(tau[jdof + 0], tau[jdof + 1], tau[jdof + 2]))
+            f_ang = wp.quat_rotate(q_p, wp.vec3(tau[jdof + 3], tau[jdof + 4], tau[jdof + 5]))
+            tau[jdof + 0] = f_lin[0]
+            tau[jdof + 1] = f_lin[1]
+            tau[jdof + 2] = f_lin[2]
+            tau[jdof + 3] = f_ang[0]
+            tau[jdof + 4] = f_ang[1]
+            tau[jdof + 5] = f_ang[2]
+
+    # Add the world-frame bias terms.
+    for i in range(dof_count):
+        tau[dof_start + i] = tau[dof_start + i] + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
+
+    # Zero loop-closure DOF slots (gap between tree-joint end and next
+    # articulation start). Non-empty when loop-closing joints carry
+    # generalized coordinates; articulation_start has a sentinel entry so
+    # art_idx + 1 is always in bounds.
+    gap_end = joint_qd_start[articulation_start[art_idx + 1]]
+    for k in range(dof_end, gap_end):
+        tau[k] = float(0.0)
+
+
+def eval_inverse_dynamics_force(
+    model: Model,
+    state: State,
+    H: wp.array3d[wp.float32],
+    qddot: wp.array[wp.float32],
+    coriolis_force: wp.array[wp.float32],
+    gravity_force: wp.array[wp.float32],
+    tau: wp.array[wp.float32],
+) -> None:
+    """Evaluate the manipulator-equation joint force ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
+
+    Combines a per-articulation mass-matrix-times-acceleration product with
+    the Coriolis and gravity forces to produce the full joint force
+    required to realize ``qddot`` at the current ``(q, q_dot)`` under
+    gravity, writing the result into ``tau`` in place. The two force
+    inputs follow the standard manipulator-equation sign convention
+    (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
+    :func:`eval_inverse_dynamics`) and are added directly. Per-articulation
+    DOF counts are recovered from :attr:`Model.joint_qd_start`, so a mix of
+    fixed-root and floating-root articulations across multiple worlds is
+    handled uniformly.
+
+    For any FREE/DISTANCE joint in the articulation tree the mass matrix ``H``
+    is expressed in the joint's parent frame while
+    ``coriolis_force``/``gravity_force`` are in the world-frame CoM-wrench
+    convention of :attr:`Control.joint_f`; each such joint's ``H @ qddot``
+    wrench is rotated to world (using ``state.body_q`` for the
+    parent-frame-in-world rotation) before the sum, so ``tau`` is entirely in
+    that world convention.
+
+    Args:
+        model: The model containing articulation definitions.
+        state: State providing ``body_q``, used to rotate the FREE/DISTANCE
+            root ``H @ qddot`` wrench into the world frame. Must be consistent
+            with the ``H`` and bias buffers (i.e. the state passed to
+            :func:`eval_inverse_dynamics`).
+        H: Joint-space mass matrix ``M(q)`` [kg, kg·m, or kg·m^2, depending
+            on the joint types of the row/column DOFs], shape
+            ``(articulation_count, max_dofs_per_articulation,
+            max_dofs_per_articulation)``, dtype float, typically produced
+            by :func:`eval_mass_matrix`.
+        qddot: Joint accelerations [m/s^2 or rad/s^2, depending on joint
+            type], shape ``(joint_dof_count,)``, dtype float.
+        coriolis_force: Coriolis force ``C(q, q_dot)*q_dot`` [N or N·m,
+            depending on joint type], shape ``(joint_dof_count,)``, dtype
+            float, e.g. :attr:`InverseDynamics.coriolis_force`.
+        gravity_force: Gravity force ``g(q) = ∂U/∂q`` [N or N·m, depending
+            on joint type], shape ``(joint_dof_count,)``, dtype float,
+            e.g. :attr:`InverseDynamics.gravity_force`.
+        tau: Output joint forces [N or N·m, depending on joint type],
+            shape ``(joint_dof_count,)``, dtype float, written in place.
+            Typically :attr:`InverseDynamics.tau`.
+    """
+    if model.articulation_count == 0:
+        return
+
+    expected_shape = (model.joint_dof_count,)
+    if tau.shape != expected_shape:
+        raise ValueError(f"tau has shape {tau.shape}, expected {expected_shape}.")
+
+    wp.launch(
+        kernel=eval_articulation_inverse_dynamics_force_kernel,
+        dim=model.articulation_count,
+        inputs=[
+            model.articulation_start,
+            model.articulation_end,
+            model.articulation_count,
+            model.joint_type,
+            model.joint_parent,
+            model.joint_qd_start,
+            model.joint_X_p,
+            state.body_q,
+            H,
+            qddot,
+            coriolis_force,
+            gravity_force,
+        ],
+        outputs=[tau],
+        device=model.device,
+    )
+
+
 def eval_mass_matrix(
     model: Model,
     state: State,

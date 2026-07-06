@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
+import inspect
 import math
 import sys
+import textwrap
 import unittest
 import warnings
 from types import SimpleNamespace
@@ -29,97 +32,77 @@ def _eq_set_value(builder, name, idx, value):
     attr.values[idx] = value
 
 
-class TestModelBuilderDeprecations(unittest.TestCase):
-    def test_equality_constraint_model_fields_warn_and_forward_to_mujoco_namespace(self):
-        builder = ModelBuilder()
-        body1 = builder.add_body()
-        body2 = builder.add_body()
-        _add_equality_constraint(
-            builder,
-            constraint_type=newton.EqType.CONNECT,
-            body1=body1,
-            body2=body2,
-            anchor=wp.vec3(1.0, 2.0, 3.0),
+class TestModelAttributeSpecs(unittest.TestCase):
+    def test_attribute_frequencies_have_count_metadata(self):
+        model = newton.Model(device="cpu")
+        frequency = newton.Model.AttributeFrequency
+        expected_count_frequencies = set(frequency).difference({frequency.ONCE})
+        actual_count_frequencies = set(model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS)
+        self.assertEqual(
+            actual_count_frequencies,
+            expected_count_frequencies,
+            "Keep Model.AttributeFrequency and Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS in sync. "
+            "Add a count-attribute mapping for each new frequency and remove mappings for deleted frequencies.",
         )
 
-        model = builder.finalize(skip_all_validations=True)
+        for attribute_frequency, count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.items():
+            with self.subTest(frequency=attribute_frequency):
+                self.assertTrue(
+                    hasattr(model, count_attribute),
+                    f"Model.AttributeFrequency.{attribute_frequency.name} maps to missing attribute "
+                    f"Model.{count_attribute}. Add the count attribute or correct "
+                    "Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.",
+                )
+                self.assertEqual(
+                    model._attribute_frequency_count(attribute_frequency),
+                    getattr(model, count_attribute),
+                    f"Model._attribute_frequency_count() must resolve Model.AttributeFrequency."
+                    f"{attribute_frequency.name} through Model.{count_attribute}.",
+                )
 
-        self.assertEqual(model.mujoco.equality_constraint_count, 1)
-        self.assertNotIn("_equality_constraint_body1", model.__dict__)
+    def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        model = newton.Model(device="cpu")
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            np.testing.assert_array_equal(model.equality_constraint_body1.numpy(), np.array([body1], dtype=np.int32))
+        prefixes = tuple(
+            count_attribute.removesuffix("count") for count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.values()
+        )
+        private_prefixes = tuple(f"_{prefix}" for prefix in prefixes)
+        indexed_container_types = (wp.array, np.ndarray, list, dict, set, tuple)
+        indexed_attributes = {
+            name
+            for name, value in model.__dict__.items()
+            if name.startswith(prefixes + private_prefixes) and isinstance(value, indexed_container_types)
+        }
 
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("Model.equality_constraint_body1 is deprecated in Newton 1.3", str(caught[0].message))
-        self.assertIn("model.mujoco.equality_constraint_body1", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
+        # Most Warp arrays are None until finalization, so runtime inspection alone cannot find them.
+        init_source = textwrap.dedent(inspect.getsource(newton.Model.__init__))
+        init_node = ast.parse(init_source).body[0]
+        for node in ast.walk(init_node):
+            if not (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Attribute)
+                and isinstance(node.target.value, ast.Name)
+                and node.target.value.id == "self"
+            ):
+                continue
+            name = node.target.attr
+            annotation = ast.unparse(node.annotation)
+            is_indexed_container = any(
+                container in annotation for container in ("wp.array", "np.ndarray", "list[", "dict[", "set[", "tuple[")
+            )
+            if name.startswith(prefixes + private_prefixes) and is_indexed_container:
+                indexed_attributes.add(name)
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertEqual(model.equality_constraint_count, 1)
+        missing = sorted(indexed_attributes.difference(model.attribute_specs))
+        self.assertEqual(
+            missing,
+            [],
+            "Model attributes are missing AttributeSpec metadata. Add each listed attribute to "
+            "Model._CORE_ATTRIBUTE_SPECS with the correct frequency, references, row width, and compaction policy.",
+        )
 
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("Model.equality_constraint_count is deprecated in Newton 1.3", str(caught[0].message))
-        self.assertIn("model.mujoco.equality_constraint_count", str(caught[0].message))
 
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_count = 2
-
-        self.assertEqual(model.mujoco.equality_constraint_count, 2)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        model.mujoco.equality_constraint_count = 1
-
-        new_body1 = wp.array([body2], dtype=wp.int32, device=model.device)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_body1 = new_body1
-
-        self.assertIs(model.mujoco.equality_constraint_body1, new_body1)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-
-        namespaced_body1 = wp.array([body1], dtype=wp.int32, device=model.device)
-        model.mujoco.equality_constraint_body1 = namespaced_body1
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertIs(model.equality_constraint_body1, namespaced_body1)
-
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-
-    def test_equality_constraint_model_fields_are_created_lazily_for_bare_models(self):
-        model = newton.Model()
-        self.assertFalse(hasattr(model, "mujoco"))
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertIsNone(model.equality_constraint_body1)
-
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertIsNone(model.mujoco.equality_constraint_body1)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_label.append("legacy")
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(model.mujoco.equality_constraint_label, ["legacy"])
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_count = 3
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(model.mujoco.equality_constraint_count, 3)
-
+class TestModelBuilderDeprecations(unittest.TestCase):
     def test_joint_target_pos_vel_aliases_warn(self):
         """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
         default flag and raise under ``use_coord_layout_targets=True``;
@@ -2575,7 +2558,7 @@ class TestModelValidation(unittest.TestCase):
         body2 = builder.add_body(mass=1.0)
         _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.WELD,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
             body1=body1,
             body2=body2,
             label="test_constraint",
@@ -2604,7 +2587,7 @@ class TestModelValidation(unittest.TestCase):
         # Add a joint equality constraint
         _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.JOINT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
             joint1=joint1,
             joint2=joint2,
             label="joint_constraint",

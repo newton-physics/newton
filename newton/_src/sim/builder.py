@@ -53,7 +53,6 @@ from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency
 from .enums import (
     BodyFlags,
-    EqType,
     JointTargetMode,
     JointType,
 )
@@ -625,7 +624,7 @@ class ModelBuilder:
         """For attributes containing entity indices, specifies how values are transformed during add_builder/add_world/replicate merging.
 
         Built-in entity types (values are offset by entity count):
-            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``,
+            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
@@ -1307,43 +1306,11 @@ class ModelBuilder:
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by controller class and shared params."""
 
-        # Deprecation shim (removal in a future release): auto-register the namespaced
-        # equality-constraint attributes so models built without ``SolverMuJoCo`` still expose
-        # ``model.mujoco.equality_constraint_*``. Lazy-import keeps ``ModelBuilder`` construction
-        # free of solver imports.
+        # Equality constraints are canonical MuJoCo custom attributes and must be available
+        # independently of SolverMuJoCo. Lazy import avoids a module-level solver dependency.
         from ..solvers.mujoco.equality import _register_equality_constraint_attributes  # noqa: PLC0415
 
         _register_equality_constraint_attributes(self)
-
-    # Deprecated equality-constraint accumulators (removal in a future release).
-    # The legacy ``ModelBuilder.equality_constraint_*`` lists are now thin read-only views over
-    # the ``mujoco:equality_constraint`` custom-attribute table. Delete this whole block when
-    # the deprecation window closes.
-
-    class _ReadOnlyEqualityList(list):
-        """Read-only snapshot of a deprecated ``ModelBuilder.equality_constraint_*`` list.
-
-        Indexing, iteration, and ``len`` behave like the historical builder lists, but every
-        in-place mutation raises :class:`TypeError`. These accessors are now snapshots over the
-        ``mujoco:equality_constraint`` custom attributes, so mutating one (e.g.
-        ``builder.equality_constraint_type.append(...)``) would silently drop the change instead
-        of updating the builder. Construct equality constraints with
-        :meth:`~newton.ModelBuilder.add_custom_values` using the ``mujoco:equality_constraint_*``
-        keys, and read finalized values from ``model.mujoco.equality_constraint_*``.
-        """
-
-        __slots__ = ()
-
-        def _readonly(self, *args, **kwargs):
-            raise TypeError(
-                "ModelBuilder.equality_constraint_* are deprecated read-only snapshots and cannot "
-                "be mutated in place; the change would be silently dropped. Add equality "
-                'constraints with add_custom_values(**{"mujoco:equality_constraint_*": ...}) and '
-                "read finalized values from model.mujoco.equality_constraint_*."
-            )
-
-        append = extend = insert = remove = pop = clear = sort = reverse = _readonly
-        __setitem__ = __delitem__ = __iadd__ = __imul__ = _readonly
 
     def _eq_attr(self, name: str) -> ModelBuilder.CustomAttribute:
         """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name`` (no ``mujoco:`` prefix)."""
@@ -1368,115 +1335,10 @@ class ModelBuilder:
             for i in range(count)
         ]
 
-    def _deprecated_eq_list(self, name: str) -> list[Any]:
-        """Warn that ``ModelBuilder.<name>`` is deprecated, then return a read-only snapshot.
-
-        The snapshot detaches mutable elements (e.g. ``polycoef`` lists, and the shared attribute
-        default returned for missing rows) and is wrapped in :class:`_ReadOnlyEqualityList`, so
-        neither replacing an entry nor mutating one in place can silently corrupt the builder's
-        ``mujoco:equality_constraint`` custom-attribute store.
-        """
-        warnings.warn(
-            f"ModelBuilder.{name} is deprecated in Newton 1.3 and is scheduled for removal in "
-            f"a future release. Populate equality constraints via "
-            f'add_custom_values(**{{"mujoco:{name}": ...}}) and read finalized values from '
-            f"model.mujoco.{name}.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        detached = [list(v) if isinstance(v, list) else v for v in self._eq_list(name)]
-        return ModelBuilder._ReadOnlyEqualityList(detached)
-
-    def _warn_deprecated_builder_add_equality_constraint(self, name: str) -> None:
-        warnings.warn(
-            f"ModelBuilder.{name} is deprecated in Newton 1.3 and is scheduled for removal in "
-            f"a future release. Equality constraints are now plain ``mujoco:equality_constraint`` "
-            f"custom-attribute rows; construct them with add_custom_values using the "
-            f"``mujoco:equality_constraint_*`` keys, and read finalized values from "
-            f"``model.mujoco.equality_constraint_*``.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-
     @property
     def _equality_constraint_count(self) -> int:
         """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
-
-    @property
-    def equality_constraint_type(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_type``."""
-        return self._deprecated_eq_list("equality_constraint_type")
-
-    @property
-    def equality_constraint_body1(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body1``."""
-        return self._deprecated_eq_list("equality_constraint_body1")
-
-    @property
-    def equality_constraint_body2(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_body2``."""
-        return self._deprecated_eq_list("equality_constraint_body2")
-
-    @property
-    def equality_constraint_anchor(self) -> list[Vec3]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_anchor``."""
-        return self._deprecated_eq_list("equality_constraint_anchor")
-
-    @property
-    def equality_constraint_torquescale(self) -> list[float]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_torquescale``."""
-        return self._deprecated_eq_list("equality_constraint_torquescale")
-
-    @property
-    def equality_constraint_relpose(self) -> list[Transform]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_relpose``."""
-        return self._deprecated_eq_list("equality_constraint_relpose")
-
-    @property
-    def equality_constraint_joint1(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint1``."""
-        return self._deprecated_eq_list("equality_constraint_joint1")
-
-    @property
-    def equality_constraint_joint2(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_joint2``."""
-        return self._deprecated_eq_list("equality_constraint_joint2")
-
-    @property
-    def equality_constraint_polycoef(self) -> list[list[float]]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_polycoef``."""
-        return self._deprecated_eq_list("equality_constraint_polycoef")
-
-    @property
-    def equality_constraint_label(self) -> list[str]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_label``."""
-        return self._deprecated_eq_list("equality_constraint_label")
-
-    @property
-    def equality_constraint_enabled(self) -> list[bool]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_enabled``."""
-        return self._deprecated_eq_list("equality_constraint_enabled")
-
-    @property
-    def equality_constraint_world(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world``."""
-        return self._deprecated_eq_list("equality_constraint_world")
-
-    @property
-    def equality_constraint_world_start(self) -> list[int]:
-        """Deprecated in Newton 1.3; will be removed in a future release. Use ``model.mujoco.equality_constraint_world_start``.
-
-        The per-world start array is built during :meth:`finalize`; before then this returns an empty list.
-        """
-        warnings.warn(
-            "ModelBuilder.equality_constraint_world_start is deprecated in Newton 1.3 and is "
-            "scheduled for removal in a future release. Read the finalized per-world starts from "
-            "``model.mujoco.equality_constraint_world_start`` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return list(self._equality_constraint_world_start)
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -1534,20 +1396,6 @@ class ModelBuilder:
                 # with the default value 20.0
                 assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
         """
-        # Translate the deprecated EQUALITY_CONSTRAINT enum frequency to the equivalent
-        # ``mujoco:equality_constraint`` string frequency. The enum is on the path to removal
-        # in a future release; emitting the warning here surfaces it at the user's declaration site.
-        if attribute.frequency == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
-            warnings.warn(
-                "Model.AttributeFrequency.EQUALITY_CONSTRAINT is deprecated in Newton 1.3 "
-                "and is scheduled for removal in a future release. Declare custom attributes with "
-                'frequency="mujoco:equality_constraint" instead; the frequency itself is '
-                "registered automatically by ModelBuilder during the deprecation window.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            attribute = replace(attribute, frequency="mujoco:equality_constraint")
-
         key = attribute.key
 
         existing = self.custom_attributes.get(key)
@@ -1657,23 +1505,7 @@ class ModelBuilder:
         Returns:
             Custom attributes matching the requested frequencies.
         """
-        # Backward-compat: callers that still pass the deprecated
-        # ``Model.AttributeFrequency.EQUALITY_CONSTRAINT`` get translated to the new string
-        # frequency. The warning fires at the lookup site so the migration target is obvious.
-        normalized: list[Model.AttributeFrequency | str] = []
-        for freq in frequencies:
-            if freq == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
-                warnings.warn(
-                    "Model.AttributeFrequency.EQUALITY_CONSTRAINT is deprecated in Newton 1.3 "
-                    "and is scheduled for removal in a future release. Look up by "
-                    '"mujoco:equality_constraint" instead.',
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                normalized.append("mujoco:equality_constraint")
-            else:
-                normalized.append(freq)
-        return [attr for attr in self.custom_attributes.values() if attr.frequency in normalized]
+        return [attr for attr in self.custom_attributes.values() if attr.frequency in frequencies]
 
     def get_custom_frequency_keys(self) -> set[str]:
         """Return set of custom frequency keys (string frequencies) defined in this builder."""
@@ -2787,6 +2619,7 @@ class ModelBuilder:
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -2915,6 +2748,10 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+                where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
+                Use for USD files authored against MuJoCo <= 3.8. Defaults to
+                False (identity translation matching MuJoCo 3.9 semantics).
 
         Returns:
             The returned mapping has the following entries:
@@ -2988,6 +2825,7 @@ class ModelBuilder:
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
         )
 
     def add_mjcf(
@@ -3025,6 +2863,7 @@ class ModelBuilder:
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
         override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -3138,6 +2977,10 @@ class ModelBuilder:
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+            legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+                where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
+                Use for MJCF files authored against MuJoCo <= 3.8. Defaults
+                to False (identity translation matching MuJoCo 3.9 semantics).
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -3177,6 +3020,7 @@ class ModelBuilder:
             ctrl_direct=ctrl_direct,
             path_resolver=path_resolver,
             override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
         )
 
     # endregion
@@ -4848,199 +4692,6 @@ class ModelBuilder:
             **kwargs,
         )
 
-    def add_equality_constraint(
-        self,
-        constraint_type: EqType,
-        body1: int = -1,
-        body2: int = -1,
-        anchor: Vec3 | None = None,
-        torquescale: float | None = None,
-        relpose: Transform | None = None,
-        joint1: int = -1,
-        joint2: int = -1,
-        polycoef: list[float] | None = None,
-        label: str | None = None,
-        enabled: bool = True,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Generic method to add any type of equality constraint to this ModelBuilder.
-
-        .. deprecated:: 1.3
-            Construct equality constraints with :meth:`add_custom_values` using the
-            ``mujoco:equality_constraint_*`` keys directly, and read finalized values
-            from ``model.mujoco.equality_constraint_*``. Scheduled for removal in
-            a future release.
-
-        Args:
-            constraint_type: Equality constraint type. Use ``EqType.CONNECT`` to
-                pin a point to another body or the world, ``EqType.WELD`` to
-                constrain relative pose, or ``EqType.JOINT`` to couple two joints.
-            body1: Index of the first body participating in the constraint (-1 for world)
-            body2: Index of the second body participating in the constraint (-1 for world)
-            anchor: Anchor point on body1
-            torquescale: Scales the angular residual for weld
-            relpose: Relative pose of body2 for weld. If None, the identity transform is used.
-            joint1: Index of the first joint for joint coupling
-            joint2: Index of the second joint for joint coupling
-            polycoef: Five polynomial coefficients for ``EqType.JOINT`` coupling
-            label: Optional constraint label
-            enabled: Whether constraint is active
-            custom_attributes: Custom attributes to set on the constraint
-
-        Returns:
-            Constraint index
-        """
-        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint")
-        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
-
-        return _add(
-            self,
-            constraint_type=constraint_type,
-            body1=body1,
-            body2=body2,
-            anchor=anchor,
-            torquescale=torquescale,
-            relpose=relpose,
-            joint1=joint1,
-            joint2=joint2,
-            polycoef=polycoef,
-            label=label,
-            enabled=enabled,
-            custom_attributes=custom_attributes,
-        )
-
-    def add_equality_constraint_connect(
-        self,
-        body1: int = -1,
-        body2: int = -1,
-        anchor: Vec3 | None = None,
-        label: str | None = None,
-        enabled: bool = True,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a connect equality constraint to the model.
-        This constraint connects two bodies at a point. It effectively defines a ball joint outside the kinematic tree.
-
-        .. deprecated:: 1.3
-            Construct equality constraints with :meth:`add_custom_values` using the
-            ``mujoco:equality_constraint_*`` keys directly. Scheduled for removal in
-            a future release.
-
-        Args:
-            body1: Index of the first body participating in the constraint (-1 for world)
-            body2: Index of the second body participating in the constraint (-1 for world)
-            anchor: Anchor point on body1
-            label: Optional constraint label
-            enabled: Whether constraint is active
-            custom_attributes: Custom attributes to set on the constraint
-
-        Returns:
-            Constraint index
-        """
-        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_connect")
-        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
-
-        return _add(
-            self,
-            constraint_type=EqType.CONNECT,
-            body1=body1,
-            body2=body2,
-            anchor=anchor,
-            label=label,
-            enabled=enabled,
-            custom_attributes=custom_attributes,
-        )
-
-    def add_equality_constraint_joint(
-        self,
-        joint1: int = -1,
-        joint2: int = -1,
-        polycoef: list[float] | None = None,
-        label: str | None = None,
-        enabled: bool = True,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a joint equality constraint to the model.
-        Constrains the position or angle of one joint to be a quartic polynomial of another joint. Only scalar joint types (prismatic and revolute) can be used.
-
-        .. deprecated:: 1.3
-            Construct equality constraints with :meth:`add_custom_values` using the
-            ``mujoco:equality_constraint_*`` keys directly. Scheduled for removal in
-            a future release.
-
-        Args:
-            joint1: Index of the first joint
-            joint2: Index of the second joint
-            polycoef: Polynomial coefficients for joint coupling
-            label: Optional constraint label
-            enabled: Whether constraint is active
-            custom_attributes: Custom attributes to set on the constraint
-
-        Returns:
-            Constraint index
-        """
-        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_joint")
-        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
-
-        return _add(
-            self,
-            constraint_type=EqType.JOINT,
-            joint1=joint1,
-            joint2=joint2,
-            polycoef=polycoef,
-            label=label,
-            enabled=enabled,
-            custom_attributes=custom_attributes,
-        )
-
-    def add_equality_constraint_weld(
-        self,
-        body1: int = -1,
-        body2: int = -1,
-        anchor: Vec3 | None = None,
-        torquescale: float | None = None,
-        relpose: Transform | None = None,
-        label: str | None = None,
-        enabled: bool = True,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a weld equality constraint to the model.
-        Attaches two bodies to each other, removing all relative degrees of freedom between them (softly).
-
-        .. deprecated:: 1.3
-            Construct equality constraints with :meth:`add_custom_values` using the
-            ``mujoco:equality_constraint_*`` keys directly. Scheduled for removal in
-            a future release.
-
-        Args:
-            body1: Index of the first body participating in the constraint (-1 for world)
-            body2: Index of the second body participating in the constraint (-1 for world)
-            anchor: Coordinates of the weld point relative to body2
-            torquescale: Scales the angular residual for weld
-            relpose: Relative pose of body2 relative to body1. If None, the identity transform is used
-            label: Optional constraint label
-            enabled: Whether constraint is active
-            custom_attributes: Custom attributes to set on the constraint
-
-        Returns:
-            Constraint index
-        """
-        self._warn_deprecated_builder_add_equality_constraint("add_equality_constraint_weld")
-        from ..solvers.mujoco.equality import _add_equality_constraint as _add  # noqa: PLC0415
-
-        return _add(
-            self,
-            constraint_type=EqType.WELD,
-            body1=body1,
-            body2=body2,
-            anchor=anchor,
-            torquescale=torquescale,
-            relpose=relpose,
-            custom_attributes=custom_attributes,
-            label=label,
-            enabled=enabled,
-        )
-
     def add_constraint_mimic(
         self,
         joint0: int,
@@ -5741,6 +5392,9 @@ class ModelBuilder:
         self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
+        # Import locally to avoid a cycle while the public simulation package initializes.
+        from ..solvers.mujoco.enums import EqType  # noqa: PLC0415
+
         # Each ``*_values`` is the ``list`` backing the string-frequency CustomAttribute. These
         # lists are sparse: ``add_custom_values`` only populates the fields that were supplied,
         # so an omitted optional field can be ``None``, shorter than the row count, or absent
@@ -11650,8 +11304,6 @@ class ModelBuilder:
                     count = m.articulation_count
                 elif freq_key == Model.AttributeFrequency.WORLD:
                     count = m.world_count
-                elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
-                    count = m.mujoco.equality_constraint_count
                 elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                     count = m.constraint_mimic_count
                 elif freq_key == Model.AttributeFrequency.PARTICLE:
@@ -11667,19 +11319,21 @@ class ModelBuilder:
                 else:
                     continue
 
-                # Skip empty custom frequency attributes. The ``mujoco:equality_constraint``
-                # frequency is exempt: its arrays back a deprecated public surface
-                # (``model.equality_constraint_*`` and the ``model.mujoco.*`` migration target)
-                # whose historical contract is a shape-stable empty array at zero rows, not an
-                # absent attribute. Materializing them even at count 0 (``build_array`` handles
-                # empty arrays for every dtype) keeps the documented migration target usable and
-                # is driven by the registered attributes, so no field list needs to be kept in
-                # sync. Remove this exemption when the deprecation window closes.
+                # Keep canonical MuJoCo equality attributes shape-stable at zero rows. This lets
+                # callers consume ``model.mujoco.equality_constraint_*`` without branching on
+                # whether the model contains any equality constraints.
                 if count == 0 and freq_key != "mujoco:equality_constraint":
                     continue
 
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
+                m.add_attribute(
+                    custom_attr.name,
+                    result,
+                    freq_key,
+                    custom_attr.assignment,
+                    custom_attr.namespace,
+                    custom_attr.references,
+                )
 
             m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
             m.bvh_build_particles(m)

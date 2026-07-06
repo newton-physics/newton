@@ -205,11 +205,6 @@ def store_joint_cts_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.cts_axes))(
-            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
-        )
-
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.cts_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
@@ -262,11 +257,6 @@ def store_joint_dofs_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.dofs_axes))(
-            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
-        )
-
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.dofs_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
@@ -316,11 +306,6 @@ def store_joint_cts_jacobian_sparse(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.cts_axes))(
-            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
-        )
-
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.CARTESIAN.cts_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
@@ -367,11 +352,6 @@ def store_joint_dofs_jacobian_sparse(
 
     elif dof_type == JointDoFType.SPHERICAL:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.SPHERICAL.dofs_axes))(
-            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
-        )
-
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.dofs_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
