@@ -11281,7 +11281,9 @@ class ModelBuilder:
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
-            self.find_shape_contact_pairs(m)
+            # The packed array was just installed on the model, so builder and
+            # model filters are known to match without rebuilding it.
+            self._find_shape_contact_pairs(m, allow_filter_blocks=True)
 
             # enable ground plane
             m.up_axis = self.up_axis
@@ -11581,7 +11583,13 @@ class ModelBuilder:
             validated_templates.add(template_key)
 
     def find_shape_contact_pairs(self, model: Model):
-        """
+        """Deprecated method for rebuilding explicit shape contact pairs.
+
+        .. deprecated:: 1.4
+            Shape contact pairs are generated automatically by :meth:`finalize`.
+            Configure collision filters before finalization instead of rebuilding
+            contact pairs manually.
+
         Identifies and stores all potential shape contact pairs for collision detection.
 
         This method examines the collision groups and collision masks of all shapes in the model
@@ -11600,6 +11608,17 @@ class ModelBuilder:
             - Sets `model.shape_contact_pairs` to a wp.array of shape pairs (wp.vec2i).
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
+        warnings.warn(
+            "ModelBuilder.find_shape_contact_pairs() is deprecated; shape contact pairs are generated "
+            + "automatically by ModelBuilder.finalize(). Configure collision filters before finalization instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Deprecated calls may supply an unrelated model or a builder that has
+        # changed since finalization, so always query filters from the model.
+        self._find_shape_contact_pairs(model, allow_filter_blocks=False)
+
+    def _find_shape_contact_pairs(self, model: Model, *, allow_filter_blocks: bool) -> None:
         filter_pairs = self._shape_collision_filter_pairs
         world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
         explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
@@ -11622,14 +11641,9 @@ class ModelBuilder:
                 self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
             )
 
-        # The fast path replays builder-side filters against the finalized
-        # world layout; require built world starts that match shape_world (the
-        # layout validation can be skipped in finalize) and a pristine model
-        # filter store (a mutated store must be honored by the general path).
-        use_filter_blocks = bool(world_filter_blocks)
-        if use_filter_blocks:
-            model_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
-            use_filter_blocks = model_filters is not None and model_filters.packed_pairs() is not None
+        # Builder-side compact blocks are valid only while they describe the
+        # model's filters exactly; otherwise the general path queries the model.
+        use_filter_blocks = bool(world_filter_blocks) and allow_filter_blocks
         if use_filter_blocks:
             shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
             starts = self.shape_world_start

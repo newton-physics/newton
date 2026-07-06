@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import logging
+import operator
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Set as AbstractSet
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, SupportsIndex
 
 import numpy as np
 import warp as wp
@@ -121,14 +122,11 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
         """Sorted unique packed pair codes, or ``None`` after mutation."""
         return self._packed
 
-    def contains_pair(self, shape_a: int, shape_b: int) -> bool:
+    def contains_pair(self, shape_a: SupportsIndex, shape_b: SupportsIndex) -> bool:
         """Return membership of a shape pair in any argument order."""
-        try:
-            # Normalize to Python ints: NumPy int32 inputs would overflow the
-            # 32-bit shift in the packed code and give wrong membership.
-            shape_a, shape_b = int(shape_a), int(shape_b)
-        except (TypeError, ValueError):
-            return False
+        # Normalize to Python ints: NumPy int32 inputs would overflow the
+        # 32-bit shift in the packed code and give wrong membership.
+        shape_a, shape_b = operator.index(shape_a), operator.index(shape_b)
         if shape_a > shape_b:
             shape_a, shape_b = shape_b, shape_a
         if self._packed is None:
@@ -139,10 +137,6 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
 
     def mask_pairs(self, pairs: np.ndarray) -> np.ndarray:
         """Return a boolean membership mask for shape pairs in any order."""
-        pairs = np.asarray(pairs)
-        if pairs.dtype.kind != "i":
-            pairs = pairs.astype(np.int64)
-        pairs = pairs.reshape((-1, 2))
         if pairs.shape[0] == 0:
             return np.zeros(0, dtype=bool)
         if self._packed is None:
@@ -253,22 +247,26 @@ class _DeprecatedShapeCollisionFilterSet(set[tuple[int, int]]):
 
     @override
     def __ior__(self, other: Iterable[tuple[int, int]]):
-        self.update(other)
+        self._prepare_mutation()
+        super().update(self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in other)
         return self
 
     @override
     def __iand__(self, other: AbstractSet[object]):
-        self.intersection_update(other)
+        self._prepare_mutation()
+        super().intersection_update(set(self._iter_canonical_pairs(other)))
         return self
 
     @override
     def __isub__(self, other: AbstractSet[object]):
-        self.difference_update(other)
+        self._prepare_mutation()
+        super().difference_update(set(self._iter_canonical_pairs(other)))
         return self
 
     @override
     def __ixor__(self, other: Iterable[tuple[int, int]]):
-        self.symmetric_difference_update(other)
+        self._prepare_mutation()
+        super().symmetric_difference_update({self._canonical_pair(shape_a, shape_b) for shape_a, shape_b in other})
         return self
 
 
@@ -293,6 +291,8 @@ class _ShapeCollisionFilterPairsAttribute:
         return filters
 
     def __set__(self, instance: Any, value: Iterable[tuple[int, int]]) -> None:
+        if instance.__dict__.get("shape_collision_filter_pairs") is value:
+            return
         if "shape_collision_filter_pairs" in instance.__dict__:
             warnings.warn(_SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         instance.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(value)
@@ -559,9 +559,10 @@ class Model:
         self.shape_collision_filter_pairs = _DeprecatedShapeCollisionFilterSet()
         """Set of canonical shape index pairs that should not collide.
 
-        Mutating or reassigning this finalized-model set is deprecated. Configure collision
-        filters on :class:`ModelBuilder` before calling :meth:`ModelBuilder.finalize` instead;
-        post-finalize changes do not rebuild :attr:`shape_contact_pairs`.
+        .. deprecated:: 1.4
+            Mutating or reassigning this finalized-model set is deprecated. Configure collision
+            filters on :class:`ModelBuilder` before calling :meth:`ModelBuilder.finalize` instead;
+            post-finalize changes do not rebuild :attr:`shape_contact_pairs`.
         """
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
@@ -1167,7 +1168,7 @@ class Model:
         """
         return self.__dict__.get("shape_collision_filter_pairs")
 
-    def shape_collision_filter_contains(self, shape_a: int, shape_b: int) -> bool:
+    def shape_collision_filter_contains(self, shape_a: SupportsIndex, shape_b: SupportsIndex) -> bool:
         """Return whether a canonicalized shape pair is collision-filtered.
 
         This queries the canonical filter-pair array when available, avoiding
@@ -1179,6 +1180,9 @@ class Model:
 
         Returns:
             Whether the pair is present in the collision filter.
+
+        Raises:
+            TypeError: If either shape index is not an integer.
         """
         filters = self._shape_collision_filter_store()
         if filters is None:
@@ -1214,10 +1218,22 @@ class Model:
 
         Returns:
             Boolean mask of filtered pairs, shape [pair_count].
+
+        Raises:
+            TypeError: If ``pairs`` does not have an integer dtype.
+            OverflowError: If an unsigned shape index exceeds the signed 64-bit range.
         """
+        pairs = np.asarray(pairs)
+        if pairs.dtype.kind not in "iu":
+            raise TypeError(f"pairs must have an integer dtype, got {pairs.dtype}")
+        if pairs.dtype.kind == "u":
+            if pairs.size > 0 and np.any(pairs > np.iinfo(np.int64).max):
+                raise OverflowError("unsigned shape indices must fit in a signed 64-bit integer")
+            pairs = pairs.astype(np.int64)
+        pairs = pairs.reshape((-1, 2))
         filters = self._shape_collision_filter_store()
         if filters is None:
-            return np.zeros(np.asarray(pairs).reshape((-1, 2)).shape[0], dtype=bool)
+            return np.zeros(pairs.shape[0], dtype=bool)
         return filters.mask_pairs(pairs)
 
     # ----- Deprecated SDF aliases -------------------------------------------

@@ -998,6 +998,32 @@ class TestModelMesh(unittest.TestCase):
         contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
 
+    def test_collision_filter_in_place_mutation_warns_at_call_site(self):
+        def union(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs |= {(0, 1)}
+
+        def intersection(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs &= {(0, 1)}
+
+        def difference(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs -= {(0, 1)}
+
+        def symmetric_difference(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs ^= {(0, 1)}
+
+        for mutation in (union, intersection, difference, symmetric_difference):
+            with self.subTest(mutation=mutation.__name__):
+                model = ModelBuilder().finalize(device="cpu")
+                filters = model.shape_collision_filter_pairs
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    mutation(model)
+
+                self.assertEqual(len(caught), 1)
+                self.assertEqual(caught[0].filename, __file__)
+                self.assertEqual(caught[0].lineno, mutation.__code__.co_firstlineno + 1)
+                self.assertIs(model.shape_collision_filter_pairs, filters)
+
     def test_builder_collision_filter_pairs_preserve_list_api(self):
         robot = ModelBuilder()
         body0 = robot.add_body()
@@ -1046,16 +1072,16 @@ class TestModelMesh(unittest.TestCase):
         shape1 = source.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
         body2 = source.add_body()
         shape2 = source.add_shape_box(body=body2, hx=0.5, hy=0.5, hz=0.5)
-        source.shape_collision_filter_pairs.append((shape0, shape1))
+        source.add_shape_collision_filter_pair(shape0, shape1)
 
         builder = ModelBuilder()
         builder.add_builder(source)
-        source.shape_collision_filter_pairs[0] = (shape0, shape2)
+        source.add_shape_collision_filter_pair(shape0, shape2)
         builder.add_builder(source)
 
         self.assertIn((0, 1), builder.shape_collision_filter_pairs)
+        self.assertIn((3, 4), builder.shape_collision_filter_pairs)
         self.assertIn((3, 5), builder.shape_collision_filter_pairs)
-        self.assertNotIn((3, 4), builder.shape_collision_filter_pairs)
 
     def test_compact_replicated_collision_filters_allow_residual_filters(self):
         """Residual global filters should work with compact contact-pair generation."""
@@ -1078,7 +1104,13 @@ class TestModelMesh(unittest.TestCase):
         builder.add_shape_collision_filter_pair(ground, 3)
         builder.add_shape_collision_filter_pair(ground, 5)
 
-        model = builder.finalize()
+        with mock.patch.object(
+            builder,
+            "_build_shape_collision_filter_packed",
+            wraps=builder._build_shape_collision_filter_packed,  # pyright: ignore[reportPrivateUsage]
+        ) as build_filters:
+            model = builder.finalize()
+        build_filters.assert_called_once()
 
         filters = model.shape_collision_filter_pairs
         self.assertIsInstance(filters, set)
@@ -1146,6 +1178,7 @@ class TestModelMesh(unittest.TestCase):
         self.assertEqual(pair_list, sorted(pair_list))
 
         internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
+        assert internal_filters is not None
         self.assertFalse(internal_filters.is_materialized)
 
         self.assertTrue(model.shape_collision_filter_contains(1, 2))
@@ -1156,6 +1189,10 @@ class TestModelMesh(unittest.TestCase):
         # the packed pair code.
         self.assertTrue(model.shape_collision_filter_contains(np.int32(1), np.int32(2)))
         self.assertTrue(model.shape_collision_filter_contains(1, np.int32(2)))
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_contains("1", 2)  # pyright: ignore[reportArgumentType]
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_contains(1.0, 2)  # pyright: ignore[reportArgumentType]
         self.assertFalse(internal_filters.is_materialized)
 
         # The canonical array aliases internal state and must be read-only.
@@ -1165,8 +1202,24 @@ class TestModelMesh(unittest.TestCase):
         candidates = np.array([[1, 2], [2, 1], [ground, 1], [ground, 2], [3, 4]], dtype=np.int32)
         mask = model.shape_collision_filter_mask(candidates)
         self.assertEqual(mask.tolist(), [True, True, True, False, True])
+        unsigned_mask = model.shape_collision_filter_mask(np.array([[1, 2], [ground, 2]], dtype=np.uint32))
+        self.assertEqual(unsigned_mask.tolist(), [True, False])
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_mask(candidates.astype(np.float64))
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_mask(candidates.astype(str))
 
         self.assertEqual(set(pair_list), set(model.shape_collision_filter_pairs))
+
+        # Rebuilding through the public method must use the model as the filter
+        # source even if this builder has changed since finalization.
+        builder.add_shape_collision_filter_pair(ground, 2)
+        with self.assertWarnsRegex(DeprecationWarning, "generated automatically"):
+            builder.find_shape_contact_pairs(model)
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
+        self.assertIn((ground, 2), contact_pairs)
 
         # After deprecated mutation, queries fall back to native set semantics.
         with self.assertWarns(DeprecationWarning):
@@ -1178,8 +1231,11 @@ class TestModelMesh(unittest.TestCase):
 
         # Rebuilding contact pairs after a (deprecated) mutation must honor
         # the mutated model store rather than replaying stale builder filters.
-        builder.find_shape_contact_pairs(model)
-        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        with self.assertWarnsRegex(DeprecationWarning, "generated automatically"):
+            builder.find_shape_contact_pairs(model)
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
         self.assertNotIn((ground, 2), contact_pairs)
 
     def test_mixed_replicated_and_global_builder_filters_preserve_contacts(self):
