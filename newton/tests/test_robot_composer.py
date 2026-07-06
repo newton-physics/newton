@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -21,7 +22,7 @@ class RobotComposerSim:
     composition across URDF, MJCF, and USD importers:
 
     1. UR5e (MJCF) + Robotiq 2F-85 gripper (MJCF) with a planar D6 base joint.
-       The gripper is actuated via ``joint_target_pos`` on the driver joints
+       The gripper is actuated via ``joint_target_q`` on the driver joints
        (``right_driver_joint``, ``left_driver_joint``) instead of the default
        MuJoCo actuator, which is disabled to avoid instability in MJWarp.
     2. UR5e (MJCF) + LEAP hand left (MJCF) with a planar D6 base joint.
@@ -52,9 +53,11 @@ class RobotComposerSim:
         # Build the scene
         builder = newton.ModelBuilder()
         self._build_scene(builder)
+        builder.shape_gap[:] = [0.0] * len(builder.shape_gap)
 
         # Replicate for parallel simulation
         scene = newton.ModelBuilder()
+        scene.default_shape_cfg.gap = 0.0
         scene.replicate(builder, self.world_count)
         scene.add_ground_plane()
 
@@ -84,8 +87,8 @@ class RobotComposerSim:
             self.viewer.set_world_offsets(wp.vec3(4.0, 4.0, 0.0))
 
         # Initialize joint target positions
-        self.joint_target_pos = wp.zeros_like(self.control.joint_target_pos)
-        wp.copy(self.joint_target_pos, self.control.joint_target_pos)
+        self.joint_target_q = wp.zeros_like(self.control.joint_target_q)
+        wp.copy(self.joint_target_q, self.control.joint_target_q)
 
         self.capture()
 
@@ -197,14 +200,14 @@ class RobotComposerSim:
         self.robotiq_gripper_dof_offset = ur5e_with_robotiq_gripper.joint_dof_count
 
         # Base joints
-        ur5e_with_robotiq_gripper.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        ur5e_with_robotiq_gripper.joint_target_q[:3] = [0.0, 0.0, 0.0]
         ur5e_with_robotiq_gripper.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_robotiq_gripper.joint_target_kd[:3] = [50.0] * 3
         ur5e_with_robotiq_gripper.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_robotiq_gripper.joint_q[-6:] = init_q[:6]
-        ur5e_with_robotiq_gripper.joint_target_pos[-6:] = init_q[:6]
+        ur5e_with_robotiq_gripper.joint_target_q[-6:] = init_q[:6]
         ur5e_with_robotiq_gripper.joint_target_ke[-6:] = [4500.0] * 6
         ur5e_with_robotiq_gripper.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_robotiq_gripper.joint_effort_limit[-6:] = [100.0] * 6
@@ -240,7 +243,7 @@ class RobotComposerSim:
             idx = self.robotiq_gripper_dof_offset + i
             ur5e_with_robotiq_gripper.joint_target_ke[idx] = 20.0
             ur5e_with_robotiq_gripper.joint_target_kd[idx] = 1.0
-            ur5e_with_robotiq_gripper.joint_target_pos[idx] = self.gripper_target_pos
+            ur5e_with_robotiq_gripper.joint_target_q[idx] = self.gripper_target_pos
             ur5e_with_robotiq_gripper.joint_target_mode[idx] = int(JointTargetMode.POSITION)
 
         builder.add_builder(ur5e_with_robotiq_gripper)
@@ -264,14 +267,14 @@ class RobotComposerSim:
         )
 
         # Base joints
-        ur5e_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        ur5e_with_hand.joint_target_q[:3] = [0.0, 0.0, 0.0]
         ur5e_with_hand.joint_target_ke[:3] = [500.0] * 3
         ur5e_with_hand.joint_target_kd[:3] = [50.0] * 3
         ur5e_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
 
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur5e_with_hand.joint_q[-6:] = init_q[:6]
-        ur5e_with_hand.joint_target_pos[-6:] = init_q[:6]
+        ur5e_with_hand.joint_target_q[-6:] = init_q[:6]
         ur5e_with_hand.joint_target_ke[-6:] = [4500.0] * 6
         ur5e_with_hand.joint_target_kd[-6:] = [450.0] * 6
         ur5e_with_hand.joint_effort_limit[-6:] = [100.0] * 6
@@ -317,7 +320,7 @@ class RobotComposerSim:
         )
 
         # Base joints
-        franka_with_hand.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        franka_with_hand.joint_target_q[:3] = [0.0, 0.0, 0.0]
         franka_with_hand.joint_target_ke[:3] = [500.0] * 3
         franka_with_hand.joint_target_kd[:3] = [50.0] * 3
         franka_with_hand.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
@@ -334,7 +337,7 @@ class RobotComposerSim:
         ]
 
         franka_with_hand.joint_q[-7:] = init_q[:7]
-        franka_with_hand.joint_target_pos[-7:] = init_q[:7]
+        franka_with_hand.joint_target_q[-7:] = init_q[:7]
         franka_with_hand.joint_target_ke[-7:] = [4500, 4500, 3500, 3500, 2000, 2000, 2000]
         franka_with_hand.joint_target_kd[-7:] = [450, 450, 350, 350, 200, 200, 200]
         franka_with_hand.joint_effort_limit[-7:] = [87, 87, 87, 87, 12, 12, 12]
@@ -350,14 +353,19 @@ class RobotComposerSim:
         hand_quat = quat_z * quat_y
         ee_xform = wp.transform((0.0, 0.0, 0.1), hand_quat)
 
-        franka_with_hand.add_mjcf(
-            str(self.allegro_path),
-            xform=ee_xform,
-            parent_body=franka_ee_idx,
-        )
+        # fr3_link8 is the canonical massless Franka tool flange, rigidly fixed
+        # to a massive parent; mounting the hand there is the intended use, so
+        # tolerate the advisory zero-mass-parent warning. Other warnings surface.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r"parent_body \d+ has zero or negative mass")
+            franka_with_hand.add_mjcf(
+                str(self.allegro_path),
+                xform=ee_xform,
+                parent_body=franka_ee_idx,
+            )
 
         allegro_dof_count = franka_with_hand.joint_dof_count - 7 - 3
-        franka_with_hand.joint_target_pos[-allegro_dof_count:] = franka_with_hand.joint_q[-allegro_dof_count:]
+        franka_with_hand.joint_target_q[-allegro_dof_count:] = franka_with_hand.joint_q[-allegro_dof_count:]
 
         num_mujoco_actuators = len(franka_with_hand.custom_attributes["mujoco:ctrl_source"].values)
         ctrl_source = [SolverMuJoCo.CtrlSource.JOINT_TARGET] * num_mujoco_actuators
@@ -385,7 +393,7 @@ class RobotComposerSim:
         )
 
         # Set gains for base joint DOFs (first 3 DOFs)
-        ur10_builder.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        ur10_builder.joint_target_q[:3] = [0.0, 0.0, 0.0]
         ur10_builder.joint_target_ke[:3] = [500.0] * 3
         ur10_builder.joint_target_kd[:3] = [50.0] * 3
         ur10_builder.joint_target_mode[:3] = [int(JointTargetMode.POSITION)] * 3
@@ -393,7 +401,7 @@ class RobotComposerSim:
         # Initialize arm joints to elbow down configuration (same as UR5e)
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur10_builder.joint_q[-6:] = init_q[:6]
-        ur10_builder.joint_target_pos[-6:] = init_q[:6]
+        ur10_builder.joint_target_q[-6:] = init_q[:6]
 
         # Set joint targets and gains for arm joints
         ur10_builder.joint_target_ke[-6:] = [4500.0] * 6
@@ -421,7 +429,7 @@ class RobotComposerSim:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        wp.copy(self.control.joint_target_pos, self.joint_target_pos)
+        wp.copy(self.control.joint_target_q, self.joint_target_q)
 
         if self.graph:
             wp.capture_launch(self.graph)
@@ -443,11 +451,11 @@ class RobotComposerSim:
             self.gripper_target_pos = value
             # The actuated joints are right_driver_joint and left_driver_joint (dof indexes 0 and 4 within gripper).
             # robotiq_gripper_dof_offset accounts for base_joint(3) + arm(6) DOFs.
-            joint_target_pos = self.joint_target_pos.reshape((self.world_count, -1)).numpy()
+            joint_target_q = self.joint_target_q.reshape((self.world_count, -1)).numpy()
             for i in self.robotiq_gripper_dofs:
-                joint_target_pos[:, self.robotiq_gripper_dof_offset + i] = value
-            joint_target_pos_wp = wp.array(joint_target_pos.flatten(), dtype=wp.float32, device=self.device)
-            wp.copy(self.joint_target_pos, joint_target_pos_wp)
+                joint_target_q[:, self.robotiq_gripper_dof_offset + i] = value
+            joint_target_q_wp = wp.array(joint_target_q.flatten(), dtype=wp.float32, device=self.device)
+            wp.copy(self.joint_target_q, joint_target_q_wp)
 
         changed, value = imgui.slider_float(
             "gripper_target_pos_slider", self.gripper_target_pos, 0.0, 0.8, format="%.3f"

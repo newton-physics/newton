@@ -13,6 +13,7 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType
+from ...sim.contacts import contact_surface_point, contact_surface_separation
 
 
 @wp.kernel
@@ -123,6 +124,7 @@ def solve_particle_shape_contacts(
     body_com: wp.array[wp.vec3],
     body_m_inv: wp.array[float],
     body_I_inv: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
     shape_body: wp.array[int],
     shape_material_mu: wp.array[float],
     particle_mu: float,
@@ -150,8 +152,16 @@ def solve_particle_shape_contacts(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+    particle_flag = particle_flags[particle_index]
+    if (particle_flag & ParticleFlags.ACTIVE) == 0:
         return
+    if (particle_flag & ParticleFlags.PROXY) != 0:
+        if body_index < 0:
+            return
+        if (body_flags[body_index] & int(BodyFlags.PROXY)) != 0:
+            return
+        if body_m_inv[body_index] == 0.0:
+            return
 
     px = particle_x[particle_index]
     pv = particle_v[particle_index]
@@ -218,8 +228,13 @@ def solve_particle_shape_contacts(
     wp.atomic_add(delta, particle_index, w1 * delta_total)
 
     if body_index >= 0:
-        delta_t = wp.cross(r, delta_total)
-        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_total, delta_t))
+        # apply_body_deltas() treats body_delta as a velocity-like correction:
+        # it multiplies by inverse mass/inertia and dt to update the body pose.
+        # delta_total is a positional contact correction, matching the particle
+        # path above, so convert it to the body-delta convention here.
+        delta_v = delta_total / dt
+        delta_w = wp.cross(r, delta_v)
+        wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_v, delta_w))
 
 
 @wp.kernel
@@ -245,8 +260,10 @@ def solve_particle_particle_contacts(
     if i == -1:
         # hash grid has not been built yet
         return
-    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0:
+    particle_flag = particle_flags[i]
+    if (particle_flag & ParticleFlags.ACTIVE) == 0:
         return
+    is_proxy = particle_flag & ParticleFlags.PROXY
 
     x = particle_x[i]
     v = particle_v[i]
@@ -260,7 +277,12 @@ def solve_particle_particle_contacts(
     delta = wp.vec3(0.0)
 
     while wp.hash_grid_query_next(query, index):
-        if (particle_flags[index] & ParticleFlags.ACTIVE) != 0 and index != i:
+        neighbor_flag = particle_flags[index]
+        if (
+            (neighbor_flag & ParticleFlags.ACTIVE) != 0
+            and (is_proxy == 0 or ((neighbor_flag & ParticleFlags.PROXY) == 0 and particle_invmass[index] > 0.0))
+            and index != i
+        ):
             # compute distance to point
             n = x - particle_x[index]
             d = wp.length(n)
@@ -270,7 +292,7 @@ def solve_particle_particle_contacts(
             w2 = particle_invmass[index]
             denom = w1 + w2
 
-            if err <= k_cohesion and denom > 0.0:
+            if err <= k_cohesion and denom > 0.0 and d > 0.0:
                 n = n / d
                 vrel = v - particle_v[index]
 
@@ -469,6 +491,38 @@ def solve_tetrahedra(
     relaxation: float,
     delta: wp.array[wp.vec3],
 ):
+    # Tetrahedral XPBD constraint solve.
+    #
+    # ModelBuilder stores rest_matrix as inv(Dm), where
+    # Dm = [x1_0 - x0_0, x2_0 - x0_0, x3_0 - x0_0] in the rest pose.  Each
+    # iteration rebuilds Ds from the current particle positions and computes the
+    # deformation gradient
+    #
+    #     F = Ds * inv(Dm).
+    #
+    # The material is the same compressible Neo-Hookean-style split used by the
+    # FEM path: a distortional term controlled by the first Lame parameter
+    # k_mu, and a volume term controlled by the second Lame parameter k_lambda.
+    # In XPBD form these are solved as two scalar constraints:
+    #
+    #     C_dev = trace(F^T F) - 3
+    #     C_vol = det(F) - 1 + activation
+    #
+    # Their gradients are dC/dF = 2F for C_dev and cof(F) for C_vol.  The chain
+    # rule dF/dx contributes inv(Dm)^T, giving the per-particle gradients below.
+    #
+    # A tetrahedron's energy scales with rest volume V0, so the XPBD compliance
+    # for a material stiffness k is 1 / (V0 * k).  Since rest_matrix is inv(Dm),
+    # det(rest_matrix) * 6 = 1 / V0.
+    #
+    # Damping uses XPBD's compliant Rayleigh term:
+    #
+    #     gamma = k_damp / (k * dt)
+    #     dlambda = -(C + gamma * dt * grad(C).dot(v))
+    #               / ((1 + gamma) * sum_i(w_i |grad_i C|^2) + alpha)
+    #
+    # The solver does not persist lambdas for this constraint, so each iteration
+    # computes a local multiplier and accumulates relaxed position corrections.
     tid = wp.tid()
 
     i = indices[tid, 0]
@@ -476,21 +530,21 @@ def solve_tetrahedra(
     k = indices[tid, 2]
     l = indices[tid, 3]
 
-    # act = activation[tid]
+    act = activation[tid]
 
-    # k_mu = materials[tid, 0]
-    # k_lambda = materials[tid, 1]
-    # k_damp = materials[tid, 2]
+    k_mu = materials[tid, 0]
+    k_lambda = materials[tid, 1]
+    k_damp = materials[tid, 2]
 
     x0 = x[i]
     x1 = x[j]
     x2 = x[k]
     x3 = x[l]
 
-    # v0 = v[i]
-    # v1 = v[j]
-    # v2 = v[k]
-    # v3 = v[l]
+    v0 = v[i]
+    v1 = v[j]
+    v2 = v[k]
+    v3 = v[l]
 
     w0 = inv_mass[i]
     w1 = inv_mass[j]
@@ -506,6 +560,8 @@ def solve_tetrahedra(
     inv_QT = wp.transpose(Dm)
 
     inv_rest_volume = wp.determinant(Dm) * 6.0
+    if inv_rest_volume <= 0.0 or k_mu <= 0.0 or k_lambda <= 0.0:
+        return
 
     # F = Xs*Xm^-1
     F = Ds * Dm
@@ -519,9 +575,7 @@ def solve_tetrahedra(
     C = float(0.0)
     dC = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     compliance = float(0.0)
-
-    stretching_compliance = relaxation
-    volume_compliance = relaxation
+    stiffness = float(0.0)
 
     num_terms = 2
     for term in range(0, num_terms):
@@ -529,12 +583,14 @@ def solve_tetrahedra(
             # deviatoric, stable
             C = tr - 3.0
             dC = F * 2.0
-            compliance = stretching_compliance
+            compliance = inv_rest_volume / k_mu
+            stiffness = k_mu
         elif term == 1:
             # volume conservation
-            C = wp.determinant(F) - 1.0
+            C = wp.determinant(F) - 1.0 + act
             dC = wp.matrix_from_cols(wp.cross(f2, f3), wp.cross(f3, f1), wp.cross(f1, f2))
-            compliance = volume_compliance
+            compliance = inv_rest_volume / k_lambda
+            stiffness = k_lambda
 
         if C != 0.0:
             dP = dC * inv_QT
@@ -552,14 +608,17 @@ def solve_tetrahedra(
 
             if w > 0.0:
                 alpha = compliance / dt / dt
-                if inv_rest_volume > 0.0:
-                    alpha *= inv_rest_volume
-                dlambda = -C / (w + alpha)
+                gamma = float(0.0)
+                grad_dot_v = float(0.0)
+                if k_damp > 0.0 and stiffness > 0.0:
+                    gamma = k_damp / (stiffness * dt)
+                    grad_dot_v = dt * (wp.dot(grad0, v0) + wp.dot(grad1, v1) + wp.dot(grad2, v2) + wp.dot(grad3, v3))
+                dlambda = -1.0 * (C + gamma * grad_dot_v) / ((1.0 + gamma) * w + alpha)
 
-                wp.atomic_add(delta, i, w0 * dlambda * grad0)
-                wp.atomic_add(delta, j, w1 * dlambda * grad1)
-                wp.atomic_add(delta, k, w2 * dlambda * grad2)
-                wp.atomic_add(delta, l, w3 * dlambda * grad3)
+                wp.atomic_add(delta, i, w0 * dlambda * grad0 * relaxation)
+                wp.atomic_add(delta, j, w1 * dlambda * grad1 * relaxation)
+                wp.atomic_add(delta, k, w2 * dlambda * grad2 * relaxation)
+                wp.atomic_add(delta, l, w3 * dlambda * grad3 * relaxation)
                 # wp.atomic_add(particle.num_corr, id0, 1)
                 # wp.atomic_add(particle.num_corr, id1, 1)
                 # wp.atomic_add(particle.num_corr, id2, 1)
@@ -657,11 +716,6 @@ def solve_tetrahedra2(
     x1 = x[j]
     x2 = x[k]
     x3 = x[l]
-
-    # v0 = v[i]
-    # v1 = v[j]
-    # v2 = v[k]
-    # v3 = v[l]
 
     w0 = inv_mass[i]
     w1 = inv_mass[j]
@@ -801,6 +855,7 @@ def apply_particle_deltas(
     v_new_mag = wp.length(v_new)
     if v_new_mag > v_max:
         v_new *= v_max / v_new_mag
+        x_new = x0 + v_new * dt
 
     x_out[tid] = x_new
     v_out[tid] = v_new
@@ -1471,10 +1526,11 @@ def solve_body_joints(
     joint_limit_lower: wp.array[float],
     joint_limit_upper: wp.array[float],
     joint_qd_start: wp.array[int],
+    joint_target_q_start: wp.array[int],
     joint_dof_dim: wp.array2d[int],
     joint_axis: wp.array[wp.vec3],
-    joint_target_pos: wp.array[float],
-    joint_target_vel: wp.array[float],
+    joint_target_q: wp.array[float],
+    joint_target_qd: wp.array[float],
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_linear_compliance: float,
@@ -1555,6 +1611,7 @@ def solve_body_joints(
     angular_compliance = joint_angular_compliance
 
     axis_start = joint_qd_start[tid]
+    target_axis_start = joint_target_q_start[tid]
     lin_axis_count = joint_dof_dim[tid, 0]
     ang_axis_count = joint_dof_dim[tid, 1]
 
@@ -1638,36 +1695,38 @@ def solve_body_joints(
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
             ke = joint_target_ke[axis_start]
             kd = joint_target_kd[axis_start]
-            target_pos = joint_target_pos[axis_start]
-            target_vel = joint_target_vel[axis_start]
+            target_pos = joint_target_q[target_axis_start]
+            target_vel = joint_target_qd[axis_start]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if lin_axis_count > 1:
             axis_idx = axis_start + 1
+            target_axis_idx = target_axis_start + 1
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if lin_axis_count > 2:
             axis_idx = axis_start + 2
+            target_axis_idx = target_axis_start + 2
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
@@ -1833,42 +1892,45 @@ def solve_body_joints(
         # avoid a for loop here since local variables would need to be modified which is not yet differentiable
         if ang_axis_count > 0:
             axis_idx = axis_start + lin_axis_count
+            target_axis_idx = target_axis_start + lin_axis_count
             axis = joint_axis[axis_idx]
             lo_temp = axis * joint_limit_lower[axis_idx]
             up_temp = axis * joint_limit_upper[axis_idx]
             axis_limits = wp.spatial_vector(vec_min(lo_temp, up_temp), vec_max(lo_temp, up_temp))
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if ang_axis_count > 1:
             axis_idx = axis_start + lin_axis_count + 1
+            target_axis_idx = target_axis_start + lin_axis_count + 1
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
                 axis_target_vel_kd = update_joint_axis_weighted_target(axis, target_vel, kd, axis_target_vel_kd)
         if ang_axis_count > 2:
             axis_idx = axis_start + lin_axis_count + 2
+            target_axis_idx = target_axis_start + lin_axis_count + 2
             axis = joint_axis[axis_idx]
             lower = joint_limit_lower[axis_idx]
             upper = joint_limit_upper[axis_idx]
             axis_limits = update_joint_axis_limits(axis, lower, upper, axis_limits)
             ke = joint_target_ke[axis_idx]
             kd = joint_target_kd[axis_idx]
-            target_pos = joint_target_pos[axis_idx]
-            target_vel = joint_target_vel[axis_idx]
+            target_pos = joint_target_q[target_axis_idx]
+            target_vel = joint_target_qd[axis_idx]
             if ke > 0.0:  # has position control
                 axis_target_pos_ke = update_joint_axis_weighted_target(axis, target_pos, ke, axis_target_pos_ke)
             if kd > 0.0:  # has velocity control
@@ -2136,9 +2198,8 @@ def solve_body_contact_positions(
     bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
 
-    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
-    d = wp.dot(n, bx_b - bx_a) - thickness
+    d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
 
     if d >= 0.0:
         return
@@ -2219,8 +2280,8 @@ def solve_body_contact_positions(
     if mu > 0.0:
         # add on displacement from surface offsets, this ensures we include any rotational effects due to thickness from feature
         # need to use the current rotation to account for friction due to angular effects (e.g.: slipping contact)
-        bx_a += wp.transform_vector(X_wb_a, offset_a)
-        bx_b += wp.transform_vector(X_wb_b, offset_b)
+        bx_a = contact_surface_point(X_wb_a, contact_point0[tid], offset_a)
+        bx_b = contact_surface_point(X_wb_b, contact_point1[tid], offset_b)
 
         # update delta
         delta = bx_b - bx_a
@@ -2585,12 +2646,11 @@ def apply_rigid_restitution(
         com_b = body_com[body_b]
 
     # compute body position in world space
-    bx_a = wp.transform_point(X_wb_a_prev, contact_point0[tid] + contact_offset0[tid])
-    bx_b = wp.transform_point(X_wb_b_prev, contact_point1[tid] + contact_offset1[tid])
+    bx_a = contact_surface_point(X_wb_a_prev, contact_point0[tid], contact_offset0[tid])
+    bx_b = contact_surface_point(X_wb_b_prev, contact_point1[tid], contact_offset1[tid])
 
-    thickness = contact_thickness0[tid] + contact_thickness1[tid]
     n = contact_normal[tid]
-    d = wp.dot(n, bx_b - bx_a) - thickness
+    d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
     if d >= 0.0:
         return
 

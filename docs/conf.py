@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import docutils.nodes
+
 # Set environment variable to indicate we're in a Sphinx build.
 # This is inherited by subprocesses (e.g., Jupyter kernels run by nbsphinx).
 os.environ["NEWTON_SPHINX_BUILD"] = "1"
@@ -91,6 +93,7 @@ extensions = [
     "sphinx_tabs.tabs",
     "autodoc_filter",
     "autodoc_wpfunc",
+    "experimental",
 ]
 
 # -- nbsphinx configuration ---------------------------------------------------
@@ -104,12 +107,30 @@ nbsphinx_timeout = 600
 # Allow errors in notebook execution (useful for development)
 nbsphinx_allow_errors = False
 
+nbsphinx_prolog = r"""
+{% if env.docname.startswith("tutorials/") %}
+{% set notebook_name = env.docname.split("/")[-1] + ".ipynb" %}
+{% set notebook_path = "docs/" + env.docname + ".ipynb" %}
+{% set github_url = "https://github.com/newton-physics/newton/blob/" + env.config.github_version + "/" + notebook_path %}
+{% set colab_url = "https://colab.research.google.com/github/newton-physics/newton/blob/" + env.config.github_version + "/" + notebook_path %}
+
+.. raw:: html
+
+   <div class="notebook-link-bar">
+      <a href="{{ notebook_name }}">Download notebook</a>
+      <a href="{{ github_url }}">View on GitHub</a>
+      <a href="{{ colab_url }}">Open in Colab</a>
+   </div>
+{% endif %}
+"""
+
 
 templates_path = ["_templates"]
 exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
+    "superpowers",
     "sphinx-env/**",
     "sphinx-env",
     "**/site-packages/**",
@@ -198,6 +219,16 @@ extlinks = {
     "github": (f"https://github.com/newton-physics/newton/blob/{github_version}/%s", "%s"),
 }
 
+rst_epilog = f"""
+.. |intro-colab| image:: https://colab.research.google.com/assets/colab-badge.svg
+   :target: https://colab.research.google.com/github/newton-physics/newton/blob/{github_version}/docs/tutorials/00_introduction.ipynb
+   :alt: Open in Colab
+
+.. |robotics-colab| image:: https://colab.research.google.com/assets/colab-badge.svg
+   :target: https://colab.research.google.com/github/newton-physics/newton/blob/{github_version}/docs/tutorials/01_robotics.ipynb
+   :alt: Open in Colab
+"""
+
 doctest_global_setup = """
 import warnings
 from typing import Any
@@ -274,11 +305,11 @@ html_theme_options = {
         "alt_text": "Newton Physics Logo",
     },
     # Keep the right-hand page TOC on by default, but remove it on the
-    # solver API page where several wide comparison tables benefit from the
+    # solver overview where several wide comparison tables benefit from the
     # extra content width.
     "secondary_sidebar_items": {
         "**": ["page-toc", "edit-this-page", "sourcelink"],
-        "api/newton_solvers": [],
+        "solvers/index": [],
     },
     # "primary_sidebar_end": ["indices.html", "sidebar-ethical-ads.html"],
 }
@@ -452,10 +483,44 @@ def _on_builder_inited(_app: Any) -> None:
     _copy_viser_client_into_output_static(outdir=outdir)
 
 
+_RE_REPR_ADDRESS = re.compile(r"<([\w.]+) object at 0x[0-9a-f]+>")
+
+
+def strip_repr_addresses(app: Any, doctree: Any, docname: str) -> None:
+    """Drop memory addresses from default-repr leaks in the resolved doctree.
+
+    When an attribute or default is documented without an explicit type
+    annotation, autodoc falls back to ``repr(obj)``.  For an object whose class
+    has no ``__repr__`` that yields ``<some.module.Class object at 0x7f...>``
+    (or ``<property object at 0x...>`` for a descriptor).  The address differs
+    every Python process (ASLR), which makes the rendered HTML byte-unstable
+    across builds -- every deploy to ``gh-pages`` then writes a different tree
+    even when the docs haven't changed (GH-2726).
+
+    ``sphinx.ext.autodoc.typehints`` injects these directly into the doctree via
+    the ``object-description-transform`` event, bypassing the
+    ``autodoc-process-signature`` / ``autodoc-process-docstring`` hooks (and not
+    covered by ``autodoc_preserve_defaults``), so the cleanup has to happen at
+    the doctree level.  Newton's public API does not currently surface such an
+    object; this runs as defense-in-depth so a future one can't silently
+    reintroduce per-build churn.
+    """
+    for text_node in list(doctree.findall(docutils.nodes.Text)):
+        original = text_node.astext()
+        if "object at 0x" not in original:
+            continue
+        cleaned = _RE_REPR_ADDRESS.sub(r"<\1 object>", original)
+        if cleaned != original:
+            text_node.parent.replace(text_node, docutils.nodes.Text(cleaned))
+
+
 def setup(app: Any) -> None:
+    app.add_config_value("github_version", github_version, "env")
+
     # Regenerate API .rst files so builds always reflect the current public API.
     from generate_api import generate_all  # noqa: PLC0415
 
     generate_all()
 
     app.connect("builder-inited", _on_builder_inited)
+    app.connect("doctree-resolved", strip_repr_addresses)

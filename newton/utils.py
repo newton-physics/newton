@@ -17,6 +17,7 @@ __all__ = [
 from ._src.geometry.utils import remesh_mesh
 from ._src.utils.mesh import (
     MeshAdjacency,
+    MeshAdjacencyData,
     solidify_mesh,
     validate_tet_mesh,
     validate_triangle_mesh,
@@ -24,6 +25,7 @@ from ._src.utils.mesh import (
 
 __all__ += [
     "MeshAdjacency",
+    "MeshAdjacencyData",
     "remesh_mesh",
     "solidify_mesh",
     "validate_tet_mesh",
@@ -39,6 +41,22 @@ from ._src.utils.render import (  # noqa: E402
 
 __all__ += [
     "bourke_color_map",
+]
+
+# ==================================================================================
+# color utils
+# ==================================================================================
+
+from ._src.utils.color import (  # noqa: E402
+    ColorSpace,
+    color_linear_to_srgb,
+    color_srgb_to_linear,
+)
+
+__all__ += [
+    "ColorSpace",
+    "color_linear_to_srgb",
+    "color_srgb_to_linear",
 ]
 
 # ==================================================================================
@@ -107,14 +125,4 @@ from ._src.utils.texture import load_texture, normalize_texture  # noqa: E402
 __all__ += [
     "load_texture",
     "normalize_texture",
-]
-
-# ==================================================================================
-# ONNX inference runtime
-# ==================================================================================
-
-from ._src.utils.onnx_runtime import OnnxRuntime  # noqa: E402
-
-__all__ += [
-    "OnnxRuntime",
 ]

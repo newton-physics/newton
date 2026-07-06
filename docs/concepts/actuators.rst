@@ -6,10 +6,10 @@
 Actuators
 =========
 
-.. warning::
+.. experimental::
 
-   The actuator API is **experimental** and may change in future releases.
-   Feedback is welcome — please file issues or discussion threads.
+   The actuator API may change without prior notice. Feedback is welcome —
+   please file issues or discussion threads.
 
 Actuators provide composable implementations that read physics simulation
 state, compute effort, and **accumulate** (scatter-add) the effort into
@@ -128,7 +128,35 @@ components directly:
        controller=ControllerPD(kp=kp, kd=kd),
        delay=Delay(delay_steps=wp.array([5], dtype=wp.int32), max_delay=5),
        clamping=[ClampingMaxEffort(max_effort=max_e)],
+       control_target_pos_attr="joint_target_q",
+       control_target_vel_attr="joint_target_qd",
    )
+
+The simulator state and control objects do not need to be a full
+:class:`newton.Model` / :class:`newton.Control` — any objects exposing
+``joint_q``, ``joint_qd``, ``joint_target_q``, ``joint_target_qd``,
+``joint_act`` (optional), and ``joint_f`` will do.  This makes actuators
+reusable from a custom simulator or test harness:
+
+.. testcode:: actuator-usage
+
+   import types
+
+   sim_state = types.SimpleNamespace(
+       joint_q=wp.array([0.0], dtype=wp.float32),
+       joint_qd=wp.array([0.0], dtype=wp.float32),
+   )
+   sim_control = types.SimpleNamespace(
+       joint_target_q=wp.array([1.0], dtype=wp.float32),
+       joint_target_qd=wp.array([0.0], dtype=wp.float32),
+       joint_act=None,
+       joint_f=wp.zeros(1, dtype=wp.float32),
+   )
+
+   state_a = actuator.state()
+   state_b = actuator.state()
+   sim_control.joint_f.zero_()
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 
 Stateful Actuators
@@ -173,8 +201,10 @@ Differentiability and Graph Capture
 Whether an actuator supports differentiability and CUDA graph capture depends on
 its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
 graphable.  Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) require PyTorch and are not graphable due to
-framework interop overhead.
+:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX checkpoints
+use Warp-NN's Warp-backed runtime and are graphable, while TorchScript
+checkpoints (``.pt`` / ``.pth``) use the Torch backend, require PyTorch, and are
+not graphable due to framework interop overhead.
 
 :meth:`Actuator.is_graphable` returns ``True`` when all components can be
 captured in a CUDA graph.
@@ -193,10 +223,10 @@ Controllers
 * :class:`ControllerPD` — proportional-derivative control law (stateless).
 * :class:`ControllerPID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
-* :class:`ControllerNeuralMLP` — MLP neural-network controller (requires
-  PyTorch, stateful: position/velocity history buffers).
-* :class:`ControllerNeuralLSTM` — LSTM neural-network controller (requires
-  PyTorch, stateful: hidden/cell state).
+* :class:`ControllerNeuralMLP` — MLP neural-network controller
+  (stateful: position/velocity history buffers).
+* :class:`ControllerNeuralLSTM` — LSTM neural-network controller
+  (stateful: hidden/cell state).
 
 See the API documentation for each controller's control-law equations.
 

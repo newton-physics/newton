@@ -62,7 +62,7 @@ class Example:
         self.particle_self_contact_margin = 0.005
 
         self.soft_contact_ke = 2e6
-        self.soft_contact_kd = 1e-7
+        self.soft_contact_kd = 2e-1
         self.self_contact_friction = 0.5
 
         self.scene = ModelBuilder(gravity=-9.81)
@@ -81,7 +81,7 @@ class Example:
         table_pos = wp.vec3(0.0, -0.5, 0.1)
         self.scene.add_shape_box(
             -1,
-            wp.transform(table_pos, wp.quat_identity()),
+            xform=wp.transform(table_pos, wp.quat_identity()),
             hx=table_hx,
             hy=table_hy,
             hz=table_hz,
@@ -104,7 +104,7 @@ class Example:
             density=100.0,
             k_mu=1.0e6,
             k_lambda=1.0e6,
-            k_damp=1e-6,
+            k_damp=1e0,
             particle_radius=self.particle_radius,
         )
 

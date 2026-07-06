@@ -9,6 +9,7 @@ from typing import Any, Literal
 import warp as wp
 
 from ..sim.builder import ModelBuilder
+from ..sim.enums import JointType
 
 
 def string_to_warp(value: str, warp_dtype: Any, default: Any = None) -> Any:
@@ -203,6 +204,69 @@ def should_show_collider(
     if force_show_colliders or parse_visuals_as_colliders:
         return True
     return not has_visual_shapes
+
+
+def collapse_massless_fixed_root_joints(
+    builder: ModelBuilder,
+    joint_indices: Sequence[int],
+    root_joint_indices: Sequence[int] | None = None,
+) -> None:
+    """Collapse massless fixed-root chains below imported free root joints.
+
+    Args:
+        builder: The :class:`ModelBuilder` containing the imported joints.
+        joint_indices: Joint indices created by the current import.
+        root_joint_indices: Optional subset of ``joint_indices`` that should be
+            considered articulation roots.
+    """
+    imported_joint_indices = set(joint_indices)
+    if root_joint_indices is None:
+        root_joint_indices = [
+            joint_idx
+            for joint_idx in joint_indices
+            if builder.joint_type[joint_idx] == JointType.FREE and builder.joint_parent[joint_idx] == -1
+        ]
+
+    fixed_joint_indices_to_collapse: set[int] = set()
+    for root_joint_idx in root_joint_indices:
+        if root_joint_idx not in imported_joint_indices:
+            continue
+        if builder.joint_type[root_joint_idx] != JointType.FREE or builder.joint_parent[root_joint_idx] != -1:
+            continue
+
+        root_body = builder.joint_child[root_joint_idx]
+        if root_body < 0 or builder.body_mass[root_body] > 0.0:
+            continue
+
+        massless_chain_parents = {root_body}
+        while True:
+            added_joint = False
+            for joint_idx in joint_indices:
+                if joint_idx in fixed_joint_indices_to_collapse:
+                    continue
+                if builder.joint_type[joint_idx] != JointType.FIXED:
+                    continue
+                if builder.joint_parent[joint_idx] not in massless_chain_parents:
+                    continue
+
+                fixed_joint_indices_to_collapse.add(joint_idx)
+                child = builder.joint_child[joint_idx]
+                if child >= 0 and builder.body_mass[child] <= 0.0:
+                    massless_chain_parents.add(child)
+                added_joint = True
+
+            if not added_joint:
+                break
+
+    if not fixed_joint_indices_to_collapse:
+        return
+
+    fixed_joint_indices_to_keep = {
+        joint_idx
+        for joint_idx in range(builder.joint_count)
+        if builder.joint_type[joint_idx] == JointType.FIXED and joint_idx not in fixed_joint_indices_to_collapse
+    }
+    builder.collapse_fixed_joints(joints_to_keep=fixed_joint_indices_to_keep)
 
 
 def is_xml_content(source: str) -> bool:
