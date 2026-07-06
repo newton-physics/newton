@@ -19,10 +19,10 @@ def add_connection(v0: int, v1: int, counts: wp.array[int], neighbors: wp.array2
     Otherwise, adds the connection in the next available slot and returns the new slot index.
 
     Args:
-        v0 (int): Index of the source vertex.
-        v1 (int): Index of the target vertex (to be added as neighbor of v0).
-        counts (wp.array): 1D array storing how many neighbors each vertex currently has.
-        neighbors (wp.array2d): 2D array storing the neighbor list for each vertex.
+        v0: Index of the source vertex.
+        v1: Index of the target vertex (to be added as neighbor of v0).
+        counts: 1D array storing how many neighbors each vertex currently has.
+        neighbors: 2D array storing the neighbor list for each vertex.
 
     Returns:
         int: The slot index in `neighbors[v0]` where `v1` is stored,
@@ -196,7 +196,7 @@ class PDMatrixBuilder:
         edge_inds = np.array(edge_indices).reshape(-1, 4)
         edge_area = np.array(edge_rest_area)
         edge_prop = np.array(edge_bending_properties).reshape(-1, 2)
-        edge_stiff = edge_prop[:, 0] / edge_area
+        edge_stiff = edge_prop[:, 0] * (3.0 / edge_area)
 
         bend_cot = np.array(edge_bending_cot).reshape(-1, 4)
         bend_weight = np.zeros(shape=(num_edge, 4), dtype=np.float32)
@@ -208,6 +208,7 @@ class PDMatrixBuilder:
         bend_weight[:, 1] = -bend_cot[:, 1] - bend_cot[:, 3]
 
         # Construct Hessian matrix per edge (outer product)
+        # Hessian = k * (3 / area) * w^T w
         bend_hess = (
             bend_weight[:, :, np.newaxis] * bend_weight[:, np.newaxis, :] * edge_stiff[:, np.newaxis, np.newaxis]
         )  # shape is num_edge,4,4

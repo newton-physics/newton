@@ -159,7 +159,9 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+          # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
+          COVERAGE_CORE: "sysmon"
+        run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Check disk space (post-test)
         if: always()
@@ -246,7 +248,7 @@ jobs:
         if: ${{ needs.start-runner.outputs.ec2-instance-id != '' }}
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
         with:
-          aws-region: ${{ needs.start-runner.outputs.region || env.AWS_REGION }}
+          aws-region: ${{ needs.start-runner.outputs.region }}
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           role-duration-seconds: ${{ env.AWS_ROLE_DURATION }}
 

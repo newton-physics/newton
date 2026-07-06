@@ -6,6 +6,8 @@ from __future__ import annotations
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..utils.deprecation import deprecate_nonkeyword_arguments
+
 GENERATION_SENTINEL = -1
 """Value reserved as an impossible generation; the increment kernel skips it."""
 
@@ -38,6 +40,54 @@ def _clear_counters_and_bump_generation(
         else:
             g = g + 1
         generation[0] = g
+
+
+@wp.func
+def contact_surface_separation(
+    point0_world: wp.vec3,
+    point1_world: wp.vec3,
+    normal: wp.vec3,
+    margin0: float,
+    margin1: float,
+) -> float:
+    """Signed separation between the two effective contact surfaces along the normal.
+
+    Positive values are a gap; negative values are penetration.
+
+    Args:
+        point0_world: Support-shape contact point on shape 0 [m], world space.
+        point1_world: Support-shape contact point on shape 1 [m], world space.
+        normal: Unit contact normal pointing from shape 0 toward shape 1.
+        margin0: Effective surface thickness of shape 0 [m] (effective radius + margin).
+        margin1: Effective surface thickness of shape 1 [m].
+
+    Returns:
+        Separation between the effective surfaces [m].
+    """
+    return wp.dot(normal, point1_world - point0_world) - (margin0 + margin1)
+
+
+@wp.func
+def contact_surface_point(
+    X_wb: wp.transform,
+    point_local: wp.vec3,
+    offset_local: wp.vec3,
+) -> wp.vec3:
+    """World-space effective-surface contact point for one shape.
+
+    Shifts the body-frame support point by the body-frame surface offset and maps the result
+    to world space. Because the offset is expressed in the body frame, a persisted/reused
+    contact tracks the material point under rotation.
+
+    Args:
+        X_wb: Body-to-world transform of the shape's body.
+        point_local: Support-shape contact point in the body frame [m].
+        offset_local: Surface offset in the body frame [m] (effective thickness along the normal).
+
+    Returns:
+        Effective-surface contact point [m], world space.
+    """
+    return wp.transform_point(X_wb, point_local + offset_local)
 
 
 class Contacts:
@@ -86,10 +136,12 @@ class Contacts:
             bad = ", ".join(invalid)
             raise ValueError(f"Unknown extended contact attribute(s): {bad}. Allowed: {allowed}.")
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         rigid_contact_max: int,
         soft_contact_max: int,
+        *,
         requires_grad: bool = False,
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
@@ -269,7 +321,10 @@ class Contacts:
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
-            """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`."""
+            """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`.
+
+            Point on the raw (un-inflated) shape surface; per-shape ``shape_margin`` is
+            applied analytically by consumers rather than baked into this point."""
             self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)

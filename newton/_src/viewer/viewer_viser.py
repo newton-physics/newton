@@ -9,6 +9,7 @@ import os
 import warnings
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -187,28 +188,48 @@ class ViewerViser(ViewerBase):
     @override
     def clear_model(self):
         """Reset model-dependent state, including scalar plot buffers."""
+        owns = self._is_layer_owned_path
         for plane_name in list(self._plane_handles.keys()):
-            self._remove_plane_handles(plane_name)
-        self._plane_handles.clear()
-        self._plane_meshes.clear()
+            if owns(plane_name):
+                self._remove_plane_handles(plane_name)
+        self._plane_meshes = {name: value for name, value in self._plane_meshes.items() if not owns(name)}
 
-        # Remove plot handles from the GUI.
-        for handle in self._plot_handles.values():
+        for name, handle in list(getattr(self, "_scene_handles", {}).items()):
+            if not owns(name):
+                continue
             try:
                 handle.remove()
             except Exception:
                 pass
-        self._plot_handles.clear()
-        if self._plot_folder is not None:
+            self._scene_handles.pop(name, None)
+            self._instances.pop(name, None)
+            self._meshes.pop(name, None)
+            self._line_segment_counts.pop(name, None)
+            self._line_versions.pop(name, None)
+
+        # Remove only scalar plot state owned by the active layer.
+        for name, handle in list(self._plot_handles.items()):
+            if not owns(name):
+                continue
+            try:
+                handle.remove()
+            except Exception:
+                pass
+            self._plot_handles.pop(name, None)
+        if not self._plot_handles and self._plot_folder is not None:
             try:
                 self._plot_folder.remove()
             except Exception:
                 pass
             self._plot_folder = None
-        self._scalar_buffers.clear()
-        self._scalar_accumulators.clear()
-        self._scalar_smoothing.clear()
-        self._scalar_dirty.clear()
+        for name in list(self._scalar_buffers.keys()):
+            if owns(name):
+                self._scalar_buffers.pop(name, None)
+                self._scalar_accumulators.pop(name, None)
+                self._scalar_smoothing.pop(name, None)
+        for name in list(self._scalar_dirty):
+            if owns(name):
+                self._scalar_dirty.discard(name)
 
         super().clear_model()
 
@@ -298,6 +319,86 @@ class ViewerViser(ViewerBase):
             return f"{jupyter_base_url}/proxy/{port}{normalized_path}{query}"
 
         return f"http://{local_host}:{port}{normalized_path}{query}"
+
+    @staticmethod
+    def _get_colab_output() -> Any | None:
+        """Return google.colab.output when Colab iframe display is available."""
+        try:
+            from google.colab import output  # noqa: PLC0415
+        except Exception:
+            return None
+
+        if not hasattr(output, "serve_kernel_port_as_iframe"):
+            return None
+
+        return output
+
+    @classmethod
+    def _display_colab_iframe(
+        cls,
+        port: int,
+        *,
+        path: str = "/",
+        query: str = "",
+        width: int | str = "100%",
+        height: int | str = 400,
+    ) -> bool:
+        """Display a local server port in Colab when the Colab helper is available."""
+        output = cls._get_colab_output()
+        if output is None:
+            return False
+
+        normalized_path = "/" if path in ("", "/") else "/" + path.lstrip("/")
+        normalized_query = ""
+        if query:
+            normalized_query = query if query.startswith("?") else "?" + query
+        iframe_path = f"{normalized_path}{normalized_query}"
+
+        try:
+            output.serve_kernel_port_as_iframe(port, path=iframe_path, width=width, height=height)
+        except TypeError:
+            output.serve_kernel_port_as_iframe(port, path=iframe_path, height=height)
+
+        return True
+
+    @classmethod
+    def _colab_iframe_target_from_url(cls, player_url: str) -> tuple[int, str, str] | None:
+        """Extract a Colab iframe target from an absolute or Jupyter proxy URL."""
+        parsed_url = urlparse(player_url)
+
+        proxy_target = None
+        path_segments = parsed_url.path.split("/")
+        for index, segment in enumerate(path_segments[:-1]):
+            if segment != "proxy":
+                continue
+
+            port_text = path_segments[index + 1]
+            if not port_text.isdecimal():
+                continue
+
+            proxy_port = int(port_text)
+            if proxy_port > 65535:
+                continue
+
+            downstream_segments = path_segments[index + 2 :]
+            if not downstream_segments or downstream_segments == [""]:
+                downstream_path = "/"
+            else:
+                downstream_path = "/" + "/".join(downstream_segments)
+            proxy_target = (proxy_port, downstream_path, parsed_url.query)
+
+        if proxy_target is not None:
+            return proxy_target
+
+        try:
+            parsed_port = parsed_url.port
+        except ValueError:
+            parsed_port = None
+
+        if parsed_port is not None:
+            return parsed_port, parsed_url.path or "/", parsed_url.query
+
+        return None
 
     @classmethod
     def get_viser_client_dir(cls) -> Path:
@@ -525,6 +626,8 @@ class ViewerViser(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
+        name = self._qualify(name)
+
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
 
@@ -625,42 +728,10 @@ class ViewerViser(ViewerBase):
                 pass
 
     @staticmethod
-    def _build_plane_grid_points(width: float, length: float) -> np.ndarray:
-        """Create a finite grid of line segments in the local XY plane."""
-        width = max(float(width), 0.1)
-        length = max(float(length), 0.1)
-
-        spacing = max(min(width, length) / 10.0, 0.25)
-        spacing = min(spacing, 2.0)
-
-        nx = max(int(np.ceil(width / spacing)), 1)
-        ny = max(int(np.ceil(length / spacing)), 1)
-
-        xs = np.linspace(-width * 0.5, width * 0.5, nx + 1, dtype=np.float32)
-        ys = np.linspace(-length * 0.5, length * 0.5, ny + 1, dtype=np.float32)
-
-        segments = []
-        for x in xs:
-            segments.append([[x, -length * 0.5, 0.0], [x, length * 0.5, 0.0]])
-        for y in ys:
-            segments.append([[-width * 0.5, y, 0.0], [width * 0.5, y, 0.0]])
-
-        return np.asarray(segments, dtype=np.float32)
-
-    @staticmethod
-    def _rotate_points_wxyz(points: np.ndarray, quat_wxyz: np.ndarray) -> np.ndarray:
-        """Rotate points by a unit quaternion stored in WXYZ order."""
-        quat_wxyz = np.asarray(quat_wxyz, dtype=np.float32)
-        norm = np.linalg.norm(quat_wxyz)
-        if norm > 0.0:
-            quat_wxyz = quat_wxyz / norm
-
-        qvec = quat_wxyz[1:4]
-        flat_points = points.reshape(-1, 3)
-        uv = np.cross(qvec, flat_points)
-        uuv = np.cross(qvec, uv)
-        rotated = flat_points + 2.0 * (quat_wxyz[0] * uv + uuv)
-        return rotated.reshape(points.shape).astype(np.float32, copy=False)
+    def _plane_cell_size(width: float, length: float) -> float:
+        """Pick a grid cell size for a plane of the given extents."""
+        spacing = max(min(float(width), float(length)) / 10.0, 0.25)
+        return min(spacing, 2.0)
 
     def _log_plane_instances(
         self,
@@ -670,7 +741,7 @@ class ViewerViser(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         hidden: bool = False,
     ):
-        """Render plane instances as finite line grids instead of opaque meshes."""
+        """Render plane instances as viser grids."""
         self._remove_plane_handles(name)
 
         if hidden or xforms is None:
@@ -687,30 +758,42 @@ class ViewerViser(ViewerBase):
         if scales_np is not None:
             scales_np = np.asarray(scales_np, dtype=np.float32)
 
-        width = float(plane_info["width"])
-        length = float(plane_info["length"])
-        grid_points = self._build_plane_grid_points(width, length)
+        base_width = float(plane_info["width"])
+        base_length = float(plane_info["length"])
 
-        all_points = []
+        handles = []
         for idx, (position, quat_wxyz) in enumerate(zip(positions, quats_wxyz, strict=False)):
-            instance_points = grid_points
+            width = base_width
+            length = base_length
+
+            # TODO: Compute cell size for the scaled width/length directly
+            cell_size = self._plane_cell_size(width, length)
+
             if scales_np is not None:
-                plane_scale = np.array([scales_np[idx][0], scales_np[idx][1], 1.0], dtype=np.float32)
-                instance_points = grid_points * plane_scale
-            instance_points = self._rotate_points_wxyz(instance_points, quat_wxyz) + position
-            all_points.append(instance_points)
+                sx = float(scales_np[idx][0])
+                sy = float(scales_np[idx][1])
+                width *= sx
+                length *= sy
+                cell_size *= max(sx, sy)
 
-        if not all_points:
-            return
+            # The plane's local frame has its normal along +Z, so the grid lies in the local XY plane.
+            handle = self._call_scene_method(
+                self._server.scene.add_grid,
+                name=f"{name}/grid_{idx}",
+                width=width,
+                height=length,
+                plane="xy",
+                cell_color=(150, 150, 150),
+                section_color=(110, 110, 110),
+                cell_size=cell_size,
+                section_size=cell_size,
+                position=tuple(float(v) for v in position),
+                wxyz=tuple(float(v) for v in quat_wxyz),
+            )
+            handles.append(handle)
 
-        handle = self._server.scene.add_line_segments(
-            name=f"{name}/grid",
-            points=np.concatenate(all_points, axis=0),
-            colors=(150, 150, 150),
-            line_width=1.5,
-        )
-
-        self._plane_handles[name] = handle
+        if handles:
+            self._plane_handles[name] = handles
 
     @override
     def log_instances(
@@ -738,6 +821,9 @@ class ViewerViser(ViewerBase):
             materials: Instance materials.
             hidden: Whether the instances are hidden.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if mesh in self._plane_meshes:
             self._log_plane_instances(name, self._plane_meshes[mesh], xforms, scales, hidden=hidden)
             return
@@ -1020,6 +1106,7 @@ class ViewerViser(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
+        name = self._qualify(name)
 
         def remove_existing_line(reset_version: bool = True):
             handle = self._scene_handles.pop(name, None)
@@ -1129,6 +1216,8 @@ class ViewerViser(ViewerBase):
             geo_src: Optional source geometry for mesh-backed types.
             hidden: Whether the resulting geometry is hidden.
         """
+        name = self._qualify(name)
+
         if geo_type == newton.GeoType.PLANE:
             # Handle "infinite" planes encoded with non-positive scales
             if geo_scale[0] == 0.0 or geo_scale[1] == 0.0:
@@ -1168,6 +1257,8 @@ class ViewerViser(ViewerBase):
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         # Remove existing points if present
         if name in self._scene_handles:
             try:
@@ -1258,6 +1349,7 @@ class ViewerViser(ViewerBase):
         """
         if smoothing < 1:
             raise ValueError("smoothing must be >= 1")
+        name = self._qualify(name)
         val = float(value.item() if hasattr(value, "item") else value)
         buf = self._scalar_buffers.get(name)
         if buf is None:
@@ -1313,6 +1405,9 @@ class ViewerViser(ViewerBase):
         from .viewer import is_sphinx_build  # noqa: PLC0415
 
         if self._record_to_viser is None:
+            if self._display_colab_iframe(self._port, width=width, height=height):
+                return None
+
             # No recording - display the live server via IFrame
             return display(IFrame(src=self.url, width=width, height=height))
 
@@ -1364,6 +1459,18 @@ class ViewerViser(ViewerBase):
                 self._record_to_viser,
                 camera_request=self._camera_request,
             )
+            colab_target = self._colab_iframe_target_from_url(player_url)
+            if colab_target is not None:
+                colab_port, colab_path, colab_query = colab_target
+                if self._display_colab_iframe(
+                    colab_port,
+                    path=colab_path,
+                    query=colab_query,
+                    width=width,
+                    height=height,
+                ):
+                    return None
+
             return display(IFrame(src=player_url, width=width, height=height))
 
     def _ipython_display_(self):

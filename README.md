@@ -39,7 +39,9 @@ Before running the examples below, install Newton with the examples extra:
 pip install "newton[examples]"
 ```
 
-If you installed from source with uv, substitute `uv run` for `python` in the commands below.
+If you run the examples from a source checkout with uv, use
+`uv run --extra examples -m newton.examples <example_name>` instead of the
+`python -m newton.examples <example_name>` commands below.
 
 <table>
   <tr>
@@ -135,14 +137,20 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_plotting.jpg" alt="Plotting">
       </a>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_basic_dzhanibekov.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_dzhanibekov.jpg" alt="Dzhanibekov">
+      </a>
+    </td>
     <td></td>
   </tr>
   <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples basic_plotting</code>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples basic_dzhanibekov</code>
+    </td>
     <td></td>
   </tr>
   <tr>
@@ -187,7 +195,11 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_anymal_c_walk.jpg" alt="Anymal C Walk">
       </a>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_policy.jpg" alt="Policy">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -196,13 +208,11 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
     <td align="center" width="33%">
       <code>python -m newton.examples robot_anymal_c_walk</code>
     </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples robot_policy</code>
+    </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_policy.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_policy.jpg" alt="Policy">
-      </a>
-    </td>
     <td align="center" width="33%">
       <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_ur10.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_ur10.jpg" alt="UR10">
@@ -213,36 +223,21 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_panda_hydro.jpg" alt="Panda Hydro">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_allegro_hand.jpg" alt="Allegro Hand">
+      </a>
+    </td>
   </tr>
   <tr>
-    <td align="center" width="33%">
-      <code>python -m newton.examples robot_policy</code>
-    </td>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_ur10</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_panda_hydro</code>
     </td>
-  </tr>
-  <tr>
-    <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/robot/example_robot_allegro_hand.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_robot_allegro_hand.jpg" alt="Allegro Hand">
-      </a>
-    </td>
-    <td align="center" width="33%">
-    </td>
-    <td align="center" width="33%">
-    </td>
-  </tr>
-  <tr>
     <td align="center" width="33%">
       <code>python -m newton.examples robot_allegro_hand</code>
-    </td>
-    <td align="center" width="33%">
-    </td>
-    <td align="center" width="33%">
     </td>
   </tr>
   <tr>
@@ -673,6 +668,9 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_rigid_soft_contact.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_rigid_soft_contact.jpg" alt="Rigid Soft Contact">
+      </a>
     </td>
   </tr>
   <tr>
@@ -683,7 +681,30 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
       <code>python -m newton.examples softbody_dropping_to_cloth</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples rigid_soft_contact</code>
     </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_franka_cable_ik_pick_place.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_franka_cable_ik_pick_place.jpg" alt="Franka Cable IK Pick and Place">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_mujoco_franka_vbd_cable_admm_solver.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mujoco_franka_vbd_cable_admm_solver.jpg" alt="MuJoCo Franka VBD Cable ADMM">
+      </a>
+    </td>
+    <td></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples franka_cable_ik_pick_place</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mujoco_franka_vbd_cable_admm_solver</code>
+    </td>
+    <td></td>
   </tr>
   <tr>
     <td colspan="3"><h3>Contacts Examples</h3></td>
@@ -826,16 +847,20 @@ If you installed from source with uv, substitute `uv run` for `python` in the co
 
 ### Example Options
 
-The examples support the following command-line arguments:
+All examples share a common set of command-line options. The most commonly used ones are:
 
-| Argument        | Description                                                                                         | Default                      |
-| --------------- | --------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `--viewer`      | Viewer type: `gl` (OpenGL window), `usd` (USD file output), `rerun` (ReRun), or `null` (no viewer). | `gl`                         |
-| `--device`      | Compute device to use, e.g., `cpu`, `cuda:0`, etc.                                                  | `None` (default Warp device) |
-| `--num-frames`  | Number of frames to simulate (for USD output).                                                      | `100`                        |
-| `--output-path` | Output path for USD files (required if `--viewer usd` is used).                                     | `None`                       |
+| Argument        | Description                                                              | Default                      |
+| --------------- | ------------------------------------------------------------------------ | ---------------------------- |
+| `--viewer`      | Viewer to use: `gl`, `usd`, `rtx`, `rerun`, `viser`, or `null`.          | `gl`                         |
+| `--device`      | Compute device to use, e.g., `cpu`, `cuda:0`.                            | `None` (default Warp device) |
+| `--num-frames`  | Total number of frames to simulate.                                      | `100`                        |
+| `--output-path` | Path to the output USD file (used by the `usd` viewer).                  | `output.usd`                 |
 
-Some examples may add additional arguments (see their respective source files for details).
+For the complete, always-current list of options — plus any arguments a specific example adds — run:
+
+```bash
+python -m newton.examples <example_name> --help
+```
 
 ### Example Usage
 

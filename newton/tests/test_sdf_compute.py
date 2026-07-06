@@ -823,8 +823,8 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         # No compact SDF entry should exist for this shape
-        self.assertEqual(int(model.shape_sdf_index.numpy()[0]), -1)
-        self.assertEqual(model.texture_sdf_data.shape[0], 0)
+        self.assertEqual(int(model._shape_sdf_index.numpy()[0]), -1)
+        self.assertEqual(model._texture_sdf_data.shape[0], 0)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_works_on_gpu(self):
@@ -842,9 +842,9 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         model = builder.finalize(device="cuda:0")
 
         # Texture SDF data should be populated in compact table
-        sdf_idx = int(model.shape_sdf_index.numpy()[0])
+        sdf_idx = int(model._shape_sdf_index.numpy()[0])
         self.assertGreaterEqual(sdf_idx, 0)
-        self.assertGreater(model.texture_sdf_data.shape[0], sdf_idx)
+        self.assertGreater(model._texture_sdf_data.shape[0], sdf_idx)
 
     @unittest.skipUnless(_cuda_available, "Requires CUDA device")
     def test_mesh_build_sdf_guard_and_clear(self):
@@ -933,9 +933,9 @@ class TestSDFPublicApi(unittest.TestCase):
         builder.add_shape_box(body=body, hx=0.5, hy=0.4, hz=0.3, cfg=cfg)
 
         model = builder.finalize(device="cuda:0")
-        sdf_idx = int(model.shape_sdf_index.numpy()[0])
+        sdf_idx = int(model._shape_sdf_index.numpy()[0])
         self.assertGreaterEqual(sdf_idx, 0)
-        self.assertGreater(model.texture_sdf_data.shape[0], sdf_idx)
+        self.assertGreater(model._texture_sdf_data.shape[0], sdf_idx)
 
 
 @unittest.skipUnless(_cuda_available, "wp.Volume requires CUDA device")
@@ -1343,7 +1343,7 @@ def test_brick_pyramid_stability(test, device):
     builder.rigid_gap = 0.005
 
     # Add ground plane
-    builder.add_shape_plane(-1, wp.transform_identity(), width=0.0, length=0.0)
+    builder.add_shape_plane(xform=wp.transform_identity(), width=0.0, length=0.0)
 
     # Create unit cube mesh (will be scaled non-uniformly)
     cube_mesh = create_box_mesh((0.5, 0.5, 0.5))
