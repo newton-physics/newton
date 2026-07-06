@@ -123,6 +123,21 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             wp.transform_point(world_mat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in mesh_points
         ]
 
+        # A zero-area triangle cannot form an FEM element; add_cloth_mesh would drop it and
+        # leave a partial import (particles without their triangle). Contain it like other
+        # malformed topology: warn and skip the prim before any builder mutation.
+        vert_np = np.array([[v[0], v[1], v[2]] for v in cloth_vertices], dtype=np.float64)
+        edge1 = vert_np[tri_faces[:, 1]] - vert_np[tri_faces[:, 0]]
+        edge2 = vert_np[tri_faces[:, 2]] - vert_np[tri_faces[:, 0]]
+        tri_areas = 0.5 * np.linalg.norm(np.cross(edge1, edge2), axis=1)
+        degenerate = int(np.count_nonzero(tri_areas < 1.0e-12))
+        if degenerate:
+            warnings.warn(
+                f"{path}: cloth mesh has {degenerate} zero-area (degenerate) triangle(s); skipping.",
+                stacklevel=2,
+            )
+            continue
+
         cloth_mat = usd._get_surface_deformable_material(prim, deformable_read) or {}
         # Surface thickness: prefer the material's authored value; otherwise fall back to a
         # shell mass model's thickness (NewtonMassAPI massModel="shell" / shellThickness,

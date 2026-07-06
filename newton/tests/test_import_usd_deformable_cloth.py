@@ -196,6 +196,30 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertAlmostEqual(builder.particle_radius[i], 0.5 * thickness, places=6)
         self.assertNotAlmostEqual(builder.particle_radius[p0], builder.default_particle_radius, places=6)
 
+    def test_degenerate_cloth_triangle_warns_and_skips(self):
+        """A zero-area (collinear) triangle cannot form an FEM element: the cloth is
+        skipped whole with a warning instead of importing particles without their
+        triangle, and a valid cloth in the same stage still imports."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        bad = UsdGeom.Mesh.Define(stage, "/World/Bad")
+        bad.CreatePointsAttr([(0.0, 0.0, 1.0), (0.5, 0.0, 1.0), (1.0, 0.0, 1.0)])  # collinear
+        bad.CreateFaceVertexCountsAttr([3])
+        bad.CreateFaceVertexIndicesAttr([0, 1, 2])
+        bad.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        bad.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _add_cloth_mesh(stage, "/World/Good")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "/World/Bad.*degenerate"):
+            result = builder.add_usd(stage, deformable_results=True)
+        self.assertNotIn("/World/Bad", result["path_cloth_map"])
+        self.assertIn("/World/Good", result["path_cloth_map"])
+        self.assertEqual(builder.particle_count, 4)  # the good quad only
+        self.assertEqual(builder.tri_count, 2)
+        builder.finalize()
+
     def test_cloth_collision_limitation(self):
         """Newton cannot disable particle collision: a cloth without an enabled
         PhysicsCollisionAPI warns and imports colliding; an enabled one is silent."""
