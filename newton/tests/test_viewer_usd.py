@@ -40,7 +40,7 @@ class TestViewerUSD(unittest.TestCase):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()
         self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
-        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=False)
         self.addCleanup(viewer.close)
         self.addCleanup(lambda: setattr(viewer, "output_path", ""))
         return viewer
@@ -73,7 +73,7 @@ class TestViewerUSD(unittest.TestCase):
         self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
 
         # Create first viewer and write some data into the stage.
-        viewer1 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        viewer1 = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=False)
         self.addCleanup(viewer1.close)
         self.addCleanup(lambda: setattr(viewer1, "output_path", ""))
 
@@ -88,7 +88,7 @@ class TestViewerUSD(unittest.TestCase):
 
         # Create second viewer for the same output path; this should reuse the same
         # underlying layer and clear any previous contents.
-        viewer2 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        viewer2 = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=False)
         self.addCleanup(viewer2.close)
         self.addCleanup(lambda: setattr(viewer2, "output_path", ""))
 

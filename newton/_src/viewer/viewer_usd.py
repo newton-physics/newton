@@ -81,7 +81,7 @@ class ViewerUSD(ViewerBase):
         up_axis: str = "Z",
         num_frames: int | None = 100,
         scaling: float = 1.0,
-        points_as_spheres: bool = False,
+        points_as_spheres: bool = True,
     ):
         """
         Initialize the USD viewer backend for Newton physics simulations.
@@ -94,8 +94,8 @@ class ViewerUSD(ViewerBase):
             scaling: Uniform scaling applied to the scene root. Default is 1.0.
             points_as_spheres: When True, :meth:`log_points` renders points as a
                 :class:`~pxr.UsdGeom.PointInstancer` of :class:`~pxr.UsdGeom.Sphere`
-                prototypes scaled by ``radii``, instead of the default flat
-                :class:`~pxr.UsdGeom.Points` splats. Default is False.
+                prototypes scaled by ``radii``, instead of flat
+                :class:`~pxr.UsdGeom.Points` splats. Default is True.
 
         Raises:
             ImportError: If the usd-core package is not installed.
