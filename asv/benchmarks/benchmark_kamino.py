@@ -14,6 +14,10 @@ import newton
 
 _NUM_ACTIONS = 12
 _OBS_DIM = 94
+_MIN_STANDING_HEIGHT = 0.20
+_MIN_STANDING_FRACTION = 0.90
+_MAX_BODY_LINEAR_SPEED = 10.0
+_MAX_BODY_ANGULAR_SPEED = 50.0
 
 # Joint order the policy was trained with: USD declaration order. The Kamino
 # RL stack imports with joint_ordering=None to preserve it (Newton's default
@@ -265,8 +269,12 @@ class PolicyController:
         target_q[:, self._driven_target_offsets] = self._action_scale * self._actions
         wp.to_torch(control.joint_target_qd).zero_()
 
+    def test_final(self):
+        if not self._torch.isfinite(self._actions).all().item():
+            raise RuntimeError("Policy produced non-finite actions")
 
-class Example:
+
+class DRLegsBenchmarkWorkload:
     """Public SolverKamino mirror of the deployed DR Legs RL workload.
 
     Contact aggregation is omitted because the walk policy does not consume it.
@@ -292,10 +300,11 @@ class Example:
         self.decimation = cfg["control_decimation"]
         self.sim_substeps = self.decimation
         self.frame_dt = self.sim_dt * self.sim_substeps
+        self.world_count = world_count
         self.viewer = viewer
 
         if builder is None:
-            builder = Example.create_model_builder(robot, world_count)
+            builder = DRLegsBenchmarkWorkload.create_model_builder(robot, world_count)
         self.model = builder.finalize(skip_validation_joints=True)
 
         # Match RigidBodySim.body_pose_offset: translate initial body poses only,
@@ -304,13 +313,13 @@ class Example:
         body_q[:, 2] += cfg["body_pose_offset_z"]
         self.model.body_q.assign(body_q)
 
-        Example._set_newton_joint_params(self.model, cfg, world_count)
+        DRLegsBenchmarkWorkload._set_newton_joint_params(self.model, cfg, world_count)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.solver = Example.create_solver(self.model, self.sim_dt)
+        self.solver = DRLegsBenchmarkWorkload.create_solver(self.model, self.sim_dt)
         self.solver.reset(state=self.state_0)
 
         self._world_reset_mask = wp.zeros(world_count, dtype=wp.bool, device=self.model.device)
@@ -416,10 +425,51 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        for name in ("joint_q", "body_q"):
+        state_values = {}
+        for name in ("joint_q", "body_q", "body_qd"):
             values = getattr(self.state_0, name).numpy()
             if not np.isfinite(values).all():
                 raise RuntimeError(f"Simulation produced non-finite values in state.{name}")
+            state_values[name] = values
+
+        body_count = self.model.body_count // self.world_count
+        body_qd = state_values["body_qd"].reshape(self.world_count, body_count, 6)
+        max_linear_speed = np.linalg.norm(body_qd[:, :, :3], axis=-1).max()
+        max_angular_speed = np.linalg.norm(body_qd[:, :, 3:], axis=-1).max()
+        if max_linear_speed > _MAX_BODY_LINEAR_SPEED:
+            raise RuntimeError(
+                f"Maximum body linear speed is {max_linear_speed:.3f} m/s, exceeding {_MAX_BODY_LINEAR_SPEED:.1f} m/s"
+            )
+        if max_angular_speed > _MAX_BODY_ANGULAR_SPEED:
+            raise RuntimeError(
+                f"Maximum body angular speed is {max_angular_speed:.3f} rad/s, "
+                f"exceeding {_MAX_BODY_ANGULAR_SPEED:.1f} rad/s"
+            )
+
+        if self.policy_controller is None:
+            return
+
+        body_labels = [label.rsplit("/", 1)[-1] for label in self.model.body_label[:body_count]]
+        try:
+            pelvis_index = body_labels.index("pelvis")
+        except ValueError as e:
+            raise RuntimeError("DR Legs model has no pelvis root body") from e
+
+        body_q = state_values["body_q"].reshape(self.world_count, body_count, 7)[:, pelvis_index]
+        body_com = self.model.body_com.numpy().reshape(self.world_count, body_count, 3)[:, pelvis_index]
+        quat_vector = body_q[:, 3:6]
+        twice_cross = 2.0 * np.cross(quat_vector, body_com)
+        rotated_com = body_com + body_q[:, 6:7] * twice_cross + np.cross(quat_vector, twice_cross)
+        pelvis_height = body_q[:, 2] + rotated_com[:, 2]
+        standing_count = np.count_nonzero(pelvis_height >= _MIN_STANDING_HEIGHT)
+        standing_fraction = standing_count / self.world_count
+        if standing_fraction < _MIN_STANDING_FRACTION:
+            raise RuntimeError(
+                f"Only {standing_count}/{self.world_count} robots have pelvis height >= "
+                f"{_MIN_STANDING_HEIGHT:.2f} m ({standing_fraction:.1%})"
+            )
+
+        self.policy_controller.test_final()
 
     def render(self):
         if self.viewer is None:
@@ -476,10 +526,10 @@ if __name__ == "__main__":
     parser.set_defaults(world_count=1)
     viewer, args = newton.examples.init(parser)
 
-    example = Example(
+    workload = DRLegsBenchmarkWorkload(
         world_count=args.world_count,
         use_cuda_graph=True,
         use_policy=not args.no_policy,
         viewer=viewer,
     )
-    newton.examples.run(example, args)
+    newton.examples.run(workload, args)

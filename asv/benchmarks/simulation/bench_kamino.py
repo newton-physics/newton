@@ -13,7 +13,7 @@ wp.config.log_level = wp.LOG_WARNING
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_kamino import Example
+from benchmark_kamino import DRLegsBenchmarkWorkload
 
 
 class _FastBenchmark:
@@ -28,9 +28,9 @@ class _FastBenchmark:
 
     def setup(self):
         if not hasattr(self, "_builder") or self._builder is None:
-            self._builder = Example.create_model_builder(self.robot, self.world_count)
+            self._builder = DRLegsBenchmarkWorkload.create_model_builder(self.robot, self.world_count)
 
-        self.example = Example(
+        self.workload = DRLegsBenchmarkWorkload(
             robot=self.robot,
             world_count=self.world_count,
             use_cuda_graph=True,
@@ -40,20 +40,20 @@ class _FastBenchmark:
 
         wp.synchronize_device()
 
-        if self.example.graph is None or self.example.reset_graph is None:
+        if self.workload.graph is None or self.workload.reset_graph is None:
             raise SkipNotImplemented("CUDA graph capture unavailable (is the CUDA mempool allocator enabled?)")
 
     def teardown(self):
-        example = getattr(self, "example", None)
-        if example is not None:
-            example.test_final()
+        workload = getattr(self, "workload", None)
+        if workload is not None:
+            workload.test_final()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         for _ in range(self.num_frames):
-            for _ in range(self.example.decimation):
-                wp.capture_launch(self.example.reset_graph)
-                wp.capture_launch(self.example.graph)
+            for _ in range(self.workload.decimation):
+                wp.capture_launch(self.workload.reset_graph)
+                wp.capture_launch(self.workload.graph)
         wp.synchronize_device()
 
 
@@ -71,30 +71,29 @@ class _KpiBenchmark:
         if not hasattr(self, "_builder") or self._builder is None:
             self._builder = {}
         if world_count not in self._builder:
-            self._builder[world_count] = Example.create_model_builder(self.robot, world_count)
+            self._builder[world_count] = DRLegsBenchmarkWorkload.create_model_builder(self.robot, world_count)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, world_count):
         total_time = 0.0
         for _iter in range(self.samples):
-            example = Example(
+            workload = DRLegsBenchmarkWorkload(
                 robot=self.robot,
                 world_count=world_count,
                 use_cuda_graph=True,
                 use_policy=self.use_policy,
                 builder=self._builder[world_count],
             )
-            if example.graph is None or example.reset_graph is None:
+            if workload.graph is None or workload.reset_graph is None:
                 raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
 
             wp.synchronize_device()
             for _ in range(self.num_frames):
-                example.step()
-            wp.synchronize_device()
-            total_time += example.benchmark_time
-            example.test_final()
+                workload.step()
+            total_time += workload.benchmark_time
+            workload.test_final()
 
-        return total_time * 1000 / (self.num_frames * example.sim_substeps * world_count * self.samples)
+        return total_time * 1000 / (self.num_frames * workload.sim_substeps * world_count * self.samples)
 
     track_simulate.unit = "ms/world-step"
 
@@ -102,12 +101,12 @@ class _KpiBenchmark:
 class FastDRLegs(_FastBenchmark):
     num_frames = 25
     robot = "dr_legs"
-    repeat = 3
+    repeat = 2
     world_count = 32
 
 
 class KpiDRLegs(_KpiBenchmark):
-    params = [[8192]]
+    params = [[1024]]
     num_frames = 50
     robot = "dr_legs"
     samples = 2
