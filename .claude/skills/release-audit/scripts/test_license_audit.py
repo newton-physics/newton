@@ -115,8 +115,14 @@ source = { git = "https://example.com/fork.git" }
 
         self.assertTrue(license_audit._is_standard_license_expression("MIT OR Apache-2.0"))
         self.assertTrue(license_audit._is_standard_license_expression("GPL-2.0-only WITH Classpath-exception-2.0"))
+        self.assertTrue(license_audit._is_standard_license_expression("(MIT OR Apache-2.0) AND BSD-3-Clause"))
+        self.assertTrue(license_audit._is_standard_license_expression("((MIT OR Apache-2.0) AND BSD-3-Clause)"))
         self.assertFalse(license_audit._is_standard_license_expression("Apache Software License"))
         self.assertFalse(license_audit._is_standard_license_expression("Permission is hereby granted, free of charge"))
+        self.assertFalse(license_audit._is_standard_license_expression("AND"))
+        self.assertFalse(license_audit._is_standard_license_expression("MIT AND (Apache-2.0"))
+        self.assertFalse(license_audit._is_standard_license_expression("MIT)"))
+        self.assertFalse(license_audit._is_standard_license_expression("MIT OR ()"))
 
         self.assertEqual(
             license_audit._concise_license({"license": "MIT OR Apache-2.0", "url": metadata_url}),

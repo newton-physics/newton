@@ -6,14 +6,14 @@ This reference is loaded during Phases 3, 4, and 5 of the skill. It defines conc
 
 Used to decide whether a symbol is "genuinely new" vs. "pre-existed and got extended":
 
-Newton does NOT expose its public surface through a single `__init__.py` (unlike Warp). It uses per-topic public re-export modules discovered dynamically by `docs/generate_api.py`:
+Newton exposes its public surface through per-topic re-export modules discovered dynamically by `docs/generate_api.py`:
 
 - `api_modules()` imports `newton`, starts with the top-level module, and adds every module-valued name exported through `newton.__all__`.
 - Each discovered module's own `__all__` defines its public symbols; when `__all__` is absent, `public_symbols()` falls back to non-private, non-module attributes.
 - `solver_submodule_pages()` adds public solver submodules and recursively exposed module trees under `newton.solvers`.
 - There is no fixed `MODULES` constant. Inspect `docs/generate_api.py`, `newton/__init__.py`, and `newton/solvers.py` at both refs so additions such as a new top-level public module or nested experimental solver namespace are included.
 
-Current examples include `newton.actuators`, `newton.geometry`, `newton.ik`, `newton.math`, `newton.selection`, `newton.sensors`, `newton.solvers`, `newton.usd`, `newton.utils`, and `newton.viewer`, but this list is illustrative rather than authoritative. Each public module re-exports from `newton/_src/<topic>/...`. `newton._src` is internal (AGENTS.md: "Examples and docs must not import from `newton._src`").
+Representative modules include `newton.geometry`, `newton.solvers`, and `newton.viewer`. Each public module re-exports from `newton/_src/<topic>/...`. `newton._src` is internal (AGENTS.md: "Examples and docs must not import from `newton._src`").
 
 **To determine if `newton.X` existed at base**:
 - Inspect module-valued exports in `newton.__all__` at base and target using the `api_modules()` rules above.
@@ -24,9 +24,9 @@ Current examples include `newton.actuators`, `newton.geometry`, `newton.ik`, `ne
 
 **Public-API exposure check (Phase 4a addition)**: for every symbol that is genuinely new, verify at HEAD that it is reachable via at least one public module. If the symbol lives only in `newton._src.<path>` and is not re-exported, raise a 🕵️ Private-only flag. Reason: AGENTS.md forbids examples/docs from importing `newton._src`, so a user-facing symbol that is not re-exported is unusable by Newton's own examples and will churn.
 
-## Newton has no kernel-scope builtin registry
+## No kernel-scope builtin registry
 
-Warp's release-audit walks `warp/_src/builtins.py` for `add_builtin("<name>", ...)` calls. Newton has no such registry. All user-facing Newton symbols are ordinary Python (classes, functions, enums, constants) defined in `newton/_src/**` and re-exported through the public modules above. Skip every "kernel-scope" codepath from the Warp version of this skill.
+Newton has no separate builtin registry to audit. All user-facing symbols are ordinary Python classes, functions, enums, and constants defined in `newton/_src/**` and re-exported through the public modules above. Skip kernel-scope symbol extraction.
 
 ## Paths that trigger Phase 4f semantic-change review
 

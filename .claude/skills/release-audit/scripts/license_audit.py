@@ -311,19 +311,30 @@ def _metadata_needs_review(metadata: dict[str, str]) -> bool:
 
 def _is_standard_license_expression(value: str) -> bool:
     """Return whether *value* has the shape of an SPDX license expression."""
-    tokens = value.replace("(", " ").replace(")", " ").split()
+    tokens = value.replace("(", " ( ").replace(")", " ) ").split()
     if not tokens:
         return False
 
     expect_identifier = True
+    parenthesis_depth = 0
     for token in tokens:
-        if expect_identifier:
-            if _LICENSE_IDENTIFIER_RE.fullmatch(token) is None:
+        if token == "(":
+            if not expect_identifier:
                 return False
-        elif token not in _LICENSE_EXPRESSION_OPERATORS:
+            parenthesis_depth += 1
+        elif token == ")":
+            if expect_identifier or parenthesis_depth == 0:
+                return False
+            parenthesis_depth -= 1
+        elif expect_identifier:
+            if token in _LICENSE_EXPRESSION_OPERATORS or _LICENSE_IDENTIFIER_RE.fullmatch(token) is None:
+                return False
+            expect_identifier = False
+        elif token in _LICENSE_EXPRESSION_OPERATORS:
+            expect_identifier = True
+        else:
             return False
-        expect_identifier = not expect_identifier
-    return not expect_identifier
+    return parenthesis_depth == 0 and not expect_identifier
 
 
 def _concise_license(metadata: dict[str, str]) -> str:
