@@ -110,8 +110,17 @@ Known gaps of the experimental importer, tracked as follow-ups:
   deformables are skipped rather than simulated.
 * **Per-element materials** -- ``GeomSubset`` material bindings are ignored; one material
   applies to the whole simulation prim.
+* **Collision participation** -- follows the rigid semantics: a deformable collides when
+  its simulation geometry (or, approximated with a warning, another prim in its deformable
+  body hierarchy) carries an enabled ``PhysicsCollisionAPI``; ``physics:collisionEnabled``
+  falls back to true. Cables without an enabled collider import as non-colliding rods
+  (dynamics only, per the proposal). Cloth and volume deformables cannot disable particle
+  collision in Newton yet: they warn and import colliding. A welded cable graph shares one
+  shape configuration, so any collision-enabled member curve makes the whole graph collide
+  (mixed authoring warns).
 * **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not imported or driven. The simulation geometry is what you get.
+  deformable body is not simulated or driven; a dedicated collider only toggles the
+  simulation geometry's collision as described above.
 * **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
   synthesized. One stiffness value, computed from the mean segment length, applies to a whole
   curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a

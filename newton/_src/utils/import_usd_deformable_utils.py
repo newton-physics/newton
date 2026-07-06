@@ -77,6 +77,66 @@ def _is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
     return any(re.match(pattern, path) for pattern in ignore_paths)
 
 
+def _deformable_collision_enabled(prim) -> tuple[bool, str | None]:
+    """Resolve a deformable simulation geometry's collision participation.
+
+    Mirrors the rigid path's ``_is_enabled_collider``: collision is on when the
+    simulation geometry carries an enabled ``PhysicsCollisionAPI``
+    (``physics:collisionEnabled`` falls back to true), or, failing that, when
+    another prim in the deformable body hierarchy does -- a dedicated collider
+    Newton cannot embed, approximated by the simulation geometry. Without any
+    enabled collider the deformable simulates dynamics without collision, per
+    the proposal.
+
+    Returns ``(enabled, approximated_from)`` where ``approximated_from`` is the
+    dedicated collider's path when the second rule applied, else ``None``.
+    """
+    from pxr import Usd, UsdPhysics
+
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    def _enabled_collider(p) -> bool:
+        if not (p.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(p, "PhysicsCollisionAPI")):
+            return False
+        attr = p.GetAttribute("physics:collisionEnabled")
+        value = attr.Get() if attr else None
+        return True if value is None else bool(value)
+
+    if _enabled_collider(prim):
+        return True, None
+    body_root = usd._find_deformable_body_prim(prim)
+    if body_root is not None:
+        it = iter(Usd.PrimRange(body_root, Usd.TraverseInstanceProxies()))
+        for p in it:
+            if p != body_root and usd.has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
+                it.PruneChildren()  # a nested body's collider is its own
+                continue
+            if p == prim:
+                continue
+            if _enabled_collider(p):
+                return True, str(p.GetPath())
+    return False, None
+
+
+def _warn_collision_approximated(path: str, approximated_from: str | None) -> None:
+    """Warn when a dedicated deformable collider is approximated by the sim geometry."""
+    if approximated_from is not None:
+        warnings.warn(
+            f"{approximated_from}: dedicated deformable collider is approximated by the "
+            f"simulation geometry {path} (deformable collider embedding is not supported).",
+            stacklevel=2,
+        )
+
+
+def _warn_collision_not_disableable(path: str) -> None:
+    """Warn that a particle deformable cannot honor disabled/unauthored collision."""
+    warnings.warn(
+        f"{path}: no enabled collider is authored, but Newton cannot disable deformable "
+        f"particle collision; importing with collision enabled.",
+        stacklevel=2,
+    )
+
+
 def _world_matrix_reflects(world_mat: wp.mat44) -> bool:
     """Whether the world transform's linear part has a negative determinant (a reflection).
 

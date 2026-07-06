@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import ShapeFlags
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_physics_attachment,
@@ -742,6 +743,58 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertNotIn("/World/Junction", result["path_attachment_map"])
         junction = result["path_attachment_attrs"]["/World/Junction"]
         self.assertIn("unsupported_reason", junction)
+
+    def test_cable_collision_gating(self):
+        """Collision participation follows the rigid semantics: an enabled
+        PhysicsCollisionAPI collides, an explicitly disabled one does not, and
+        an unmarked curve simulates dynamics without collision (proposal)."""
+        from pxr import Sdf
+
+        collide = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        for case, expected_colliding in (("none", False), ("enabled", True), ("disabled", False)):
+            with self.subTest(case=case):
+                stage = _deformable_stage()
+                curve = _add_cable_curve(stage, "/World/Cable", pts, collision=False)
+                if case != "none":
+                    curve.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+                    if case == "disabled":
+                        curve.GetPrim().CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage)
+                # Dynamics are intact either way; only the collision flags differ.
+                self.assertEqual(builder.body_count, 3)
+                self.assertEqual(builder.joint_count, 2)
+                for i in range(builder.shape_count):
+                    is_colliding = bool(int(builder.shape_flags[i]) & collide)
+                    self.assertEqual(is_colliding, expected_colliding, f"shape {i}")
+                builder.finalize()
+
+    def test_welded_graph_mixed_collision_collides_and_warns(self):
+        """A welded graph mixing collision-enabled and unmarked curves collides
+        as a whole (one rod graph has one shape config) and warns."""
+        stage = _deformable_stage()
+        pts_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        a = _add_cable_curve(stage, "/World/CableA", pts_a, collision=False)
+        a.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        pts_b = [(0.0, 0.0, 1.0), (0.0, 0.1, 1.0), (0.0, 0.2, 1.0), (0.0, 0.3, 1.0)]
+        _add_cable_curve(stage, "/World/CableB", pts_b, collision=False)
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/CableA",
+            type0="point",
+            indices0=[0],
+            src1="/World/CableB",
+            type1="point",
+            indices1=[0],
+        )
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "mix collision"):
+            builder.add_usd(stage)
+        collide = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
+        for i in range(builder.shape_count):
+            self.assertTrue(int(builder.shape_flags[i]) & collide, f"shape {i}")
 
     def test_curve_vertex_counts_partition_validation(self):
         """curveVertexCounts that do not partition points (a mismatched total or a negative

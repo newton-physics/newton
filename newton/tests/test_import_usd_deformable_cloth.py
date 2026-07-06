@@ -39,6 +39,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         mesh.CreateFaceVertexCountsAttr([4])  # single quad face
         mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
         mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -59,6 +60,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
         mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
         mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -85,6 +87,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 mesh.CreateFaceVertexCountsAttr(face_counts)
                 mesh.CreateFaceVertexIndicesAttr(face_indices)
                 mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+                mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
 
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(UserWarning, message):
@@ -189,6 +192,28 @@ class TestUSDDeformableCloth(unittest.TestCase):
         for i in range(p0, p1):
             self.assertAlmostEqual(builder.particle_radius[i], 0.5 * thickness, places=6)
         self.assertNotAlmostEqual(builder.particle_radius[p0], builder.default_particle_radius, places=6)
+
+    def test_cloth_collision_limitation(self):
+        """Newton cannot disable particle collision: a cloth without an enabled
+        PhysicsCollisionAPI warns and imports colliding; an enabled one is silent."""
+        from pxr import Sdf
+
+        for case, expect_warning in (("none", True), ("enabled", False), ("disabled", True)):
+            with self.subTest(case=case):
+                stage = _deformable_stage()
+                mesh = _add_cloth_mesh(stage, "/World/Cloth", collision=False)
+                if case != "none":
+                    mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+                    if case == "disabled":
+                        mesh.GetPrim().CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_usd(stage)
+                messages = [str(w.message) for w in caught]
+                warned = any("cannot disable deformable particle collision" in m for m in messages)
+                self.assertEqual(warned, expect_warning)
+                self.assertEqual(builder.particle_count, 4)
 
     def test_cloth_per_point_mass_policy(self):
         """Valid physics:masses on the cloth Mesh set the particle masses directly; negative /

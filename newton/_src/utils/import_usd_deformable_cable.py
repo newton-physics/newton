@@ -23,11 +23,13 @@ from .import_usd_deformable_utils import (
     _cable_segment_quaternions,
     _CurveDeformableRecord,
     _deformable_body_skip_reason,
+    _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
     _validate_attachment_index_pairs,
+    _warn_collision_approximated,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_unsupported_rest_fields,
@@ -370,7 +372,24 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 stretch = create_cable_stiffness_from_elastic_moduli(mat["stretchStiffness"], radius, seg_len)[0]
             if "bendStiffness" in mat:
                 bend = create_cable_stiffness_from_elastic_moduli(mat["bendStiffness"], radius, seg_len)[1]
-        cfg = replace(builder.default_shape_cfg, density=rep.density)
+        # One rod graph has one shape config, so collision is resolved per component:
+        # any collision-enabled member curve makes the whole graph collide.
+        collision_states = {p: _deformable_collision_enabled(curve_recs[p].prim) for p in comp_paths}
+        for p, (_enabled, approximated_from) in collision_states.items():
+            _warn_collision_approximated(p, approximated_from)
+        collision_enabled = any(enabled for enabled, _src in collision_states.values())
+        if collision_enabled and not all(enabled for enabled, _src in collision_states.values()):
+            warnings.warn(
+                f"cable graph '{cid}': welded cables mix collision-enabled and collision-disabled "
+                f"curves; the whole graph collides.",
+                stacklevel=2,
+            )
+        cfg = replace(
+            builder.default_shape_cfg,
+            density=rep.density,
+            has_shape_collision=collision_enabled,
+            has_particle_collision=collision_enabled,
+        )
         # Unlike single cables, the graph junction spanning tree is intrinsic topology, not a
         # caller choice, and only a tree (not the all-incident-edges joint set produced when
         # unwrapped) is articulation-safe. So the importer wraps each component into its own
@@ -592,7 +611,14 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
         cable_density = _resolve_deformable_density(prim, cable_mat.get("density"), deformable_read)
         resolved_cable_density = cable_density if cable_density is not None else builder.default_shape_cfg.density
-        cable_cfg = replace(builder.default_shape_cfg, density=resolved_cable_density)
+        collision_enabled, approximated_from = _deformable_collision_enabled(prim)
+        _warn_collision_approximated(path, approximated_from)
+        cable_cfg = replace(
+            builder.default_shape_cfg,
+            density=resolved_cable_density,
+            has_shape_collision=collision_enabled,
+            has_particle_collision=collision_enabled,
+        )
         if "shearStiffness" in cable_mat or "twistStiffness" in cable_mat:
             warnings.warn(
                 f"{path}: shearStiffness / twistStiffness cannot be expressed by the rod's stretch and "

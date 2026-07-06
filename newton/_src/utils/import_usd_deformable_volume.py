@@ -19,10 +19,13 @@ import warp as wp
 from .import_usd_deformable_utils import (
     _apply_particle_masses,
     _deformable_body_skip_reason,
+    _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
+    _warn_collision_approximated,
+    _warn_collision_not_disableable,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_unsupported_rest_fields,
@@ -119,6 +122,14 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             ],
             dtype=np.float32,
         )
+        if is_volume_deformable:
+            # Newton has no per-particle collision toggle, so authored no-collision
+            # intent cannot be honored; the legacy bare-TetMesh path is unchanged.
+            collision_enabled, approximated_from = _deformable_collision_enabled(prim)
+            _warn_collision_approximated(path, approximated_from)
+            if not collision_enabled:
+                _warn_collision_not_disableable(path)
+
         add_soft_mesh_kwargs = {
             "pos": wp.vec3(0.0, 0.0, 0.0),
             "rot": wp.quat_identity(),

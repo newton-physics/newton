@@ -4,13 +4,15 @@
 """Shared USD-authoring fixtures for the deformable-import test modules."""
 
 
-def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None):
+def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, density=None, collision=True):
     """Author a GeomBasisCurves marked as a curve deformable (cable).
 
     Binds a minimal canonical curve-deformable material carrying ``thickness`` (and optional
     ``density``) so the importer does not warn about an unauthored cable thickness. Pass
     ``thickness=None`` to leave the cable without a bound material, e.g. to exercise the
-    default-radius fallback or a test's own material binding.
+    default-radius fallback or a test's own material binding. ``collision`` authors an
+    enabled ``PhysicsCollisionAPI`` (the common colliding case); pass ``False`` for the
+    collision-gating tests.
     """
     from pxr import UsdGeom
 
@@ -22,6 +24,8 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     # Metadata-based discovery: apply the curve-deformable sim API by token so it
     # is found even when the deformable schema is not registered with USD.
     curves.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableSimAPI")
+    if collision:
+        curves.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     if thickness is not None:
         mat_attrs = {"thickness": thickness}
         if density is not None:
@@ -117,7 +121,7 @@ def _add_element_collision_filter(
     return prim
 
 
-def _add_cloth_mesh(stage, path):
+def _add_cloth_mesh(stage, path, *, collision=True):
     """Author a two-triangle quad GeomMesh marked as a surface deformable (cloth)."""
     from pxr import UsdGeom
 
@@ -126,6 +130,8 @@ def _add_cloth_mesh(stage, path):
     mesh.CreateFaceVertexCountsAttr([3, 3])
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
     mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+    if collision:
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     return mesh
 
 

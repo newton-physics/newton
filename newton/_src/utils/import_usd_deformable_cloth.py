@@ -19,10 +19,13 @@ import warp as wp
 from .import_usd_deformable_utils import (
     _apply_particle_masses,
     _deformable_body_skip_reason,
+    _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
+    _warn_collision_approximated,
+    _warn_collision_not_disableable,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_unsupported_rest_fields,
@@ -183,6 +186,13 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         density = resolved_cloth_density * thickness if thickness is not None else resolved_cloth_density
         # Collision radius from the shell's physical half-thickness rather than the generic default.
         particle_radius = 0.5 * thickness if thickness is not None else None
+
+        # Newton has no per-particle collision toggle, so authored no-collision intent
+        # cannot be honored for particle deformables; see the collision-gating docs.
+        collision_enabled, approximated_from = _deformable_collision_enabled(prim)
+        _warn_collision_approximated(path, approximated_from)
+        if not collision_enabled:
+            _warn_collision_not_disableable(path)
 
         p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
         builder.add_cloth_mesh(

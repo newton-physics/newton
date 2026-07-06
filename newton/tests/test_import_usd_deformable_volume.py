@@ -46,11 +46,17 @@ def _author_tet_cube(stage, path, z0=0.0):
     tet.CreatePointsAttr(c)
     tet.CreateTetVertexIndicesAttr(tets)
     tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     return tet
 
 
-def _author_unit_tet(stage, path, *, sim_api=False):
-    """Author a single-tetrahedron TetMesh (volume 1/6), optionally marked as a simulation mesh."""
+def _author_unit_tet(stage, path, *, sim_api=False, collision=None):
+    """Author a single-tetrahedron TetMesh (volume 1/6), optionally marked as a simulation mesh.
+
+    ``collision`` authors an enabled ``PhysicsCollisionAPI``; defaults to ``sim_api`` so
+    deformable-marked fixtures represent the common colliding case, while bare TetMeshes
+    keep the legacy import untouched.
+    """
     from pxr import UsdGeom
 
     tet = UsdGeom.TetMesh.Define(stage, path)
@@ -58,6 +64,8 @@ def _author_unit_tet(stage, path, *, sim_api=False):
     tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
     if sim_api:
         tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    if sim_api if collision is None else collision:
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     return tet
 
 
@@ -74,6 +82,7 @@ def _author_two_tet_wedge(stage, path):
     tet.CreatePointsAttr([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 4.0), (0.0, 0.0, -1.0)])
     tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3), (0, 2, 1, 4)])
     tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     return tet
 
 
@@ -259,6 +268,54 @@ class TestUSDDeformableVolume(unittest.TestCase):
         result = builder.add_usd(stage, deformable_results=True)
 
         self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
+
+    def test_volume_collision_limitation(self):
+        """Newton cannot disable particle collision: a volume deformable without
+        an enabled PhysicsCollisionAPI warns and imports colliding."""
+        from pxr import Sdf
+
+        for case, expect_warning in (("none", True), ("enabled", False), ("disabled", True)):
+            with self.subTest(case=case):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True, collision=False)
+                if case != "none":
+                    tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+                    if case == "disabled":
+                        tet.GetPrim().CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_usd(stage)
+                messages = [str(w.message) for w in caught]
+                warned = any("cannot disable deformable particle collision" in m for m in messages)
+                self.assertEqual(warned, expect_warning)
+                self.assertEqual(builder.particle_count, 4)
+
+    def test_dedicated_collider_enables_collision_with_approximation_warning(self):
+        """An enabled collider elsewhere in the deformable body hierarchy turns
+        collision on, approximated by the simulation geometry, with a warning
+        naming the collider prim."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        _apply_deformable_body_api(body)
+        _author_unit_tet(stage, "/World/Body/Sim", sim_api=True, collision=False)
+        # A dedicated TetMesh collider: not a simulation mesh, so the volume pass
+        # leaves it alone, and it is not eligible for the rigid collider path.
+        collider = UsdGeom.TetMesh.Define(stage, "/World/Body/Collider")
+        collider.CreatePointsAttr([(0.0, 0.0, 1.0), (0.5, 0.0, 1.0), (0.0, 0.5, 1.0), (0.0, 0.0, 1.5)])
+        collider.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+        collider.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(w.message) for w in caught]
+        self.assertTrue(any("approximated by the simulation geometry" in m for m in messages))
+        self.assertFalse(any("cannot disable deformable particle collision" in m for m in messages))
+        self.assertEqual(builder.particle_count, 4)
 
     def test_volume_material_density_validation(self):
         """Negative and non-finite material densities warn and are ignored (the proposal's
