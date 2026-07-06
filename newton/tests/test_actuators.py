@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
@@ -53,9 +54,9 @@ if _HAS_TORCH:
     class _LSTMNet(_torch.nn.Module):
         """Minimal LSTM network for exercising the Torch checkpoint path."""
 
-        def __init__(self, hidden: int = 8, layers: int = 1):
+        def __init__(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False):
             super().__init__()
-            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True)
+            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True, bidirectional=bidirectional)
             self.dec = _torch.nn.Linear(hidden, 1)
 
         def forward(
@@ -552,9 +553,8 @@ class TestControllerNeuralLSTM(unittest.TestCase):
             ControllerNeuralLSTM(model_path=path)
 
 
-@unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNeuralMLPTorchFormats(unittest.TestCase):
-    """ControllerNeuralMLP loading from pt2, TorchScript, and dict checkpoints."""
+class _TorchCheckpointTestMixin:
+    """Shared helpers for saving pt2 / TorchScript / dict torch checkpoints."""
 
     def setUp(self):
         import torch
@@ -570,6 +570,31 @@ class TestControllerNeuralMLPTorchFormats(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
+    def _save_torchscript(self, net, filename="model.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        scripted = self.torch.jit.script(net)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _save_dict(self, net, filename="model_dict.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        self.torch.save({"model": net, "metadata": metadata or {}}, path)
+        return path
+
+    def _export_pt2(self, net, example_inputs, dynamic_shapes, filename, metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        net.eval()
+        exported = self.torch.export.export(net, example_inputs, dynamic_shapes=dynamic_shapes)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else None
+        self.torch.export.save(exported, path, extra_files=extra)
+        return path
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
+    """ControllerNeuralMLP loading from pt2, TorchScript, and dict checkpoints."""
+
     def _make_mlp(self, bias=0.0):
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
         with self.torch.no_grad():
@@ -577,27 +602,10 @@ class TestControllerNeuralMLPTorchFormats(unittest.TestCase):
             net[0].bias.fill_(bias)
         return net
 
-    def _save_torchscript(self, net, filename="mlp.pt", metadata=None):
-        path = os.path.join(self._tmp_dir, filename)
-        scripted = self.torch.jit.script(net)
-        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
-        self.torch.jit.save(scripted, path, _extra_files=extra)
-        return path
-
-    def _save_dict(self, net, filename="mlp_dict.pt", metadata=None):
-        path = os.path.join(self._tmp_dir, filename)
-        self.torch.save({"model": net, "metadata": metadata or {}}, path)
-        return path
-
     def _save_pt2(self, net, filename="mlp.pt2", metadata=None):
-        path = os.path.join(self._tmp_dir, filename)
-        net.eval()
         example = (self.torch.randn(2, 2, device=self._torch_dev),)
         batch = self.torch.export.Dim("batch", min=1)
-        exported = self.torch.export.export(net, example, dynamic_shapes=({0: batch},))
-        extra = {"metadata.json": json.dumps(metadata)} if metadata else None
-        self.torch.export.save(exported, path, extra_files=extra)
-        return path
+        return self._export_pt2(net, example, ({0: batch},), filename, metadata=metadata)
 
     def test_dict_checkpoint(self):
         """Load MLP from a dict checkpoint with metadata."""
@@ -643,43 +651,34 @@ class TestControllerNeuralMLPTorchFormats(unittest.TestCase):
         with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
             ControllerNeuralMLP(model_path=dict_path)
 
+    def test_deprecation_warning_points_at_caller(self):
+        """The legacy-format warning is attributed to the calling code, not newton internals."""
+        path = self._save_torchscript(self._make_mlp())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            ControllerNeuralMLP(model_path=path)
+        hits = [w for w in caught if "TorchScript checkpoints" in str(w.message)]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].filename, __file__)
+
+    def test_load_metadata_reads_zip_entry_without_warning(self):
+        """Metadata-only reads do not deserialize the network or warn about legacy formats."""
+        path = self._save_torchscript(self._make_mlp(), metadata={"effort_scale": 3.0})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            metadata = load_metadata(path)
+        self.assertEqual(metadata, {"effort_scale": 3.0})
+        self.assertFalse([w for w in caught if "checkpoints" in str(w.message)])
+
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNeuralLSTMTorchFormats(unittest.TestCase):
+class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
     """ControllerNeuralLSTM loading from pt2, TorchScript, and dict checkpoints."""
 
-    def setUp(self):
-        import torch
-
-        self.device = wp.get_device()
-        if self.device.is_cuda and not torch.cuda.is_available():
-            self.skipTest("Torch not compiled with CUDA support")
-        self.torch = torch
-        _ignore_torchscript_deprecation(self)
-        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
-        self._tmp_dir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        shutil.rmtree(self._tmp_dir, ignore_errors=True)
-
-    def _make_lstm(self, hidden=8, layers=1):
-        return _LSTMNet(hidden=hidden, layers=layers).to(self._torch_dev)
-
-    def _save_torchscript(self, net, filename="lstm.pt", metadata=None):
-        path = os.path.join(self._tmp_dir, filename)
-        scripted = self.torch.jit.script(net)
-        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
-        self.torch.jit.save(scripted, path, _extra_files=extra)
-        return path
-
-    def _save_dict(self, net, filename="lstm_dict.pt", metadata=None):
-        path = os.path.join(self._tmp_dir, filename)
-        self.torch.save({"model": net, "metadata": metadata or {}}, path)
-        return path
+    def _make_lstm(self, hidden=8, layers=1, bidirectional=False):
+        return _LSTMNet(hidden=hidden, layers=layers, bidirectional=bidirectional).to(self._torch_dev)
 
     def _save_pt2(self, net, filename="lstm.pt2", metadata=None):
-        path = os.path.join(self._tmp_dir, filename)
-        net.eval()
         layers, hidden = net.lstm.num_layers, net.lstm.hidden_size
         n = 2
         x = self.torch.randn(n, 1, 2, device=self._torch_dev)
@@ -687,10 +686,7 @@ class TestControllerNeuralLSTMTorchFormats(unittest.TestCase):
         c = self.torch.zeros(layers, n, hidden, device=self._torch_dev)
         batch = self.torch.export.Dim("batch", min=1)
         dynamic_shapes = ({0: batch}, ({1: batch}, {1: batch}))
-        exported = self.torch.export.export(net, (x, (h, c)), dynamic_shapes=dynamic_shapes)
-        extra = {"metadata.json": json.dumps(metadata)} if metadata else None
-        self.torch.export.save(exported, path, extra_files=extra)
-        return path
+        return self._export_pt2(net, (x, (h, c)), dynamic_shapes, filename, metadata=metadata)
 
     def _run_lstm_compute(self, ctrl):
         n = 1
@@ -749,6 +745,29 @@ class TestControllerNeuralLSTMTorchFormats(unittest.TestCase):
         """A pt2 checkpoint lacking num_layers/hidden_size fails with clear guidance."""
         path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata={"effort_scale": 5.0})
         with self.assertRaisesRegex(ValueError, "num_layers.*hidden_size"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_pt2_metadata_config_coerced_to_int(self):
+        """JSON floats for num_layers/hidden_size are coerced to int."""
+        metadata = {"num_layers": 2.0, "hidden_size": 8.0}
+        path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        self.assertIsInstance(ctrl._num_layers, int)
+        self.assertIsInstance(ctrl._hidden_size, int)
+        self.assertEqual(ctrl._num_layers, 2)
+        self.assertEqual(ctrl._hidden_size, 8)
+
+    def test_metadata_config_mismatch_raises(self):
+        """Metadata that contradicts the network's actual LSTM fails at load."""
+        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"num_layers": 2, "hidden_size": 8})
+        with self.assertRaisesRegex(ValueError, "num_layers"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_invalid_lstm_not_masked_by_config_metadata(self):
+        """Structural validation still runs when metadata provides the LSTM config."""
+        net = self._make_lstm(hidden=8, layers=1, bidirectional=True)
+        path = self._save_dict(net, metadata={"num_layers": 1, "hidden_size": 8})
+        with self.assertRaisesRegex(ValueError, "bidirectional"):
             ControllerNeuralLSTM(model_path=path)
 
     def test_legacy_formats_warn(self):

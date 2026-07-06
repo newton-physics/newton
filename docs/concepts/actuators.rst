@@ -202,9 +202,22 @@ Whether an actuator supports differentiability and CUDA graph capture depends on
 its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
 graphable.  Neural-network controllers (:class:`ControllerNeuralMLP`,
 :class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX checkpoints
-use Warp-NN's Warp-backed runtime and are graphable, while TorchScript
-checkpoints (``.pt`` / ``.pth``) use the Torch backend, require PyTorch, and are
-not graphable due to framework interop overhead.
+use Warp-NN's Warp-backed runtime and are graphable, while Torch checkpoints
+use the Torch backend, require PyTorch, and are not graphable due to framework
+interop overhead.
+
+Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
+Checkpoint metadata (scales and network configuration) is stored as a JSON
+extra file::
+
+   metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
+   torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
+
+:class:`ControllerNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
+the metadata of pt2 checkpoints, since exported modules no longer expose the
+``torch.nn.LSTM`` submodule that legacy checkpoints are inspected for.  The
+legacy TorchScript (``.pt`` / ``.pth``, saved with ``torch.jit.save``) and
+dict (saved with ``torch.save``) formats still load but are deprecated.
 
 :meth:`Actuator.is_graphable` returns ``True`` when all components can be
 captured in a CUDA graph.
