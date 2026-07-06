@@ -4,6 +4,7 @@
 """Smoke tests for the coupled solver prototype."""
 
 import unittest
+import warnings
 from typing import ClassVar
 
 import numpy as np
@@ -1704,7 +1705,9 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
         link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         tree_joint = builder.add_joint_revolute(parent=base, child=link, axis=(0.0, 0.0, 1.0))
         builder.add_articulation([root_joint, tree_joint])
-        loop_joint = builder.add_joint_fixed(parent=base, child=link)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*parallel joints.*", category=UserWarning)
+            loop_joint = builder.add_joint_fixed(parent=base, child=link)
         builder.joint_articulation[loop_joint] = -1
         model = builder.finalize(device="cpu")
 
