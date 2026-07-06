@@ -207,30 +207,62 @@ authored native value such as ``solreflimit="0 0"`` or USD
 Shape-material contact stiffness and damping
 --------------------------------------------
 
-Shape-material contact gains follow the same force-space contract as
-:ref:`joint limits <joint-limit-stiffness-and-damping>` (issue #2009).
 :attr:`~newton.Model.shape_material_ke` and
 :attr:`~newton.Model.shape_material_kd` are force-space stiffness and
-damping (``N/m`` and ``N·s/m``). For the Newton-contacts path
-(``SolverMuJoCo(..., use_mujoco_contacts=False)``),
-:class:`~newton.solvers.SolverMuJoCo` scales the stiffness/damping pair by
-``factor = (body_invweight0[A] + body_invweight0[B]) * (1 - dmax)`` (where
-``A`` and ``B`` are the two contacting bodies and ``dmax = solimp[1]``) and
-writes the resulting per-contact ``solref``. The two-body inverse-mass sum
-makes the contact stiffness independent of either body's mass, so
-:attr:`~newton.Model.shape_material_ke` behaves as a true force-space gain.
+damping (``N/m`` and ``N·s/m``), but their realized response depends on the
+active mapping. On the force-space Newton-contacts path,
+:class:`~newton.solvers.SolverMuJoCo` mixes the two shapes' gains and scales the
+pair by ``1 - dmax`` and the sum of the bodies' translational
+``body_invweight0[..., 0]`` values before writing per-contact ``solref``. Here
+``dmax = solimp[1]``. This inverse-weight scaling is Newton's implemented
+force-space contract, but it is not the full scalar contact effective mass
+:math:`(J M^{-1} J^T)^{-1}` for arbitrary articulated or off-center contacts.
 
-``model.mujoco.solref_mode`` (per shape) controls how
+``model.mujoco.solref_mode`` (per shape) records how
 ``shape_material_ke`` / ``shape_material_kd`` and ``mujoco.solref``
-combine, with the same three states as joint limits:
+combine, with the same three states as joint limits. The list describes existing
+model and implementation behavior; the constants are not a public selection
+API:
 
 * ``SOLREF_MODE_FORCE_SPACE`` — Newton force-space gains; the per-contact
   factor above applies.
 * ``SOLREF_MODE_RAW`` — forward the authored ``mujoco.solref`` (e.g.
   from an MJCF/USD import) unchanged.
 * ``SOLREF_MODE_MJCF_DEFAULT`` — registered default; preserves MuJoCo's
-  compile-time contact dynamics and the legacy
+  compile-time contact dynamics and the legacy unit-mass numerical
   ``convert_solref(ke, kd, 1, 1)`` round-trip in ``geom_solref``.
+
+.. _mujoco-contact-solref-conversion:
+
+Contact ``solref`` conversion
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For positive numeric ``ke`` and ``kd``, the legacy
+``convert_solref(ke, kd, 1, 1)`` mapping writes:
+
+.. math::
+
+   \mathrm{timeconst} = 2 / kd, \qquad
+   \mathrm{dampratio} = kd / (2 \sqrt{ke})
+
+Under this unit-mass numerical mapping, ``sqrt(ke)`` behaves like a frequency
+and holding the numerical damping ratio fixed requires ``kd`` to scale with
+``sqrt(ke)``. This is not a dimensionally physical critical-damping rule for an
+arbitrary contact mass. The force-space path applies the implemented
+``body_invweight0`` factor above before the same conversion; the formula then
+describes the scaled numerical ``solref``, not an exact Jacobian-derived contact
+response. See the implementation in
+:github:`newton/_src/solvers/mujoco/kernels.py` and its force-space contact tests
+in :github:`newton/tests/test_mujoco_solver.py`.
+
+With MuJoCo's default ``refsafe`` guard enabled, MuJoCo-Warp evaluates positive
+``solref`` using ``max(timeconst, 2 * dt)`` for the active constraint without
+rewriting the stored value. Direct-format negative ``solref`` bypasses this
+clamp. Once a requested positive ``timeconst`` falls below that floor, raising
+the gains at a fixed damping ratio no longer hardens the effective response;
+reduce the step passed to :meth:`~newton.solvers.SolverMuJoCo.step` instead. See
+MuJoCo's `refsafe option
+<https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
 
 These ``SOLREF_MODE_*`` names describe internal mode values; they are not
 public Newton symbols. MJCF/USD import selects the appropriate authored/default

@@ -44,16 +44,18 @@ unconstrained acceleration ``a0``:
 
 .. math::
 
-   a + d\,(b\,v + k\,r) = (1 - d)\,a_0
+   a + d (b v + k r) = (1 - d) a_0
 
 ``solref`` sets *how* the constraint corrects error (``b``/``k``, i.e.
 ``timeconst``/``dampratio``); ``solimp`` sets *how much authority* it has
-(impedance ``d(r)`` and regularization). Newton ``ke``/``kd`` keep their
-force-space units (``N/m`` and ``N·s/m``), but on the
-:class:`~newton.solvers.SolverMuJoCo` path they are converted into MuJoCo
-constraint ``solref`` rather than applied as a world-space penalty spring. Treat
-them as **force-space gains feeding constraint-space reference dynamics**, not as
-a Young's modulus or a direct N/m material spring.
+(impedance ``d(r)`` and regularization). Newton ``ke``/``kd`` arrays retain their
+documented units (``N/m`` and ``N·s/m``), but their realized meaning on the
+:class:`~newton.solvers.SolverMuJoCo` path depends on the active mapping. The
+legacy per-geometry conversion treats their numeric values as unit-mass
+reference dynamics and does not preserve a physical force-space response across
+masses. Existing force-space-mode contacts apply inverse-weight scaling before
+the same conversion. Neither path is a Young's modulus or a world-space penalty
+spring; see :ref:`mujoco-contact-solref-conversion`.
 
 Reference Dynamics
 ------------------
@@ -77,86 +79,29 @@ where ``d`` is the current impedance ``d(r)`` and the gains depend on the active
 The ``solimp`` plateau impedance ``dmax`` therefore normalizes both gains; raising
 ``dmax`` hardens the row but couples into ``k_0`` and ``b_0`` together.
 
-Mapping ``ke``/``kd`` to ``solref``
+Identify the Active Contact Mapping
 -----------------------------------
 
-How ``ke``/``kd`` reach the solver depends on the shape's ``solref_mode``
-(``model.mujoco.solref_mode``; default ``SOLREF_MODE_MJCF_DEFAULT``) and on
-``use_mujoco_contacts`` (default ``True``). For more details about how each mode
-and contact path affects this mapping, see
-:ref:`shape-material-contact-stiffness-and-damping`.
+Before tuning ``ke`` and ``kd``, determine whether the contact uses authored raw
+MuJoCo values, Newton's per-geometry conversion, or the per-contact force-space
+path. The active interpretation depends on imported metadata, contact path, and
+backend. See :ref:`shape-material-contact-stiffness-and-damping` for the mode
+definitions and path conditions, and :ref:`mujoco-contact-solref-conversion` for
+the exact conversion and ``refsafe`` behavior.
 
-**Default path (MJCF-default mode).** Each shape's ``ke``/``kd`` are baked into
-its geom ``solref`` at model build, as positive-format ``solref``:
+Authored raw ``solref`` retains native MuJoCo meaning. Existing force-space-mode
+contacts aim to make normal-contact tuning more transferable across effective
+masses, but the mode constants and direct symbolic selection are internal; do
+not import them from ``newton._src`` or use a magic integer to opt in. Imported
+metadata selects authored/default behavior automatically. The force-space mode
+is documented here to interpret existing models and implementation behavior,
+not as a supported user-selection workflow.
 
-.. math::
-
-   \mathtt{timeconst} = \frac{2}{k_d}, \qquad
-   \mathtt{dampratio} = \frac{k_d}{2\sqrt{k_e}}
-
-In this default mapping, ``√ke`` is the nominal constraint-space natural
-frequency and ``kd / (2√ke)`` the nominal damping ratio. To compare damping at
-fixed stiffness, hold ``ke`` and set ``kd = 2·ζ·√ke``; do not raise ``ke``
-or ``kd`` alone. (Newton's
-``convert_solref`` carries internal ``d_width``/``d_r`` arguments, but they are
-fixed at ``1`` on every current path, so they are not tuning knobs.) The realized
-response still depends on ``solimp``, ``dmax``, the current impedance ``d(r)``,
-constraint inverse inertia, the friction cone, solver convergence, and the
-timestep.
-
-Choosing ``solref_mode``
-------------------------
-
-``model.mujoco.solref_mode`` records how each shape's contact parameters are
-interpreted. The ``SOLREF_MODE_*`` names below identify internal mode values;
-they are not public Newton symbols and must not be imported from ``newton._src``.
-MJCF/USD import selects authored/default modes automatically; Newton does not
-currently expose a public symbolic workflow for selecting force-space mode.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Mode
-     - Choose when
-   * - ``SOLREF_MODE_MJCF_DEFAULT``
-     - Using Newton's default shape mapping shown above.
-   * - ``SOLREF_MODE_RAW``
-     - Preserving authored MJCF/USD ``solref`` values, calibration, or system
-       identification parameters without Newton force-space scaling.
-   * - ``SOLREF_MODE_FORCE_SPACE``
-     - Treating Newton ``ke``/``kd`` as physical contact gains across bodies with
-       different effective masses using per-contact inverse-weight scaling.
-
-Force-space mode can make normal-contact tuning more transferable across objects
-with different masses, which is useful for grasping and mass-randomized scenes.
-It does not increase friction, normal force, contact count, or controller effort;
-check those separately when a grasp slips. Use
-:ref:`contact-stiffness-sanity-checks` to evaluate force-space damping and
-timestep safety using the contact effective mass.
-
-The full force-space contact mapping applies only when both contacting shapes
-carry ``SOLREF_MODE_FORCE_SPACE``, Newton contacts are enabled
-(``use_mujoco_contacts=False``), and the MuJoCo-Warp GPU backend is used. The
-MuJoCo-contact and CPU paths fall back to the legacy per-geometry approximation.
-For the mode definitions, mapping, and fallback behavior, see
-:ref:`shape-material-contact-stiffness-and-damping`.
-
-Scaled force-space gains use positive ``(timeconst, dampratio)`` values. With
-MuJoCo's default ``refsafe`` guard enabled, the solver evaluates them using
-``effective_timeconst = max(timeconst, 2 * dt)``; it does not rewrite the stored
-``solref``. Here ``dt`` is the step passed to
-:meth:`~newton.solvers.SolverMuJoCo.step`. Direct-format negative ``solref``
-values bypass this clamp.
-
-For Newton's default positive mapping, ``timeconst = 2 / kd`` and
-``dampratio = kd / (2 * sqrt(ke))``. Holding damping ratio fixed therefore
-requires ``kd`` to scale with ``sqrt(ke)``. Once the requested ``timeconst`` is
-below the ``refsafe`` floor, increasing both gains along that fixed-ratio curve
-no longer hardens the effective response. Reduce ``dt`` or increase substeps
-instead of only raising gains. See the
-:ref:`contact-stiffness-sanity-checks` and MuJoCo's `refsafe option
-<https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
+If an existing model uses force-space mode, evaluate damping and timestep safety
+with :ref:`contact-stiffness-sanity-checks`. The mode does not add friction,
+normal force, contacts, or controller effort. If ``refsafe`` limits the requested
+positive-format response, reduce ``dt`` or increase substeps rather than
+repeatedly raising the gains.
 
 ``solref`` Formats
 ------------------
@@ -271,9 +216,10 @@ Hardness is mainly ``timeconst``/``ke`` and ``d(r)``; stability depends on
 geometry, mass/inertia, and controller.
 
 Do not treat raising ``kd`` as equivalent to reducing an independently authored
-``timeconst``. In ``SOLREF_MODE_MJCF_DEFAULT``, raising ``kd`` also raises the
-mapped ``dampratio``. In ``SOLREF_MODE_FORCE_SPACE``, choose damping using the
-effective-mass check in :ref:`contact-stiffness-sanity-checks`.
+``timeconst``. In Newton's positive conversion, raising ``kd`` also changes the
+mapped ``dampratio``. For force-space contacts, choose damping using the
+effective-mass check in :ref:`contact-stiffness-sanity-checks`; see
+:ref:`mujoco-contact-solref-conversion` for the exact mapping.
 
 .. _friction-cone-choice:
 
@@ -387,10 +333,9 @@ Tabletop Support / Pressing / Stacking
 
 *Goal: reduce penetration, keep support stable, and suppress bounce and chatter.*
 
-- Choose ``ke`` and ``kd`` together for the desired response. In
-  ``SOLREF_MODE_MJCF_DEFAULT``, ``kd ≈ 2·√ke`` gives nominal critical
-  damping; in ``SOLREF_MODE_FORCE_SPACE``, use
-  :ref:`contact-stiffness-sanity-checks`.
+- Choose ``ke`` and ``kd`` together using the active contact mapping. For
+  force-space contacts, use :ref:`contact-stiffness-sanity-checks`; for the exact
+  positive conversion, see :ref:`mujoco-contact-solref-conversion`.
 - Raise ``dmax`` in ``solimp`` to cut deep penetration; raise ``d0`` only if
   shallow contact is also too soft.
 - Increase substeps if the contact must be hard and the timestep cannot shrink.
@@ -406,8 +351,7 @@ energy and velocity transfer.*
 - Raise stiffness (higher ``ke``, lower ``timeconst``) to limit penetration
   depth.
 - If contact is overdamped, move ``dampratio`` toward 1 or reduce ``kd`` using
-  the active mode's mapping; overdamped contact absorbs energy that should
-  transfer.
+  the active mapping; overdamped contact absorbs energy that should transfer.
 - Reduce ``dt`` or increase substeps — high stiffness is more stable at small
   timesteps.
 - Judge contact quality by energy retention and rebound height, not penetration
