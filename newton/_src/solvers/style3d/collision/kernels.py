@@ -31,6 +31,17 @@ def triangle_barycentric(A: wp.vec3, B: wp.vec3, C: wp.vec3, P: wp.vec3):
 
 
 @wp.kernel
+def hessian_multiply_kernel(
+    hessian_diags: wp.array[wp.mat33],
+    x: wp.array[wp.vec3],
+    # outputs
+    Hx: wp.array[wp.vec3],
+):
+    tid = wp.tid()
+    Hx[tid] = hessian_diags[tid] * x[tid]
+
+
+@wp.kernel
 def eval_body_contact_kernel(
     # inputs
     dt: float,
@@ -55,6 +66,7 @@ def eval_body_contact_kernel(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     # outputs: particle force and hessian
     forces: wp.array[wp.vec3],
     hessians: wp.array[wp.mat33],
@@ -85,6 +97,7 @@ def eval_body_contact_kernel(
             contact_body_pos,
             contact_body_vel,
             contact_normal,
+            shape_margin,
             dt,
         )
         wp.atomic_add(forces, particle_idx, body_contact_force)

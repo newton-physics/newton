@@ -88,6 +88,10 @@ BETA_THRESHOLD = 0.0001  # 0.1mm
 
 VALUES_PER_KEY = NUM_SPATIAL_DIRECTIONS + 1
 
+# Open-addressed linear probing gets expensive at high load and failed inserts
+# scan the whole table.
+HASHTABLE_WARN_LOAD_PERCENT = 80
+
 # Vector type for tracking exported contact IDs (used in export kernels)
 exported_ids_vec_type = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
@@ -310,6 +314,26 @@ def _make_preprune_probe_fast(score: float, fingerprint: int) -> wp.uint64:
     return (wp.uint64(float_flip(score)) << wp.uint64(32)) | wp.uint64(0xFFFFFFFF)
 
 
+@wp.func
+def _make_spatial_contact_value_fast(score: float, is_inner: bool, fingerprint: int, contact_id: int) -> wp.uint64:
+    """Pack inner/outer priority, spatial score, and contact id."""
+    priority = wp.uint64(0)
+    if is_inner:
+        priority = wp.uint64(1)
+    score_bits = wp.uint64(float_flip(score) >> wp.uint32(1))
+    return (priority << wp.uint64(63)) | (score_bits << wp.uint64(32)) | wp.uint64(contact_id)
+
+
+@wp.func
+def _make_spatial_preprune_probe_fast(score: float, is_inner: bool, fingerprint: int) -> wp.uint64:
+    """Pre-prune probe for prioritized spatial contact slots."""
+    priority = wp.uint64(0)
+    if is_inner:
+        priority = wp.uint64(1)
+    score_bits = wp.uint64(float_flip(score) >> wp.uint32(1))
+    return (priority << wp.uint64(63)) | (score_bits << wp.uint64(32)) | wp.uint64(0xFFFFFFFF)
+
+
 @wp.func_native("""
 return static_cast<int32_t>(packed & 0xFFFFFFFFull);
 """)
@@ -404,6 +428,36 @@ def _make_preprune_probe_det(score: float, fingerprint: int) -> wp.uint64:
     )
 
 
+@wp.func
+def _make_spatial_contact_value_det(score: float, is_inner: bool, fingerprint: int, contact_id: int) -> wp.uint64:
+    """Pack inner/outer priority, spatial score, fingerprint, and contact id."""
+    priority = wp.uint64(0)
+    if is_inner:
+        priority = wp.uint64(1)
+    score_bits = wp.uint64(float_flip(score) >> wp.uint32(wp.static(SCORE_SHIFT + 1)))
+    return (
+        (priority << wp.uint64(63))
+        | (score_bits << wp.uint64(42))
+        | ((wp.uint64(fingerprint) & FINGERPRINT_MASK) << CONTACT_ID_BITS)
+        | (wp.uint64(contact_id) & CONTACT_ID_MASK)
+    )
+
+
+@wp.func
+def _make_spatial_preprune_probe_det(score: float, is_inner: bool, fingerprint: int) -> wp.uint64:
+    """Deterministic pre-prune probe for prioritized spatial slots."""
+    priority = wp.uint64(0)
+    if is_inner:
+        priority = wp.uint64(1)
+    score_bits = wp.uint64(float_flip(score) >> wp.uint32(wp.static(SCORE_SHIFT + 1)))
+    return (
+        (priority << wp.uint64(63))
+        | (score_bits << wp.uint64(42))
+        | ((wp.uint64(fingerprint) & FINGERPRINT_MASK) << CONTACT_ID_BITS)
+        | CONTACT_ID_MASK
+    )
+
+
 @wp.func_native("""
 return static_cast<int32_t>(packed & 0xFFFFFull);
 """)
@@ -435,6 +489,28 @@ def make_contact_value(score: float, fingerprint: int, contact_id: int, determin
     if deterministic != 0:
         return _make_contact_value_det(score, fingerprint, contact_id)
     return _make_contact_value_fast(score, fingerprint, contact_id)
+
+
+@wp.func
+def make_spatial_contact_value(
+    score: float,
+    is_inner: bool,
+    fingerprint: int,
+    contact_id: int,
+    deterministic: int,
+) -> wp.uint64:
+    """Pack a directional contact value where inner contacts outrank outer contacts."""
+    if deterministic != 0:
+        return _make_spatial_contact_value_det(score, is_inner, fingerprint, contact_id)
+    return _make_spatial_contact_value_fast(score, is_inner, fingerprint, contact_id)
+
+
+@wp.func
+def make_spatial_preprune_probe(score: float, is_inner: bool, fingerprint: int, deterministic: int) -> wp.uint64:
+    """Build a pre-prune probe for prioritized directional slots."""
+    if deterministic != 0:
+        return _make_spatial_preprune_probe_det(score, is_inner, fingerprint)
+    return _make_spatial_preprune_probe_fast(score, is_inner, fingerprint)
 
 
 @wp.func
@@ -541,8 +617,14 @@ class GlobalContactReducerData:
 
     # Aggregate force per hashtable entry (indexed by ht_capacity)
     # Used for hydroelastic stiffness calculation: c_stiffness = k_eff * |agg_force| / total_depth
-    # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
+    # Accumulates sum(area * pressure_func(depth) * normal) for all penetrating contacts per entry
     agg_force: wp.array[wp.vec3]
+
+    # Aggregate geometric depth-volume per hashtable entry: sum(area * |depth| * normal)
+    # for all penetrating contacts. Unlike ``agg_force`` this is independent of the
+    # pressure law, so its magnitude is used as the pressure-law-agnostic
+    # direction-reliability gate for normal matching / anchor placement.
+    agg_depth_volume: wp.array[wp.vec3]
 
     # Weighted position sum per hashtable entry (for anchor contact computation)
     # Accumulates sum(area * depth * position) for penetrating contacts
@@ -582,6 +664,7 @@ def _clear_active_kernel(
     ht_active_slots: wp.array[wp.int32],
     # Hydroelastic per-entry arrays
     agg_force: wp.array[wp.vec3],
+    agg_depth_volume: wp.array[wp.vec3],
     weighted_pos_sum: wp.array[wp.vec3],
     weight_sum: wp.array[wp.float32],
     entry_k_eff: wp.array[wp.float32],
@@ -637,6 +720,7 @@ def _clear_active_kernel(
             # Clear hydroelastic aggregates if arrays are not empty
             if agg_force.shape[0] > 0:
                 agg_force[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
+                agg_depth_volume[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weighted_pos_sum[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weight_sum[entry_idx] = 0.0
                 entry_k_eff[entry_idx] = 0.0
@@ -723,6 +807,7 @@ class GlobalContactReducer:
         store_hydroelastic_data: bool = False,
         store_moment_data: bool = False,
         deterministic: bool = False,
+        hashtable_size_factor: float = 0.25,
     ):
         """Initialize the global contact reducer.
 
@@ -735,7 +820,13 @@ class GlobalContactReducer:
             deterministic: If True, use deterministic fingerprint-based tiebreaking
                 in contact reduction and replace the pre-prune probe with a
                 deterministic variant.
+            hashtable_size_factor: Multiplier applied to ``capacity`` when sizing
+                the reduction hashtable. Must be positive.
         """
+        hashtable_size_factor = float(hashtable_size_factor)
+        if not hashtable_size_factor > 0.0:
+            raise ValueError(f"hashtable_size_factor must be > 0.0, got {hashtable_size_factor}")
+
         max_det_contacts = 1 << int(CONTACT_ID_BITS)
         if deterministic and capacity > max_det_contacts:
             raise ValueError(
@@ -748,6 +839,7 @@ class GlobalContactReducer:
         self.device = device
         self.store_hydroelastic_data = store_hydroelastic_data
         self.deterministic = deterministic
+        self.hashtable_size_factor = hashtable_size_factor
 
         self.values_per_key = NUM_SPATIAL_DIRECTIONS + 1
 
@@ -773,13 +865,10 @@ class GlobalContactReducer:
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
-        # Hashtable sizing: estimate unique (shape_pair, bin) keys needed
-        # - NUM_NORMAL_BINS + ceil(NUM_VOXEL_DEPTH_SLOTS / values_per_key) bins per pair
-        # - Dense hydroelastic contacts: many contacts share the same bin
-        # - Assume ~8 contacts per unique key on average (conservative for dense contacts)
-        # - Provides 2x load factor headroom within the /4 estimate
-        # - If table fills, contacts gracefully skip reduction (still in buffer)
-        hashtable_size = max(capacity // 4, 1024)  # minimum 1024 for small scenes
+        # Hashtable sizing: keep the historical default at capacity / 4 for
+        # memory compatibility, while exposing a factor for dense batched scenes.
+        # A full open-addressed table can turn failed inserts into whole-table probes.
+        hashtable_size = max(int(capacity * hashtable_size_factor), 1024)
         self.hashtable = HashTable(hashtable_size, device=device)
 
         # Values array for hashtable - managed here, not by HashTable
@@ -790,6 +879,7 @@ class GlobalContactReducer:
         # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
         if store_hydroelastic_data:
             self.agg_force = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
+            self.agg_depth_volume = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
             # k_eff per entry (constant per shape pair, set once on first insert)
@@ -809,6 +899,7 @@ class GlobalContactReducer:
                 self.agg_moment2_reduced = wp.zeros(0, dtype=wp.float32, device=device)
         else:
             self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
+            self.agg_depth_volume = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(0, dtype=wp.float32, device=device)
             self.entry_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
@@ -853,6 +944,7 @@ class GlobalContactReducer:
                 self.ht_values,
                 self.hashtable.active_slots,
                 self.agg_force,
+                self.agg_depth_volume,
                 self.weighted_pos_sum,
                 self.weight_sum,
                 self.entry_k_eff,
@@ -896,6 +988,7 @@ class GlobalContactReducer:
         data.contact_nbin_entry = self.contact_nbin_entry
         data.entry_k_eff = self.entry_k_eff
         data.agg_force = self.agg_force
+        data.agg_depth_volume = self.agg_depth_volume
         data.weighted_pos_sum = self.weighted_pos_sum
         data.weight_sum = self.weight_sum
         data.total_depth_reduced = self.total_depth_reduced
@@ -1219,6 +1312,122 @@ def export_and_reduce_contact_centered(
         reduction_update_slot(voxel_entry_idx, voxel_local_slot, voxel_value, reducer_data.ht_values, ht_capacity)
     else:
         wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
+
+    return contact_id
+
+
+@wp.func
+def export_and_reduce_contact_centered_two_spatial_depths(
+    shape_a: int,
+    shape_b: int,
+    position: wp.vec3,
+    normal: wp.vec3,
+    depth: float,
+    fingerprint: int,
+    centered_position: wp.vec3,
+    inner_spatial_depth: float,
+    outer_spatial_depth: float,
+    X_ws_voxel_shape: wp.transform,
+    aabb_lower_voxel: wp.vec3,
+    aabb_upper_voxel: wp.vec3,
+    voxel_res: wp.vec3i,
+    reducer_data: GlobalContactReducerData,
+) -> int:
+    """Export contact with inner-preferred spatial winners.
+
+    Directional slots accept contacts out to ``outer_spatial_depth``, but
+    contacts inside ``inner_spatial_depth`` always outrank outer contacts.
+    Within the same inner/outer tier, the furthest spatial projection wins.
+    """
+    ht_capacity = reducer_data.ht_capacity
+    use_inner = depth < inner_spatial_depth
+    use_outer = depth < outer_spatial_depth
+
+    if not use_outer:
+        return -1
+
+    # === Normal bin: prioritized spatial slots and inner max-depth slot ===
+    bin_id = get_slot(normal)
+    pos_2d = project_point_to_plane(bin_id, centered_position)
+    key = make_contact_key(shape_a, shape_b, bin_id)
+
+    entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+    might_win = False
+
+    if entry_idx >= 0:
+        if use_inner:
+            if reducer_data.deterministic != 0:
+                max_depth_probe = _make_preprune_probe_det(-depth, fingerprint)
+            else:
+                max_depth_probe = _make_contact_value_fast(-depth, 0, 0)
+            if reducer_data.ht_values[wp.static(NUM_SPATIAL_DIRECTIONS) * ht_capacity + entry_idx] < max_depth_probe:
+                might_win = True
+
+        for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
+            if not might_win:
+                dir_2d = get_spatial_direction_2d(dir_i)
+                score = wp.dot(pos_2d, dir_2d)
+                probe = make_spatial_preprune_probe(score, use_inner, fingerprint, reducer_data.deterministic)
+                if reducer_data.ht_values[dir_i * ht_capacity + entry_idx] < probe:
+                    might_win = True
+    else:
+        wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
+
+    # === Voxel bin: inner depth coverage ===
+    position_local = wp.transform_point(X_ws_voxel_shape, position)
+    voxel_idx = compute_voxel_index(position_local, aabb_lower_voxel, aabb_upper_voxel, voxel_res)
+    voxel_idx = wp.clamp(voxel_idx, 0, wp.static(NUM_VOXEL_DEPTH_SLOTS - 1))
+
+    voxels_per_group = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
+    voxel_group = voxel_idx // voxels_per_group
+    voxel_local_slot = voxel_idx % voxels_per_group
+    voxel_bin_id = wp.static(NUM_NORMAL_BINS) + voxel_group
+    voxel_key = make_contact_key(shape_a, shape_b, voxel_bin_id)
+
+    voxel_entry_idx = -1
+    if use_inner and not might_win:
+        voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+        if voxel_entry_idx >= 0:
+            if reducer_data.deterministic != 0:
+                voxel_probe = _make_preprune_probe_det(-depth, fingerprint)
+            else:
+                voxel_probe = _make_contact_value_fast(-depth, 0, 0)
+            if reducer_data.ht_values[voxel_local_slot * ht_capacity + voxel_entry_idx] < voxel_probe:
+                might_win = True
+
+    if not might_win:
+        return -1
+
+    contact_id = export_contact_to_buffer(shape_a, shape_b, position, normal, depth, fingerprint, reducer_data)
+    if contact_id < 0:
+        return -1
+
+    if use_inner and entry_idx >= 0:
+        for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
+            dir_2d = get_spatial_direction_2d(dir_i)
+            score = wp.dot(pos_2d, dir_2d)
+            value = make_spatial_contact_value(score, True, fingerprint, contact_id, reducer_data.deterministic)
+            reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
+
+        max_depth_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
+        reduction_update_slot(
+            entry_idx, wp.static(NUM_SPATIAL_DIRECTIONS), max_depth_value, reducer_data.ht_values, ht_capacity
+        )
+    elif entry_idx >= 0:
+        for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
+            dir_2d = get_spatial_direction_2d(dir_i)
+            score = wp.dot(pos_2d, dir_2d)
+            value = make_spatial_contact_value(score, False, fingerprint, contact_id, reducer_data.deterministic)
+            reduction_update_slot(entry_idx, dir_i, value, reducer_data.ht_values, ht_capacity)
+
+    if use_inner:
+        if voxel_entry_idx < 0:
+            voxel_entry_idx = hashtable_find_or_insert(voxel_key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+        if voxel_entry_idx >= 0:
+            voxel_value = make_contact_value(-depth, fingerprint, contact_id, reducer_data.deterministic)
+            reduction_update_slot(voxel_entry_idx, voxel_local_slot, voxel_value, reducer_data.ht_values, ht_capacity)
+        else:
+            wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
 
     return contact_id
 

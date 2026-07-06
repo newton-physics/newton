@@ -137,7 +137,12 @@ def download_usd_asset(robot_name: str) -> Path:
 class TestMenagerieUsdImport(unittest.TestCase):
     """Verify that each menagerie USD asset imports correctly into Newton."""
 
-    def _load_robot(self, robot_name: str) -> tuple[newton.ModelBuilder, newton.Model]:
+    def _load_robot(
+        self,
+        robot_name: str,
+        *,
+        convert_mjc_equality_constraints: bool = True,
+    ) -> tuple[newton.ModelBuilder, newton.Model]:
         """Load a menagerie USD asset and return the builder and finalized model."""
         usd_path = download_usd_asset(robot_name)
         self.assertTrue(usd_path.exists(), f"USD asset not found: {usd_path}")
@@ -150,6 +155,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
             collapse_fixed_joints=False,
             enable_self_collisions=False,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
         )
 
         model = builder.finalize()
@@ -188,11 +194,11 @@ class TestMenagerieUsdImport(unittest.TestCase):
         self._assert_no_nan(model, "shadow_hand")
 
     def test_import_robotiq_2f85_v4(self):
-        builder, model = self._load_robot("robotiq_2f85_v4")
+        builder, model = self._load_robot("robotiq_2f85_v4", convert_mjc_equality_constraints=False)
         self.assertEqual(builder.body_count, 11)
         self.assertEqual(builder.joint_count, 11)
         self.assertEqual(builder.shape_count, 28)
-        self.assertEqual(model.equality_constraint_count, 3)
+        self.assertEqual(model.mujoco.equality_constraint_count, 3)
         self._assert_no_nan(model, "robotiq_2f85_v4")
 
     def test_import_apptronik_apollo(self):
@@ -1133,8 +1139,16 @@ class TestMenagerieUSD(TestMenagerieBase):
         "dof_",
         # Joint ordering may differ -> compared via _compare_jnt_range
         "jnt_",
-        # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
-        "M_",
+        # Sparse D-structure CSR arrays (top-level in mujoco_warp >= 3.9); the same
+        # sparsity is already verified via _compare_qD_structure (qD_fullm_i/j).
+        "D_rownnz",
+        "D_rowadr",
+        "D_diag",
+        "D_colind",
+        # M<->D sparse-layout mappings (mujoco_warp >= 3.9); DOF-indexed, so USD
+        # body reordering only permutes contents, preserving semantics.
+        "mapM2D",
+        "mapD2M",
         # Sparse RNE derivative D-structure: DOF-indexed, compared via _compare_qD_structure
         "qD_fullm_",
         # Sparse tendon Jacobian structure: DOF-indexed, compared via _compare_tendon_jacobian_structure
@@ -1202,9 +1216,16 @@ class TestMenagerieUSD(TestMenagerieBase):
         newton_opt = newton_solver.mjw_model.opt
         native_opt = native_mjw_model.opt
         for attr in dir(native_opt):
-            if attr.startswith("_") or callable(getattr(native_opt, attr)):
+            if attr.startswith("_"):
                 continue
-            native_val = getattr(native_opt, attr)
+            try:
+                native_val = getattr(native_opt, attr)
+            except AttributeError:
+                # Removed options (e.g. ls_parallel, removed in mujoco_warp 3.9.1)
+                # keep their property defined but raise on access.
+                continue
+            if callable(native_val):
+                continue
             if isinstance(native_val, (int, float, bool)):
                 setattr(newton_opt, attr, native_val)
 
@@ -1313,19 +1334,12 @@ class TestMenagerieUSD(TestMenagerieBase):
         "actuator_lengthrange",
     }
 
-    # Per-actuator and per-joint fields the USD parser doesn't populate to match
-    # native MJCF compilation, but which step-response dynamics depends on.
-    # Empirically pinned down on ShadowHand: without these, qfrc_actuator
-    # diverges at step 0 (actuator clipping fields), and qfrc_constraint
-    # diverges at step 1+ (joint-limit solref + actfrc).
-    usd_actuator_backfill_fields: ClassVar[list[str]] = [
-        "actuator_ctrlrange",
-        "actuator_ctrllimited",
-        "actuator_forcerange",
-        "actuator_forcelimited",
-    ]
+    # Per-joint fields the USD parser doesn't populate to match native MJCF, but
+    # which step-response dynamics depend on (joint actuator-force range).
+    # Without them, qfrc_constraint diverges from step 1 onward.
+    # Actuator ctrl/force ranges are not listed: the solver re-attaches them when
+    # rebuilding JOINT_TARGET actuators, so no backfill is needed.
     usd_joint_backfill_fields: ClassVar[list[str]] = [
-        "jnt_solref",
         "jnt_actfrclimited",
         "jnt_actfrcrange",
     ]
@@ -1374,8 +1388,6 @@ class TestMenagerieUSD(TestMenagerieBase):
                     out[nw] = m[ni]
             getattr(newton_mjw, field).assign(out)
 
-        for field in self.usd_actuator_backfill_fields:
-            _backfill_permuted(field, self._actuator_map)
         for field in self.usd_joint_backfill_fields:
             _backfill_permuted(field, self._jnt_map)
         for field in self.usd_body_backfill_fields:
@@ -1534,8 +1546,8 @@ class TestMenagerieUSD(TestMenagerieBase):
             # joint_target_pos (initial DOF targets from the USD posture) would apply
             # nonzero forces every world for actuators we didn't drive — surfaced on
             # WonikAllegro where tha0's initial target 0.8295 stayed in every world.
-            joint_target_pos = np.zeros_like(newton_control.joint_target_pos.numpy())
-            joint_target_vel = np.zeros_like(newton_control.joint_target_vel.numpy())
+            joint_target_pos = np.zeros_like(newton_control.joint_target_q.numpy())
+            joint_target_vel = np.zeros_like(newton_control.joint_target_qd.numpy())
             dofs_per_world = joint_target_pos.shape[0] // num_worlds
 
             native_ctrl_np = np.zeros((num_worlds, num_actuators), dtype=np.float32)
@@ -1560,8 +1572,8 @@ class TestMenagerieUSD(TestMenagerieBase):
                         joint_target_vel[w * dofs_per_world + (-(idx + 2))] = target
             native_mjw_data.ctrl.assign(native_ctrl_np)
             newton_control.mujoco.ctrl.assign(newton_ctrl_np)
-            newton_control.joint_target_pos.assign(joint_target_pos)
-            newton_control.joint_target_vel.assign(joint_target_vel)
+            newton_control.joint_target_q.assign(joint_target_pos)
+            newton_control.joint_target_qd.assign(joint_target_vel)
 
             # qpos / qvel permutation arrays (native_idx -> newton_idx).
             nq = int(native_mjw_data.qpos.shape[1])
@@ -1789,6 +1801,7 @@ class TestMenagerieUSD_ApptronikApollo(TestMenagerieUSD):
     robot_xml = "apptronik_apollo.xml"
     usd_asset_folder = "apptronik_apollo"
     usd_scene_file = "usd_structured/apptronik_apollo.usda"
+    allow_standalone_world_roots = True
 
     num_steps = 20
     fk_enabled = True
@@ -1880,18 +1893,7 @@ class TestMenagerieUSD_UR5e(TestMenagerieUSD):
     usd_asset_folder = "universal_robots_ur5e"
     usd_scene_file = "usd_structured/ur5e.usda"
 
-    # TODO(#2420): re-enable step-response dynamics. UR5e USD MjcActuator rows
-    # match the position-shortcut pattern, so they're imported as JOINT_TARGET
-    # (see parse_usd's MjcActuator post-process). _init_actuators rebuilds
-    # JOINT_TARGET actuators with no per-actuator forcerange and instead clamps
-    # at the joint via jnt_actfrcrange. Native MJCF UR5e uses per-actuator
-    # forcerange. Both clip at the same magnitude, but mujoco-warp routes them
-    # through different code paths (joint-level becomes a solver constraint),
-    # producing small qpos diffs (~1e-3) at step 0 that exceed the 1e-6
-    # tolerance. The fix is to also set actuator_forcerange on JOINT_TARGET-
-    # built actuators in _init_actuators so the clipping path matches native;
-    # that affects the MJCF JOINT_TARGET path too and is out of scope here.
-    num_steps = 0
+    num_steps = 20
     fk_enabled = True
     backfill_model = True
 

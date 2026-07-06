@@ -47,7 +47,9 @@ def extract_active_constraint_dims(data: DataKamino) -> list[int]:
     return [int(active_dim_np[i]) for i in range(len(active_dim_np))]
 
 
-def extract_active_constraint_vectors(model: ModelKamino, data: DataKamino, x: wp.array) -> list[np.ndarray]:
+def extract_active_constraint_vectors(
+    model: ModelKamino, data: DataKamino, x: wp.array[wp.float32]
+) -> list[np.ndarray]:
     cts_start_np = model.info.total_cts_offset.numpy()
     num_active_cts_np = extract_active_constraint_dims(data)
     x_np = x.numpy()
@@ -238,7 +240,7 @@ def extract_delassus_sparse(
 
     entry_start_np = delassus.bsm.row_start.numpy()
 
-    world_mask = wp.ones((num_worlds,), dtype=wp.int32, device=delassus._device)
+    world_mask = wp.ones((num_worlds,), dtype=wp.bool, device=delassus._device)
 
     for dim in range(max_dim):
         # Query the operator by computing the product with a vector where only entry `dim` is set to 1.
