@@ -1392,6 +1392,11 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
                     stacklevel=2,
                 )
 
+    if density is None:
+        # The base UsdPhysicsMaterialAPI (which the family APIs extend) supplies
+        # density too; a plain rigid-style physics material is a valid source.
+        density = _get_physics_material_density(material_prim)
+
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
     # Primvar interpolation is used to determine the attribute frequency
     # when available, falling back to length-based inference in TetMesh.__init__.
@@ -1557,6 +1562,36 @@ def _get_surface_deformable_material(
         "PhysicsSurfaceDeformableMaterialAPI",
         ("thickness", "stretchStiffness", "shearStiffness", "bendStiffness", "density"),
     )
+
+
+def _get_physics_material_density(material_prim) -> float | None:
+    """Read a bound material's base ``UsdPhysicsMaterialAPI`` density.
+
+    The proposal reuses the rigid ``UsdPhysicsMaterialAPI`` for deformables, so a
+    material applying only the base API still supplies density (the family
+    material APIs extend it). Accepts a finite value greater than zero; zero is
+    the proposal's ignored fallback; other values warn and are ignored.
+    """
+    from pxr import UsdPhysics
+
+    if material_prim is None or not (
+        material_prim.HasAPI(UsdPhysics.MaterialAPI) or has_applied_api_schema(material_prim, "PhysicsMaterialAPI")
+    ):
+        return None
+    attr = material_prim.GetAttribute("physics:density")
+    value = attr.Get() if attr else None
+    if value is None:
+        return None
+    density = float(value)
+    if math.isfinite(density) and density > 0.0:
+        return density
+    if density != 0.0:
+        warnings.warn(
+            f"{material_prim.GetPath()}: invalid physics material density {density}; "
+            f"expected a finite positive value, ignoring it.",
+            stacklevel=2,
+        )
+    return None
 
 
 def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:

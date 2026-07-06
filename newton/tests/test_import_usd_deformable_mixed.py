@@ -49,6 +49,53 @@ def _author_unit_tet(stage, path, *, sim_api=True, y=0.0):
 class TestUSDDeformableMixed(unittest.TestCase):
     """Mixed cable/cloth/volume scene imports, groups, and finalizes in one pass."""
 
+    def test_physics_material_api_density_supplies_mass(self):
+        """The proposal reuses UsdPhysicsMaterialAPI for deformables: a bound material
+        applying only the base API supplies density to all three families, while
+        family-specific properties keep their normal fallbacks."""
+        from pxr import Sdf, UsdPhysics, UsdShade
+
+        def bind_density_material(stage, prim, density):
+            mat = UsdShade.Material.Define(stage, "/World/BaseMat")
+            UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+            mat.GetPrim().CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat, materialPurpose="physics")
+
+        with self.subTest(family="soft"):
+            stage = _deformable_stage()
+            tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+            bind_density_material(stage, tet.GetPrim(), 600.0)
+            builder = newton.ModelBuilder()
+            builder.default_tet_density = 1.0
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                result = builder.add_usd(stage, deformable_results=True)
+            self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 600.0)
+            # density 600 over the unit tet (V = 1/6) -> total particle mass = 100.
+            self.assertAlmostEqual(sum(builder.particle_mass), 100.0, delta=1e-3)
+
+        with self.subTest(family="cloth"):
+            stage = _deformable_stage()
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            bind_density_material(stage, mesh.GetPrim(), 600.0)
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                result = builder.add_usd(stage, deformable_results=True)
+            self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 600.0)
+
+        with self.subTest(family="cable"):
+            stage = _deformable_stage()
+            curve = _add_cable_curve(
+                stage, "/World/Cable", [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], thickness=None
+            )
+            bind_density_material(stage, curve.GetPrim(), 600.0)
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                result = builder.add_usd(stage, deformable_results=True)
+            self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["resolved_density"], 600.0)
+
     def test_mixed_scene_imports_and_finalizes(self):
         """The mixed scene builds every family with correct counts, labels, disjoint
         ranges, materials, and per-cable articulations, and finalizes in one pass."""

@@ -44,7 +44,10 @@ def _bind_deformable_material(stage, prim, mat_path, *, namespace="physics", **a
     from pxr import Sdf, UsdGeom, UsdShade
 
     mat = UsdShade.Material.Define(stage, mat_path)
-    # Declare the per-family deformable material API the importer's readers gate on.
+    # Declare the per-family deformable material API the importer's readers gate on. The
+    # family APIs extend UsdPhysicsMaterialAPI, so proposal-shaped materials apply both
+    # (schema inheritance is unavailable while the deformable schema is unregistered).
+    mat.GetPrim().AddAppliedSchema("PhysicsMaterialAPI")
     if prim.IsA(UsdGeom.BasisCurves):
         mat.GetPrim().AddAppliedSchema("PhysicsCurvesDeformableMaterialAPI")
     elif prim.IsA(UsdGeom.TetMesh):

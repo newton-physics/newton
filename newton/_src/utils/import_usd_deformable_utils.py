@@ -368,13 +368,19 @@ def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
 def _resolve_deformable_density(prim: Usd.Prim, material_density: float | None, read_attr: Callable) -> float | None:
     """Resolve the density used for a deformable.
 
-    Mass precedence (proposal): a ``PhysicsDeformableBodyAPI`` body-density override takes
-    precedence over the bound material's density.
+    Mass precedence (proposal): a ``PhysicsDeformableBodyAPI`` body-density override,
+    then the bound material's family density, then the material's base
+    ``UsdPhysicsMaterialAPI`` density (the family material APIs extend the base API,
+    so a plain rigid-style physics material is a valid density source).
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
     _, body_density = usd._get_deformable_body_overrides(prim, read_attr)
-    return body_density if body_density is not None else material_density
+    if body_density is not None:
+        return body_density
+    if material_density is not None:
+        return material_density
+    return usd._get_physics_material_density(usd._find_physics_material_prim(prim))
 
 
 def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
