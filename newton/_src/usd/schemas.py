@@ -390,7 +390,7 @@ class SchemaResolverMjc(SchemaResolver):
             # mjc:solref also fills shape_material_ke/kd via the legacy lossy
             # conversion for back-compat with the convert_solref(ke, kd, 1, 1)
             # round-trip; raw solref is preserved in mujoco.solref. See
-            # docs/integrations/mujoco.rst > "Shape-material contact stiffness
+            # docs/solvers/mujoco.rst > "Shape-material contact stiffness
             # and damping".
             "ke": SchemaAttribute("mjc:solref", None, solref_to_stiffness),
             "kd": SchemaAttribute("mjc:solref", None, solref_to_damping),

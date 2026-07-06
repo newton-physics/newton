@@ -1335,12 +1335,11 @@ class TestMenagerieUSD(TestMenagerieBase):
     }
 
     # Per-joint fields the USD parser doesn't populate to match native MJCF, but
-    # which step-response dynamics depend on (joint-limit solref + actfrc range).
+    # which step-response dynamics depend on (joint actuator-force range).
     # Without them, qfrc_constraint diverges from step 1 onward.
     # Actuator ctrl/force ranges are not listed: the solver re-attaches them when
     # rebuilding JOINT_TARGET actuators, so no backfill is needed.
     usd_joint_backfill_fields: ClassVar[list[str]] = [
-        "jnt_solref",
         "jnt_actfrclimited",
         "jnt_actfrcrange",
     ]

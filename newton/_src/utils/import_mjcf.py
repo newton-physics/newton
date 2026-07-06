@@ -765,7 +765,7 @@ def parse_mjcf(
             # conversion for back-compat with the legacy
             # convert_solref(ke, kd, 1, 1) round-trip; raw solref is
             # preserved in mujoco.solref by the registered
-            # mjcf_attribute_name="solref". See docs/integrations/mujoco.rst
+            # mjcf_attribute_name="solref". See docs/solvers/mujoco.rst
             # > "Shape-material contact stiffness and damping".
             if "solref" in geom_attrib:
                 solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
@@ -800,7 +800,7 @@ def parse_mjcf(
                 # Authored solref → RAW (forwarded verbatim); unauthored →
                 # MJCF_DEFAULT (force-space scaling is strictly opt-in for
                 # shapes — no auto-promote, unlike joint limits). See
-                # docs/integrations/mujoco.rst > "Shape-material contact
+                # docs/solvers/mujoco.rst > "Shape-material contact
                 # stiffness and damping".
                 custom_attributes[solref_mode_key] = (
                     SOLREF_MODE_RAW if "solref" in geom_attrib else SOLREF_MODE_MJCF_DEFAULT

@@ -36,6 +36,7 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
@@ -384,6 +385,8 @@ def parse_usd(
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
+    mjc_resolver = next((resolver for resolver in schema_resolvers if resolver.name == "mjc"), None)
+    solreflimit_mode_key = "mujoco:solreflimit_mode"
 
     # mapping from prim path to body index in ModelBuilder
     path_body_map: dict[str, int] = {}
@@ -451,6 +454,63 @@ def parse_usd(
 
     def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
+
+    def _should_write_solreflimit_mode() -> bool:
+        return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
+
+    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
+    def _get_mjc_joint_limit_default(prim: Usd.Prim, key: str) -> float | None:
+        if mjc_resolver is None or not _has_api_schema(prim, "MjcJointAPI"):
+            return None
+        spec = mjc_resolver.mapping.get(PrimType.JOINT, {}).get(key)
+        if spec is None or spec.default is None:
+            return None
+        if spec.usd_value_transformer is not None:
+            return spec.usd_value_transformer(spec.default)
+        return spec.default
+
+    def _resolve_joint_limit_gain(
+        prim: Usd.Prim, key: str, builder_default: float
+    ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
+        """Resolve a limit gain and report the semantics of its source."""
+        for resolver in R.resolvers:
+            spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
+            if spec is None:
+                continue
+
+            if resolver.name == "mjc":
+                raw_value = usd.get_attribute(prim, spec.name)
+                if raw_value is None:
+                    continue
+                R._collect_on_first_use(resolver, prim)
+                authored_value = (
+                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
+                )
+                if authored_value is not None:
+                    return authored_value, "mjc_authored"
+                mjc_default = _get_mjc_joint_limit_default(prim, key)
+                if mjc_default is not None:
+                    return mjc_default, "mjc_authored"
+                return builder_default, "mjc_authored"
+
+            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
+            if authored_value is not None:
+                R._collect_on_first_use(resolver, prim)
+                return authored_value, "force"
+
+        if mjc_resolver is not None:
+            mjc_default = _get_mjc_joint_limit_default(prim, key)
+            if mjc_default is not None:
+                return mjc_default, "mjc_default"
+        return builder_default, "force"
+
+    def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
+        """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
+        if ke_source == kd_source == "mjc_authored":
+            return SOLREF_MODE_RAW
+        if ke_source == kd_source == "mjc_default":
+            return SOLREF_MODE_MJCF_DEFAULT
+        return SOLREF_MODE_FORCE_SPACE
 
     def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
         current = prim
@@ -1184,21 +1244,19 @@ def parse_usd(
             else:
                 limit_gains_scaling = 1.0
 
-            # Resolve limit gains with precedence, fallback to builder defaults when missing
-            current_joint_limit_ke = R.get_value(
+            limit_key = "limit_angular" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear"
+            current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 joint_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
-                default=default_joint_limit_ke * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_ke",
+                default_joint_limit_ke * limit_gains_scaling,
             )
-            current_joint_limit_kd = R.get_value(
+            current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 joint_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
-                default=default_joint_limit_kd * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_kd",
+                default_joint_limit_kd * limit_gains_scaling,
             )
+            if _should_write_solreflimit_mode():
+                joint_custom_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
@@ -1274,6 +1332,8 @@ def parse_usd(
             d6_initial_velocities = {}
             # Track which axes were added as DOFs (in order)
             d6_dof_axes = []
+            linear_solref_modes: list[int] = []
+            angular_solref_modes: list[int] = []
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)
             # print(joint_desc.body1)
@@ -1359,19 +1419,15 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke = R.get_value(
+                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{trans_name}_ke",
-                        default=default_joint_limit_ke,
-                        verbose=verbose,
+                        f"limit_{trans_name}_ke",
+                        default_joint_limit_ke,
                     )
-                    current_joint_limit_kd = R.get_value(
+                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{trans_name}_kd",
-                        default=default_joint_limit_kd,
-                        verbose=verbose,
+                        f"limit_{trans_name}_kd",
+                        default_joint_limit_kd,
                     )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -1393,6 +1449,7 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
+                    linear_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(trans_name)
                 elif free_axis and dof in _rot_axes:
@@ -1413,19 +1470,15 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke = R.get_value(
+                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{rot_name}_ke",
-                        default=default_joint_limit_ke * DegreesToRadian,
-                        verbose=verbose,
+                        f"limit_{rot_name}_ke",
+                        default_joint_limit_ke * DegreesToRadian,
                     )
-                    current_joint_limit_kd = R.get_value(
+                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{rot_name}_kd",
-                        default=default_joint_limit_kd * DegreesToRadian,
-                        verbose=verbose,
+                        f"limit_{rot_name}_kd",
+                        default_joint_limit_kd * DegreesToRadian,
                     )
 
                     angular_axes.append(
@@ -1448,9 +1501,13 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
+                    angular_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(rot_name)
                     num_dofs += 1
+
+            if _should_write_solreflimit_mode():
+                joint_custom_attrs[solreflimit_mode_key] = linear_solref_modes + angular_solref_modes
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
@@ -1654,19 +1711,16 @@ def parse_usd(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
 
-            limit_ke = R.get_value(
+            limit_key = "limit_angular" if is_revolute else "limit_linear"
+            limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 jp_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_ke" if is_revolute else "limit_linear_ke",
-                default=default_joint_limit_ke * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_ke",
+                default_joint_limit_ke * limit_gains_scaling,
             )
-            limit_kd = R.get_value(
+            limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 jp_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_kd" if is_revolute else "limit_linear_kd",
-                default=default_joint_limit_kd * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_kd",
+                default_joint_limit_kd * limit_gains_scaling,
             )
 
             limit_lower = jd.limit.lower
@@ -1765,6 +1819,8 @@ def parse_usd(
 
             # Collect per-DOF custom attributes from this sibling prim
             sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
+            if _should_write_solreflimit_mode():
+                sibling_dof_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
 
             if is_revolute:
                 angular_axes.append(ax)

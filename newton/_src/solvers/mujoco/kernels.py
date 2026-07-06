@@ -222,6 +222,165 @@ def quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
     return wp.quat(q[3], q[0], q[1], q[2])
 
 
+# Coupling kernels
+@wp.func
+def find_mujoco_body_from_newton_body(
+    world: int,
+    newton_body: int,
+    mjc_body_to_newton: wp.array2d[wp.int32],
+) -> int:
+    mjc_body = int(-1)
+    if world >= 0 and world < mjc_body_to_newton.shape[0]:
+        for candidate in range(mjc_body_to_newton.shape[1]):
+            if mjc_body_to_newton[world, candidate] == newton_body:
+                mjc_body = candidate
+    return mjc_body
+
+
+@wp.kernel
+def eval_mujoco_coupling_gravity_acceleration_kernel(
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_gravcomp: wp.array2d[float],
+    out: wp.array[wp.vec3],
+):
+    body = wp.tid()
+    world = int(0)
+    if body_gravcomp.shape[0] > 1:
+        if body < body_world.shape[0]:
+            world = body_world[body]
+        else:
+            world = int(-1)
+
+    g = wp.vec3(0.0, 0.0, 0.0)
+    if world >= 0 and world < gravity.shape[0]:
+        g = gravity[world]
+
+    gravcomp = float(0.0)
+    mjc_body = find_mujoco_body_from_newton_body(world, body, mjc_body_to_newton)
+    if world >= 0 and world < body_gravcomp.shape[0] and mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
+        gravcomp = body_gravcomp[world, mjc_body]
+
+    out[body] = (1.0 - gravcomp) * g
+
+
+@wp.kernel
+def eval_mujoco_coupling_effective_mass_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    endpoint_local_pos: wp.array[wp.vec3],
+    body_kind: int,
+    particle_kind: int,
+    body_mass: wp.array[float],
+    particle_mass: wp.array[float],
+    body_world: wp.array[int],
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_invweight0: wp.array2d[wp.vec2],
+    out: wp.array[float],
+):
+    tid = wp.tid()
+    kind = endpoint_kind[tid]
+    index = endpoint_index[tid]
+
+    value = float(0.0)
+    if kind == body_kind:
+        if index >= 0 and index < body_mass.shape[0]:
+            value = body_mass[index]
+
+        if index >= 0:
+            world = int(0)
+            if body_invweight0.shape[0] > 1:
+                if index < body_world.shape[0]:
+                    world = body_world[index]
+                else:
+                    world = int(-1)
+            mjc_body = find_mujoco_body_from_newton_body(world, index, mjc_body_to_newton)
+            if (
+                world >= 0
+                and world < body_invweight0.shape[0]
+                and mjc_body >= 0
+                and mjc_body < body_invweight0.shape[1]
+            ):
+                invweight = body_invweight0[world, mjc_body]
+                inv_mass = invweight[0]
+                inv_rot = invweight[1]
+                r = endpoint_local_pos[tid]
+                inv_eff = inv_mass + (2.0 / 3.0) * inv_rot * wp.dot(r, r)
+                if inv_eff > 0.0:
+                    value = 1.0 / inv_eff
+    elif kind == particle_kind:
+        if index >= 0 and index < particle_mass.shape[0]:
+            value = particle_mass[index]
+
+    out[tid] = value
+
+
+@wp.kernel
+def eval_mujoco_coupling_effective_mass_block_kernel(
+    endpoint_kind: wp.array[int],
+    endpoint_index: wp.array[int],
+    endpoint_local_pos: wp.array[wp.vec3],
+    body_kind: int,
+    particle_kind: int,
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    particle_mass: wp.array[float],
+    body_world: wp.array[int],
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_invweight0: wp.array2d[wp.vec2],
+    out_mass: wp.array[float],
+    out_inertia: wp.array[wp.mat33],
+):
+    tid = wp.tid()
+    kind = endpoint_kind[tid]
+    index = endpoint_index[tid]
+
+    mass = float(0.0)
+    inertia = wp.mat33(0.0)
+    if kind == body_kind:
+        if index >= 0 and index < body_mass.shape[0]:
+            mass = body_mass[index]
+        if index >= 0 and index < body_inertia.shape[0]:
+            inertia = body_inertia[index]
+
+        if index >= 0:
+            world = int(0)
+            if body_invweight0.shape[0] > 1:
+                if index < body_world.shape[0]:
+                    world = body_world[index]
+                else:
+                    world = int(-1)
+            mjc_body = find_mujoco_body_from_newton_body(world, index, mjc_body_to_newton)
+            if (
+                world >= 0
+                and world < body_invweight0.shape[0]
+                and mjc_body >= 0
+                and mjc_body < body_invweight0.shape[1]
+            ):
+                invweight = body_invweight0[world, mjc_body]
+                inv_mass = invweight[0]
+                inv_rot = invweight[1]
+                r = endpoint_local_pos[tid]
+                inv_eff = inv_mass + (2.0 / 3.0) * inv_rot * wp.dot(r, r)
+                if inv_eff > 0.0:
+                    mass = 1.0 / inv_eff
+
+                determinant = wp.determinant(inertia)
+                if inv_rot > 0.0 and wp.abs(determinant) > 1.0e-30:
+                    # Fit MuJoCo's mean angular compliance without reducing free-body inertia.
+                    free_inv_rot = wp.trace(wp.inverse(inertia)) / 3.0
+                    inertia = inertia * wp.max(free_inv_rot / inv_rot, 1.0)
+                elif index >= 0 and index < body_mass.shape[0] and body_mass[index] > 0.0:
+                    inertia = inertia * wp.max(mass / body_mass[index], 1.0)
+    elif kind == particle_kind:
+        if index >= 0 and index < particle_mass.shape[0]:
+            mass = particle_mass[index]
+
+    out_mass[tid] = mass
+    out_inertia[tid] = inertia
+
+
 # Kernel functions
 @wp.kernel
 def convert_newton_contacts_to_mjwarp_kernel(
@@ -405,7 +564,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         # FORCE_SPACE per-contact override: bypass contact_params' per-geom
         # solref averaging and recompute the solref from the combined
-        # two-body factor. See docs/integrations/mujoco.rst > "Shape-material
+        # two-body factor. See docs/solvers/mujoco.rst > "Shape-material
         # contact stiffness and damping" for the mechanism.
         if shape_mjc_solref_mode:
             mode_a = shape_mjc_solref_mode[shape_a]
@@ -2287,7 +2446,7 @@ def update_geom_properties_kernel(
     rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
-    # geom_solref per shape_mjc_solref_mode. See docs/integrations/mujoco.rst
+    # geom_solref per shape_mjc_solref_mode. See docs/solvers/mujoco.rst
     # > "Shape-material contact stiffness and damping". FORCE_SPACE and
     # MJCF_DEFAULT both write the legacy convert_solref round-trip here;
     # FORCE_SPACE additionally triggers the per-contact override in
