@@ -10,7 +10,7 @@ from typing import Any
 import warp as wp
 
 from ..core.joints import JointDoFType
-from ..core.math import quat_from_x_rot, quat_from_y_rot, quat_from_z_rot, screw, screw_angular, screw_linear
+from ..core.math import quat_from_x_rot, quat_from_y_rot, screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..kinematics.joints import (
@@ -224,11 +224,6 @@ def _get_joint_rel_transform_from_coords(
         t[1] = joint_q[coord_offset + 1]
         t[2] = joint_q[coord_offset + 2]
         q = read_quat_from_array(joint_q, coord_offset + 3, True)
-    elif dof_type == JointDoFType.GIMBAL:
-        q_x = quat_from_x_rot(joint_q[coord_offset])
-        q_y = quat_from_y_rot(joint_q[coord_offset + 1])
-        q_z = quat_from_z_rot(joint_q[coord_offset + 2])
-        q = q_x * q_y * q_z
     elif dof_type == JointDoFType.PRISMATIC:
         t[0] = joint_q[coord_offset]
     elif dof_type == JointDoFType.REVOLUTE:
@@ -317,8 +312,6 @@ def _get_joint_rel_velocity_from_dofs(
         return wp.spatial_vectorf(0.0)
     elif dof_type == JointDoFType.FREE:
         return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.FREE))(q_j, dofs_offset, joint_u)
-    elif dof_type == JointDoFType.GIMBAL:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.GIMBAL))(q_j, dofs_offset, joint_u)
     elif dof_type == JointDoFType.PRISMATIC:
         return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.PRISMATIC))(q_j, dofs_offset, joint_u)
     elif dof_type == JointDoFType.REVOLUTE:
