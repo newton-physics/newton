@@ -160,13 +160,11 @@ def normalize_contact_positions_kernel(
     contact_position_matrix: wp.array2d[wp.vec3],
     contact_position_weight: wp.array2d[float],
 ):
-    """Normalize force-weighted contact position sums in place; NaN marks entries with no contributing contacts."""
+    """Normalize force-weighted contact position sums in place; entries with no contributing contacts stay zero."""
     row, col = wp.tid()
     weight = contact_position_weight[row, col]
     if weight > 0.0:
         contact_position_matrix[row, col] /= weight
-    else:
-        contact_position_matrix[row, col] = wp.vec3(wp.nan, wp.nan, wp.nan)
 
 
 @wp.kernel(enable_backward=False)
@@ -300,8 +298,7 @@ class SensorContact:
     When counterparts are specified, the per-counterpart matrices have shape
     ``(sum_of_sensors_across_worlds, max_counterparts)``, where ``max_counterparts`` is the maximum counterpart count
     of any single world. Row order matches
-    :attr:`sensing_indices`. Columns beyond a world's own counterpart count are zero-padded in the force matrices and
-    NaN in :attr:`contact_position_matrix`.
+    :attr:`sensing_indices`. Columns beyond a world's own counterpart count are zero-padded.
 
     :attr:`sensing_indices` and :attr:`counterpart_indices` are flat lists that describe the structure of the output
     arrays.
@@ -389,8 +386,9 @@ class SensorContact:
     :class:`vec3`. Entry ``[i, j]`` is the world-frame average contact position between sensing object ``i`` and
     counterpart ``counterpart_indices[i][j]``. Each contributing position is the midpoint of the contact's two
     world-space surface points and is weighted by the magnitude of its linear contact force. Contacts with zero linear force
-    do not contribute; entries with no contributing contacts are NaN. Only refreshed when :meth:`update` receives a
-    state with body transforms. ``None`` when no counterparts are specified."""
+    do not contribute; entries with no contributing contacts are zero and only meaningful where the corresponding
+    :attr:`force_matrix` entry is nonzero. Only refreshed when :meth:`update` receives a state with body transforms.
+    ``None`` when no counterparts are specified."""
 
     sensing_transforms: wp.array[wp.transform]
     """World-frame transforms of sensing objects [m, unitless quaternion],
@@ -638,7 +636,7 @@ class SensorContact:
         if max_readings > 0:
             self.force_matrix = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
             self.force_matrix_friction = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
-            self.contact_position_matrix = wp.full((n_rows, max_readings), wp.nan, dtype=wp.vec3, device=self.device)
+            self.contact_position_matrix = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
             self._contact_position_weight = wp.zeros((n_rows, max_readings), dtype=wp.float32, device=self.device)
         else:
             self.force_matrix = None

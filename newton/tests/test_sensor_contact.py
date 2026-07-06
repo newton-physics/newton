@@ -352,8 +352,8 @@ class TestSensorContact(unittest.TestCase):
         net = sensor.force_matrix.numpy()
         ground_col = sensor.counterpart_indices[0].index(2)
         np.testing.assert_allclose(net[0, ground_col], [0, 0, 5.0], atol=1e-5)
-        # positions were never refreshed (no state passed), so all entries hold the allocation NaN
-        self.assertTrue(np.isnan(sensor.contact_position_matrix.numpy()).all())
+        # positions were never refreshed (no state passed), so all entries hold the zero allocation
+        np.testing.assert_array_equal(sensor.contact_position_matrix.numpy(), 0.0)
 
     def test_contact_position_matrix(self):
         """Contact positions are force-weighted world-space midpoints grouped by counterpart."""
@@ -449,9 +449,9 @@ class TestSensorContact(unittest.TestCase):
         np.testing.assert_allclose(positions[row_a, col_ground_a], [12.0, 4.5, 2.0], atol=1e-5)
         # B-ground: single tiny-force contact, midpoint of surface points (5, 24, 0) and (2, 22, 0)
         np.testing.assert_allclose(positions[row_b, col_ground_b], [3.5, 23.0, 0.0], atol=1e-5)
-        # entries with no contributing contacts (here: each body's own shape) are NaN
+        # entries with no contributing contacts (here: each body's own shape) are zero
         col_self_a = sensor.counterpart_indices[row_a].index(shape_a)
-        self.assertTrue(np.isnan(positions[row_a, col_self_a]).all())
+        np.testing.assert_array_equal(positions[row_a, col_self_a], 0.0)
 
         # a second update with the same inputs must give identical results
         # (catches stale weight accumulation across updates)
@@ -471,7 +471,7 @@ class TestSensorContact(unittest.TestCase):
         zero_force_contacts = create_contacts(device, [(shape_a, shape_b)], naconmax=4, forces=[0.0])
         sensor.update(state, zero_force_contacts)
         positions = sensor.contact_position_matrix.numpy()
-        self.assertTrue(np.isnan(positions).all())
+        np.testing.assert_array_equal(positions, 0.0)
 
     def test_duplicate_sensing_objects_raises(self):
         """Duplicate sensing object indices raise ValueError."""
@@ -797,7 +797,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             positions[row_b, sensor.counterpart_indices[row_b].index(shape_a)], [0.0, 0.0, 0.75], atol=0.05
         )
         # b never touches the base
-        self.assertTrue(np.isnan(positions[row_b, sensor.counterpart_indices[row_b].index(shape_base)]).all())
+        np.testing.assert_array_equal(positions[row_b, sensor.counterpart_indices[row_b].index(shape_base)], 0.0)
 
     def test_stacking_friction(self):
         """Friction forces are near zero for boxes at rest on a flat surface."""
