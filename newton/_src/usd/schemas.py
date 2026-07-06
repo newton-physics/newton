@@ -285,7 +285,6 @@ class SchemaResolverNewton(SchemaResolver):
         PrimType.BODY: {},
         PrimType.ARTICULATION: {
             "self_collision_enabled": SchemaAttribute("newton:selfCollisionEnabled", True),
-            "joint_model": SchemaAttribute("newton:jointModel", "maximal"),
         },
         PrimType.MATERIAL: {
             "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
