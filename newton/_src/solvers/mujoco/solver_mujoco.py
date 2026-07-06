@@ -6860,8 +6860,8 @@ class SolverMuJoCo(SolverBase):
         """Build reference joint coordinates from model data and ``dof_ref``.
 
         Launches ``build_ref_q_kernel`` to produce joint coordinates in
-        Newton convention (xyzw quaternions). FREE/DISTANCE joints source
-        position and orientation from ``body_q`` of the child body, BALL
+        Newton convention (xyzw quaternions). FREE/DISTANCE joints copy
+        position and orientation from ``joint_q``, BALL
         joints use identity, and hinge/slide/D6 joints use ``dof_ref``.
 
         Args:
@@ -6880,11 +6880,10 @@ class SolverMuJoCo(SolverBase):
             dim=model.joint_count,
             inputs=[
                 model.joint_type,
+                model.joint_q,
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
-                model.joint_child,
-                model.body_q,
                 dof_ref,
             ],
             outputs=[

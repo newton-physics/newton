@@ -887,11 +887,10 @@ def sync_qpos0_kernel(
 @wp.kernel
 def build_ref_q_kernel(
     joint_type: wp.array[wp.int32],
+    joint_q: wp.array[wp.float32],
     joint_q_start: wp.array[wp.int32],
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
-    joint_child: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
     dof_ref: wp.array[wp.float32],
     # output
     ref_q: wp.array[wp.float32],
@@ -902,8 +901,8 @@ def build_ref_q_kernel(
     convention (xyzw quaternions) suitable for ``eval_articulation_fk``.
     Per joint type:
 
-    - **FREE / DISTANCE**: position and quaternion [xyzw] from ``body_q``
-      of the child body.
+    - **FREE / DISTANCE**: copies position and quaternion [xyzw] from
+      ``joint_q``.
     - **BALL**: identity quaternion [xyzw].
     - **PRISMATIC / REVOLUTE / D6**: copies ``dof_ref`` values [m or rad]
       (or zero when ``dof_ref`` is ``None``).
@@ -911,15 +910,14 @@ def build_ref_q_kernel(
 
     Args:
         joint_type: Joint type enum per joint, shape ``[joint_count]``.
+        joint_q: Joint coordinates [m or rad], shape
+            ``[joint_coord_count]``.
         joint_q_start: Start index into ``ref_q`` for each joint,
             shape ``[joint_count]``.
         joint_qd_start: Start index into ``dof_ref`` for each joint,
             shape ``[joint_count]``.
         joint_dof_dim: Positional and rotational DOF counts per joint,
             shape ``[joint_count, 2]``.
-        joint_child: Child body index per joint, shape ``[joint_count]``.
-        body_q: Body transforms [m], shape ``[body_count]``,
-            dtype ``wp.transform``.
         dof_ref: Reference DOF values [m or rad], shape ``[joint_dof_count]``.
             May be ``None``, in which case zeros are used.
         ref_q: *(output)* Reference joint coordinates [m or rad],
@@ -931,17 +929,8 @@ def build_ref_q_kernel(
     qd_start = joint_qd_start[j]
 
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
-        child = joint_child[j]
-        bq = body_q[child]
-        pos = wp.transform_get_translation(bq)
-        rot = wp.transform_get_rotation(bq)
-        ref_q[q_start + 0] = pos[0]
-        ref_q[q_start + 1] = pos[1]
-        ref_q[q_start + 2] = pos[2]
-        ref_q[q_start + 3] = rot[0]
-        ref_q[q_start + 4] = rot[1]
-        ref_q[q_start + 5] = rot[2]
-        ref_q[q_start + 6] = rot[3]
+        for i in range(7):
+            ref_q[q_start + i] = joint_q[q_start + i]
     elif jtype == JointType.BALL:
         ref_q[q_start + 0] = 0.0
         ref_q[q_start + 1] = 0.0

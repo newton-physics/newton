@@ -822,6 +822,75 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_add_builder_xform_updates_root_free_joint_coordinates(self):
+        parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
+        child_xform = wp.transform(wp.vec3(-0.1, 0.3, 0.2), wp.quat_rpy(-0.2, 0.1, 0.4))
+        body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.1, 0.2, -0.3))
+        offset = wp.transform(wp.vec3(-0.5, 0.7, 1.2), wp.quat_rpy(-0.3, 0.2, 0.1))
+
+        source = ModelBuilder()
+        body = source.add_link(xform=body_xform)
+        joint = source.add_joint_free(
+            child=body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        source.add_articulation([joint])
+
+        builder = ModelBuilder()
+        builder.add_builder(source, xform=offset)
+
+        expected_body_xform = offset * body_xform
+        expected_joint_q = wp.transform_inverse(parent_xform) * expected_body_xform * child_xform
+        q_start = builder.joint_q_start[joint]
+        assert_np_equal(np.array(builder.joint_X_p[joint]), np.array(parent_xform), tol=1.0e-6)
+        assert_np_equal(
+            np.array(builder.joint_q[q_start : q_start + 7]),
+            np.array(expected_joint_q),
+            tol=1.0e-6,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[body], np.array(expected_body_xform), tol=1.0e-5)
+
+    def test_add_builder_xform_preserves_parented_free_joint_coordinates(self):
+        parent_body_xform = wp.transform(wp.vec3(0.5, -0.4, 0.2), wp.quat_rpy(0.2, -0.1, 0.3))
+        child_body_xform = wp.transform(wp.vec3(-0.6, 0.8, 1.1), wp.quat_rpy(-0.3, 0.4, -0.2))
+        root_parent_xform = wp.transform(wp.vec3(0.1, 0.2, -0.3), wp.quat_rpy(0.1, 0.3, -0.2))
+        parent_xform = wp.transform(wp.vec3(-0.2, 0.5, 0.1), wp.quat_rpy(-0.2, 0.1, 0.4))
+        child_xform = wp.transform(wp.vec3(0.3, -0.1, 0.2), wp.quat_rpy(0.3, -0.4, 0.1))
+        offset = wp.transform(wp.vec3(1.0, -0.5, 0.7), wp.quat_rpy(0.4, 0.2, -0.3))
+
+        source = ModelBuilder()
+        parent = source.add_link(xform=parent_body_xform)
+        child = source.add_link(xform=child_body_xform)
+        root_joint = source.add_joint_free(child=parent, parent_xform=root_parent_xform)
+        child_joint = source.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        source.add_articulation([root_joint, child_joint])
+
+        q_start = source.joint_q_start[child_joint]
+        expected_joint_q = np.array(source.joint_q[q_start : q_start + 7])
+
+        builder = ModelBuilder()
+        builder.add_builder(source, xform=offset)
+
+        q_start = builder.joint_q_start[child_joint]
+        assert_np_equal(np.array(builder.joint_X_p[child_joint]), np.array(parent_xform), tol=1.0e-6)
+        assert_np_equal(np.array(builder.joint_q[q_start : q_start + 7]), expected_joint_q, tol=1.0e-6)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[parent], np.array(offset * parent_body_xform), tol=1.0e-5)
+        assert_np_equal(state.body_q.numpy()[child], np.array(offset * child_body_xform), tol=1.0e-5)
+
     def test_add_joint_free_initializes_relative_transform(self):
         parent_body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.2, -0.3, 0.4))
         child_body_xform = wp.transform(wp.vec3(-0.5, 1.5, 2.0), wp.quat_rpy(-0.4, 0.1, 0.3))
