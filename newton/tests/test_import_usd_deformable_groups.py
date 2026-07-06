@@ -104,7 +104,6 @@ class TestUSDDeformableGroups(unittest.TestCase):
         for name in ("A", "B"):
             body = UsdGeom.Xform.Define(stage, f"/World/{name}")
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
         fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Fix")
         fixed.CreateBody0Rel().SetTargets(["/World/A"])
         fixed.CreateBody1Rel().SetTargets(["/World/B"])
@@ -128,7 +127,6 @@ class TestUSDDeformableGroups(unittest.TestCase):
         for name in ("A", "B"):
             body = UsdGeom.Xform.Define(stage, f"/World/{name}")
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
         fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Fix")
         fixed.CreateBody0Rel().SetTargets(["/World/A"])
         fixed.CreateBody1Rel().SetTargets(["/World/B"])
