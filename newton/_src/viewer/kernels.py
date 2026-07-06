@@ -835,3 +835,21 @@ def transform_points(
 ):
     i = wp.tid()
     transformed_points[i] = wp.transform_point(xform, points[i])
+
+
+@wp.kernel
+def apply_world_offset_and_layer_transform(
+    points: wp.array[wp.vec3],
+    world_offsets: wp.array[wp.vec3],
+    world_index: int,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+):
+    """Offset simulation-frame points by their world's device offset, then apply
+    the layer transform. ``world_index < 0`` skips the offset (global entities or
+    a viewer without world offsets)."""
+    i = wp.tid()
+    p = points[i]
+    if world_index >= 0:
+        p = p + world_offsets[world_index]
+    out_points[i] = wp.transform_point(layer_xform, p)

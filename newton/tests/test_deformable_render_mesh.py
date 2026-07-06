@@ -12,6 +12,47 @@ import warp as wp
 import newton
 from newton._src.sim.deformable_render import compute_render_mesh_normals, skin_render_mesh
 from newton.tests.unittest_utils import assert_np_equal
+from newton.viewer import ViewerNull
+
+
+class _MeshProbe(ViewerNull):
+    """Captures every ``log_mesh`` call keyed by object name.
+
+    Deliberately overrides ``log_mesh`` with the legacy signature (no new
+    keywords) to pin that render-mesh drawing works with pre-existing viewer
+    subclasses.
+    """
+
+    def __init__(self):
+        super().__init__(num_frames=1)
+        self.calls: dict[str, dict] = {}
+
+    def log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+    ):
+        self.calls[name] = {
+            "points": None if points is None else points.numpy(),
+            "normals": None if normals is None else normals.numpy(),
+            "uvs": None if uvs is None else uvs.numpy(),
+            "texture": texture,
+            "hidden": hidden,
+        }
+
+    def _frame(self, state, t=0.0):
+        self.begin_frame(t)
+        self.log_state(state)
+        self.end_frame()
 
 
 def _add_cloth(builder):
@@ -256,9 +297,7 @@ class TestDeformableRenderMeshBindings(unittest.TestCase):
         builder = newton.ModelBuilder()
         _add_cloth(builder)
         verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-        builder.add_deformable_render_mesh(
-            verts, _QUAD, kind="particle", particles=np.arange(4, dtype=np.int32)
-        )
+        builder.add_deformable_render_mesh(verts, _QUAD, kind="particle", particles=np.arange(4, dtype=np.int32))
         model = builder.finalize()
         rm = model.deformable_render_meshes[0]
         points = wp.array(verts, dtype=wp.vec3, device=model.device)
@@ -281,9 +320,7 @@ class TestDeformableRenderMeshValidation(unittest.TestCase):
         builder = self._soft_builder()
         verts = np.zeros((4, 3), dtype=np.float32)
         with self.assertRaisesRegex(ValueError, "do not apply to this kind"):
-            builder.add_deformable_render_mesh(
-                verts, _QUAD, kind="tet", tet_range=(0, 1), particles=np.arange(4)
-            )
+            builder.add_deformable_render_mesh(verts, _QUAD, kind="tet", tet_range=(0, 1), particles=np.arange(4))
         with self.assertRaisesRegex(ValueError, "do not apply to this kind"):
             builder.add_deformable_render_mesh(verts, _QUAD, kind="particle", particles=np.arange(4), bodies=[0])
 
@@ -336,9 +373,7 @@ class TestDeformableRenderMeshValidation(unittest.TestCase):
         verts = np.zeros((4, 3), dtype=np.float32)
         good_w = np.full((4, 4), 0.25, dtype=np.float32)
         with self.assertRaisesRegex(ValueError, "passed together"):
-            builder.add_deformable_render_mesh(
-                verts, _QUAD, kind="tet", tet_range=(0, 1), parent=np.zeros(4, np.int32)
-            )
+            builder.add_deformable_render_mesh(verts, _QUAD, kind="tet", tet_range=(0, 1), parent=np.zeros(4, np.int32))
         with self.assertRaisesRegex(ValueError, "within the owning range"):
             builder.add_deformable_render_mesh(
                 verts, _QUAD, kind="tet", tet_range=(0, 1), parent=np.full(4, 3, np.int32), weights=good_w
@@ -381,6 +416,92 @@ class TestDeformableRenderMeshValidation(unittest.TestCase):
         self.assertEqual(model.deformable_render_mesh_count, 2)
         worlds = sorted(rm.world for rm in model.deformable_render_meshes)
         self.assertEqual(worlds, [0, 1])
+
+
+class TestDeformableRenderMeshViewer(unittest.TestCase):
+    """ViewerBase drawing: naming, visibility, world offsets, legacy overrides."""
+
+    @staticmethod
+    def _cloth_skin_builder():
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        n = builder.particle_count
+        verts = np.array(builder.particle_q, dtype=np.float32)
+        uvs = np.linspace(0.0, 1.0, n * 2, dtype=np.float32).reshape(n, 2)
+        # A non-degenerate grid quad (0-1-5-4) so face normals are well defined.
+        quad = np.array([0, 1, 5, 0, 5, 4], dtype=np.int32)
+        builder.add_deformable_render_mesh(
+            verts, quad, kind="particle", particles=np.arange(n, dtype=np.int32), uvs=uvs, label="skin"
+        )
+        return builder, uvs
+
+    def test_viewer_draws_skinned_mesh_with_invariant_name(self):
+        """The mesh is drawn under its invariant index name with skinned points,
+        recomputed normals, and preserved UVs."""
+        builder, uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+
+        state = model.state()
+        moved = state.particle_q.numpy()
+        moved[:, 2] += 1.5
+        state.particle_q = wp.array(moved, dtype=wp.vec3)
+        viewer._frame(state)
+
+        call = viewer.calls["/model/render_meshes/0_skin"]
+        self.assertFalse(call["hidden"])
+        assert_np_equal(call["points"], moved, tol=1.0e-5)
+        assert_np_equal(call["uvs"], uvs, tol=1.0e-6)
+        self.assertIsNotNone(call["normals"])
+        # Unit normals on every vertex the triangles reference.
+        referenced = np.linalg.norm(call["normals"][[0, 1, 4, 5]], axis=1)
+        assert_np_equal(referenced, np.ones(4, dtype=np.float32), tol=1.0e-4)
+
+    def test_sim_triangles_stay_visible_and_mesh_toggles(self):
+        """Render meshes draw in addition to the simulation triangles; toggling
+        show_render_mesh hides the mesh but keeps valid geometry registered."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        state = model.state()
+
+        viewer._frame(state)
+        self.assertFalse(viewer.calls["/model/triangles"]["hidden"])
+        self.assertFalse(viewer.calls["/model/render_meshes/0_skin"]["hidden"])
+
+        viewer.show_render_mesh = False
+        viewer._frame(state, 1.0)
+        call = viewer.calls["/model/render_meshes/0_skin"]
+        self.assertTrue(call["hidden"])
+        self.assertEqual(len(call["points"]), model.deformable_render_meshes[0].vertex_count)
+        self.assertFalse(viewer.calls["/model/triangles"]["hidden"])
+
+    def test_replicated_worlds_use_distinct_names_and_device_offsets(self):
+        """Replicated meshes draw under distinct names, each offset by its own
+        world offset."""
+        source = newton.ModelBuilder()
+        _add_cloth(source)
+        n = source.particle_count
+        verts = np.array(source.particle_q, dtype=np.float32)
+        source.add_deformable_render_mesh(
+            verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="skin"
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(source, 2)
+        model = builder.finalize()
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer.set_world_offsets((4.0, 0.0, 0.0))
+        viewer._frame(model.state())
+
+        offsets = viewer.world_offsets.numpy()
+        p0 = viewer.calls["/model/render_meshes/0_skin"]["points"]
+        p1 = viewer.calls["/model/render_meshes/1_skin"]["points"]
+        assert_np_equal(p0, verts + offsets[0], tol=1.0e-5)
+        assert_np_equal(p1, verts + offsets[1], tol=1.0e-5)
 
 
 if __name__ == "__main__":

@@ -885,6 +885,11 @@ class ViewerGL(ViewerBase):
         self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+        # The shader samples the albedo map only when the material's texture flag is
+        # set; key it on the actually uploaded texture so a texture is never bound
+        # but silently unused.
+        r, m, c, _t = self.objects[name].material
+        self.objects[name].material = (r, m, c, 1.0 if self.objects[name].texture_id else 0.0)
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
