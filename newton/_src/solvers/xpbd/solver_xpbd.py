@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import warp as wp
 
 from ...core.types import override
@@ -129,6 +131,16 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self.angular_damping = angular_damping
 
         self.enable_restitution = enable_restitution
+        if not enable_restitution:
+            # stacklevel=3 skips the deprecate_nonkeyword_arguments wrapper
+            warnings.warn(
+                "SolverXPBD(enable_restitution=False) is deprecated. XPBD will enable "
+                "restitution by default in a future release. Pass enable_restitution=True "
+                "to opt into the future behavior, and set material restitution coefficients "
+                "to 0.0 for no-bounce contacts.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
 
         self.compute_body_velocity_from_position_delta = False
 

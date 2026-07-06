@@ -445,20 +445,7 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
 
 
 def test_rigid_restitution_zero_settles(test, device):
-    """
-    Regression test: per-shape restitution coefficients are respected when
-    ``enable_restitution=True`` is passed to the solver.
-
-    Setup:
-    - Two spheres dropped from z=0.3 onto the ground plane (Z-up, default gravity).
-    - restitution=0.0 (inelastic) and restitution=1.0 (elastic), mu=0.0.
-    - Before the energy-explosion fix, both behaved identically because the
-      velocity-from-position-delta update was not running before the restitution pass.
-    - 25 frames at 60 fps with 16 substeps.
-
-    Assert: restitution=0.0 must not bounce above its impact minimum; restitution=1.0
-    must bounce back up and reach a meaningfully higher peak.
-    """
+    """A dropped restitution=0.0 sphere must settle while a restitution=1.0 sphere rebounds higher."""
     radius = 0.05
     drop_z = 0.3
     fps, substeps = 60, 16
@@ -506,8 +493,7 @@ def test_rigid_restitution_zero_settles(test, device):
         bounced_up,
         msg=(
             f"With restitution=0.0, sphere should not rise above its impact minimum "
-            f"(z_min={z_min_inelastic:.4f} m). Post-impact z values: {post_impact_inelastic}. "
-            f"Before the fix, the restitution pass never ran so this bounced like restitution=1.0."
+            f"(z_min={z_min_inelastic:.4f} m). Post-impact z values: {post_impact_inelastic}."
         ),
     )
 
@@ -530,27 +516,14 @@ def test_rigid_restitution_zero_settles(test, device):
         peak_elastic,
         peak_inelastic + 0.02,
         msg=(
-            f"Elastic peak ({peak_elastic:.4f} m) should be > inelastic peak ({peak_inelastic:.4f} m) "
-            f"by at least 2 cm. Before the fix both were identical (restitution values ignored)."
+            f"Elastic peak ({peak_elastic:.4f} m) should be > inelastic peak ({peak_inelastic:.4f} m) by at least 2 cm."
         ),
     )
 
 
 def test_rigid_restitution_elastic_no_explosion(test, device):
-    """
-    Regression test for Bug 2: energy explosion when enable_restitution=True with
-    high restitution coefficient.
-
-    Setup:
-    - Box dropped from z=0.3 onto the ground plane (Z-up, default gravity).
-    - restitution=1.0 (fully elastic), mu=0.0, enable_restitution=True.
-
-    Without the fix, XPBD positional corrections fed unnormalized velocities into the
-    restitution pass (Δv = Δq/dt per substep), sending bodies to ~1e29 m.
-
-    With the fix, update_body_velocities runs first and bounds the velocity to
-    (q_final - q_init)/dt. The box should bounce finite and well below 2x drop height.
-    """
+    """A restitution=1.0 box drop must rebound without the energy explosion caused by
+    the restitution pass reading stale pre-correction velocities (#1289)."""
     hz = 0.05
     drop_z = 0.3
 
@@ -621,17 +594,7 @@ def test_rigid_restitution_elastic_no_explosion(test, device):
 
 
 def test_rigid_restitution_runs_with_requires_grad(test, device):
-    """
-    Regression test for grad-enabled rigid restitution.
-
-    Setup:
-    - Two runs with the same sphere (z=0.3, restitution=1.0, mu=0.0):
-      requires_grad=True vs requires_grad=False, 50 frames at 60 fps / 16 substeps.
-
-    Assert: both paths must bounce without exploding. The grad-enabled path uses a
-    cloned velocity buffer for the position-delta velocity update so restitution
-    sees corrected impact velocities without overwriting recorded arrays in place.
-    """
+    """Rigid restitution must bounce without exploding on both grad and non-grad paths."""
     radius = 0.05
     drop_z = 0.3
     fps, substeps = 60, 16
@@ -707,23 +670,8 @@ def test_rigid_restitution_runs_with_requires_grad(test, device):
 
 
 def test_particle_shape_restitution_runs_with_requires_grad(test, device):
-    """
-    Regression test ensuring particle-body restitution runs (and does not NaN) with requires_grad=True.
-
-    Before the fix, apply_particle_shape_restitution was gated behind ``not requires_grad``,
-    so particles against dynamic bodies never bounced on the grad path.  After the fix the
-    kernel writes into a cloned output buffer (same pattern as rigid restitution), keeping
-    the tape-recorded array intact.
-
-    Setup:
-    - A dynamic rigid box moving upward at 5 m/s.
-    - A stationary particle sitting just above the top face of the box.
-    - Restitution = 1.0, gravity disabled.
-
-    Assert (both grad and non-grad paths):
-    - No NaN / Inf in particle velocity after one step.
-    - Particle receives a restitution impulse (upward velocity > 7 m/s).
-    """
+    """A particle hit by a moving rigid box must receive a finite restitution impulse
+    on both grad and non-grad paths."""
     builder = newton.ModelBuilder(up_axis="Y")
 
     body_id = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
