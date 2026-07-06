@@ -11,7 +11,8 @@ import warp as wp
 
 import newton
 from newton._src.sim.deformable_render import compute_render_mesh_normals, skin_render_mesh
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 from newton.viewer import ViewerNull
 
 
@@ -502,6 +503,226 @@ class TestDeformableRenderMeshViewer(unittest.TestCase):
         p1 = viewer.calls["/model/render_meshes/1_skin"]["points"]
         assert_np_equal(p0, verts + offsets[0], tol=1.0e-5)
         assert_np_equal(p1, verts + offsets[1], tol=1.0e-5)
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestDeformableRenderMeshUSDImport(unittest.TestCase):
+    """AOUSD graphics-geometry discovery: hierarchy, bind poses, ownership."""
+
+    @staticmethod
+    def _stage():
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        return stage
+
+    @staticmethod
+    def _add_volume_body(stage, path):
+        """A deformable body root with a unit-tet simulation mesh child."""
+        from pxr import UsdGeom
+
+        body = UsdGeom.Xform.Define(stage, path)
+        body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        tet = UsdGeom.TetMesh.Define(stage, f"{path}/Sim")
+        tet.CreatePointsAttr([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)])
+        tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+        # Author collision like the importer fixtures: no gating warning under strict runs.
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        return body, tet
+
+    @staticmethod
+    def _add_graphics_mesh(stage, path, points=None):
+        from pxr import UsdGeom
+
+        gfx = UsdGeom.Mesh.Define(stage, path)
+        pts = points if points is not None else [(0.2, 0.2, 0.2), (0.4, 0.2, 0.2), (0.2, 0.4, 0.2)]
+        gfx.CreatePointsAttr([tuple(p) for p in pts])
+        gfx.CreateFaceVertexCountsAttr([3])
+        gfx.CreateFaceVertexIndicesAttr([0, 1, 2])
+        return gfx
+
+    def _import(self, stage, **kwargs):
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, **kwargs)
+        return builder
+
+    def test_untagged_mesh_under_volume_body_imports_and_skins(self):
+        """An untagged graphics Mesh under a volume deformable body becomes a tet
+        render mesh with USD ownership metadata, without any custom relationship
+        and without deformable_results."""
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        self._add_graphics_mesh(stage, "/World/Tire/Skin")
+
+        builder = self._import(stage)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 1)
+        rm = model.deformable_render_meshes[0]
+        self.assertEqual(rm.kind, newton.DeformableRenderMesh.Kind.TET)
+        self.assertEqual(rm.body_path, "/World/Tire")
+        self.assertEqual(rm.sim_path, "/World/Tire/Sim")
+        self.assertEqual(rm.graphics_path, "/World/Tire/Skin")
+
+        # Rigid translation of the soft body carries the skinned vertices exactly.
+        state = model.state()
+        rest = _skin(model, rm, state)
+        shift = np.array([0.0, 0.0, 2.0], dtype=np.float32)
+        state.particle_q = wp.array(state.particle_q.numpy() + shift, dtype=wp.vec3)
+        assert_np_equal(_skin(model, rm, state), rest + shift, tol=1.0e-5)
+
+    def test_multiple_graphics_meshes_and_nested_bodies(self):
+        """Multiple graphics meshes under one body all import; a nested deformable
+        body's graphics are never assigned to the outer body."""
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Outer")
+        self._add_graphics_mesh(stage, "/World/Outer/SkinA")
+        self._add_graphics_mesh(stage, "/World/Outer/SkinB")
+        self._add_volume_body(stage, "/World/Outer/Inner")
+        self._add_graphics_mesh(stage, "/World/Outer/Inner/Skin")
+
+        builder = self._import(stage)
+        model = builder.finalize()
+        by_path = {rm.graphics_path: rm for rm in model.deformable_render_meshes}
+        self.assertEqual(set(by_path), {"/World/Outer/SkinA", "/World/Outer/SkinB", "/World/Outer/Inner/Skin"})
+        self.assertEqual(by_path["/World/Outer/SkinA"].body_path, "/World/Outer")
+        self.assertEqual(by_path["/World/Outer/Inner/Skin"].body_path, "/World/Outer/Inner")
+        # The nested body's mesh embeds in the nested body's own tets.
+        self.assertNotEqual(
+            by_path["/World/Outer/SkinA"].parent.numpy()[0], by_path["/World/Outer/Inner/Skin"].parent.numpy()[0]
+        )
+
+    def test_collision_marked_geometry_is_not_visual(self):
+        """A Mesh marked with a collision API under the body is not a render mesh."""
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        collider = self._add_graphics_mesh(stage, "/World/Tire/Collider")
+        collider.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+
+        with self.assertWarnsRegex(UserWarning, "approximated by the simulation geometry"):
+            builder = self._import(stage)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 0)
+
+    def test_bind_pose_is_honored(self):
+        """PhysicsDeformablePoseAPI bindPose drives the embedding: a mesh whose
+        default points are far away but whose bind pose lies inside the tet
+        embeds without an outside-domain clamp warning."""
+        from pxr import Sdf
+
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        gfx = self._add_graphics_mesh(
+            stage, "/World/Tire/Skin", points=[(9.0, 9.0, 9.0), (9.4, 9.0, 9.0), (9.0, 9.4, 9.0)]
+        )
+        gfx.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        gfx.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+            ["bindPose"]
+        )
+        gfx.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.2, 0.2, 0.2), (0.4, 0.2, 0.2), (0.2, 0.4, 0.2)]
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = self._import(stage)
+        self.assertFalse(any("clamped" in str(w.message) for w in caught))
+        model = builder.finalize()
+        rm = model.deformable_render_meshes[0]
+        # The bind-pose vertices (inside the tet) are the rest vertices.
+        self.assertLess(float(rm.rest_vertices.numpy().max()), 1.0)
+
+    def test_transforms_embed_in_common_frame(self):
+        """Sim and graphics prims with different local transforms meet in the
+        world frame: a graphics mesh authored in a shifted local frame lands on
+        the simulation geometry."""
+        from pxr import Gf, UsdGeom
+
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        gfx = self._add_graphics_mesh(
+            stage, "/World/Tire/Skin", points=[(-0.8, 0.2, 0.2), (-0.6, 0.2, 0.2), (-0.8, 0.4, 0.2)]
+        )
+        UsdGeom.Xformable(gfx).AddTranslateOp().Set(Gf.Vec3d(1.0, 0.0, 0.0))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder = self._import(stage)
+        self.assertFalse(any("clamped" in str(w.message) for w in caught))
+        model = builder.finalize()
+        rest = model.deformable_render_meshes[0].rest_vertices.numpy()
+        assert_np_equal(rest[0], np.array([0.2, 0.2, 0.2], dtype=np.float32), tol=1.0e-6)
+
+    def test_cloth_body_graphics_embed_in_triangles(self):
+        """An untagged Mesh under a surface deformable body embeds into the
+        cloth's owning triangle range."""
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Body/Sim")
+        from pxr import UsdGeom
+
+        body = stage.GetPrimAtPath("/World/Body")
+        if not body or not body.IsValid():
+            body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        body.AddAppliedSchema("PhysicsDeformableBodyAPI")
+        self._add_graphics_mesh(stage, "/World/Body/Skin", points=[(0.2, 0.2, 1.0), (0.6, 0.2, 1.0), (0.2, 0.6, 1.0)])
+        del cloth
+
+        builder = self._import(stage)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 1)
+        rm = model.deformable_render_meshes[0]
+        self.assertEqual(rm.kind, newton.DeformableRenderMesh.Kind.TRIANGLE)
+        self.assertEqual(rm.weights.numpy().shape[1], 3)
+
+    def test_cable_body_graphics_bind_to_segment_bodies(self):
+        """An untagged Mesh under a cable deformable body binds to the curve's
+        imported segment bodies and follows them."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        body.AddAppliedSchema("PhysicsDeformableBodyAPI")
+        _add_cable_curve(stage, "/World/Body/Sim", [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)])
+        self._add_graphics_mesh(
+            stage, "/World/Body/Skin", points=[(0.0, 0.02, 1.0), (0.15, 0.02, 1.0), (0.3, 0.02, 1.0)]
+        )
+
+        builder = self._import(stage)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 1)
+        rm = model.deformable_render_meshes[0]
+        self.assertEqual(rm.kind, newton.DeformableRenderMesh.Kind.BODY)
+        self.assertEqual(rm.body_path, "/World/Body")
+        parents = rm.parent.numpy()
+        self.assertTrue((parents >= 0).all() and (parents < model.body_count).all())
+
+    def test_uvs_survive_import(self):
+        """Vertex-interpolated primvars:st arrive on the render mesh."""
+        from pxr import Sdf, UsdGeom
+
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        gfx = self._add_graphics_mesh(stage, "/World/Tire/Skin")
+        pv = UsdGeom.PrimvarsAPI(gfx.GetPrim()).CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+        )
+        pv.Set([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)])
+
+        builder = self._import(stage)
+        model = builder.finalize()
+        rm = model.deformable_render_meshes[0]
+        self.assertIsNotNone(rm.uvs)
+        assert_np_equal(rm.uvs.numpy(), np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32), tol=1e-6)
+
+    def test_load_visual_shapes_false_skips_render_meshes(self):
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        self._add_graphics_mesh(stage, "/World/Tire/Skin")
+        builder = self._import(stage, load_visual_shapes=False)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 0)
 
 
 if __name__ == "__main__":

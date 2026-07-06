@@ -976,14 +976,18 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
                     or any(s in deformable_sim_apis for s in prim.GetPrimTypeInfo().GetAppliedAPISchemas())
                 ):
                     # Simulation candidates of any family are handled (or warned) by their
-                    # own passes; everything else is unembedded graphics geometry.
+                    # own passes; everything else is graphics geometry. Untagged Meshes are
+                    # claimed by the render pass and skinned from the simulation state
+                    # (excluding them here keeps the native loader from importing a second,
+                    # static copy); other PointBased graphics cannot be embedded yet.
                     buckets.native_physics_exclude_paths.append(path)
-                    warnings.warn(
-                        f"{path}: PointBased geometry under deformable body {body_path} cannot "
-                        f"deform with the simulation geometry (embedding is not implemented); "
-                        f"skipping it.",
-                        stacklevel=2,
-                    )
+                    if not prim.IsA(UsdGeom.Mesh):
+                        warnings.warn(
+                            f"{path}: PointBased geometry under deformable body {body_path} cannot "
+                            f"deform with the simulation geometry (embedding is not implemented); "
+                            f"skipping it.",
+                            stacklevel=2,
+                        )
     return buckets
 
 
@@ -1006,6 +1010,8 @@ class _DeformableImportContext:
     get_rigid_body_ancestor_path: Callable
     get_first_target: Callable
     get_tetmesh_cached: Callable
+    get_mesh_cached: Callable
+    load_visual_shapes: bool
     incoming_world_xform: wp.transform
     linear_unit: float
     ignore_paths: Sequence[str]

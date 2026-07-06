@@ -9491,18 +9491,20 @@ class ModelBuilder:
         return parent, weights
 
     def _embed_render_vertices_in_tets(
-        self, vertices: np.ndarray, tet_range: tuple[int, int]
+        self, vertices: np.ndarray, tet_range: tuple[int, int], positions: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute the containing owning tet and barycentric weights per render vertex.
 
         Build-time, host-side embedding restricted to the owning ``[start, end)``
         tet range, so a clamp can never cross deformable bodies. A vertex outside
         every owning tet (gaps, surface overhang) is clamped to the nearest owning
-        tet by centroid distance and a warning is emitted.
+        tet by centroid distance and a warning is emitted. ``positions`` overrides
+        the particle positions used as the bind configuration (the USD importer
+        passes an authored bind pose); defaults to the builder's particles.
         """
         lo, hi = tet_range
         tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)[lo:hi]
-        particles = np.asarray(self.particle_q, dtype=np.float64)
+        particles = np.asarray(self.particle_q, dtype=np.float64) if positions is None else positions
 
         v0, v1, v2, v3 = (particles[tet_idx[:, i]] for i in range(4))
         # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
@@ -9540,18 +9542,20 @@ class ModelBuilder:
         return parent, weights
 
     def _embed_render_vertices_in_triangles(
-        self, vertices: np.ndarray, tri_range: tuple[int, int]
+        self, vertices: np.ndarray, tri_range: tuple[int, int], positions: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Project each render vertex onto its closest owning simulation triangle.
 
         Build-time, host-side embedding restricted to the owning ``[start, end)``
         triangle range. The barycentric coordinates of the closest point are
         stored; the normal offset from the surface is dropped by design (the
-        skinned vertex lies on the simulation surface).
+        skinned vertex lies on the simulation surface). ``positions`` overrides
+        the particle positions used as the bind configuration (the USD importer
+        passes an authored bind pose); defaults to the builder's particles.
         """
         lo, hi = tri_range
         tri_idx = np.asarray(self.tri_indices, dtype=np.int64).reshape(-1, 3)[lo:hi]
-        particles = np.asarray(self.particle_q, dtype=np.float64)
+        particles = np.asarray(self.particle_q, dtype=np.float64) if positions is None else positions
         a, b, c = (particles[tri_idx[:, i]] for i in range(3))
         ab = b - a
         ac = c - a
@@ -9572,8 +9576,10 @@ class ModelBuilder:
             w = np.clip((d00 * d21 - d01 * d20) / denom, 0.0, 1.0)
             scale = v + w
             over = scale > 1.0
-            v = np.where(over, v / scale, v)
-            w = np.where(over, w / scale, w)
+            # np.where evaluates both branches; keep the unused divisor finite.
+            safe_scale = np.where(over, scale, 1.0)
+            v = np.where(over, v / safe_scale, v)
+            w = np.where(over, w / safe_scale, w)
             closest = a + v[:, None] * ab + w[:, None] * ac
             best = int(np.argmin(np.linalg.norm(closest - p, axis=1)))
             weights[i] = (1.0 - v[best] - w[best], v[best], w[best])

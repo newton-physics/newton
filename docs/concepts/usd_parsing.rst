@@ -145,14 +145,17 @@ Known gaps of the experimental importer, tracked as follow-ups:
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
-* **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven (embedding is not implemented): untagged
-  PointBased graphics geometry warns and is skipped (a static import would leave a frozen
-  copy behind), and a dedicated point-based collider (every one warns) only toggles the
-  simulation geometry's collision as described above and never becomes a separate rigid
-  shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
-  deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
-  rather than falling back to a rigid representation. A disabled
+* **Graphics geometry** -- an untagged ``UsdGeom.Mesh`` under a deformable body (the
+  proposal's graphics geometry) imports as a render mesh embedded in the simulation
+  geometry and skinned from the simulation state each frame (see
+  :meth:`~newton.ModelBuilder.add_deformable_render_mesh`). ``PhysicsDeformablePoseAPI``
+  bind poses are honored. Other point-based graphics geometry (e.g. a graphics TetMesh
+  or BasisCurves) cannot be embedded yet: it warns and is skipped.
+* **Collision geometry** -- a dedicated point-based collider (every one warns) only
+  toggles the simulation geometry's collision as described above and never becomes a
+  separate rigid shape. Deformable-owned geometry is owned exclusively by the deformable
+  importer: when a deformable is skipped as kinematic or malformed it imports as nothing,
+  with a warning, rather than falling back to a rigid representation. A disabled
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
