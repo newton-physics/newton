@@ -11349,7 +11349,14 @@ class ModelBuilder:
                     continue
 
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
+                m.add_attribute(
+                    custom_attr.name,
+                    result,
+                    freq_key,
+                    custom_attr.assignment,
+                    custom_attr.namespace,
+                    custom_attr.references,
+                )
 
             m.bvh_build_shapes(m, bvh_constructor=self.default_bvh_cfg.shape_constructor)
             m.bvh_build_particles(m)
