@@ -201,8 +201,10 @@ Differentiability and Graph Capture
 Whether an actuator supports differentiability and CUDA graph capture depends on
 its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
 graphable.  Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) require PyTorch and are not graphable due to
-framework interop overhead.
+:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX checkpoints
+use Warp-NN's Warp-backed runtime and are graphable, while TorchScript
+checkpoints (``.pt`` / ``.pth``) use the Torch backend, require PyTorch, and are
+not graphable due to framework interop overhead.
 
 :meth:`Actuator.is_graphable` returns ``True`` when all components can be
 captured in a CUDA graph.
@@ -221,10 +223,10 @@ Controllers
 * :class:`ControllerPD` — proportional-derivative control law (stateless).
 * :class:`ControllerPID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
-* :class:`ControllerNeuralMLP` — MLP neural-network controller (requires
-  PyTorch, stateful: position/velocity history buffers).
-* :class:`ControllerNeuralLSTM` — LSTM neural-network controller (requires
-  PyTorch, stateful: hidden/cell state).
+* :class:`ControllerNeuralMLP` — MLP neural-network controller
+  (stateful: position/velocity history buffers).
+* :class:`ControllerNeuralLSTM` — LSTM neural-network controller
+  (stateful: hidden/cell state).
 
 See the API documentation for each controller's control-law equations.
 

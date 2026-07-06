@@ -11,7 +11,17 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from warp.types import is_array
 
-from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
+from ..sim import (
+    Control,
+    InverseDynamics,
+    JointType,
+    Model,
+    State,
+    eval_fk,
+    eval_inverse_dynamics,
+    eval_jacobian,
+    eval_mass_matrix,
+)
 from .deprecation import deprecate_nonkeyword_arguments
 
 if TYPE_CHECKING:
@@ -1709,6 +1719,39 @@ class ArticulationView:
         return eval_mass_matrix(
             self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
         )
+
+    def eval_inverse_dynamics(
+        self,
+        state: State,
+        eval_type: InverseDynamics.EvalType,
+        inverse_dynamics: InverseDynamics,
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Compute inverse-dynamics quantities for articulations in this view.
+
+        Forwards to :func:`~newton.eval_inverse_dynamics` with an
+        articulation mask derived from this view (combined with the
+        optional view-local ``mask``). Output buffers in
+        ``inverse_dynamics`` are sized for the whole model: entries
+        belonging to articulations outside the view (or outside the
+        sub-selection) are written as zero, matching the convention
+        used by :meth:`eval_mass_matrix`.
+
+        Args:
+            state: The state containing the current generalized
+                coordinates and velocities. ``state.body_q`` must
+                already reflect ``state.joint_q``.
+            eval_type: Bitmask selecting which quantities to compute.
+            inverse_dynamics: Output container whose buffers are
+                written in place; also holds the internal scratch.
+            mask: Optional mask of articulations in this
+                ArticulationView (all by default). Either 1-D
+                ``[world_count]`` selecting whole worlds or 2-D
+                ``[world_count, count_per_world]`` selecting individual
+                articulations per world.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        eval_inverse_dynamics(self.model, state, eval_type, inverse_dynamics, mask=articulation_mask)
 
     # ========================================================================================
     # Actuator parameter access

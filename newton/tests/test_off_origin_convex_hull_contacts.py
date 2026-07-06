@@ -217,6 +217,7 @@ def test_off_origin_convex_hull_reports_correct_separation(test, device):
             model,
             reduce_contacts=False,
             broad_phase="sap",
+            include_static_kinematic_pairs=True,
         )
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
