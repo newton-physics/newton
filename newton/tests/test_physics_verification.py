@@ -828,7 +828,7 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
     else:
         _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.CONNECT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
             body1=-1,
             body2=rocker_body,
             anchor=wp.vec3(d_link, 0.0, 0.0),

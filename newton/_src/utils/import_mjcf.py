@@ -18,7 +18,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
-from ..sim import EqType, JointTargetMode, JointType, ModelBuilder
+from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.constants import (
@@ -28,6 +28,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
@@ -759,7 +760,7 @@ def parse_mjcf(
             # conversion for back-compat with the legacy
             # convert_solref(ke, kd, 1, 1) round-trip; raw solref is
             # preserved in mujoco.solref by the registered
-            # mjcf_attribute_name="solref". See docs/integrations/mujoco.rst
+            # mjcf_attribute_name="solref". See docs/solvers/mujoco.rst
             # > "Shape-material contact stiffness and damping".
             if "solref" in geom_attrib:
                 solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
@@ -795,7 +796,7 @@ def parse_mjcf(
                 # Authored solref → RAW (forwarded verbatim); unauthored →
                 # MJCF_DEFAULT (force-space scaling is strictly opt-in for
                 # shapes — no auto-promote, unlike joint limits). See
-                # docs/integrations/mujoco.rst > "Shape-material contact
+                # docs/solvers/mujoco.rst > "Shape-material contact
                 # stiffness and damping".
                 custom_attributes[solref_mode_key] = (
                     SOLREF_MODE_RAW if "solref" in geom_attrib else SOLREF_MODE_MJCF_DEFAULT

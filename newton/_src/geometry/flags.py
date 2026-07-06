@@ -13,6 +13,15 @@ class ParticleFlags(IntEnum):
     ACTIVE = 1 << 0
     """Indicates that the particle is active."""
 
+    PROXY = 1 << 1
+    """Indicates that the particle is a solver-coupling proxy.
+
+    .. experimental::
+
+        This flag is part of the experimental coupled-solver contract and may
+        change without prior notice.
+    """
+
 
 # Shape flags
 class ShapeFlags(IntEnum):
