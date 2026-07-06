@@ -3522,26 +3522,30 @@ class ModelBuilder:
 
         # Deformable groups: shift each group's ranges by this builder's start offsets and tag each
         # copy with the current world (labels ride the label_attrs handling below). Mirrors the
-        # articulation_start/end offset + articulation_world tagging above.
-        self._cable_body_start.extend([s + start_body_idx for s in builder._cable_body_start])
-        self._cable_body_end.extend([e + start_body_idx for e in builder._cable_body_end])
-        self._cable_joint_start.extend([s + start_joint_idx for s in builder._cable_joint_start])
-        self._cable_joint_end.extend([e + start_joint_idx for e in builder._cable_joint_end])
-        self._cable_world.extend([self.current_world] * len(builder._cable_label))
+        # articulation_start/end offset + articulation_world tagging above. Guarded per family so
+        # deformable-free builders (e.g. every replicate() copy of a rigid robot) skip the merges.
+        if builder._cable_label:
+            self._cable_body_start.extend([s + start_body_idx for s in builder._cable_body_start])
+            self._cable_body_end.extend([e + start_body_idx for e in builder._cable_body_end])
+            self._cable_joint_start.extend([s + start_joint_idx for s in builder._cable_joint_start])
+            self._cable_joint_end.extend([e + start_joint_idx for e in builder._cable_joint_end])
+            self._cable_world.extend([self.current_world] * len(builder._cable_label))
 
-        self._cloth_particle_start.extend([s + start_particle_idx for s in builder._cloth_particle_start])
-        self._cloth_particle_end.extend([e + start_particle_idx for e in builder._cloth_particle_end])
-        self._cloth_tri_start.extend([s + start_triangle_idx for s in builder._cloth_tri_start])
-        self._cloth_tri_end.extend([e + start_triangle_idx for e in builder._cloth_tri_end])
-        self._cloth_edge_start.extend([s + start_edge_idx for s in builder._cloth_edge_start])
-        self._cloth_edge_end.extend([e + start_edge_idx for e in builder._cloth_edge_end])
-        self._cloth_world.extend([self.current_world] * len(builder._cloth_label))
+        if builder._cloth_label:
+            self._cloth_particle_start.extend([s + start_particle_idx for s in builder._cloth_particle_start])
+            self._cloth_particle_end.extend([e + start_particle_idx for e in builder._cloth_particle_end])
+            self._cloth_tri_start.extend([s + start_triangle_idx for s in builder._cloth_tri_start])
+            self._cloth_tri_end.extend([e + start_triangle_idx for e in builder._cloth_tri_end])
+            self._cloth_edge_start.extend([s + start_edge_idx for s in builder._cloth_edge_start])
+            self._cloth_edge_end.extend([e + start_edge_idx for e in builder._cloth_edge_end])
+            self._cloth_world.extend([self.current_world] * len(builder._cloth_label))
 
-        self._soft_particle_start.extend([s + start_particle_idx for s in builder._soft_particle_start])
-        self._soft_particle_end.extend([e + start_particle_idx for e in builder._soft_particle_end])
-        self._soft_tet_start.extend([s + start_tetrahedron_idx for s in builder._soft_tet_start])
-        self._soft_tet_end.extend([e + start_tetrahedron_idx for e in builder._soft_tet_end])
-        self._soft_world.extend([self.current_world] * len(builder._soft_label))
+        if builder._soft_label:
+            self._soft_particle_start.extend([s + start_particle_idx for s in builder._soft_particle_start])
+            self._soft_particle_end.extend([e + start_particle_idx for e in builder._soft_particle_end])
+            self._soft_tet_start.extend([s + start_tetrahedron_idx for s in builder._soft_tet_start])
+            self._soft_tet_end.extend([e + start_tetrahedron_idx for e in builder._soft_tet_end])
+            self._soft_world.extend([self.current_world] * len(builder._soft_label))
 
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
