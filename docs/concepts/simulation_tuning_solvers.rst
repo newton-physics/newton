@@ -80,7 +80,7 @@ Drive and limit gains
    :attr:`~Model.joint_target_kd`. Joint limits use
    :attr:`~Model.joint_limit_ke` and :attr:`~Model.joint_limit_kd` where
    supported. Check :ref:`Joint feature support` (the table in
-   ``docs/api/newton_solvers.rst``) before assuming a solver uses a joint feature.
+   ``docs/solvers/index.rst``) before assuming a solver uses a joint feature.
 
 Effort limits, target rates, armature, and friction
    Target rate limits are usually implemented in control code.

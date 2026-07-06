@@ -10,7 +10,7 @@ Simulation Tuning
 
 Physics tuning is a process of reducing one failure mode at a time. Start with
 the smallest scene that reproduces the issue, verify the model scale and mass
-properties, then tune the solver and material parameters in a fixed order.
+properties, then follow the order appropriate to the diagnosed symptom.
 
 This page is intentionally operational: it is written as a checklist for humans
 and agents. Parameter names are Newton parameter names unless explicitly marked
@@ -40,8 +40,8 @@ symptoms are not contact problems:
 - **Initialization / geometry:** initial penetration, collision-vs-visual mesh
   mismatch, wrong joint state.
 - **Control:** a bad controller or IK target, step changes in drive targets.
-- **Model:** missing joint friction, armature, or damping; a missing drive
-  import; bad mass or inertia.
+- **Model:** bad mass or effective inertia; a missing drive import; or missing
+  friction, damping, and reflected actuator inertia where physically expected.
 - **Capacity:** too few contact or constraint rows for the scene.
 - **Contact / solver:** only after the above are ruled out.
 
@@ -61,7 +61,7 @@ Three principles guide every change:
 Tuning Order
 ------------
 
-Use this order for most rigid-body and articulation problems:
+For contact-dominated rigid-body and articulation problems, use this order:
 
 1. **Simplify the scene.** Test the robot, mechanism, gripper, or object in
    isolation before tuning the full environment.
@@ -80,9 +80,10 @@ Use this order for most rigid-body and articulation problems:
    then cost runtime without meaningful accuracy.
 6. **Tune contacts.** Adjust stiffness, damping, friction, contact margins,
    gaps, contact count, and collision refresh cadence.
-7. **Tune joints and drives.** Use realistic drive stiffness and damping. Add target rate limits in
-   control code. Use supported model features such as effort limits, armature, or joint
-   friction only where the selected solver supports them.
+7. **Tune joints and drives.** Use realistic drive stiffness and damping. Add
+   target rate limits in control code. Use supported model features such as
+   effort limits, armature, or joint friction only where the selected solver
+   supports them.
 8. **Optimize performance last.** Reduce collision frequency, contact count,
    solver iterations, or substeps only after the behavior is acceptable.
 
@@ -154,6 +155,8 @@ Symptom Table
 Going Deeper
 ------------
 
+- :doc:`Solver overview </solvers/index>` — solver selection, capability
+  matrices, and joint-feature support.
 - :ref:`Tuning Solver Reference` — supported knobs per solver and sanity-check
   math.
 - :ref:`Tuning MuJoCo` — the MuJoCo-Warp constraint model, ``ke``/``kd`` to

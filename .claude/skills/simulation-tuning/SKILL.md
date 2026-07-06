@@ -24,8 +24,9 @@ contact problems):
 - **Initialization / geometry** — initial penetration, collision-vs-visual mesh
   mismatch, wrong joint state.
 - **Control** — bad controller/IK target, step changes in drive targets.
-- **Model** — missing joint friction/armature/damping, missing drive import,
-  bad mass/inertia.
+- **Model** — bad mass or effective inertia, missing drive import, or missing
+  friction/damping and reflected actuator inertia when the mechanism should
+  have them.
 - **Capacity** — too few contact/constraint rows.
 - **Contact / solver** — tune only after the above are ruled out.
 
@@ -39,8 +40,10 @@ contact problems):
 3. Record `dt`, substeps, contact-refresh cadence, solver params, contact
    materials, and drive gains before changing anything.
 4. Reproduce the symptom in a minimal scene.
-5. Change one category at a time: model → timestep → solver convergence →
-   contacts → drives → performance.
+5. Start with the diagnosed category and change one category at a time. For a
+   contact-dominated symptom, use model → timestep → solver convergence →
+   contacts → drives → performance. For a control- or drive-dominated symptom,
+   inspect control and drives before contact tuning.
 6. Prefer physically meaningful changes before solver brute force.
 7. Keep the final recommendation solver-specific.
 
@@ -55,7 +58,7 @@ or from this guide without having opened the code that defines it.
 | Workflow, principles, symptom table | `docs/concepts/simulation_tuning.rst` |
 | Supported knobs per solver, sanity-check math | `docs/concepts/simulation_tuning_solvers.rst` |
 | MuJoCo-Warp constraint model, ke/kd↔solref/solimp, task templates | `docs/concepts/simulation_tuning_mujoco.rst` |
-| Which joint features each solver supports ("Joint feature support" table) | `docs/api/newton_solvers.rst` |
+| Which joint features each solver supports ("Joint feature support" table) | `docs/solvers/index.rst` |
 
 ## Key facts
 

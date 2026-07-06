@@ -230,9 +230,12 @@ combine, with the same three states as joint limits:
   from an MJCF/USD import) unchanged.
 * ``SOLREF_MODE_MJCF_DEFAULT`` — registered default; preserves MuJoCo's
   compile-time contact dynamics and the legacy
-  ``convert_solref(ke, kd, 1, 1)`` round-trip in ``geom_solref``. Opt
-  in to force-space scaling by setting
-  ``model.mujoco.solref_mode[shape] = SOLREF_MODE_FORCE_SPACE``.
+  ``convert_solref(ke, kd, 1, 1)`` round-trip in ``geom_solref``.
+
+These ``SOLREF_MODE_*`` names describe internal mode values; they are not
+public Newton symbols. MJCF/USD import selects the appropriate authored/default
+mode automatically. Do not import the constants from ``newton._src`` to change
+the mode from user code.
 
 .. note::
 
@@ -242,6 +245,9 @@ combine, with the same three states as joint limits:
    reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
    fall back to the legacy ``convert_solref(ke, kd, 1, 1)``
    approximation on those paths.
+
+For parameter interpretation, stability tradeoffs, and task-oriented guidance,
+see :ref:`Tuning MuJoCo`.
 
 Actuators
 ---------
