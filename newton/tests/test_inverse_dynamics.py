@@ -2596,17 +2596,25 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         torque_expected = np.array(wp.quat_rotate(qx, I_local * alpha_parent), dtype=np.float32)
 
         joint_cases = [
-            ("free", lambda b, body1, body2: b.add_joint_free(
-                parent=body1, child=body2,
-                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
-                child_xform=identity,
-            )),
-            ("distance", lambda b, body1, body2: b.add_joint_distance(
-                parent=body1, child=body2,
-                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
-                child_xform=identity,
-                max_distance=-1,
-            )),
+            (
+                "free",
+                lambda b, body1, body2: b.add_joint_free(
+                    parent=body1,
+                    child=body2,
+                    parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
+                    child_xform=identity,
+                ),
+            ),
+            (
+                "distance",
+                lambda b, body1, body2: b.add_joint_distance(
+                    parent=body1,
+                    child=body2,
+                    parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
+                    child_xform=identity,
+                    max_distance=-1,
+                ),
+            ),
         ]
         for joint_name, add_joint in joint_cases:
             with self.subTest(joint=joint_name):
@@ -2621,7 +2629,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
                 inverse_dynamics = model.inverse_dynamics()
 
-                newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics)
+                newton.eval_inverse_dynamics(
+                    model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics
+                )
                 qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
                 newton.eval_inverse_dynamics_force(
                     model,
@@ -3184,7 +3194,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         selects its second (B) — to verify that the 2-D path produces the
         correct per-articulation zeroing behaviour.
 
-        Model layout (2 worlds × 2 articulations):
+        Model layout (2 worlds X 2 articulations):
             art index   0    1    2    3
             label       A0   B0   A1   B1
             DOF range  0,1  2,3  4,5  6,7
@@ -3198,13 +3208,19 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         def _add_two_link_pendulum(builder, m_first, m_second, label):
             b1 = builder.add_link(xform=identity_xform, mass=m_first, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
             j1 = builder.add_joint_revolute(
-                parent=-1, child=b1, axis=y_axis,
-                parent_xform=identity_xform, child_xform=neg_half,
+                parent=-1,
+                child=b1,
+                axis=y_axis,
+                parent_xform=identity_xform,
+                child_xform=neg_half,
             )
             b2 = builder.add_link(xform=identity_xform, mass=m_second, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
             j2 = builder.add_joint_revolute(
-                parent=b1, child=b2, axis=y_axis,
-                parent_xform=pos_half, child_xform=neg_half,
+                parent=b1,
+                child=b2,
+                axis=y_axis,
+                parent_xform=pos_half,
+                child_xform=neg_half,
             )
             builder.add_articulation([j1, j2], label=label)
 
