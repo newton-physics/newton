@@ -72,11 +72,21 @@ class ControllerNeuralLSTM(Controller):
     error and velocity error. Hidden and cell state are maintained across
     timesteps.
 
-    ``.pt`` and ``.pth`` checkpoints use the Torch backend and preserve the
-    Torch state interface. ``.onnx`` checkpoints use Warp-NN. The exported ONNX
-    model must have three inputs: input, initial hidden, and initial cell. It
-    must have three graph outputs: effort, hidden output, and cell output.
-    Metadata properties map those names to controller roles.
+    Torch checkpoints use the Torch backend and preserve the Torch state
+    interface. They accept pt2 archives (``.pt2`` saved with
+    ``torch.export.save``; preferred) and the deprecated TorchScript (``.pt``
+    saved with ``torch.jit.save``) and module-bundle
+    (``{"model": <network module>, "metadata": {...}}`` saved with
+    ``torch.save``) formats. ``num_layers`` and ``hidden_size`` are taken from
+    checkpoint metadata when present, otherwise from a live ``lstm`` attribute
+    (``torch.nn.LSTM``). Exported pt2 modules no longer expose that attribute,
+    so their checkpoints must record ``num_layers`` and ``hidden_size`` in
+    metadata.
+
+    ``.onnx`` checkpoints use Warp-NN. The exported ONNX model must have three
+    inputs: input, initial hidden, and initial cell. It must have three graph
+    outputs: effort, hidden output, and cell output. Metadata properties map
+    those names to controller roles.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -129,7 +139,8 @@ class ControllerNeuralLSTM(Controller):
         """Initialize LSTM controller from a checkpoint file.
 
         Args:
-            model_path: Path to the ``.onnx``, ``.pt``, or ``.pth`` checkpoint.
+            model_path: Path to the ``.onnx``, ``.pt2``, ``.pt``, or ``.pth``
+                checkpoint.
         """
         self.model_path = model_path
 
@@ -149,22 +160,30 @@ class ControllerNeuralLSTM(Controller):
             self.vel_scale = metadata.get("vel_scale", 1.0)
             self.effort_scale = metadata.get("effort_scale", metadata.get("torque_scale", 1.0))
 
-            if not hasattr(self.network, "lstm"):
-                raise ValueError("network must expose a 'lstm' attribute (torch.nn.LSTM)")
-            lstm = self.network.lstm
-            if not hasattr(lstm, "num_layers"):
-                raise ValueError("network.lstm must be a torch.nn.LSTM (missing num_layers)")
-            if not lstm.batch_first:
-                raise ValueError("network.lstm.batch_first must be True")
-            if lstm.input_size != 2:
-                raise ValueError(f"network.lstm.input_size must be 2 (pos_error, vel_error); got {lstm.input_size}")
-            if lstm.bidirectional:
-                raise ValueError("network.lstm must not be bidirectional")
-            if getattr(lstm, "proj_size", 0) != 0:
-                raise ValueError(f"network.lstm.proj_size must be 0; got {lstm.proj_size}")
+            if "num_layers" in metadata and "hidden_size" in metadata:
+                self._num_layers = metadata["num_layers"]
+                self._hidden_size = metadata["hidden_size"]
+            elif hasattr(self.network, "lstm") and hasattr(self.network.lstm, "num_layers"):
+                lstm = self.network.lstm
+                if not lstm.batch_first:
+                    raise ValueError("network.lstm.batch_first must be True")
+                if lstm.input_size != 2:
+                    raise ValueError(f"network.lstm.input_size must be 2 (pos_error, vel_error); got {lstm.input_size}")
+                if lstm.bidirectional:
+                    raise ValueError("network.lstm must not be bidirectional")
+                if getattr(lstm, "proj_size", 0) != 0:
+                    raise ValueError(f"network.lstm.proj_size must be 0; got {lstm.proj_size}")
 
-            self._num_layers = lstm.num_layers
-            self._hidden_size = lstm.hidden_size
+                self._num_layers = lstm.num_layers
+                self._hidden_size = lstm.hidden_size
+            else:
+                raise ValueError(
+                    f"Cannot determine the LSTM configuration for '{model_path}': the checkpoint "
+                    f"does not expose an 'lstm' module (torch.nn.LSTM), so 'num_layers' and "
+                    f"'hidden_size' must be provided in the checkpoint metadata. Add them when "
+                    f"exporting, e.g. torch.export.save(exported, path, extra_files="
+                    f"{{'metadata.json': json.dumps({{'num_layers': 2, 'hidden_size': 8}})}})."
+                )
         else:
             self.pos_scale = _parse_metadata_scale(metadata, "pos_scale", model_path)
             self.vel_scale = _parse_metadata_scale(metadata, "vel_scale", model_path)
