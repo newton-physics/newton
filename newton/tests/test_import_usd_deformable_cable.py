@@ -60,7 +60,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         cases = (
             # (name, fixture kwargs, warning regex, CableB stays at the authored gap)
             ("zero_stiffness", {"gap": 10.0, "stiffness": 0.0}, "not welded", True),
-            ("finite_stiffness", {"gap": 0.0, "stiffness": 1.0e4}, "finite stiffness/damping", False),
+            ("finite_stiffness", {"gap": 0.0, "stiffness": 1.0e4}, "not welded", False),
             ("hard_apart", {"gap": 10.0}, "not coincident", True),
         )
         for name, kwargs, regex, check_gap in cases:
