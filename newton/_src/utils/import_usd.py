@@ -865,11 +865,29 @@ def parse_usd(
             prim_world_mat = incoming_mat @ prim_world_mat
         return prim_world_mat
 
+    def _load_visual_shape_children(
+        parent_body_id: int,
+        prim: Usd.Prim,
+        body_xform: wp.transform | None,
+        articulation_root_xform: wp.transform | None,
+        sites_only: bool,
+    ):
+        if prim.IsInstance():
+            proto = prim.GetPrototype()
+            for child in proto.GetChildren():
+                inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
+                inst_child = stage.GetPrimAtPath(inst_path)
+                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform, articulation_root_xform, sites_only)
+            return
+        for child in prim.GetChildren():
+            _load_visual_shapes_impl(parent_body_id, child, body_xform, articulation_root_xform, sites_only)
+
     def _load_visual_shapes_impl(
         parent_body_id: int,
         prim: Usd.Prim,
         body_xform: wp.transform | None = None,
         articulation_root_xform: wp.transform | None = None,
+        sites_only: bool = False,
     ):
         """Load visual-only shapes (non-physics) for a prim subtree.
 
@@ -884,10 +902,27 @@ def parse_usd(
                 passed when override_root_xform=True. Strips the root's original
                 pose from visual prim transforms to match the rebased body transforms.
         """
-        if _is_enabled_collider(prim) or prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             return
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
+            return
+        if _is_enabled_collider(prim):
+            _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, True)
+            return
+        if prim.IsInstance():
+            _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, sites_only)
+            return
+
+        type_name = str(prim.GetTypeName()).lower()
+        if type_name.endswith("joint"):
+            return
+
+        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
+        if is_site and not load_sites:
+            return
+        if not is_site and (sites_only or not load_visual_shapes):
+            _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, sites_only)
             return
 
         prim_world_mat = _get_prim_world_mat(
@@ -905,27 +940,7 @@ def parse_usd(
         xform_pos, xform_rot, scale = wp.transform_decompose(rel_mat)
         xform = wp.transform(xform_pos, xform_rot)
 
-        if prim.IsInstance():
-            proto = prim.GetPrototype()
-            for child in proto.GetChildren():
-                # remap prototype child path to this instance's path (instance proxy)
-                inst_path = child.GetPath().ReplacePrefix(proto.GetPath(), prim.GetPath())
-                inst_child = stage.GetPrimAtPath(inst_path)
-                _load_visual_shapes_impl(parent_body_id, inst_child, body_xform, articulation_root_xform)
-            return
-        type_name = str(prim.GetTypeName()).lower()
-        if type_name.endswith("joint"):
-            return
-
         shape_id = -1
-
-        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
-
-        # Skip based on granular loading flags
-        if is_site and not load_sites:
-            return
-        if not is_site and not load_visual_shapes:
-            return
 
         visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
         visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
@@ -1083,8 +1098,7 @@ def parse_usd(
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
-        for child in prim.GetChildren():
-            _load_visual_shapes_impl(parent_body_id, child, body_xform, articulation_root_xform)
+        _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, sites_only)
 
     def add_body(
         prim: Usd.Prim,
