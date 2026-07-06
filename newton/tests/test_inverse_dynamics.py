@@ -2567,6 +2567,76 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         expected = np.concatenate([m_mass * (R @ a_parent), R @ (I_local @ alpha_parent)]).astype(np.float32)
         np.testing.assert_allclose(inverse_dynamics.tau.numpy(), expected, atol=1e-5, rtol=1e-5)
 
+    def test_inverse_dynamics_force_non_root_free_joint_rotated_parent(self):
+        """Non-root FREE or DISTANCE joint with a rotated parent frame and non-zero ``qddot``.
+
+        A FIXED root joint makes the second joint non-root. The ``H @ qddot``
+        wrench for that joint's six DOFs is in the joint's parent frame and must
+        be rotated to world before summing with the world-frame bias terms.
+
+        With zero gravity and zero velocity the bias terms vanish, so ``tau``
+        equals the world-frame ``M(q)*qddot`` wrench. For a free rigid body whose
+        COM coincides with the joint origin this is
+        ``(m * R * a_parent, R * I_local * alpha_parent)`` where ``R`` is the
+        rotation from the joint's parent frame to world.
+
+        Tested for both FREE and DISTANCE joint types. The DISTANCE joint uses
+        ``max_distance=-1`` (no upper limit) so the distance constraint is inactive.
+        """
+        m_mass = 2.0
+        I_local = wp.mat33(0.3, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.4)
+        # 90 deg about X: parent +Y -> world +Z, parent +Z -> world -Y.
+        qx = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
+        identity = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+        qddot_np = np.array([0.5, -0.3, 0.7, 0.2, 0.4, -0.6], dtype=np.float32)
+        a_parent = wp.vec3(*qddot_np[0:3].tolist())
+        alpha_parent = wp.vec3(*qddot_np[3:6].tolist())
+        f_expected = np.array(wp.quat_rotate(qx, m_mass * a_parent), dtype=np.float32)
+        torque_expected = np.array(wp.quat_rotate(qx, I_local * alpha_parent), dtype=np.float32)
+
+        joint_cases = [
+            ("free", lambda b, body1, body2: b.add_joint_free(
+                parent=body1, child=body2,
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
+                child_xform=identity,
+            )),
+            ("distance", lambda b, body1, body2: b.add_joint_distance(
+                parent=body1, child=body2,
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
+                child_xform=identity,
+                max_distance=-1,
+            )),
+        ]
+        for joint_name, add_joint in joint_cases:
+            with self.subTest(joint=joint_name):
+                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=self.I_UNIT)
+                body2 = builder.add_link(mass=m_mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=I_local)
+                j_fixed = builder.add_joint_fixed(parent=-1, child=body1, parent_xform=identity, child_xform=identity)
+                j_floating = add_joint(builder, body1, body2)
+                builder.add_articulation([j_fixed, j_floating])
+                model = builder.finalize(device=self.device)
+                state = model.state()
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                inverse_dynamics = model.inverse_dynamics()
+
+                newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics)
+                qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
+                newton.eval_inverse_dynamics_force(
+                    model,
+                    state,
+                    inverse_dynamics.mass_matrix,
+                    qddot,
+                    inverse_dynamics.coriolis_force,
+                    inverse_dynamics.gravity_force,
+                    inverse_dynamics.tau,
+                )
+
+                tau = inverse_dynamics.tau.numpy()
+                np.testing.assert_allclose(tau[0:3], f_expected, atol=1e-5, rtol=1e-5)
+                np.testing.assert_allclose(tau[3:6], torque_expected, atol=1e-5, rtol=1e-5)
+
     def test_loop_closing_joint_does_not_contaminate_eval_inverse_dynamics_force(self):
         """A loop-closing joint appended after tree joints must not affect tau.
 
