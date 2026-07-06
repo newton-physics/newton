@@ -104,8 +104,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
   instead of springing back.
 * **Springy attachments** -- attachments with a finite stiffness or damping are not simulated.
-  Supported attachments become hard constraints; the rest are kept in
-  ``path_attachment_attrs``.
+  They are preserved in ``path_attachment_attrs`` with their authored stiffness and damping
+  (silently hardening them would change the authored physics); only hard attachments
+  (``stiffness = inf``) become joints.
 * **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
   deformables are skipped rather than simulated.
 * **Per-element materials** -- ``GeomSubset`` material bindings are ignored; one material
@@ -160,9 +161,9 @@ The joint connects the cable segment body (for a cable point, the neighboring se
 the target: an xform, a rigid body (kinematic bodies included), or the world frame. The created
 joints are returned in ``path_attachment_map``. Every parsed attachment, including unsupported
 ones, is described in ``path_attachment_attrs``. A finite attachment stiffness or damping cannot
-be represented yet, so supported attachments become hard constraints. Attachments on cloth or
-volume sites warn and are kept in ``path_attachment_attrs`` until Newton has a constraint for
-them.
+be represented yet, so compliant attachments warn and are preserved as metadata instead of
+becoming joints. Attachments on cloth or volume sites warn and are kept in
+``path_attachment_attrs`` until Newton has a constraint for them.
 
 A ``point``->``point`` attachment between two imported cables can be a weld. Welding happens
 only when the attachment is **hard** (no authored stiffness, or infinite, with zero damping)

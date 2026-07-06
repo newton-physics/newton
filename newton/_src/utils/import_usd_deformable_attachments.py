@@ -182,11 +182,15 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             coords1 = [wp.vec3(0.0, 0.0, 0.0) for _ in indices0]
 
         if math.isfinite(stiffness) or damping != 0.0:
-            warnings.warn(
-                f"{path}: finite PhysicsAttachment stiffness/damping are not represented by Newton's "
-                "current cable-to-xform lowering; importing as hard ball joint(s).",
-                stacklevel=2,
+            # Silently hardening a compliant attachment would change the authored physics;
+            # preserve it as metadata until a compliant lowering exists.
+            _mark_attachment_unsupported(
+                attrs,
+                path,
+                "finite PhysicsAttachment stiffness/damping cannot be represented by Newton's "
+                "cable-to-xform lowering yet; preserved as metadata, no joint created.",
             )
+            continue
 
         joints: list[int] = []
         for site_idx, src_index in enumerate(indices0):

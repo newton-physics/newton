@@ -24,6 +24,38 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 class TestUSDDeformableAttachments(unittest.TestCase):
     """Proposal PhysicsAttachment + element-collision-filter import onto cable bodies."""
 
+    def test_compliant_attachment_is_preserved_not_hardened(self):
+        """A finite-stiffness (compliant) attachment is preserved as metadata instead of
+        being silently lowered into a hard joint: authored physics is not changed, the
+        attrs keep the authored stiffness/damping, and no joint is created."""
+        stage = _deformable_stage()
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/Cable", pts)
+        _add_physics_attachment(
+            stage,
+            "/World/SoftAnchor",
+            src0="/World/Cable",
+            type0="point",
+            indices0=[0],
+            coords1=[(0.0, 0.0, 1.0)],
+            stiffness=500.0,
+            damping=2.0,
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "stiffness"):
+            result = builder.add_usd(stage, deformable_results=True)
+
+        # Only the cable's own joints exist; the compliant attachment created none.
+        j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
+        self.assertEqual(builder.joint_count, j1 - j0)
+        self.assertNotIn("/World/SoftAnchor", result["path_attachment_map"])
+        attrs = result["path_attachment_attrs"]["/World/SoftAnchor"]
+        self.assertEqual(attrs["stiffness"], 500.0)
+        self.assertEqual(attrs["damping"], 2.0)
+        self.assertIn("unsupported_reason", attrs)
+        builder.finalize()
+
     def test_physics_attachment_segment_to_world_imports_ball_joint(self):
         """A segment-to-world PhysicsAttachment imports as a world ball joint whose anchor
         rides the import ``xform`` along with the cable geometry.
