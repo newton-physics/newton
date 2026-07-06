@@ -42,6 +42,8 @@ _LICENSE_REVIEW_RE = re.compile(
     r"(^|[^a-z0-9])(proprietary|agpl|lgpl|gpl|commercial|unknown)([^a-z0-9]|$)",
     re.IGNORECASE,
 )
+_LICENSE_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
+_LICENSE_EXPRESSION_OPERATORS = {"AND", "OR", "WITH"}
 
 
 @dataclass(frozen=True)
@@ -307,6 +309,33 @@ def _metadata_needs_review(metadata: dict[str, str]) -> bool:
     return metadata["license"] != _SKIP_PYPI_LICENSE and _license_needs_review(metadata["license"])
 
 
+def _is_standard_license_expression(value: str) -> bool:
+    """Return whether *value* has the shape of an SPDX license expression."""
+    tokens = value.replace("(", " ").replace(")", " ").split()
+    if not tokens:
+        return False
+
+    expect_identifier = True
+    for token in tokens:
+        if expect_identifier:
+            if _LICENSE_IDENTIFIER_RE.fullmatch(token) is None:
+                return False
+        elif token not in _LICENSE_EXPRESSION_OPERATORS:
+            return False
+        expect_identifier = not expect_identifier
+    return not expect_identifier
+
+
+def _concise_license(metadata: dict[str, str]) -> str:
+    """Return concise Markdown for a license value while retaining evidence."""
+    value = metadata["license"]
+    if value.startswith(("not checked", "not declared")) or _is_standard_license_expression(value):
+        return value
+    if metadata["url"]:
+        return f"[package metadata]({metadata['url']})"
+    return "package metadata unavailable"
+
+
 def _md(value: object) -> str:
     text = "" if value is None else str(value)
     return text.replace("|", r"\|").replace("\n", " ")
@@ -354,13 +383,16 @@ def _license_summary(
     skip_pypi: bool,
     timeout: float,
     cache: dict[tuple[str, str | None, str | None], dict[str, str]],
+    *,
+    concise: bool = False,
 ) -> tuple[str, str]:
     entries = []
     urls = []
     for package in sorted(packages, key=lambda item: (item.version or "", item.registry or "", item.markers)):
         metadata = _locked_license(package, skip_pypi, timeout, cache)
         version = package.version or "(no version)"
-        entries.append(f"{version}: {metadata['license']}")
+        license_value = _concise_license(metadata) if concise else metadata["license"]
+        entries.append(f"{version}: {license_value}")
         if metadata["url"]:
             urls.append(metadata["url"])
     return "; ".join(entries), "; ".join(dict.fromkeys(urls))
@@ -577,12 +609,14 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
                 skip_pypi,
                 pypi_timeout,
                 license_cache,
+                concise=True,
             )
             head_license, head_evidence = _license_summary(
                 head_lock_by_name[name],
                 skip_pypi,
                 pypi_timeout,
                 license_cache,
+                concise=True,
             )
             evidence = "; ".join(url for url in (base_evidence, head_evidence) if url)
             rows.append(

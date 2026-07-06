@@ -110,6 +110,57 @@ source = { git = "https://example.com/fork.git" }
             metadata = license_audit._fetch_pypi_license("example", "1.0", 1.0)
         self.assertEqual(metadata["license"], "not declared (license files: LICENSE)")
 
+    def test_concise_license_keeps_identifiers_and_links_verbose_text(self):
+        metadata_url = "https://pypi.org/project/example/1.0/"
+
+        self.assertTrue(license_audit._is_standard_license_expression("MIT OR Apache-2.0"))
+        self.assertTrue(license_audit._is_standard_license_expression("GPL-2.0-only WITH Classpath-exception-2.0"))
+        self.assertFalse(license_audit._is_standard_license_expression("Apache Software License"))
+        self.assertFalse(license_audit._is_standard_license_expression("Permission is hereby granted, free of charge"))
+
+        self.assertEqual(
+            license_audit._concise_license({"license": "MIT OR Apache-2.0", "url": metadata_url}),
+            "MIT OR Apache-2.0",
+        )
+        self.assertEqual(
+            license_audit._concise_license({"license": "not declared", "url": metadata_url}),
+            "not declared",
+        )
+        self.assertEqual(
+            license_audit._concise_license(
+                {"license": "Permission is hereby granted, free of charge", "url": metadata_url}
+            ),
+            f"[package metadata]({metadata_url})",
+        )
+
+    def test_license_summary_concise_mode_links_nonstandard_metadata(self):
+        package = license_audit.LockedPackage(
+            name="example",
+            normalized_name="example",
+            version="1.0",
+            registry="https://pypi.org/simple",
+            source="registry: https://pypi.org/simple",
+            markers=(),
+        )
+        metadata_url = "https://pypi.org/project/example/1.0/"
+        cache = {
+            ("example", "1.0", "https://pypi.org/simple"): {
+                "license": "Permission is hereby granted, free of charge",
+                "url": metadata_url,
+            }
+        }
+
+        summary, evidence = license_audit._license_summary(
+            [package],
+            False,
+            1.0,
+            cache,
+            concise=True,
+        )
+
+        self.assertEqual(summary, f"1.0: [package metadata]({metadata_url})")
+        self.assertEqual(evidence, metadata_url)
+
     def test_skip_pypi_build_audit_defers_review_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
