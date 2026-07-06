@@ -306,6 +306,38 @@ def Xform "World"
             err_msg="Rotated quaternion mismatch",
         )
 
+    def test_axial_site_scale_uses_authored_axis(self):
+        cases = (
+            ("X", (2, 3, 4), (0.4, 0.5, 0.0)),
+            ("Y", (2, 4, 3), (0.3, 1.0, 0.0)),
+            ("Z", (3, 4, 2), (0.4, 0.5, 0.0)),
+        )
+        for shape in ("Capsule", "Cylinder", "Cone"):
+            for axis, scale, expected in cases:
+                with self.subTest(shape=shape, axis=axis):
+                    stage = self._create_usd_stage(
+                        f"""#usda 1.0
+def Xform "World" {{
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {{
+        def {shape} "site" (prepend apiSchemas = ["NewtonSiteAPI"]) {{
+            uniform token axis = "{axis}"
+            double radius = 0.1
+            double height = 0.5
+            float3 xformOp:scale = {scale}
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }}
+    }}
+}}
+"""
+                    )
+
+                    builder = newton.ModelBuilder()
+                    builder.add_usd(stage)
+                    model = builder.finalize()
+
+                    site = model.shape_label.index("/World/link/site")
+                    np.testing.assert_allclose(model.shape_scale.numpy()[site], expected)
+
     def test_site_without_mjcsite_api(self):
         """Test that shapes without MjcSiteAPI are not treated as sites."""
         usd_content = """#usda 1.0
