@@ -3539,7 +3539,7 @@ def parse_usd(
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for path, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
+        for path, rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
@@ -3600,9 +3600,7 @@ def parse_usd(
                     # created by schema resolvers are not real USD prims). Fall back to
                     # builder-accumulated mass properties from add_shape_*() calls.
                     cmp_mass = builder.body_mass[body_id]
-                    if has_authored_com:
-                        cmp_com = mass_api.GetCenterOfMassAttr().Get()
-                    else:
+                    if not has_authored_com:
                         cmp_com = builder.body_com[body_id]
                     # When the body has an authored density, rescale accumulated mass
                     # and inertia from the builder's default shape density to the
@@ -3620,9 +3618,10 @@ def parse_usd(
                         )
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
-            else:
+
+            if has_authored_com:
                 # Match the scale/frame convention used by OpenUSD's collider and joint descriptors.
-                _, _, cmp_com, _ = UsdPhysics.RigidBodyAPI(prim).ComputeMassProperties(_get_collision_mass_information)
+                cmp_com = Gf.CompMult(mass_api.GetCenterOfMassAttr().Get(), rigid_body_desc.scale)
 
             # Inertia: newton:inertia > physics:diagonalInertia + physics:principalAxes > mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia

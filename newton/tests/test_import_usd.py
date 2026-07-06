@@ -6162,7 +6162,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_com_survives_failed_mass_computation(self):
-        """Authored body COM survives fallback when mass properties cannot be computed."""
+        """Authored body COM keeps descriptor scale when mass properties cannot be computed."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -6180,7 +6180,7 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
 
         body_idx = result["path_body_map"]["/World/Scaled/Body"]
-        np.testing.assert_allclose(builder.body_com[body_idx], [0.3, 0.0, 0.0], atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(builder.body_com[body_idx], [0.6, 0.0, 0.0], atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
