@@ -66,7 +66,8 @@ For contact-dominated rigid-body and articulation problems, use this order:
 1. **Simplify the scene.** Test the robot, mechanism, gripper, or object in
    isolation before tuning the full environment.
 2. **Validate the model.** Check SI units, shape dimensions, mass, inertia,
-   joint axes, joint limits, and unintended self-collisions.
+   joint axes, joint limits, and unintended self-collisions. Inspect collision
+   geometry in the viewer rather than assuming it matches the visual geometry.
 3. **Choose the contact representation.** Prefer primitives for speed. Use SDF
    or hydroelastic contacts when contact patch quality, force distribution, or
    non-convex geometry matters.
@@ -145,7 +146,8 @@ Symptom Table
      - Runtime
    * - Jitter or explosive motion
      - Lower contact or drive stiffness; add damping; check for overlapping
-       shapes and unintended self-collision.
+       shapes, unintended self-collision, and conflicting or overconstrained
+       constraints.
      - Clamp or rate-limit commands in control code; use supported effort
        limits or armature when physically justified; reduce mass and inertia
        ratios.
