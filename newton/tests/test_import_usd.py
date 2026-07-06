@@ -2012,6 +2012,44 @@ class TestImportUsdPhysics(unittest.TestCase):
             self.assertTrue(builder.shape_flags[ci] & newton.ShapeFlags.COLLIDE_SHAPES)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_axial_visual_scale_matches_collision(self):
+        from pxr import Usd
+
+        for shape in ("Capsule", "Cylinder", "Cone"):
+            for axis in ("X", "Y", "Z"):
+                with self.subTest(shape=shape, axis=axis):
+                    stage = Usd.Stage.CreateInMemory()
+                    stage.GetRootLayer().ImportFromString(
+                        f"""#usda 1.0
+def Xform "World" {{
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {{
+        def {shape} "visual" {{
+            uniform token axis = "{axis}"
+            double radius = 0.1
+            double height = 0.5
+            float3 xformOp:scale = (2, 3, 4)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }}
+        def {shape} "collision" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {{
+            uniform token axis = "{axis}"
+            double radius = 0.1
+            double height = 0.5
+            float3 xformOp:scale = (2, 3, 4)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }}
+    }}
+}}
+"""
+                    )
+
+                    builder = newton.ModelBuilder()
+                    builder.add_usd(stage)
+
+                    visual = builder.shape_label.index("/World/link/visual")
+                    collision = builder.shape_label.index("/World/link/collision")
+                    np.testing.assert_allclose(builder.shape_scale[visual], builder.shape_scale[collision])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_non_symmetric_inertia(self):
         """Test importing USD with inertia specified in principal axes that don't align with body frame."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
