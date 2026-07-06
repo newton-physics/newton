@@ -1725,7 +1725,7 @@ class ArticulationView:
         state: State,
         eval_type: InverseDynamics.EvalType,
         inverse_dynamics: InverseDynamics,
-        mask: wp.array[bool] | None = None,
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
         """Compute inverse-dynamics quantities for articulations in this view.
 

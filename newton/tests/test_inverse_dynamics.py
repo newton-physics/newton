@@ -3104,6 +3104,136 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                         self.assertAlmostEqual(float(g[dof_idx]), 0.0, delta=1e-6)
                         self.assertAlmostEqual(float(c[dof_idx]), 0.0, delta=1e-6)
 
+    def test_articulation_view_masks_inverse_dynamics_2d(self):
+        """``ArticulationView.eval_inverse_dynamics`` accepts a 2-D ``wp.array2d[bool]`` mask.
+
+        A 2-D mask of shape ``[world_count, count_per_world]`` selects
+        individual articulations per world independently, which cannot be
+        expressed as a 1-D per-world mask.  This test uses a diagonal
+        pattern — world 0 selects its first articulation (A), world 1
+        selects its second (B) — to verify that the 2-D path produces the
+        correct per-articulation zeroing behaviour.
+
+        Model layout (2 worlds × 2 articulations):
+            art index   0    1    2    3
+            label       A0   B0   A1   B1
+            DOF range  0,1  2,3  4,5  6,7
+        Selected by 2-D mask: A0 (index 0) and B1 (index 3).
+        """
+        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        pos_half = wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity())
+        neg_half = wp.transform(wp.vec3(-0.5, 0.0, 0.0), wp.quat_identity())
+        y_axis = wp.vec3(0.0, 1.0, 0.0)
+
+        def _add_two_link_pendulum(builder, m_first, m_second, label):
+            b1 = builder.add_link(xform=identity_xform, mass=m_first, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+            j1 = builder.add_joint_revolute(
+                parent=-1, child=b1, axis=y_axis,
+                parent_xform=identity_xform, child_xform=neg_half,
+            )
+            b2 = builder.add_link(xform=identity_xform, mass=m_second, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
+            j2 = builder.add_joint_revolute(
+                parent=b1, child=b2, axis=y_axis,
+                parent_xform=pos_half, child_xform=neg_half,
+            )
+            builder.add_articulation([j1, j2], label=label)
+
+        world = newton.ModelBuilder()
+        _add_two_link_pendulum(world, m_first=1.0, m_second=2.0, label="A")
+        _add_two_link_pendulum(world, m_first=3.0, m_second=5.0, label="B")
+        scene = newton.ModelBuilder()
+        scene.replicate(world, world_count=2)
+        model = scene.finalize(device=self.device)
+
+        joint_q = [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+        joint_qd = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+        state = model.state()
+        state.joint_q.assign(joint_q)
+        state.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        # Unmasked reference.
+        reference_id = model.inverse_dynamics()
+        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, reference_id)
+        H_ref = reference_id.mass_matrix.numpy()
+        g_ref = reference_id.gravity_force.numpy()
+        c_ref = reference_id.coriolis_force.numpy()
+
+        # View covers all four articulations (A and B in both worlds),
+        # giving count_per_world=2.  The fnmatch pattern "[AB]" matches
+        # both single-character labels.
+        view = newton.selection.ArticulationView(model, "[AB]", verbose=False)
+        self.assertEqual(view.count_per_world, 2)
+
+        # 1-D mask [True, False]: selects all articulations in world 0 (A0 and B0),
+        # deselects all in world 1 (A1 and B1).  With count_per_world=2 this
+        # verifies that a single True/False entry governs the whole world, not
+        # just one articulation slot — which a count_per_world=1 view cannot test.
+        mask1d = wp.array(np.array([True, False], dtype=bool), dtype=bool, device=self.device)
+
+        inverse_dynamics = model.inverse_dynamics()
+        view.eval_inverse_dynamics(state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, mask=mask1d)
+
+        H = inverse_dynamics.mass_matrix.numpy()
+        g = inverse_dynamics.gravity_force.numpy()
+        c = inverse_dynamics.coriolis_force.numpy()
+
+        # art 0 = A0 (selected), art 1 = B0 (selected), art 2 = A1 (not), art 3 = B1 (not)
+        articulation_selected_1d = [True, True, False, False]
+        dof_selected_1d = [True, True, True, True, False, False, False, False]
+
+        for art_id in range(model.articulation_count):
+            for i in range(model.max_dofs_per_articulation):
+                for j in range(model.max_dofs_per_articulation):
+                    if articulation_selected_1d[art_id]:
+                        self.assertAlmostEqual(float(H[art_id, i, j]), float(H_ref[art_id, i, j]), delta=1e-5)
+                    else:
+                        self.assertAlmostEqual(float(H[art_id, i, j]), 0.0, delta=1e-6)
+
+        for dof_idx in range(model.joint_dof_count):
+            if dof_selected_1d[dof_idx]:
+                self.assertAlmostEqual(float(g[dof_idx]), float(g_ref[dof_idx]), delta=1e-5)
+                self.assertAlmostEqual(float(c[dof_idx]), float(c_ref[dof_idx]), delta=1e-5)
+            else:
+                self.assertAlmostEqual(float(g[dof_idx]), 0.0, delta=1e-6)
+                self.assertAlmostEqual(float(c[dof_idx]), 0.0, delta=1e-6)
+
+        # Diagonal 2-D mask: select A0 (world 0, slot 0) and B1 (world 1, slot 1).
+        # This pattern cannot be expressed as a 1-D per-world mask.
+        mask2d = wp.array(
+            np.array([[True, False], [False, True]], dtype=bool),
+            dtype=bool,
+            device=self.device,
+        )
+
+        inverse_dynamics = model.inverse_dynamics()
+        view.eval_inverse_dynamics(state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, mask=mask2d)
+
+        H = inverse_dynamics.mass_matrix.numpy()
+        g = inverse_dynamics.gravity_force.numpy()
+        c = inverse_dynamics.coriolis_force.numpy()
+
+        # art 0 = A0 (selected), art 1 = B0 (not), art 2 = A1 (not), art 3 = B1 (selected)
+        articulation_selected_2d = [True, False, False, True]
+        # DOF ranges: A0→[0,1], B0→[2,3], A1→[4,5], B1→[6,7]
+        dof_selected_2d = [True, True, False, False, False, False, True, True]
+
+        for art_id in range(model.articulation_count):
+            for i in range(model.max_dofs_per_articulation):
+                for j in range(model.max_dofs_per_articulation):
+                    if articulation_selected_2d[art_id]:
+                        self.assertAlmostEqual(float(H[art_id, i, j]), float(H_ref[art_id, i, j]), delta=1e-5)
+                    else:
+                        self.assertAlmostEqual(float(H[art_id, i, j]), 0.0, delta=1e-6)
+
+        for dof_idx in range(model.joint_dof_count):
+            if dof_selected_2d[dof_idx]:
+                self.assertAlmostEqual(float(g[dof_idx]), float(g_ref[dof_idx]), delta=1e-5)
+                self.assertAlmostEqual(float(c[dof_idx]), float(c_ref[dof_idx]), delta=1e-5)
+            else:
+                self.assertAlmostEqual(float(g[dof_idx]), 0.0, delta=1e-6)
+                self.assertAlmostEqual(float(c[dof_idx]), 0.0, delta=1e-6)
+
 
 class TestGravCompForceCPU(TestGravCompForce, unittest.TestCase):
     device = wp.get_device("cpu")
