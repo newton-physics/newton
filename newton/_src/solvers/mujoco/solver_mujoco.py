@@ -798,7 +798,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                # See docs/integrations/mujoco.rst > "Shape-material contact
+                # See docs/solvers/mujoco.rst > "Shape-material contact
                 # stiffness and damping" for the three modes. Default is
                 # MJCF_DEFAULT so existing builder-API ke/kd defaults keep
                 # working; opt into force-space scaling by setting
@@ -3419,7 +3419,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         "(use_mujoco_contacts=False); on this backend these shapes silently fall back to "
                         "the legacy convert_solref(ke, kd, 1, 1) approximation and shape_material_ke/kd "
                         "will not behave as force-space gains. See "
-                        "docs/integrations/mujoco.rst > 'Shape-material contact stiffness and damping'.",
+                        "docs/solvers/mujoco.rst > 'Shape-material contact stiffness and damping'.",
                         stacklevel=2,
                     )
         if separate_worlds is None:
@@ -4597,7 +4597,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
 
-        See ``docs/integrations/mujoco.rst`` for user-facing documentation of
+        See ``docs/solvers/mujoco.rst`` for user-facing documentation of
         all conversions performed here.  Keep that file in sync when changing
         this method.
 
@@ -5421,7 +5421,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     rolling,
                 ]
 
-                # solref per mujoco.solref_mode. See docs/integrations/mujoco.rst
+                # solref per mujoco.solref_mode. See docs/solvers/mujoco.rst
                 # > "Shape-material contact stiffness and damping".
                 solref_mode_for_shape = (
                     int(shape_mjc_solref_mode[shape]) if shape_mjc_solref_mode is not None else SOLREF_MODE_MJCF_DEFAULT
