@@ -41,27 +41,16 @@ try:
 except ImportError:
     HAS_USD = False
 
-try:
-    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
-
-    _HAS_LEGACY_ACTUATORS = True
-except ImportError:
-    _HAS_LEGACY_ACTUATORS = False
 
 _HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _HAS_TORCH = importlib.util.find_spec("torch") is not None
+_HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
 
 
 def _onnx_modules():
-    """Lazily import ``onnx`` submodules used by the test ONNX builders.
-
-    Keeping these imports out of module scope so the optional ``onnx``
-    dependency is only loaded when an ONNX-gated test actually runs (and to
-    satisfy the ``TID253`` lint rule that bans module-level ``onnx`` imports
-    in ``newton/tests/**``).
-    """
-    import onnx
-    from onnx import TensorProto, helper, numpy_helper
+    """Lazily import ONNX modules used by test model builders."""
+    import onnx  # noqa: PLC0415
+    from onnx import TensorProto, helper, numpy_helper  # noqa: PLC0415
 
     return onnx, TensorProto, helper, numpy_helper
 
@@ -73,12 +62,7 @@ def _build_mlp_onnx(
     metadata: dict | None = None,
     batch_dim: int | None = None,
 ) -> None:
-    """Build a single-Gemm (transB=1) ONNX MLP at ``path``.
-
-    Args:
-        weights: (out_dim, in_dim) Linear weights (PyTorch convention).
-        bias: (out_dim,) Linear bias.
-    """
+    """Build a single-Gemm ONNX MLP at ``path``."""
     onnx_mod, TensorProto, helper, numpy_helper = _onnx_modules()
 
     in_dim = int(weights.shape[1])
@@ -106,11 +90,7 @@ def _build_lstm_onnx(
     metadata: dict | None = None,
     rng_seed: int = 0,
 ) -> None:
-    """Build an ONNX LSTM model with random weights, layout=0.
-
-    Inputs : ``input`` (1, N, 2), ``h_in`` (num_layers, N, H), ``c_in`` (..., N, H)
-    Outputs: ``output`` (N, 1) effort, ``h_out`` (num_layers, N, H), ``c_out`` (...)
-    """
+    """Build a small ONNX LSTM policy model for controller tests."""
     if num_layers != 1:
         raise NotImplementedError("test fixture currently supports num_layers=1")
 
@@ -147,11 +127,9 @@ def _build_lstm_onnx(
         hidden_size=hidden_size,
         layout=0,
     )
-    # Y has shape (1, 1, N, hidden_size).  Squeeze first two dims -> (N, hidden_size).
     squeeze_axes = numpy_helper.from_array(np.array([0, 1], dtype=np.int64), name="squeeze_axes")
     initializers.append(squeeze_axes)
     sq = helper.make_node("Squeeze", ["Y", "squeeze_axes"], ["Y_2d"])
-    # Final linear decoder: Y_2d (N, H) @ Wd^T + bd -> (N, 1)
     dec = helper.make_node("Gemm", ["Y_2d", "Wd", "bd"], ["output"], alpha=1.0, beta=1.0, transB=1)
 
     graph = helper.make_graph(
@@ -189,6 +167,24 @@ def _write_dof_values(model, array, dof_indices, values):
     for dof, val in zip(dof_indices, values, strict=True):
         arr_np[dof] = val
     wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
+
+
+def _ignore_torchscript_deprecation(test_case):
+    """Tolerate torch's TorchScript-family deprecation notices for one test.
+
+    The neural-controller tests deliberately exercise the TorchScript checkpoint
+    path (``torch.jit.script``/``save``/``load``), which PyTorch now deprecates in
+    favor of ``torch.export``. Ignore just those advisories, scoped to the calling
+    test, so strict-warnings mode still surfaces everything else.
+    """
+    ctx = warnings.catch_warnings()
+    ctx.__enter__()
+    test_case.addCleanup(ctx.__exit__, None, None, None)
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*torch\.jit\..* is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,13 +291,16 @@ class TestControllerPID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
-@unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
 class TestControllerNeuralMLP(unittest.TestCase):
-    """ControllerNeuralMLP — load via model_path, call compute() directly."""
+    """ControllerNeuralMLP - load via model_path, call compute() directly."""
 
     def setUp(self):
         self.device = wp.get_device()
         self._tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def _save_mlp(self, weights, bias, filename="mlp.onnx", metadata=None, batch_dim=None):
         path = os.path.join(self._tmp_dir, filename)
@@ -382,6 +381,45 @@ class TestControllerNeuralMLP(unittest.TestCase):
         )
         self.assertAlmostEqual(forces.numpy()[0], 30.0, places=3, msg="bias=10 * effort_scale=3 -> 30")
 
+    def test_corrupt_single_metadata_property_raises(self):
+        """A corrupt JSON metadata blob must not silently fall back to defaults."""
+        weights = np.zeros((1, 2), dtype=np.float32)
+        bias = np.zeros((1,), dtype=np.float32)
+        path = self._save_mlp(weights, bias, metadata={"effort_scale": 1.0})
+
+        onnx_mod, _, _, _ = _onnx_modules()
+        model = onnx_mod.load(path)
+        model.metadata_props[0].value = "{"
+        onnx_mod.save(model, path)
+
+        with self.assertRaisesRegex(ValueError, "Invalid JSON.*metadata.*mlp.onnx"):
+            ControllerNeuralMLP(model_path=path)
+
+    def test_non_mapping_single_metadata_property_raises(self):
+        weights = np.zeros((1, 2), dtype=np.float32)
+        bias = np.zeros((1,), dtype=np.float32)
+        path = self._save_mlp(weights, bias, metadata={"effort_scale": 1.0})
+
+        onnx_mod, _, _, _ = _onnx_modules()
+        model = onnx_mod.load(path)
+        model.metadata_props[0].value = json.dumps(["not", "a", "mapping"])
+        onnx_mod.save(model, path)
+
+        with self.assertRaisesRegex(ValueError, "mlp.onnx.*expected a JSON object"):
+            ControllerNeuralMLP(model_path=path)
+
+    def test_invalid_scale_metadata_names_key_and_path(self):
+        weights = np.zeros((1, 2), dtype=np.float32)
+        bias = np.zeros((1,), dtype=np.float32)
+        path = self._save_mlp(weights, bias, metadata={"effort_scale": None})
+
+        with self.assertRaisesRegex(ValueError, "effort_scale.*mlp.onnx"):
+            ControllerNeuralMLP(model_path=path)
+
+        path = self._save_mlp(weights, bias, filename="zero_scale.onnx", metadata={"effort_scale": 0.0})
+        with self.assertRaisesRegex(ValueError, "effort_scale.*zero_scale.onnx"):
+            ControllerNeuralMLP(model_path=path)
+
     def test_finalize_fixed_batch_onnx_with_multiple_actuators(self):
         """Fixed-batch ONNX exports can still run one scalar per actuator."""
         weights = np.array([[2.0, 0.0]], dtype=np.float32)
@@ -413,75 +451,17 @@ class TestControllerNeuralMLP(unittest.TestCase):
         )
         np.testing.assert_allclose(forces.numpy(), np.array([3.0, 5.0, 7.0], dtype=np.float32), rtol=1e-5)
 
-    @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-    def test_finalize_legacy_torchscript_checkpoint(self):
-        """Legacy ``.pt`` checkpoints must finalize without a KeyError.
 
-        Regression test: the deprecated ``_TorchModuleAdapter`` populates its
-        ``_shapes`` dict only after the first ``__call__()``, so the output
-        shape lookup in ``finalize()`` previously raised ``KeyError("action")``
-        before any inference had happened.  ``finalize()`` should now probe the
-        shape with a dry forward and accept the legacy checkpoint.
-        """
-        import torch
-
-        n = 1
-        in_features = 2  # matches default input_idx=[0] -> 2*K = 2
-
-        class _BiasOnlyMLP(torch.nn.Module):
-            """Single Linear layer with zero weights and a known bias."""
-
-            def __init__(self):
-                super().__init__()
-                self.fc = torch.nn.Linear(in_features, 1, bias=True)
-                with torch.no_grad():
-                    self.fc.weight.zero_()
-                    self.fc.bias.fill_(7.0)
-
-            def forward(self, x):
-                return self.fc(x)
-
-        model = _BiasOnlyMLP().eval()
-        scripted = torch.jit.script(model)
-        path = os.path.join(self._tmp_dir, "legacy_mlp.pt")
-        scripted.save(path, _extra_files={"metadata.json": json.dumps({"effort_scale": 1.0})})
-
-        ctrl = ControllerNeuralMLP(model_path=path)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            ctrl.finalize(self.device, n)
-
-        self.assertEqual(ctrl._net_output_name, "action")
-        self.assertEqual(ctrl._network._shapes["action"], (n, 1))
-
-        indices = wp.array([0], dtype=wp.uint32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-        state_a = ctrl.state(n, self.device)
-        ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            state_a,
-            0.01,
-            self.device,
-        )
-        self.assertAlmostEqual(float(forces.numpy()[0]), 7.0, places=3)
-
-
-@unittest.skipUnless(_HAS_ONNX, "onnx not installed")
+@unittest.skipUnless(_HAS_ONNX and _HAS_WARP_NN, "onnx or warp-nn not installed")
 class TestControllerNeuralLSTM(unittest.TestCase):
-    """ControllerNeuralLSTM — load via model_path, call compute() directly."""
+    """ControllerNeuralLSTM - load via model_path, call compute() directly."""
 
     def setUp(self):
         self.device = wp.get_device()
         self._tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def _save_lstm(self, filename="lstm.onnx", hidden=8, metadata=None):
         path = os.path.join(self._tmp_dir, filename)
@@ -489,7 +469,6 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         return path
 
     def _run_lstm_compute(self, ctrl):
-        """Run a single compute step and verify output."""
         n = 1
         ctrl.finalize(self.device, n)
 
@@ -526,13 +505,11 @@ class TestControllerNeuralLSTM(unittest.TestCase):
         return forces.numpy()[0]
 
     def test_compute(self):
-        """LSTM produces non-zero output; hidden state evolves after update_state."""
         path = self._save_lstm()
         ctrl = ControllerNeuralLSTM(model_path=path)
         self._run_lstm_compute(ctrl)
 
     def test_metadata_scales(self):
-        """Scale factors from metadata are applied during compute."""
         metadata = {"pos_scale": 2.0, "vel_scale": 0.5, "effort_scale": 10.0}
         path = self._save_lstm(metadata=metadata)
 
@@ -543,40 +520,93 @@ class TestControllerNeuralLSTM(unittest.TestCase):
 
         self._run_lstm_compute(ctrl)
 
+    def test_invalid_scale_metadata_names_key_and_path(self):
+        path = self._save_lstm(filename="invalid_lstm.onnx", metadata={"vel_scale": float("inf")})
+
+        with self.assertRaisesRegex(ValueError, "vel_scale.*invalid_lstm.onnx"):
+            ControllerNeuralLSTM(model_path=path)
+
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
-class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
-    """Regression tests for the deprecated ``.pt`` LSTM checkpoint path.
-
-    ``ControllerNeuralLSTM`` was rewritten to load ``.onnx`` checkpoints
-    backed by Newton's ONNX runtime, but legacy TorchScript / dict
-    checkpoints created against the pre-ONNX API are still supported via
-    ``_LegacyLstmTorchAdapter`` for one deprecation cycle.  These tests
-    pin that contract: a legacy ``.pt`` checkpoint exposing a
-    ``torch.nn.LSTM`` attribute named ``lstm`` (``batch_first=True``,
-    ``input_size=2``) must continue to load, finalize, and run end-to-end.
-    """
+class TestControllerNeuralMLPLegacyTorchScript(unittest.TestCase):
+    """Regression tests for the supported .pt MLP checkpoint path."""
 
     def setUp(self):
         self.device = wp.get_device()
         self._tmp_dir = tempfile.mkdtemp()
+        _ignore_torchscript_deprecation(self)
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def test_finalize_legacy_torchscript_checkpoint(self):
+        """.pt checkpoints keep the Torch backend and state interface."""
+        import torch
+
+        n = 1
+        in_features = 2
+
+        class _BiasOnlyMLP(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = torch.nn.Linear(in_features, 1, bias=True)
+                with torch.no_grad():
+                    self.fc.weight.zero_()
+                    self.fc.bias.fill_(7.0)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        model = _BiasOnlyMLP().eval()
+        scripted = torch.jit.script(model)
+        path = os.path.join(self._tmp_dir, "legacy_mlp.pt")
+        scripted.save(path, _extra_files={"metadata.json": json.dumps({"effort_scale": 1.0})})
+
+        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl.finalize(self.device, n)
+
+        self.assertFalse(ctrl.is_graphable())
+        self.assertIsNotNone(ctrl.network)
+        self.assertIsNone(ctrl._network)
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        state_a = ctrl.state(n, self.device)
+        self.assertTrue(type(state_a.pos_error_history).__module__.startswith("torch"))
+        ctrl.compute(
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.array([1.0], dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(float(forces.numpy()[0]), 7.0, places=3)
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
+    """Regression tests for the supported .pt LSTM checkpoint path."""
+
+    def setUp(self):
+        self.device = wp.get_device()
+        self._tmp_dir = tempfile.mkdtemp()
+        _ignore_torchscript_deprecation(self)
 
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def _build_legacy_lstm_checkpoint(self, path: str, hidden_size: int = 4, metadata: dict | None = None):
-        """Save a TorchScript LSTM module matching the pre-ONNX controller contract."""
         import torch
 
         class _LegacyLSTM(torch.nn.Module):
-            """Minimal stateful LSTM matching the legacy ``ControllerNeuralLSTM`` API.
-
-            Returns ``(effort, (h_new, c_new))`` from ``forward(net_input, (h, c))``
-            where ``net_input`` has shape ``(N, 1, 2)`` (``batch_first=True``).  The
-            explicit type annotation on ``hc`` is required for ``torch.jit.script``
-            to compile the ``self.lstm(x, hc)`` overload selection.
-            """
-
             def __init__(self, hidden_size: int):
                 super().__init__()
                 self.lstm = torch.nn.LSTM(
@@ -602,55 +632,31 @@ class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
         extra_files = {"metadata.json": json.dumps(metadata or {})}
         scripted.save(path, _extra_files=extra_files)
 
-    def test_load_emits_deprecation_warning(self):
-        """Legacy ``.pt`` LSTM checkpoints emit a ``DeprecationWarning`` on load."""
-        path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
-        self._build_legacy_lstm_checkpoint(path)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            ControllerNeuralLSTM(model_path=path)
-
-        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-        self.assertTrue(deprecations, "expected a DeprecationWarning when loading a .pt LSTM checkpoint")
-        self.assertIn(".pt", str(deprecations[0].message))
-
     def test_synthesizes_metadata_from_torch_module(self):
-        """``num_layers`` / ``hidden_size`` are read from ``network.lstm`` when missing."""
         path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
         hidden = 6
         self._build_legacy_lstm_checkpoint(path, hidden_size=hidden, metadata={"effort_scale": 2.5})
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            ctrl = ControllerNeuralLSTM(model_path=path)
+        ctrl = ControllerNeuralLSTM(model_path=path)
 
         self.assertEqual(ctrl._num_layers, 1)
         self.assertEqual(ctrl._hidden_size, hidden)
         self.assertAlmostEqual(ctrl.effort_scale, 2.5)
 
     def test_finalize_and_compute(self):
-        """Legacy ``.pt`` LSTM runs end-to-end through ``compute()`` / ``update_state()``.
-
-        Mirrors :class:`TestControllerNeuralLSTM` ONNX coverage but exercises the
-        ``_LegacyLstmTorchAdapter`` path so we catch any future regression that
-        breaks legacy checkpoint loading before the deprecation window closes.
-        """
         path = os.path.join(self._tmp_dir, "legacy_lstm.pt")
         self._build_legacy_lstm_checkpoint(path, hidden_size=4)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            ctrl = ControllerNeuralLSTM(model_path=path)
+        ctrl = ControllerNeuralLSTM(model_path=path)
 
         n = 1
         ctrl.finalize(self.device, n)
-        # ``is_graphable`` must be False because the adapter round-trips through host.
         self.assertFalse(ctrl.is_graphable())
 
         state_a = ctrl.state(n, self.device)
         state_b = ctrl.state(n, self.device)
-        np.testing.assert_array_equal(state_a.hidden.numpy(), 0.0)
+        self.assertTrue(type(state_a.hidden).__module__.startswith("torch"))
+        np.testing.assert_array_equal(state_a.hidden.detach().cpu().numpy(), 0.0)
 
         indices = wp.array([0], dtype=wp.uint32, device=self.device)
         positions = wp.zeros(n, dtype=wp.float32, device=self.device)
@@ -676,10 +682,8 @@ class TestControllerNeuralLSTMLegacyTorchScript(unittest.TestCase):
         )
         ctrl.update_state(state_a, state_b)
 
-        # The legacy module returns a non-zero effort for non-zero pos/vel error
-        # and the LSTM hidden state should evolve away from zero.
         self.assertNotAlmostEqual(float(forces.numpy()[0]), 0.0, places=6)
-        self.assertTrue(np.any(state_b.hidden.numpy() != 0.0))
+        self.assertTrue(np.any(state_b.hidden.detach().cpu().numpy() != 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -941,7 +945,7 @@ class TestActuatorStep(unittest.TestCase):
         control = model.control()
         for step_i in range(5):
             tgt = target_schedule[step_i]
-            _write_dof_values(model, control.joint_target_pos, dofs, [tgt] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [tgt] * n)
             written_targets.append(tgt)
 
             control.joint_f.zero_()
@@ -1175,109 +1179,6 @@ class TestActuatorBuilder(unittest.TestCase):
         act_state = act.state()
         self.assertEqual(act_state.delay_state.buffer_pos.shape, (3, n))
         np.testing.assert_array_equal(act_state.delay_state.num_pushes.numpy(), [0] * n)
-
-
-# ---------------------------------------------------------------------------
-# 6. Legacy newton_actuators backward compatibility
-# ---------------------------------------------------------------------------
-
-
-@unittest.skipUnless(_HAS_LEGACY_ACTUATORS, "newton_actuators not installed")
-class TestLegacyActuatorCompat(unittest.TestCase):
-    """Deprecated ``newton_actuators`` calling conventions must still work."""
-
-    def _make_builder(self, n_joints=2):
-        builder = newton.ModelBuilder()
-        links = [builder.add_link() for _ in range(n_joints)]
-        joints = []
-        for i, link in enumerate(links):
-            parent = -1 if i == 0 else links[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
-        builder.add_articulation(joints)
-        dofs = [builder.joint_qd_start[j] for j in joints]
-        return builder, dofs
-
-    def test_legacy_positional_list(self):
-        """add_actuator(ActuatorPD, [dof], kp=...) — old positional style."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, [dofs[0]], kp=50.0, kd=5.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        self.assertIsInstance(model.actuators[0].controller, ControllerPD)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [50.0])
-
-    def test_legacy_keyword_input_indices(self):
-        """add_actuator(ActuatorPD, input_indices=[dof], kp=...)."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [100.0])
-
-    def test_legacy_keyword_actuator_class(self):
-        """add_actuator(actuator_class=ActuatorPD, input_indices=[dof], kp=...)."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(actuator_class=ActuatorPD, input_indices=[dofs[0]], kp=75.0)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 1)
-        np.testing.assert_array_almost_equal(model.actuators[0].controller.kp.numpy(), [75.0])
-
-    def test_legacy_delayed_pd(self):
-        """ActuatorDelayedPD maps to ControllerPD + delay."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[0]], kp=200.0, delay=3)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertIsInstance(act.controller, ControllerPD)
-        self.assertIsNotNone(act.delay)
-        np.testing.assert_array_equal(act.delay.delay_steps.numpy(), [3])
-
-    def test_legacy_pid(self):
-        """ActuatorPID maps to ControllerPID."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPID, [dofs[0]], kp=100.0, ki=10.0, kd=20.0)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertIsInstance(act.controller, ControllerPID)
-        np.testing.assert_array_almost_equal(act.controller.ki.numpy(), [10.0])
-
-    def test_legacy_max_force_becomes_clamping(self):
-        """max_force kwarg creates a ClampingMaxEffort on the new actuator."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=150.0, max_force=50.0)
-        model = builder.finalize()
-        act = model.actuators[0]
-        self.assertEqual(len(act.clamping), 1)
-        self.assertIsInstance(act.clamping[0], ClampingMaxEffort)
-        np.testing.assert_array_almost_equal(act.clamping[0].max_effort.numpy(), [50.0])
-
-    def test_legacy_output_indices_warns(self):
-        """output_indices != input_indices emits extra deprecation warning."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, [dofs[0]], [dofs[1]], kp=50.0)
-
-    def test_legacy_gear_warns(self):
-        """Non-unity gear emits a deprecation warning."""
-        builder, dofs = self._make_builder()
-        with self.assertWarns(DeprecationWarning):
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.0)
-
-    def test_new_api_no_warning(self):
-        """New-style calls must not emit DeprecationWarning."""
-        builder, dofs = self._make_builder()
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            builder.add_actuator(ControllerPD, index=dofs[0], kp=50.0)
-        dep = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        self.assertEqual(len(dep), 0, f"Unexpected warnings: {[str(x.message) for x in dep]}")
 
 
 # ---------------------------------------------------------------------------
@@ -1632,7 +1533,7 @@ class TestStateReset(unittest.TestCase):
 
         control = model.control()
         for _step in range(3):
-            _write_dof_values(model, control.joint_target_pos, dofs, [10.0] * n)
+            _write_dof_values(model, control.joint_target_q, dofs, [10.0] * n)
             control.joint_f.zero_()
             actuator.step(state, control, state_0, state_1, 0.01)
             state_0, state_1 = state_1, state_0
@@ -1728,17 +1629,17 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         # --- Eager ---
         solver, s0, s1, ctrl, act, act_a, act_b = _setup()
-        wp.copy(ctrl.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, max_delay)
         eager_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             s0, s1, act_a, act_b = _loop(solver, s0, s1, ctrl, act, act_a, act_b, N)
             eager_results.append(s0.joint_q.numpy().copy())
 
         # --- Graph ---
         solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g = _setup()
-        wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
+        wp.copy(ctrl_g.joint_target_q, wp.full(ndof, warmup_target, dtype=wp.float32, device=device))
         s0_g, s1_g, act_a_g, act_b_g = _loop(solver_g, s0_g, s1_g, ctrl_g, act_g, act_a_g, act_b_g, max_delay)
         sub_dt = dt / K
         with wp.ScopedCapture(device=device) as capture:
@@ -1754,7 +1655,7 @@ class TestDelayGraphCapture(unittest.TestCase):
 
         graph_results = []
         for tgt in cycle_targets:
-            wp.copy(ctrl_g.joint_target_pos, wp.full(ndof, tgt, dtype=wp.float32, device=device))
+            wp.copy(ctrl_g.joint_target_q, wp.full(ndof, tgt, dtype=wp.float32, device=device))
             wp.capture_launch(graph)
             graph_results.append(s0_g.joint_q.numpy().copy())
 
@@ -1909,12 +1810,15 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
         target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        actuator = Actuator(
-            indices=indices,
-            controller=ctrl,
-            pos_indices=pos_indices,
-            target_pos_indices=target_pos_indices,
-        )
+        # This test deliberately exercises the legacy DOF-shaped target layout via
+        # the default attr resolution, which is deprecated and warns.
+        with self.assertWarns(DeprecationWarning):
+            actuator = Actuator(
+                indices=indices,
+                controller=ctrl,
+                pos_indices=pos_indices,
+                target_pos_indices=target_pos_indices,
+            )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])

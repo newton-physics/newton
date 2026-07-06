@@ -1242,8 +1242,11 @@ class TestCustomAttributes(unittest.TestCase):
                 assignment=AttributeAssignment.MODEL,
             )
         )
-        # Should still work
-        self.assertEqual(len(builder5.custom_attributes), 1)
+        # Should still work. ModelBuilder.__init__ also auto-registers the canonical
+        # ``mujoco:equality_constraint_*`` CustomAttributes, so account for those alongside the
+        # single attribute declared by this test.
+        baseline = len(ModelBuilder().custom_attributes)
+        self.assertEqual(len(builder5.custom_attributes), baseline + 1)
 
         # Test 6: Same key with different frequency - SHOULD FAIL
         builder6 = ModelBuilder()
@@ -1636,8 +1639,11 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("global_freq", builder.custom_frequencies)
 
         # Test 4: Duplicate registration should be silently ignored (idempotent)
+        # ModelBuilder.__init__ auto-registers the canonical ``mujoco:equality_constraint``
+        # custom frequency, so take a baseline from a freshly-constructed builder.
+        baseline = len(ModelBuilder().custom_frequencies)
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="freq1", namespace="ns"))  # Should not raise
-        self.assertEqual(len(builder.custom_frequencies), 3)  # Still 3 frequencies
+        self.assertEqual(len(builder.custom_frequencies), baseline + 3)
 
     def test_custom_frequency_validation_inconsistent_counts(self):
         """Test that inconsistent counts for same custom frequency are handled gracefully with warnings."""
@@ -1985,6 +1991,37 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertEqual(len(arr), 2)
         self.assertEqual(arr[0], 42)
         self.assertEqual(arr[1], 42)
+
+    def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
+        builder = ModelBuilder()
+
+        def finalizer_a(_builder, _model, _custom_attr):
+            pass
+
+        def finalizer_b(_builder, _model, _custom_attr):
+            pass
+
+        builder._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+        builder._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+
+        with self.assertRaisesRegex(ValueError, "test:value"):
+            builder._add_custom_attribute_model_finalizer("test:value", finalizer_b)
+
+    def test_add_builder_rejects_conflicting_custom_attribute_model_finalizers(self):
+        main = ModelBuilder()
+        sub = ModelBuilder()
+
+        def finalizer_a(_builder, _model, _custom_attr):
+            pass
+
+        def finalizer_b(_builder, _model, _custom_attr):
+            pass
+
+        main._add_custom_attribute_model_finalizer("test:value", finalizer_a)
+        sub._add_custom_attribute_model_finalizer("test:value", finalizer_b)
+
+        with self.assertRaisesRegex(ValueError, "test:value"):
+            main.add_builder(sub)
 
     def test_transform_value_list_and_sentinel_shape_refs(self):
         """Test that transform_value handles lists with negative sentinel values correctly."""

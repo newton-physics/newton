@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 import warp as wp
 
+from ....solver_kamino import SolverKamino
 from ...core.builder import ModelBuilderKamino
 from ...core.control import ControlKamino
 from ...core.model import ModelKamino
@@ -45,13 +46,10 @@ class SimulatorData:
     Holds the time-varying data for the simulation.
 
     Attributes:
-        state_p (StateKamino):
-            The previous state data of the simulation
-        state_n (StateKamino):
-            The current state data of the simulation, computed from the previous step as:
+        state_p: The previous state data of the simulation.
+        state_n: The current state data of the simulation, computed from the previous step as:
             ``state_n = f(state_p, control)``, where ``f()`` is the system dynamics function.
-        control (ControlKamino):
-            The control data, computed at each step as:
+        control: The control data, computed at each step as:
             ``control = g(state_n, state_p, control)``, where ``g()`` is the control function.
     """
 
@@ -113,7 +111,7 @@ class Simulator:
 
         dt: float | FloatArrayLike = 0.001
         """
-        The time-step to be used for the simulation.\n
+        The time-step to be used for the simulation.
         Defaults to `0.001` seconds.
         """
 
@@ -125,7 +123,7 @@ class Simulator:
 
         solver: SolverKaminoImpl.Config = field(default_factory=SolverKaminoImpl.Config)
         """
-        The config for the dynamics solver.\n
+        The config for the dynamics solver.
         See :class:`SolverKaminoImpl.Config` for more details.
         """
 
@@ -176,9 +174,9 @@ class Simulator:
         Initializes the simulator with the given model builder, time-step, and device.
 
         Args:
-            builder (ModelBuilderKamino): The model builder defining the model to be simulated.
-            config (Simulator.Config, optional): The simulator config to use. If None, the default config are used.
-            device (wp.DeviceLike, optional): The device to run the simulation on. If None, the default device is used.
+            builder: The model builder defining the model to be simulated.
+            config: The simulator config to use. If None, the default config are used.
+            device: The device to run the simulation on. If None, the default device is used.
         """
         # Cache simulator config: If no config is provided, use default configs
         if config is None:
@@ -342,54 +340,35 @@ class Simulator:
 
     def reset(
         self,
-        world_mask: wp.array | None = None,
-        actuator_q: wp.array | None = None,
-        actuator_u: wp.array | None = None,
-        joint_q: wp.array | None = None,
-        joint_u: wp.array | None = None,
-        base_q: wp.array | None = None,
-        base_u: wp.array | None = None,
-        bodies_q: wp.array | None = None,
-        bodies_u: wp.array | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
+        config: SolverKamino.ResetConfig | None = None,
     ):
         """
-        Resets the simulation state given a combination of desired base body
-        and joint states, as well as an optional per-world mask array indicating
-        which worlds should be reset.
+        Performs a configurable in-place reset of the simulation state, in all or a subset
+        of worlds, setting body poses and velocities selectively to default or current values,
+        or as per joint coordinates/velocities, using a forward kinematics solve.
+        This is optionally combined with a reset of the pose and velocity of the floating base.
+
+        All state components are reset consistently with the new body poses and velocities
+        (unless prescribed otherwise by state flags), and solver-internal buffers are cleared.
 
         Args:
-            world_mask (wp.array, optional):
-                Optional array of per-world masks indicating which worlds should be reset.
-                Shape of `(num_worlds,)` and type :class:`wp.int8 | wp.bool`
-            joint_q (wp.array, optional):
-                Optional array of target joint coordinates.
-                Shape of `(num_joint_coords,)` and type :class:`wp.float32`
-            joint_qd (wp.array, optional):
-                Optional array of target joint DoF velocities.
-                Shape of `(num_joint_dofs,)` and type :class:`wp.float32`
-            base_q (wp.array, optional):
-                Optional array of target base body poses.
-                Shape of `(num_worlds,)` and type :class:`wp.transformf`
-            base_qd (wp.array, optional):
-                Optional array of target base body twists.
-                Shape of `(num_worlds,)` and type :class:`wp.spatial_vectorf`
+            world_mask: Optional array of per-world masks indicating which
+                worlds should be reset.
+                Shape of ``(num_worlds,)``.
+            config: Optional reset configuration, controlling the reset behavior
+                for body poses/velocities as well as floating base pose/velocity.
+                If not provided, all components are reset to default (initial) values.
         """
         # Run the pre-reset callback if it has been set
         if self._pre_reset_cb is not None:
             self._pre_reset_cb(self)
 
-        # Step the physics solver
+        # Reset the physics solver
         self._solver.reset(
-            state_out=self._data.state_n,
+            state=self._data.state_n,
             world_mask=world_mask,
-            actuator_q=actuator_q,
-            actuator_u=actuator_u,
-            joint_q=joint_q,
-            joint_u=joint_u,
-            base_q=base_q,
-            base_u=base_u,
-            bodies_q=bodies_q,
-            bodies_u=bodies_u,
+            config=config,
         )
 
         # Cache the current state as the previous state for the next step

@@ -117,6 +117,7 @@ class Wind:
             apply_wind_force_kernel,
             dim=len(state.particle_q),
             inputs=[state.particle_q, state.particle_qd, self.model.particle_flags, self.wind_data],
+            device=self.model.device,
         )
 
     def is_active(self):

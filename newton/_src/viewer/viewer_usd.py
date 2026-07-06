@@ -19,7 +19,7 @@ try:
 except ImportError:
     Gf = Sdf = Usd = UsdGeom = Vt = None
 
-from .viewer import ViewerBase
+from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 
 
 # transforms a cylinder such that it connects the two points pos0, pos1
@@ -143,42 +143,60 @@ class ViewerUSD(ViewerBase):
 
         self.stage.SetDefaultPrim(self.root.GetPrim())
 
-        # Track meshes and instancers
-        self._meshes = {}  # mesh_name -> prototype_path
-        self._instancers = {}  # instancer_name -> UsdGeomPointInstancer
-        self._points = {}  # point_name -> UsdGeomPoints
-        self._texture_materials: dict[str, Any] = {}  # mesh_name -> UsdShade.Material
-
         # Track current frame
         self._frame_index = 0
         self._frame_count = 0
 
         self.set_model(None)
 
+    @override
+    def _init_extra_layer_state(self, layer) -> None:
+        super()._init_extra_layer_state(layer)
+        layer._meshes = {}  # mesh_name -> prototype path
+        layer._instance_groups = {}  # instance_name -> group prim for individually referenced meshes
+        layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
+        layer._points = {}  # point_name -> UsdGeom.Points
+        layer._texture_materials: dict[str, Any] = {}  # mesh_name -> UsdShade.Material
+
+    def _reset_stage(self):
+        self.stage.GetRootLayer().Clear()
+        self.stage.SetTimeCodesPerSecond(self.fps)
+        self.stage.SetFramesPerSecond(self.fps)
+        self.stage.SetStartTimeCode(0)
+        axis_token = {
+            "X": UsdGeom.Tokens.x,
+            "Y": UsdGeom.Tokens.y,
+            "Z": UsdGeom.Tokens.z,
+        }.get(self.up_axis.strip().upper())
+        UsdGeom.SetStageUpAxis(self.stage, axis_token)
+        UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
+        self.root = UsdGeom.Xform.Define(self.stage, "/root")
+        self.root.ClearXformOpOrder()
+        s = self.root.AddScaleOp()
+        s.Set(Gf.Vec3d(float(self.scaling), float(self.scaling), float(self.scaling)), 0.0)
+        self.stage.SetDefaultPrim(self.root.GetPrim())
+        self._frame_index = 0
+        self._frame_count = 0
+
+    def _remove_active_layer_prims(self):
+        names = set(self._meshes) | set(self._instance_groups) | set(self._instancers) | set(self._points)
+        for name in sorted(names, key=lambda item: self._get_path(item).count("/"), reverse=True):
+            if self._is_layer_owned_path(name):
+                self.stage.RemovePrim(self._get_path(name))
+
+        for mesh_name in list(self._texture_materials):
+            if self._is_layer_owned_path(mesh_name):
+                self.stage.RemovePrim(self._texture_material_path(mesh_name))
+
+    def _has_user_layers(self) -> bool:
+        return any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
+
     def clear_model(self):
         if hasattr(self, "stage") and self.stage is not None:
-            self.stage.GetRootLayer().Clear()
-            self.stage.SetTimeCodesPerSecond(self.fps)
-            self.stage.SetFramesPerSecond(self.fps)
-            self.stage.SetStartTimeCode(0)
-            axis_token = {
-                "X": UsdGeom.Tokens.x,
-                "Y": UsdGeom.Tokens.y,
-                "Z": UsdGeom.Tokens.z,
-            }.get(self.up_axis.strip().upper())
-            UsdGeom.SetStageUpAxis(self.stage, axis_token)
-            UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
-            self.root = UsdGeom.Xform.Define(self.stage, "/root")
-            self.root.ClearXformOpOrder()
-            s = self.root.AddScaleOp()
-            s.Set(Gf.Vec3d(float(self.scaling), float(self.scaling), float(self.scaling)), 0.0)
-            self.stage.SetDefaultPrim(self.root.GetPrim())
-            self._meshes = {}
-            self._instancers = {}
-            self._points = {}
-            self._texture_materials = {}
-            self._frame_index = 0
-            self._frame_count = 0
+            if self._active_layer_id == _DEFAULT_LAYER_ID and not self._has_user_layers():
+                self._reset_stage()
+            else:
+                self._remove_active_layer_prims()
 
         super().clear_model()
 
@@ -274,6 +292,8 @@ class ViewerUSD(ViewerBase):
                 is metal.
         """
 
+        name = self._qualify(name)
+
         # Convert warp arrays to numpy
         points_np = points.numpy().astype(np.float32)
         indices_np = indices.numpy().astype(np.uint32)
@@ -345,8 +365,7 @@ class ViewerUSD(ViewerBase):
                 )
                 return
 
-        safe = mesh_name.replace("/", "_").lstrip("_")
-        mat_path = f"/root/Materials/mat_{safe}"
+        mat_path = self._texture_material_path(mesh_name)
         self._ensure_scopes_for_path(self.stage, mat_path)
 
         material = UsdShade.Material.Define(self.stage, mat_path)
@@ -375,6 +394,11 @@ class ViewerUSD(ViewerBase):
         UsdShade.MaterialBindingAPI(mesh_prim.GetPrim()).Bind(material)
         self._texture_materials[mesh_name] = material
 
+    @staticmethod
+    def _texture_material_path(mesh_name: str) -> str:
+        safe = mesh_name.replace("/", "_").lstrip("_")
+        return f"/root/Materials/mat_{safe}"
+
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes
     @override
@@ -400,12 +424,21 @@ class ViewerUSD(ViewerBase):
             materials: Array of materials.
             hidden: Whether the instances are hidden.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         # Get prototype path
         if mesh not in self._meshes:
             msg = f"Mesh prototype '{mesh}' not found for log_instances(). Call log_mesh() first."
             raise RuntimeError(msg)
 
         self._ensure_scopes_for_path(self.stage, self._get_path(name) + "/scope")
+        group_prim = self.stage.GetPrimAtPath(self._get_path(name))
+        if group_prim:
+            self._instance_groups[name] = group_prim
+            UsdGeom.Imageable(group_prim).GetVisibilityAttr().Set(
+                "inherited" if not hidden else "invisible", self._frame_index
+            )
 
         if xforms is not None:
             xforms = xforms.numpy()
@@ -428,8 +461,11 @@ class ViewerUSD(ViewerBase):
                 instance = self.stage.DefinePrim(instance_path)
                 instance.GetReferences().AddInternalReference(self._get_path(mesh))
 
-                UsdGeom.Imageable(instance).GetVisibilityAttr().Set("inherited" if not hidden else "invisible")
                 _usd_add_xform(instance)
+
+            UsdGeom.Imageable(instance).GetVisibilityAttr().Set(
+                "inherited" if not hidden else "invisible", self._frame_index
+            )
 
             # update transform
             if xforms is not None:
@@ -469,6 +505,9 @@ class ViewerUSD(ViewerBase):
         Raises:
             RuntimeError: If the mesh prototype is not found.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         # Get prototype path
         if mesh not in self._meshes:
             msg = f"Mesh prototype '{mesh}' not found for log_instances(). Call log_mesh() first."
@@ -540,6 +579,8 @@ class ViewerUSD(ViewerBase):
                 indices = Vt.IntArray(range(num_instances))
                 displayColor.SetIndices(indices, self._frame_index)
 
+        instancer.GetVisibilityAttr().Set("inherited", self._frame_index)
+
     # Abstract methods that need basic implementations
     @override
     def log_lines(
@@ -561,6 +602,8 @@ class ViewerUSD(ViewerBase):
             width: The width of the lines.
             hidden: Whether the lines are hidden.
         """
+
+        name = self._qualify(name)
 
         if name not in self._instancers:
             self._ensure_scopes_for_path(self.stage, self._get_path(name))
@@ -651,7 +694,14 @@ class ViewerUSD(ViewerBase):
         Returns:
             ``Sdf.Path`` of the created/updated primitive.
         """
+        name = self._qualify(name)
+
         if points is None:
+            path = self._get_path(name)
+            instancer = UsdGeom.Points.Get(self.stage, path)
+            if instancer:
+                instancer.GetVisibilityAttr().Set("invisible", self._frame_index)
+                return instancer.GetPath()
             return
 
         num_points = len(points)
@@ -709,9 +759,12 @@ class ViewerUSD(ViewerBase):
         if not instancer:
             self._ensure_scopes_for_path(self.stage, path)
             instancer = UsdGeom.Points.Define(self.stage, path)
+            self._points[name] = instancer
 
             UsdGeom.Primvar(instancer.GetWidthsAttr()).SetInterpolation(radius_interp)
             UsdGeom.Primvar(instancer.GetDisplayColorAttr()).SetInterpolation(color_interp)
+        else:
+            self._points[name] = instancer
 
         instancer.GetPointsAttr().Set(points.numpy(), self._frame_index)
 

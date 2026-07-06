@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from collections.abc import Iterable, Sequence
@@ -16,6 +17,8 @@ from ..geometry import Gaussian, Mesh
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
 from ..utils.texture import linear_texture_to_srgb, load_texture
+
+logger = logging.getLogger("newton")
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
@@ -912,11 +915,11 @@ def get_mesh(
             assert len(demo_mesh.normals) == 6102
 
     Args:
-        prim (Usd.Prim): The USD prim to load the mesh from.
-        load_normals (bool): Whether to load the normals.
-        load_uvs (bool): Whether to load the UVs.
-        maxhullvert (int): The maximum number of vertices for the convex hull approximation.
-        face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]):
+        prim: The USD prim to load the mesh from.
+        load_normals: Whether to load the normals.
+        load_uvs: Whether to load the UVs.
+        maxhullvert: The maximum number of vertices for the convex hull approximation.
+        face_varying_normal_conversion:
             This argument specifies how to convert "faceVarying" normals
             (normals defined per-corner rather than per-vertex) into per-vertex normals for the mesh.
             If ``load_normals`` is False, this argument is ignored.
@@ -935,13 +938,13 @@ def get_mesh(
                 * - ``"vertex_splitting"``
                   - Splits a vertex into multiple vertices if the difference between the corner normals exceeds a threshold angle (see ``vertex_splitting_angle_threshold_deg``). This preserves sharp features by assigning separate (duplicated) vertices to corners with widely different normals.
 
-        vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
+        vertex_splitting_angle_threshold_deg: The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than ``vertex_splitting_angle_threshold_deg`` will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
-        preserve_facevarying_uvs (bool): If True, keep faceVarying UVs in their
+        preserve_facevarying_uvs: If True, keep faceVarying UVs in their
             original corner layout and avoid UV-driven vertex splitting. The
             returned mesh keeps its original topology. This is useful when the
             caller needs the original UV indexing (e.g., panel-space cloth).
-        return_uv_indices (bool): If True, return a tuple ``(mesh, uv_indices)``
+        return_uv_indices: If True, return a tuple ``(mesh, uv_indices)``
             where ``uv_indices`` is a flattened triangle index buffer for the
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
@@ -1147,10 +1150,11 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                warnings.warn(
-                    f"UV primvar length ({len(uvs)}) does not match indices length ({len(indices)}) for mesh {prim.GetPath()}; "
-                    "dropping UVs.",
-                    stacklevel=2,
+                logger.info(
+                    "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
+                    prim.GetPath(),
+                    len(uvs),
+                    len(indices),
                 )
                 uvs = None
             else:

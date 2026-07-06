@@ -1,16 +1,41 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Physics verification tests.
+
+In the simulation V&V (verification and validation) paradigm, this module
+holds *verification* tests only — checks that the equations of motion and
+constitutive laws are implemented correctly. Each test compares simulator
+output against a closed-form analytical solution, a known kinematic identity,
+or a conservation law (energy, linear/angular momentum). They are not a
+measure of physical plausibility, real-world fidelity, or agreement with
+another simulator; those belong in separate validation or cross-code suites.
+
+Tests added here should:
+
+- Compare against an analytical reference (free fall, pendulum period,
+  projectile parabola, Coulomb friction threshold, restitution, conical
+  pendulum orbit, ...) or assert a conservation law on a closed system.
+- State the reference equation in a comment so the expected value is
+  reproducible without re-running the simulator.
+- Avoid "looks reasonable" thresholds — pick tolerances tied to the
+  integrator order and step size.
+
+Tests that only check qualitative behaviour (no bouncing, no NaN, stays
+above ground, matches another simulator's output) belong elsewhere.
+"""
+
 import unittest
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-class TestPhysicsValidation(unittest.TestCase):
+class TestPhysicsVerification(unittest.TestCase):
     pass
 
 
@@ -498,6 +523,71 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
     test.assertGreater(pos_change, 0.1, "Bodies should have moved")
 
 
+def test_torque_free_precession(test, device, solver_fn):
+    """Torque-free anisotropic body on a D6 joint with three angular DOFs.
+
+    With no applied torque and no gravity, angular momentum is conserved in the
+    world frame: ``L = R(t) I_body R(t)^T omega(t) = const`` (Euler's equations
+    for a free rigid body). The body must also precess (the angular velocity
+    direction changes) to ensure the test is meaningful.
+    """
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    # Anisotropic inertia so the gyroscopic coupling between axes is non-trivial.
+    link = builder.add_link(
+        mass=1.0,
+        com=wp.vec3(0.0, 0.0, 0.0),
+        inertia=wp.mat33(0.2, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.4),
+    )
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=link,
+        angular_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y), cfg(axis=newton.Axis.Z)],
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([j])
+    model = builder.finalize(device=device)
+
+    solver = solver_fn(model)
+    state_0 = model.state()
+    state_1 = model.state()
+
+    # Non-zero angular velocity on every DOF. Joint position stays at zero; for
+    # three angular axes the Coriolis bias projects onto the DOFs already there.
+    omega0 = np.array([0.7, -0.5, 0.9], dtype=np.float32)
+    qd = state_0.joint_qd.numpy()
+    qd[:3] = omega0
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    I_body = model.body_inertia.numpy()[0]
+
+    def angular_momentum_world(state):
+        bq = state.body_q.numpy()[0]
+        omega = state.body_qd.numpy()[0, 3:6]
+        R = np.array(wp.quat_to_matrix(wp.quat(*bq[3:7].tolist()))).reshape(3, 3)
+        return (R @ I_body @ R.T) @ omega
+
+    L0 = angular_momentum_world(state_0)
+    quat_0 = state_0.body_q.numpy()[0, 3:7].copy()
+    test.assertGreater(np.linalg.norm(L0), 0.1, "Initial angular momentum should be nonzero")
+
+    sim_dt = 1e-2
+    for _ in range(20):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, None, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    L_drift = np.linalg.norm(angular_momentum_world(state_0) - L0) / np.linalg.norm(L0)
+    test.assertLess(L_drift, 5e-3, f"Angular momentum drift: {L_drift:.6e}")
+
+    # Sanity: the body must actually precess over the interval.
+    quat_f = state_0.body_q.numpy()[0, 3:7]
+    rotation_angle = 2.0 * np.arccos(min(abs(float(np.dot(quat_0, quat_f))), 1.0))
+    test.assertGreater(rotation_angle, 0.1, f"Body should have rotated, got {rotation_angle:.4f} rad")
+
+
 # Coulomb friction is covered by test_rigid_friction_ramp.py (mu, theta) grid.
 
 
@@ -801,7 +891,13 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
         )
         builder.joint_articulation[j_loop] = -1
     else:
-        builder.add_equality_constraint_connect(body1=-1, body2=rocker_body, anchor=wp.vec3(d_link, 0.0, 0.0))
+        _add_equality_constraint(
+            builder,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
+            body1=-1,
+            body2=rocker_body,
+            anchor=wp.vec3(d_link, 0.0, 0.0),
+        )
     model = builder.finalize(device=device)
 
     solver = solver_fn(model)
@@ -1386,7 +1482,7 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_free_fall_{solver_name}",
             test_free_fall,
             devices=[device],
@@ -1394,7 +1490,7 @@ for device in devices:
         )
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_projectile_motion_{solver_name}",
             test_projectile_motion,
             devices=[device],
@@ -1403,7 +1499,7 @@ for device in devices:
         )
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_momentum_conservation_{solver_name}",
             test_momentum_conservation,
             devices=[device],
@@ -1443,7 +1539,7 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_pendulum_period_{solver_name}",
             test_pendulum_period,
             devices=[device],
@@ -1458,7 +1554,7 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_energy_conservation_{solver_name}",
             test_energy_conservation,
             devices=[device],
@@ -1468,11 +1564,23 @@ for device in devices:
             sphere_radius=0.1 if solver_name == "semi_implicit" else 0.01,
         )
 
+        # Torque-free precession exercises the articulated rigid-body dynamics
+        # exactly (rigid joints, no soft constraints), so restrict it to the
+        # exact generalized-coordinate solvers.
+        if solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
+            add_function_test(
+                TestPhysicsVerification,
+                f"test_torque_free_precession_{solver_name}",
+                test_torque_free_precession,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
+
         if solver_name == "semi_implicit":
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_joint_actuation_{solver_name}",
             test_joint_actuation,
             devices=[device],
@@ -1484,7 +1592,7 @@ for device in devices:
     # Restitution test
     if device.is_cuda:
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             "test_restitution_xpbd",
             test_restitution,
             devices=[device],
@@ -1495,7 +1603,7 @@ for device in devices:
 
     if not device.is_cuda:
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             "test_restitution_mujoco_cpu",
             test_restitution_mujoco,
             devices=[device],
@@ -1504,7 +1612,7 @@ for device in devices:
         )
     if device.is_cuda:
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             "test_restitution_mujoco_warp",
             test_restitution_mujoco,
             devices=[device],
@@ -1528,14 +1636,14 @@ for device in devices:
             continue
 
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_fourbar_linkage_{solver_name}",
             test_fourbar_linkage,
             devices=[device],
             solver_fn=solver_fn,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_fourbar_linkage_loop_joint_{solver_name}",
             test_fourbar_linkage,
             devices=[device],
@@ -1543,21 +1651,21 @@ for device in devices:
             use_loop_joint=True,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_revolute_loop_joint_{solver_name}",
             test_revolute_loop_joint,
             devices=[device],
             solver_fn=solver_fn,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_ball_loop_joint_{solver_name}",
             test_ball_loop_joint,
             devices=[device],
             solver_fn=solver_fn,
         )
         add_function_test(
-            TestPhysicsValidation,
+            TestPhysicsVerification,
             f"test_fixed_loop_joint_{solver_name}",
             test_fixed_loop_joint,
             devices=[device],

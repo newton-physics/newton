@@ -10,8 +10,8 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton import JointTargetMode, ModelBuilder
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton import JointTargetMode, ModelBuilder, ModelFlags
+from newton.solvers import SolverMuJoCo
 from newton.tests import get_asset
 from newton.tests.unittest_utils import USD_AVAILABLE
 
@@ -180,6 +180,7 @@ def assert_solver_actuator_mapping(test, model, expected_indices):
         [SolverMuJoCo.CtrlSource.JOINT_TARGET] * len(expected_indices),
     )
     np.testing.assert_array_equal(solver.mjc_actuator_to_newton_idx.numpy(), expected_indices)
+    return solver
 
 
 def find_joint_by_name(builder, joint_name):
@@ -207,7 +208,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION))
         self.assertEqual(builder.joint_target_ke[dof], 12.0)
         self.assertEqual(builder.joint_target_kd[dof], 0.0)
-        self.assertEqual(builder.joint_effort_limit[dof], 5.0)
+        self.assertEqual(builder.joint_effort_limit[dof], builder.default_joint_cfg.effort_limit)
 
         model = builder.finalize()
         self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 1)
@@ -215,7 +216,8 @@ class TestMuJoCoActuators(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.ctrl_source.numpy(), [SolverMuJoCo.CtrlSource.JOINT_TARGET])
         np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[dof, 0]])
 
-        assert_solver_actuator_mapping(self, model, [dof])
+        solver = assert_solver_actuator_mapping(self, model, [dof])
+        np.testing.assert_allclose(solver.mj_model.actuator_forcerange[0], [-5.0, 5.0], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_mjc_velocity_actuator_sets_velocity_target(self):
@@ -244,7 +246,9 @@ class TestMuJoCoActuators(unittest.TestCase):
         self.assertEqual(builder.joint_target_mode[dof], int(JointTargetMode.POSITION_VELOCITY))
         self.assertEqual(builder.joint_target_ke[dof], 12.0)
         self.assertEqual(builder.joint_target_kd[dof], 4.0)
-        self.assertEqual(builder.joint_effort_limit[dof], 5.0)
+        # Only the position actuator authored a forceRange; it maps to that sub-actuator's
+        # forcerange (below), not the joint effort limit (matches MJCF).
+        self.assertEqual(builder.joint_effort_limit[dof], builder.default_joint_cfg.effort_limit)
 
         model = builder.finalize()
         self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 2)
@@ -255,7 +259,11 @@ class TestMuJoCoActuators(unittest.TestCase):
         )
         np.testing.assert_array_equal(model.mujoco.actuator_trnid.numpy(), [[dof, 0], [dof, 0]])
 
-        assert_solver_actuator_mapping(self, model, [dof, -(dof + 2)])
+        solver = assert_solver_actuator_mapping(self, model, [dof, -(dof + 2)])
+        mjc_to_newton = solver.mjc_actuator_to_newton_idx.numpy()
+        for mj_idx in range(solver.mj_model.nu):
+            if mjc_to_newton[mj_idx] >= 0:  # position sub-actuator carries the authored forceRange
+                np.testing.assert_allclose(solver.mj_model.actuator_forcerange[mj_idx], [-5.0, 5.0], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_mjc_direct_actuator_stays_ctrl_direct(self):
@@ -401,6 +409,94 @@ class TestMuJoCoActuators(unittest.TestCase):
                     kd = joint_target_kd[dof_idx]
                     np.testing.assert_allclose(mj_model.actuator_gainprm[mj_idx, 0], kd, atol=1e-5)
                     np.testing.assert_allclose(mj_model.actuator_biasprm[mj_idx, 2], -kd, atol=1e-5)
+
+    def test_joint_target_distinct_position_velocity_ranges(self):
+        """Position + velocity actuators on one joint keep separate ctrl/force ranges.
+
+        The two are merged into a single POSITION_VELOCITY joint target, then rebuilt
+        as two mj_model actuators; each must carry its own authored range.
+        """
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="dual_actuator">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <body name="link" pos="0 0 0">
+            <joint name="j" axis="0 0 1" type="hinge"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="p" joint="j" kp="100" forcerange="-7 7" forcelimited="true" ctrlrange="-2 2" ctrllimited="true"/>
+        <velocity name="v" joint="j" kv="10" forcerange="-3 3" forcelimited="true" ctrlrange="-5 5" ctrllimited="true"/>
+    </actuator>
+</mujoco>
+"""
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=False)
+        model = builder.finalize()
+
+        self.assertEqual(
+            model.joint_target_mode.numpy()[get_qd_start(builder, "j")],
+            int(JointTargetMode.POSITION_VELOCITY),
+        )
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        mj_model = solver.mj_model
+        self.assertEqual(mj_model.nu, 2)
+
+        mjc_ctrl_source = solver.mjc_actuator_ctrl_source.numpy()
+        mjc_to_newton = solver.mjc_actuator_to_newton_idx.numpy()
+
+        seen_position = False
+        seen_velocity = False
+        for mj_idx in range(mj_model.nu):
+            self.assertEqual(mjc_ctrl_source[mj_idx], SolverMuJoCo.CtrlSource.JOINT_TARGET)
+            # JOINT_TARGET: idx >= 0 is a position sub-actuator, idx <= -2 is velocity.
+            if mjc_to_newton[mj_idx] >= 0:
+                seen_position = True
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            else:
+                seen_velocity = True
+                np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-3.0, 3.0], atol=1e-5)
+                np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-5.0, 5.0], atol=1e-5)
+            self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
+            self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
+
+        self.assertTrue(seen_position, "no position sub-actuator found")
+        self.assertTrue(seen_velocity, "no velocity sub-actuator found")
+
+    def test_ball_joint_target_ranges_applied_to_all_axes(self):
+        """A ball-joint position actuator expands to one mj_model actuator per axis.
+
+        The single authored ctrl/force range must apply to every per-axis actuator.
+        """
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="ball">
+    <option gravity="0 0 0"/>
+    <worldbody>
+        <body name="link" pos="0 0 0">
+            <joint name="bj" type="ball"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="p" joint="bj" kp="100" forcerange="-7 7" forcelimited="true" ctrlrange="-2 2" ctrllimited="true"/>
+    </actuator>
+</mujoco>
+"""
+        builder = ModelBuilder()
+        builder.add_mjcf(mjcf, ctrl_direct=False)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        mj_model = solver.mj_model
+        self.assertEqual(mj_model.nu, 3)  # one actuator per ball DOF
+        for mj_idx in range(mj_model.nu):
+            np.testing.assert_allclose(mj_model.actuator_forcerange[mj_idx], [-7.0, 7.0], atol=1e-5)
+            np.testing.assert_allclose(mj_model.actuator_ctrlrange[mj_idx], [-2.0, 2.0], atol=1e-5)
+            self.assertTrue(bool(mj_model.actuator_forcelimited[mj_idx]))
+            self.assertTrue(bool(mj_model.actuator_ctrllimited[mj_idx]))
 
     def test_parsing_ctrl_direct_true(self):
         """Test parsing with ctrl_direct=True."""
@@ -633,7 +729,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         model.joint_target_ke.assign(new_ke)
         model.joint_target_kd.assign(new_kd)
 
-        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
 
         updated_gainprm = solver.mjw_model.actuator_gainprm.numpy()
         updated_biasprm = solver.mjw_model.actuator_biasprm.numpy()
@@ -695,7 +791,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         model.mujoco.actuator_gainprm.assign(new_gainprm)
         model.mujoco.actuator_biasprm.assign(new_biasprm)
 
-        solver.notify_model_changed(SolverNotifyFlags.ACTUATOR_PROPERTIES)
+        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
 
         updated_gainprm = solver.mjw_model.actuator_gainprm.numpy()
         updated_biasprm = solver.mjw_model.actuator_biasprm.numpy()

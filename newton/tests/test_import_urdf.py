@@ -5,7 +5,9 @@ import base64
 import os
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -14,6 +16,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
 
 try:
@@ -206,6 +209,72 @@ JOINT_URDF = """
 </robot>
 """
 
+MASSLESS_FIXED_ROOT_URDF = """
+<robot name="massless_fixed_root">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+</robot>
+"""
+
+MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF = """
+<robot name="massless_fixed_root_internal_fixed">
+    <link name="base_link"/>
+    <link name="chassis">
+        <inertial>
+            <mass value="2.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0"
+                     iyy="0.1" iyz="0.0"
+                     izz="0.1"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <box size="1.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+    </link>
+    <link name="sensor">
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0"
+                     iyy="0.01" iyz="0.0"
+                     izz="0.01"/>
+        </inertial>
+        <collision>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="base_to_chassis" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+    <joint name="chassis_to_sensor" type="fixed">
+        <parent link="chassis"/>
+        <child link="sensor"/>
+        <origin xyz="0 0 0.6" rpy="0 0 0"/>
+    </joint>
+</robot>
+"""
+
 JOINT_TREE_URDF = """
 <robot name="joint_tree_test">
 <!-- Mixed ordering of links -->
@@ -392,6 +461,52 @@ class TestImportUrdfBasic(unittest.TestCase):
             self.assertIsNotNone(mesh.texture)
             self.assertEqual(mesh.texture, texture_uri)
 
+    def test_dae_pycollada_shape_deprecation_filtered(self):
+        """Verify known pycollada NumPy deprecations do not fail strict warning runs."""
+
+        def make_loader(message: str, module_name: str):
+            def fake_load(filename, force=None):
+                warnings.warn_explicit(
+                    message=message,
+                    category=DeprecationWarning,
+                    filename=str(filename),
+                    lineno=1,
+                    module=module_name,
+                )
+                return SimpleNamespace(
+                    vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+                    faces=np.array([[0, 1, 2]], dtype=np.int32),
+                    vertex_normals=np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32),
+                )
+
+            return fake_load
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dae_path = Path(temp_dir) / "triangle.dae"
+            dae_path.write_text("<COLLADA/>")
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader(
+                        "Setting the shape on a NumPy array has been deprecated in NumPy 2.5.",
+                        "collada.polylist",
+                    ),
+                ):
+                    meshes = load_meshes_from_file(str(dae_path), maxhullvert=0)
+
+            self.assertEqual(len(meshes), 1)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader("Different Collada deprecation", "collada.polylist"),
+                ):
+                    with self.assertRaises(DeprecationWarning):
+                        load_meshes_from_file(str(dae_path), maxhullvert=0)
+
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
         parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
@@ -489,6 +604,100 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
         assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
         assert_np_equal(builder.joint_effort_limit[-1], np.array([6.78]))
+
+    def test_floating_massless_fixed_root_default_preserves_topology(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF, floating=True, up_axis="Z")
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        root_joint = builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")
+        root_body = builder.joint_child[root_joint]
+        self.assertEqual(builder.joint_type[root_joint], newton.JointType.FREE)
+        self.assertEqual(builder.body_mass[root_body], 0.0)
+
+    def test_floating_massless_fixed_root_urdf_opt_in_is_dynamic(self):
+        dt = 1.0 / 60.0
+        step_count = 5
+        expected_drop = 0.5 * 9.81 * (step_count * dt) ** 2
+        min_drop = 0.5 * expected_drop
+
+        for urdf in [MASSLESS_FIXED_ROOT_URDF, MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF]:
+            with self.subTest(urdf=urdf.splitlines()[1].strip()):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
+
+                self.assertEqual(builder.joint_type[0], newton.JointType.FREE)
+                self.assertGreater(builder.body_mass[0], 0.0)
+
+                model = builder.finalize()
+                state_0 = model.state()
+                state_1 = model.state()
+                control = model.control()
+                contacts = model.contacts()
+                newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+                root_body = int(model.joint_child.numpy()[0])
+                start_z = float(state_0.body_q.numpy()[root_body][2])
+
+                solver = newton.solvers.SolverXPBD(model, iterations=2)
+                for _ in range(step_count):
+                    state_0.clear_forces()
+                    solver.step(state_0, state_1, control, contacts, dt)
+                    state_0, state_1 = state_1, state_0
+
+                end_z = float(state_0.body_q.numpy()[root_body][2])
+                self.assertGreaterEqual(start_z - end_z, min_drop)
+
+    def test_floating_massless_fixed_root_opt_in_preserves_existing_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(mass=1.0, label="pre_root")
+        child = builder.add_link(mass=1.0, label="pre_child")
+        root_joint = builder.add_joint_fixed(parent=-1, child=root, label="pre_world_fixed")
+        child_joint = builder.add_joint_fixed(parent=root, child=child, label="pre_child_fixed")
+        builder.add_articulation([root_joint, child_joint], label="pre_articulation")
+
+        builder.add_urdf(MASSLESS_FIXED_ROOT_URDF, floating=True, up_axis="Z", collapse_massless_fixed_root=True)
+
+        self.assertEqual(builder.joint_count, 3)
+        self.assertIn("pre_world_fixed", builder.joint_label)
+        self.assertIn("pre_child_fixed", builder.joint_label)
+        self.assertIn("massless_fixed_root/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root/base_to_chassis", builder.joint_label)
+
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_world_fixed")], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_type[builder.joint_label.index("pre_child_fixed")], newton.JointType.FIXED)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root/floating_base")],
+            newton.JointType.FREE,
+        )
+
+    def test_floating_massless_fixed_root_opt_in_preserves_imported_internal_fixed_joints(self):
+        builder = newton.ModelBuilder()
+        builder.add_urdf(
+            MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_URDF,
+            floating=True,
+            up_axis="Z",
+            collapse_massless_fixed_root=True,
+        )
+
+        self.assertEqual(builder.joint_count, 2)
+        self.assertIn("massless_fixed_root_internal_fixed/floating_base", builder.joint_label)
+        self.assertNotIn("massless_fixed_root_internal_fixed/base_to_chassis", builder.joint_label)
+        self.assertIn("massless_fixed_root_internal_fixed/chassis_to_sensor", builder.joint_label)
+
+        self.assertGreater(builder.body_mass[0], 0.0)
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/floating_base")],
+            newton.JointType.FREE,
+        )
+        self.assertEqual(
+            builder.joint_type[builder.joint_label.index("massless_fixed_root_internal_fixed/chassis_to_sensor")],
+            newton.JointType.FIXED,
+        )
 
     def test_cartpole_urdf(self):
         builder = newton.ModelBuilder()
@@ -1675,6 +1884,24 @@ class TestUrdfUriResolution(unittest.TestCase):
             builder.add_urdf(str(self.base_path / "robot.urdf"), up_axis="Z")
         self.assertIn("could not resolve", str(cm.warning).lower())
         self.assertEqual(builder.shape_count, 0)
+
+    def test_package_uri_fallback_does_not_match_substrings(self):
+        """Test fallback package resolution only matches full path components."""
+        accidental = self.base_path / "not" / "pkg" / "meshes"
+        accidental.mkdir(parents=True)
+        (accidental / "link.obj").write_text(MESH_OBJ)
+
+        misleading = self.base_path / "notpkg"
+        (misleading / "urdf").mkdir(parents=True)
+        urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="package://pkg/meshes/link.obj"))
+        (misleading / "urdf" / "robot.urdf").write_text(urdf)
+
+        with patch("newton._src.utils.import_urdf.resolve_robotics_uri", None):
+            builder = newton.ModelBuilder()
+            with self.assertWarns(UserWarning) as cm:
+                builder.add_urdf(str(misleading / "urdf" / "robot.urdf"), up_axis="Z")
+            self.assertIn('could not resolve package "pkg"', str(cm.warning))
+            self.assertEqual(builder.shape_count, 0)
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_automatic_vs_manual_resolution(self):
