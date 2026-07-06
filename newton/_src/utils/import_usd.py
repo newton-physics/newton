@@ -1246,9 +1246,11 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
-        joint_damping = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="damping", default=default_joint_damping, verbose=verbose
+        _joint_damping_usd = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
         )
+        joint_damping_authored = _joint_damping_usd is not None
+        joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
         joint_velocity_limit = R.get_value(
             joint_prim,
             prim_type=PrimType.JOINT,
@@ -1367,7 +1369,8 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
-                joint_params["damping"] /= DegreesToRadian
+                if joint_damping_authored:
+                    joint_params["damping"] /= DegreesToRadian
                 if joint_params["velocity_limit"] is not None:
                     joint_params["velocity_limit"] *= DegreesToRadian
 
@@ -1556,7 +1559,7 @@ def parse_usd(
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            damping=joint_damping / DegreesToRadian,
+                            damping=joint_damping / DegreesToRadian if joint_damping_authored else joint_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian

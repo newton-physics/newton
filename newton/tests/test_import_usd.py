@@ -1318,6 +1318,82 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_velocity_limit.numpy()[d]), 100.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_joint_api_revolute_default_damping(self):
+        """builder.default_joint_cfg.damping is used as-is when newton:damping is not authored.
+
+        Regression: the importer previously divided the builder default by DegreesToRadian,
+        producing an incorrect value (e.g. 3.0 → ~171.9) for revolute joints.
+        """
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+        # newton:damping intentionally omitted — builder default must be used without conversion
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 3.0
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        damping = model.joint_damping.numpy()
+        d = int(qd_start[model.joint_label.index("/Articulation/Joint1")])
+        self.assertAlmostEqual(float(damping[d]), 3.0, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
         """NewtonJointAPI attributes broadcast uniformly across a D6 joint's linear and angular DOFs."""
         from pxr import Usd
