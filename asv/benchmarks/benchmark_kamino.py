@@ -15,7 +15,9 @@ import newton
 _NUM_ACTIONS = 12
 _OBS_DIM = 94
 _MIN_STANDING_HEIGHT = 0.20
-_MIN_STANDING_FRACTION = 0.90
+_MAX_STANDING_HEIGHT = 0.35
+_MIN_HEALTHY_WORLD_FRACTION = 0.90
+_MIN_ACTION_NORM = 1.0e-4
 _MAX_BODY_LINEAR_SPEED = 10.0
 _MAX_BODY_ANGULAR_SPEED = 50.0
 
@@ -272,6 +274,14 @@ class PolicyController:
     def test_final(self):
         if not self._torch.isfinite(self._actions).all().item():
             raise RuntimeError("Policy produced non-finite actions")
+        action_norms = self._torch.linalg.vector_norm(self._actions, dim=1)
+        nontrivial_count = self._torch.count_nonzero(action_norms >= _MIN_ACTION_NORM).item()
+        nontrivial_fraction = nontrivial_count / self._wc
+        if nontrivial_fraction < _MIN_HEALTHY_WORLD_FRACTION:
+            raise RuntimeError(
+                f"Only {nontrivial_count}/{self._wc} robots have policy action norm >= "
+                f"{_MIN_ACTION_NORM:.1e} ({nontrivial_fraction:.1%})"
+            )
 
 
 class DRLegsBenchmarkWorkload:
@@ -461,12 +471,14 @@ class DRLegsBenchmarkWorkload:
         twice_cross = 2.0 * np.cross(quat_vector, body_com)
         rotated_com = body_com + body_q[:, 6:7] * twice_cross + np.cross(quat_vector, twice_cross)
         pelvis_height = body_q[:, 2] + rotated_com[:, 2]
-        standing_count = np.count_nonzero(pelvis_height >= _MIN_STANDING_HEIGHT)
+        standing_count = np.count_nonzero(
+            (pelvis_height >= _MIN_STANDING_HEIGHT) & (pelvis_height <= _MAX_STANDING_HEIGHT)
+        )
         standing_fraction = standing_count / self.world_count
-        if standing_fraction < _MIN_STANDING_FRACTION:
+        if standing_fraction < _MIN_HEALTHY_WORLD_FRACTION:
             raise RuntimeError(
-                f"Only {standing_count}/{self.world_count} robots have pelvis height >= "
-                f"{_MIN_STANDING_HEIGHT:.2f} m ({standing_fraction:.1%})"
+                f"Only {standing_count}/{self.world_count} robots have pelvis height within "
+                f"[{_MIN_STANDING_HEIGHT:.2f}, {_MAX_STANDING_HEIGHT:.2f}] m ({standing_fraction:.1%})"
             )
 
         self.policy_controller.test_final()

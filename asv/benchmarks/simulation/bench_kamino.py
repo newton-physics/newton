@@ -3,6 +3,7 @@
 
 import os
 import sys
+from typing import ClassVar
 
 import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
@@ -60,9 +61,9 @@ class _FastBenchmark:
 class _KpiBenchmark:
     """Utility base class for Kamino KPI benchmarks."""
 
-    param_names = ["world_count"]
+    param_names: ClassVar[list[str]] = ["world_count"]
     num_frames = None
-    params = None
+    params: ClassVar[list[list[int]] | None] = None
     robot = None
     samples = None
     use_policy = True
@@ -106,8 +107,8 @@ class FastDRLegs(_FastBenchmark):
 
 
 class KpiDRLegs(_KpiBenchmark):
-    params = [[1024]]
-    num_frames = 50
+    params: ClassVar[list[list[int]]] = [[4096]]
+    num_frames = 25
     robot = "dr_legs"
     samples = 2
 
