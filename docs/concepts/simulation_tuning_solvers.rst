@@ -84,14 +84,11 @@ Drive and limit gains
 
 Effort limits, target rates, armature, and friction
    Target rate limits are usually implemented in control code.
-   :attr:`~Model.joint_effort_limit` is currently a
-   :class:`~newton.solvers.SolverMuJoCo` feature, and
-   :attr:`~Model.joint_velocity_limit` is not enforced by the listed Newton
-   solvers. :attr:`~Model.joint_armature` and :attr:`~Model.joint_friction` are
-   useful stabilizers only where the selected solver supports them. Armature
-   adds joint-space inertia and can lower the effective natural frequency of a
-   drive, but it changes the physical model and should be justified by actuator
-   or gearbox data when possible.
+   Check :ref:`Joint feature support` for effort limits, velocity limits,
+   armature, and friction rather than inferring support from the model arrays.
+   Armature adds joint-space inertia and can lower the effective natural
+   frequency of a drive, but it changes the physical model and should be
+   justified by actuator or gearbox data when possible.
 
 Collision frequency
    Calling ``model.collide`` or ``pipeline.collide`` every substep is most
@@ -121,12 +118,10 @@ repository examples spend tuning effort, not a shared solver API.
        ``sdf_initpoints``, ``nconmax``, ``njmax``, ``use_mujoco_contacts``,
        ``enable_multiccd``, ``disable_contacts``, ``use_mujoco_cpu``.
      - Uses MuJoCo or MuJoCo Warp semantics. Newton's constructor supports the
-       listed options, not every option from external MuJoCo documentation. In
-       particular, ``noslip_iterations`` is not exposed by
-       :class:`~newton.solvers.SolverMuJoCo` and is not supported by the
-       MuJoCo Warp-backed path. Examples most often tune ``iterations``,
-       ``ls_iterations``, ``solver``, ``integrator``, ``cone``, ``impratio``,
-       ``nconmax``, ``njmax``, and ``use_mujoco_contacts``.
+       listed options, not every option from external MuJoCo documentation.
+       Examples most often tune ``iterations``, ``ls_iterations``, ``solver``,
+       ``integrator``, ``cone``, ``impratio``, ``nconmax``, ``njmax``, and
+       ``use_mujoco_contacts``.
    * - :class:`~newton.solvers.SolverXPBD`
      - ``iterations``, ``soft_body_relaxation``, ``soft_contact_relaxation``,
        ``joint_linear_relaxation``, ``joint_angular_relaxation``,

@@ -226,14 +226,14 @@ effective-mass check in :ref:`contact-stiffness-sanity-checks`; see
 Friction Cone Choice
 --------------------
 
-``SolverMuJoCo`` supports ``"elliptic"`` and ``"pyramidal"`` friction cones and
-defaults to ``"pyramidal"`` unless the constructor or model attributes override
-it. MuJoCo describes elliptic cones as closer to physical friction and better
-for suppressing slip, but more expensive. Pyramidal cones can improve algorithm
-performance, though not necessarily for every model. If the elliptic solve is
-too costly or does not converge within the available budget, compare pyramidal
-with the timestep, solver settings, and contact parameters held fixed; do not
-assume either cone is universally more stable.
+:class:`~newton.solvers.SolverMuJoCo` exposes MuJoCo's elliptic and pyramidal
+friction cones; inspect the constructor or resolved model option for the active
+choice. MuJoCo describes elliptic cones as closer to physical friction and
+better for suppressing slip, but more expensive. Pyramidal cones can improve
+algorithm performance, though not necessarily for every model. If the elliptic
+solve is too costly or does not converge within the available budget, compare
+pyramidal with the timestep, solver settings, and contact parameters held fixed;
+do not assume either cone is universally more stable.
 
 Changing the cone changes the soft-contact model, not only the solver. See
 MuJoCo's `solver-setting guidance
