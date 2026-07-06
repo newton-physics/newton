@@ -100,7 +100,30 @@ oscillation), tune joints and drives first and consult the Symptom Table.
 Accept a parameter change only when the target task metric improves and no
 guardrail regresses past a bound set in advance — NaN/Inf count, maximum
 penetration or constraint residual, and runtime. Record those baselines before
-the first change and change one knob at a time.
+the first change. Change one knob at a time when attributing an effect; when the
+failure evidence points to an interaction, test the smallest justified
+combination in a scripted reproduction and keep it only if the target metric and
+guardrails improve.
+
+Changing Solvers or Backends
+----------------------------
+
+Treat a solver or backend change as a model-porting exercise before tuning
+gains. Audit the :ref:`Joint feature support` table and current implementation
+for the features the scene relies on: joint limits, velocity and effort limits,
+drives, armature and friction, contact representation, margin/gap semantics, and
+contact or constraint capacity. For example,
+:attr:`~Model.joint_velocity_limit` is not enforced by the solvers currently
+listed in that table; do not assume a limit authored for another engine transfers
+automatically.
+
+Record the source run's commands and replay them unchanged on the target. Compare
+joint position and velocity, end-effector state, penetration, contact and
+constraint counts, and force or residual traces where their definitions are
+comparable. Include recorded failures and bounded worst-case commands: random
+rollouts alone may never reach the states that expose a missing feature or an
+unstable interaction. Retune only after the source and target configurations are
+semantically aligned.
 
 Symptom Table
 -------------

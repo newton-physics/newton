@@ -142,11 +142,20 @@ MuJoCo-contact and CPU paths fall back to the legacy per-geometry approximation.
 For the mode definitions, mapping, and fallback behavior, see
 :ref:`shape-material-contact-stiffness-and-damping`.
 
-Scaled force-space gains use positive ``(timeconst, dampratio)`` values, allowing
-MuJoCo's default ``refsafe`` guard to soften contacts that are too stiff for the
-timestep. This can prevent divergence but changes the requested hardness. If the
-guard activates, reduce ``dt`` or increase substeps instead of only raising
-``ke``. See MuJoCo's `refsafe option
+Scaled force-space gains use positive ``(timeconst, dampratio)`` values. With
+MuJoCo's default ``refsafe`` guard enabled, the solver evaluates them using
+``effective_timeconst = max(timeconst, 2 * dt)``; it does not rewrite the stored
+``solref``. Here ``dt`` is the step passed to
+:meth:`~newton.solvers.SolverMuJoCo.step`. Direct-format negative ``solref``
+values bypass this clamp.
+
+For Newton's default positive mapping, ``timeconst = 2 / kd`` and
+``dampratio = kd / (2 * sqrt(ke))``. Holding damping ratio fixed therefore
+requires ``kd`` to scale with ``sqrt(ke)``. Once the requested ``timeconst`` is
+below the ``refsafe`` floor, increasing both gains along that fixed-ratio curve
+no longer hardens the effective response. Reduce ``dt`` or increase substeps
+instead of only raising gains. See the
+:ref:`contact-stiffness-sanity-checks` and MuJoCo's `refsafe option
 <https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-flag-refsafe>`__.
 
 ``solref`` Formats
@@ -303,13 +312,19 @@ practice:
   assumptions from both.
 - **Contact margin and gap.** In Newton collision generation, ``margin`` sets
   the shifted contact surface and ``gap`` adds speculative detection distance.
-  The current MuJoCo conversion always writes ``geom_gap = 0`` and may zero
-  ``geom_margin`` when required by MuJoCo-Warp native CCD. With
-  ``use_mujoco_contacts=False``, Newton still uses the authored shape
-  margin/gap to generate contacts, and the solver restores the supported margin
-  contribution for those contacts. See :ref:`margin and gap semantics
+  ``SolverMuJoCo`` forwards :attr:`~Model.shape_gap` to ``geom_gap`` and
+  authored pair gaps to ``pair_gap`` at initialization and runtime updates.
+  MuJoCo reports contacts with surface distance in ``(margin, margin + gap]``
+  as inactive, making them available for custom computations without producing
+  contact force. Newton-generated contacts similarly set their included margin
+  from the authored margin. Native CCD modes may zero geom or pair margins, but
+  do not discard the forwarded gaps. See :ref:`margin and gap semantics
   <margin-gap-semantics>` and the :doc:`MuJoCo solver guide </solvers/mujoco>`
   for the path-specific limitations.
+- **Imported margin and gap.** MJCF and USD values now map directly to Newton's
+  margin and gap semantics. Use ``legacy_margin_gap=True`` with
+  :meth:`~ModelBuilder.add_mjcf` or :meth:`~ModelBuilder.add_usd` only when an
+  asset requires Newton's pre-MuJoCo-3.9 import translation.
 - **Armature as a stabilizer.** A small :attr:`~Model.joint_armature` on light,
   high-gain joints raises effective joint inertia and tames stiff drives on the
   MuJoCo path; justify the magnitude with actuator or gearbox data where
@@ -320,7 +335,12 @@ Set them for the busiest world, not the average: a buffer that fits a quiet
 world can truncate contacts or constraints in a heavier one, while an oversized
 buffer wastes GPU memory multiplied across every world. If left unset, they are
 estimated from the initial state; monitor overflow counters or warnings and raise
-the relevant buffer when needed.
+the relevant buffer when needed. A positive gap can increase the number of
+detected contacts even though contacts outside the margin remain inactive.
+After changing gaps or upgrading margin/gap behavior, remeasure peak contacts,
+constraints, and overflow in the busiest world before compensating with
+stiffness or iterations; do not assume the previous run generated the same rows.
+Large gaps and oversized buffers also increase work and memory.
 
 In batched, many-world runs everything per step is multiplied by the world
 count: total buffer memory scales with ``nconmax``/``njmax`` times the number of

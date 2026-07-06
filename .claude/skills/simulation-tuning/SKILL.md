@@ -34,12 +34,17 @@ contact problems):
 
 1. Identify the active solver class; read its public constructor / config object
    and the "Joint feature support" docs table for supported model attributes.
+   Follow the guide's internal cross-references and linked primary documentation
+   for any behavior you rely on; a link is evidence to inspect, not merely a
+   citation to repeat.
 2. Verify each proposed option is supported by that solver. Do **not** copy
    option names across solvers or from external MuJoCo/Omniverse docs. Example:
    `noslip_iterations` is **not** a `SolverMuJoCo` option.
 3. Record `dt`, substeps, contact-refresh cadence, solver params, contact
    materials, and drive gains before changing anything.
 4. Reproduce the symptom in a minimal scene.
+   When changing solvers or backends, replay the same recorded commands and
+   compare state, contacts, and task metrics before retuning gains.
 5. Start with the diagnosed category and change one category at a time. For a
    contact-dominated symptom, use model → timestep → solver convergence →
    contacts → drives → performance. For a control- or drive-dominated symptom,
