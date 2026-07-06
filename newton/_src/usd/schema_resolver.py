@@ -237,17 +237,24 @@ class SchemaResolverManager:
         Returns:
             Resolved value according to the precedence above.
         """
+        value, _ = self.get_value_with_resolver(prim, prim_type, key, default, verbose)
+        return value
+
+    def get_value_with_resolver(
+        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
+    ) -> tuple[Any, SchemaResolver | None]:
+        """Resolve a value and return the resolver that supplied an authored value."""
         # 1) Authored value by schema priority
         for r in self.resolvers:
             val = r.get_value(prim, prim_type, key)
             if val is None:
                 continue
             self._collect_on_first_use(r, prim)
-            return val
+            return val, r
 
         # 2) Caller-provided default, if any
         if default is not None:
-            return default
+            return default, None
 
         # 3) Resolver mapping defaults in priority order
         for resolver in self.resolvers:
@@ -256,7 +263,7 @@ class SchemaResolverManager:
                 d = getattr(spec, "default", None)
                 if d is not None:
                     transformer = getattr(spec, "usd_value_transformer", None)
-                    return transformer(d) if transformer is not None else d
+                    return (transformer(d) if transformer is not None else d), None
 
         # Nothing found
         try:
@@ -269,7 +276,7 @@ class SchemaResolverManager:
                 + "no authored value, no explicit default, and no solver mapping default."
             )
             print(error_message)
-        return None
+        return None, None
 
     def deformable_compat_namespaces(self) -> list[str]:
         """Deformable vendor attribute namespaces declared by the active resolvers.
