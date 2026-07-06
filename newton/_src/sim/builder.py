@@ -2849,8 +2849,8 @@ class ModelBuilder:
         Returns:
             .. experimental::
 
-               ``deformable_results`` and its conditional result entries are experimental.
-               A replacement will follow Newton's normal deprecation policy.
+               ``deformable_results`` and its conditional result entries are experimental and
+               may change or be removed without prior notice.
 
             When ``deformable_results=True``, imported deformable (cable/cloth/volume) element
             ranges are returned by prim path in the ``path_cable_map`` / ``path_cloth_map`` /

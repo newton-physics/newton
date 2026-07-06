@@ -251,8 +251,8 @@ def parse_usd(
     Returns:
         .. experimental::
 
-           ``deformable_results`` and its conditional result entries are experimental.
-           A replacement will follow Newton's normal deprecation policy.
+           ``deformable_results`` and its conditional result entries are experimental and
+           may change or be removed without prior notice.
 
         When ``deformable_results=True``, imported deformable (cable/cloth/volume) element
         ranges are returned by prim path in the ``path_cable_map`` / ``path_cloth_map`` /
@@ -4569,8 +4569,7 @@ def parse_usd(
             print(f"Mapped {converted} MuJoCo USD actuator(s) to joint targets")
     if deformable_results:
         # The deformable results are opt-in so the default return shape carries no
-        # deformable additions; the flag is the single deprecation hook for a future
-        # importer-report API.
+        # deformable additions and stays isolated from changes to this experimental contract.
         result.update(
             {
                 "path_cable_map": path_cable_map,
