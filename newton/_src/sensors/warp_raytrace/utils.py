@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -359,6 +360,23 @@ class Utils:
         return wp.zeros(
             (self.__render_context.world_count, camera_count, height, width),
             dtype=wp.uint32,
+            device=self.__render_context.device,
+        )
+
+    def create_hdr_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
+        """Create a linear HDR color output array for :meth:`~SensorTiledCamera.update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
+        Returns:
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``vec3f``.
+        """
+        return wp.zeros(
+            (self.__render_context.world_count, camera_count, height, width),
+            dtype=wp.vec3f,
             device=self.__render_context.device,
         )
 
@@ -775,48 +793,6 @@ class Utils:
         )
         return out_buffer
 
-    def assign_random_colors_per_world(self, seed: int = 100):
-        """Assign each world a random color, applied to all its shapes.
-
-        .. deprecated:: 1.1
-            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
-
-        Args:
-            seed: Random seed.
-        """
-        warnings.warn(
-            "``SensorTiledCamera.utils.assign_random_colors_per_world`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-
-        if not self.__render_context.shape_count_total:
-            return
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
-        self.__render_context.shape_colors = wp.array(
-            colors[self.__render_context.shape_world_index.numpy() % len(colors)],
-            dtype=wp.vec3f,
-            device=self.__render_context.device,
-        )
-
-    def assign_random_colors_per_shape(self, seed: int = 100):
-        """Assign a random color to each shape.
-
-        .. deprecated:: 1.1
-            Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).
-
-        Args:
-            seed: Random seed.
-        """
-        warnings.warn(
-            "``SensorTiledCamera.utils.assign_random_colors_per_shape`` is deprecated. Use shape colors instead (e.g. ``builder.add_shape_cylinder(..., color=(r, g, b))``).",
-            category=DeprecationWarning,
-            stacklevel=2,
-        )
-
-        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 3)) * 0.5 + 0.5
-        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec3f, device=self.__render_context.device)
-
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
 
@@ -840,22 +816,33 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
-        """Assign a gray checkerboard texture material to all shapes.
-        Creates a gray checkerboard pattern texture and applies it to all shapes
-        in the scene.
+    def assign_checkerboard_material(
+        self,
+        *,
+        shape_indices: Sequence[int] | np.ndarray,
+        resolution: int = 64,
+        checker_size: int = 32,
+    ):
+        """Assign a gray checkerboard texture material to selected shapes.
 
         Args:
+            shape_indices: Shape indices that should use the checkerboard texture.
             resolution: Texture resolution in pixels (square texture).
             checker_size: Size of each checkerboard square in pixels.
         """
+        shape_indices = np.asarray(shape_indices, dtype=np.int64).reshape(-1)
+        invalid = (shape_indices < 0) | (shape_indices >= self.__render_context.shape_count_total)
+        if invalid.any():
+            raise ValueError("shape_indices contains an out-of-range shape index")
+
         checkerboard = (
             (np.arange(resolution) // checker_size)[:, None] + (np.arange(resolution) // checker_size)
         ) % 2 == 0
 
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32)
 
-        texture_ids = np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32)
+        texture_ids = np.full(self.__render_context.shape_count_total, fill_value=-1, dtype=np.int32)
+        texture_ids[shape_indices] = 0
 
         self.__checkerboard_data = TextureData()
         self.__checkerboard_data.texture = wp.Texture2D(
@@ -878,6 +865,29 @@ class Utils:
             texture_ids, dtype=wp.int32, device=self.__render_context.device
         )
 
+    def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
+        """Assign a gray checkerboard texture material to all shapes.
+
+        .. deprecated:: 1.4
+            Use :meth:`assign_checkerboard_material` with explicit shape
+            indices instead.
+
+        Args:
+            resolution: Texture resolution in pixels (square texture).
+            checker_size: Size of each checkerboard square in pixels.
+        """
+        warnings.warn(
+            "``SensorTiledCamera.utils.assign_checkerboard_material_to_all_shapes`` is deprecated as of Newton 1.4. "
+            "Use ``SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)`` instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        self.assign_checkerboard_material(
+            shape_indices=np.arange(self.__render_context.shape_count_total, dtype=np.int32),
+            resolution=resolution,
+            checker_size=checker_size,
+        )
+
     def __reshape_buffer_for_flatten(
         self,
         width: int,
@@ -888,16 +898,6 @@ class Utils:
     ) -> wp.array():
         world_and_camera_count = self.__render_context.world_count * camera_count
         if worlds_per_row is None:
-            worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
-        elif worlds_per_row == 0:
-            # Older callers passed 0 to mean "auto layout" because the original
-            # check was a falsy test. Preserve that behavior with a deprecation
-            # warning so we can require >=1 in a future release.
-            warnings.warn(
-                "worlds_per_row=0 is deprecated; pass None for auto layout.",
-                category=DeprecationWarning,
-                stacklevel=3,
-            )
             worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
         elif worlds_per_row < 1:
             raise ValueError(f"worlds_per_row must be >= 1, got {worlds_per_row}")

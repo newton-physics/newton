@@ -9,6 +9,7 @@
 - Follow Google-style docstrings. Types in annotations, not docstrings. `Args:` use `name: description`.
   - Sphinx cross-refs (`:class:`, `:meth:`) with shortest possible targets. Prefer public API paths; never use `newton._src`.
   - SI units for physical quantities in public API docstrings: `"""Particle positions [m], shape [particle_count, 3]."""`. Joint-dependent: `[m or rad]`. Spatial vectors: `[N, N·m]`. Compound arrays: per-component. Skip non-physical fields.
+- Code comments: brief, and only for non-obvious code. Explain *why* (intent, constraints, edge cases), not *what* the code already shows. Prefer a cross-reference (doc, `:class:`/`:meth:`) over re-explaining context.
 - Run `docs/generate_api.py` when adding public API symbols.
 - Avoid new required dependencies. Strongly prefer not adding optional ones — use Warp, NumPy, or stdlib.
 - Create a feature branch before committing — never commit directly to `main`. Use `<username>/feature-desc`.

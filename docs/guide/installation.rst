@@ -29,7 +29,7 @@ Minimum Requirements
      - 3.11+ recommended
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-     - macOS has no GPU acceleration; see :ref:`cpu-limitations` below
+     - macOS has no GPU acceleration
    * - NVIDIA GPU
      - Compute capability 5.0+ (Maxwell)
      - Any GeForce GTX 9xx or newer
@@ -38,43 +38,7 @@ Minimum Requirements
      - 550 or newer (CUDA 12.4) recommended for best performance
    * - CUDA
      - 12, 13
-     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime
-
-CUDA Compatibility
-^^^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :widths: 25 75
-   :header-rows: 1
-
-   * - CUDA Version
-     - Notes
-   * - 12.3+
-     - Required for reliable CUDA graph capture
-   * - 12.4+
-     - Recommended for best performance
-   * - 13
-     - Supported
-
-Tested Configurations
-^^^^^^^^^^^^^^^^^^^^^
-
-Newton releases are tested on the following configurations:
-
-.. list-table::
-   :widths: 25 75
-   :header-rows: 1
-
-   * - Component
-     - Configuration
-   * - OS
-     - Ubuntu 22.04/24.04 (x86-64 + ARM64), Windows, macOS (CPU only)
-   * - GPU
-     - NVIDIA Ada Lovelace, Blackwell
-   * - Python
-     - 3.10, 3.12, 3.14 (import-only)
-   * - CUDA
-     - 12, 13
+     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime. See :ref:`cuda-compatibility` for version-specific notes.
 
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -89,21 +53,8 @@ X11 development libraries to build ``imgui_bundle`` from source:
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
 
-.. _cpu-limitations:
-
-CPU-Only Limitations
-^^^^^^^^^^^^^^^^^^^^
-
-Newton can run on CPU (including macOS), but the following features require an
-NVIDIA GPU and are unavailable in CPU-only mode:
-
-- **SDF collision** — signed-distance-field computation requires CUDA
-  (``wp.Volume`` is GPU-only).
-- **Mesh-mesh contacts** — SDF-based mesh-mesh collision is silently skipped on CPU.
-- **Hydroelastic contacts** — depends on the SDF system.
-- **Tiled camera sensor** — GPU-accelerated raytraced rendering.
-- **Implicit MPM solver** — designed for GPU execution with CUDA graph support.
-- **Tile-based VBD solve** — uses GPU tile API; gracefully disabled on CPU.
+For tested configurations and CUDA version-specific notes, see
+:doc:`compatibility`.
 
 Installing Newton
 -----------------
@@ -171,26 +122,14 @@ After installing Newton with the ``examples`` extra, launch the default
 
     python -m newton.examples
 
-Run an example that runs RL policy inference. Choose the extra matching your
-NVIDIA driver's CUDA support (``torch-cu12`` for CUDA 12.x, ``torch-cu13`` for
-CUDA 13.x) and the corresponding pytorch wheel (e.g, ``128`` for CUDA 12.8); run ``nvidia-smi``
-to check the supported CUDA version (shown in the top-right corner of the output):
+Run an example that performs RL policy inference. The ``examples`` extra
+includes ``newton[onnx]``, which installs Warp-NN's ONNX runtime and the ONNX
+parser:
 
 .. code-block:: console
 
-    pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
+    pip install "newton[examples]"
     python -m newton.examples robot_anymal_c_walk
-
-.. note::
-
-    The ``torch-cu12`` extra installs PyTorch built against CUDA 12.8. If your
-    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), you
-    need to install PyTorch 2.6.0 manually instead:
-
-    .. code-block:: console
-
-        pip install "newton[examples]"
-        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
 
 See a list of all available examples (also browsable from the viewer's side panel):
 
@@ -201,9 +140,9 @@ See a list of all available examples (also browsable from the viewer's side pane
 Quick Start
 ^^^^^^^^^^^
 
-After installing Newton, you can build
-models, create solvers, and run simulations directly from Python. A typical
-workflow looks like this:
+After installing Newton with the base package, you can build models, create
+solvers, and run simulations directly from Python. This example uses only the
+required dependencies installed by ``pip install newton``:
 
 .. code-block:: python
 
@@ -212,12 +151,16 @@ workflow looks like this:
 
     # Build a model
     builder = newton.ModelBuilder()
-    builder.add_mjcf("robot.xml")        # or add_urdf() / add_usd()
+    body = builder.add_body(
+        xform=wp.transform((0.0, 1.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+    )
+    builder.add_shape_sphere(body, radius=0.25)
     builder.add_ground_plane()
     model = builder.finalize()
 
     # Create a solver and allocate state
-    solver = newton.solvers.SolverMuJoCo(model)
+    solver = newton.solvers.SolverXPBD(model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
@@ -226,15 +169,21 @@ workflow looks like this:
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     # Step the simulation
-    for step in range(1000):
+    for step in range(120):
         state_0.clear_forces()
         model.collide(state_0, contacts)
-        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0 / 4.0)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
         state_0, state_1 = state_1, state_0
 
-For robot-learning workflows with parallel environments (as used by
-`Isaac Lab <https://isaac-sim.github.io/IsaacLab/>`_), you can replicate a
-robot template across many worlds and step them all simultaneously on the GPU:
+The following workflow uses :class:`~newton.solvers.SolverMuJoCo`, so install
+the optional simulation dependencies first:
+
+.. code-block:: console
+
+    pip install "newton[sim]"
+
+Then build a robot template, replicate it across many worlds, and step them all
+simultaneously on the GPU:
 
 .. code-block:: python
 
@@ -251,8 +200,9 @@ robot template across many worlds and step them all simultaneously on the GPU:
     # The solver steps all 1024 worlds in parallel
     solver = newton.solvers.SolverMuJoCo(model)
 
-See the :doc:`/guide/overview` guide and :doc:`/integrations/isaac-lab`
-for more details.
+See the :doc:`MuJoCo solver guide </solvers/mujoco>` for solver-specific
+details, the :doc:`/guide/overview` for Newton's core workflow, and
+:doc:`/lab/isaac-lab` for Isaac Lab integration details.
 
 .. _extra-dependencies:
 
@@ -274,12 +224,14 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
      - Asset import and mesh processing dependencies
    * - ``remesh``
      - Remeshing dependencies (Open3D, pyfqmr) for :func:`newton.utils.remesh_mesh`
+   * - ``onnx``
+     - Warp-NN ONNX runtime dependencies for neural actuators and RL policy examples
    * - ``examples``
-     - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
+     - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12.8+) for running RL policy examples (includes ``examples``); see :ref:`note above <running-examples>` for CUDA 12.4–12.5
+     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``torch-cu13``
-     - PyTorch (CUDA 13) for running RL policy examples (includes ``examples``)
+     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
@@ -287,48 +239,13 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``docs``
      - Dependencies for building the documentation
 
-Some extras transitively include others. For example, ``examples`` pulls in both
-``sim`` and ``importers``, and ``dev`` pulls in ``examples``. You only need to
-install the most specific set for your use case.
-
-.. _versioning:
-
-Versioning
-----------
-
-Newton currently uses the following versioning scheme. This may evolve
-depending on the needs of the project and its users.
-
-Newton uses a **major.minor.micro** versioning scheme, similar to
-`Python itself <https://devguide.python.org/developer-workflow/development-cycle/#devcycle>`__:
-
-* New **major** versions are reserved for major reworks of Newton causing
-  disruptive incompatibility (or reaching the 1.0 milestone).
-* New **minor** versions are feature releases with a new set of features.
-  May contain deprecations, breaking changes, and removals.
-* New **micro** versions are bug-fix releases. In principle, there are no
-  new features. The first release of a new minor version always includes
-  the micro version (e.g., ``1.1.0``), though informal references may
-  shorten it (e.g., "Newton 1.1").
-
-Prerelease Versions
-^^^^^^^^^^^^^^^^^^^
-
-In addition to stable releases, Newton uses the following prerelease
-version formats:
-
-* **Development builds** (``major.minor.micro.dev0``): The version string
-  used in the source code on the main branch between stable releases
-  (e.g., ``1.1.0.dev0``).
-* **Release candidates** (``major.minor.microrcN``): Pre-release versions
-  for QA testing before a stable release, starting with ``rc1`` and
-  incrementing (e.g., ``1.1.0rc1``). Usually not published to PyPI.
-
-Prerelease versions should be considered unstable and are not subject
-to the same compatibility guarantees as stable releases.
+Some extras transitively include others. For example, ``examples`` pulls in
+``sim``, ``importers``, and ``onnx``, and ``dev`` pulls in ``examples``. You only
+need to install the most specific set for your use case.
 
 Next Steps
 ----------
 
 - Run ``python -m newton.examples --list`` to see all available examples and check out the :doc:`visualization` guide to learn how to interact with the example simulations.
+- See the :doc:`compatibility` guide for Newton's supported platforms, versioning scheme, and deprecation policy.
 - Check out the :doc:`development` guide to learn how to contribute to Newton, or how to use alternative installation methods.

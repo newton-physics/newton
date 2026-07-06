@@ -33,6 +33,7 @@ from ..geometry.collision_primitive import (
 )
 from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, ContactData, contact_passes_gap_check, make_contact_sort_key
 from ..geometry.contact_reduction_global import (
+    HASHTABLE_WARN_LOAD_PERCENT,
     GlobalContactReducer,
     create_export_reduced_contacts_kernel,
     mesh_triangle_contacts_to_reducer_kernel,
@@ -160,6 +161,8 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
         shape_source: wp.array[wp.uint64],
         shape_gap: wp.array[float],
         shape_flags: wp.array[wp.int32],
+        shape_sdf_index: wp.array[wp.int32],
+        shape_edge_range: wp.array[wp.vec2i],
         writer_data: Any,
         total_num_threads: int,
         # Output: pairs that need GJK/MPR processing
@@ -292,11 +295,24 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             # =====================================================================
             is_mesh_a = type_a == GeoType.MESH
             is_mesh_b = type_b == GeoType.MESH
+            is_box_a = type_a == GeoType.BOX
+            is_box_b = type_b == GeoType.BOX
             is_plane_a = type_a == GeoType.PLANE
             is_infinite_plane_a = is_plane_a and (scale_a[0] == 0.0 and scale_a[1] == 0.0)
+            has_sdf_edges_a = shape_sdf_index[shape_a] >= 0 and shape_edge_range[shape_a][1] > 0
+            has_sdf_edges_b = shape_sdf_index[shape_b] >= 0 and shape_edge_range[shape_b][1] > 0
 
-            # Mesh-mesh collision
-            if is_mesh_a and is_mesh_b:
+            # Existing mesh-mesh pairs keep their legacy SDF/BVH fallback
+            # behavior. New planar SDF cases require both shapes to have
+            # texture SDF data and edges; otherwise the old routing is cheaper.
+            # Keep box-box on its existing GJK/MPR path even when SDFs are
+            # present. The output buffer must exist for the SDF edge route.
+            if (is_mesh_a and is_mesh_b) or (
+                shape_pairs_mesh_mesh.shape[0] > 0
+                and has_sdf_edges_a
+                and has_sdf_edges_b
+                and not (is_box_a and is_box_b)
+            ):
                 idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                 if idx < shape_pairs_mesh_mesh.shape[0]:
                     shape_pairs_mesh_mesh[idx] = wp.vec2i(shape_a, shape_b)
@@ -786,6 +802,8 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_gap: wp.array[float],  # Per-shape contact gaps
     shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
     shape_collision_radius: wp.array[float],
+    shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
+    shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     shape_pairs_mesh: wp.array[wp.vec2i],
@@ -830,7 +848,9 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
                 shape_b,
                 hfd,
                 shape_transform,
-                shape_collision_radius,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                shape_data,
                 shape_gap,
                 triangle_pairs,
                 triangle_pairs_count,
@@ -864,12 +884,16 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         # Get non-mesh shape world transform
         X_ws = shape_transform[non_mesh_shape]
 
-        # Use per-shape contact gaps for consistent pairwise thresholding.
+        # Use the same margin+gap shell for triangle candidates that the
+        # narrow phase uses when accepting contacts.
         gap_non_mesh = shape_gap[non_mesh_shape]
         gap_mesh = shape_gap[mesh_shape]
         gap_sum = gap_non_mesh + gap_mesh
+        margin_non_mesh = shape_data[non_mesh_shape][3]
+        margin_mesh = shape_data[mesh_shape][3]
+        contact_threshold = gap_sum + margin_non_mesh + margin_mesh
 
-        # Call mesh_vs_convex_midphase with the shape_data and pair gap sum.
+        # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
         mesh_vs_convex_midphase(
             j,
             mesh_shape,
@@ -880,7 +904,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_types,
             shape_data,
             shape_source,
-            gap_sum,
+            contact_threshold,
             triangle_pairs,
             triangle_pairs_count,
         )
@@ -1346,6 +1370,10 @@ def verify_narrow_phase_buffers(
     max_sdf_sdf: int,
     contact_count: wp.array[int],
     max_contacts: int,
+    reduction_ht_active_slots: wp.array[int],
+    reduction_ht_capacity: int,
+    reduction_ht_insert_failures: wp.array[int],
+    reduction_ht_warn_load_percent: int,
 ):
     """Check for buffer overflows in the collision pipeline."""
     if broad_phase_count[0] > max_broad_phase:
@@ -1401,6 +1429,22 @@ def verify_narrow_phase_buffers(
             contact_count[0],
             max_contacts,
         )
+    if reduction_ht_capacity > 0:
+        reduction_ht_active_count = reduction_ht_active_slots[reduction_ht_capacity]
+        if reduction_ht_active_count * 100 >= reduction_ht_capacity * reduction_ht_warn_load_percent:
+            wp.printf(
+                "Warning: Contact reduction hashtable fill ratio exceeded %d%% (%d / %d). "
+                "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
+                reduction_ht_warn_load_percent,
+                reduction_ht_active_count,
+                reduction_ht_capacity,
+            )
+        if reduction_ht_insert_failures[0] > 0:
+            wp.printf(
+                "Warning: Contact reduction hashtable insert failures %d. "
+                "Increase contact_reduction_hashtable_size_factor or max_triangle_pairs.\n",
+                reduction_ht_insert_failures[0],
+            )
 
 
 class NarrowPhase:
@@ -1431,6 +1475,7 @@ class NarrowPhase:
         deterministic: bool = False,
         contact_max: int | None = None,
         verify_buffers: bool = True,
+        contact_reduction_hashtable_size_factor: float = 0.25,
     ) -> None:
         """
         Initialize NarrowPhase with pre-allocated buffers.
@@ -1469,13 +1514,19 @@ class NarrowPhase:
                 ``triangle_pairs_count``, ``shape_pairs_mesh_plane_count``,
                 ``shape_pairs_mesh_mesh_count``, ``shape_pairs_sdf_sdf_count``)
                 and the output ``contact_count`` against the capacity of its
-                backing array, printing ``wp.printf`` warnings on overflow.
+                backing array, and checks the global contact reducer hashtable
+                fill/failure counters when reduction is enabled, printing
+                ``wp.printf`` warnings on overflow or critical hashtable load.
                 Users who want a programmatic overflow hook can disable this and
                 read those counters themselves.  Overhead is one extra kernel
                 launch per collision pass (roughly a few µs of launch latency on
                 CUDA; the kernel body is a handful of scalar comparisons on one
                 thread).  Disable in hot loops or CUDA graph capture once buffer
                 sizes are known to be adequate.
+            contact_reduction_hashtable_size_factor: Multiplier applied to
+                ``max_triangle_pairs`` when allocating the global contact
+                reduction hashtable. Increase this if hashtable fill/failure
+                warnings appear. Defaults to ``0.25`` for memory compatibility.
         """
         self.max_candidate_pairs = max_candidate_pairs
         self.max_triangle_pairs = max_triangle_pairs
@@ -1485,7 +1536,7 @@ class NarrowPhase:
         self.has_heightfields = has_heightfields
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
-
+        device_obj = wp.get_device(device)
         # Contact reduction requires either meshes or heightfields (the
         # mesh/heightfield-triangle path feeds the global reducer, so
         # heightfield-only scenes still benefit from reduction).
@@ -1512,7 +1563,11 @@ class NarrowPhase:
         else:
             writer_func = contact_writer_warp_func
 
-        self.tile_size_mesh_convex = 128
+        # CPU kernels currently observe ``wp.block_dim() == 1`` regardless
+        # of the plain ``wp.launch(..., block_dim=N)`` parameter (Warp
+        # GH-1413). Keep the mesh-convex midphase launch grid, tile shape,
+        # and kernel-side ``wp.block_dim()`` in sync on CPU.
+        self.tile_size_mesh_convex = 1 if device_obj.is_cpu else 128
         # Must match ``MESH_SDF_BLOCK_DIM`` in sdf_contact.py: the mesh-SDF
         # kernels assume ``wp.block_dim()`` equals that constant so the
         # tile-stack overflow margin (``STACK_CAPACITY = 2 *
@@ -1526,7 +1581,12 @@ class NarrowPhase:
         # Generic block dim for non-tile-stack kernels (primitive /
         # GJK-MPR / export). Not used for the mesh-SDF tile launches,
         # which use ``self.tile_size_mesh_mesh`` above.
-        self.block_dim = 128
+        #
+        # Plain ``wp.launch`` does not auto-clamp ``block_dim`` on CPU like
+        # ``wp.launch_tiled`` does. Match the kernel-observed value so
+        # strided-loop and tile-index calculations cannot run past the CPU
+        # launch geometry.
+        self.block_dim = 1 if device_obj.is_cpu else 128
 
         # Create the appropriate kernel variants
         # Primitive kernel handles lightweight primitives and routes remaining pairs
@@ -1587,7 +1647,10 @@ class NarrowPhase:
             self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
             # Global contact reducer for all mesh contact types
             self.global_contact_reducer = GlobalContactReducer(
-                max_triangle_pairs, device=device, deterministic=deterministic
+                max_triangle_pairs,
+                device=device,
+                deterministic=deterministic,
+                hashtable_size_factor=contact_reduction_hashtable_size_factor,
             )
         else:
             self.export_reduced_contacts_kernel = None
@@ -1666,7 +1729,6 @@ class NarrowPhase:
         # 256 blocks provides good occupancy on most GPUs (2-4 blocks per SM).
 
         # Query GPU properties to compute appropriate thread limits
-        device_obj = wp.get_device(device)
         if device_obj.is_cuda:
             # Use 4 blocks per SM as a reasonable upper bound for occupancy
             # This balances parallelism with resource utilization
@@ -1766,6 +1828,8 @@ class NarrowPhase:
         """
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
+        if shape_edge_range is None:
+            shape_edge_range = self._empty_edge_range
 
         # Clear all counters with a single kernel launch (consolidated counter array)
         self._counter_array.zero_()
@@ -1785,6 +1849,8 @@ class NarrowPhase:
                 shape_source,
                 shape_gap,
                 shape_flags,
+                shape_sdf_index,
+                shape_edge_range,
                 writer_data,
                 self.total_num_threads,
             ],
@@ -1869,6 +1935,8 @@ class NarrowPhase:
                     shape_gap,
                     shape_data,
                     shape_collision_radius,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
                     shape_heightfield_index,
                     heightfield_data,
                     self.shape_pairs_mesh,
@@ -1998,9 +2066,6 @@ class NarrowPhase:
                 texture_sdf_data = wp.zeros(0, dtype=TextureSDFData, device=device)
             if mesh_edge_indices is None:
                 mesh_edge_indices = self._empty_edge_indices
-            if shape_edge_range is None:
-                shape_edge_range = self._empty_edge_range
-
             if self.mesh_mesh_contacts_kernel is not None:
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration
@@ -2119,6 +2184,15 @@ class NarrowPhase:
 
         # Verify no collision pipeline buffers overflowed
         if self.verify_buffers:
+            if self.global_contact_reducer is not None:
+                reduction_ht_active_slots = self.global_contact_reducer.hashtable.active_slots
+                reduction_ht_capacity = self.global_contact_reducer.hashtable.capacity
+                reduction_ht_insert_failures = self.global_contact_reducer.ht_insert_failures
+            else:
+                reduction_ht_active_slots = self.gjk_candidate_pairs_count
+                reduction_ht_capacity = 0
+                reduction_ht_insert_failures = self.gjk_candidate_pairs_count
+
             wp.launch(
                 kernel=verify_narrow_phase_buffers,
                 dim=[1],
@@ -2139,6 +2213,10 @@ class NarrowPhase:
                     self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
                     writer_data.contact_count,
                     writer_data.contact_max,
+                    reduction_ht_active_slots,
+                    reduction_ht_capacity,
+                    reduction_ht_insert_failures,
+                    HASHTABLE_WARN_LOAD_PERCENT,
                 ],
                 device=device,
                 record_tape=False,

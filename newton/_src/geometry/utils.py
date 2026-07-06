@@ -75,20 +75,32 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
     Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
     """
     if geo_type == GeoType.SPHERE:
-        return scale[0]
+        return abs(scale[0])
     elif geo_type == GeoType.BOX:
-        return np.linalg.norm(scale)
+        return float(np.linalg.norm(np.abs(np.asarray(scale))))
     elif geo_type == GeoType.CAPSULE or geo_type == GeoType.CYLINDER or geo_type == GeoType.CONE:
-        return scale[0] + scale[1]
+        return abs(scale[0]) + abs(scale[1])
     elif geo_type == GeoType.ELLIPSOID:
         # Bounding sphere radius is the largest semi-axis
-        return max(scale[0], scale[1], scale[2])
+        return max(abs(scale[0]), abs(scale[1]), abs(scale[2]))
     elif geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
-        vmax = np.max(np.abs(src.vertices), axis=0) * np.max(scale)
-        return np.linalg.norm(vmax)
+        # Bounding sphere of the local AABB.  We deliberately do NOT use
+        # ``max(|vertex|)`` here: that assumes the shape is centered at
+        # the local origin, which is not guaranteed for imported convex
+        # hulls (e.g. assets that place collision hulls far from the
+        # body frame).  Using the AABB diagonal gives a tighter and
+        # always-correct enclosing radius regardless of where the
+        # authoring origin sits relative to the geometry.
+        verts = np.asarray(src.vertices, dtype=np.float64) * np.asarray(scale, dtype=np.float64)
+        aabb_lo = verts.min(axis=0)
+        aabb_hi = verts.max(axis=0)
+        return float(0.5 * np.linalg.norm(aabb_hi - aabb_lo))
     elif geo_type == GeoType.PLANE:
-        if scale[0] > 0.0 and scale[1] > 0.0:
-            return np.linalg.norm(scale) * 0.5
+        # Use magnitudes for the finite-vs-infinite check so that legacy callers that
+        # pass negative components still classify correctly. The infinite-plane sentinel
+        # is exact zero, which is preserved by abs().
+        if abs(scale[0]) > 0.0 and abs(scale[1]) > 0.0:
+            return float(np.linalg.norm(np.abs(np.asarray(scale)))) * 0.5
         else:
             return 1.0e6
     elif geo_type == GeoType.HFIELD:
@@ -96,12 +108,12 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
         # X/Y are symmetric ([-hx, +hx], [-hy, +hy]), but Z spans [min_z, max_z]
         # which may not be symmetric around 0.
         if src is not None:
-            half_x = src.hx * scale[0]
-            half_y = src.hy * scale[1]
-            max_abs_z = max(abs(src.min_z), abs(src.max_z)) * scale[2]
+            half_x = src.hx * abs(scale[0])
+            half_y = src.hy * abs(scale[1])
+            max_abs_z = max(abs(src.min_z), abs(src.max_z)) * abs(scale[2])
             return np.sqrt(half_x**2 + half_y**2 + max_abs_z**2)
         else:
-            return np.linalg.norm(scale)
+            return float(np.linalg.norm(np.abs(np.asarray(scale))))
     elif geo_type == GeoType.GAUSSIAN:
         if src is not None:
             lower, upper = src.compute_aabb()
@@ -356,8 +368,8 @@ def load_mesh(filename: str, method: str | None = None):
     Loads a 3D triangular surface mesh from a file.
 
     Args:
-        filename (str): The path to the 3D model file (obj, and other formats supported by the different methods) to load.
-        method (str): The method to use for loading the mesh (default None). Can be either `"trimesh"`, `"meshio"`, `"pcu"`, or `"openmesh"`. If None, every method is tried and the first successful mesh import where the number of vertices is greater than 0 is returned.
+        filename: The path to the 3D model file (obj, and other formats supported by the different methods) to load.
+        method: The method to use for loading the mesh (default None). Can be either `"trimesh"`, `"meshio"`, `"pcu"`, or `"openmesh"`. If None, every method is tried and the first successful mesh import where the number of vertices is greater than 0 is returned.
 
     Returns:
         Tuple of (mesh_points, mesh_indices), where mesh_points is a Nx3 numpy array of vertex positions (float32),

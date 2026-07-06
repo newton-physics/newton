@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast, overload
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -179,90 +180,750 @@ def smooth_vertex_normals_by_position(
 default_num_segments = 32
 
 
-class MeshAdjacency:
-    """Builds and stores edge adjacency information for a triangle mesh.
+@wp.struct
+class MeshAdjacencyData:
+    """Kernel-facing soft-mesh adjacency -- pure data, no Python state or methods.
 
-    This class processes triangle indices to create a mapping from edges to
-    their adjacent triangles. Each edge stores references to both adjacent
-    triangles (if they exist) along with the opposite vertices.
-
-    Attributes:
-        edges: Dictionary mapping edge keys (min_vertex, max_vertex) to MeshAdjacency.Edge objects.
-        indices: The original triangle indices used to build the adjacency.
+    Uploaded from :class:`MeshAdjacency` via :meth:`MeshAdjacency.to`: the vertex-adjacency
+    CSR arrays (read by the VBD solver's kernels) plus the ``edge_tri_indices`` /
+    ``tri_edge_indices`` topology maps, so kernels can read mesh topology directly on device.
     """
 
-    @dataclass
+    edge_tri_indices: wp.array2d[wp.int32]
+    tri_edge_indices: wp.array2d[wp.int32]
+    v_adj_tris: wp.array[wp.int32]
+    v_adj_tris_offsets: wp.array[wp.int32]
+    v_adj_edges: wp.array[wp.int32]
+    v_adj_edges_offsets: wp.array[wp.int32]
+    v_adj_springs: wp.array[wp.int32]
+    v_adj_springs_offsets: wp.array[wp.int32]
+    v_adj_tets: wp.array[wp.int32]
+    v_adj_tets_offsets: wp.array[wp.int32]
+
+
+@wp.func
+def get_vertex_num_adjacent_edges(adjacency: MeshAdjacencyData, vertex: wp.int32):
+    return (adjacency.v_adj_edges_offsets[vertex + 1] - adjacency.v_adj_edges_offsets[vertex]) >> 1
+
+
+@wp.func
+def get_vertex_adjacent_edge_id_order(adjacency: MeshAdjacencyData, vertex: wp.int32, edge: wp.int32):
+    offset = adjacency.v_adj_edges_offsets[vertex]
+    return adjacency.v_adj_edges[offset + edge * 2], adjacency.v_adj_edges[offset + edge * 2 + 1]
+
+
+@wp.func
+def get_vertex_num_adjacent_faces(adjacency: MeshAdjacencyData, vertex: wp.int32):
+    return (adjacency.v_adj_tris_offsets[vertex + 1] - adjacency.v_adj_tris_offsets[vertex]) >> 1
+
+
+@wp.func
+def get_vertex_adjacent_face_id_order(adjacency: MeshAdjacencyData, vertex: wp.int32, face: wp.int32):
+    offset = adjacency.v_adj_tris_offsets[vertex]
+    return adjacency.v_adj_tris[offset + face * 2], adjacency.v_adj_tris[offset + face * 2 + 1]
+
+
+@wp.func
+def get_vertex_num_adjacent_springs(adjacency: MeshAdjacencyData, vertex: wp.int32):
+    return adjacency.v_adj_springs_offsets[vertex + 1] - adjacency.v_adj_springs_offsets[vertex]
+
+
+@wp.func
+def get_vertex_adjacent_spring_id(adjacency: MeshAdjacencyData, vertex: wp.int32, spring: wp.int32):
+    offset = adjacency.v_adj_springs_offsets[vertex]
+    return adjacency.v_adj_springs[offset + spring]
+
+
+@wp.func
+def get_vertex_num_adjacent_tets(adjacency: MeshAdjacencyData, vertex: wp.int32):
+    return (adjacency.v_adj_tets_offsets[vertex + 1] - adjacency.v_adj_tets_offsets[vertex]) >> 1
+
+
+@wp.func
+def get_vertex_adjacent_tet_id_order(adjacency: MeshAdjacencyData, vertex: wp.int32, tet: wp.int32):
+    offset = adjacency.v_adj_tets_offsets[vertex]
+    return adjacency.v_adj_tets[offset + tet * 2], adjacency.v_adj_tets[offset + tet * 2 + 1]
+
+
+class MeshAdjacency:
+    """Connectivity tables of a soft (triangle) mesh, consumed by collision and the solvers.
+
+    Three kinds of topology are stored, all derived from a triangle mesh and its bending
+    edges. The edge/triangle tables are dense arrays indexed by element and are computed
+    eagerly in the constructor (independent of the vertex count). The vertex-adjacency CSR
+    tables are built on demand by :meth:`init_vertex_adjacency` (which needs only the particle
+    count -- the element topology is stored on the object). Every table is a host NumPy array;
+    :meth:`to` copies the vertex-adjacency CSR into a
+    :class:`MeshAdjacencyData` struct for use inside Warp kernels.
+
+    Obtain an instance by construction — ``MeshAdjacency(tri_indices)`` — or from a finalized
+    model via :attr:`newton.Model.soft_mesh_adjacency`.
+
+    Attributes:
+        edge_indices: Undirected edges as ``[o0, o1, v0, v1]`` rows, ``int32`` shape
+            ``[edge_count, 4]``: the edge connects ``v0``-``v1``, and ``o0``/``o1`` are the
+            opposite vertices of its two adjacent triangles (``o1 == -1`` on a boundary edge).
+        edge_tri_indices: The two triangles sharing each edge as ``[f0, f1]`` rows, ``int32``
+            shape ``[edge_count, 2]`` (``f1 == -1`` on a boundary edge); ``f0`` is the
+            triangle whose opposite vertex is ``o0``.
+        tri_edge_indices: Each triangle's three edges, ``int32`` shape ``[tri_count, 3]``;
+            column ``k`` is the edge between the triangle's local vertices ``k`` and
+            ``(k + 1) % 3``, or ``-1`` if that edge was never registered (e.g. a bare triangle).
+        v_adj_edges, v_adj_tris, v_adj_springs, v_adj_tets: Per-vertex CSR adjacency to
+            bending edges / triangles / springs / tetrahedra, each paired with its matching
+            ``*_offsets``. ``*_offsets`` is ``int32`` of length ``particle_count + 1``, and
+            vertex ``i``'s records occupy ``v_adj_X[offsets[i] : offsets[i + 1]]``; a record
+            is an ``(element_id, local_slot)`` pair (a single ``element_id`` for springs). All
+            eight arrays are ``None`` until :meth:`init_vertex_adjacency` runs.
+        vertex_adjacency_initialized: Whether the vertex-adjacency CSR has been built;
+            :meth:`init_vertex_adjacency` returns early when this is already ``True``.
+        indices, spring_indices, tet_indices: The triangle / spring / tetrahedron topology this
+            adjacency is built over, kept from the constructor for :meth:`init_vertex_adjacency`.
+
+    .. note::
+        The :attr:`edges` dict is a deprecated compatibility shim (it emits a
+        ``DeprecationWarning``); use the ``edge_indices`` / ``edge_tri_indices`` arrays instead.
+    """
+
+    @dataclass(slots=True)
     class Edge:
-        """Represents an edge in a triangle mesh with adjacency information.
-
-        Stores the two vertices of the edge, the opposite vertices from each
-        adjacent triangle, and the indices of those triangles. The winding order
-        is consistent: the first triangle is reconstructed as {v0, v1, o0}, and
-        the second triangle as {v1, v0, o1}.
-
-        For boundary edges (edges with only one adjacent triangle), o1 and f1
-        are set to -1.
-        """
+        """Legacy per-edge record: edge ``(v0, v1)`` with opposite vertices
+        ``o0``/``o1`` and adjacent triangles ``f0``/``f1`` (``-1`` if boundary)."""
 
         v0: int
-        """Index of the first vertex of the edge."""
         v1: int
-        """Index of the second vertex of the edge."""
         o0: int
-        """Index of the vertex opposite to the edge in the first adjacent triangle."""
         o1: int
-        """Index of the vertex opposite to the edge in the second adjacent triangle, or -1 if boundary."""
         f0: int
-        """Index of the first adjacent triangle."""
         f1: int
-        """Index of the second adjacent triangle, or -1 if boundary edge."""
 
-    def __init__(self, indices: Sequence[Sequence[int]] | np.ndarray):
-        """Build edge adjacency from triangle indices.
-
-        Args:
-            indices: Array-like of triangle indices, where each element is a
-                sequence of 3 vertex indices defining a triangle.
-        """
-        self.edges: dict[tuple[int, int], MeshAdjacency.Edge] = {}
-        self.indices = indices
-
-        for index, tri in enumerate(indices):
-            self.add_edge(tri[0], tri[1], tri[2], index)
-            self.add_edge(tri[1], tri[2], tri[0], index)
-            self.add_edge(tri[2], tri[0], tri[1], index)
-
-    def add_edge(self, i0: int, i1: int, o: int, f: int):
-        """Add or update an edge in the adjacency structure.
-
-        If the edge already exists, updates it with the second adjacent triangle.
-        If the edge would have more than two adjacent triangles, prints a warning
-        (non-manifold edge).
+    def __init__(
+        self,
+        tri_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
+        edge_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
+        spring_indices: Sequence[int] | np.ndarray | None = None,
+        tet_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
+        indices: Sequence[Sequence[int]] | np.ndarray | None = None,
+    ):
+        """Build edge adjacency from triangles and store the element topology as members.
 
         Args:
-            i0: Index of the first vertex of the edge.
-            i1: Index of the second vertex of the edge.
-            o: Index of the opposite vertex in the triangle.
-            f: Index of the triangle containing this edge.
+            tri_indices: Triangle indices, shape ``[tri_count, 3]``, used to derive the
+                edge/triangle maps. ``None`` leaves the edge tables empty.
+            edge_indices: Pre-numbered bending edges, shape ``[edge_count, 4]`` as
+                ``[o0, o1, v0, v1]``. When given, this exact edge numbering is kept
+                (so it stays aligned with externally stored bending materials) and
+                only the edge/triangle maps are derived against ``tri_indices``.
+                When ``None``, ``edge_indices`` is computed from ``tri_indices``.
+            spring_indices: Spring endpoint pairs, flat shape ``[2 * spring_count]``;
+                stored for :meth:`init_vertex_adjacency`.
+            tet_indices: Tetrahedron vertex ids, shape ``[tet_count, 4]``; stored for
+                :meth:`init_vertex_adjacency`.
+            indices: Deprecated alias for ``tri_indices``.
         """
-        key = (min(i0, i1), max(i0, i1))
-        edge = None
+        # `indices` is a deprecated alias for `tri_indices`, kept for backward compatibility.
+        if indices is not None:
+            if tri_indices is not None and not np.array_equal(_numpy_int_array(indices), _numpy_int_array(tri_indices)):
+                raise ValueError("Pass `tri_indices` or the deprecated `indices`, not both with different values.")
+            warnings.warn(
+                "MeshAdjacency `indices` argument is deprecated; use `tri_indices`.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            tri_indices = indices
 
-        if key in self.edges:
-            edge = self.edges[key]
+        # Element topology kept as members (owned int32 copies, detached from any mutable input
+        # list so a finalized model's adjacency can't drift if the builder is modified after
+        # finalize()); init_vertex_adjacency builds the CSR from these.
+        self.indices = None if tri_indices is None else np.array(tri_indices, dtype=np.int32)
+        self.spring_indices = None if spring_indices is None else np.array(spring_indices, dtype=np.int32)
+        self.tet_indices = None if tet_indices is None else np.array(tet_indices, dtype=np.int32)
 
-            if edge.f1 != -1:
-                warnings.warn("Detected non-manifold edge", stacklevel=2)
-                return
-            else:
-                # update other side of the edge
-                edge.o1 = o
-                edge.f1 = f
+        if edge_indices is not None:
+            # Keep the caller's edge numbering; derive only the maps from the triangles.
+            self.edge_indices = _numpy_int_rows(edge_indices, 4)
+            tris = _numpy_int_rows(tri_indices, 3) if tri_indices is not None else np.empty((0, 3), dtype=np.int32)
+            self.edge_tri_indices, self.tri_edge_indices = self._build_maps(self.edge_indices, tris)
+        elif tri_indices is not None:
+            self.edge_indices, self.edge_tri_indices, self.tri_edge_indices = self._compute_edge_adjacency(tri_indices)
         else:
-            # create new edge with opposite yet to be filled
-            edge = MeshAdjacency.Edge(i0, i1, o, -1, f, -1)
+            self.edge_indices = np.empty((0, 4), dtype=np.int32)
+            self.edge_tri_indices = np.empty((0, 2), dtype=np.int32)
+            self.tri_edge_indices = np.empty((0, 3), dtype=np.int32)
 
-        self.edges[key] = edge
+        # Vertex-to-element CSR tables; built explicitly by init_vertex_adjacency.
+        self.v_adj_tris = None
+        self.v_adj_tris_offsets = None
+        self.v_adj_edges = None
+        self.v_adj_edges_offsets = None
+        self.v_adj_springs = None
+        self.v_adj_springs_offsets = None
+        self.v_adj_tets = None
+        self.v_adj_tets_offsets = None
+        # Set once init_vertex_adjacency has built the CSR tables; guards recomputation.
+        self.vertex_adjacency_initialized = False
+
+    @property
+    def edges(self) -> dict[tuple[int, int], "MeshAdjacency.Edge"]:
+        """Deprecated legacy edge dict, rebuilt on access from ``edge_indices``.
+
+        Maps ``(min(v0, v1), max(v0, v1))`` to an :class:`Edge`. Recomputed on
+        every access and never cached; prefer the ``edge_indices`` /
+        ``edge_tri_indices`` arrays directly.
+        """
+        warnings.warn(
+            "MeshAdjacency.edges is deprecated; use the edge_indices/edge_tri_indices arrays.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        edge_indices = _numpy_int_rows(self.edge_indices, 4)
+        edge_tri_indices = _numpy_int_rows(self.edge_tri_indices, 2)
+        return {
+            (min(int(v0), int(v1)), max(int(v0), int(v1))): MeshAdjacency.Edge(
+                int(v0), int(v1), int(o0), int(o1), int(f0), int(f1)
+            )
+            for (o0, o1, v0, v1), (f0, f1) in zip(edge_indices, edge_tri_indices, strict=True)
+        }
+
+    def add_edge(self, i0: int, i1: int, o: int, f: int) -> None:
+        """Add or update one edge (deprecated; build via ``edge_indices`` instead).
+
+        Legacy incremental API: edge ``(i0, i1)`` with opposite vertex ``o`` in triangle ``f``.
+        The first call for an edge fills ``o0``/``f0``, the second fills ``o1``/``f1``; a third
+        warns (non-manifold). Updates :attr:`edge_indices` / :attr:`edge_tri_indices` (so
+        :attr:`edges` reflects it) and invalidates the vertex-adjacency CSR. It does **not**
+        update :attr:`tri_edge_indices`, so an edge added this way will not appear in the
+        per-triangle edge map; users can reconstruct via the constructor if they need that. O(edge_count)
+        per call -- a compatibility shim, not a hot path.
+
+        Args:
+            i0: First edge endpoint.
+            i1: Second edge endpoint.
+            o: Opposite vertex in triangle ``f``.
+            f: Triangle containing this edge.
+        """
+        warnings.warn(
+            "MeshAdjacency.add_edge is deprecated; construct with edge_indices ([o0, o1, v0, v1] rows) instead. "
+            "The added edge is not reflected in tri_edge_indices.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        edge_rows = _numpy_int_rows(self.edge_indices, 4)
+        tri_rows = _numpy_int_rows(self.edge_tri_indices, 2)
+        lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
+        match = -1
+        for e in range(edge_rows.shape[0]):
+            if (
+                min(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == lo
+                and max(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == hi
+            ):
+                match = e
+                break
+        if match == -1:
+            self.edge_indices = np.concatenate((edge_rows, np.array([[o, -1, i0, i1]], dtype=np.int32)))
+            self.edge_tri_indices = np.concatenate((tri_rows, np.array([[f, -1]], dtype=np.int32)))
+        elif int(tri_rows[match, 1]) == -1:
+            edge_rows[match, 1] = o
+            tri_rows[match, 1] = f
+            self.edge_indices, self.edge_tri_indices = edge_rows, tri_rows
+        else:
+            warnings.warn("Detected non-manifold edge", stacklevel=2)
+            return
+        self.vertex_adjacency_initialized = False
+
+    def to(self, device) -> MeshAdjacencyData:
+        """Upload the device-facing adjacency arrays onto ``device`` as a pure data struct.
+
+        Always uploads the edge/triangle topology maps. The vertex-adjacency CSR is uploaded
+        only when :meth:`init_vertex_adjacency` has populated it; otherwise the eight
+        ``v_adj_*`` fields are left ``None`` and a warning is emitted (the struct is still
+        usable for callers that only need the topology maps). This is the only place the host
+        NumPy tables become Warp arrays.
+        """
+        device = wp.get_device(device)
+        data = MeshAdjacencyData()
+        data.edge_tri_indices = wp.array(self.edge_tri_indices, dtype=wp.int32, device=device)
+        data.tri_edge_indices = wp.array(self.tri_edge_indices, dtype=wp.int32, device=device)
+        if not self.vertex_adjacency_initialized:
+            warnings.warn(
+                "MeshAdjacency.to(): vertex adjacency not initialized; v_adj_* are None -- call "
+                "init_vertex_adjacency(particle_count) first if your kernels need them.",
+                stacklevel=2,
+            )
+            return data
+        data.v_adj_tris = wp.array(self.v_adj_tris, dtype=wp.int32, device=device)
+        data.v_adj_tris_offsets = wp.array(self.v_adj_tris_offsets, dtype=wp.int32, device=device)
+        data.v_adj_edges = wp.array(self.v_adj_edges, dtype=wp.int32, device=device)
+        data.v_adj_edges_offsets = wp.array(self.v_adj_edges_offsets, dtype=wp.int32, device=device)
+        data.v_adj_springs = wp.array(self.v_adj_springs, dtype=wp.int32, device=device)
+        data.v_adj_springs_offsets = wp.array(self.v_adj_springs_offsets, dtype=wp.int32, device=device)
+        data.v_adj_tets = wp.array(self.v_adj_tets, dtype=wp.int32, device=device)
+        data.v_adj_tets_offsets = wp.array(self.v_adj_tets_offsets, dtype=wp.int32, device=device)
+        return data
+
+    @staticmethod
+    def _compute_edge_adjacency(
+        indices: Sequence[Sequence[int]] | np.ndarray,
+        *,
+        tri_start: int = 0,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute the edge / edge-triangle / triangle-edge tables from triangles.
+
+        Returns ``(edge_indices, edge_tri_indices, tri_edge_indices)``.
+        ``edge_indices`` rows are ``[o0, o1, v0, v1]`` (opposite vertices, edge
+        endpoints); ``edge_tri_indices`` rows are ``[tri0, tri1]`` (``-1`` for a
+        boundary side, triangle ids offset by ``tri_start``); ``tri_edge_indices``
+        maps each triangle's three local edge slots to edge rows.
+        """
+        tris = np.asarray(indices, dtype=np.int32).reshape(-1, 3)
+        tri_count = tris.shape[0]
+        if tri_count == 0:
+            return (
+                np.empty((0, 4), dtype=np.int32),
+                np.empty((0, 2), dtype=np.int32),
+                np.empty((0, 3), dtype=np.int32),
+            )
+
+        # Local edge slots are: (v0, v1 | opposite v2), (v1, v2 | opposite v0),
+        # (v2, v0 | opposite v1).
+        entry_v0 = np.stack((tris[:, 0], tris[:, 1], tris[:, 2]), axis=1).reshape(-1)
+        entry_v1 = np.stack((tris[:, 1], tris[:, 2], tris[:, 0]), axis=1).reshape(-1)
+        entry_opposite = np.stack((tris[:, 2], tris[:, 0], tris[:, 1]), axis=1).reshape(-1)
+        entry_tri = np.repeat(np.arange(tri_count, dtype=np.int32), 3)
+        entry_slot = np.tile(np.arange(3, dtype=np.int32), tri_count)
+
+        keys = np.stack((np.minimum(entry_v0, entry_v1), np.maximum(entry_v0, entry_v1)), axis=1)
+        _, first_entries, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+
+        # np.unique returns keys sorted lexicographically. Remap to first-occurrence
+        # order so edge rows follow triangle traversal order.
+        first_order = np.argsort(first_entries, kind="stable")
+        edge_remap = np.empty(len(first_order), dtype=np.int32)
+        edge_remap[first_order] = np.arange(len(first_order), dtype=np.int32)
+        entry_edge = edge_remap[inverse]
+
+        edge_count = len(first_order)
+        edge_indices = np.full((edge_count, 4), -1, dtype=np.int32)
+        edge_tri_indices = np.full((edge_count, 2), -1, dtype=np.int32)
+        tri_edge_indices = np.full((tri_count, 3), -1, dtype=np.int32)
+
+        fill_counts = np.zeros(edge_count, dtype=np.int32)
+        for entry_id, edge_ref in enumerate(entry_edge):
+            edge_id = int(edge_ref)
+            tri_edge_indices[entry_tri[entry_id], entry_slot[entry_id]] = edge_id
+
+            side = fill_counts[edge_id]
+            if side == 0:
+                edge_indices[edge_id, 0] = entry_opposite[entry_id]
+                edge_indices[edge_id, 2] = entry_v0[entry_id]
+                edge_indices[edge_id, 3] = entry_v1[entry_id]
+                edge_tri_indices[edge_id, 0] = tri_start + entry_tri[entry_id]
+            elif side == 1:
+                edge_indices[edge_id, 1] = entry_opposite[entry_id]
+                edge_tri_indices[edge_id, 1] = tri_start + entry_tri[entry_id]
+            else:
+                warnings.warn("Detected non-manifold edge", stacklevel=2)
+
+            fill_counts[edge_id] += 1
+
+        return edge_indices, edge_tri_indices, tri_edge_indices
+
+    @staticmethod
+    def _build_maps(edge_indices: np.ndarray, tri_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Derive the edge-triangle and triangle-edge maps from pre-numbered edges.
+
+        Returns ``(edge_tri_indices, tri_edge_indices)`` sized to ``edge_indices`` /
+        ``tri_indices``. A triangle is linked to an edge only when the triangle's
+        vertex opposite that edge equals one of the edge's stored opposite vertices
+        (``o0``/``o1``); placeholder edges (``o0 == o1 == -1``) and bare triangles
+        therefore stay unlinked, as if the edge were never registered for them.
+        """
+        edge_count = edge_indices.shape[0]
+        tri_count = tri_indices.shape[0]
+        edge_tri_indices = np.full((edge_count, 2), -1, dtype=np.int32)
+        tri_edge_indices = np.full((tri_count, 3), -1, dtype=np.int32)
+        if edge_count == 0 or tri_count == 0:
+            return edge_tri_indices, tri_edge_indices
+
+        edges = edge_indices.astype(np.int64, copy=False)
+        tris = tri_indices.astype(np.int64, copy=False)
+
+        # Encode each undirected vertex pair as one key (min * stride + max) so edges and
+        # triangle sides can be matched with a single vectorized searchsorted.
+        stride = max(int(edges[:, 2:4].max()), int(tris.max())) + 1
+        edge_key = np.minimum(edges[:, 2], edges[:, 3]) * stride + np.maximum(edges[:, 2], edges[:, 3])
+
+        # Triangle local slots: slot k spans verts (k, k+1); the opposite vertex is (k+2).
+        nxt = np.roll(tris, -1, axis=1)
+        slot_key = np.minimum(tris, nxt) * stride + np.maximum(tris, nxt)  # (tri_count, 3)
+        slot_opp = np.roll(tris, -2, axis=1)  # (tri_count, 3)
+
+        # Map each slot key to its edge id; -1 where the pair is not a registered edge.
+        order = np.argsort(edge_key, kind="stable")
+        pos = np.clip(np.searchsorted(edge_key[order], slot_key), 0, edge_count - 1)
+        cand = order[pos]  # (tri_count, 3)
+        found = edge_key[cand] == slot_key
+
+        # Link a slot to its candidate only if the opposite vertex matches a stored
+        # opposite (o0 -> side 0, o1 -> side 1), mirroring _compute_edge_adjacency.
+        side0 = found & (slot_opp == edges[cand, 0])
+        side1 = found & ~side0 & (slot_opp == edges[cand, 1])
+
+        tri_edge_indices = np.where(side0 | side1, cand, -1).astype(np.int32)
+        tri_ids = np.broadcast_to(np.arange(tri_count, dtype=np.int32)[:, None], (tri_count, 3))
+        edge_tri_indices[cand[side0], 0] = tri_ids[side0]
+        edge_tri_indices[cand[side1], 1] = tri_ids[side1]
+        return edge_tri_indices, tri_edge_indices
+
+    @staticmethod
+    def compute_vertex_adjacency(
+        particle_count: int,
+        *,
+        edge_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        tri_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        spring_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+        tet_indices: "wp.array[wp.int32] | np.ndarray | None" = None,
+    ) -> "MeshAdjacency":
+        """Build a temporary adjacency over the given elements and its vertex-to-element CSR."""
+        return MeshAdjacency(
+            tri_indices=tri_indices,
+            edge_indices=edge_indices,
+            spring_indices=spring_indices,
+            tet_indices=tet_indices,
+        ).init_vertex_adjacency(particle_count)
+
+    def init_vertex_adjacency(self, particle_count: int) -> "MeshAdjacency":
+        """Compute and store the vertex-to-element CSR tables from the stored topology.
+
+        Builds per-vertex adjacency to the bending edges, triangles, springs and tetrahedra held
+        on this object (:attr:`edge_indices`, :attr:`indices`, :attr:`spring_indices`,
+        :attr:`tet_indices`). Idempotent: returns early once built. The count/fill Warp kernels
+        run on the host; :meth:`to` later uploads the result to a device.
+
+        Args:
+            particle_count: Number of particles; sizes the per-vertex CSR offsets.
+        """
+        if self.vertex_adjacency_initialized:
+            return self
+
+        if _has_entries(self.edge_indices):
+            self.v_adj_edges, self.v_adj_edges_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array2d(self.edge_indices, 4),
+                particle_count,
+                count_kernel=_count_num_adjacent_edges,
+                fill_kernel=_fill_adjacent_edges,
+                values_per_entry=2,
+            )
+        else:
+            self.v_adj_edges, self.v_adj_edges_offsets = _empty_vertex_adjacency()
+
+        if _has_entries(self.indices):
+            self.v_adj_tris, self.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array2d(self.indices, 3),
+                particle_count,
+                count_kernel=_count_num_adjacent_tris,
+                fill_kernel=_fill_adjacent_tris,
+                values_per_entry=2,
+            )
+        else:
+            self.v_adj_tris, self.v_adj_tris_offsets = _empty_vertex_adjacency()
+
+        if _has_entries(self.tet_indices):
+            self.v_adj_tets, self.v_adj_tets_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array2d(self.tet_indices, 4),
+                particle_count,
+                count_kernel=_count_num_adjacent_tets,
+                fill_kernel=_fill_adjacent_tets,
+                values_per_entry=2,
+            )
+        else:
+            self.v_adj_tets, self.v_adj_tets_offsets = _empty_vertex_adjacency()
+
+        if _has_entries(self.spring_indices):
+            self.v_adj_springs, self.v_adj_springs_offsets = _build_vertex_adjacency_with_warp(
+                _as_cpu_int_array1d(self.spring_indices),
+                particle_count,
+                count_kernel=_count_num_adjacent_springs,
+                fill_kernel=_fill_adjacent_springs,
+                values_per_entry=1,
+            )
+        else:
+            self.v_adj_springs, self.v_adj_springs_offsets = _empty_vertex_adjacency()
+
+        self.vertex_adjacency_initialized = True
+        return self
+
+
+def _numpy_int_array(data) -> np.ndarray:
+    """Return ``data`` as an int32 NumPy array, accepting Warp arrays."""
+    if data is None:
+        return np.empty(0, dtype=np.int32)
+    if hasattr(data, "numpy"):
+        data = data.numpy()
+    return np.asarray(data, dtype=np.int32)
+
+
+def _numpy_int_rows(data, width: int) -> np.ndarray:
+    """Return ``data`` as ``(-1, width)`` int32 rows."""
+    data_np = _numpy_int_array(data)
+    if data_np.size == 0:
+        return np.empty((0, width), dtype=np.int32)
+    return data_np.reshape(-1, width)
+
+
+@wp.kernel
+def _count_num_adjacent_edges(edge_indices: wp.array2d[wp.int32], num_vertex_adjacent_edges: wp.array[wp.int32]):
+    for edge_id in range(edge_indices.shape[0]):
+        o0 = edge_indices[edge_id, 0]
+        o1 = edge_indices[edge_id, 1]
+        v0 = edge_indices[edge_id, 2]
+        v1 = edge_indices[edge_id, 3]
+
+        num_vertex_adjacent_edges[v0] = num_vertex_adjacent_edges[v0] + 1
+        num_vertex_adjacent_edges[v1] = num_vertex_adjacent_edges[v1] + 1
+
+        if o0 != -1:
+            num_vertex_adjacent_edges[o0] = num_vertex_adjacent_edges[o0] + 1
+        if o1 != -1:
+            num_vertex_adjacent_edges[o1] = num_vertex_adjacent_edges[o1] + 1
+
+
+@wp.kernel
+def _fill_adjacent_edges(
+    edge_indices: wp.array2d[wp.int32],
+    vertex_adjacent_edges_offsets: wp.array[wp.int32],
+    vertex_adjacent_edges_fill_count: wp.array[wp.int32],
+    vertex_adjacent_edges: wp.array[wp.int32],
+):
+    for edge_id in range(edge_indices.shape[0]):
+        v0 = edge_indices[edge_id, 2]
+        v1 = edge_indices[edge_id, 3]
+
+        fill_count_v0 = vertex_adjacent_edges_fill_count[v0]
+        buffer_offset_v0 = vertex_adjacent_edges_offsets[v0]
+        vertex_adjacent_edges[buffer_offset_v0 + fill_count_v0 * 2] = edge_id
+        vertex_adjacent_edges[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 2
+        vertex_adjacent_edges_fill_count[v0] = fill_count_v0 + 1
+
+        fill_count_v1 = vertex_adjacent_edges_fill_count[v1]
+        buffer_offset_v1 = vertex_adjacent_edges_offsets[v1]
+        vertex_adjacent_edges[buffer_offset_v1 + fill_count_v1 * 2] = edge_id
+        vertex_adjacent_edges[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 3
+        vertex_adjacent_edges_fill_count[v1] = fill_count_v1 + 1
+
+        o0 = edge_indices[edge_id, 0]
+        if o0 != -1:
+            fill_count_o0 = vertex_adjacent_edges_fill_count[o0]
+            buffer_offset_o0 = vertex_adjacent_edges_offsets[o0]
+            vertex_adjacent_edges[buffer_offset_o0 + fill_count_o0 * 2] = edge_id
+            vertex_adjacent_edges[buffer_offset_o0 + fill_count_o0 * 2 + 1] = 0
+            vertex_adjacent_edges_fill_count[o0] = fill_count_o0 + 1
+
+        o1 = edge_indices[edge_id, 1]
+        if o1 != -1:
+            fill_count_o1 = vertex_adjacent_edges_fill_count[o1]
+            buffer_offset_o1 = vertex_adjacent_edges_offsets[o1]
+            vertex_adjacent_edges[buffer_offset_o1 + fill_count_o1 * 2] = edge_id
+            vertex_adjacent_edges[buffer_offset_o1 + fill_count_o1 * 2 + 1] = 1
+            vertex_adjacent_edges_fill_count[o1] = fill_count_o1 + 1
+
+
+@wp.kernel
+def _count_num_adjacent_tris(tri_indices: wp.array2d[wp.int32], num_vertex_adjacent_tris: wp.array[wp.int32]):
+    for tri_id in range(tri_indices.shape[0]):
+        v0 = tri_indices[tri_id, 0]
+        v1 = tri_indices[tri_id, 1]
+        v2 = tri_indices[tri_id, 2]
+
+        num_vertex_adjacent_tris[v0] = num_vertex_adjacent_tris[v0] + 1
+        num_vertex_adjacent_tris[v1] = num_vertex_adjacent_tris[v1] + 1
+        num_vertex_adjacent_tris[v2] = num_vertex_adjacent_tris[v2] + 1
+
+
+@wp.kernel
+def _fill_adjacent_tris(
+    tri_indices: wp.array2d[wp.int32],
+    vertex_adjacent_tris_offsets: wp.array[wp.int32],
+    vertex_adjacent_tris_fill_count: wp.array[wp.int32],
+    vertex_adjacent_tris: wp.array[wp.int32],
+):
+    for tri_id in range(tri_indices.shape[0]):
+        v0 = tri_indices[tri_id, 0]
+        v1 = tri_indices[tri_id, 1]
+        v2 = tri_indices[tri_id, 2]
+
+        fill_count_v0 = vertex_adjacent_tris_fill_count[v0]
+        buffer_offset_v0 = vertex_adjacent_tris_offsets[v0]
+        vertex_adjacent_tris[buffer_offset_v0 + fill_count_v0 * 2] = tri_id
+        vertex_adjacent_tris[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 0
+        vertex_adjacent_tris_fill_count[v0] = fill_count_v0 + 1
+
+        fill_count_v1 = vertex_adjacent_tris_fill_count[v1]
+        buffer_offset_v1 = vertex_adjacent_tris_offsets[v1]
+        vertex_adjacent_tris[buffer_offset_v1 + fill_count_v1 * 2] = tri_id
+        vertex_adjacent_tris[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 1
+        vertex_adjacent_tris_fill_count[v1] = fill_count_v1 + 1
+
+        fill_count_v2 = vertex_adjacent_tris_fill_count[v2]
+        buffer_offset_v2 = vertex_adjacent_tris_offsets[v2]
+        vertex_adjacent_tris[buffer_offset_v2 + fill_count_v2 * 2] = tri_id
+        vertex_adjacent_tris[buffer_offset_v2 + fill_count_v2 * 2 + 1] = 2
+        vertex_adjacent_tris_fill_count[v2] = fill_count_v2 + 1
+
+
+@wp.kernel
+def _count_num_adjacent_springs(spring_indices: wp.array[wp.int32], num_vertex_adjacent_springs: wp.array[wp.int32]):
+    num_springs = spring_indices.shape[0] // 2
+    for spring_id in range(num_springs):
+        v0 = spring_indices[spring_id * 2]
+        v1 = spring_indices[spring_id * 2 + 1]
+
+        num_vertex_adjacent_springs[v0] = num_vertex_adjacent_springs[v0] + 1
+        num_vertex_adjacent_springs[v1] = num_vertex_adjacent_springs[v1] + 1
+
+
+@wp.kernel
+def _fill_adjacent_springs(
+    spring_indices: wp.array[wp.int32],
+    vertex_adjacent_springs_offsets: wp.array[wp.int32],
+    vertex_adjacent_springs_fill_count: wp.array[wp.int32],
+    vertex_adjacent_springs: wp.array[wp.int32],
+):
+    num_springs = spring_indices.shape[0] // 2
+    for spring_id in range(num_springs):
+        v0 = spring_indices[spring_id * 2]
+        v1 = spring_indices[spring_id * 2 + 1]
+
+        fill_count_v0 = vertex_adjacent_springs_fill_count[v0]
+        buffer_offset_v0 = vertex_adjacent_springs_offsets[v0]
+        vertex_adjacent_springs[buffer_offset_v0 + fill_count_v0] = spring_id
+        vertex_adjacent_springs_fill_count[v0] = fill_count_v0 + 1
+
+        fill_count_v1 = vertex_adjacent_springs_fill_count[v1]
+        buffer_offset_v1 = vertex_adjacent_springs_offsets[v1]
+        vertex_adjacent_springs[buffer_offset_v1 + fill_count_v1] = spring_id
+        vertex_adjacent_springs_fill_count[v1] = fill_count_v1 + 1
+
+
+@wp.kernel
+def _count_num_adjacent_tets(tet_indices: wp.array2d[wp.int32], num_vertex_adjacent_tets: wp.array[wp.int32]):
+    for tet_id in range(tet_indices.shape[0]):
+        v0 = tet_indices[tet_id, 0]
+        v1 = tet_indices[tet_id, 1]
+        v2 = tet_indices[tet_id, 2]
+        v3 = tet_indices[tet_id, 3]
+
+        num_vertex_adjacent_tets[v0] = num_vertex_adjacent_tets[v0] + 1
+        num_vertex_adjacent_tets[v1] = num_vertex_adjacent_tets[v1] + 1
+        num_vertex_adjacent_tets[v2] = num_vertex_adjacent_tets[v2] + 1
+        num_vertex_adjacent_tets[v3] = num_vertex_adjacent_tets[v3] + 1
+
+
+@wp.kernel
+def _fill_adjacent_tets(
+    tet_indices: wp.array2d[wp.int32],
+    vertex_adjacent_tets_offsets: wp.array[wp.int32],
+    vertex_adjacent_tets_fill_count: wp.array[wp.int32],
+    vertex_adjacent_tets: wp.array[wp.int32],
+):
+    for tet_id in range(tet_indices.shape[0]):
+        v0 = tet_indices[tet_id, 0]
+        v1 = tet_indices[tet_id, 1]
+        v2 = tet_indices[tet_id, 2]
+        v3 = tet_indices[tet_id, 3]
+
+        fill_count_v0 = vertex_adjacent_tets_fill_count[v0]
+        buffer_offset_v0 = vertex_adjacent_tets_offsets[v0]
+        vertex_adjacent_tets[buffer_offset_v0 + fill_count_v0 * 2] = tet_id
+        vertex_adjacent_tets[buffer_offset_v0 + fill_count_v0 * 2 + 1] = 0
+        vertex_adjacent_tets_fill_count[v0] = fill_count_v0 + 1
+
+        fill_count_v1 = vertex_adjacent_tets_fill_count[v1]
+        buffer_offset_v1 = vertex_adjacent_tets_offsets[v1]
+        vertex_adjacent_tets[buffer_offset_v1 + fill_count_v1 * 2] = tet_id
+        vertex_adjacent_tets[buffer_offset_v1 + fill_count_v1 * 2 + 1] = 1
+        vertex_adjacent_tets_fill_count[v1] = fill_count_v1 + 1
+
+        fill_count_v2 = vertex_adjacent_tets_fill_count[v2]
+        buffer_offset_v2 = vertex_adjacent_tets_offsets[v2]
+        vertex_adjacent_tets[buffer_offset_v2 + fill_count_v2 * 2] = tet_id
+        vertex_adjacent_tets[buffer_offset_v2 + fill_count_v2 * 2 + 1] = 2
+        vertex_adjacent_tets_fill_count[v2] = fill_count_v2 + 1
+
+        fill_count_v3 = vertex_adjacent_tets_fill_count[v3]
+        buffer_offset_v3 = vertex_adjacent_tets_offsets[v3]
+        vertex_adjacent_tets[buffer_offset_v3 + fill_count_v3 * 2] = tet_id
+        vertex_adjacent_tets[buffer_offset_v3 + fill_count_v3 * 2 + 1] = 3
+        vertex_adjacent_tets_fill_count[v3] = fill_count_v3 + 1
+
+
+def _has_entries(data) -> bool:
+    """Return whether a topology array/list has at least one stored entry."""
+    if data is None:
+        return False
+    if isinstance(data, wp.array):
+        return data.size > 0
+    return np.asarray(data).size > 0
+
+
+def _as_cpu_int_array2d(data, width: int) -> wp.array:
+    """Return topology data as a CPU Warp int array with shape ``(-1, width)``."""
+    if isinstance(data, wp.array):
+        if data.ndim == 2:
+            return data.to("cpu")
+        if data.dtype == wp.int32 and data.is_contiguous:
+            return data.reshape((-1, width)).to("cpu")
+        return wp.array(data.numpy().reshape(-1, width), dtype=wp.int32, device="cpu")
+
+    return wp.array(_numpy_int_rows(data, width), dtype=wp.int32, device="cpu")
+
+
+def _as_cpu_int_array1d(data) -> wp.array:
+    """Return topology data as a flat CPU Warp int array."""
+    if isinstance(data, wp.array):
+        if data.ndim == 1:
+            return data.to("cpu")
+        if data.dtype == wp.int32 and data.is_contiguous:
+            return data.flatten().to("cpu")
+        return wp.array(data.numpy().reshape(-1), dtype=wp.int32, device="cpu")
+
+    return wp.array(_numpy_int_array(data).reshape(-1), dtype=wp.int32, device="cpu")
+
+
+def _empty_vertex_adjacency() -> tuple[np.ndarray, np.ndarray]:
+    """Return empty (NumPy) adjacency values and offsets arrays."""
+    return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
+
+
+def _build_vertex_adjacency_with_warp(
+    topology: wp.array,
+    particle_count: int,
+    *,
+    count_kernel,
+    fill_kernel,
+    values_per_entry: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build vertex-adjacency CSR arrays (NumPy) using the VBD count/fill Warp kernels on CPU.
+
+    The kernels run on CPU; results are copied out to NumPy so the host
+    ``MeshAdjacency`` stays free of Warp arrays (``to`` re-uploads on demand).
+    """
+    with wp.ScopedDevice("cpu"):
+        counts = wp.zeros(shape=(particle_count,), dtype=wp.int32, device="cpu")
+        wp.launch(count_kernel, inputs=[topology, counts], dim=1, device="cpu")
+
+        counts_np = counts.numpy()
+        offsets_np = np.empty(shape=(particle_count + 1,), dtype=np.int32)
+        offsets_np[0] = 0
+        offsets_np[1:] = np.cumsum(values_per_entry * counts_np)[:]
+        offsets = wp.array(offsets_np, dtype=wp.int32, device="cpu")
+
+        fill_count = wp.zeros(shape=(particle_count,), dtype=wp.int32, device="cpu")
+        values = wp.empty(shape=(int(values_per_entry * counts_np.sum()),), dtype=wp.int32, device="cpu")
+        wp.launch(fill_kernel, inputs=[topology, offsets, fill_count, values], dim=1, device="cpu")
+
+    # Copy out of the CPU Warp buffers (which go out of scope here) into owned NumPy arrays.
+    return values.numpy().copy(), offsets_np
 
 
 def create_mesh_sphere(
@@ -409,6 +1070,11 @@ def _extract_trimesh_texture(visual_or_material, base_dir: str) -> np.ndarray | 
         if base_color_texture is not None:
             image = getattr(base_color_texture, "image", None)
             image_path = image_path or getattr(base_color_texture, "image_path", None)
+            if image is None:
+                if isinstance(base_color_texture, (str, os.PathLike)):
+                    image_path = image_path or os.fspath(base_color_texture)
+                else:
+                    image = base_color_texture
 
     if image is not None:
         try:
@@ -497,7 +1163,7 @@ def load_meshes_from_file(
 
     def _parse_dae_material_colors(
         path: str,
-    ) -> tuple[list[str], dict[str, dict[str, float | tuple[float, float, float] | None]]]:
+    ) -> tuple[list[str], dict[str, dict[str, float | str | tuple[float, float, float] | None]]]:
         try:
             tree = ET.parse(path)
             root = tree.getroot()
@@ -507,15 +1173,64 @@ def load_meshes_from_file(
         def strip(tag: str) -> str:
             return tag.split("}", 1)[-1] if "}" in tag else tag
 
+        image_paths: dict[str, str] = {}
+        for image in root.iter():
+            if strip(image.tag) != "image":
+                continue
+            image_id = image.attrib.get("id")
+            image_name = image.attrib.get("name")
+            image_path = None
+            for child in image.iter():
+                if strip(child.tag) == "init_from" and child.text:
+                    image_path = child.text.strip()
+                    break
+            if image_path:
+                if image_id:
+                    image_paths[image_id] = image_path
+                if image_name:
+                    image_paths[image_name] = image_path
+
+        def resolve_dae_texture_path(texture_path: str | None) -> str | None:
+            if not texture_path:
+                return None
+            texture_path = image_paths.get(texture_path.lstrip("#"), texture_path)
+            parsed = urlparse(texture_path)
+            if parsed.scheme in {"file", "http", "https", "data"}:
+                return texture_path
+            if not os.path.isabs(texture_path):
+                texture_path = os.path.abspath(os.path.join(base_dir, texture_path))
+            return texture_path
+
         # Map effect id -> material properties
-        effect_props: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        effect_props: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
         for effect in root.iter():
             if strip(effect.tag) != "effect":
                 continue
             effect_id = effect.attrib.get("id")
             if not effect_id:
                 continue
+            surface_images: dict[str, str] = {}
+            sampler_surfaces: dict[str, str] = {}
+            for newparam in effect.iter():
+                if strip(newparam.tag) != "newparam":
+                    continue
+                sid = newparam.attrib.get("sid")
+                if not sid:
+                    continue
+                for child in newparam:
+                    child_tag = strip(child.tag)
+                    if child_tag == "surface":
+                        for init in child.iter():
+                            if strip(init.tag) == "init_from" and init.text:
+                                surface_images[sid] = init.text.strip()
+                                break
+                    elif child_tag == "sampler2D":
+                        for source in child.iter():
+                            if strip(source.tag) == "source" and source.text:
+                                sampler_surfaces[sid] = source.text.strip()
+                                break
             diffuse_color = None
+            diffuse_texture = None
             specular_color = None
             specular_intensity = None
             shininess = None
@@ -530,9 +1245,16 @@ def load_meshes_from_file(
                 for node in shader.iter():
                     tag = strip(node.tag)
                     if tag == "diffuse":
-                        for col in node.iter():
-                            if strip(col.tag) == "color" and col.text:
-                                values = [float(x) for x in col.text.strip().split()]
+                        for diffuse_node in node.iter():
+                            diffuse_tag = strip(diffuse_node.tag)
+                            if diffuse_tag == "texture":
+                                sampler_id = diffuse_node.attrib.get("texture")
+                                surface_id = sampler_surfaces.get(sampler_id, sampler_id)
+                                image_id = surface_images.get(surface_id, surface_id)
+                                diffuse_texture = resolve_dae_texture_path(image_id)
+                                break
+                            if diffuse_tag == "color" and diffuse_node.text:
+                                values = [float(x) for x in diffuse_node.text.strip().split()]
                                 if len(values) >= 3:
                                     # DAE diffuse colors are commonly authored in linear space.
                                     # Convert to sRGB for the viewer shader (which converts to linear).
@@ -567,7 +1289,7 @@ def load_meshes_from_file(
                                     shininess = None
                                 break
                         continue
-                if diffuse_color is not None:
+                if diffuse_color is not None or diffuse_texture is not None:
                     break
             metallic = None
             if specular_color is not None:
@@ -579,15 +1301,16 @@ def load_meshes_from_file(
                 if shininess > 1.0:
                     shininess = min(shininess / 128.0, 1.0)
                 roughness = float(np.clip(1.0 - shininess, 0.0, 1.0))
-            if diffuse_color is not None:
+            if diffuse_color is not None or diffuse_texture is not None:
                 effect_props[effect_id] = {
                     "color": diffuse_color,
+                    "texture": diffuse_texture,
                     "metallic": metallic,
                     "roughness": roughness,
                 }
 
         # Map material id/name -> material properties
-        material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+        material_colors: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
         for material in root.iter():
             if strip(material.tag) != "material":
                 continue
@@ -620,11 +1343,23 @@ def load_meshes_from_file(
         return face_materials, material_colors
 
     dae_face_materials: list[str] = []
-    dae_material_colors: dict[str, dict[str, float | tuple[float, float, float] | None]] = {}
+    dae_material_colors: dict[str, dict[str, float | str | tuple[float, float, float] | None]] = {}
     if filename.lower().endswith(".dae"):
         dae_face_materials, dae_material_colors = _parse_dae_material_colors(filename)
 
-    tri = trimesh.load(filename, force="mesh")
+    if filename.lower().endswith(".dae"):
+        with warnings.catch_warnings():
+            # Remove when the pycollada floor includes a release that replaces
+            # load-time NumPy array shape assignment with reshape.
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Setting the shape on a NumPy array has been deprecated.*",
+                category=DeprecationWarning,
+                module=r"^collada\.",
+            )
+            tri = trimesh.load(filename, force="mesh")
+    else:
+        tri = trimesh.load(filename, force="mesh")
     tri_meshes = tri.geometry.values() if hasattr(tri, "geometry") else [tri]
 
     meshes = []
@@ -667,6 +1402,8 @@ def load_meshes_from_file(
             if sub_normals is None or force_smooth:
                 sub_normals = smooth_vertex_normals_by_position(sub_vertices, remapped_faces)
             sub_uvs = mesh_uvs[used] if mesh_uvs is not None else None
+            if mesh_texture is not None and mat_color is None:
+                mat_color = (1.0, 1.0, 1.0)
 
             meshes.append(
                 Mesh(
@@ -728,6 +1465,7 @@ def load_meshes_from_file(
                 mat_color = mat_props.get("color")
                 mat_roughness = mat_props.get("roughness")
                 mat_metallic = mat_props.get("metallic")
+                mat_texture = mat_props.get("texture", texture)
                 add_mesh_from_faces(
                     mat_faces,
                     mat_color=mat_color,
@@ -736,7 +1474,7 @@ def load_meshes_from_file(
                     mesh_vertices=vertices,
                     mesh_normals=normals,
                     mesh_uvs=uvs,
-                    mesh_texture=texture,
+                    mesh_texture=mat_texture,
                 )
             continue
 
@@ -1398,3 +2136,239 @@ def solidify_mesh(
     faces = out_faces.numpy()
     vertices = out_vertices.numpy()
     return faces, vertices
+
+
+def validate_triangle_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    *,
+    min_area: float = 1e-6,
+    max_aspect_ratio: float = 20.0,
+    min_angle_deg: float = 5.0,
+    label: str | None = None,
+    stacklevel: int = 2,
+) -> None:
+    """Check a triangle mesh for quality issues and emit warnings.
+
+    Inspects the input triangle mesh for degenerate or sliver triangles
+    and extreme interior angles. Non-manifold-edge detection is *not*
+    performed here; :class:`MeshAdjacency` emits its own warning during
+    construction and is built by every builder path that accepts a
+    triangle mesh, so going through ``add_cloth_mesh`` /
+    ``add_soft_mesh`` already covers it. Standalone callers who need a
+    non-manifold check should construct ``MeshAdjacency(indices)``
+    themselves. Each detected problem is reported via
+    :func:`warnings.warn`.
+
+    Args:
+        vertices: Vertex positions [m], shape ``(N, 3)``.
+        indices: Triangle vertex indices, shape ``(F, 3)``.
+        min_area: Minimum triangle area [m²]. Default ``1e-6`` (1 mm²).
+        max_aspect_ratio: Maximum longest-edge / shortest-altitude ratio.
+            Default ``20.0`` — flags slivers whose worst interior angle
+            is below ~3° while staying quiet on rough-but-fine
+            production meshes.
+        min_angle_deg: Minimum interior angle [deg]. Default ``5.0``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
+        stacklevel: Passed to :func:`warnings.warn` so the warning points at
+            the caller's frame.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 3 != 0:
+        warnings.warn("Triangle index array length is not a multiple of 3.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 3)
+    except ValueError:
+        warnings.warn("Triangle index array must be flat or have shape (N, 3).", stacklevel=stacklevel)
+        return
+    n_verts = len(vertices)
+    n_faces = len(indices)
+
+    if n_faces == 0:
+        warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        return
+
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+
+    e01 = v1 - v0
+    e12 = v2 - v1
+    e20 = v0 - v2
+
+    len01 = np.linalg.norm(e01, axis=1)
+    len12 = np.linalg.norm(e12, axis=1)
+    len20 = np.linalg.norm(e20, axis=1)
+    longest = np.maximum(len01, np.maximum(len12, len20))
+
+    cross = np.cross(e01, -e20)
+    area = 0.5 * np.linalg.norm(cross, axis=1)
+
+    eps = 1e-20
+    shortest_alt = 2.0 * area / np.maximum(longest, eps)
+    aspect = longest / np.maximum(shortest_alt, eps)
+
+    def _ang(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        an = np.maximum(np.linalg.norm(a, axis=1), eps)
+        bn = np.maximum(np.linalg.norm(b, axis=1), eps)
+        cos = np.einsum("ij,ij->i", a, b) / (an * bn)
+        return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+    min_angle_arr = np.minimum(_ang(e01, -e20), np.minimum(_ang(-e01, e12), _ang(-e12, e20)))
+
+    issues: list[str] = []
+
+    n_degen = int(np.sum(area < min_area))
+    if n_degen > 0:
+        issues.append(f"{n_degen} triangle(s) with area < {min_area} m\u00b2")
+
+    n_sliver = int(np.sum(aspect > max_aspect_ratio))
+    if n_sliver > 0:
+        issues.append(
+            f"{n_sliver} sliver triangle(s) with aspect ratio > {max_aspect_ratio} (worst: {float(aspect.max()):.1f})"
+        )
+
+    n_small_angle = int(np.sum(min_angle_arr < min_angle_deg))
+    if n_small_angle > 0:
+        issues.append(
+            f"{n_small_angle} triangle(s) with minimum angle < {min_angle_deg}\u00b0"
+            f" (smallest: {float(min_angle_arr.min()):.1f}\u00b0)"
+        )
+
+    if not issues:
+        return
+
+    prefix = "Mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = (
+        f"{prefix} ({n_verts} vertices, {n_faces} triangles):\n"
+        + "\n".join(f"  - {issue}" for issue in issues)
+        + "\nConsider remeshing the input geometry."
+    )
+    warnings.warn(msg, stacklevel=stacklevel)
+
+
+def validate_tet_mesh(
+    vertices: np.ndarray,
+    indices: np.ndarray,
+    *,
+    min_volume: float = 1e-9,
+    min_eta: float = 0.01,
+    label: str | None = None,
+    stacklevel: int = 2,
+) -> None:
+    """Check a tetrahedral mesh for quality issues and emit warnings.
+
+    Inspects the input tet mesh for inverted elements, small volumes,
+    sliver tetrahedra, and non-manifold faces. Each detected problem is
+    reported via :func:`warnings.warn`.
+
+    The shape quality metric used is:
+
+    .. math::
+
+        \\eta = \\frac{12\\,(3\\,|V|)^{2/3}}{\\sum_i l_i^2}
+
+    where *V* is the signed volume and *l_i* are the six edge lengths.
+    For a regular tetrahedron :math:`\\eta = 1`; degenerate elements
+    approach zero.
+
+    Args:
+        vertices: Vertex positions [m], shape ``(N, 3)``.
+        indices: Tetrahedron vertex indices, shape ``(T, 4)``.
+        min_volume: Minimum absolute tet volume [m³]. Default ``1e-9``
+            (1 mm³).
+        min_eta: Minimum shape quality eta. Default ``0.01``.
+        label: Optional name included in the warning message so callers
+            can identify which mesh tripped the warning when validating
+            many meshes.
+        stacklevel: Passed to :func:`warnings.warn`.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    raw = np.asarray(indices, dtype=np.intp)
+    if raw.size > 0 and raw.ndim == 1 and raw.size % 4 != 0:
+        warnings.warn("Tet index array length is not a multiple of 4.", stacklevel=stacklevel)
+        return
+    try:
+        indices = raw.reshape(-1, 4)
+    except ValueError:
+        warnings.warn("Tet index array must be flat or have shape (N, 4).", stacklevel=stacklevel)
+        return
+    n_tets = len(indices)
+
+    if n_tets == 0:
+        warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        return
+
+    n_verts = len(vertices)
+    if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
+        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        return
+
+    v0 = vertices[indices[:, 0]]
+    v1 = vertices[indices[:, 1]]
+    v2 = vertices[indices[:, 2]]
+    v3 = vertices[indices[:, 3]]
+
+    d1 = v1 - v0
+    d2 = v2 - v0
+    d3 = v3 - v0
+    vol = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) / 6.0
+
+    issues: list[str] = []
+
+    n_inverted = int(np.sum(vol < 0))
+    if n_inverted > 0:
+        issues.append(f"{n_inverted}/{n_tets} inverted tetrahedron(s) (negative volume)")
+
+    n_degen = int(np.sum(np.abs(vol) < min_volume))
+    if n_degen > 0:
+        issues.append(f"{n_degen}/{n_tets} tetrahedron(s) with volume < {min_volume} m\u00b3")
+
+    e01 = v1 - v0
+    e02 = v2 - v0
+    e03 = v3 - v0
+    e12 = v2 - v1
+    e13 = v3 - v1
+    e23 = v3 - v2
+    l_sq_sum = (
+        np.sum(e01**2, axis=1)
+        + np.sum(e02**2, axis=1)
+        + np.sum(e03**2, axis=1)
+        + np.sum(e12**2, axis=1)
+        + np.sum(e13**2, axis=1)
+        + np.sum(e23**2, axis=1)
+    )
+    eps = 1e-30
+    abs_vol = np.abs(vol)
+    eta = 12.0 * np.cbrt(3.0 * abs_vol) ** 2 / np.maximum(l_sq_sum, eps)
+    n_sliver = int(np.sum(eta < min_eta))
+    if n_sliver > 0:
+        issues.append(
+            f"{n_sliver}/{n_tets} sliver tetrahedron(s) (shape quality eta < {min_eta}; worst: {float(eta.min()):.4f})"
+        )
+
+    face_combos = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
+    all_faces = np.concatenate([np.sort(indices[:, combo], axis=1) for combo in face_combos])
+    _, counts = np.unique(all_faces, axis=0, return_counts=True)
+    n_nonmanifold = int(np.sum(counts > 2))
+    if n_nonmanifold > 0:
+        issues.append(f"{n_nonmanifold} non-manifold face(s) shared by more than 2 tetrahedra")
+
+    if not issues:
+        return
+
+    prefix = "Tet mesh quality warning"
+    if label is not None:
+        prefix += f" [{label}]"
+    msg = f"{prefix} ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(f"  - {issue}" for issue in issues)
+    warnings.warn(msg, stacklevel=stacklevel)

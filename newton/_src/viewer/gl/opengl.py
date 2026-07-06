@@ -16,6 +16,7 @@ from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
     ShaderArrow,
+    ShaderEdge,
     ShaderLine,
     ShaderShape,
     ShaderSky,
@@ -226,12 +227,11 @@ class MeshGL:
         #   column 3  (0,0,0,1)
         gl.glVertexAttrib4f(6, 0.0, 0.0, 0.0, 1.0)
 
-        # albedo
-        gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
-        # material = (roughness, metallic, checker, texture_enable)
-        gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
-
         gl.glBindVertexArray(0)
+
+        # Per-mesh albedo and material (applied in render()).
+        self.color = (0.7, 0.5, 0.3)
+        self.material = (0.5, 0.0, 0.0, 0.0)
 
         # Create CUDA-GL interop buffer for efficient updates
         if ENABLE_CUDA_INTEROP and self.device.is_cuda:
@@ -362,6 +362,10 @@ class MeshGL:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
             else:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
+
+            # Set per-mesh albedo and material (global state, not per-VAO).
+            gl.glVertexAttrib3f(7, *self.color)
+            gl.glVertexAttrib4f(8, *self.material)
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
@@ -973,7 +977,12 @@ class RendererGL:
         self.draw_wireframe = False
         self.wireframe_line_width = 1.5  # pixels
         self.line_width = 1.5  # pixels, for all log_lines batches
-        self.arrow_scale = 1.0  # uniform scale for arrow line width and head size
+        self.arrow_scale = 1.0  # screen-space multiplier on arrow line width and arrowhead size
+        self.arrow_length_scale = 1.0  # multiplier on contact-arrow world-space length
+        self.joint_scale = 1.0  # multiplier on joint-axis line length
+        self.com_scale = 1.0  # multiplier on COM sphere radius
+        self.draw_edges = False
+        self._edge_color = (0.05, 0.05, 0.05, 1.0)
 
         self.background_color = (68.0 / 255.0, 161.0 / 255.0, 255.0 / 255.0)
 
@@ -1103,6 +1112,7 @@ class RendererGL:
         self._shadow_shader = None
         self._shadow_width = 4096
         self._shadow_height = 4096
+        self._light_space_matrix = np.eye(4, dtype=np.float32)
 
         self._frame_texture = None
         self._frame_depth_texture = None
@@ -1138,6 +1148,7 @@ class RendererGL:
 
         self._shadow_shader = ShadowShader(gl)
         self._shape_shader = ShaderShape(gl)
+        self._edge_shader = ShaderEdge(gl)
         self._frame_shader = FrameShader(gl)
         self._sky_shader = ShaderSky(gl)
         self._wireframe_shader = ShaderLine(gl)
@@ -1839,6 +1850,28 @@ class RendererGL:
             self._draw_objects(objects)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+
+        # Edge overlay: redraw the same geometry as lines with polygon offset
+        # to avoid z-fighting (per @mmacklin review on #2300).
+        if self.draw_edges:
+            # Skip objects that opted out of the edge overlay (e.g. ground
+            # planes) via the per-object draw_edge flag. Mirrors the cast_shadow
+            # filter in _render_shadow_map and keeps the decision off the checker
+            # material bit (see #2808 review).
+            edge_objects = {k: v for k, v in objects.items() if getattr(v, "draw_edge", True)}
+            self._edge_shader.update(
+                view_matrix=self._view_matrix,
+                projection_matrix=self._projection_matrix,
+                edge_color=self._edge_color,
+                light_space_matrix=self._light_space_matrix,
+            )
+            gl.glEnable(gl.GL_POLYGON_OFFSET_LINE)
+            gl.glPolygonOffset(-1.0, -1.0)
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+            with self._edge_shader:
+                self._draw_objects(edge_objects)
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+            gl.glDisable(gl.GL_POLYGON_OFFSET_LINE)
 
         check_gl_error()
 

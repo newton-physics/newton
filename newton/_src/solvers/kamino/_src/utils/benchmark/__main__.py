@@ -37,18 +37,18 @@ Each mode includes the metrics of the previous modes, with increasing levels of 
 The supported modes are as follows:
 
 - "total":
-    Only collects total runtime and final memory usage of each solver configuration and problem.\n
+    Only collects total runtime and final memory usage of each solver configuration and problem.
     This mode is intended to be used for a high-level comparison of the overall throughput of
     different solver configurations across problems, without detailed step-by-step metrics.
 
 - "stepstats":
-    Collects detailed timings of each simulation step to compute throughput statistics.\n
+    Collects detailed timings of each simulation step to compute throughput statistics.
     This mode lightly impacts overall throughput as it requires synchronizing the device at
     each  step to measure accurate timings. It is intended to be used for analyzing the step
     time distribution and variability across different solver configurations.
 
 - "convergence":
-    Collects solver performance metrics such as PADMM iterations and residuals.\n
+    Collects solver performance metrics such as PADMM iterations and residuals.
     This mode moderately impacts overall throughput as it requires additional computation to
     collect and store solver metrics at each step. It is intended to be used for analyzing
     solver convergence behavior and its relationship to step time.
@@ -60,7 +60,7 @@ The supported modes are as follows:
     analysis and to evaluate the trade-off between fast convergence and physical correctness.
 
 - "import":
-    Generates plots for the collected metrics given an HDF5 file containing benchmark results.\n
+    Generates plots for the collected metrics given an HDF5 file containing benchmark results.
     NOTE: This mode does not execute any benchmarks and only produces plots from existing data.
 """
 

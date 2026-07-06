@@ -4,8 +4,9 @@
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
-from ..flags import SolverNotifyFlags
+from ...sim import Contacts, Control, Model, ModelFlags, State
+from ...utils.deprecation import deprecate_nonkeyword_arguments
+from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .kernels import (
     accumulate_weighted_contact_impulse,
@@ -30,7 +31,7 @@ from .kernels import (
 )
 
 
-class SolverXPBD(SolverBase):
+class SolverXPBD(SolverBase, CouplingInterface):
     """An implicit integrator using eXtended Position-Based Dynamics (XPBD) for rigid and soft body simulation.
 
     References:
@@ -51,18 +52,20 @@ class SolverXPBD(SolverBase):
         which is symmetric but not exact.
 
         **Reported parent-joint forces** (see :attr:`~newton.State.body_parent_f`,
-        populated when the extended state attribute is requested) are also
+        populated when the extended state attribute is requested) are
         approximate.  XPBD applies relaxation factors
         (``joint_linear_relaxation``, ``joint_angular_relaxation``) to each
         joint constraint correction, and with a finite ``iterations`` count
         residual constraint error remains at end-of-step, so the reported
         wrench is the *applied* constraint reaction rather than the exact
         wrench needed to enforce the joint perfectly.  The convention matches
+        :class:`~newton.solvers.SolverFeatherstone` and
         :class:`~newton.solvers.SolverMuJoCo`: it is the spatial wrench
         transmitted from the parent through the inbound joint, in world frame
-        at the child body's COM. In equilibrium this reaction counters all
-        applied forces (gravity, contacts, ``State.body_f``, and the net
-        effect of :attr:`~newton.Control.joint_f`) by Newton's third law.
+        at the child body's COM, **including** both the constraint reaction
+        and the body-frame contribution of :attr:`~newton.Control.joint_f`.
+        In equilibrium this wrench counters all applied forces (gravity,
+        contacts, ``State.body_f``) by Newton's third law.
 
     Joint limitations:
         - Supported joint types: PRISMATIC, REVOLUTE, BALL, FIXED, FREE, DISTANCE, D6.
@@ -92,9 +95,11 @@ class SolverXPBD(SolverBase):
 
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
+        *,
         iterations: int = 2,
         soft_body_relaxation: float = 0.9,
         soft_contact_relaxation: float = 0.9,
@@ -139,9 +144,13 @@ class SolverXPBD(SolverBase):
                 model.particle_grid.reserve(model.particle_count)
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
-        if flags & (SolverNotifyFlags.BODY_PROPERTIES | SolverNotifyFlags.BODY_INERTIAL_PROPERTIES):
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+
+    @override
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        return True
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:
@@ -332,6 +341,13 @@ class SolverXPBD(SolverBase):
                 if model.joint_count:
                     # Avoid accumulating joint_f into the persistent state body_f buffer.
                     body_f_tmp = wp.clone(state_in.body_f)
+                    # ``joint_impulse`` (may be ``None`` when ``body_parent_f``
+                    # was not requested) accumulates both the joint_f wrench
+                    # contribution recorded here and the constraint-correction
+                    # contribution added by :func:`solve_body_joints` inside
+                    # the iteration loop.  Together they recover the total
+                    # wrench transmitted to the child body, matching the
+                    # :attr:`State.body_parent_f` convention.
                     wp.launch(
                         kernel=apply_joint_forces,
                         dim=model.joint_count,
@@ -348,8 +364,9 @@ class SolverXPBD(SolverBase):
                             model.joint_dof_dim,
                             model.joint_axis,
                             control.joint_f,
+                            dt,
                         ],
-                        outputs=[body_f_tmp],
+                        outputs=[body_f_tmp, joint_impulse],
                         device=model.device,
                     )
 
@@ -398,6 +415,7 @@ class SolverXPBD(SolverBase):
                                     model.body_com,
                                     self.body_inv_mass_effective,
                                     self.body_inv_inertia_effective,
+                                    model.body_flags,
                                     model.shape_body,
                                     model.shape_material_mu,
                                     model.soft_contact_mu,
@@ -492,7 +510,7 @@ class SolverXPBD(SolverBase):
                                     model.particle_inv_mass,
                                     model.tet_indices,
                                     model.tet_poses,
-                                    model.tet_activations,
+                                    control.tet_activations,
                                     model.tet_materials,
                                     dt,
                                     self.soft_body_relaxation,
@@ -611,10 +629,11 @@ class SolverXPBD(SolverBase):
                                 model.joint_limit_lower,
                                 model.joint_limit_upper,
                                 model.joint_qd_start,
+                                model.joint_target_q_start,
                                 model.joint_dof_dim,
                                 model.joint_axis,
-                                control.joint_target_pos,
-                                control.joint_target_vel,
+                                control.joint_target_q,
+                                control.joint_target_qd,
                                 model.joint_target_ke,
                                 model.joint_target_kd,
                                 self.joint_linear_compliance,

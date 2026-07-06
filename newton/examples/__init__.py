@@ -5,7 +5,10 @@ import ast
 import copy
 import gc
 import importlib
+import math
 import os
+import sys
+import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
@@ -15,6 +18,8 @@ import warp as wp
 
 import newton
 from newton.tests.unittest_utils import find_nan_members
+
+_DEPRECATED_WARP_CONFIG_KEYS = {"quiet", "verbose"}
 
 
 def get_source_directory() -> str:
@@ -32,11 +37,14 @@ def get_asset(filename: str) -> str:
 def _enable_example_deprecation_warnings() -> None:
     """Show Newton deprecations during example runs.
 
-    Skipped when ``PYTHONWARNINGS`` is already set so that
-    ``test_examples.py`` (or a user) can escalate warnings to errors
-    without this filter overriding their policy.
+    Skipped when the interpreter already has an explicit warnings policy -- any
+    ``-W`` flag or ``PYTHONWARNINGS``, both surfaced via ``sys.warnoptions`` --
+    so that ``test_examples.py``, or a user running ``python -W error ...``, can
+    escalate warnings to errors without this "default" filter shadowing their
+    policy (it is installed after startup, so it would otherwise take
+    precedence).
     """
-    if "PYTHONWARNINGS" in os.environ or getattr(_enable_example_deprecation_warnings, "_installed", False):
+    if sys.warnoptions or getattr(_enable_example_deprecation_warnings, "_installed", False):
         return
 
     warnings.filterwarnings("default", category=DeprecationWarning, module=r"newton(\.|$)")
@@ -184,6 +192,146 @@ def test_particle_state(
             raise ValueError(f'Test "{test_name}" failed for {len(failed_particles)} out of {len(indices)} particles')
 
 
+_COUPLED_VIEW_COMBINED = "combined"
+
+
+def add_coupled_view_args(parser) -> None:
+    """Add the standard coupled-solver view selection argument to an example parser.
+
+    Args:
+        parser: Argument parser to extend.
+    """
+    parser.add_argument(
+        "--coupled-view",
+        type=str,
+        default=_COUPLED_VIEW_COMBINED,
+        metavar="NAME",
+        help="Coupled solver view to render: 'combined' or one sub-solver entry name.",
+    )
+
+
+def configure_coupled_view(example, args=None, view_name: str | None = None):
+    """Configure an example viewer for combined or entry-local coupled rendering.
+
+    Args:
+        example: Example instance with ``viewer``, ``model``, ``state_0`` and
+            optionally a coupled ``solver``.
+        args: Parsed arguments that may contain ``coupled_view``.
+        view_name: Explicit view name overriding ``args.coupled_view``.
+
+    Returns:
+        Model or ModelView passed to the viewer.
+
+    Raises:
+        ValueError: If an entry view is requested for a non-coupled solver or
+            the entry name does not exist.
+    """
+    name = _coupled_view_name(args, view_name)
+    model = _coupled_view_model(example, name)
+    example._coupled_view_name = name
+    example.viewer.set_model(model)
+    return model
+
+
+def is_coupled_view_combined(example) -> bool:
+    """Return whether an example is rendering the combined parent model."""
+    return getattr(example, "_coupled_view_name", _COUPLED_VIEW_COMBINED) == _COUPLED_VIEW_COMBINED
+
+
+def get_coupled_view_state(example):
+    """Return the state matching an example's selected coupled render view.
+
+    Args:
+        example: Example instance configured with :func:`configure_coupled_view`.
+
+    Returns:
+        Parent-model state for the combined view or entry-local state for an
+        individual coupled solver view.
+    """
+    name = getattr(example, "_coupled_view_name", _COUPLED_VIEW_COMBINED)
+    return _coupled_view_state(example, name)
+
+
+def apply_coupled_viewer_forces(example, state: newton.State) -> None:
+    """Apply viewer-driven forces when the viewer is bound to the parent model.
+
+    Entry-local render views can compact ids, so picking and wind forces are not
+    mapped back to the parent state in that mode.
+
+    Args:
+        example: Example instance with ``viewer`` and coupled-view metadata.
+        state: Parent-model state to receive viewer forces.
+    """
+    if is_coupled_view_combined(example):
+        example.viewer.apply_forces(state)
+
+
+def log_coupled_view(example, contacts=None, *, log_contacts: bool = True) -> None:
+    """Log the currently selected coupled view for an example frame.
+
+    Args:
+        example: Example instance with ``viewer``, ``model``, ``state_0`` and
+            optionally a coupled ``solver``.
+        contacts: Parent-model contacts to log when compatible with the
+            selected view.
+        log_contacts: Whether to log compatible contacts.
+    """
+    name = getattr(example, "_coupled_view_name", _COUPLED_VIEW_COMBINED)
+    state = _coupled_view_state(example, name)
+    example.viewer.log_state(state)
+
+    if not log_contacts:
+        return
+
+    view_contacts = contacts
+    if name != _COUPLED_VIEW_COMBINED:
+        solver = getattr(example, "solver", None)
+        entry_contacts = getattr(solver, "entry_contacts", None)
+        view_contacts = None if not callable(entry_contacts) else entry_contacts(name, contacts)
+    if view_contacts is not None:
+        example.viewer.log_contacts(view_contacts, state)
+
+
+def _coupled_view_name(args, view_name: str | None) -> str:
+    if view_name is not None:
+        return str(view_name)
+    return str(getattr(args, "coupled_view", _COUPLED_VIEW_COMBINED))
+
+
+def _coupled_entry_names(solver) -> tuple[str, ...]:
+    entry_names = getattr(solver, "entry_names", None)
+    if not callable(entry_names):
+        return ()
+    return tuple(str(name) for name in entry_names())
+
+
+def _coupled_view_model(example, name: str):
+    if name == _COUPLED_VIEW_COMBINED:
+        return example.model
+
+    solver = getattr(example, "solver", None)
+    entry_names = _coupled_entry_names(solver)
+    if not entry_names:
+        raise ValueError("--coupled-view requires a coupled solver when not set to 'combined'")
+    if name not in entry_names:
+        choices = ", ".join((_COUPLED_VIEW_COMBINED, *entry_names))
+        raise ValueError(f"Unknown coupled solver view {name!r}; choose one of: {choices}")
+
+    return solver.view(name)
+
+
+def _coupled_view_state(example, name: str):
+    if name == _COUPLED_VIEW_COMBINED:
+        return example.state_0
+
+    solver = example.solver
+    output_valid = getattr(solver, "entry_output_state_valid", None)
+    sync_entry_states = getattr(solver, "sync_entry_states", None)
+    if callable(output_valid) and callable(sync_entry_states) and not output_valid():
+        sync_entry_states(example.state_0)
+    return solver.entry_state(name)
+
+
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
@@ -230,9 +378,25 @@ class _ExampleBrowser:
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
+    def _show_splash(self, text):
+        # Raise the splash and pump a couple of frames so it actually paints
+        # before the upcoming blocking work (importlib + Example construction
+        # can take several seconds when Warp kernels recompile).
+        if not hasattr(self.viewer, "show_loading_splash"):
+            return
+        self.viewer.show_loading_splash(text)
+        for _ in range(2):
+            self.viewer.begin_frame(0.0)
+            self.viewer.end_frame()
+
+    def _hide_splash(self):
+        if hasattr(self.viewer, "hide_loading_splash"):
+            self.viewer.hide_loading_splash()
+
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
         module_path, self.switch_target = self.switch_target, None
+        self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
         self.viewer.clear_model()
         try:
             mod = importlib.import_module(module_path)
@@ -241,12 +405,14 @@ class _ExampleBrowser:
             example = mod.Example(self.viewer, new_args)
         except Exception as e:
             warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
+            self._hide_splash()
             return None, example_class
         # Track the args used to launch the current example so a subsequent
         # Reset reuses the new example's args, not the originally launched
         # example's args (different parsers expose different fields).
         self._initial_args = copy.deepcopy(new_args)
         self._register_ui(example)
+        self._hide_splash()
         return example, type(example)
 
     def reset(self, example_class):
@@ -256,6 +422,7 @@ class _ExampleBrowser:
         this method.
         """
         self._reset_requested = False
+        self._show_splash("Resetting...")
         self.viewer.clear_model()
         try:
             if self._initial_args is not None:
@@ -269,8 +436,10 @@ class _ExampleBrowser:
             new_example = example_class(self.viewer, args)
         except Exception as e:
             warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
+            self._hide_splash()
             return None
         self._register_ui(new_example)
+        self._hide_splash()
         return new_example
 
 
@@ -283,9 +452,65 @@ def _format_fps(fps: float) -> str:
     return f"{fps:.3f}"
 
 
+def _positive_float(value: str) -> float:
+    """Parse a finite, positive float for example CLI arguments."""
+    import argparse  # noqa: PLC0415
+
+    try:
+        result = float(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a valid float") from e
+
+    if not math.isfinite(result) or result <= 0.0:
+        raise argparse.ArgumentTypeError("must be a finite value greater than 0")
+
+    return result
+
+
+def _throttle_render_fps(
+    frame_start_time: float,
+    render_fps: float | None,
+    *,
+    time_fn: Callable[[], float] = time.perf_counter,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> float:
+    """Sleep to cap a render loop to ``render_fps``.
+
+    Args:
+        frame_start_time: Wall-clock time at the start of the current frame.
+        render_fps: Maximum render rate in frames per second, or ``None`` for
+            no cap.
+        time_fn: Clock function used to measure elapsed frame time.
+        sleep_fn: Sleep function used to delay the next frame.
+
+    Returns:
+        The sleep duration in seconds, or ``0.0`` when no sleep was needed.
+
+    Raises:
+        ValueError: If ``render_fps`` is not finite and positive.
+    """
+    if render_fps is None:
+        return 0.0
+
+    if not math.isfinite(render_fps) or render_fps <= 0.0:
+        raise ValueError("render_fps must be a finite value greater than 0")
+
+    target_period = 1.0 / render_fps
+    sleep_time = target_period - (time_fn() - frame_start_time)
+    if sleep_time <= 0.0:
+        return 0.0
+
+    sleep_fn(sleep_time)
+    return sleep_time
+
+
 def run(example, args):
     viewer = example.viewer
     example_class = type(example)
+    render_fps = getattr(args, "render_fps", None)
+
+    if hasattr(viewer, "hide_loading_splash"):
+        viewer.hide_loading_splash()
 
     perform_test = args is not None and args.test
     test_post_step = perform_test and hasattr(example, "test_post_step")
@@ -297,6 +522,8 @@ def run(example, args):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
     while viewer.is_running():
+        frame_start_time = time.perf_counter()
+
         if browser is not None and browser.switch_target is not None:
             example, example_class = browser.switch(example_class)
             continue
@@ -314,6 +541,7 @@ def run(example, args):
         if example is None:
             viewer.begin_frame(0.0)
             viewer.end_frame()
+            _throttle_render_fps(frame_start_time, render_fps)
             continue
 
         if viewer.should_step():
@@ -324,6 +552,8 @@ def run(example, args):
 
         with wp.ScopedTimer("render", active=False):
             example.render()
+
+        _throttle_render_fps(frame_start_time, render_fps)
 
     if perform_test:
         if test_final:
@@ -364,61 +594,6 @@ def run(example, args):
                 raise ValueError(f"NaN members found in contacts: {nan_members}")
 
 
-def compute_world_offsets(
-    world_count: int,
-    world_offset: tuple[float, float, float] = (5.0, 5.0, 0.0),
-    up_axis: newton.AxisType = newton.Axis.Z,
-):
-    # raise deprecation warning
-    import warnings  # noqa: PLC0415
-
-    warnings.warn(
-        (
-            "compute_world_offsets is deprecated and will be removed in a future version. "
-            "Use the builder.replicate() function instead."
-        ),
-        stacklevel=2,
-    )
-
-    # compute positional offsets per world
-    world_offset = np.array(world_offset)
-    nonzeros = np.nonzero(world_offset)[0]
-    num_dim = nonzeros.shape[0]
-    if num_dim > 0:
-        side_length = int(np.ceil(world_count ** (1.0 / num_dim)))
-        world_offsets = []
-        if num_dim == 1:
-            for i in range(world_count):
-                world_offsets.append(i * world_offset)
-        elif num_dim == 2:
-            for i in range(world_count):
-                d0 = i // side_length
-                d1 = i % side_length
-                offset = np.zeros(3)
-                offset[nonzeros[0]] = d0 * world_offset[nonzeros[0]]
-                offset[nonzeros[1]] = d1 * world_offset[nonzeros[1]]
-                world_offsets.append(offset)
-        elif num_dim == 3:
-            for i in range(world_count):
-                d0 = i // (side_length * side_length)
-                d1 = (i // side_length) % side_length
-                d2 = i % side_length
-                offset = np.zeros(3)
-                offset[0] = d0 * world_offset[0]
-                offset[1] = d1 * world_offset[1]
-                offset[2] = d2 * world_offset[2]
-                world_offsets.append(offset)
-        world_offsets = np.array(world_offsets)
-    else:
-        world_offsets = np.zeros((world_count, 3))
-    min_offsets = np.min(world_offsets, axis=0)
-    correction = min_offsets + (np.max(world_offsets, axis=0) - min_offsets) / 2.0
-    # ensure the envs are not shifted below the ground plane
-    correction[newton.Axis.from_any(up_axis)] = 0.0
-    world_offsets -= correction
-    return world_offsets
-
-
 def get_examples() -> dict[str, str]:
     """Return a dict mapping example short names to their full module paths."""
     example_map = {}
@@ -457,8 +632,8 @@ def create_parser():
         "--viewer",
         type=str,
         default="gl",
-        choices=["gl", "usd", "rerun", "null", "viser"],
-        help="Viewer to use (gl, usd, rerun, null, or viser).",
+        choices=["gl", "usd", "rtx", "rerun", "null", "viser"],
+        help="Viewer to use (gl, usd, rtx, rerun, null, or viser).",
     )
     parser.add_argument(
         "--rerun-address",
@@ -470,6 +645,12 @@ def create_parser():
         "--output-path", type=str, default="output.usd", help="Path to the output USD file (required for usd viewer)."
     )
     parser.add_argument("--num-frames", type=int, default=100, help="Total number of frames.")
+    parser.add_argument(
+        "--render-fps",
+        type=_positive_float,
+        default=None,
+        help="Maximum render rate in frames per second. Does not change simulation frame timing.",
+    )
     parser.add_argument(
         "--headless",
         action=argparse.BooleanOptionalAction,
@@ -487,6 +668,12 @@ def create_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Suppress Warp compilation messages.",
+    )
+    parser.add_argument(
+        "--paused",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Start the viewer in a paused state.",
     )
     parser.add_argument(
         "--benchmark",
@@ -528,7 +715,7 @@ def add_broad_phase_arg(parser):
 
 def add_mujoco_contacts_arg(parser):
     """Add ``--use-mujoco-contacts`` argument to *parser*."""
-    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
+    import argparse  # noqa: PLC0415
 
     parser.add_argument(
         "--use-mujoco-contacts",
@@ -606,6 +793,9 @@ def _apply_warp_config(parser, args):
             parser.error(f"invalid --warp-config format '{entry}': expected KEY=VALUE")
 
         key, value_str = entry.split("=", 1)
+
+        if key in _DEPRECATED_WARP_CONFIG_KEYS:
+            parser.error(f"invalid --warp-config key '{key}': use 'log_level' instead")
 
         if not hasattr(wp.config, key):
             parser.error(f"invalid --warp-config key '{key}': not a recognized warp.config setting")
@@ -692,7 +882,7 @@ def init(parser=None):
 
     # Suppress Warp compilation messages if requested
     if args.quiet:
-        wp.config.quiet = True
+        wp.config.log_level = max(wp.config.log_level, wp.LOG_WARNING)
 
     # Set device if specified
     if args.device:
@@ -704,12 +894,15 @@ def init(parser=None):
         _raise_benchmark_priority(realtime=args.realtime)
 
     # Create viewer based on type
+    visible_gl = args.viewer == "gl" and not args.headless
     if args.viewer == "gl":
-        viewer = newton.viewer.ViewerGL(headless=args.headless)
+        viewer = newton.viewer.ViewerGL(headless=args.headless, paused=args.paused)
     elif args.viewer == "usd":
         if args.output_path is None:
             raise ValueError("--output-path is required when using usd viewer")
         viewer = newton.viewer.ViewerUSD(output_path=args.output_path, num_frames=args.num_frames)
+    elif args.viewer == "rtx":
+        viewer = newton.viewer.ViewerRTX(headless=args.headless, paused=args.paused, num_frames=args.num_frames)
     elif args.viewer == "rerun":
         viewer = newton.viewer.ViewerRerun(address=args.rerun_address)
     elif args.viewer == "null":
@@ -722,6 +915,17 @@ def init(parser=None):
         viewer = newton.viewer.ViewerViser()
     else:
         raise ValueError(f"Invalid viewer: {args.viewer}")
+
+    if visible_gl:
+        viewer.show_loading_splash("Loading...")
+        # Pump a few frames so the OS maps the GL surface before kernel
+        # compilation blocks the main thread.  No portable "window is on
+        # screen" signal exists across X11/Wayland/macOS; three frames is
+        # a best-effort heuristic that may still come up blank on slow
+        # compositors (silently absent, not wrong).
+        for _ in range(3):
+            viewer.begin_frame(0.0)
+            viewer.end_frame()
 
     return viewer, args
 
