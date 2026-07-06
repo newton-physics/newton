@@ -310,10 +310,11 @@ the practical meaning of stiffness and damping. Define:
      - Commonly :attr:`~Model.shape_material_kd` or
        :attr:`~ModelBuilder.ShapeConfig.kd`.
    * - :math:`m_{\mathrm{eff}}`
-     - Effective mass at the contact point :math:`kg`. For a conservative first check,
-       use the lighter contacting body mass, or the lighter relevant subtree mass
-       for an articulated contact.
-     - Estimated from the contacting bodies.
+     - Effective scalar mass seen along the contact normal :math:`kg`. Prefer a
+       solver- or Jacobian-derived value. For two free bodies with purely
+       translational normal motion, use their reduced mass.
+     - Derived from the contact Jacobian and inverse mass matrix, or approximated
+       from the two free-body masses.
    * - :math:`\omega_n`
      - Approximate normal contact natural angular frequency :math:`rad/s`.
      - Derived from :math:`k_{\mathrm{n}}` and :math:`m_{\mathrm{eff}}`.
@@ -323,6 +324,24 @@ the practical meaning of stiffness and damping. Define:
        :math:`m_{\mathrm{eff}}`.
 
 Then estimate:
+
+.. math::
+
+   m_{\mathrm{eff}} = \left(\frac{1}{m_1} + \frac{1}{m_2}\right)^{-1}
+
+for the two-free-body translational case. The lighter body mass is an upper
+bound only for this approximation: it overestimates :math:`m_{\mathrm{eff}}`
+and underestimates :math:`\omega_n`, which can make a timestep/stiffness
+combination appear safer than it is.
+
+For a scalar contact row with Jacobian :math:`J` and generalized mass matrix
+:math:`M`, the principled quantity is conceptually
+:math:`m_{\mathrm{eff}} = (J M^{-1} J^T)^{-1}` when that inverse exists.
+Rotational inertia, contact-point offset, articulation, and other active
+constraints change this value; the lighter body or subtree mass is not a general
+bound for those systems. If a Jacobian-derived value is unavailable, label the
+estimate as coarse and verify it with a bounded timestep/stiffness sweep and an
+explicit safety margin rather than a universal numeric factor.
 
 .. math::
 
