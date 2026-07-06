@@ -1153,6 +1153,39 @@ class TestModelJoints(unittest.TestCase):
         builder.collapse_fixed_joints()
         self.assertEqual(builder.joint_count, count_before)
 
+    def test_collapse_parallel_joints_with_fixed_ordering(self):
+        """Parallel joints between one body pair survive collapse regardless of which
+        joint comes first; a fixed joint among them still merges the pair, and the
+        surviving non-fixed joint is remapped onto the merged body."""
+        for order in ("fixed_first", "fixed_second", "fixed_kept_first"):
+            with self.subTest(order=order):
+                builder = newton.ModelBuilder()
+                p = builder.add_body(label="parent")
+                c = builder.add_body(label="child")
+                builder.add_shape_sphere(p, radius=0.1)
+                builder.add_shape_sphere(c, radius=0.1)
+                if order == "fixed_second":
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                else:
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                keep = ["fix"] if order == "fixed_kept_first" else []
+                builder.collapse_fixed_joints(joints_to_keep=keep)
+                labels = list(builder.joint_label)
+                # add_body() gives each body a free joint; only assert on ours.
+                if order == "fixed_kept_first":
+                    # Nothing merged: both parallel joints survive.
+                    self.assertIn("fix", labels)
+                    self.assertIn("ball", labels)
+                    self.assertEqual(builder.body_count, 2)
+                else:
+                    # The fixed pair merged (or the redundant fixed loop joint dropped);
+                    # the ball joint survives with valid endpoints.
+                    self.assertIn("ball", labels)
+                for j in range(builder.joint_count):
+                    self.assertLess(builder.joint_child[j], builder.body_count)
+
     def test_collapse_reindexes_bodies_in_original_order(self):
         """Retained bodies keep their original relative order after collapse, so an
         anchor joint reaching a rod mid-chain cannot scramble recorded body ranges."""

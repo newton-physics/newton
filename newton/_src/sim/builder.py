@@ -5209,8 +5209,11 @@ class ModelBuilder:
             nonlocal body_data
 
             # The first joint of the pair is the tree edge; parallel joints between the
-            # same pair (e.g. an attachment with several point sites) close loops.
-            retain_loop_joints(joint_data[(parent_body, child_body)][1:], child_body, incoming_xform, last_dynamic_body)
+            # same pair (e.g. an attachment with several point sites) close loops. They are
+            # retained after the tree edge is processed (see below), so a fixed tree joint's
+            # merge is already recorded when their child endpoint is remapped.
+            entry_xform = incoming_xform
+            entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
             # and would be merged into world (last_dynamic_body == -1)
@@ -5309,6 +5312,10 @@ class ModelBuilder:
                 retained_bodies.append(child_body)
                 for shape in body_data[child_body]["shapes"]:
                     self.shape_body[shape] = new_id
+
+            retain_loop_joints(
+                joint_data[(parent_body, child_body)][1:], child_body, entry_xform, entry_last_dynamic_body
+            )
 
             visited[parent_body] = True
             if visited[child_body] or child_body not in body_children:
