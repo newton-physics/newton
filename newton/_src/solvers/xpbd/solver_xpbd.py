@@ -6,6 +6,7 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
+from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .kernels import (
     accumulate_weighted_contact_impulse,
@@ -30,7 +31,7 @@ from .kernels import (
 )
 
 
-class SolverXPBD(SolverBase):
+class SolverXPBD(SolverBase, CouplingInterface):
     """An implicit integrator using eXtended Position-Based Dynamics (XPBD) for rigid and soft body simulation.
 
     References:
@@ -146,6 +147,10 @@ class SolverXPBD(SolverBase):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+
+    @override
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        return True
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
         if model.body_count == 0:
@@ -410,6 +415,7 @@ class SolverXPBD(SolverBase):
                                     model.body_com,
                                     self.body_inv_mass_effective,
                                     self.body_inv_inertia_effective,
+                                    model.body_flags,
                                     model.shape_body,
                                     model.shape_material_mu,
                                     model.soft_contact_mu,
