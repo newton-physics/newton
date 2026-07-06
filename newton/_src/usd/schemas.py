@@ -239,6 +239,74 @@ class SchemaResolverNewton(SchemaResolver):
                 0.0,
                 usd_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:velocity"),
             ),
+            # Per-axis linear limit attrs (deprecated; use newton:limitStiffness / newton:limitDamping)
+            "limit_transX_ke": SchemaAttribute(
+                "newton:transX:limitStiffness",
+                None,
+                usd_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:transX:limitStiffness", "newton:limitStiffness"
+                ),
+            ),
+            "limit_transY_ke": SchemaAttribute(
+                "newton:transY:limitStiffness",
+                None,
+                usd_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:transY:limitStiffness", "newton:limitStiffness"
+                ),
+            ),
+            "limit_transZ_ke": SchemaAttribute(
+                "newton:transZ:limitStiffness",
+                None,
+                usd_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:transZ:limitStiffness", "newton:limitStiffness"
+                ),
+            ),
+            "limit_transX_kd": SchemaAttribute(
+                "newton:transX:limitDamping",
+                None,
+                usd_value_getter=_newton_legacy_joint_limit_attr("newton:transX:limitDamping", "newton:limitDamping"),
+            ),
+            "limit_transY_kd": SchemaAttribute(
+                "newton:transY:limitDamping",
+                None,
+                usd_value_getter=_newton_legacy_joint_limit_attr("newton:transY:limitDamping", "newton:limitDamping"),
+            ),
+            "limit_transZ_kd": SchemaAttribute(
+                "newton:transZ:limitDamping",
+                None,
+                usd_value_getter=_newton_legacy_joint_limit_attr("newton:transZ:limitDamping", "newton:limitDamping"),
+            ),
+            # Non-schema per-DOF initial state attrs for translation axes
+            "transX_position": SchemaAttribute(
+                "newton:transX:position",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transX:position"),
+            ),
+            "transY_position": SchemaAttribute(
+                "newton:transY:position",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transY:position"),
+            ),
+            "transZ_position": SchemaAttribute(
+                "newton:transZ:position",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transZ:position"),
+            ),
+            "transX_velocity": SchemaAttribute(
+                "newton:transX:velocity",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transX:velocity"),
+            ),
+            "transY_velocity": SchemaAttribute(
+                "newton:transY:velocity",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transY:velocity"),
+            ),
+            "transZ_velocity": SchemaAttribute(
+                "newton:transZ:velocity",
+                0.0,
+                usd_value_getter=_newton_non_schema_joint_state_attr("newton:transZ:velocity"),
+            ),
         },
         PrimType.SHAPE: {
             # Mesh
