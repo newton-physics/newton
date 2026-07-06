@@ -21,6 +21,7 @@ from ..core.types import Devicelike, override
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .deformable_render import DeformableRenderMesh
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -1025,6 +1026,12 @@ class Model:
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
+        self.deformable_render_meshes: list[DeformableRenderMesh] = []
+        """High-resolution render meshes embedded in deformables, skinned from the
+        simulation state for visualization and sensors only (see
+        :meth:`~newton.ModelBuilder.add_deformable_render_mesh`). Empty when no
+        render meshes were attached."""
+
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params: wp.array2d[wp.float32] | None = None
@@ -1315,6 +1322,8 @@ class Model:
         """Total number of springs in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
+        self.deformable_render_mesh_count: int = 0
+        """Total number of deformable render meshes in the system."""
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.joint_dof_count: int = 0
