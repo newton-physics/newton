@@ -246,6 +246,10 @@ def _ptr_key_from_numpy(arr: np.ndarray) -> int:
     # Use the underlying buffer address as a stable key within a process
     # for non-aliased arrays. For views, this still points to the base buffer;
     # since user guarantees no aliasing across arrays, we can use the data address.
+    # Empty arrays share a null data buffer, so distinct empties would otherwise
+    # collide on the same key; fall back to object identity for them.
+    if arr.size == 0:
+        return id(arr)
     return int(arr.__array_interface__["data"][0])
 
 

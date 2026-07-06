@@ -282,6 +282,10 @@ actuators — see ``SolverMuJoCo._init_actuators``.
 Equality constraints
 --------------------
 
+Use :class:`~newton.solvers.SolverMuJoCo.EqType` for MuJoCo equality
+constraint types. The top-level :class:`newton.EqType` alias is deprecated
+in Newton 1.4.
+
 Each row's ``data[...]`` reference below points into MuJoCo's
 `equality.data <https://mujoco.readthedocs.io/en/stable/XMLreference.html#equality>`_
 array; slot layout depends on the constraint type.
@@ -293,14 +297,14 @@ array; slot layout depends on the constraint type.
    * - Newton type
      - MuJoCo equivalent
      - Notes
-   * - :attr:`~newton.EqType.CONNECT`
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.CONNECT`
      - ``mjEQ_CONNECT``
      - Anchor forwarded in ``data[0:3]``.
-   * - :attr:`~newton.EqType.WELD`
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.WELD`
      - ``mjEQ_WELD``
      - Anchor forwarded in ``data[0:3]``, relative pose in ``data[3:10]``,
        torque scale in ``data[10]``.
-   * - :attr:`~newton.EqType.JOINT`
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.JOINT`
      - ``mjEQ_JOINT``
      - Polynomial coefficients forwarded in ``data[0:5]``.
    * - Mimic
@@ -316,6 +320,28 @@ builder call. Construct them through the MuJoCo
 :meth:`~newton.ModelBuilder.add_custom_values` using the
 ``mujoco:equality_constraint_*`` keys, then read or update finalized
 fields via ``model.mujoco.equality_constraint_*``.
+
+For example, add a connect constraint between two body indices in the
+active world as follows. Fields that do not apply to connect constraints
+retain their registered defaults.
+
+.. code-block:: python
+
+   import newton
+   import warp as wp
+
+   builder.add_custom_values(
+       **{
+           "mujoco:equality_constraint_type": int(
+               newton.solvers.SolverMuJoCo.EqType.CONNECT
+           ),
+           "mujoco:equality_constraint_body1": body1,
+           "mujoco:equality_constraint_body2": body2,
+           "mujoco:equality_constraint_anchor": wp.vec3(0.0, 0.0, 0.0),
+           "mujoco:equality_constraint_enabled": True,
+           "mujoco:equality_constraint_world": builder.current_world,
+       }
+   )
 
 .. _mujoco-loop-closures:
 

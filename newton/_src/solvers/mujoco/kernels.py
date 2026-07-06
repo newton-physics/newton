@@ -10,7 +10,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import BodyFlags, EqType, JointTargetMode, JointType
+from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_GAIN_RTOL,
@@ -24,6 +24,7 @@ from .constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from .enums import EqType
 
 
 def _import_contact_force_fn():
@@ -2024,14 +2025,14 @@ def update_body_properties_kernel(
     body_flags: wp.array[wp.int32],
     joint_armature: wp.array[float],
     kinematic_armature: float,
+    apply_kinematic_armature: bool,
     # outputs
     dof_armature: wp.array2d[float],
 ):
     """Update MuJoCo dof_armature from Newton body flags.
 
-    For each MuJoCo DOF, the mapped Newton child body controls armature source:
-    - kinematic body -> ``kinematic_armature``
-    - dynamic body   -> Newton ``joint_armature``
+    Kinematic DOFs use ``kinematic_armature`` when requested; all other DOFs
+    use Newton ``joint_armature``.
     """
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
@@ -2039,7 +2040,7 @@ def update_body_properties_kernel(
         return
 
     newton_body = newton_dof_to_body[newton_dof]
-    if newton_body >= 0 and (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+    if apply_kinematic_armature and newton_body >= 0 and (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
         dof_armature[world, mjc_dof] = kinematic_armature
     else:
         dof_armature[world, mjc_dof] = joint_armature[newton_dof]
