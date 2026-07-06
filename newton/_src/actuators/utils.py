@@ -184,6 +184,21 @@ def _require_torch():
     return torch
 
 
+def _parse_metadata_json(text: str | bytes, path: str) -> dict[str, Any]:
+    """Parse a checkpoint's ``metadata.json`` payload, requiring a JSON object."""
+    if not text:
+        return {}
+    try:
+        metadata = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in checkpoint metadata for '{path}'") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError(
+            f"Invalid checkpoint metadata for '{path}': expected a JSON object, got {type(metadata).__name__}"
+        )
+    return metadata
+
+
 def _load_torch_raw(path: str, warn: bool = True) -> tuple[Any, dict[str, Any]]:
     """Load a pt2 / TorchScript / dict checkpoint as ``(module, metadata)``.
 
@@ -200,8 +215,7 @@ def _load_torch_raw(path: str, warn: bool = True) -> tuple[Any, dict[str, Any]]:
     if "archive_format" in entries:
         extra_files: dict[str, str] = {_METADATA_FILE: ""}
         exported = torch.export.load(path, extra_files=extra_files)
-        metadata = json.loads(extra_files[_METADATA_FILE]) if extra_files[_METADATA_FILE] else {}
-        return exported.module(), metadata
+        return exported.module(), _parse_metadata_json(extra_files[_METADATA_FILE], path)
 
     if "constants.pkl" in entries:
         # torch.jit.save always writes constants.pkl; torch.save archives don't.
@@ -214,7 +228,7 @@ def _load_torch_raw(path: str, warn: bool = True) -> tuple[Any, dict[str, Any]]:
                 DeprecationWarning,
                 stacklevel=4,
             )
-        metadata = json.loads(extra_files[_METADATA_FILE]) if extra_files[_METADATA_FILE] else {}
+        metadata = _parse_metadata_json(extra_files[_METADATA_FILE], path)
         net.eval()
         return net, metadata
 
@@ -252,7 +266,7 @@ def _load_torch_metadata(path: str) -> dict[str, Any]:
             entries = {name.split("/", 1)[-1]: name for name in zf.namelist()}
             metadata_entry = entries.get(f"extra/{_METADATA_FILE}")
             if metadata_entry is not None:
-                return json.loads(zf.read(metadata_entry))
+                return _parse_metadata_json(zf.read(metadata_entry), path)
             if "archive_format" in entries or "constants.pkl" in entries:
                 return {}
     except (OSError, zipfile.BadZipFile):
