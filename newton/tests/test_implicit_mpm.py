@@ -7,7 +7,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverImplicitMPM
+from newton.solvers import SolverImplicitMPM, SolverXPBD
+from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -278,6 +279,54 @@ def test_cg_rheology_whole_step_graph_capture(test, device):
             test.assertTrue(np.all(np.isfinite(state_1.particle_q.numpy())))
 
 
+def test_proxy_particle_gravity_is_not_coupling_feedback(test, device):
+    gravity = -9.81
+    dt = 1.0 / 60.0
+
+    builder = newton.ModelBuilder(gravity=gravity)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.03)
+    builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.03)
+    model = builder.finalize(device=device)
+    model.mpm.yield_pressure.fill_(1.0e5)
+
+    config = SolverImplicitMPM.Config()
+    config.voxel_size = 0.2
+    config.grid_type = "fixed"
+    config.grid_padding = 2
+    config.warmstart_mode = "none"
+    config.transfer_scheme = "pic"
+    config.max_iterations = 1
+
+    solver = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(
+                name="xpbd",
+                solver=lambda view: SolverXPBD(model=view, iterations=1),
+                particles=[0],
+            ),
+            SolverCoupled.Entry(
+                name="mpm",
+                solver=lambda view: SolverImplicitMPM(model=view, config=config),
+                particles=[1],
+                in_place=True,
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[SolverCoupledProxy.Proxy(source="xpbd", destination="mpm", particles=[0])]
+        ),
+    )
+
+    state_0 = model.state()
+    state_1 = model.state()
+    for step in range(1, 3):
+        solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+        expected_velocity = np.array([0.0, 0.0, step * gravity * dt])
+        np.testing.assert_allclose(state_1.particle_qd.numpy()[0], expected_velocity, atol=1.0e-4)
+        state_0, state_1 = state_1, state_0
+
+
 devices = get_test_devices()
 
 
@@ -301,6 +350,14 @@ add_function_test(
     TestImplicitMPM,
     "test_cg_rheology_whole_step_graph_capture",
     test_cg_rheology_whole_step_graph_capture,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_proxy_particle_gravity_is_not_coupling_feedback",
+    test_proxy_particle_gravity_is_not_coupling_feedback,
     devices=devices,
     check_output=False,
 )

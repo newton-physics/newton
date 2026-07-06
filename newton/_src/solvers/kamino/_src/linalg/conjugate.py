@@ -45,12 +45,12 @@ class BatchedLinearOperator:
         gemv_fn: Callable,
         n_worlds: int,
         max_dim: int,
-        active_dims: wp.array,
+        active_dims: wp.array[wp.int32],
         device: wp.Device,
         dtype: type,
         matvec_fn: Callable | None = None,
-        mio: wp.array | None = None,
-        vio: wp.array | None = None,
+        mio: wp.array[wp.int32] | None = None,
+        vio: wp.array[wp.int32] | None = None,
         total_vec_size: int = 0,
     ):
         self._gemv_fn = gemv_fn
@@ -91,7 +91,9 @@ class BatchedLinearOperator:
         )
 
     @classmethod
-    def from_diagonal(cls, D: wp.array, active_dims: wp.array, vio: wp.array, max_dim: int) -> BatchedLinearOperator:
+    def from_diagonal(
+        cls, D: wp.array[Any], active_dims: wp.array[wp.int32], vio: wp.array[wp.int32], max_dim: int
+    ) -> BatchedLinearOperator:
         """Create operator from diagonal matrix (flat 1D storage)."""
         n_worlds = active_dims.shape[0]
 
@@ -101,7 +103,7 @@ class BatchedLinearOperator:
         return cls(gemv_fn, n_worlds, max_dim, active_dims, D.device, D.dtype, vio=vio, total_vec_size=D.shape[0])
 
     @classmethod
-    def from_block_sparse(cls, A: BlockSparseMatrices, active_dims: wp.array) -> BatchedLinearOperator:
+    def from_block_sparse(cls, A: BlockSparseMatrices, active_dims: wp.array[wp.int32]) -> BatchedLinearOperator:
         """Create operator from block-sparse matrix.
 
         The block-sparse matrix uses its own ``row_start``/``col_start`` offsets
@@ -166,11 +168,18 @@ class BatchedLinearOperator:
             total_vec_size=total_vec_size,
         )
 
-    def gemv(self, x: wp.array, y: wp.array, world_active: wp.array[bool], alpha: float, beta: float):
+    def gemv(
+        self,
+        x: wp.array[Any],
+        y: wp.array[Any],
+        world_active: wp.array[wp.bool],
+        alpha: float,
+        beta: float,
+    ):
         """Compute y = alpha * A @ x + beta * y."""
         self._gemv_fn(x, y, world_active, alpha, beta)
 
-    def matvec(self, x: wp.array, y: wp.array, world_active: wp.array[bool]):
+    def matvec(self, x: wp.array[Any], y: wp.array[Any], world_active: wp.array[wp.bool]):
         if self._matvec_fn is not None:
             return self._matvec_fn(x, y, world_active)
         return self._gemv_fn(x, y, world_active, 1.0, 0.0)
@@ -186,7 +195,7 @@ def check_termination(
     loop_granularity: int,
     r_norm_sq: wp.array[Any],
     atol_sq: wp.array[Any],
-    world_active: wp.array[bool],
+    world_active: wp.array[wp.bool],
     cur_iter: wp.array[int],
     world_condition: wp.array[wp.int32],
     batch_condition: wp.array[wp.int32],
@@ -309,12 +318,12 @@ def _cr_kernel_2(
 
 def _run_capturable_loop(
     do_iteration: Callable,
-    r_norm_sq: wp.array,
-    world_active: wp.array[bool],
+    r_norm_sq: wp.array[Any],
+    world_active: wp.array[wp.bool],
     cur_iter: wp.array[wp.int32],
     conditions: wp.array[wp.int32],
     maxiter: wp.array[int],
-    atol_sq: wp.array,
+    atol_sq: wp.array[Any],
     callback: Callable | None,
     use_cuda_graph: bool,
     use_graph_conditionals: bool = True,
@@ -399,7 +408,7 @@ def make_dot_kernel(tile_size: int, maxdim: int):
         b: wp.array2d[Any],
         vio: wp.array[wp.int32],
         world_size: wp.array[wp.int32],
-        world_active: wp.array[bool],
+        world_active: wp.array[wp.bool],
         result: wp.array2d[Any],
     ):
         """Compute the dot products between flat arrays using tiles and pairwise summation."""
@@ -440,7 +449,7 @@ def dot_sequential(
     b: wp.array2d[Any],
     vio: wp.array[wp.int32],
     world_size: wp.array[wp.int32],
-    world_active: wp.array[bool],
+    world_active: wp.array[wp.bool],
     partial_sum: wp.array3d[Any],
 ):
     col, world = wp.tid()
@@ -526,11 +535,11 @@ class ConjugateSolver:
     def __init__(
         self,
         A: BatchedLinearOperator,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[bool] | None = None,
+        active_dims: wp.array[wp.int32] | None = None,
+        world_active: wp.array[wp.bool] | None = None,
         atol: float | wp.array[Any] | None = None,
         rtol: float | wp.array[Any] | None = None,
-        maxiter: wp.array = None,
+        maxiter: wp.array[wp.int32] = None,
         Mi: BatchedLinearOperator | None = None,
         callback: Callable | None = None,
         use_cuda_graph: bool = True,
@@ -582,7 +591,7 @@ class ConjugateSolver:
 
         if self.maxiter is None:
             maxiter = int(1.5 * self.maxdims)
-            self.maxiter = wp.full(self.n_worlds, maxiter, dtype=int, device=self.device)
+            self.maxiter = wp.full(self.n_worlds, maxiter, dtype=wp.int32, device=self.device)
             self.maxiter_host = maxiter
         else:
             self.maxiter_host = int(max(self.maxiter.numpy()))
@@ -670,10 +679,10 @@ class CGSolver(ConjugateSolver):
 
     def solve(
         self,
-        b: wp.array,
-        x: wp.array,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[bool] | None = None,
+        b: wp.array[Any],
+        x: wp.array[Any],
+        active_dims: wp.array[wp.int32] | None = None,
+        world_active: wp.array[wp.bool] | None = None,
     ):
         if b.shape[0] != self.total_vec_size:
             raise ValueError(f"b has size {b.shape[0]} but solver expects total_vec_size={self.total_vec_size}")
@@ -788,10 +797,10 @@ class CRSolver(ConjugateSolver):
 
     def solve(
         self,
-        b: wp.array,
-        x: wp.array,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[bool] | None = None,
+        b: wp.array[Any],
+        x: wp.array[Any],
+        active_dims: wp.array[wp.int32] | None = None,
+        world_active: wp.array[wp.bool] | None = None,
     ):
         if b.shape[0] != self.total_vec_size:
             raise ValueError(f"b has size {b.shape[0]} but solver expects total_vec_size={self.total_vec_size}")
@@ -901,7 +910,7 @@ class CRSolver(ConjugateSolver):
         )
 
 
-def _repeat_first(arr: wp.array):
+def _repeat_first(arr: wp.array[Any]):
     # returns a view of the first element repeated arr.shape[0] times
     view = wp.array(
         ptr=arr.ptr,
