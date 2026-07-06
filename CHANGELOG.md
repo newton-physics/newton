@@ -78,6 +78,7 @@
 - Fix USD import of MJCF weld and connect equalities that represent world with the stage's non-rigid default prim.
 - Fix USD import of authored rigid-body centers of mass to apply inherited transform scale. (#3332)
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
+- Fix `SolverVBD` building unused per-body rigid and particle contact lists for static and kinematic bodies, which caused unnecessary work and misleading contact-buffer overflow warnings.
 - Fix multi-world soft contact filtering to avoid cross-world rigid-soft particle-shape pairs and VBD soft-soft triangle/edge candidates.
 - Fix `ModelBuilder.add_usd` so a stray authored joint outside any articulation root no longer suppresses base-joint (articulation) creation for unrelated floating rigid bodies in the same call. (#3002)
 - Fix `SolverSemiImplicit` ball joints to apply `joint_damping` on all three angular DOFs.
