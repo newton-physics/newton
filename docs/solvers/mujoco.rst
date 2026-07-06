@@ -425,6 +425,8 @@ degenerate tendon definition produces a warning and is skipped rather
 than raising.
 
 
+.. _mujoco-collision-pipeline:
+
 Collision pipeline
 ------------------
 
@@ -435,6 +437,28 @@ to feed contacts computed by Newton's own collision pipeline into
 Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
+
+.. _mujoco-margin-gap-mapping:
+
+Margin and gap mapping
+~~~~~~~~~~~~~~~~~~~~~~
+
+:attr:`~newton.Model.shape_margin` maps to MuJoCo
+``geom_margin`` and :attr:`~newton.Model.shape_gap` maps to ``geom_gap``;
+authored contact-pair values similarly map to ``pair_margin`` and ``pair_gap``.
+The margin mapping is subject to *Margin zeroing* below. The solver forwards gap
+values at construction and runtime property updates. MuJoCo reports surface
+distances in ``(margin, margin + gap]`` as inactive contacts without contact
+force. See :ref:`margin and gap semantics
+<margin-gap-semantics>` for Newton's contact geometry and MuJoCo's `margin and
+gap model
+<https://mujoco.readthedocs.io/en/stable/computation/index.html#margin-and-gap>`__
+for the three contact regimes.
+
+MJCF and USD margin/gap values use direct MuJoCo 3.9+ semantics. Pass
+``legacy_margin_gap=True`` to :meth:`~newton.ModelBuilder.add_mjcf` or
+:meth:`~newton.ModelBuilder.add_usd` only when reproducing Newton's pre-3.9
+import translation.
 
 **Multi-contact CCD.** Constructing
 :class:`~newton.solvers.SolverMuJoCo` with ``enable_multiccd=True``
