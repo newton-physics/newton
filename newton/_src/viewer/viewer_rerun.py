@@ -149,6 +149,7 @@ class ViewerRerun(ViewerBase):
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
 
+        self._rerun_initialized = False
         super().__init__()
 
         self.app_id = app_id or "newton-viewer"
@@ -192,6 +193,7 @@ class ViewerRerun(ViewerBase):
 
         # Make sure the timeline is set up
         rr.set_time("time", timestamp=0.0)
+        self._rerun_initialized = True
 
     def _get_blueprint(self):
         scalar_panel = None
@@ -205,6 +207,34 @@ class ViewerRerun(ViewerBase):
             rrb.TimePanel(timeline="time", state="collapsed"),
             collapse_panels=True,
         )
+
+    @override
+    def clear_model(self):
+        """Clear the active layer's local caches and Rerun entity subtree."""
+        owns = self._is_layer_owned_path
+
+        if getattr(self, "_rerun_initialized", False):
+            prefix = self.layer.name_prefix
+            if prefix:
+                rr.log(prefix, rr.Clear(recursive=True))
+            else:
+                names = (
+                    set(getattr(self, "_meshes", {}))
+                    | set(getattr(self, "_instances", {}))
+                    | set(getattr(self, "_scalars", {}))
+                )
+                for name in names:
+                    if owns(name):
+                        rr.log(name, rr.Clear(recursive=True))
+
+        if hasattr(self, "_meshes"):
+            self._meshes = {name: value for name, value in self._meshes.items() if not owns(name)}
+        if hasattr(self, "_instances"):
+            self._instances = {name: value for name, value in self._instances.items() if not owns(name)}
+        if hasattr(self, "_scalars"):
+            self._scalars = {name: value for name, value in self._scalars.items() if not owns(name)}
+
+        super().clear_model()
 
     @override
     def log_mesh(
@@ -242,6 +272,8 @@ class ViewerRerun(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
+        name = self._qualify(name)
+
         if not hidden:
             assert isinstance(points, wp.array)
             assert isinstance(indices, wp.array)
@@ -359,6 +391,9 @@ class ViewerRerun(ViewerBase):
             opacities: Instance opacities.
             hidden: Whether the instances are hidden.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if hidden:
             if name in self._instances:
                 rr.log(name, rr.Clear(recursive=False))
@@ -373,6 +408,9 @@ class ViewerRerun(ViewerBase):
         appearance_changed = colors is not None or opacities is not None
         if name not in self._instances or appearance_changed:
             mesh_data = self._meshes[mesh]
+            previous_appearance = self._instances.get(name)
+            if not isinstance(previous_appearance, dict):
+                previous_appearance = {}
             has_texture = (
                 mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None
             ) or mesh_data.get("texture_image") is not None
@@ -383,8 +421,11 @@ class ViewerRerun(ViewerBase):
             albedo_factor = None
             first_opacity = 1.0
             num_instances = len(xforms) if xforms is not None else 0
+            opacity_source = opacities
+            if opacity_source is None:
+                opacity_source = previous_appearance.get("opacities", mesh_data.get("opacity"))
             opacities_np = promote_to_clamped_float_array(
-                opacities if opacities is not None else mesh_data.get("opacity"),
+                opacity_source,
                 num_instances,
                 value_name="Opacity",
             )
@@ -398,16 +439,28 @@ class ViewerRerun(ViewerBase):
                 vertex_colors = np.tile(color_rgb, (num_vertices, 1))
                 if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
                     albedo_factor = (255, 255, 255, self._opacity_to_u8(first_opacity))
+            elif previous_appearance.get("vertex_colors") is not None and not has_texture:
+                vertex_colors = previous_appearance["vertex_colors"].copy()
+                if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
+                    previous_albedo = previous_appearance.get("albedo_factor")
+                    albedo_rgb = (255, 255, 255) if previous_albedo is None else tuple(previous_albedo[:3])
+                    albedo_factor = (*albedo_rgb, self._opacity_to_u8(first_opacity))
             elif (opacities_np is not None or mesh_data.get("color") is not None) and not has_texture:
                 base_rgb = self._rgb_to_u8(mesh_data.get("color"))
                 num_vertices = len(mesh_data["points"])
                 vertex_colors = np.tile(base_rgb, (num_vertices, 1))
                 if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
                     albedo_factor = (255, 255, 255, self._opacity_to_u8(first_opacity))
-            elif (opacities_np is not None or mesh_data.get("color") is not None) and self._mesh3d_supports(
-                "albedo_factor"
-            ):
-                base_rgb = self._rgb_to_u8(mesh_data.get("color"), default=(255, 255, 255))
+            elif (
+                opacities_np is not None or colors is not None or mesh_data.get("color") is not None
+            ) and self._mesh3d_supports("albedo_factor"):
+                previous_albedo = previous_appearance.get("albedo_factor")
+                if colors is not None:
+                    base_rgb = self._rgb_to_u8(to_numpy(colors)[0], default=(255, 255, 255))
+                elif previous_albedo is not None:
+                    base_rgb = np.asarray(previous_albedo[:3], dtype=np.uint8)
+                else:
+                    base_rgb = self._rgb_to_u8(mesh_data.get("color"), default=(255, 255, 255))
                 albedo_factor = (*base_rgb.tolist(), self._opacity_to_u8(first_opacity))
 
             # Log the base mesh with optional colors
@@ -431,8 +484,12 @@ class ViewerRerun(ViewerBase):
             mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
             rr.log(name, mesh_3d)
 
-            # save reference
-            self._instances[name] = mesh_3d
+            self._instances[name] = {
+                "mesh_3d": mesh_3d,
+                "vertex_colors": vertex_colors,
+                "albedo_factor": albedo_factor,
+                "opacities": None if opacities_np is None else opacities_np.copy(),
+            }
 
             # hide the reference mesh
             rr.log(mesh, rr.Clear(recursive=False))
@@ -559,11 +616,14 @@ class ViewerRerun(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
+        name = self._qualify(name)
 
         if hidden:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Do not log hidden lines
 
         if starts is None or ends is None:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Nothing to log
 
         # Convert inputs to numpy for rerun API compatibility
@@ -606,6 +666,8 @@ class ViewerRerun(ViewerBase):
             name: Name of the array.
             array: The array data (can be a wp.array or a numpy array).
         """
+        name = self._qualify(name)
+
         if array is None:
             return
         array_np = to_numpy(array)
@@ -623,6 +685,7 @@ class ViewerRerun(ViewerBase):
         # Basic scalar logging for rerun: log as a 'Scalar' component (if present)
         if name is None:
             return
+        name = self._qualify(name)
 
         # Only support standard Python/numpy scalars, not generic objects for now
         if hasattr(value, "item"):
@@ -702,11 +765,15 @@ class ViewerRerun(ViewerBase):
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         if hidden:
             # Optionally, skip logging hidden points
+            rr.log(name, rr.Clear(recursive=False))
             return
 
         if points is None:
+            rr.log(name, rr.Clear(recursive=False))
             return
 
         pts = to_numpy(points)

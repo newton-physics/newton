@@ -140,6 +140,9 @@ uniform float shadow_extents;
 uniform float exposure;
 #ifdef ENABLE_TRANSPARENCY
 uniform bool transparent_pass;
+uniform mat4 view;
+uniform float camera_near;
+uniform float camera_far;
 #endif
 
 const float PI = 3.14159265359;
@@ -408,8 +411,16 @@ void main()
     if (transparent_pass)
     {
         float alpha = clamp(Opacity, 0.0, 1.0);
-        // Avoid depth-derived weights here: clip-space depth varies with camera range and scene scale.
-        float accum_weight = max(alpha, 0.01);
+        float view_depth = max(-(view * vec4(FragPos, 1.0)).z, camera_near);
+        float depth01 = clamp(
+            (view_depth - camera_near) / max(camera_far - camera_near, 1e-5),
+            0.0,
+            1.0
+        );
+        // A normalized view-depth weight is unit-free while retaining the
+        // near-surface preference of weighted-blended OIT.
+        float depth_weight = clamp(0.1 / (1e-5 + depth01 * depth01), 0.01, 10.0);
+        float accum_weight = max(alpha * depth_weight, 0.01);
         FragColor = vec4(color * alpha * accum_weight, alpha * accum_weight);
         Revealage = vec4(alpha);
     }
@@ -611,8 +622,12 @@ class ShaderShape(ShaderGL):
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
             self.loc_transparent_pass = None
+            self.loc_camera_near = None
+            self.loc_camera_far = None
             if self.enable_transparency:
                 self.loc_transparent_pass = self._get_uniform_location("transparent_pass")
+                self.loc_camera_near = self._get_uniform_location("camera_near")
+                self.loc_camera_far = self._get_uniform_location("camera_far")
 
     def update(
         self,
@@ -636,6 +651,8 @@ class ShaderShape(ShaderGL):
         spotlight_enabled: bool = True,
         shadow_extents: float = 10.0,
         exposure: float = 1.6,
+        camera_near: float = 0.01,
+        camera_far: float = 1000.0,
     ):
         """Update all shader uniforms."""
         with self:
@@ -658,6 +675,8 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1f(self.loc_exposure, exposure)
             if self.loc_transparent_pass is not None:
                 self._gl.glUniform1i(self.loc_transparent_pass, 0)
+                self._gl.glUniform1f(self.loc_camera_near, float(camera_near))
+                self._gl.glUniform1f(self.loc_camera_far, float(camera_far))
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)

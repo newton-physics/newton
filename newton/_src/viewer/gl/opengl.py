@@ -13,6 +13,7 @@ from newton import Mesh
 
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
+from ..utils import OPAQUE_OPACITY_THRESHOLD
 from .shaders import (
     FrameShader,
     OITResolveShader,
@@ -264,7 +265,6 @@ class MeshGL:
 
         Args:
             points: New point positions (warp array or numpy array)
-            scale: Scaling factor for positions
             opacity: Display opacity in [0, 1].
         """
         gl = RendererGL.gl
@@ -386,7 +386,7 @@ class MeshGL:
 
     def has_transparency(self) -> bool:
         """Return True when this mesh needs transparent rendering."""
-        return not self.hidden and self.opacity < 0.999
+        return not self.hidden and self.opacity < OPAQUE_OPACITY_THRESHOLD
 
     def sort_depth(self, camera_pos, camera_front) -> float:
         """Return a camera-space depth key for back-to-front object sorting."""
@@ -1023,7 +1023,7 @@ class MeshInstancerGL:
         else:
             host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
             host_opacities = np.clip(host_opacities, 0.0, 1.0)
-            self._has_transparency = bool(np.any(host_opacities < 0.999))
+            self._has_transparency = bool(np.any(host_opacities < OPAQUE_OPACITY_THRESHOLD))
             if not self._has_transparency and self._opacity_buffer_opaque:
                 self._set_opacity_attribute_enabled(False)
                 return
@@ -1444,13 +1444,10 @@ class RendererGL:
         gl.glViewport(0, 0, self._screen_width, self._screen_height)
 
         use_weighted_oit = self._can_use_weighted_transparency(scene_has_transparency)
+        has_msaa = getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None
 
         # select target framebuffer (MSAA or regular) for scene rendering
-        target_fbo = (
-            self._frame_fbo
-            if use_weighted_oit
-            else (self._frame_msaa_fbo if getattr(self, "msaa_samples", 0) > 0 else self._frame_fbo)
-        )
+        target_fbo = self._frame_msaa_fbo if has_msaa else self._frame_fbo
 
         # ---------------------------------------
         # Set texture as render target for MSAA resolve
@@ -1462,7 +1459,7 @@ class RendererGL:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glBindVertexArray(0)
 
-        self._render_scene(
+        msaa_resolved = self._render_scene(
             objects,
             use_weighted_oit=use_weighted_oit,
             scene_has_transparency=scene_has_transparency,
@@ -1481,25 +1478,8 @@ class RendererGL:
         # ------------------------------------------------------------------
         # If MSAA is enabled, resolve the multi-sample buffer into texture FBO
         # ------------------------------------------------------------------
-        if not use_weighted_oit and getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
-            gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._frame_msaa_fbo)
-            gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
-
-            gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._frame_fbo)
-            gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
-
-            gl.glBlitFramebuffer(
-                0,
-                0,
-                self._screen_width,
-                self._screen_height,
-                0,
-                0,
-                self._screen_width,
-                self._screen_height,
-                gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT,
-                gl.GL_NEAREST,
-            )
+        if has_msaa and not msaa_resolved:
+            self._resolve_msaa_frame()
 
         # ------------------------------------------------------------------
         # Draw resolved texture to the screen
@@ -2070,8 +2050,8 @@ class RendererGL:
 
         self._shadow_shader.update(self._light_space_matrix)
 
-        # render from light's point of view (skip objects that don't cast shadows
-        # and transparent objects for this prototype)
+        # Render from the light's point of view. Transparent objects do not cast
+        # shadows because the shadow pass has no alpha-aware representation.
         if scene_has_transparency:
             shadow_objects = {
                 k: v
@@ -2109,10 +2089,18 @@ class RendererGL:
             spotlight_enabled=self.spotlight_enabled,
             shadow_extents=self.shadow_extents,
             exposure=self.exposure,
+            camera_near=self.camera.near,
+            camera_far=self.camera.far,
         )
 
-    def _render_scene(self, objects, use_weighted_oit: bool = False, scene_has_transparency: bool = False):
+    def _render_scene(
+        self,
+        objects,
+        use_weighted_oit: bool = False,
+        scene_has_transparency: bool = False,
+    ) -> bool:
         gl = RendererGL.gl
+        msaa_resolved = False
 
         if self.draw_sky:
             self._draw_sky()
@@ -2135,6 +2123,9 @@ class RendererGL:
             self._update_shape_shader(self._shape_transparent_shader)
             with self._shape_transparent_shader:
                 if use_weighted_oit:
+                    if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
+                        self._resolve_msaa_frame()
+                        msaa_resolved = True
                     self._render_weighted_transparent_objects(transparent_objects, self._shape_transparent_shader)
                 else:
                     self._render_sorted_transparent_objects(transparent_objects, self._shape_transparent_shader)
@@ -2164,6 +2155,28 @@ class RendererGL:
             gl.glDisable(gl.GL_POLYGON_OFFSET_LINE)
 
         check_gl_error()
+        return msaa_resolved
+
+    def _resolve_msaa_frame(self) -> None:
+        """Resolve multisampled opaque color and depth into the texture framebuffer."""
+        gl = RendererGL.gl
+        gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._frame_msaa_fbo)
+        gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
+        gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._frame_fbo)
+        gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
+        gl.glBlitFramebuffer(
+            0,
+            0,
+            self._screen_width,
+            self._screen_height,
+            0,
+            0,
+            self._screen_width,
+            self._screen_height,
+            gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT,
+            gl.GL_NEAREST,
+        )
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
 
     def _can_use_weighted_transparency(self, scene_has_transparency: bool) -> bool:
         gl = RendererGL.gl

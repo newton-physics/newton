@@ -31,17 +31,7 @@ from ..core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION, make_get_mat
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..core.types import (
-    float32,
-    int32,
-    quatf,
     to_warp_int32_array,
-    transformf,
-    uint32,
-    uint64,
-    vec2f,
-    vec2i,
-    vec3f,
-    vec4f,
 )
 from ..geometry.contacts import (
     DEFAULT_GEOM_PAIR_CONTACT_GAP,
@@ -70,42 +60,42 @@ class ContactWriterDataKamino:
     """Contact writer data for writing contacts directly in Kamino format."""
 
     # Contact limits
-    model_max_contacts: int32
-    world_max_contacts: wp.array[int32]
+    model_max_contacts: wp.int32
+    world_max_contacts: wp.array[wp.int32]
 
     # Geometry information arrays
-    geom_wid: wp.array[int32]  # World ID for each geometry
-    geom_bid: wp.array[int32]  # Body ID for each geometry
-    geom_mid: wp.array[int32]  # Material ID for each geometry
-    geom_gap: wp.array[float32]  # Detection gap for each geometry [m]
-    geom_margin: wp.array[float32]  # Shape margin for each geometry [m]
+    geom_wid: wp.array[wp.int32]  # World ID for each geometry
+    geom_bid: wp.array[wp.int32]  # Body ID for each geometry
+    geom_mid: wp.array[wp.int32]  # Material ID for each geometry
+    geom_gap: wp.array[wp.float32]  # Detection gap for each geometry [m]
+    geom_margin: wp.array[wp.float32]  # Shape margin for each geometry [m]
 
     # Material properties (indexed by material pair)
-    material_restitution: wp.array[float32]
-    material_static_friction: wp.array[float32]
-    material_dynamic_friction: wp.array[float32]
-    material_pair_restitution: wp.array[float32]
-    material_pair_static_friction: wp.array[float32]
-    material_pair_dynamic_friction: wp.array[float32]
+    material_restitution: wp.array[wp.float32]
+    material_static_friction: wp.array[wp.float32]
+    material_dynamic_friction: wp.array[wp.float32]
+    material_pair_restitution: wp.array[wp.float32]
+    material_pair_static_friction: wp.array[wp.float32]
+    material_pair_dynamic_friction: wp.array[wp.float32]
 
     # Contact limit and active count (Newton interface)
-    contact_max: int32
-    contact_count: wp.array[int32]
+    contact_max: wp.int32
+    contact_count: wp.array[wp.int32]
 
     # Output arrays (Kamino Contacts format)
-    contacts_model_num_active: wp.array[int32]
-    contacts_world_num_active: wp.array[int32]
-    contact_wid: wp.array[int32]
-    contact_cid: wp.array[int32]
-    contact_gid_AB: wp.array[vec2i]
-    contact_bid_AB: wp.array[vec2i]
-    contact_position_A: wp.array[vec3f]
-    contact_position_B: wp.array[vec3f]
-    contact_gapfunc: wp.array[vec4f]
-    contact_frame: wp.array[quatf]
-    contact_material: wp.array[vec2f]
-    contact_margins: wp.array[vec2f]
-    contact_key: wp.array[uint64]
+    contacts_model_num_active: wp.array[wp.int32]
+    contacts_world_num_active: wp.array[wp.int32]
+    contact_wid: wp.array[wp.int32]
+    contact_cid: wp.array[wp.int32]
+    contact_gid_AB: wp.array[wp.vec2i]
+    contact_bid_AB: wp.array[wp.vec2i]
+    contact_position_A: wp.array[wp.vec3f]
+    contact_position_B: wp.array[wp.vec3f]
+    contact_gapfunc: wp.array[wp.vec4f]
+    contact_frame: wp.array[wp.quatf]
+    contact_material: wp.array[wp.vec2f]
+    contact_margins: wp.array[wp.vec2f]
+    contact_key: wp.array[wp.uint64]
 
 
 ###
@@ -193,19 +183,19 @@ def _write_contact_unified_kamino(
     # Ensure the static body is always body A so that the normal
     # always points from A to B and bid_B is non-negative
     if bid_b < 0:
-        gid_AB = vec2i(gid_b, gid_a)
-        bid_AB = vec2i(bid_b, bid_a)
+        gid_AB = wp.vec2i(gid_b, gid_a)
+        bid_AB = wp.vec2i(bid_b, bid_a)
         normal = -contact_normal_a_to_b
         pos_A = b_contact_world
         pos_B = a_contact_world
-        margins = vec2f(margin_b, margin_a)
+        margins = wp.vec2f(margin_b, margin_a)
     else:
-        gid_AB = vec2i(gid_a, gid_b)
-        bid_AB = vec2i(bid_a, bid_b)
+        gid_AB = wp.vec2i(gid_a, gid_b)
+        bid_AB = wp.vec2i(bid_a, bid_b)
         normal = contact_normal_a_to_b
         pos_A = a_contact_world
         pos_B = b_contact_world
-        margins = vec2f(margin_a, margin_b)
+        margins = wp.vec2f(margin_a, margin_b)
 
     # Retrieve the material properties for the geom pair
     restitution_ab, _, mu_ab = wp.static(make_get_material_pair_properties())(
@@ -218,13 +208,13 @@ def _write_contact_unified_kamino(
         writer_data.material_pair_static_friction,
         writer_data.material_pair_dynamic_friction,
     )
-    material = vec2f(mu_ab, restitution_ab)
+    material = wp.vec2f(mu_ab, restitution_ab)
 
     # Generate the gap-function (normal.x, normal.y, normal.z, distance),
     # contact frame (z-norm aligned with contact normal)
-    gapfunc = vec4f(normal[0], normal[1], normal[2], distance)
+    gapfunc = wp.vec4f(normal[0], normal[1], normal[2], distance)
     q_frame = wp.quat_from_matrix(make_contact_frame_znorm(normal))
-    key = build_pair_key2(uint32(gid_AB[0]), uint32(gid_AB[1]))
+    key = build_pair_key2(wp.uint32(gid_AB[0]), wp.uint32(gid_AB[1]))
 
     # Store contact data in Kamino format
     writer_data.contact_wid[mcid] = wid
@@ -246,13 +236,13 @@ def _write_contact_unified_kamino(
 
 
 @wp.func
-def _compute_collision_radius(geo_type: int32, scale: vec3f) -> float32:
+def _compute_collision_radius(geo_type: wp.int32, scale: wp.vec3f) -> wp.float32:
     """Compute the bounding-sphere radius for broadphase AABB fallback.
 
     Mirrors :func:`newton._src.geometry.utils.compute_shape_radius` for the
     primitive shape types that Kamino currently supports.
     """
-    radius = float32(10.0)
+    radius = wp.float32(10.0)
     if geo_type == GeoType.SPHERE:
         radius = scale[0]
     elif geo_type == GeoType.BOX:
@@ -265,24 +255,24 @@ def _compute_collision_radius(geo_type: int32, scale: vec3f) -> float32:
         if scale[0] > 0.0 and scale[1] > 0.0:
             radius = wp.length(scale) * 0.5
         else:
-            radius = float32(1.0e6)
+            radius = wp.float32(1.0e6)
     elif geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH or geo_type == GeoType.HFIELD:
         # Large bounding sphere; the AABB kernel computes a tighter bound from mesh data
-        radius = float32(1.0e6)
+        radius = wp.float32(1.0e6)
     return radius
 
 
 @wp.kernel
 def _convert_geom_data_kamino_to_newton(
     # Inputs:
-    default_gap: float32,
-    geom_type: wp.array[int32],
-    geom_params: wp.array[vec3f],
-    geom_margin: wp.array[float32],
+    default_gap: wp.float32,
+    geom_type: wp.array[wp.int32],
+    geom_params: wp.array[wp.vec3f],
+    geom_margin: wp.array[wp.float32],
     # Outputs:
-    geom_gap: wp.array[float32],
-    geom_data: wp.array[vec4f],
-    shape_collision_radius: wp.array[float32],
+    geom_gap: wp.array[wp.float32],
+    geom_data: wp.array[wp.vec4f],
+    shape_collision_radius: wp.array[wp.float32],
 ):
     """
     Converts Kamino geometry data to Newton-compatible format.
@@ -304,7 +294,7 @@ def _convert_geom_data_kamino_to_newton(
     # Store converted geometry data
     # NOTE: the per-geom margin is overridden because
     # the unified pipeline needs it during narrow-phase
-    geom_data[gid] = vec4f(scale[0], scale[1], scale[2], margin)
+    geom_data[gid] = wp.vec4f(scale[0], scale[1], scale[2], margin)
     geom_gap[gid] = wp.max(default_gap, gap)
     shape_collision_radius[gid] = _compute_collision_radius(type, scale)
 
@@ -312,19 +302,19 @@ def _convert_geom_data_kamino_to_newton(
 @wp.kernel
 def _update_geom_poses_and_compute_aabbs(
     # Inputs:
-    geom_type: wp.array[int32],
-    geom_bid: wp.array[int32],
+    geom_type: wp.array[wp.int32],
+    geom_bid: wp.array[wp.int32],
     geom_ptr: wp.array[wp.uint64],
-    geom_offset: wp.array[transformf],
-    geom_margin: wp.array[float32],
-    geom_gap: wp.array[float32],
-    geom_data: wp.array[vec4f],
-    geom_collision_radius: wp.array[float32],
-    body_pose: wp.array[transformf],
+    geom_offset: wp.array[wp.transformf],
+    geom_margin: wp.array[wp.float32],
+    geom_gap: wp.array[wp.float32],
+    geom_data: wp.array[wp.vec4f],
+    geom_collision_radius: wp.array[wp.float32],
+    body_pose: wp.array[wp.transformf],
     # Outputs:
-    geom_pose: wp.array[transformf],
-    shape_aabb_lower: wp.array[vec3f],
-    shape_aabb_upper: wp.array[vec3f],
+    geom_pose: wp.array[wp.transformf],
+    shape_aabb_lower: wp.array[wp.vec3f],
+    shape_aabb_upper: wp.array[wp.vec3f],
 ):
     """
     Updates the pose of each Kamino geometry in world coordinates and computes its AABB.
@@ -341,7 +331,7 @@ def _update_geom_poses_and_compute_aabbs(
     gap = geom_gap[gid]
     X_bg = geom_offset[gid]
 
-    X_b = wp.transform_identity(dtype=float32)
+    X_b = wp.transform_identity(dtype=wp.float32)
     if bid > -1:
         X_b = body_pose[bid]
 
@@ -350,8 +340,8 @@ def _update_geom_poses_and_compute_aabbs(
     r_g = wp.transform_get_translation(X_g)
     q_g = wp.transform_get_rotation(X_g)
 
-    # Format is (vec3f scale, float32 margin_offset)
-    scale = vec3f(geo_data[0], geo_data[1], geo_data[2])
+    # Format is (wp.vec3f scale, wp.float32 margin_offset)
+    scale = wp.vec3f(geo_data[0], geo_data[1], geo_data[2])
 
     # Enlarge AABB by margin + gap per shape (matching Newton core convention)
     expansion = margin + gap
@@ -475,7 +465,7 @@ class CollisionPipelineUnifiedKamino:
             self._max_contacts = max_contacts
 
         # Build shape pairs for EXPLICIT mode
-        self.shape_pairs_filtered: wp.array | None = None
+        self.shape_pairs_filtered: wp.array[wp.vec2i] | None = None
         if broadphase == "explicit":
             self.shape_pairs_filtered = self._model.geoms.collidable_pairs
             self._max_shape_pairs = self._model.geoms.num_collidable_pairs
@@ -488,14 +478,14 @@ class CollisionPipelineUnifiedKamino:
         # list of excluded pairs that encodes same-body, group/collides, and
         # neighbor-joint filtering.
         geom_collision_group_list = [1] * self._num_geoms
-        self._excluded_pairs: wp.array | None = None
+        self._excluded_pairs: wp.array[wp.vec2i] | None = None
         self._num_excluded_pairs: int = 0
         if broadphase in ("nxn", "sap"):
             self._excluded_pairs = self._model.geoms.excluded_pairs
             self._num_excluded_pairs = self._model.geoms.num_excluded_pairs
 
         # Capture a reference to per-geometry world indices already present in the model
-        self.geom_wid: wp.array = self._model.geoms.wid
+        self.geom_wid: wp.array[wp.int32] = self._model.geoms.wid
 
         # Define default shape flags for all geometries
         default_shape_flag: int = (
@@ -515,15 +505,15 @@ class CollisionPipelineUnifiedKamino:
         # Allocate internal data needed by the pipeline that
         # the Kamino model and data do not yet provide
         with wp.ScopedDevice(self._device):
-            self.geom_data = wp.zeros(self._num_geoms, dtype=vec4f)
+            self.geom_data = wp.zeros(self._num_geoms, dtype=wp.vec4f)
             self.geom_collision_group = to_warp_int32_array(geom_collision_group_list)
-            self.collision_radius = wp.zeros(self._num_geoms, dtype=float32)
-            self.shape_flags = wp.full(self._num_geoms, default_shape_flag, dtype=int32)
+            self.collision_radius = wp.zeros(self._num_geoms, dtype=wp.float32)
+            self.shape_flags = wp.full(self._num_geoms, default_shape_flag, dtype=wp.int32)
             self.shape_aabb_lower = wp.zeros(self._num_geoms, dtype=wp.vec3)
             self.shape_aabb_upper = wp.zeros(self._num_geoms, dtype=wp.vec3)
             self.broad_phase_pairs = wp.zeros(self._max_shape_pairs, dtype=wp.vec2i)
             self.broad_phase_pair_count = wp.zeros(1, dtype=wp.int32)
-            self.narrow_phase_contact_count = wp.zeros(1, dtype=int32)
+            self.narrow_phase_contact_count = wp.zeros(1, dtype=wp.int32)
             self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self._model.geoms.type, -1)
 
@@ -594,9 +584,9 @@ class CollisionPipelineUnifiedKamino:
         Runs the unified collision detection pipeline to generate discrete contacts.
 
         Args:
-            data (DataKamino): The data container holding the time-varying state of the simulation.
-            state (StateKamino): The state container holding the current simulation state.
-            contacts (ContactsKamino): Output contacts container (will be cleared and populated)
+            data: The data container holding the time-varying state of the simulation.
+            state: The state container holding the current simulation state.
+            contacts: Output contacts container (will be cleared and populated).
         """
         # Check if contacts is allocated on the same device
         if contacts.device != self._device:
@@ -641,10 +631,6 @@ class CollisionPipelineUnifiedKamino:
         Converts Kamino geometry data to the Newton format.
 
         This operation needs to be called only once during initialization.
-
-        Args:
-            model (ModelKamino):
-                The model container holding the time-invariant parameters of the simulation.
         """
         wp.launch(
             kernel=_convert_geom_data_kamino_to_newton,
@@ -673,10 +659,8 @@ class CollisionPipelineUnifiedKamino:
         Updates geometry poses from corresponding body states and computes respective AABBs.
 
         Args:
-            data (DataKamino):
-                The data container holding the time-varying state of the simulation.
-            state (StateKamino):
-                The state container holding the current simulation state.
+            data: The data container holding the time-varying state of the simulation.
+            state: The state container holding the current simulation state.
         """
         wp.launch(
             kernel=_update_geom_poses_and_compute_aabbs,
@@ -756,17 +740,15 @@ class CollisionPipelineUnifiedKamino:
         Runs narrow-phase collision detection to generate contacts.
 
         Args:
-            data (DataKamino):
-                The data container holding the time-varying state of the simulation.
-            contacts (ContactsKamino):
-                Output contacts container (will be populated by this function)
+            data: The data container holding the time-varying state of the simulation.
+            contacts: Output contacts container (will be populated by this function).
         """
         # Create a writer data struct to bundle all necessary input/output
         # arrays into a single object for the narrow phase custom writer
         # NOTE: Unfortunately, we need to do this on every call in python,
         # but graph-capture ensures this actually happens only once
         writer_data = ContactWriterDataKamino()
-        writer_data.model_max_contacts = int32(contacts.model_max_contacts_host)
+        writer_data.model_max_contacts = wp.int32(contacts.model_max_contacts_host)
         writer_data.world_max_contacts = contacts.world_max_contacts
         writer_data.geom_bid = self._model.geoms.bid
         writer_data.geom_wid = self._model.geoms.wid
@@ -779,7 +761,7 @@ class CollisionPipelineUnifiedKamino:
         writer_data.material_pair_restitution = self._model.material_pairs.restitution
         writer_data.material_pair_static_friction = self._model.material_pairs.static_friction
         writer_data.material_pair_dynamic_friction = self._model.material_pairs.dynamic_friction
-        writer_data.contact_max = int32(contacts.model_max_contacts_host)
+        writer_data.contact_max = wp.int32(contacts.model_max_contacts_host)
         writer_data.contact_count = self.narrow_phase_contact_count
         writer_data.contacts_model_num_active = contacts.model_active_contacts
         writer_data.contacts_world_num_active = contacts.world_active_contacts

@@ -7,6 +7,7 @@ import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlsplit
 
@@ -30,6 +31,22 @@ from .texture import load_texture
 from .topology import topological_sort
 
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _clamp_imported_opacity(value: float, source: str) -> float | None:
+    """Clamp display-only importer data without failing the model import."""
+    opacity = float(value)
+    if not np.isfinite(opacity):
+        warnings.warn(f"Ignoring non-finite opacity {opacity!r} from {source}.", stacklevel=2)
+        return None
+    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
+    if clamped_opacity != opacity:
+        warnings.warn(
+            f"Clamping opacity {opacity!r} from {source} to {clamped_opacity!r}.",
+            stacklevel=2,
+        )
+    return clamped_opacity
+
 
 # Optional dependency for robust URI resolution
 try:
@@ -85,7 +102,7 @@ def parse_urdf(
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the URDF file to parse, or the URDF XML string content.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
         override_root_xform: If ``True``, the articulation root's world-space
@@ -280,8 +297,14 @@ def parse_urdf(
                     fn = filename.replace("package://", "")
                     package_name = fn.split("/")[0]
                     urdf_folder = os.path.dirname(source)
-                    if package_name in urdf_folder:
-                        filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+                    package_root = None
+                    urdf_parts = Path(os.path.abspath(urdf_folder)).parts
+                    for index in range(len(urdf_parts) - 1, -1, -1):
+                        if urdf_parts[index] == package_name:
+                            package_root = Path(*urdf_parts[:index])
+                            break
+                    if package_root is not None:
+                        filename = os.path.join(os.fspath(package_root), fn)
                     else:
                         warnings.warn(
                             f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
@@ -333,7 +356,7 @@ def parse_urdf(
                 if len(values) >= 3:
                     color = (float(values[0]), float(values[1]), float(values[2]))
                 if len(values) >= 4:
-                    opacity = float(values[3])
+                    opacity = _clamp_imported_opacity(values[3], "URDF material rgba")
 
         texture_el = material_element.find("texture")
         if texture_el is not None:
@@ -838,7 +861,7 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_d6(
                 linear_axes=[
                     ModelBuilder.JointDofConfig(
-                        u,
+                        axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
@@ -846,7 +869,7 @@ def parse_urdf(
                         actuator_mode=actuator_mode,
                     ),
                     ModelBuilder.JointDofConfig(
-                        v,
+                        axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,

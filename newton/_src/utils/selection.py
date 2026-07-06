@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import functools
 from fnmatch import fnmatch
 from types import NoneType
@@ -9,7 +11,18 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from warp.types import is_array
 
-from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
+from ..sim import (
+    Control,
+    InverseDynamics,
+    JointType,
+    Model,
+    State,
+    eval_fk,
+    eval_inverse_dynamics,
+    eval_jacobian,
+    eval_mass_matrix,
+)
+from .deprecation import deprecate_nonkeyword_arguments
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -488,22 +501,24 @@ class ArticulationView:
     and ``exclude_links`` parameters accept label patterns — see :ref:`label-matching`.
 
     Args:
-        model (Model): The model containing the articulations.
-        pattern (str): Pattern to match articulation labels.
-        include_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to include.
-        exclude_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to exclude.
-        include_links (list[str] | list[int] | None): List of link names, patterns, or indices to include.
-        exclude_links (list[str] | list[int] | None): List of link names, patterns, or indices to exclude.
-        include_joint_types (list[int] | None): List of joint types to include.
-        exclude_joint_types (list[int] | None): List of joint types to exclude.
-        include_loop_closing_joints (bool): If True, include converted loop-closing joints.
-        verbose (bool | None): If True, prints selection summary.
+        model: The model containing the articulations.
+        pattern: Pattern to match articulation labels.
+        include_joints: List of joint names, patterns, or indices to include.
+        exclude_joints: List of joint names, patterns, or indices to exclude.
+        include_links: List of link names, patterns, or indices to include.
+        exclude_links: List of link names, patterns, or indices to exclude.
+        include_joint_types: List of joint types to include.
+        exclude_joint_types: List of joint types to exclude.
+        include_loop_closing_joints: If True, include converted loop-closing joints.
+        verbose: If True, prints selection summary.
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
         pattern: str,
+        *,
         include_joints: list[str] | list[int] | None = None,
         exclude_joints: list[str] | list[int] | None = None,
         include_links: list[str] | list[int] | None = None,
@@ -1361,23 +1376,29 @@ class ArticulationView:
         Get an attribute from the source (Model, State, or Control).
 
         Args:
-            name (str): The name of the attribute to get.
-            source (Model | State | Control): The source from which to get the attribute.
+            name: The name of the attribute to get.
+            source: The source from which to get the attribute.
 
         Returns:
             array: The attribute values (dtype matches the attribute).
         """
         return self._get_attribute_values(name, source)
 
-    def set_attribute(self, name: str, target: Model | State | Control, values, mask=None):
+    def set_attribute(
+        self,
+        name: str,
+        target: Model | State | Control,
+        values: wp.array[Any],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set an attribute in the target (Model, State, or Control).
 
         Args:
-            name (str): The name of the attribute to set.
-            target (Model | State | Control): The target where to set the attribute.
-            values (array): The values to set for the attribute.
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            name: The name of the attribute to set.
+            target: The target where to set the attribute.
+            values: The values to set for the attribute.
+            mask: Mask of articulations in this ArticulationView (all by default).
 
         .. note::
             When setting attributes on the Model, it may be necessary to inform the solver about
@@ -1394,7 +1415,7 @@ class ArticulationView:
         Get the root transforms of the articulations.
 
         Args:
-            source (Model | State): Where to get the root transforms (Model or State).
+            source: Where to get the root transforms (Model or State).
 
         Returns:
             array: The root transforms (dtype=wp.transform).
@@ -1409,15 +1430,20 @@ class ArticulationView:
         else:
             return wp.array(attrib, dtype=wp.transform, device=self.device, copy=False)
 
-    def set_root_transforms(self, target: Model | State, values: wp.array, mask=None):
+    def set_root_transforms(
+        self,
+        target: Model | State,
+        values: wp.array[wp.transform],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the root transforms of the articulations.
         Call :meth:`eval_fk` to apply changes to all articulation links.
 
         Args:
-            target (Model | State): Where to set the root transforms (Model or State).
-            values (array): The root transforms to set (dtype=wp.transform).
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            target: Where to set the root transforms (Model or State).
+            values: The root transforms to set (dtype=wp.transform).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         if self.is_floating_base:
             self._set_attribute_values("joint_q", target, values, mask=mask, _slice=Slice(0, 7))
@@ -1429,7 +1455,7 @@ class ArticulationView:
         Get the root velocities of the articulations.
 
         Args:
-            source (Model | State): Where to get the root velocities (Model or State).
+            source: Where to get the root velocities (Model or State).
 
         Returns:
             array: The root velocities (dtype=wp.spatial_vector).
@@ -1445,33 +1471,38 @@ class ArticulationView:
         else:
             return wp.array(attrib, dtype=wp.spatial_vector, device=self.device, copy=False)
 
-    def set_root_velocities(self, target: Model | State, values: wp.array, mask=None):
+    def set_root_velocities(
+        self,
+        target: Model | State,
+        values: wp.array[wp.spatial_vector],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the root velocities of the articulations.
 
         Args:
-            target (Model | State): Where to set the root velocities (Model or State).
-            values (array): The root velocities to set (dtype=wp.spatial_vector).
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            target: Where to set the root velocities (Model or State).
+            values: The root velocities to set (dtype=wp.spatial_vector).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         if self.is_floating_base:
             self._set_attribute_values("joint_qd", target, values, mask=mask, _slice=Slice(0, 6))
         else:
             return  # no-op
 
-    def get_link_transforms(self, source: "Model | State"):
+    def get_link_transforms(self, source: Model | State):
         """
         Get the world-space transforms of all links in the selected articulations.
 
         Args:
-            source (Model | State): The source from which to retrieve the link transforms.
+            source: The source from which to retrieve the link transforms.
 
         Returns:
             array: The link transforms (dtype=wp.transform).
         """
         return self._get_attribute_values("body_q", source)
 
-    def get_link_velocities(self, source: "Model | State"):
+    def get_link_velocities(self, source: Model | State):
         """
         Get the world-space spatial velocities of all links in the selected articulations.
 
@@ -1479,79 +1510,94 @@ class ArticulationView:
         ``(v_com_world, omega_world)``.
 
         Args:
-            source (Model | State): The source from which to retrieve the link velocities.
+            source: The source from which to retrieve the link velocities.
 
         Returns:
             array: The link velocities (dtype=wp.spatial_vector).
         """
         return self._get_attribute_values("body_qd", source)
 
-    def get_dof_positions(self, source: "Model | State"):
+    def get_dof_positions(self, source: Model | State):
         """
         Get the joint coordinate positions (DoF positions) for the selected articulations.
 
         Args:
-            source (Model | State): The source from which to retrieve the DoF positions.
+            source: The source from which to retrieve the DoF positions.
 
         Returns:
             array: The joint coordinate positions (dtype=float).
         """
         return self._get_attribute_values("joint_q", source)
 
-    def set_dof_positions(self, target: "Model | State", values, mask=None):
+    def set_dof_positions(
+        self,
+        target: Model | State,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the joint coordinate positions (DoF positions) for the selected articulations.
 
         Args:
-            target (Model | State): The target where to set the DoF positions.
-            values (array): The values to set (dtype=float).
-            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to set the DoF positions.
+            values: The values to set (dtype=float).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_q", target, values, mask=mask)
 
-    def get_dof_velocities(self, source: "Model | State"):
+    def get_dof_velocities(self, source: Model | State):
         """
         Get the joint coordinate velocities (DoF velocities) for the selected articulations.
 
         Args:
-            source (Model | State): The source from which to retrieve the DoF velocities.
+            source: The source from which to retrieve the DoF velocities.
 
         Returns:
             array: The joint coordinate velocities (dtype=float).
         """
         return self._get_attribute_values("joint_qd", source)
 
-    def set_dof_velocities(self, target: "Model | State", values, mask=None):
+    def set_dof_velocities(
+        self,
+        target: Model | State,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the joint coordinate velocities (DoF velocities) for the selected articulations.
 
         Args:
-            target (Model | State): The target where to set the DoF velocities.
-            values (array): The values to set (dtype=float).
-            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to set the DoF velocities.
+            values: The values to set (dtype=float).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_qd", target, values, mask=mask)
 
-    def get_dof_forces(self, source: "Control"):
+    def get_dof_forces(self, source: Control):
         """
         Get the joint forces (DoF forces) for the selected articulations.
 
         Args:
-            source (Control): The source from which to retrieve the DoF forces.
+            source: The source from which to retrieve the DoF forces.
 
         Returns:
             array: The joint forces (dtype=float).
         """
         return self._get_attribute_values("joint_f", source)
 
-    def set_dof_forces(self, target: "Control", values, mask=None):
+    def set_dof_forces(
+        self,
+        target: Control,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the joint forces (DoF forces) for the selected articulations.
 
         Args:
-            target (Control): The target where to set the DoF forces.
-            values (array): The values to set (dtype=float).
-            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to set the DoF forces.
+            values: The values to set (dtype=float).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_f", target, values, mask=mask)
 
@@ -1582,12 +1628,12 @@ class ArticulationView:
             f"Expected Boolean mask with shape ({self.world_count}, {self.count_per_world}) or ({self.world_count},)"
         )
 
-    def get_model_articulation_mask(self, mask=None):
+    def get_model_articulation_mask(self, mask: wp.array[bool] | wp.array2d[bool] | None = None) -> wp.array[bool]:
         """
         Get Model articulation mask from a mask in this ArticulationView.
 
         Args:
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         if mask is None:
             return self.articulation_mask
@@ -1610,7 +1656,11 @@ class ArticulationView:
                 )
             return articulation_mask
 
-    def eval_fk(self, target: Model | State, mask=None):
+    def eval_fk(
+        self,
+        target: Model | State,
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Evaluates forward kinematics given the joint coordinates and updates the body information.
 
@@ -1618,8 +1668,8 @@ class ArticulationView:
         convention ``(v_com_world, omega_world)``.
 
         Args:
-            target (Model | State): The target where to evaluate forward kinematics (Model or State).
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to evaluate forward kinematics (Model or State).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         # translate view mask to Model articulation mask
         articulation_mask = self.get_model_articulation_mask(mask=mask)
@@ -1670,11 +1720,44 @@ class ArticulationView:
             self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
         )
 
+    def eval_inverse_dynamics(
+        self,
+        state: State,
+        eval_type: InverseDynamics.EvalType,
+        inverse_dynamics: InverseDynamics,
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Compute inverse-dynamics quantities for articulations in this view.
+
+        Forwards to :func:`~newton.eval_inverse_dynamics` with an
+        articulation mask derived from this view (combined with the
+        optional view-local ``mask``). Output buffers in
+        ``inverse_dynamics`` are sized for the whole model: entries
+        belonging to articulations outside the view (or outside the
+        sub-selection) are written as zero, matching the convention
+        used by :meth:`eval_mass_matrix`.
+
+        Args:
+            state: The state containing the current generalized
+                coordinates and velocities. ``state.body_q`` must
+                already reflect ``state.joint_q``.
+            eval_type: Bitmask selecting which quantities to compute.
+            inverse_dynamics: Output container whose buffers are
+                written in place; also holds the internal scratch.
+            mask: Optional mask of articulations in this
+                ArticulationView (all by default). Either 1-D
+                ``[world_count]`` selecting whole worlds or 2-D
+                ``[world_count, count_per_world]`` selecting individual
+                articulations per world.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        eval_inverse_dynamics(self.model, state, eval_type, inverse_dynamics, mask=articulation_mask)
+
     # ========================================================================================
     # Actuator parameter access
 
     @functools.cache  # noqa: B019 - cache is tied to view lifetime
-    def _get_actuator_dof_mapping(self, actuator: "Actuator"):
+    def _get_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
@@ -1737,7 +1820,7 @@ class ArticulationView:
 
         return mapping
 
-    def get_actuator_parameter(self, actuator: "Actuator", component: Any, name: str):
+    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
 
         The returned array covers all DOFs selected by the view (one column
@@ -1779,7 +1862,7 @@ class ArticulationView:
 
     def set_actuator_parameter(
         self,
-        actuator: "Actuator",
+        actuator: Actuator,
         component: Any,
         name: str,
         values: wp.array,

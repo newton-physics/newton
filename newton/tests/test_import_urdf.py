@@ -5,7 +5,9 @@ import base64
 import os
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -14,6 +16,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
 
 try:
@@ -398,6 +401,25 @@ class TestImportUrdfBasic(unittest.TestCase):
         np.testing.assert_allclose(builder.shape_color[0], [0.1, 0.2, 0.8], atol=1e-6, rtol=1e-6)
         self.assertAlmostEqual(builder.shape_opacity[0], 0.35, places=6)
 
+    def test_visual_material_rgba_clamps_invalid_opacity(self):
+        urdf = """
+        <robot name="rgba_test">
+            <link name="base_link">
+                <visual>
+                    <geometry><sphere radius="0.5"/></geometry>
+                    <material name="invalid_alpha"><color rgba="0.1 0.2 0.8 1.5"/></material>
+                </visual>
+            </link>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+
+        with self.assertWarnsRegex(UserWarning, "Clamping opacity"):
+            parse_urdf(urdf, builder)
+
+        self.assertEqual(builder.shape_count, 1)
+        self.assertAlmostEqual(builder.shape_opacity[0], 1.0, places=6)
+
     def test_mesh_urdf(self):
         # load a urdf containing a cube mesh with 8 verts and 12 faces
         for mesh_src in ("file", "http"):
@@ -479,6 +501,52 @@ class TestImportUrdfBasic(unittest.TestCase):
             mesh = builder.shape_source[0]
             self.assertIsNotNone(mesh.texture)
             self.assertEqual(mesh.texture, texture_uri)
+
+    def test_dae_pycollada_shape_deprecation_filtered(self):
+        """Verify known pycollada NumPy deprecations do not fail strict warning runs."""
+
+        def make_loader(message: str, module_name: str):
+            def fake_load(filename, force=None):
+                warnings.warn_explicit(
+                    message=message,
+                    category=DeprecationWarning,
+                    filename=str(filename),
+                    lineno=1,
+                    module=module_name,
+                )
+                return SimpleNamespace(
+                    vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+                    faces=np.array([[0, 1, 2]], dtype=np.int32),
+                    vertex_normals=np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32),
+                )
+
+            return fake_load
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dae_path = Path(temp_dir) / "triangle.dae"
+            dae_path.write_text("<COLLADA/>")
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader(
+                        "Setting the shape on a NumPy array has been deprecated in NumPy 2.5.",
+                        "collada.polylist",
+                    ),
+                ):
+                    meshes = load_meshes_from_file(str(dae_path), maxhullvert=0)
+
+            self.assertEqual(len(meshes), 1)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader("Different Collada deprecation", "collada.polylist"),
+                ):
+                    with self.assertRaises(DeprecationWarning):
+                        load_meshes_from_file(str(dae_path), maxhullvert=0)
 
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
@@ -1857,6 +1925,24 @@ class TestUrdfUriResolution(unittest.TestCase):
             builder.add_urdf(str(self.base_path / "robot.urdf"), up_axis="Z")
         self.assertIn("could not resolve", str(cm.warning).lower())
         self.assertEqual(builder.shape_count, 0)
+
+    def test_package_uri_fallback_does_not_match_substrings(self):
+        """Test fallback package resolution only matches full path components."""
+        accidental = self.base_path / "not" / "pkg" / "meshes"
+        accidental.mkdir(parents=True)
+        (accidental / "link.obj").write_text(MESH_OBJ)
+
+        misleading = self.base_path / "notpkg"
+        (misleading / "urdf").mkdir(parents=True)
+        urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="package://pkg/meshes/link.obj"))
+        (misleading / "urdf" / "robot.urdf").write_text(urdf)
+
+        with patch("newton._src.utils.import_urdf.resolve_robotics_uri", None):
+            builder = newton.ModelBuilder()
+            with self.assertWarns(UserWarning) as cm:
+                builder.add_urdf(str(misleading / "urdf" / "robot.urdf"), up_axis="Z")
+            self.assertIn('could not resolve package "pkg"', str(cm.warning))
+            self.assertEqual(builder.shape_count, 0)
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_automatic_vs_manual_resolution(self):

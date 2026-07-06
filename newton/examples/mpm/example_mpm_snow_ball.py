@@ -104,7 +104,7 @@ class Example:
         self.init_materials(options, self.model)
 
         # Initialize MPM solver and add supplemental state variables
-        self.solver = SolverImplicitMPM(self.model, mpm_options)
+        self.solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         self.viewer.set_model(self.model)
 

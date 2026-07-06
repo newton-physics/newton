@@ -915,11 +915,11 @@ def get_mesh(
             assert len(demo_mesh.normals) == 6102
 
     Args:
-        prim (Usd.Prim): The USD prim to load the mesh from.
-        load_normals (bool): Whether to load the normals.
-        load_uvs (bool): Whether to load the UVs.
-        maxhullvert (int): The maximum number of vertices for the convex hull approximation.
-        face_varying_normal_conversion (Literal["vertex_averaging", "angle_weighted", "vertex_splitting"]):
+        prim: The USD prim to load the mesh from.
+        load_normals: Whether to load the normals.
+        load_uvs: Whether to load the UVs.
+        maxhullvert: The maximum number of vertices for the convex hull approximation.
+        face_varying_normal_conversion:
             This argument specifies how to convert "faceVarying" normals
             (normals defined per-corner rather than per-vertex) into per-vertex normals for the mesh.
             If ``load_normals`` is False, this argument is ignored.
@@ -938,13 +938,13 @@ def get_mesh(
                 * - ``"vertex_splitting"``
                   - Splits a vertex into multiple vertices if the difference between the corner normals exceeds a threshold angle (see ``vertex_splitting_angle_threshold_deg``). This preserves sharp features by assigning separate (duplicated) vertices to corners with widely different normals.
 
-        vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
+        vertex_splitting_angle_threshold_deg: The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than ``vertex_splitting_angle_threshold_deg`` will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
-        preserve_facevarying_uvs (bool): If True, keep faceVarying UVs in their
+        preserve_facevarying_uvs: If True, keep faceVarying UVs in their
             original corner layout and avoid UV-driven vertex splitting. The
             returned mesh keeps its original topology. This is useful when the
             caller needs the original UV indexing (e.g., panel-space cloth).
-        return_uv_indices (bool): If True, return a tuple ``(mesh, uv_indices)``
+        return_uv_indices: If True, return a tuple ``(mesh, uv_indices)``
             where ``uv_indices`` is a flattened triangle index buffer for the
             UVs when available. For faceVarying UVs and
             ``preserve_facevarying_uvs=True``, these indices reference the
@@ -1668,19 +1668,45 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
-def _coerce_opacity(value: Any) -> float | None:
-    """Coerce a value to an opacity scalar, or None if not possible."""
+def _coerce_opacity(value: Any, *, warn_on_multiple: bool = False) -> float | None:
+    """Coerce an opacity value to a clamped scalar, or None if not possible."""
     if value is None:
         return None
     try:
         value_np = np.array(value, dtype=np.float32).reshape(-1)
     except (TypeError, ValueError):
-        return _coerce_float(value)
-    if value_np.size == 1:
-        return float(value_np[0])
-    if value_np.size >= 4:
-        return float(value_np[3])
-    return None
+        value_np = np.asarray([_coerce_float(value)], dtype=np.float32)
+    if value_np.size == 0:
+        return None
+    if value_np.size > 1 and warn_on_multiple:
+        warnings.warn(
+            f"Opacity data contains {value_np.size} values; using the first value as the shape opacity.",
+            stacklevel=2,
+        )
+    opacity = float(value_np[0])
+    if not np.isfinite(opacity):
+        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", stacklevel=2)
+        return None
+    clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
+    if clamped_opacity != opacity:
+        warnings.warn(
+            f"Clamping imported opacity {opacity!r} to {clamped_opacity!r}.",
+            stacklevel=2,
+        )
+    return clamped_opacity
+
+
+def _coerce_color_opacity(value: Any) -> float | None:
+    """Extract alpha only from a single four-component color value."""
+    if value is None:
+        return None
+    try:
+        value_np = np.array(value, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if value_np.size != 4:
+        return None
+    return _coerce_opacity(value_np[3])
 
 
 def _extract_display_primvar_properties(prim: Usd.Prim) -> dict[str, Any]:
@@ -1694,18 +1720,17 @@ def _extract_display_primvar_properties(prim: Usd.Prim) -> dict[str, Any]:
         color = _coerce_color(color_value)
         if color is not None:
             properties["color"] = _color_to_display_space(color, display_color.GetAttr())
-        properties["opacity"] = _coerce_opacity(color_value)
 
     display_opacity = primvars_api.GetPrimvar("displayOpacity")
     if display_opacity:
-        opacity = _coerce_opacity(display_opacity.Get())
+        opacity = _coerce_opacity(display_opacity.Get(), warn_on_multiple=True)
         if opacity is not None:
             properties["opacity"] = opacity
 
     if properties["opacity"] is None:
         attr = prim.GetAttribute("displayOpacity")
         if attr:
-            properties["opacity"] = _coerce_opacity(attr.Get())
+            properties["opacity"] = _coerce_opacity(attr.Get(), warn_on_multiple=True)
 
     return properties
 
@@ -1749,14 +1774,14 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                 if coerced_color is not None:
                     properties["color"] = _color_to_display_space(coerced_color, color_attr)
                 if properties["opacity"] is None:
-                    properties["opacity"] = _coerce_opacity(color_value)
+                    properties["opacity"] = _coerce_color_opacity(color_value)
         else:
             color_value = color_input.Get()
             coerced_color = _coerce_color(color_value)
             if coerced_color is not None:
                 properties["color"] = _color_to_display_space(coerced_color, color_input.GetAttr())
             if properties["opacity"] is None:
-                properties["opacity"] = _coerce_opacity(color_value)
+                properties["opacity"] = _coerce_color_opacity(color_value)
 
     opacity_input = shader.GetInput("opacity") or shader.GetInput("alpha")
     if opacity_input:
@@ -1854,7 +1879,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         if color is not None:
             properties["color"] = _color_to_display_space(color, color_attr)
         if properties["opacity"] is None:
-            properties["opacity"] = _coerce_opacity(color_value)
+            properties["opacity"] = _coerce_color_opacity(color_value)
     if properties["opacity"] is None:
         opacity_value = _get_input_value(
             shader,
@@ -1926,7 +1951,7 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
             if color is not None:
                 properties["color"] = _color_to_display_space(color, inp.GetAttr())
                 if properties["opacity"] is None:
-                    properties["opacity"] = _coerce_opacity(value)
+                    properties["opacity"] = _coerce_color_opacity(value)
                 continue
 
         if properties["opacity"] is None and name_lower in (

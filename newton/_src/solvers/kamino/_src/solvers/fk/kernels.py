@@ -3,6 +3,8 @@
 
 """Defines the Warp kernels used by the Forward Kinematics solver."""
 
+from __future__ import annotations
+
 from functools import cache
 
 import warp as wp
@@ -20,7 +22,6 @@ from ...core.math import (
     unit_quat_conj_apply_jacobian,
     unit_quat_conj_to_rotation_matrix,
 )
-from ...core.types import vec6f
 from ...kinematics.joints import get_joint_coords_mapping_function
 from ...linalg.sparse_matrix import BlockDType
 from .types import FKJointDoFType
@@ -218,12 +219,9 @@ def _eval_fk_actuated_dofs_or_coords(
     main model actuated dofs/coords, and negative indices for base dofs/coords (base dof/coord i is stored as -i - 1)
 
     Inputs:
-        model_base_dofs:
-            Base dofs or coordinates of the main model (as a flat vector with 6 dofs or 7 coordinates per world)
-        model_actuated_dofs:
-            Actuated dofs/coords of the main model
-        actuated_dofs_map:
-            Map of fk to main model actuated/base dofs/coords
+        model_base_dofs: Base dofs or coordinates of the main model (as a flat vector with 6 dofs or 7 coordinates per world)
+        model_actuated_dofs: Actuated dofs/coords of the main model
+        actuated_dofs_map: Map of fk to main model actuated/base dofs/coords
     Outputs:
         fk_actuated_dofs: Actuated dofs or coordinates of the fk model
     """
@@ -1316,7 +1314,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
         More specifically, given an integer matrix of zeros and ones representing a sparsity pattern, multiply it by
         its transpose and clip values to [0, 1] to get the sparsity pattern of J^T * J
         Note: mostly redundant with _eval_jacobian_T_jacobian apart from the clipping, could possibly be removed
-        (was initially written to take int32, but float32 is actually faster)
+        (was initially written to take wp.int32, but wp.float32 is actually faster)
 
         Inputs:
             sparsity_pattern: Jacobian sparsity pattern per world
@@ -1490,7 +1488,7 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
 
     @wp.func
     def _isnan(x: wp.float32) -> wp.int32:
-        """Calls wp.isnan and converts the result to int32"""
+        """Calls wp.isnan and converts the result to wp.int32"""
         return wp.int32(wp.isnan(x))
 
     TILE_SIZE = TILE_SIZE_VRS if use_regularization else TILE_SIZE_CTS
@@ -1990,7 +1988,7 @@ def _eval_body_velocities(
     bodies_q_dot: wp.array2d[wp.float32],
     world_mask: wp.array[wp.bool],
     # Outputs
-    bodies_u: wp.array[vec6f],
+    bodies_u: wp.array[wp.spatial_vectorf],
 ):
     """
     A kernel computing the body velocities (twists) from the time derivative of body poses,

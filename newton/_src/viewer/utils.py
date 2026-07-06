@@ -9,6 +9,8 @@ import numpy as np
 
 from ..utils.texture import load_texture, normalize_texture
 
+OPAQUE_OPACITY_THRESHOLD = 0.999
+
 
 def to_numpy(x: Any) -> np.ndarray | None:
     """Convert Warp arrays or other array-like inputs to NumPy arrays."""

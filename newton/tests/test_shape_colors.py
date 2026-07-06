@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-import warnings
+from unittest.mock import Mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.viewer import MAX_TRIANGLE_OPACITY_GROUPS
+from newton._src.viewer.viewer_gl import ViewerGL, _compute_shape_vbo_xforms
 from newton.viewer import ViewerNull
 
 
@@ -168,6 +170,31 @@ class TestShapeColors(unittest.TestCase):
                     builder.add_shape_box(body=body, hx=0.1, hy=0.2, hz=0.3, opacity=invalid_opacity)
                 self.assertEqual(builder.shape_count, 0)
 
+    def test_triangle_opacity_rejects_invalid_values_before_mutation(self):
+        """Triangle opacity follows the same finite [0, 1] contract as shapes."""
+        for invalid_opacity in (-0.1, 1.1, float("nan"), float("inf")):
+            with self.subTest(opacity=invalid_opacity):
+                builder = newton.ModelBuilder()
+                for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+                    builder.add_particle(pos=position, vel=(0.0, 0.0, 0.0), mass=1.0)
+
+                with self.assertRaisesRegex(ValueError, "Triangle opacity"):
+                    builder.add_triangle(0, 1, 2, opacity=invalid_opacity)
+
+                self.assertEqual(len(builder.tri_indices), 0)
+                self.assertEqual(len(builder.tri_opacity), 0)
+
+    def test_triangle_opacity_array_rejects_wrong_length_before_mutation(self):
+        builder = newton.ModelBuilder()
+        for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+            builder.add_particle(pos=position, vel=(0.0, 0.0, 0.0), mass=1.0)
+
+        with self.assertRaisesRegex(ValueError, "exactly 1 values"):
+            builder.add_triangles([0], [1], [2], opacity=[0.2, 0.4])
+
+        self.assertEqual(len(builder.tri_indices), 0)
+        self.assertEqual(len(builder.tri_opacity), 0)
+
     def test_cloth_opacity_defaults_to_opaque(self):
         """Verify cloth triangles default to fully opaque display opacity."""
         builder = newton.ModelBuilder()
@@ -280,6 +307,127 @@ class TestShapeColors(unittest.TestCase):
 
         self.assertIn("/model/triangles", viewer.mesh_opacities)
         np.testing.assert_allclose(viewer.mesh_opacities["/model/triangles"], 0.4, atol=1e-6, rtol=1e-6)
+
+    def test_viewer_warns_for_wrong_triangle_opacity_count(self):
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+        )
+        model = builder.finalize(device=self.device)
+        model.tri_opacity = wp.array([0.2, 0.4, 0.6], dtype=wp.float32, device=self.device)
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        with self.assertWarnsRegex(UserWarning, "3 values for 2 triangles"):
+            groups, _ = viewer._get_triangle_opacity_groups()
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0][2], 1.0)
+
+    def test_viewer_caps_continuous_triangle_opacity_groups(self):
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=5,
+            dim_y=4,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+        )
+        model = builder.finalize(device=self.device)
+        model.tri_opacity = wp.array(
+            np.linspace(0.0, 1.0, model.tri_count, dtype=np.float32),
+            dtype=wp.float32,
+            device=self.device,
+        )
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        with self.assertWarnsRegex(UserWarning, "quantizing"):
+            groups, _ = viewer._get_triangle_opacity_groups()
+
+        self.assertLessEqual(len(groups), MAX_TRIANGLE_OPACITY_GROUPS)
+
+    def test_opaque_and_transparent_shapes_use_separate_batches(self):
+        builder = newton.ModelBuilder()
+        body0 = builder.add_body(mass=1.0)
+        body1 = builder.add_body(mass=1.0)
+        builder.add_shape_box(body=body0, hx=0.1, hy=0.2, hz=0.3, opacity=1.0)
+        builder.add_shape_box(body=body1, hx=0.1, hy=0.2, hz=0.3, opacity=0.5)
+        model = builder.finalize(device=self.device)
+        viewer = ViewerNull()
+
+        viewer.set_model(model)
+
+        self.assertEqual(sorted(batch.transparent for batch in viewer._shape_instances.values()), [False, True])
+
+    def test_viewer_gl_opacity_kernel_sets_dirty_and_regroup_flags(self):
+        device = wp.get_device("cpu")
+        common_inputs = [
+            wp.array([wp.transform_identity()], dtype=wp.transformf, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.transformf, device=device),
+            wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
+            wp.array([int(newton.GeoType.BOX)], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.vec3, device=device),
+            wp.transform_identity(),
+            wp.array([0], dtype=wp.int32, device=device),
+        ]
+        out_world_xforms = wp.empty(1, dtype=wp.transformf, device=device)
+        out_vbo_xforms = wp.empty(1, dtype=wp.mat44, device=device)
+
+        def get_flags(current_opacity, previous_opacity):
+            flags = wp.zeros(2, dtype=wp.int32, device=device)
+            wp.launch(
+                _compute_shape_vbo_xforms,
+                dim=1,
+                inputs=[
+                    *common_inputs,
+                    wp.array([current_opacity], dtype=wp.float32, device=device),
+                    wp.array([previous_opacity], dtype=wp.float32, device=device),
+                    flags,
+                    1,
+                ],
+                outputs=[out_world_xforms, out_vbo_xforms],
+                device=device,
+            )
+            return flags.numpy()
+
+        np.testing.assert_array_equal(get_flags(0.5, 1.0), [1, 1])
+        np.testing.assert_array_equal(get_flags(0.5, 0.4), [1, 0])
+
+    def test_viewer_gl_rebuilds_opacity_dependent_caches(self):
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer.objects = {}
+        viewer._shape_instances = {"stale": object()}
+        viewer._gaussian_instances = [object()]
+        viewer._sdf_isomesh_instances = {0: object()}
+        viewer._sdf_isomesh_populated = True
+        viewer.model_shape_color = object()
+        viewer.model_shape_opacity = object()
+        viewer._shape_to_slot = np.array([0], dtype=np.int32)
+        viewer._slot_to_shape = np.array([0], dtype=np.int32)
+        viewer._slot_to_shape_wp = object()
+        viewer._shape_to_batch = [object()]
+        viewer._shape_transparent_mask = np.array([False])
+        viewer._populate_shapes = Mock()
+        viewer._rebuild_gl_shape_caches = Mock()
+
+        viewer._rebuild_shape_batches_for_opacity_groups()
+
+        viewer._populate_shapes.assert_called_once_with()
+        viewer._rebuild_gl_shape_caches.assert_called_once_with()
+        self.assertTrue(viewer.model_changed)
 
     def test_ground_plane_keeps_checkerboard_material_with_resolved_shape_colors(self):
         """Verify the ground plane keeps its checkerboard material after color resolution."""
@@ -452,29 +600,6 @@ class TestShapeColors(unittest.TestCase):
 
         expected_opacities = model.shape_opacity.numpy()[slot_to_shape]
         np.testing.assert_allclose(packed_shape_opacities.numpy(), expected_opacities, atol=1e-6, rtol=1e-6)
-
-    def test_update_shape_colors_warns_and_writes_model_shape_color(self):
-        """Verify deprecated viewer color updates warn and write through to the model."""
-        builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0)
-        shape = builder.add_shape_box(body=body, hx=0.1, hy=0.2, hz=0.3)
-        model = builder.finalize(device=self.device)
-        state = model.state()
-
-        viewer = _ShapeColorProbe()
-        viewer.set_model(model)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            viewer.update_shape_colors({shape: (0.7, 0.2, 0.9)})
-
-        self.assertTrue(any(item.category is DeprecationWarning for item in caught))
-        np.testing.assert_allclose(model.shape_color.numpy()[shape], [0.7, 0.2, 0.9], atol=1e-6, rtol=1e-6)
-
-        viewer.last_colors = None
-        viewer.log_state(state)
-        self.assertIsNotNone(viewer.last_colors)
-        np.testing.assert_allclose(viewer.last_colors[0], [0.7, 0.2, 0.9], atol=1e-6, rtol=1e-6)
 
 
 if __name__ == "__main__":

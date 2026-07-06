@@ -1352,7 +1352,7 @@ class _LinearSolver:
         )
 
         with _ScopedDisableGC():
-            end_iter, residual, atol = self._method_fn(
+            end_iter, residual, _ = self._method_fn(
                 A=self.linear_operator,
                 M=self.preconditioner,
                 b=self.rheology.plastic_strain_delta,
@@ -1364,12 +1364,15 @@ class _LinearSolver:
                 use_cuda_graph=use_graph,
             )
 
-        if use_graph:
-            end_iter = end_iter.numpy()[0]
-            residual = residual.numpy()[0]
-            atol = atol.numpy()[0]
-
-        if verbose:
+        # With use_cuda_graph=True the solver returns end_iter and residual as
+        # length-1 device arrays so the caller need not synchronize. Read them
+        # back only for the verbose report, and never while an outer capture is
+        # recording: a device-to-host copy there serializes the capturing stream
+        # (CUDA error 906).
+        if verbose and not (use_graph and self.momentum.velocity.device.is_capturing):
+            if use_graph:
+                end_iter = end_iter.numpy()[0]
+                residual = residual.numpy()[0]
             res = math.sqrt(residual) / tolerance_scale
             print(f"{self.name} terminated after {end_iter} iterations with residual {res}")
 

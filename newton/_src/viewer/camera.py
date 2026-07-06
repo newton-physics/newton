@@ -3,6 +3,8 @@
 
 import numpy as np
 
+from ..core.types import Vec3
+
 
 class Camera:
     """Camera class that encapsulates all camera settings and logic."""
@@ -10,18 +12,27 @@ class Camera:
     DEFAULT_PIVOT_DISTANCE = 5.0
     MIN_PIVOT_DISTANCE = 0.05
 
-    def __init__(self, fov=45.0, near=0.01, far=1000.0, width=1280, height=720, pos=None, up_axis="Z"):
+    def __init__(
+        self,
+        fov: float = 45.0,
+        near: float = 0.01,
+        far: float = 1000.0,
+        width: int = 1280,
+        height: int = 720,
+        pos: Vec3 | None = None,
+        up_axis: str | int = "Z",
+    ) -> None:
         """
         Initialize camera with given parameters.
 
         Args:
-            fov (float): Field of view in degrees
-            near (float): Near clipping plane
-            far (float): Far clipping plane
-            width (int): Screen width
-            height (int): Screen height
-            pos (tuple): Initial camera position (if None, uses appropriate default for up_axis)
-            up_axis (str): Up axis ("X", "Y", or "Z")
+            fov: Field of view in degrees
+            near: Near clipping plane
+            far: Far clipping plane
+            width: Screen width
+            height: Screen height
+            pos: Initial camera position (if None, uses appropriate default for up_axis)
+            up_axis: Up axis ("X", "Y", or "Z")
         """
         from pyglet.math import Vec3 as PyVec3
 
@@ -222,22 +233,23 @@ class Camera:
         right = PyVec3.cross(front, world_up).normalize()
         return PyVec3.cross(right, front).normalize()
 
-    def get_view_matrix(self, scaling=1.0):
+    def get_view_matrix(self, scaling: float = 1.0) -> np.ndarray:
         """
         Compute view matrix handling up axis properly.
 
         Args:
-            scaling (float): Scene scaling factor
+            scaling: Scene scaling factor
 
         Returns:
             np.ndarray: 4x4 view matrix
         """
-        from pyglet.math import Mat4, Vec3
+        from pyglet.math import Mat4
+        from pyglet.math import Vec3 as PyVec3
 
         # Get camera vectors (already transformed for up axis)
-        pos = Vec3(*(self.pos / scaling))
-        front = Vec3(*self.get_front())
-        up = Vec3(*self.get_up())
+        pos = PyVec3(*(self.pos / scaling))
+        front = PyVec3(*self.get_front())
+        up = PyVec3(*self.get_up())
 
         return np.array(Mat4.look_at(pos, pos + front, up), dtype=np.float32)
 

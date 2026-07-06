@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -1446,13 +1447,21 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
-    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
+    @deprecate_nonkeyword_arguments
+    def finalize(
+        self,
+        device: Devicelike = None,
+        *,
+        requires_grad: bool = False,
+        bvh_constructor: str | None = None,
+    ) -> wp.uint64:
         """
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
         Args:
             device: Device on which to allocate mesh buffers.
             requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
+            bvh_constructor: Optional Warp mesh BVH constructor backend. If ``None``, Warp's default is used.
 
         Returns:
             The ID of the simulation-ready Warp Mesh.
@@ -1462,7 +1471,7 @@ class Mesh:
             vel = wp.zeros_like(pos)
             indices = wp.array(self.indices, dtype=wp.int32)
 
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
+            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
             return self.mesh.id
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":
@@ -1594,7 +1603,7 @@ class TetMesh:
             tet_mesh = newton.TetMesh(vertices, tet_indices)
     """
 
-    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density", "opacity"})
+    _RESERVED_ATTR_KEYS = frozenset({"vertices", "tet_indices", "k_mu", "k_lambda", "k_damp", "density"})
 
     def __init__(
         self,
@@ -1618,7 +1627,7 @@ class TetMesh:
                 per-element array of shape (tet_count,).
             k_lambda: Second elastic Lame parameter [Pa]. Scalar (uniform) or
                 per-element array of shape (tet_count,).
-            k_damp: Rayleigh damping coefficient [-] (dimensionless). Scalar
+            k_damp: Viscous damping coefficient [Pa·s]. Scalar
                 (uniform) or per-element array of shape (tet_count,).
             density: Uniform density [kg/m^3] for mass computation.
             opacity: Optional surface display opacity in [0, 1].
@@ -1817,7 +1826,7 @@ class TetMesh:
 
     @property
     def k_damp(self) -> np.ndarray | None:
-        """Per-element Rayleigh damping coefficient [-], shape (tet_count,) or None."""
+        """Per-element viscous damping coefficient [Pa·s], shape (tet_count,) or None."""
         return self._k_damp
 
     @property
@@ -1900,6 +1909,8 @@ class TetMesh:
                     kwargs[key] = data[key]
             if "density" in data:
                 kwargs["density"] = float(data["density"])
+            if "__opacity__" in data:
+                kwargs["opacity"] = float(data["__opacity__"])
             known_keys = {
                 "vertices",
                 "tet_indices",
@@ -1907,6 +1918,7 @@ class TetMesh:
                 "k_lambda",
                 "k_damp",
                 "density",
+                "__opacity__",
                 "__custom_names__",
                 "__custom_freqs__",
             }
@@ -1956,18 +1968,18 @@ class TetMesh:
 
         # Read material arrays from cell data
         kwargs: dict = {}
-        material_keys = {"k_mu", "k_lambda", "k_damp", "density"}
+        material_keys = {"k_mu", "k_lambda", "k_damp", "density", "newton_opacity"}
         if m.cell_data and tet_cell_idx is not None:
             for key in material_keys:
                 if key in m.cell_data:
                     arr = np.asarray(m.cell_data[key][tet_cell_idx], dtype=np.float32)
-                    if key == "density":
+                    if key in ("density", "newton_opacity"):
                         if arr.size > 1 and not np.allclose(arr, arr[0]):
                             raise ValueError(
-                                f"Non-uniform per-element density found in '{filename}'. "
-                                f"TetMesh only supports a single uniform density value."
+                                f"Non-uniform per-element {key} found in '{filename}'. "
+                                f"TetMesh only supports a single uniform {key} value."
                             )
-                        kwargs["density"] = float(arr[0])
+                        kwargs["opacity" if key == "newton_opacity" else "density"] = float(arr[0])
                     else:
                         kwargs[key] = arr
 
@@ -2012,6 +2024,8 @@ class TetMesh:
                 save_dict["k_damp"] = self._k_damp
             if self._density is not None:
                 save_dict["density"] = np.array(self._density)
+            if self._opacity is not None:
+                save_dict["__opacity__"] = np.array(self._opacity)
             custom_names = []
             custom_freqs = []
             for k, (arr, freq) in self.custom_attributes.items():
@@ -2036,6 +2050,8 @@ class TetMesh:
                 cell_data[name] = [arr]
         if self._density is not None:
             cell_data["density"] = [np.full(self.tet_count, self._density, dtype=np.float32)]
+        if self._opacity is not None:
+            cell_data["newton_opacity"] = [np.full(self.tet_count, self._opacity, dtype=np.float32)]
 
         # Save custom attributes as point or cell data based on frequency
         from ..sim.model import Model as _Model  # noqa: PLC0415
@@ -2404,11 +2420,12 @@ class Gaussian:
 
     # ---- Finalize (GPU upload) -----------------------------------------------
 
-    def finalize(self, device: Devicelike = None) -> Data:
+    def finalize(self, device: Devicelike = None, *, bvh_constructor: str | None = None) -> Data:
         """Upload Gaussian data to the GPU as Warp arrays.
 
         Args:
             device: Device on which to allocate buffers.
+            bvh_constructor: Optional Warp BVH constructor backend. If ``None``, Warp's default is used.
 
         Returns:
             Gaussian.Data struct containing the Warp arrays.
@@ -2437,7 +2454,7 @@ class Gaussian:
                 inputs=[self.warp_data, lowers, uppers],
             )
 
-            self.warp_bvh = wp.Bvh(lowers, uppers)
+            self.warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
             self.warp_data.bvh_id = self.warp_bvh.id
         return self.warp_data
 
