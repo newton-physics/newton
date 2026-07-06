@@ -421,7 +421,16 @@ def parse_usd(
         )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
+    # One scouting walk classifies every deformable candidate prim; it runs before the
+    # native loader so deformable-owned geometry (simulation prims and their colliders)
+    # can be excluded from rigid parsing, and the buckets are reused by the deformable
+    # passes below instead of re-traversing the stage.
+    root_prim = stage.GetPrimAtPath(root_path)
+    _deformable_prims = _scout_deformable_prims(root_prim)
+    native_exclude_paths = list(
+        dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
+    )
+    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
@@ -3838,11 +3847,6 @@ def parse_usd(
     # importer-created ones (e.g. kinematic anchors), preserving ascending articulation order.
     # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
     # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
-    root_prim = stage.GetPrimAtPath(root_path)
-    # One scouting walk classifies every deformable candidate prim; the passes below iterate
-    # these buckets instead of each re-traversing the stage, so a stage without deformables
-    # pays a single walk and skips every pass (including the context construction).
-    _deformable_prims = _scout_deformable_prims(root_prim)
     if _deformable_prims.has_candidates():
         _deformable_ctx = _DeformableImportContext(
             builder=builder,

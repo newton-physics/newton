@@ -17,6 +17,7 @@ import numpy as np
 import newton
 from newton.tests._usd_deformable_test_utils import (
     _add_cloth_mesh,
+    _apply_deformable_body_api,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -214,6 +215,37 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 warned = any("cannot disable deformable particle collision" in m for m in messages)
                 self.assertEqual(warned, expect_warning)
                 self.assertEqual(builder.particle_count, 4)
+
+    def test_dedicated_mesh_collider_owned_by_deformable_pass(self):
+        """A dedicated UsdGeom.Mesh collider under a deformable body belongs to the
+        deformable contract: it enables collision on the simulation geometry with the
+        approximation warning, and must not also become a native rigid shape."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        _apply_deformable_body_api(body)
+        _add_cloth_mesh(stage, "/World/Body/Sim", collision=False)
+        collider = UsdGeom.Mesh.Define(stage, "/World/Body/Collider")
+        collider.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)])
+        collider.CreateFaceVertexCountsAttr([3])
+        collider.CreateFaceVertexIndicesAttr([0, 1, 2])
+        collider.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, deformable_results=True)
+        messages = [str(w.message) for w in caught]
+        approximations = [m for m in messages if "approximated by the simulation geometry" in m]
+        self.assertEqual(len(approximations), 1)
+        self.assertIn("/World/Body/Collider", approximations[0])
+        self.assertIn("/World/Body/Sim", approximations[0])
+
+        self.assertEqual(builder.particle_count, 4)
+        self.assertEqual(builder.shape_count, 0)
+        self.assertNotIn("/World/Body/Collider", result["path_shape_map"])
+        builder.finalize()
 
     def test_cloth_per_point_mass_policy(self):
         """Valid physics:masses on the cloth Mesh set the particle masses directly; negative /

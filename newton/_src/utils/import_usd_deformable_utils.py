@@ -573,6 +573,11 @@ class _DeformablePrimBuckets:
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
     body_owner: dict[str, str] = field(default_factory=dict)
+    # Prim paths the native rigid-physics loader must not parse: deformable simulation
+    # geometry (any family) and collider prims governed by an imported deformable body.
+    # Excluding them avoids duplicate rigid shapes for dedicated deformable colliders and
+    # the native unknown-GPrim diagnostic for colliding BasisCurves/TetMesh geometry.
+    native_physics_exclude_paths: list[str] = field(default_factory=list)
 
     def has_candidates(self) -> bool:
         """Whether any deformable lowering pass has candidate prims.
@@ -601,6 +606,9 @@ def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
         return buckets
 
     def claim_body(prim: Usd.Prim) -> None:
+        # Every simulation candidate is deformable-owned, whether or not it wins the
+        # one-sim-geometry-per-body selection later.
+        buckets.native_physics_exclude_paths.append(str(prim.GetPath()))
         body_root = usd._find_deformable_body_prim(prim)
         if body_root is not None:
             buckets.body_owner.setdefault(str(body_root.GetPath()), str(prim.GetPath()))
@@ -623,6 +631,26 @@ def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
             if usd.has_applied_api_schema(prim, "PhysicsSurfaceDeformableSimAPI"):
                 buckets.cloth.append(prim)
                 claim_body(prim)
+
+    # Colliders governed by an imported deformable body belong to the deformable
+    # contract (the collision-gating approximation), never to the native rigid loader.
+    # Resolved after the traversal over just the discovered body subtrees, so a stage
+    # without deformables pays nothing extra.
+    if buckets.body_owner:
+        from pxr import UsdPhysics
+
+        stage = root_prim.GetStage()
+        for body_path in buckets.body_owner:
+            body_prim = stage.GetPrimAtPath(body_path)
+            if not body_prim or not body_prim.IsValid():
+                continue
+            it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
+            for prim in it:
+                if prim != body_prim and usd.has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
+                    it.PruneChildren()  # a nested body's colliders are its own
+                    continue
+                if prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI"):
+                    buckets.native_physics_exclude_paths.append(str(prim.GetPath()))
     return buckets
 
 
