@@ -194,7 +194,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
             _add_equality_constraint(
                 builder,
-                constraint_type=newton.EqType.CONNECT,
+                constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
                 body1=connect_body_indices[0],
                 body2=connect_body_indices[1],
                 anchor=connect_anchor_leafbody1[w],

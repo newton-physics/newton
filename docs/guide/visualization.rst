@@ -97,7 +97,8 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 **Headless mode and frame capture:**
 
 In headless mode (``headless=True``), the viewer renders off-screen without opening a window.
-Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a GPU array:
+Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a
+Warp array on the viewer device:
 
 .. code-block:: python
 

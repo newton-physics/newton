@@ -148,6 +148,61 @@ def find_overlapping_pairs_np(
 
 
 class TestBroadPhase(unittest.TestCase):
+    def test_public_launch_previous_positional_layout(self):
+        device = wp.get_device()
+        shape_lower = wp.array([wp.vec3(-1.0), wp.vec3(-0.5)], dtype=wp.vec3, device=device)
+        shape_upper = wp.array([wp.vec3(1.0), wp.vec3(0.5)], dtype=wp.vec3, device=device)
+        shape_group = wp.ones(2, dtype=wp.int32, device=device)
+        shape_world = wp.zeros(2, dtype=wp.int32, device=device)
+        candidate_pair = wp.zeros(1, dtype=wp.vec2i, device=device)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
+
+        BroadPhaseAllPairs(shape_world, device=device).launch(
+            shape_lower,
+            shape_upper,
+            None,
+            shape_group,
+            shape_world,
+            2,
+            candidate_pair,
+            candidate_pair_count,
+            device,
+            None,
+            None,
+            False,
+        )
+        self.assertEqual(int(candidate_pair_count.numpy()[0]), 1)
+
+        explicit_pairs = wp.array([(0, 1)], dtype=wp.vec2i, device=device)
+        BroadPhaseExplicit().launch(
+            shape_lower,
+            shape_upper,
+            None,
+            explicit_pairs,
+            1,
+            candidate_pair,
+            candidate_pair_count,
+            device,
+            False,
+        )
+        self.assertEqual(int(candidate_pair_count.numpy()[0]), 1)
+
+        BroadPhaseSAP(shape_world, device=device).launch(
+            shape_lower,
+            shape_upper,
+            None,
+            shape_group,
+            shape_world,
+            2,
+            candidate_pair,
+            candidate_pair_count,
+            device,
+            None,
+            None,
+            False,
+        )
+        self.assertEqual(int(candidate_pair_count.numpy()[0]), 1)
+
     def test_nxn_broadphase(self):
         verbose = False
 

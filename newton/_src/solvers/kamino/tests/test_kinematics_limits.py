@@ -13,7 +13,6 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp, screw, screw_angular, screw_linear
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.types import float32, int32, mat33f, transformf, vec3f, vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.models.builders import basics, testing
@@ -43,14 +42,14 @@ Q_X_J_MAX = 0.25 * math.pi
 
 @wp.kernel
 def _set_joint_follower_body_state(
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    model_joint_B_r_Bj: wp.array[vec3f],
-    model_joint_F_r_Fj: wp.array[vec3f],
-    model_joint_X_Bj: wp.array[mat33f],
-    model_joint_X_Fj: wp.array[mat33f],
-    state_body_q_i: wp.array[transformf],
-    state_body_u_i: wp.array[vec6f],
+    model_joint_bid_B: wp.array[wp.int32],
+    model_joint_bid_F: wp.array[wp.int32],
+    model_joint_B_r_Bj: wp.array[wp.vec3f],
+    model_joint_F_r_Fj: wp.array[wp.vec3f],
+    model_joint_X_Bj: wp.array[wp.mat33f],
+    model_joint_X_Fj: wp.array[wp.mat33f],
+    state_body_q_i: wp.array[wp.transformf],
+    state_body_u_i: wp.array[wp.spatial_vectorf],
 ):
     """
     Set the state of the bodies to a certain values in order to check computations of joint states.
@@ -83,16 +82,16 @@ def _set_joint_follower_body_state(
     q_x_j = Q_X_J
     theta_y_j = 0.0
     theta_z_j = 0.0
-    j_dR_j = vec3f(q_x_j, theta_y_j, theta_z_j)  # Joint offset as rotation vector
+    j_dR_j = wp.vec3f(q_x_j, theta_y_j, theta_z_j)  # Joint offset as rotation vector
     q_jq = quat_exp(j_dR_j)  # Joint offset as rotation quaternion
     R_jq = wp.quat_to_matrix(q_jq)  # Joint offset as rotation matrix
 
     # Define the joint translation offset
-    j_dr_j = vec3f(0.0)
+    j_dr_j = wp.vec3f(0.0)
 
     # Define the joint twist offset
-    j_dv_j = vec3f(0.0)
-    j_domega_j = vec3f(0.0)
+    j_dv_j = wp.vec3f(0.0)
+    j_domega_j = wp.vec3f(0.0)
 
     # Follower body rotation via the Base and joint frames
     R_B_X_j = R_B @ X_Bj
@@ -110,7 +109,7 @@ def _set_joint_follower_body_state(
     v_F_new = R_B_X_j @ j_dv_j + v_B + wp.cross(omega_B, r_Bj) - wp.cross(omega_F_new, r_Fj)
 
     # Offset the bose of the body by a fixed amount
-    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=float32)
+    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
     state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
 
 

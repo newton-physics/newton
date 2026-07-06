@@ -250,6 +250,10 @@ def _ptr_key_from_numpy(arr: np.ndarray) -> int:
     # Use the underlying buffer address as a stable key within a process
     # for non-aliased arrays. For views, this still points to the base buffer;
     # since user guarantees no aliasing across arrays, we can use the data address.
+    # Empty arrays share a null data buffer, so distinct empties would otherwise
+    # collide on the same key; fall back to object identity for them.
+    if arr.size == 0:
+        return id(arr)
     return int(arr.__array_interface__["data"][0])
 
 
@@ -766,6 +770,18 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Custom objects
     if "attributes" in data:
+        if type_name == "AttributeSpec" and data.get("__module__") == Model.AttributeSpec.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            for attr in ("frequency", "references"):
+                if isinstance(attributes.get(attr), int):
+                    attributes[attr] = Model.AttributeFrequency(attributes[attr])
+            if isinstance(attributes.get("assignment"), int):
+                attributes["assignment"] = Model.AttributeAssignment(attributes["assignment"])
+            return Model.AttributeSpec(**attributes)
+
         # Reconstruct AttributeNamespace as a real instance so downstream consumers
         # (notably ``transfer_to_model``) can identify it without resorting to a
         # heuristic on serialized field names.
@@ -1125,6 +1141,7 @@ class ViewerFile(ViewerBase):
 
         self._frame_count = 0
         self._model_recorded = False
+        self._running = True
 
     @override
     def set_model(self, model: Model | None):
@@ -1155,6 +1172,15 @@ class ViewerFile(ViewerBase):
         # Auto-save if enabled
         if self.auto_save and self._frame_count % self.save_interval == 0:
             self._save_recording()
+
+    @override
+    def is_running(self) -> bool:
+        """Report whether the file viewer should continue recording.
+
+        Returns:
+            bool: False after :meth:`close` has been called.
+        """
+        return self._running
 
     def save_recording(self, file_path: str | None = None, verbose: bool = False):
         """Save the recorded data to file.
@@ -1431,6 +1457,7 @@ class ViewerFile(ViewerBase):
         """Save final recording and cleanup."""
         if self._frame_count > 0:
             self._save_recording()
+        self._running = False
         print(f"ViewerFile closed. Total frames recorded: {self._frame_count}")
 
     def load_recording(self, file_path: str | None = None, verbose: bool = False):
