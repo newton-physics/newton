@@ -208,8 +208,14 @@ interop overhead.
 
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
-extra file::
+extra file:
 
+.. code-block:: python
+
+   import json
+   import torch
+
+   exported = torch.export.export(net, example_inputs)
    metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
