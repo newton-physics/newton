@@ -635,7 +635,6 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         # Per built curve: (point offset in the prim's masses array, point count, segment bodies),
         # so per-point masses can be lumped onto each curve's segments.
         cable_point_runs: list[tuple[int, int, list[int]]] = []
-        imported_point_count = 0
         offset = 0
         flat_segment_index = 0
         for ci, vertex_count in enumerate(vertex_counts):
@@ -673,7 +672,6 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 )
                 flat_segment_index += curve_segment_count
                 continue
-            imported_point_count += n
             # Authored normals set each segment's cross-section twist; map them to world via the
             # inverse-transpose computed above (``_cable_segment_quaternions`` normalizes each).
             quaternions = None

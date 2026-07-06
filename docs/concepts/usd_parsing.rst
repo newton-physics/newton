@@ -77,19 +77,27 @@ Supported subset
 The first release deliberately supports a narrow, predictable set of inputs:
 
 * Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
-  deformable APIs, each with one bound simulation material.
+  deformable APIs. A bound simulation material supplies thickness, stiffness, and density;
+  unauthored material properties fall back to documented builder defaults.
 * The points and topology **as currently authored**. Newton builds the deformable at that pose;
   a standalone cable's ``restShapePoints`` may affect stiffness normalization but never
   establishes an initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
+* ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
+  of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
+  an empty counts array selects all elements). Cloth and volume element sources warn and are
+  skipped, as are filters targeting a dedicated deformable collider (that collider is not
+  represented in the model).
 * Every imported deformable can be found by prim path in the import results (see below).
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
 (``physics:bodyEnabled = false``) and kinematic (``physics:kinematicEnabled = true``)
-deformables are skipped, malformed topology or curves are skipped, and springy or
-non-coincident cable junctions are kept as data but not imported.
+deformables are skipped, malformed topology or curves are skipped, and compliant (finite
+stiffness or damped) attachments and non-coincident cable junctions are kept as data but not
+imported. Dynamic and static friction belong to collision geometry and are not mapped onto
+the deformable collision approximation yet.
 
 Limitations
 ~~~~~~~~~~~
@@ -177,7 +185,8 @@ welded. It warns and is kept as unsupported in ``path_attachment_attrs``, so the
 geometry and the constraint intent are never silently rewritten. Cable-to-xform attachments on
 the same curves still import as described above.
 
-Each imported cable is wrapped into its own articulation, labelled ``"<path>_articulation"``.
+Each imported cable is wrapped into its own articulation, labelled ``"<path>_articulation"``
+(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``).
 The model is therefore ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 A welded rod graph gets one articulation per connected component; each of its curves keeps its
 own body range but shares that articulation. Attachment joints that tie a cable to other bodies

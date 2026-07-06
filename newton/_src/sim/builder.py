@@ -2894,13 +2894,13 @@ class ModelBuilder:
                 * - ``"path_cloth_map"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``deformable_results=True``.
                 * - ``"path_soft_map"``
-                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``deformable_results=True``.
                 * - ``"path_cable_attrs"``
-                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the VBD build ignores (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``deformable_results=True``.
                 * - ``"path_cloth_attrs"``
                   - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``deformable_results=True``.
                 * - ``"path_soft_attrs"``
-                  - Mapping from prim path (str) of a volume deformable (TetMesh soft body) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``deformable_results=True``.
+                  - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``deformable_results=True``.
                 * - ``"path_attachment_map"``
                   - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``deformable_results=True``.
                 * - ``"path_attachment_attrs"``

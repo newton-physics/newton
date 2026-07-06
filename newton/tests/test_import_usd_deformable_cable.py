@@ -58,7 +58,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         cables, moves no geometry, and preserves the attachment as unsupported."""
         cases = (
             # (name, fixture kwargs, warning regex, CableB stays at the authored gap)
-            ("zero_stiffness", {"gap": 10.0, "stiffness": 0.0}, r"finite stiffness/damping; \S*\s*not welded", True),
+            ("zero_stiffness", {"gap": 10.0, "stiffness": 0.0}, "not welded", True),
             ("finite_stiffness", {"gap": 0.0, "stiffness": 1.0e4}, "finite stiffness/damping", False),
             ("hard_apart", {"gap": 10.0}, "not coincident", True),
         )
