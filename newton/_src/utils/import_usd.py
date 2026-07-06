@@ -431,7 +431,7 @@ def parse_usd(
     # can be excluded from rigid parsing, and the buckets are reused by the deformable
     # passes below instead of re-traversing the stage.
     root_prim = stage.GetPrimAtPath(root_path)
-    _deformable_prims = _scout_deformable_prims(root_prim)
+    _deformable_prims = _scout_deformable_prims(root_prim, ignore_paths)
     native_exclude_paths = list(
         dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
     )

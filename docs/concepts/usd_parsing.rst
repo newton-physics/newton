@@ -119,8 +119,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
 * **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven; a dedicated collider only toggles the
-  simulation geometry's collision as described above.
+  deformable body is not simulated or driven; a dedicated point-based collider only toggles
+  the simulation geometry's collision as described above and never becomes a separate rigid
+  shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
+  deformable is skipped (disabled, kinematic, or malformed) it imports as nothing, with a
+  warning, rather than falling back to a rigid representation.
 * **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
   synthesized. One stiffness value, computed from the mean segment length, applies to a whole
   curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a

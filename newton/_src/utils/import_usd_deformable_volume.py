@@ -125,7 +125,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         if is_volume_deformable:
             # Newton has no per-particle collision toggle, so authored no-collision
             # intent cannot be honored; the legacy bare-TetMesh path is unchanged.
-            collision_enabled, approximated_from = _deformable_collision_enabled(prim)
+            collision_enabled, approximated_from = _deformable_collision_enabled(prim, ctx.ignore_paths)
             _warn_collision_approximated(path, approximated_from)
             if not collision_enabled:
                 _warn_collision_not_disableable(path)

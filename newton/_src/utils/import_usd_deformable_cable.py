@@ -374,7 +374,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 bend = create_cable_stiffness_from_elastic_moduli(mat["bendStiffness"], radius, seg_len)[1]
         # One rod graph has one shape config, so collision is resolved per component:
         # any collision-enabled member curve makes the whole graph collide.
-        collision_states = {p: _deformable_collision_enabled(curve_recs[p].prim) for p in comp_paths}
+        collision_states = {p: _deformable_collision_enabled(curve_recs[p].prim, ctx.ignore_paths) for p in comp_paths}
         for p, (_enabled, approximated_from) in collision_states.items():
             _warn_collision_approximated(p, approximated_from)
         collision_enabled = any(enabled for enabled, _src in collision_states.values())
@@ -611,7 +611,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
         cable_density = _resolve_deformable_density(prim, cable_mat.get("density"), deformable_read)
         resolved_cable_density = cable_density if cable_density is not None else builder.default_shape_cfg.density
-        collision_enabled, approximated_from = _deformable_collision_enabled(prim)
+        collision_enabled, approximated_from = _deformable_collision_enabled(prim, ctx.ignore_paths)
         _warn_collision_approximated(path, approximated_from)
         cable_cfg = replace(
             builder.default_shape_cfg,

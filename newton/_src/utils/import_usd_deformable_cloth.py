@@ -189,7 +189,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
 
         # Newton has no per-particle collision toggle, so authored no-collision intent
         # cannot be honored for particle deformables; see the collision-gating docs.
-        collision_enabled, approximated_from = _deformable_collision_enabled(prim)
+        collision_enabled, approximated_from = _deformable_collision_enabled(prim, ctx.ignore_paths)
         _warn_collision_approximated(path, approximated_from)
         if not collision_enabled:
             _warn_collision_not_disableable(path)

@@ -15,7 +15,9 @@ import warnings
 import numpy as np
 
 import newton
+from newton import ShapeFlags
 from newton.tests._usd_deformable_test_utils import (
+    _add_cable_curve,
     _add_cloth_mesh,
     _apply_deformable_body_api,
     _bind_deformable_material,
@@ -215,6 +217,81 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 warned = any("cannot disable deformable particle collision" in m for m in messages)
                 self.assertEqual(warned, expect_warning)
                 self.assertEqual(builder.particle_count, 4)
+
+    def test_nested_rigid_body_keeps_its_collider(self):
+        """A rigid body nested under a deformable body is native content: its collider
+        imports as a rigid shape and is neither excluded from native parsing nor
+        claimed as a dedicated deformable collider."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        _apply_deformable_body_api(body)
+        _add_cloth_mesh(stage, "/World/Body/Sim", collision=False)
+        gizmo = UsdGeom.Xform.Define(stage, "/World/Body/Gizmo").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(gizmo)
+        cube = UsdGeom.Cube.Define(stage, "/World/Body/Gizmo/Col").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(cube)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, deformable_results=True)
+        messages = [str(w.message) for w in caught]
+        self.assertFalse(any("approximated" in m for m in messages))
+        # The cloth authors no collider, so the limitation warning names it instead.
+        self.assertTrue(any("cannot disable deformable particle collision" in m for m in messages))
+        self.assertEqual(builder.particle_count, 4)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertIn("/World/Body/Gizmo/Col", result["path_shape_map"])
+
+    def test_ignored_dedicated_collider_is_absent_everywhere(self):
+        """A dedicated collider matched by ignore_paths is as-if-absent: it creates no
+        shape, does not gate deformable collision on, and emits no approximation warning."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        _apply_deformable_body_api(body)
+        _add_cable_curve(stage, "/World/Body/Sim", [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], collision=False)
+        collider = UsdGeom.Mesh.Define(stage, "/World/Body/Collider")
+        collider.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)])
+        collider.CreateFaceVertexCountsAttr([3])
+        collider.CreateFaceVertexIndicesAttr([0, 1, 2])
+        collider.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, ignore_paths=[".*Collider"], deformable_results=True)
+        messages = [str(w.message) for w in caught]
+        self.assertFalse(any("approximated" in m for m in messages))
+        self.assertEqual(builder.body_count, 2)  # the cable imported
+        self.assertNotIn("/World/Body/Collider", result["path_shape_map"])
+        collide = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
+        for i in range(builder.shape_count):
+            self.assertFalse(int(builder.shape_flags[i]) & collide, f"shape {i} collides")
+
+    def test_collision_api_on_non_pointbased_prim_is_not_a_deformable_collider(self):
+        """The proposal limits deformable colliders to UsdGeomPointBased prims: a
+        CollisionAPI on a plain Xform inside the body neither gates collision on nor
+        poisons native parsing of the subtree under it."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        _apply_deformable_body_api(body)
+        _add_cloth_mesh(stage, "/World/Body/Sim", collision=False)
+        frame = UsdGeom.Xform.Define(stage, "/World/Body/Frame").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(frame)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(w.message) for w in caught]
+        self.assertFalse(any("approximated" in m for m in messages))
+        self.assertTrue(any("cannot disable deformable particle collision" in m for m in messages))
 
     def test_dedicated_mesh_collider_owned_by_deformable_pass(self):
         """A dedicated UsdGeom.Mesh collider under a deformable body belongs to the

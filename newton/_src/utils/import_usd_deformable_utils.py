@@ -77,44 +77,76 @@ def _is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
     return any(re.match(pattern, path) for pattern in ignore_paths)
 
 
-def _deformable_collision_enabled(prim) -> tuple[bool, str | None]:
+def _enabled_collider_prim(prim) -> bool:
+    """Whether a prim carries an enabled ``PhysicsCollisionAPI``.
+
+    Mirrors the rigid path's ``_is_enabled_collider``: ``physics:collisionEnabled``
+    falls back to true when the API is applied.
+    """
+    from pxr import UsdPhysics
+
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    if not (prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI")):
+        return False
+    attr = prim.GetAttribute("physics:collisionEnabled")
+    value = attr.Get() if attr else None
+    return True if value is None else bool(value)
+
+
+def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ()):
+    """Yield a deformable body's dedicated collider prims.
+
+    Per the proposal, deformable colliders are ``UsdGeomPointBased`` prims marked
+    with ``PhysicsCollisionAPI`` in the body hierarchy. Nested body subtrees are
+    pruned: a nested deformable body's colliders are its own, and a nested rigid
+    body or articulation is native content the deformable must not claim. Prims
+    matched by ``ignore_paths`` are as-if-absent.
+    """
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    it = iter(Usd.PrimRange(body_root, Usd.TraverseInstanceProxies()))
+    for prim in it:
+        if prim != body_root and (
+            usd.has_applied_api_schema(prim, "PhysicsDeformableBodyAPI")
+            or prim.HasAPI(UsdPhysics.RigidBodyAPI)
+            or prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+        ):
+            it.PruneChildren()
+            continue
+        if not prim.IsA(UsdGeom.PointBased):
+            continue
+        if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
+            continue
+        if prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI"):
+            yield prim
+
+
+def _deformable_collision_enabled(prim, ignore_paths: Sequence[str] = ()) -> tuple[bool, str | None]:
     """Resolve a deformable simulation geometry's collision participation.
 
-    Mirrors the rigid path's ``_is_enabled_collider``: collision is on when the
-    simulation geometry carries an enabled ``PhysicsCollisionAPI``
-    (``physics:collisionEnabled`` falls back to true), or, failing that, when
-    another prim in the deformable body hierarchy does -- a dedicated collider
-    Newton cannot embed, approximated by the simulation geometry. Without any
-    enabled collider the deformable simulates dynamics without collision, per
-    the proposal.
+    Collision is on when the simulation geometry carries an enabled
+    ``PhysicsCollisionAPI``, or, failing that, when a dedicated point-based
+    collider in the deformable body hierarchy does -- a collider Newton cannot
+    embed, approximated by the simulation geometry. Without any enabled collider
+    the deformable simulates dynamics without collision, per the proposal.
 
     Returns ``(enabled, approximated_from)`` where ``approximated_from`` is the
     dedicated collider's path when the second rule applied, else ``None``.
     """
-    from pxr import Usd, UsdPhysics
-
     from ..usd import utils as usd  # noqa: PLC0415
 
-    def _enabled_collider(p) -> bool:
-        if not (p.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(p, "PhysicsCollisionAPI")):
-            return False
-        attr = p.GetAttribute("physics:collisionEnabled")
-        value = attr.Get() if attr else None
-        return True if value is None else bool(value)
-
-    if _enabled_collider(prim):
+    if _enabled_collider_prim(prim):
         return True, None
     body_root = usd._find_deformable_body_prim(prim)
     if body_root is not None:
-        it = iter(Usd.PrimRange(body_root, Usd.TraverseInstanceProxies()))
-        for p in it:
-            if p != body_root and usd.has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
-                it.PruneChildren()  # a nested body's collider is its own
+        for collider in _iter_deformable_collider_prims(body_root, ignore_paths):
+            if collider == prim:
                 continue
-            if p == prim:
-                continue
-            if _enabled_collider(p):
-                return True, str(p.GetPath())
+            if _enabled_collider_prim(collider):
+                return True, str(collider.GetPath())
     return False, None
 
 
@@ -589,7 +621,7 @@ class _DeformablePrimBuckets:
         return bool(self.cables or self.cloth or self.tetmeshes or self.attachments or self.element_filters)
 
 
-def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
+def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = ()) -> _DeformablePrimBuckets:
     """Classify deformable candidate prims in one stage traversal.
 
     Replaces the per-family full-stage walks: the lowering passes iterate these buckets instead of
@@ -637,20 +669,13 @@ def _scout_deformable_prims(root_prim: Usd.Prim) -> _DeformablePrimBuckets:
     # Resolved after the traversal over just the discovered body subtrees, so a stage
     # without deformables pays nothing extra.
     if buckets.body_owner:
-        from pxr import UsdPhysics
-
         stage = root_prim.GetStage()
         for body_path in buckets.body_owner:
             body_prim = stage.GetPrimAtPath(body_path)
             if not body_prim or not body_prim.IsValid():
                 continue
-            it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
-            for prim in it:
-                if prim != body_prim and usd.has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
-                    it.PruneChildren()  # a nested body's colliders are its own
-                    continue
-                if prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI"):
-                    buckets.native_physics_exclude_paths.append(str(prim.GetPath()))
+            for prim in _iter_deformable_collider_prims(body_prim, ignore_paths):
+                buckets.native_physics_exclude_paths.append(str(prim.GetPath()))
     return buckets
 
 
