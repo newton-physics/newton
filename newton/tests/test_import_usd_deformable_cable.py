@@ -787,10 +787,10 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage,
             "/World/Junction",
             src0="/World/Bad",
-            type0="points",
+            type0="point",
             indices0=[0],
             src1="/World/Good",
-            type1="points",
+            type1="point",
             indices1=[0],
         )
         builder = newton.ModelBuilder()
@@ -798,7 +798,16 @@ class TestUSDDeformableCable(unittest.TestCase):
             result = builder.add_usd(stage, deformable_results=True)
         self.assertEqual(group_labels(builder, "cable"), ["/World/Good"])
         self.assertNotIn("/World/Bad", result["path_cable_attrs"])
+        # The valid peer stays an independent cable rather than entering a welded graph.
+        self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Good"])
         self.assertNotIn("/World/Junction", result["path_attachment_map"])
+        # The junction was a valid weld candidate (proposal-conformant "point" sites); it is
+        # preserved as unsupported metadata because its src0 was never imported, proving the
+        # rejection happened at the malformed cable, not at the attachment's own fields.
+        junction = result["path_attachment_attrs"]["/World/Junction"]
+        self.assertEqual((junction["type0"], junction["type1"]), ("point", "point"))
+        self.assertIn("/World/Bad", junction["unsupported_reason"])
+        self.assertIn("not an imported cable", junction["unsupported_reason"])
         builder.finalize()
 
     def test_two_point_curves(self):
