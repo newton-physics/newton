@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
+import inspect
 import math
 import sys
+import textwrap
 import unittest
 import warnings
 from types import SimpleNamespace
@@ -27,6 +30,76 @@ def _eq_set_value(builder, name, idx, value):
     while len(attr.values) <= idx:
         attr.values.append(None)
     attr.values[idx] = value
+
+
+class TestModelAttributeSpecs(unittest.TestCase):
+    def test_attribute_frequencies_have_count_metadata(self):
+        model = newton.Model(device="cpu")
+        frequency = newton.Model.AttributeFrequency
+        expected_count_frequencies = set(frequency).difference({frequency.ONCE})
+        actual_count_frequencies = set(model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS)
+        self.assertEqual(
+            actual_count_frequencies,
+            expected_count_frequencies,
+            "Keep Model.AttributeFrequency and Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS in sync. "
+            "Add a count-attribute mapping for each new frequency and remove mappings for deleted frequencies.",
+        )
+
+        for attribute_frequency, count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.items():
+            with self.subTest(frequency=attribute_frequency):
+                self.assertTrue(
+                    hasattr(model, count_attribute),
+                    f"Model.AttributeFrequency.{attribute_frequency.name} maps to missing attribute "
+                    f"Model.{count_attribute}. Add the count attribute or correct "
+                    "Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.",
+                )
+                self.assertEqual(
+                    model._attribute_frequency_count(attribute_frequency),
+                    getattr(model, count_attribute),
+                    f"Model._attribute_frequency_count() must resolve Model.AttributeFrequency."
+                    f"{attribute_frequency.name} through Model.{count_attribute}.",
+                )
+
+    def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        model = newton.Model(device="cpu")
+
+        prefixes = tuple(
+            count_attribute.removesuffix("count") for count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.values()
+        )
+        private_prefixes = tuple(f"_{prefix}" for prefix in prefixes)
+        indexed_container_types = (wp.array, np.ndarray, list, dict, set, tuple)
+        indexed_attributes = {
+            name
+            for name, value in model.__dict__.items()
+            if name.startswith(prefixes + private_prefixes) and isinstance(value, indexed_container_types)
+        }
+
+        # Most Warp arrays are None until finalization, so runtime inspection alone cannot find them.
+        init_source = textwrap.dedent(inspect.getsource(newton.Model.__init__))
+        init_node = ast.parse(init_source).body[0]
+        for node in ast.walk(init_node):
+            if not (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Attribute)
+                and isinstance(node.target.value, ast.Name)
+                and node.target.value.id == "self"
+            ):
+                continue
+            name = node.target.attr
+            annotation = ast.unparse(node.annotation)
+            is_indexed_container = any(
+                container in annotation for container in ("wp.array", "np.ndarray", "list[", "dict[", "set[", "tuple[")
+            )
+            if name.startswith(prefixes + private_prefixes) and is_indexed_container:
+                indexed_attributes.add(name)
+
+        missing = sorted(indexed_attributes.difference(model.attribute_specs))
+        self.assertEqual(
+            missing,
+            [],
+            "Model attributes are missing AttributeSpec metadata. Add each listed attribute to "
+            "Model._CORE_ATTRIBUTE_SPECS with the correct frequency, references, row width, and compaction policy.",
+        )
 
 
 class TestModelBuilderDeprecations(unittest.TestCase):

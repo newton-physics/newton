@@ -2394,14 +2394,13 @@ def solve_elasticity_tile(
     dt_sqr_reciprocal = 1.0 / (dt * dt)
 
     # elastic force and hessian
-    num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
-
     f = wp.vec3(0.0)
     h = wp.mat33(0.0)
 
     batch_counter = wp.int32(0)
 
-    if tri_indices:
+    if tri_indices.shape[0] > 0:
+        num_adj_faces = get_vertex_num_adjacent_faces(particle_adjacency, particle_index)
         # loop through all the adjacent triangles using whole block
         while batch_counter + thread_idx < num_adj_faces:
             adj_tri_counter = thread_idx + batch_counter
@@ -2445,7 +2444,7 @@ def solve_elasticity_tile(
                 f += f_tri
                 h += h_tri
 
-    if edge_indices:
+    if edge_indices.shape[0] > 0:
         batch_counter = wp.int32(0)
         num_adj_edges = get_vertex_num_adjacent_edges(particle_adjacency, particle_index)
         while batch_counter + thread_idx < num_adj_edges:
@@ -2471,7 +2470,7 @@ def solve_elasticity_tile(
                 f += f_edge
                 h += h_edge
 
-    if tet_indices:
+    if tet_indices.shape[0] > 0:
         # solve tet elasticity
         batch_counter = wp.int32(0)
         num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
@@ -2568,7 +2567,7 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    if tri_indices:
+    if tri_indices.shape[0] > 0:
         # elastic force and hessian
         for i_adj_tri in range(get_vertex_num_adjacent_faces(particle_adjacency, particle_index)):
             tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, i_adj_tri)
@@ -2607,7 +2606,7 @@ def solve_elasticity(
                 f = f + f_tri
                 h = h + h_tri
 
-    if edge_indices:
+    if edge_indices.shape[0] > 0:
         for i_adj_edge in range(get_vertex_num_adjacent_edges(particle_adjacency, particle_index)):
             nei_edge_index, vertex_order_on_edge = get_vertex_adjacent_edge_id_order(particle_adjacency, particle_index, i_adj_edge)
             # vertex is on the edge; otherwise it only effects the bending energy n
@@ -2620,7 +2619,7 @@ def solve_elasticity(
                 f = f + f_edge
                 h = h + h_edge
 
-    if tet_indices:
+    if tet_indices.shape[0] > 0:
         # solve tet elasticity
         num_adj_tets = get_vertex_num_adjacent_tets(particle_adjacency, particle_index)
         for adj_tet_counter in range(num_adj_tets):
