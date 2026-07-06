@@ -18,7 +18,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
-from ..sim import EqType, JointTargetMode, JointType, ModelBuilder
+from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.constants import (
@@ -28,6 +28,7 @@ from ..solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
+from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
@@ -330,6 +331,15 @@ def parse_mjcf(
 
     root, base_dir = _load_and_expand_mjcf(source, path_resolver)
     mjcf_dirname = base_dir or "."  # Backward compatible fallback for mesh paths
+
+    contact_sections = root.findall("contact")
+    explicit_pair_geom_names: set[str] = set()
+    for contact in contact_sections:
+        for pair in contact.findall("pair"):
+            for geom_key in ("geom1", "geom2"):
+                geom_name = pair.attrib.get(geom_key)
+                if geom_name:
+                    explicit_pair_geom_names.add(geom_name)
 
     use_degrees = True  # angles are in degrees by default
     eulerseq = "xyz"  # default sequence (lowercase = intrinsic axes, per MuJoCo)
@@ -750,7 +760,7 @@ def parse_mjcf(
             # conversion for back-compat with the legacy
             # convert_solref(ke, kd, 1, 1) round-trip; raw solref is
             # preserved in mujoco.solref by the registered
-            # mjcf_attribute_name="solref". See docs/integrations/mujoco.rst
+            # mjcf_attribute_name="solref". See docs/solvers/mujoco.rst
             # > "Shape-material contact stiffness and damping".
             if "solref" in geom_attrib:
                 solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
@@ -786,7 +796,7 @@ def parse_mjcf(
                 # Authored solref → RAW (forwarded verbatim); unauthored →
                 # MJCF_DEFAULT (force-space scaling is strictly opt-in for
                 # shapes — no auto-promote, unlike joint limits). See
-                # docs/integrations/mujoco.rst > "Shape-material contact
+                # docs/solvers/mujoco.rst > "Shape-material contact
                 # stiffness and damping".
                 custom_attributes[solref_mode_key] = (
                     SOLREF_MODE_RAW if "solref" in geom_attrib else SOLREF_MODE_MJCF_DEFAULT
@@ -1303,6 +1313,7 @@ def parse_mjcf(
         """
         visuals = []
         colliders = []
+        required_colliders = []
 
         for geo_count, geom in enumerate(geoms):
             geom_defaults = defaults
@@ -1329,7 +1340,14 @@ def parse_mjcf(
             conaffinity = geom_attrib.get("conaffinity", 1)
             collides_with_anything = not (int(contype) == 0 and int(conaffinity) == 0)
 
-            if geom_class is not None:
+            # Explicit pairs override contact masks, so their geoms must survive visual filtering.
+            geom_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
+            is_explicit_pair_geom = any(
+                geom_label == name or geom_label.endswith(f"/{name}") for name in explicit_pair_geom_names
+            )
+            if is_explicit_pair_geom:
+                required_colliders.append(geom)
+            elif geom_class is not None:
                 neither_visual_nor_collider = True
                 for pattern in visual_classes:
                     if re.match(pattern, geom_class):
@@ -1372,6 +1390,8 @@ def parse_mjcf(
                 label_prefix=label_prefix,
             )
             visual_shape_indices.extend(s)
+
+        colliders.extend(required_colliders)
 
         show_colliders = should_show_collider(
             force_show_colliders,
@@ -2441,7 +2461,6 @@ def parse_mjcf(
 
     # Only parse contact pairs if custom attributes are registered
     has_pair_attrs = "mujoco:pair_geom1" in builder.custom_attributes
-    contact = root.find("contact")
 
     def _find_shape_idx(name: str) -> int | None:
         """Look up shape index by name, supporting hierarchical labels (e.g. "prefix/geom_name")."""
@@ -2451,9 +2470,10 @@ def parse_mjcf(
                 return idx
         return None
 
-    if contact is not None and has_pair_attrs:
+    if has_pair_attrs:
         # Parse <pair> elements - explicit contact pairs with custom properties
-        for pair in contact.findall("pair"):
+        pairs = (pair for contact in contact_sections for pair in contact.findall("pair"))
+        for pair in pairs:
             geom1_name = pair.attrib.get("geom1")
             geom2_name = pair.attrib.get("geom2")
 
@@ -2493,7 +2513,7 @@ def parse_mjcf(
                 print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
 
     # Parse <exclude> elements - body pairs to exclude from collision detection
-    if contact is not None:
+    for contact in contact_sections:
         for exclude in contact.findall("exclude"):
             body1_name = exclude.attrib.get("body1")
             body2_name = exclude.attrib.get("body2")
@@ -2972,11 +2992,20 @@ def parse_mjcf(
                 if key not in parsed_attrs:
                     parsed_attrs[key] = value
 
+            # Intrinsic actuator kind, known directly from the MJCF shortcut tag.
+            if actuator_type == "position":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.POSITION)
+            elif actuator_type == "velocity":
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.VELOCITY)
+            else:
+                ctrl_type_val = int(SolverMuJoCo.CtrlType.GENERAL)
+
             # Build full values dict
             actuator_values: dict[str, Any] = {}
             for attr in builder_custom_attr_actuator:
                 if attr.key in (
                     "mujoco:ctrl_source",
+                    "mujoco:ctrl_type",
                     "mujoco:actuator_trntype",
                     "mujoco:actuator_gainprm",
                     "mujoco:actuator_biasprm",
@@ -2986,6 +3015,7 @@ def parse_mjcf(
                 actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
 
             actuator_values["mujoco:ctrl_source"] = ctrl_source_val
+            actuator_values["mujoco:ctrl_type"] = ctrl_type_val
             actuator_values["mujoco:actuator_gainprm"] = gainprm
             actuator_values["mujoco:actuator_biasprm"] = biasprm
             actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)

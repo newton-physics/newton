@@ -15,7 +15,6 @@ from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.core.types import float32, transformf, vec6f
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
@@ -37,9 +36,9 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 @wp.kernel
 def _test_control_callback(
-    model_dt: wp.array[float32],
-    data_time: wp.array[float32],
-    control_tau_j: wp.array[float32],
+    model_dt: wp.array[wp.float32],
+    data_time: wp.array[wp.float32],
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     An example control callback kernel.
@@ -52,7 +51,7 @@ def _test_control_callback(
     t = data_time[wid]
 
     # Define the time window for the active external force profile
-    t_start = float32(0.0)
+    t_start = wp.float32(0.0)
     t_end = 10.0 * dt
 
     # Compute the first actuated joint index for the current world
@@ -245,10 +244,10 @@ def assert_states_close_masked(
 
 def check_body_and_joint_state_consistency(
     model: ModelKamino,
-    body_q: wp.array[transformf],
-    body_u: wp.array[vec6f],
-    joint_q: wp.array[float32],
-    joint_u: wp.array[float32],
+    body_q: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
+    joint_q: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
 ):
     """Check that provided joint/body positions and velocities are consistent for a given model."""
     # Check dimensions
@@ -595,13 +594,15 @@ class TestSolverKaminoImpl(unittest.TestCase):
         base_q_0_np = [0.1, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0]
         base_q_0_np = np.tile(base_q_0_np, reps=model.size.num_worlds).astype(np.float32)
         base_q_0_np = base_q_0_np.reshape(model.size.num_worlds, 7)
-        base_q_0: wp.array = wp.array(base_q_0_np, dtype=transformf, device=self.default_device)
+        base_q_0: wp.array[wp.transformf] = wp.array(base_q_0_np, dtype=wp.transformf, device=self.default_device)
 
         # Define the reset base twist
         base_u_0_np = [0.0, 1.5, 0.0, 0.0, 0.0, 0.0]
         base_u_0_np = np.tile(base_u_0_np, reps=model.size.num_worlds).astype(np.float32)
         base_u_0_np = base_u_0_np.reshape(model.size.num_worlds, 6)
-        base_u_0: wp.array = wp.array(base_u_0_np, dtype=vec6f, device=self.default_device)
+        base_u_0: wp.array[wp.spatial_vectorf] = wp.array(
+            base_u_0_np, dtype=wp.spatial_vectorf, device=self.default_device
+        )
 
         # Step the solver a few times to change the state
         step_solver(
@@ -720,12 +721,12 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Set default reset joint coordinates
         joint_q_0_np = [0.1, 0.1, 0.1, 0.1]
         joint_q_0_np = np.tile(joint_q_0_np, reps=model.size.num_worlds).astype(np.float32)
-        joint_q_0: wp.array = wp.array(joint_q_0_np, dtype=float32, device=self.default_device)
+        joint_q_0: wp.array[wp.float32] = wp.array(joint_q_0_np, dtype=wp.float32, device=self.default_device)
 
         # Set default reset joint velocities
         joint_u_0_np = [0.1, 0.1, 0.1, 0.1]
         joint_u_0_np = np.tile(joint_u_0_np, reps=model.size.num_worlds).astype(np.float32)
-        joint_u_0: wp.array = wp.array(joint_u_0_np, dtype=float32, device=self.default_device)
+        joint_u_0: wp.array[wp.float32] = wp.array(joint_u_0_np, dtype=wp.float32, device=self.default_device)
 
         # Step the solver a few times to change the state
         step_solver(
@@ -854,12 +855,12 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Set default reset joint coordinates
         actuator_q_0_np = [0.25, 0.25]
         actuator_q_0_np = np.tile(actuator_q_0_np, reps=model.size.num_worlds)
-        actuator_q_0: wp.array = wp.array(actuator_q_0_np, dtype=float32, device=self.default_device)
+        actuator_q_0: wp.array[wp.float32] = wp.array(actuator_q_0_np, dtype=wp.float32, device=self.default_device)
 
         # Set default reset joint velocities
         actuator_u_0_np = [-1.0, -1.0]
         actuator_u_0_np = np.tile(actuator_u_0_np, reps=model.size.num_worlds)
-        actuator_u_0: wp.array = wp.array(actuator_u_0_np, dtype=float32, device=self.default_device)
+        actuator_u_0: wp.array[wp.float32] = wp.array(actuator_u_0_np, dtype=wp.float32, device=self.default_device)
 
         # Step the solver a few times to change the state
         step_solver(
