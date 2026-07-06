@@ -248,6 +248,23 @@ class TestViewerUSD(unittest.TestCase):
             atol=1e-6,
         )
 
+    def test_log_mesh_authors_double_sided_from_backface_culling(self):
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/two_sided", points, indices, backface_culling=False)
+        viewer.log_mesh("/single_sided", points, indices, backface_culling=True)
+
+        two_sided = UsdGeom.Mesh.Get(viewer.stage, "/root/two_sided")
+        single_sided = UsdGeom.Mesh.Get(viewer.stage, "/root/single_sided")
+        self.assertTrue(two_sided.GetDoubleSidedAttr().Get())
+        self.assertFalse(single_sided.GetDoubleSidedAttr().Get())
+
     def test_log_mesh_authors_preview_surface_opacity(self):
         viewer = self._make_viewer()
 

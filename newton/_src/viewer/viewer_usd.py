@@ -314,6 +314,7 @@ class ViewerUSD(ViewerBase):
             self._meshes[name] = mesh_prim
 
         mesh_prim = self._meshes[name]
+        mesh_prim.GetDoubleSidedAttr().Set(not backface_culling)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
