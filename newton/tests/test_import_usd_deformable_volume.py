@@ -316,6 +316,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertTrue(any("approximated by the simulation geometry" in m for m in messages))
         self.assertFalse(any("cannot disable deformable particle collision" in m for m in messages))
         self.assertEqual(builder.particle_count, 4)
+        self.assertEqual(builder.shape_count, 0)
 
     def test_volume_material_density_validation(self):
         """Negative and non-finite material densities warn and are ignored (the proposal's

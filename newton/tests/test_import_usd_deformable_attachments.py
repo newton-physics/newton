@@ -24,6 +24,72 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 class TestUSDDeformableAttachments(unittest.TestCase):
     """Proposal PhysicsAttachment + element-collision-filter import onto cable bodies."""
 
+    def test_result_maps_stay_valid_after_collapse(self):
+        """With collapse_fixed_joints=True, the returned cable and attachment indices
+        are remapped to valid, correctly-labelled entries (the documented contract),
+        and joint_indices in the attachment attrs match the attachment map."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        # A rigid fixed pair collapses, shifting every body/joint index after it.
+        for name in ("A", "B"):
+            UsdPhysics.RigidBodyAPI.Apply(UsdGeom.Xform.Define(stage, f"/World/{name}").GetPrim())
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Fix")
+        fixed.CreateBody0Rel().SetTargets(["/World/A"])
+        fixed.CreateBody1Rel().SetTargets(["/World/B"])
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/Cable", pts)
+        _add_physics_attachment(
+            stage,
+            "/World/Anchor",
+            src0="/World/Cable",
+            type0="point",
+            indices0=[0],
+            coords1=[(0.0, 0.0, 1.0)],
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, collapse_fixed_joints=True, deformable_results=True)
+
+        bodies, joints = result["path_cable_map"]["/World/Cable"]
+        self.assertTrue(all("/World/Cable" in builder.body_label[b] for b in bodies))
+        self.assertTrue(all("/World/Cable" in builder.joint_label[j] for j in joints))
+        anchor_joints = result["path_attachment_map"]["/World/Anchor"]
+        self.assertEqual(len(anchor_joints), 1)
+        self.assertTrue(all(0 <= j < builder.joint_count for j in anchor_joints))
+        self.assertEqual(result["path_attachment_attrs"]["/World/Anchor"]["joint_indices"], list(anchor_joints))
+        builder.finalize()
+
+    def test_element_filter_disabled_and_unsupported_sources_skip(self):
+        """filterEnabled=false skips the filter; a cloth element source warns and skips."""
+        with self.subTest(case="disabled"):
+
+            def build(enabled):
+                stage = _deformable_stage()
+                pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
+                _add_cable_curve(stage, "/World/CableA", pts)
+                _add_cable_curve(stage, "/World/CableB", [(0.0, 0.1, 1.0), (0.1, 0.1, 1.0), (0.2, 0.1, 1.0)])
+                if enabled is not None:
+                    _add_element_collision_filter(
+                        stage, "/World/Filter", src0="/World/CableA", src1="/World/CableB", enabled=enabled
+                    )
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage)
+                return len(builder.shape_collision_filter_pairs)
+
+            baseline = build(None)  # add_rod's own adjacent-segment filters
+            self.assertGreater(build(True), baseline)
+            self.assertEqual(build(False), baseline)
+
+        with self.subTest(case="cloth_source"):
+            stage = _deformable_stage()
+            _add_cloth_mesh(stage, "/World/Cloth")
+            _add_cable_curve(stage, "/World/Cable", [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)])
+            _add_element_collision_filter(stage, "/World/Filter", src0="/World/Cloth", src1="/World/Cable")
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "/World/Filter"):
+                builder.add_usd(stage)
+
     def test_compliant_attachment_is_preserved_not_hardened(self):
         """A finite-stiffness (compliant) attachment is preserved as metadata instead of
         being silently lowered into a hard joint: authored physics is not changed, the
