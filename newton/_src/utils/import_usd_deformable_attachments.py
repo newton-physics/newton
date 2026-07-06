@@ -121,6 +121,17 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
 
         if not enabled:
             continue
+        # The proposal gives attachment stiffness the range [0, inf] with +inf meaning hard
+        # (the -inf sentinel belongs to deformable materials) and damping the range [0, inf).
+        # Nonconforming values must not silently select the hard path.
+        if math.isnan(stiffness) or stiffness < 0.0 or not (math.isfinite(damping) and damping >= 0.0):
+            _mark_attachment_unsupported(
+                attrs,
+                path,
+                f"invalid PhysicsAttachment stiffness/damping (stiffness={stiffness}, damping={damping}); "
+                f"expected stiffness in [0, inf] and finite damping >= 0; preserved as metadata.",
+            )
+            continue
         if src0 not in path_cable_segments:
             if src0 in path_cloth_map or src0 in path_soft_map:
                 _mark_attachment_unsupported(

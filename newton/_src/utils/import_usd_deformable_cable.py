@@ -205,13 +205,15 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # as unsupported instead of silently snapping the geometry together.
         stiffness_val = deformable_read(prim, "stiffness")
         damping_val = deformable_read(prim, "damping")
-        hard = (stiffness_val is None or math.isinf(float(stiffness_val))) and (
+        # Hard means the proposal's +inf sentinel exactly; NaN, -inf, or finite values
+        # (compliant or nonconforming) must not weld curves into shared topology.
+        hard = (stiffness_val is None or float(stiffness_val) == math.inf) and (
             damping_val is None or float(damping_val) == 0.0
         )
         if not hard:
             warnings.warn(
-                f"{prim.GetPath()}: curve-to-curve attachment authors finite stiffness/damping; "
-                f"not welded (compliant deformable attachments are not imported yet).",
+                f"{prim.GetPath()}: curve-to-curve attachment does not author a hard "
+                f"(+inf stiffness, zero damping) constraint; not welded.",
                 stacklevel=2,
             )
             continue

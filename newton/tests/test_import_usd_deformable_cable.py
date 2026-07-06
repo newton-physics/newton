@@ -6,6 +6,7 @@ transforms, instancing, graph welding, and curve-to-curve junctions."""
 
 import math
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -769,6 +770,35 @@ class TestUSDDeformableCable(unittest.TestCase):
                     is_colliding = bool(int(builder.shape_flags[i]) & collide)
                     self.assertEqual(is_colliding, expected_colliding, f"shape {i}")
                 builder.finalize()
+
+    def test_neg_inf_junction_stiffness_does_not_weld(self):
+        """-inf is the material sentinel, not the attachment one (+inf = hard): a
+        junction authoring -inf stiffness is nonconforming and must not weld the
+        curves into shared topology."""
+        stage = _deformable_stage()
+        pts_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
+        pts_b = [(0.0, 0.0, 1.0), (0.0, 0.1, 1.0), (0.0, 0.2, 1.0)]
+        _add_cable_curve(stage, "/World/CableA", pts_a)
+        _add_cable_curve(stage, "/World/CableB", pts_b)
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/CableA",
+            type0="point",
+            indices0=[0],
+            src1="/World/CableB",
+            type1="point",
+            indices1=[0],
+            stiffness=float("-inf"),
+        )
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(w.message) for w in caught]
+        self.assertTrue(any("not welded" in m or "invalid PhysicsAttachment" in m for m in messages))
+        # Two independent cables (two articulations), not one welded graph.
+        self.assertEqual(builder.articulation_count, 2)
 
     def test_welded_graph_mixed_collision_collides_and_warns(self):
         """A welded graph mixing collision-enabled and unmarked curves collides

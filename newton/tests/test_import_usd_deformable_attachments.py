@@ -90,6 +90,36 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             with self.assertWarnsRegex(UserWarning, "/World/Filter"):
                 builder.add_usd(stage)
 
+    def test_invalid_attachment_stiffness_is_preserved_not_hardened(self):
+        """Only +inf selects the hard path (the proposal's attachment sentinel with
+        range [0, inf]): NaN, -inf, and negative stiffness or damping warn and are
+        preserved as metadata instead of silently becoming hard joints."""
+        for label, kwargs in (
+            ("nan_stiffness", {"stiffness": float("nan")}),
+            ("neg_inf_stiffness", {"stiffness": float("-inf")}),
+            ("negative_stiffness", {"stiffness": -5.0}),
+            ("negative_damping", {"damping": -1.0}),
+        ):
+            with self.subTest(kind=label):
+                stage = _deformable_stage()
+                pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
+                _add_cable_curve(stage, "/World/Cable", pts)
+                _add_physics_attachment(
+                    stage,
+                    "/World/Att",
+                    src0="/World/Cable",
+                    type0="point",
+                    indices0=[0],
+                    coords1=[(0.0, 0.0, 1.0)],
+                    **kwargs,
+                )
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, "invalid PhysicsAttachment"):
+                    result = builder.add_usd(stage, deformable_results=True)
+                self.assertNotIn("/World/Att", result["path_attachment_map"])
+                self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Att"])
+                builder.finalize()
+
     def test_compliant_attachment_is_preserved_not_hardened(self):
         """A finite-stiffness (compliant) attachment is preserved as metadata instead of
         being silently lowered into a hard joint: authored physics is not changed, the
