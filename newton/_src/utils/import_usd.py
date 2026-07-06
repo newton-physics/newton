@@ -504,25 +504,6 @@ def parse_usd(
             return spec.usd_value_transformer(spec.default)
         return spec.default
 
-    def _resolve_authored_joint_damping(prim: Usd.Prim) -> float | None:
-        """Return the joint's authored damping, or None if not authored.
-
-        The schema resolver's ``get_value`` cannot distinguish "not authored" from
-        "authored with the schema default" because it falls back to the mapping
-        default (``newton:damping`` defaults to ``0.0``). Detect authoring directly
-        via ``HasAuthoredValue`` so the caller can decide whether to convert
-        per-degree units (authored) or fall back to the builder default, which is
-        already stored in per-radian units and must not be converted.
-        """
-        for resolver in R.resolvers:
-            spec = resolver.mapping.get(PrimType.JOINT, {}).get("damping")
-            if spec is None:
-                continue
-            authored = usd.get_attribute(prim, spec.name)
-            if authored is not None:
-                return float(authored)
-        return None
-
     def _resolve_joint_limit_gain(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
@@ -1265,7 +1246,9 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
-        _joint_damping_usd = _resolve_authored_joint_damping(joint_prim)
+        _joint_damping_usd = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
+        )
         joint_damping_authored = _joint_damping_usd is not None
         joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
         joint_velocity_limit = R.get_value(
@@ -1792,7 +1775,9 @@ def parse_usd(
             j_friction = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
             )
-            _j_damping_usd = _resolve_authored_joint_damping(jp_prim)
+            _j_damping_usd = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
+            )
             j_damping_authored = _j_damping_usd is not None
             j_damping = _j_damping_usd if j_damping_authored else default_joint_damping
             j_velocity_limit = R.get_value(

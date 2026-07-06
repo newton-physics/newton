@@ -128,7 +128,7 @@ class SchemaResolverNewton(SchemaResolver):
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("newton:armature", 0.0),
-            "damping": SchemaAttribute("newton:damping", 0.0),
+            "damping": SchemaAttribute("newton:damping", None),
             "friction": SchemaAttribute("newton:friction", 0.0),
             "limit_ke": SchemaAttribute("newton:limitStiffness", float("-inf")),
             "limit_kd": SchemaAttribute("newton:limitDamping", float("-inf")),

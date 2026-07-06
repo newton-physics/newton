@@ -1834,7 +1834,9 @@ class TestSchemaResolver(unittest.TestCase):
         # --- Mapping defaults when nothing is authored ---
         resolver_n = SchemaResolverManager([N])
         self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "armature", default=None), 0.0)
-        self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "damping", default=None), 0.0)
+        # damping has no mapping default (None) so an unauthored attr resolves to None,
+        # letting the importer fall back to the builder default without unit conversion.
+        self.assertIsNone(resolver_n.get_value(joint, PrimType.JOINT, "damping", default=None))
         self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "friction", default=None), 0.0)
         self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "limit_ke", default=None), float("-inf"))
         self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "limit_kd", default=None), float("-inf"))
