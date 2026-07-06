@@ -1394,6 +1394,65 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(damping[d]), 3.0, places=6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_merged_joint_revolute_default_damping(self):
+        """Merged-joint (D6 consolidation) path uses builder default damping as-is.
+
+        Regression: when two single-DOF joints between the same body pair are
+        merged into one D6 joint, the revolute (angular) DOF ran an unconditional
+        j_damping /= DegreesToRadian on the builder default (already per-radian),
+        producing e.g. 3.0 -> ~171.9. With no newton:damping authored, the builder
+        default must flow through unchanged for both the linear and angular DOFs.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Cube.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        # Two single-DOF joints on the same body pair -> merged into one D6 joint,
+        # exercising parse_merged_joints. A revolute DOF is required to reach the
+        # angular unit-conversion block.
+        slide = UsdPhysics.PrismaticJoint.Define(stage, "/World/Body/slide")
+        slide.CreateBody1Rel().SetTargets([body.GetPath()])
+        slide.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        slide.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        slide.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        slide.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        slide.CreateAxisAttr().Set("X")
+
+        hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/Body/hinge")
+        hinge.CreateBody1Rel().SetTargets([body.GetPath()])
+        hinge.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        hinge.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        hinge.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        hinge.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        hinge.CreateAxisAttr().Set("Z")
+        # newton:damping intentionally omitted on both joints.
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 3.0
+        result = builder.add_usd(stage, load_visual_shapes=False)
+        model = builder.finalize()
+
+        # Both joints must have merged into a single D6 joint (1 linear + 1 angular DOF).
+        self.assertEqual(builder.joint_type, [newton.JointType.D6])
+        self.assertEqual(builder.joint_dof_dim, [(1, 1)])
+        merged_joint = result["path_joint_map"][hinge.GetPath().pathString]
+        self.assertEqual(result["path_joint_map"][slide.GetPath().pathString], merged_joint)
+
+        # Both DOFs (linear DOF first, angular DOF second) must carry the builder
+        # default unchanged; the revolute DOF in particular must NOT be scaled by
+        # 1 / DegreesToRadian.
+        qd_start = int(model.joint_qd_start.numpy()[merged_joint])
+        damping = model.joint_damping.numpy()
+        self.assertAlmostEqual(float(damping[qd_start]), 3.0, places=6)  # linear DOF
+        self.assertAlmostEqual(float(damping[qd_start + 1]), 3.0, places=6)  # angular DOF
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_joint_api_d6(self):
         """NewtonJointAPI attributes broadcast uniformly across a D6 joint's linear and angular DOFs."""
         from pxr import Usd
