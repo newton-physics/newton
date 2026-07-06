@@ -256,16 +256,29 @@ def _deformable_remap_collapsed(
             return body_remap.get(parent, parent)
         return body_id
 
+    def remap_joints(path: str, joints) -> list[int]:
+        # A joint missing from the remap was deleted by the collapse; passing its stale
+        # index through would silently alias a different retained joint.
+        remapped = []
+        for j in joints:
+            if j in joint_remap:
+                remapped.append(joint_remap[j])
+            else:
+                warnings.warn(
+                    f"{path}: joint {j} was removed by collapse_fixed_joints; dropping it from "
+                    f"the returned index maps.",
+                    stacklevel=3,
+                )
+        return remapped
+
     if path_cable_map:
         path_cable_map = {
-            path: ([remap_body(b) for b in bodies], [joint_remap.get(j, j) for j in joints])
+            path: ([remap_body(b) for b in bodies], remap_joints(path, joints))
             for path, (bodies, joints) in path_cable_map.items()
         }
 
     if path_attachment_map:
-        path_attachment_map = {
-            path: [joint_remap.get(j, j) for j in joints] for path, joints in path_attachment_map.items()
-        }
+        path_attachment_map = {path: remap_joints(path, joints) for path, joints in path_attachment_map.items()}
         for path, joints in path_attachment_map.items():
             if path in path_attachment_attrs:
                 path_attachment_attrs[path]["joint_indices"] = list(joints)

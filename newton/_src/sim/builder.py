@@ -5153,7 +5153,7 @@ class ModelBuilder:
                     }
                 )
 
-            joint_data[(parent, child)] = data
+            joint_data.setdefault((parent, child), []).append(data)
 
         # sort body children so we traverse the tree in the same order as the bodies are listed
         for children in body_children.values():
@@ -5177,6 +5177,26 @@ class ModelBuilder:
         body_merged_parent = {}
         body_merged_transform = {}
 
+        # Joints already retained as loop-closing edges (by original id), so a joint
+        # reachable through several traversal paths is kept exactly once.
+        retained_loop_joint_ids = set()
+
+        def retain_loop_joints(joints_for_pair, child, incoming_xform, last_dynamic_body):
+            # Loop-closing joints: the child was already visited via another path (or the
+            # pair has parallel joints). Retain them without re-processing the child body.
+            for loop_joint in joints_for_pair:
+                if loop_joint["type"] == JointType.FIXED or loop_joint["original_id"] in retained_loop_joint_ids:
+                    continue
+                retained_loop_joint_ids.add(loop_joint["original_id"])
+                loop_joint["parent_xform"] = incoming_xform * loop_joint["parent_xform"]
+                loop_joint["parent"] = last_dynamic_body
+                if child in body_merged_parent:
+                    # Child was merged into another body -- remap child and adjust child_xform
+                    merge_xform = body_merged_transform[child]
+                    loop_joint["child_xform"] = merge_xform * loop_joint["child_xform"]
+                    loop_joint["child"] = body_merged_parent[child]
+                retained_joints.append(loop_joint)
+
         # depth first search over the joint graph
         def dfs(parent_body: int, child_body: int, incoming_xform: wp.transform, last_dynamic_body: int):
             nonlocal visited
@@ -5184,7 +5204,10 @@ class ModelBuilder:
             nonlocal retained_bodies
             nonlocal body_data
 
-            joint = joint_data[(parent_body, child_body)]
+            # The first joint of the pair is the tree edge; parallel joints between the
+            # same pair (e.g. an attachment with several point sites) close loops.
+            retain_loop_joints(joint_data[(parent_body, child_body)][1:], child_body, incoming_xform, last_dynamic_body)
+            joint = joint_data[(parent_body, child_body)][0]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
             # and would be merged into world (last_dynamic_body == -1)
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
@@ -5276,6 +5299,7 @@ class ModelBuilder:
                 last_dynamic_body = child_body
                 incoming_xform = wp.transform()
                 retained_joints.append(joint)
+                retained_loop_joint_ids.add(joint["original_id"])
                 new_id = len(retained_bodies)
                 body_data[child_body]["id"] = new_id
                 retained_bodies.append(child_body)
@@ -5290,22 +5314,15 @@ class ModelBuilder:
                 if not visited[child]:
                     dfs(child_body, child, incoming_xform, last_dynamic_body)
                 elif (child_body, child) in joint_data:
-                    # Loop-closing joint: child was already visited via another path.
-                    # Retain the joint but don't re-process the child body.
-                    loop_joint = joint_data[(child_body, child)]
-                    if loop_joint["type"] != JointType.FIXED:
-                        loop_joint["parent_xform"] = incoming_xform * loop_joint["parent_xform"]
-                        loop_joint["parent"] = last_dynamic_body
-                        if child in body_merged_parent:
-                            # Child was merged into another body — remap child and adjust child_xform
-                            merge_xform = body_merged_transform[child]
-                            loop_joint["child_xform"] = merge_xform * loop_joint["child_xform"]
-                            loop_joint["child"] = body_merged_parent[child]
-                        retained_joints.append(loop_joint)
+                    retain_loop_joints(joint_data[(child_body, child)], child, incoming_xform, last_dynamic_body)
 
         for body in body_children[-1]:
             if not visited[body]:
                 dfs(-1, body, wp.transform(), -1)
+            else:
+                # A world joint to an already-visited body (e.g. an attachment anchor)
+                # closes a loop; it must not be dropped.
+                retain_loop_joints(joint_data[(-1, body)], body, wp.transform(), -1)
 
         # Handle disconnected subtrees: bodies not reachable from world.
         # This happens when joints only connect bodies to each other (no joint
@@ -5329,6 +5346,20 @@ class ModelBuilder:
             for child in body_children[body_id]:
                 if not visited[child]:
                     dfs(body_id, child, wp.transform(), body_id)
+                else:
+                    # The child was reached earlier through a loop-closing path (e.g. an
+                    # attachment anchor); this root's joint to it must not be dropped.
+                    retain_loop_joints(joint_data[(body_id, child)], child, wp.transform(), body_id)
+
+        # Reindex retained bodies in their original relative order: DFS discovery order
+        # would reorder bodies whenever a loop-closing joint (e.g. an attachment anchor)
+        # reaches a body before its chain root, breaking parent < child joint ordering
+        # and the contiguity of recorded group ranges.
+        retained_bodies.sort()
+        for new_id, original_id in enumerate(retained_bodies):
+            body_data[original_id]["id"] = new_id
+            for shape in body_data[original_id]["shapes"]:
+                self.shape_body[shape] = new_id
 
         # repopulate the model
         # save original body groups before clearing
