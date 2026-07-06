@@ -1775,9 +1775,11 @@ def parse_usd(
             j_friction = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
             )
-            j_damping = R.get_value(
-                jp_prim, prim_type=PrimType.JOINT, key="damping", default=default_joint_damping, verbose=verbose
+            _j_damping_usd = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
             )
+            j_damping_authored = _j_damping_usd is not None
+            j_damping = _j_damping_usd if j_damping_authored else default_joint_damping
             j_velocity_limit = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
@@ -1850,7 +1852,8 @@ def parse_usd(
                 limit_upper *= DegreesToRadian
                 limit_ke /= DegreesToRadian
                 limit_kd /= DegreesToRadian
-                j_damping /= DegreesToRadian
+                if j_damping_authored:
+                    j_damping /= DegreesToRadian
                 if jd.drive.enabled:
                     target_pos *= DegreesToRadian
                     target_vel *= DegreesToRadian
