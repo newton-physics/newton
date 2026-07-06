@@ -136,10 +136,13 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
+          # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
+          COVERAGE_CORE: "sysmon"
         run: >
           uv run --extra dev -m newton.tests
           --strict-warnings
           --parallel-timeout ${{ matrix.os == 'macos-latest' && 6900 || 3300 }}
+          ${{ matrix.os == 'macos-latest' && '--disable-process-pooling' || '' }}
           --no-cache-clear
           --junit-report-xml rspec.xml
           --coverage

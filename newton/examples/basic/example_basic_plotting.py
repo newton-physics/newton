@@ -41,6 +41,7 @@ class Example:
         self.viewer = viewer
 
         humanoid = newton.ModelBuilder()
+        humanoid.rigid_gap = 0.0
 
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
         humanoid.add_mjcf(
@@ -50,6 +51,7 @@ class Example:
         )
 
         builder = newton.ModelBuilder()
+        builder.rigid_gap = humanoid.rigid_gap
         builder.replicate(humanoid, args.world_count)
         builder.add_ground_plane()
 

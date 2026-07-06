@@ -2231,7 +2231,7 @@ See Also
 
 **Related documentation:**
 
-- :doc:`../api/newton_solvers` - Solver API reference (material property behavior per solver)
+- :ref:`Contact material support` - Material property behavior by solver
 - :doc:`custom_attributes` - USD custom attributes for collision properties
 - :doc:`usd_parsing` - USD import options including collision settings
 - :doc:`sites` - Non-colliding reference points
