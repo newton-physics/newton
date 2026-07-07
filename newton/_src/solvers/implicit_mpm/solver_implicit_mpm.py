@@ -1454,12 +1454,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         return update_render_grains(state_prev, state, grains, self._mpm_model.particle_radius, dt)
 
-    def create_particle_surface(self, voxel_size: float | None = None, **kwargs) -> ParticleSurface:
+    def create_particle_surface(
+        self,
+        voxel_size: float | None = None,
+        *,
+        max_grid_cells: int | None = None,
+        **kwargs,
+    ) -> ParticleSurface:
         """Create a reusable particle surface extraction context.
 
         Args:
             voxel_size: Voxel size for the density grid [m].
                 Defaults to ``0.45 * solver_voxel_size``.
+            max_grid_cells: Maximum logical grid cell count. When set,
+                extraction uses graph-capturable preallocated buffers. When
+                ``None``, it uses tight allocations.
             **kwargs: Forwarded to :class:`newton.geometry.ParticleSurface`.
 
         Returns:
@@ -1468,7 +1477,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
         if voxel_size is None:
             voxel_size = self._mpm_model.voxel_size * 0.45
-        return ParticleSurface(voxel_size=voxel_size, **kwargs)
+        return ParticleSurface(
+            voxel_size=voxel_size,
+            max_grid_cells=max_grid_cells,
+            device=self.model.device,
+            **kwargs,
+        )
 
     def extract_particle_surface(
         self,
@@ -1479,7 +1493,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         collider_extrapolation_depth: float | None = None,
         collider_extrapolation_onset: float = 0.0,
         particle_flags: wp.array[wp.int32] | None = None,
-    ) -> tuple[wp.array[wp.vec3] | None, wp.array[wp.int32] | None, wp.array[wp.vec3] | None]:
+    ) -> ParticleSurface.ExtractionMesh:
         """Extract a triangle mesh from the current particle state.
 
         Args:
@@ -1498,16 +1512,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 particles to surface.  Defaults to the model particle flags.
 
         Returns:
-            Tuple of vertex positions [m], triangle indices, and unit-length
-            vertex normals. All entries are ``None`` when no surface can be
-            extracted.
+            Mesh buffers and device-resident logical counts.
         """
         if particle_flags is None:
             particle_flags = self.model.particle_flags
         if extrapolate_into_colliders and surface.field_mode != "sdf":
             raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
 
-        verts, indices, normals = surface.extract(
+        mesh = surface.extract(
             state.particle_q,
             radii=self._mpm_model.particle_radius,
             compute_normals=compute_normals and not extrapolate_into_colliders,
@@ -1515,9 +1527,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             compute_mesh=not extrapolate_into_colliders,
         )
         if not extrapolate_into_colliders:
-            return verts, indices, normals
-        if surface.field is None:
-            return None, None, None
+            return mesh
 
         return extrapolate_surface_sdf_into_colliders(
             surface,
