@@ -18,6 +18,21 @@ if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
+def _resolve_fisheye_image_size(
+    axis: str,
+    image_size: float | None,
+    nominal_size: float | None,
+    default_size: int,
+) -> float:
+    if image_size is not None and nominal_size is not None and image_size != nominal_size:
+        raise ValueError(f"image_{axis} and nominal_{axis} must match when both are provided.")
+    if image_size is not None:
+        return float(image_size)
+    if nominal_size is not None:
+        return float(nominal_size)
+    return float(default_size)
+
+
 @wp.kernel(enable_backward=False)
 def flatten_color_image(
     color_image: wp.array4d[wp.uint32],
@@ -387,21 +402,24 @@ class Utils:
         direction normalized) for each pixel. Use either vertical field of
         view values or aperture/focal-length values.
 
+        Physical camera parameters accept any consistent length unit, such as
+        USD-style millimeters. The unit must match across *focal_length*,
+        apertures, and aperture offsets.
+
         Args:
             width: Image width [px].
             height: Image height [px].
             camera_fovs: Vertical FOV angles [rad], shape
                 ``(camera_count,)``. Required unless *focal_length*,
                 *horizontal_aperture*, and *vertical_aperture* are supplied.
-            focal_length: Focal length in the same units as the apertures.
-            horizontal_aperture: Horizontal aperture in the same units as
-                *focal_length*.
-            vertical_aperture: Vertical aperture in the same units as
-                *focal_length*.
-            horizontal_aperture_offset: Horizontal aperture offset in the same
-                units as *horizontal_aperture*.
-            vertical_aperture_offset: Vertical aperture offset in the same
-                units as *vertical_aperture*.
+            focal_length: Focal length [mm or any consistent unit].
+            horizontal_aperture: Horizontal aperture [mm or any consistent
+                unit].
+            vertical_aperture: Vertical aperture [mm or any consistent unit].
+            horizontal_aperture_offset: Horizontal aperture offset [mm or any
+                consistent unit].
+            vertical_aperture_offset: Vertical aperture offset [mm or any
+                consistent unit].
             out_rays: Optional output array to write into, shape
                 ``(out_camera_count, height, width, 2)``. If ``None``,
                 allocates a new array.
@@ -508,21 +526,24 @@ class Utils:
         .. deprecated:: 1.4
             Use :meth:`compute_camera_rays_pinhole` instead.
 
+        Physical camera parameters accept any consistent length unit, such as
+        USD-style millimeters. The unit must match across *focal_length*,
+        apertures, and aperture offsets.
+
         Args:
             width: Image width [px].
             height: Image height [px].
             camera_fovs: Vertical FOV angles [rad], shape
                 ``(camera_count,)``. Required unless *focal_length*,
                 *horizontal_aperture*, and *vertical_aperture* are supplied.
-            focal_length: Focal length in the same units as the apertures.
-            horizontal_aperture: Horizontal aperture in the same units as
-                *focal_length*.
-            vertical_aperture: Vertical aperture in the same units as
-                *focal_length*.
-            horizontal_aperture_offset: Horizontal aperture offset in the same
-                units as *horizontal_aperture*.
-            vertical_aperture_offset: Vertical aperture offset in the same
-                units as *vertical_aperture*.
+            focal_length: Focal length [mm or any consistent unit].
+            horizontal_aperture: Horizontal aperture [mm or any consistent
+                unit].
+            vertical_aperture: Vertical aperture [mm or any consistent unit].
+            horizontal_aperture_offset: Horizontal aperture offset [mm or any
+                consistent unit].
+            vertical_aperture_offset: Vertical aperture offset [mm or any
+                consistent unit].
             out_rays: Optional output array to write into, shape
                 ``(out_camera_count, height, width, 2)``. If ``None``,
                 allocates a new array.
@@ -566,13 +587,18 @@ class Utils:
         """Compute camera-space ray directions for USD pinhole cameras.
 
         Reads standard ``UsdGeom.Camera`` perspective attributes and forwards
-        them to :meth:`compute_camera_rays_pinhole`.
+        them to :meth:`compute_camera_rays_pinhole`. The returned
+        ``camera_rays`` array has no world axis, so rays are shared by every
+        world in a render call. Pair these rays with per-world camera
+        transforms only when the cameras at each camera index have matching
+        intrinsics across all worlds.
 
         Args:
             width: Image width [px].
             height: Image height [px].
             cameras: USD camera prim, ``UsdGeom.Camera``, or a flat sequence
-                of either.
+                of either. Per-world camera grids are not accepted because
+                camera rays cannot vary by world.
             time: Optional USD time code or numeric frame used for camera
                 attributes.
             out_rays: Optional output array to write into, shape
@@ -616,6 +642,11 @@ class Utils:
         camera_index: int = 0,
     ) -> wp.array4d[wp.vec3f]:
         """Compute camera-space ray directions for OpenCV fisheye cameras.
+
+        The distorted radius polynomial
+        ``r = theta * (1 + k1 theta^2 + k2 theta^4 + k3 theta^6 + k4 theta^8)``
+        must be monotonically increasing over the supported field of view,
+        ``[0, min(max_fov / 2, pi)]``.
 
         Args:
             width: Output image width [px].
@@ -682,6 +713,8 @@ class Utils:
         optical_center_x: float,
         optical_center_y: float,
         *,
+        image_width: float | None = None,
+        image_height: float | None = None,
         nominal_width: float | None = None,
         nominal_height: float | None = None,
         k0: float = 0.0,
@@ -695,15 +728,24 @@ class Utils:
     ) -> wp.array4d[wp.vec3f]:
         """Compute camera-space ray directions for F-theta fisheye cameras.
 
+        The F-theta radius polynomial
+        ``r = k0 + k1 theta + k2 theta^2 + k3 theta^3 + k4 theta^4``
+        must be monotonically increasing over the supported field of view,
+        ``[0, min(max_fov / 2, pi)]``.
+
         Args:
             width: Output image width [px].
             height: Output image height [px].
             optical_center_x: Optical center x-coordinate [px].
             optical_center_y: Optical center y-coordinate [px].
-            nominal_width: Calibration image width [px]. If ``None``, uses
-                *width*.
-            nominal_height: Calibration image height [px]. If ``None``, uses
-                *height*.
+            image_width: Calibration image width [px]. If ``None``, uses
+                *nominal_width*, then *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *nominal_height*, then *height*.
+            nominal_width: Alias for *image_width* using F-theta model
+                terminology. If both are provided, they must match.
+            nominal_height: Alias for *image_height* using F-theta model
+                terminology. If both are provided, they must match.
             k0: Constant F-theta polynomial coefficient [px].
             k1: Linear F-theta polynomial coefficient [px/rad].
             k2: Quadratic F-theta polynomial coefficient [px/rad^2].
@@ -720,8 +762,8 @@ class Utils:
             camera_rays: *out_rays* if provided, otherwise a new array with
                 shape ``(1, height, width, 2)`` and dtype ``vec3f``.
         """
-        nominal_width = width if nominal_width is None else nominal_width
-        nominal_height = height if nominal_height is None else nominal_height
+        image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
+        image_height = _resolve_fisheye_image_size("height", image_height, nominal_height, height)
         out_rays, camera_index = camera_utils._validate_camera_ray_output(
             width, height, 1, out_rays, camera_index, self.__render_context.device
         )
@@ -732,8 +774,8 @@ class Utils:
             inputs=[
                 width,
                 height,
-                nominal_width,
-                nominal_height,
+                image_width,
+                image_height,
                 optical_center_x,
                 optical_center_y,
                 k0,
@@ -757,6 +799,8 @@ class Utils:
         optical_center_x: float,
         optical_center_y: float,
         *,
+        image_width: float | None = None,
+        image_height: float | None = None,
         nominal_width: float | None = None,
         nominal_height: float | None = None,
         k0: float = 1.0,
@@ -772,15 +816,22 @@ class Utils:
         Uses the ``r = k0 theta + k1 theta^3 + k2 theta^5 + k3 theta^7``
         polynomial form.
 
+        The radius polynomial must be monotonically increasing over the
+        supported field of view, ``[0, min(max_fov / 2, pi)]``.
+
         Args:
             width: Output image width [px].
             height: Output image height [px].
             optical_center_x: Optical center x-coordinate [px].
             optical_center_y: Optical center y-coordinate [px].
-            nominal_width: Calibration image width [px]. If ``None``, uses
-                *width*.
-            nominal_height: Calibration image height [px]. If ``None``, uses
-                *height*.
+            image_width: Calibration image width [px]. If ``None``, uses
+                *nominal_width*, then *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *nominal_height*, then *height*.
+            nominal_width: Alias for *image_width* using Kannala-Brandt model
+                terminology. If both are provided, they must match.
+            nominal_height: Alias for *image_height* using Kannala-Brandt model
+                terminology. If both are provided, they must match.
             k0: Linear Kannala-Brandt coefficient [px/rad].
             k1: Cubic Kannala-Brandt coefficient [px/rad^3].
             k2: Quintic Kannala-Brandt coefficient [px/rad^5].
@@ -796,8 +847,8 @@ class Utils:
             camera_rays: *out_rays* if provided, otherwise a new array with
                 shape ``(1, height, width, 2)`` and dtype ``vec3f``.
         """
-        nominal_width = width if nominal_width is None else nominal_width
-        nominal_height = height if nominal_height is None else nominal_height
+        image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
+        image_height = _resolve_fisheye_image_size("height", image_height, nominal_height, height)
         out_rays, camera_index = camera_utils._validate_camera_ray_output(
             width, height, 1, out_rays, camera_index, self.__render_context.device
         )
@@ -808,8 +859,8 @@ class Utils:
             inputs=[
                 width,
                 height,
-                nominal_width,
-                nominal_height,
+                image_width,
+                image_height,
                 optical_center_x,
                 optical_center_y,
                 k0,
@@ -830,11 +881,21 @@ class Utils:
         cameras: camera_utils.UsdCameraGridInput,
         *,
         time: camera_utils.UsdTime | None = None,
+        xform: Any | None = None,
     ) -> wp.array2d[wp.transformf]:
         """Compute camera-to-world transforms from USD camera prims.
 
         Transforms are rotated from each USD camera's stage up-axis into the
-        associated :class:`~newton.Model` up-axis.
+        associated :class:`~newton.Model` up-axis. Pass the same *xform* used
+        for :meth:`~newton.ModelBuilder.add_usd` when the USD scene was
+        imported with a placement transform.
+
+        The returned transform array may vary by world, but
+        :meth:`compute_camera_rays_usd_pinhole` and
+        :meth:`~newton.sensors.SensorTiledCamera.update` use ``camera_rays``
+        without a world axis. When using a 2D per-world camera layout, every
+        camera at the same camera index must therefore share the same
+        intrinsics across worlds.
 
         Args:
             cameras: One or more USD camera prims or ``UsdGeom.Camera``
@@ -847,6 +908,10 @@ class Utils:
                 ``(camera_count, world_count)``.
             time: Optional USD time code or numeric frame used for authored
                 camera attributes and transforms.
+            xform: Optional scene placement transform to compose with each
+                camera transform. Use the same value passed as
+                ``ModelBuilder.add_usd(..., xform=xform)`` so cameras and
+                imported geometry share the same model-space placement.
 
         Returns:
             Camera-to-world transforms, shape ``(camera_count, world_count)``.
@@ -857,6 +922,7 @@ class Utils:
             device=self.__render_context.device,
             target_up_axis=self.__render_context.up_axis,
             time=time,
+            xform=xform,
         )
 
     def convert_ray_depth_to_forward_depth(

@@ -53,8 +53,11 @@ def _camera_param_array(
             return wp.full((camera_count,), value=float(values[0]), dtype=wp.float32, device=device)
         raise ValueError(f"{name} must have length 1 or {camera_count}.")
 
+    if param.size == 1:
+        value = float(param.numpy().reshape(-1)[0])
+        return wp.full((camera_count,), value=value, dtype=wp.float32, device=device)
     if param.size != camera_count:
-        raise ValueError(f"{name} must have length {camera_count}.")
+        raise ValueError(f"{name} must have length 1 or {camera_count}.")
     if param.dtype != wp.float32 or param.device != device:
         return wp.array(param.numpy().reshape(-1).astype(np.float32), dtype=wp.float32, device=device)
     return param
@@ -192,6 +195,7 @@ def compute_usd_camera_transforms(
     device: wp.Device,
     target_up_axis: Any | None = None,
     time: UsdTime | None = None,
+    xform: Any | None = None,
 ) -> wp.array2d[wp.transformf]:
     try:
         from pxr import UsdGeom
@@ -203,6 +207,7 @@ def compute_usd_camera_transforms(
 
     time_code = _coerce_usd_time(time)
     xform_cache = UsdGeom.XformCache(time_code)
+    scene_xform = wp.transform(*xform) if xform is not None else None
 
     def world_transform(usd_camera: Any) -> wp.transformf:
         transform = get_transform(usd_camera.GetPrim(), local=False, xform_cache=xform_cache)
@@ -210,6 +215,8 @@ def compute_usd_camera_transforms(
             stage_up_axis = Axis.from_string(str(UsdGeom.GetStageUpAxis(usd_camera.GetPrim().GetStage())))
             axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, target_up_axis))
             transform = axis_xform * transform
+        if scene_xform is not None:
+            transform = scene_xform * transform
         return transform
 
     is_per_world = _is_camera_sequence(cameras) and len(cameras) > 0 and _is_camera_sequence(cameras[0])
@@ -294,6 +301,7 @@ def _solve_opencv_fisheye_theta(
     if radius <= 1.0e-7:
         return wp.float32(0.0)
 
+    # This endpoint check and the binary search assume r(theta) is monotonic.
     max_radius = _opencv_fisheye_radius(max_theta, k0, k1, k2, k3)
     if radius > max_radius + 1.0e-5:
         return wp.float32(-1.0)
@@ -328,6 +336,7 @@ def _solve_ftheta_theta(
     if radius <= min_radius:
         return wp.float32(0.0)
 
+    # This endpoint check and the binary search assume r(theta) is monotonic.
     max_radius = _ftheta_radius(max_theta, k0, k1, k2, k3, k4)
     if radius > max_radius + 1.0e-5:
         return wp.float32(-1.0)
@@ -355,6 +364,7 @@ def _solve_kannala_brandt_k3_theta(
     if radius <= 1.0e-7:
         return wp.float32(0.0)
 
+    # This endpoint check and the binary search assume r(theta) is monotonic.
     max_radius = _kannala_brandt_k3_radius(max_theta, k0, k1, k2, k3)
     if radius > max_radius + 1.0e-5:
         return wp.float32(-1.0)

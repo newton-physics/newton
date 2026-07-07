@@ -59,6 +59,33 @@ class TestSensorCameraRays(unittest.TestCase):
             got_q = -got_q
         np.testing.assert_allclose(got_q, expected_q, atol=1e-6)
 
+    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    def test_usd_camera_transform_composes_import_xform(self):
+        from newton.math import quat_between_axes  # noqa: PLC0415
+
+        utils = _make_utils(up_axis=newton.Axis.Z)
+        stage, camera = _make_camera()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        camera.AddTranslateOp().Set(Gf.Vec3d(0.0, 1.0, 0.0))
+        import_xform = wp.transform(
+            wp.vec3(1.0, 2.0, 3.0),
+            wp.quat(0.0, 0.0, 0.70710678, 0.70710678),
+        )
+
+        got = utils.compute_usd_camera_transforms(camera, xform=import_xform).numpy()[0, 0]
+        expected = (
+            import_xform
+            * wp.transform(wp.vec3(0.0), quat_between_axes(newton.Axis.Y, newton.Axis.Z))
+            * wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat_identity())
+        )
+
+        np.testing.assert_allclose(got[:3], np.array(expected.p), atol=1e-6)
+        got_q = got[3:]
+        expected_q = np.array(expected.q)
+        if np.dot(got_q, expected_q) < 0.0:
+            got_q = -got_q
+        np.testing.assert_allclose(got_q, expected_q, atol=1e-6)
+
     def test_opencv_fisheye_zero_distortion(self):
         utils = _make_utils()
 
@@ -94,6 +121,29 @@ class TestSensorCameraRays(unittest.TestCase):
             vertical_aperture=vertical_aperture,
         ).numpy()
         expected = utils.compute_camera_rays_pinhole(width, height, fov).numpy()
+
+        np.testing.assert_allclose(got, expected, atol=1e-6)
+
+    def test_pinhole_length_one_warp_intrinsic_broadcasts(self):
+        utils = _make_utils()
+        width, height = 5, 3
+        horizontal_aperture = 2.0
+        vertical_apertures = [1.0, 1.5]
+
+        got = utils.compute_camera_rays_pinhole(
+            width,
+            height,
+            focal_length=[1.0, 1.0],
+            horizontal_aperture=wp.array([horizontal_aperture], dtype=wp.float32, device="cpu"),
+            vertical_aperture=vertical_apertures,
+        ).numpy()
+        expected = utils.compute_camera_rays_pinhole(
+            width,
+            height,
+            focal_length=[1.0, 1.0],
+            horizontal_aperture=horizontal_aperture,
+            vertical_aperture=vertical_apertures,
+        ).numpy()
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
 
@@ -174,6 +224,70 @@ class TestSensorCameraRays(unittest.TestCase):
         ).numpy()[0, 0, 0, 1]
 
         np.testing.assert_allclose(got, _direction(theta), atol=1e-6)
+
+    def test_fisheye_image_size_aliases_match_nominal_names(self):
+        utils = _make_utils()
+
+        ftheta_from_image_size = utils.compute_camera_rays_fisheye_ftheta(
+            2,
+            2,
+            optical_center_x=2.0,
+            optical_center_y=2.0,
+            image_width=4.0,
+            image_height=4.0,
+            k1=2.0,
+            max_fov=math.pi,
+        ).numpy()
+        ftheta_from_nominal_size = utils.compute_camera_rays_fisheye_ftheta(
+            2,
+            2,
+            optical_center_x=2.0,
+            optical_center_y=2.0,
+            nominal_width=4.0,
+            nominal_height=4.0,
+            k1=2.0,
+            max_fov=math.pi,
+        ).numpy()
+        kb_from_image_size = utils.compute_camera_rays_fisheye_kannala_brandt(
+            2,
+            2,
+            optical_center_x=2.0,
+            optical_center_y=2.0,
+            image_width=4.0,
+            image_height=4.0,
+            k0=2.0,
+            max_fov=math.pi,
+        ).numpy()
+        kb_from_nominal_size = utils.compute_camera_rays_fisheye_kannala_brandt(
+            2,
+            2,
+            optical_center_x=2.0,
+            optical_center_y=2.0,
+            nominal_width=4.0,
+            nominal_height=4.0,
+            k0=2.0,
+            max_fov=math.pi,
+        ).numpy()
+
+        np.testing.assert_allclose(ftheta_from_image_size, ftheta_from_nominal_size, atol=1e-6)
+        np.testing.assert_allclose(kb_from_image_size, kb_from_nominal_size, atol=1e-6)
+
+    def test_fisheye_image_size_alias_conflicts_raise(self):
+        utils = _make_utils()
+
+        for helper in (
+            utils.compute_camera_rays_fisheye_ftheta,
+            utils.compute_camera_rays_fisheye_kannala_brandt,
+        ):
+            with self.assertRaisesRegex(ValueError, "image_width and nominal_width"):
+                helper(
+                    1,
+                    1,
+                    optical_center_x=0.5,
+                    optical_center_y=0.5,
+                    image_width=2.0,
+                    nominal_width=3.0,
+                )
 
     def test_fisheye_rays_write_preallocated_camera_index(self):
         utils = _make_utils()
