@@ -388,12 +388,10 @@ def find_matching_ids(
     matching_ids = match_labels(labels, pattern)
 
     if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
-        # ArticulationView derives its layouts from model order. String patterns
-        # already produce this order, so normalize explicit indices to match.
-        matching_ids = sorted(matching_ids)
+        # ArticulationView derives its layouts from model order. String patterns already produce this order.
         for idx in range(1, len(matching_ids)):
-            if matching_ids[idx] == matching_ids[idx - 1]:
-                raise ValueError("Articulation indices must not contain duplicates")
+            if matching_ids[idx] <= matching_ids[idx - 1]:
+                raise ValueError("Articulation indices must be unique and in ascending order")
         if matching_ids[0] < 0 or matching_ids[-1] >= len(labels):
             raise ValueError(f"Articulation indices must be in range [0, {len(labels)})")
 
@@ -507,7 +505,7 @@ class ArticulationView:
     Args:
         model: The model containing the articulations.
         pattern: Pattern or list of patterns to match articulation labels, or a list
-            of absolute articulation indices.
+            of absolute articulation indices. Indices must be unique and in ascending order.
         include_joints: List of joint names, patterns, or indices to include.
         exclude_joints: List of joint names, patterns, or indices to exclude.
         include_links: List of link names, patterns, or indices to include.
