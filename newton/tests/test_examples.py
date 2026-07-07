@@ -1083,6 +1083,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_render_mesh",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 60},
+    use_viewer=True,
+)
+
 
 class TestKaminoExamples(unittest.TestCase):
     pass
