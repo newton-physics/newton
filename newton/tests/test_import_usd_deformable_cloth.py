@@ -340,6 +340,80 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertFalse(any("approximated" in m for m in messages))
         self.assertTrue(any("cannot disable deformable particle collision" in m for m in messages))
 
+    @staticmethod
+    def _add_triangle_mesh(stage, path, *, collision=False):
+        """Author a minimal one-triangle GeomMesh, optionally as an enabled collider."""
+        from pxr import UsdGeom
+
+        mesh = UsdGeom.Mesh.Define(stage, path)
+        mesh.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)])
+        mesh.CreateFaceVertexCountsAttr([3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+        if collision:
+            mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        return mesh
+
+    def test_every_dropped_dedicated_collider_warns(self):
+        """Every enabled CollisionAPI on a non-sim prim of a deformable body is dropped
+        (approximated by the simulation geometry), so every one must warn: the 2nd+
+        dedicated collider, and dedicated colliders whose sim geometry carries its own
+        CollisionAPI, were previously silent."""
+        from pxr import UsdGeom
+
+        with self.subTest(case="two_dedicated_colliders"):
+            stage = _deformable_stage()
+            body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+            _apply_deformable_body_api(body)
+            _add_cloth_mesh(stage, "/World/Body/Sim", collision=False)
+            self._add_triangle_mesh(stage, "/World/Body/ColA", collision=True)
+            self._add_triangle_mesh(stage, "/World/Body/ColB", collision=True)
+
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.add_usd(stage)
+            approximations = [str(w.message) for w in caught if "approximated by the simulation" in str(w.message)]
+            self.assertEqual(len(approximations), 2)
+            self.assertTrue(any("/World/Body/ColA" in m for m in approximations))
+            self.assertTrue(any("/World/Body/ColB" in m for m in approximations))
+
+        with self.subTest(case="sim_geometry_has_own_collision"):
+            stage = _deformable_stage()
+            body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+            _apply_deformable_body_api(body)
+            _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
+            self._add_triangle_mesh(stage, "/World/Body/Col", collision=True)
+
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.add_usd(stage)
+            approximations = [str(w.message) for w in caught if "approximated by the simulation" in str(w.message)]
+            self.assertEqual(len(approximations), 1)
+            self.assertIn("/World/Body/Col", approximations[0])
+
+    def test_unembedded_graphics_geometry_warns_and_skips(self):
+        """A PointBased prim under a deformable body that is neither the simulation
+        geometry nor a collider should deform with the simulation geometry per the
+        proposal; embedding is not implemented, so it is skipped with a warning.
+        Importing it as a static shape would leave a frozen copy behind while the
+        deformable moves away."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        _apply_deformable_body_api(body)
+        _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
+        self._add_triangle_mesh(stage, "/World/Body/Graphics", collision=False)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "/World/Body/Graphics.*cannot deform"):
+            result = builder.add_usd(stage, deformable_results=True)
+
+        # The graphics mesh is excluded from the native loader: no shape imports for it.
+        self.assertEqual(builder.shape_count, 0)
+        self.assertNotIn("/World/Body/Graphics", result["path_shape_map"])
+
     def test_dedicated_mesh_collider_owned_by_deformable_pass(self):
         """A dedicated UsdGeom.Mesh collider under a deformable body belongs to the
         deformable contract: it enables collision on the simulation geometry with the

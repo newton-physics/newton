@@ -103,14 +103,21 @@ def _enabled_collider_prim(prim) -> bool:
     return True if value is None else bool(value)
 
 
-def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ()):
-    """Yield a deformable body's dedicated collider prims.
+def _prim_has_collision_api(prim) -> bool:
+    """Whether a prim has ``PhysicsCollisionAPI`` applied (enabled or not)."""
+    from pxr import UsdPhysics
 
-    Per the proposal, deformable colliders are ``UsdGeomPointBased`` prims marked
-    with ``PhysicsCollisionAPI`` in the body hierarchy. Nested body subtrees are
-    pruned: a nested deformable body's colliders are its own, and a nested rigid
-    body or articulation is native content the deformable must not claim. Prims
-    matched by ``ignore_paths`` are as-if-absent.
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    return prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI")
+
+
+def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = ()):
+    """Yield a deformable body's ``UsdGeomPointBased`` prims (colliders and graphics geometry).
+
+    Nested body subtrees are pruned: a nested deformable body's geometry is its own, and a
+    nested rigid body or articulation is native content the deformable must not claim.
+    Prims matched by ``ignore_paths`` are as-if-absent.
     """
     from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -129,41 +136,51 @@ def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ())
             continue
         if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
             continue
-        if prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI"):
+        yield prim
+
+
+def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ()):
+    """Yield a deformable body's dedicated collider prims.
+
+    Per the proposal, deformable colliders are ``UsdGeomPointBased`` prims marked
+    with ``PhysicsCollisionAPI`` in the body hierarchy (see
+    :func:`_iter_deformable_pointbased_prims` for the subtree pruning rules).
+    """
+    for prim in _iter_deformable_pointbased_prims(body_root, ignore_paths):
+        if _prim_has_collision_api(prim):
             yield prim
 
 
-def _deformable_collision_enabled(prim, ignore_paths: Sequence[str] = ()) -> tuple[bool, str | None]:
+def _deformable_collision_enabled(prim, ignore_paths: Sequence[str] = ()) -> tuple[bool, list[str]]:
     """Resolve a deformable simulation geometry's collision participation.
 
     Collision is on when the simulation geometry carries an enabled
-    ``PhysicsCollisionAPI``, or, failing that, when a dedicated point-based
-    collider in the deformable body hierarchy does -- a collider Newton cannot
-    embed, approximated by the simulation geometry. Without any enabled collider
-    the deformable simulates dynamics without collision, per the proposal.
+    ``PhysicsCollisionAPI``, or when a dedicated point-based collider in the
+    deformable body hierarchy does -- a collider Newton cannot embed,
+    approximated by the simulation geometry. Without any enabled collider the
+    deformable simulates dynamics without collision, per the proposal.
 
-    Returns ``(enabled, approximated_from)`` where ``approximated_from`` is the
-    dedicated collider's path when the second rule applied, else ``None``.
+    Returns ``(enabled, approximated_from)`` where ``approximated_from`` lists
+    every enabled dedicated collider, all of whose geometry is dropped in favor
+    of the simulation geometry -- including when the simulation geometry has its
+    own collision, so each dropped collider stays visible to the user.
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
-    if _enabled_collider_prim(prim):
-        return True, None
+    dedicated: list[str] = []
     body_root = usd._find_deformable_body_prim(prim)
     if body_root is not None:
         for collider in _iter_deformable_collider_prims(body_root, ignore_paths):
-            if collider == prim:
-                continue
-            if _enabled_collider_prim(collider):
-                return True, str(collider.GetPath())
-    return False, None
+            if collider != prim and _enabled_collider_prim(collider):
+                dedicated.append(str(collider.GetPath()))
+    return _enabled_collider_prim(prim) or bool(dedicated), dedicated
 
 
-def _warn_collision_approximated(path: str, approximated_from: str | None) -> None:
-    """Warn when a dedicated deformable collider is approximated by the sim geometry."""
-    if approximated_from is not None:
+def _warn_collision_approximated(path: str, approximated_from: Sequence[str]) -> None:
+    """Warn for every dedicated deformable collider approximated by the sim geometry."""
+    for collider_path in approximated_from:
         warnings.warn(
-            f"{approximated_from}: dedicated deformable collider is approximated by the "
+            f"{collider_path}: dedicated deformable collider is approximated by the "
             f"simulation geometry {path} (deformable collider embedding is not supported).",
             stacklevel=2,
         )
@@ -748,18 +765,42 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
                 buckets.cloth.append(prim)
                 claim_body(prim)
 
-    # Colliders governed by an imported deformable body belong to the deformable
-    # contract (the collision-gating approximation), never to the native rigid loader.
-    # Resolved after the traversal over just the discovered body subtrees, so a stage
-    # without deformables pays nothing extra.
+    # Every PointBased prim governed by an imported deformable body belongs to the
+    # deformable contract, never to the native rigid loader: colliders feed the
+    # collision-gating approximation, and untagged graphics geometry must deform with
+    # the simulation geometry per the proposal. Embedding is not implemented, so the
+    # graphics geometry is skipped with a warning -- importing it as a static shape
+    # would leave a frozen copy behind while the deformable moves away. Resolved after
+    # the traversal over just the discovered body subtrees, so a stage without
+    # deformables pays nothing extra.
     if buckets.body_owner:
+        deformable_sim_apis = (
+            "PhysicsCurvesDeformableSimAPI",
+            "PhysicsSurfaceDeformableSimAPI",
+            "PhysicsVolumeDeformableSimAPI",
+        )
         stage = root_prim.GetStage()
-        for body_path in buckets.body_owner:
+        for body_path, owner_path in buckets.body_owner.items():
             body_prim = stage.GetPrimAtPath(body_path)
             if not body_prim or not body_prim.IsValid():
                 continue
-            for prim in _iter_deformable_collider_prims(body_prim, ignore_paths):
-                buckets.native_physics_exclude_paths.append(str(prim.GetPath()))
+            for prim in _iter_deformable_pointbased_prims(body_prim, ignore_paths):
+                path = str(prim.GetPath())
+                if _prim_has_collision_api(prim):
+                    buckets.native_physics_exclude_paths.append(path)
+                elif path != owner_path and not (
+                    prim.IsA(UsdGeom.TetMesh)
+                    or any(s in deformable_sim_apis for s in prim.GetPrimTypeInfo().GetAppliedAPISchemas())
+                ):
+                    # Simulation candidates of any family are handled (or warned) by their
+                    # own passes; everything else is unembedded graphics geometry.
+                    buckets.native_physics_exclude_paths.append(path)
+                    warnings.warn(
+                        f"{path}: PointBased geometry under deformable body {body_path} cannot "
+                        f"deform with the simulation geometry (embedding is not implemented); "
+                        f"skipping it.",
+                        stacklevel=2,
+                    )
     return buckets
 
 

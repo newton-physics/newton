@@ -128,8 +128,10 @@ Known gaps of the experimental importer, tracked as follow-ups:
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
 * **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven; a dedicated point-based collider only toggles
-  the simulation geometry's collision as described above and never becomes a separate rigid
+  deformable body is not simulated or driven (embedding is not implemented): untagged
+  PointBased graphics geometry warns and is skipped (a static import would leave a frozen
+  copy behind), and a dedicated point-based collider (every one warns) only toggles the
+  simulation geometry's collision as described above and never becomes a separate rigid
   shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
   deformable is skipped (disabled, kinematic, or malformed) it imports as nothing, with a
   warning, rather than falling back to a rigid representation.
