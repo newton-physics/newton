@@ -3,13 +3,12 @@
 
 import math
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorBatchedCamera
 
 
 def _build_single_sphere_model():
@@ -20,45 +19,41 @@ def _build_single_sphere_model():
 
 
 def _render_tiny_color_and_hdr(model, *, output_color_space=newton.utils.ColorSpace.SRGB):
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="SensorTiledCamera is deprecated",
-            category=DeprecationWarning,
-        )
-        sensor = SensorTiledCamera(
-            model=model,
-            config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
-        )
+    sensor = SensorBatchedCamera(
+        model=model,
+        config=SensorBatchedCamera.RenderConfig(output_color_space=output_color_space),
+    )
     state = model.state()
 
     camera_transforms = wp.array(
-        [[wp.transformf(wp.vec3f(3.0, 0.0, 0.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]],
+        [wp.transformf(wp.vec3f(3.0, 0.0, 0.0), wp.quatf(0.5, 0.5, 0.5, 0.5))],
         dtype=wp.transformf,
         device="cpu",
     )
+    camera_indices = wp.array([[0, 0]], dtype=wp.int32, device="cpu")
     camera_rays = sensor.utils.compute_pinhole_camera_rays(4, 4, math.radians(45.0))
-    color_image = sensor.utils.create_color_image_output(4, 4, 1)
-    hdr_color_image = sensor.utils.create_hdr_color_image_output(4, 4, 1)
+    color_image = sensor.utils.create_color_image_output(1, 4, 4)
+    hdr_color_image = sensor.utils.create_hdr_color_image_output(1, 4, 4)
 
     sensor.update(
         state,
         camera_transforms,
         camera_rays,
+        camera_indices,
         color_image=color_image,
         hdr_color_image=hdr_color_image,
     )
     return np.asarray(color_image.numpy(), dtype=np.uint32), np.asarray(hdr_color_image.numpy(), dtype=np.float32)
 
 
-class TestSensorTiledCameraHdrColor(unittest.TestCase):
+class TestSensorBatchedCameraHdrColor(unittest.TestCase):
     def test_hdr_color_is_available_next_to_packed_color(self):
         model = _build_single_sphere_model()
 
         color, hdr_color = _render_tiny_color_and_hdr(model)
 
-        self.assertEqual(color.shape, (1, 1, 4, 4))
-        self.assertEqual(hdr_color.shape, (1, 1, 4, 4, 3))
+        self.assertEqual(color.shape, (1, 4, 4))
+        self.assertEqual(hdr_color.shape, (1, 4, 4, 3))
         self.assertEqual(color.dtype, np.uint32)
         self.assertEqual(hdr_color.dtype, np.float32)
         self.assertTrue(np.isfinite(hdr_color).all())

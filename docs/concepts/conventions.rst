@@ -441,9 +441,9 @@ with :func:`newton.utils.color_srgb_to_linear` and
 Base-color textures stored on Newton models follow the same convention and are
 kept display/sRGB-encoded.
 
-Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+Packed color and albedo outputs from :class:`newton.sensors.SensorBatchedCamera`
 use display/sRGB encoding by default. Set
-``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+``SensorBatchedCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
 when linear RGB bytes are required for downstream processing. Clear colors are
 specified as display/sRGB packed RGBA values and are converted to linear when
 linear output is requested.

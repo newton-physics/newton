@@ -1,17 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from ..batched_camera_renderer import gaussians, lighting, raytrace, textures
-from ..batched_camera_renderer.types import (
-    ClearData,
-    GaussianRenderMode,
-    MeshData,
-    RenderConfig,
-    RenderLightType,
-    RenderOrder,
-    TextureData,
-)
 from .render_context import RenderContext
+from .types import ClearData, GaussianRenderMode, MeshData, RenderConfig, RenderLightType, RenderOrder, TextureData
 from .utils import Utils
 
 __all__ = [
@@ -24,8 +15,4 @@ __all__ = [
     "RenderOrder",
     "TextureData",
     "Utils",
-    "gaussians",
-    "lighting",
-    "raytrace",
-    "textures",
 ]

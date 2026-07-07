@@ -3,28 +3,17 @@
 
 import math
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton.sensors import SensorTiledCamera
+from newton.sensors import SensorBatchedCamera
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-def _create_tiled_camera(*args, **kwargs) -> SensorTiledCamera:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="SensorTiledCamera is deprecated",
-            category=DeprecationWarning,
-        )
-        return SensorTiledCamera(*args, **kwargs)
-
-
 def _build_multiworld_particle_model(*, worlds: int, spacing: float):
-    """Build a tiny multi-world particle model for SensorTiledCamera regression tests.
+    """Build a tiny multi-world particle model for SensorBatchedCamera regression tests.
 
     This scene is intentionally minimal and deterministic:
     - each world has the same particle grid
@@ -79,7 +68,7 @@ def _build_multiworld_particle_model(*, worlds: int, spacing: float):
     return builder
 
 
-def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.TestCase, device):
+def test_sensor_batched_camera_multiworld_particles_consistent(test: unittest.TestCase, device):
     """Regression test: multi-world particle depth should be consistent across worlds.
 
     This catches incorrect BVH particle index mapping across worlds, which can cause
@@ -107,54 +96,53 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
 
     state = model.state()
 
-    sensor = _create_tiled_camera(
+    sensor = SensorBatchedCamera(
         model=model,
-        config=SensorTiledCamera.RenderConfig(max_distance=max_distance),
+        config=SensorBatchedCamera.RenderConfig(max_distance=max_distance),
     )
     camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
 
     cam_quat = wp.quat_identity()
     camera_transforms = wp.array(
         [
-            [
-                wp.transformf(
-                    wp.vec3f(cam_local_pos[0] + float(world_id) * float(spacing), cam_local_pos[1], cam_local_pos[2]),
-                    cam_quat,
-                )
-                for world_id in range(worlds)
-            ]
+            wp.transformf(
+                wp.vec3f(cam_local_pos[0] + float(world_id) * float(spacing), cam_local_pos[1], cam_local_pos[2]),
+                cam_quat,
+            )
+            for world_id in range(worlds)
         ],
         dtype=wp.transformf,
         device=device,
     )
+    camera_indices = wp.array([[world_id, 0] for world_id in range(worlds)], dtype=wp.int32, device=device)
 
-    depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
-    sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
+    depth_image = sensor.utils.create_depth_image_output(worlds, width, height)
+    sensor.update(state, camera_transforms, camera_rays, camera_indices, depth_image=depth_image)
 
-    depth_np = depth_image.numpy()  # (num_worlds, num_cameras, H, W)
+    depth_np = depth_image.numpy()  # (num_views, H, W)
 
     # Sanity: ensure this scene actually produces hits.
-    hit_count = int(np.count_nonzero(depth_np[0, 0] > 0.0))
+    hit_count = int(np.count_nonzero(depth_np[0] > 0.0))
     test.assertGreater(hit_count, 0, "Expected at least one particle hit in world 0.")
 
     # Regression: all worlds should render the same depth image.
     # (Identical scene, identical relative camera pose).
     for w in range(1, worlds):
         # We expect numerical agreement up to small fp32 differences introduced by world translations.
-        np.testing.assert_allclose(depth_np[0, 0], depth_np[w, 0], rtol=0.0, atol=1e-4)
+        np.testing.assert_allclose(depth_np[0], depth_np[w], rtol=0.0, atol=1e-4)
 
 
-class TestSensorTiledCameraParticlesMultiworld(unittest.TestCase):
-    """Unittest harness for device-parametrized SensorTiledCamera particle regression tests."""
+class TestSensorBatchedCameraParticlesMultiworld(unittest.TestCase):
+    """Unittest harness for device-parametrized SensorBatchedCamera particle regression tests."""
 
     pass
 
 
 devices = get_test_devices()
 add_function_test(
-    TestSensorTiledCameraParticlesMultiworld,
-    "test_sensor_tiled_camera_multiworld_particles_consistent",
-    test_sensor_tiled_camera_multiworld_particles_consistent,
+    TestSensorBatchedCameraParticlesMultiworld,
+    "test_sensor_batched_camera_multiworld_particles_consistent",
+    test_sensor_batched_camera_multiworld_particles_consistent,
     devices=devices,
 )
 
