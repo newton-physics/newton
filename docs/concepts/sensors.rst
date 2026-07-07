@@ -99,8 +99,8 @@ Newton provides five sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
-* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, including friction decomposition,
-  with optional per-counterpart breakdown.
+* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, with friction decomposition,
+  optional per-counterpart force matrices, and force-weighted contact positions.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
