@@ -947,8 +947,13 @@ class ParticleSurface:
         """
         if not self._has_field:
             raise RuntimeError("extract() or update_field() must populate the field before fem_field()")
+        dims = self.grid_dims
+        if dims is None or any(dim < 2 for dim in dims):
+            raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
         field = self.field
         origin = self.grid_origin
+        if field is None or origin is None:
+            raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
         nx, ny, nz = field.shape
         grid = fem.Grid3D(
             bounds_lo=origin,
