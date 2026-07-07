@@ -6,9 +6,25 @@ from __future__ import annotations
 import json
 import math
 import os
+import warnings
+import zipfile
 from typing import Any
 
 import warp as wp
+
+_METADATA_FILE = "metadata.json"
+
+
+def _torch_archive_entries(path: str) -> set[str]:
+    """Zip entry names with the archive-name prefix PyTorch adds stripped.
+
+    Returns an empty set for non-zip files (e.g. legacy pickle checkpoints).
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return {name.split("/", 1)[-1] for name in zf.namelist()}
+    except (OSError, zipfile.BadZipFile):
+        return set()
 
 
 def _require_onnx():
@@ -36,7 +52,7 @@ def _require_warp_nn_runtime():
 
 
 def _looks_like_torch_checkpoint(path: str) -> bool:
-    return os.path.splitext(path)[1].lower() in (".pt", ".pth")
+    return os.path.splitext(path)[1].lower() in (".pt", ".pth", ".pt2")
 
 
 def load_metadata(path: str) -> dict[str, Any]:
@@ -67,7 +83,7 @@ def load_checkpoint(
 ):
     """Load a neural-network checkpoint as ``(model, metadata)``.
 
-    Both ONNX (``.onnx``) and TorchScript / Torch (``.pt`` / ``.pth``)
+    Both ONNX (``.onnx``) and Torch (``.pt2`` / ``.pt`` / ``.pth``)
     checkpoints are accepted. ONNX checkpoints return a Warp-NN runtime;
     Torch checkpoints return the loaded Torch module.
 
@@ -85,7 +101,7 @@ def load_checkpoint(
         checkpoints or a Torch module for Torch checkpoints.
     """
     if _looks_like_torch_checkpoint(path):
-        return _load_torch_checkpoint(path, device=device)
+        return _load_torch_raw(path)
 
     metadata = load_metadata(path)
     OnnxRuntime = _require_warp_nn_runtime()
@@ -168,36 +184,99 @@ def _require_torch():
     return torch
 
 
-def _load_torch_raw(path: str) -> tuple[Any, dict[str, Any]]:
-    """Load a ``.pt`` / ``.pth`` checkpoint."""
-    torch = _require_torch()
-
-    extra_files: dict[str, str] = {"metadata.json": ""}
+def _parse_metadata_json(text: str | bytes, path: str) -> dict[str, Any]:
+    """Parse a checkpoint's ``metadata.json`` payload, requiring a JSON object."""
+    if not text:
+        return {}
     try:
-        net = torch.jit.load(path, map_location="cpu", _extra_files=extra_files)
-        meta = json.loads(extra_files["metadata.json"]) if extra_files["metadata.json"] else {}
-        return net, meta
-    except Exception:
-        pass
-
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-    if isinstance(checkpoint, dict):
-        meta = checkpoint.get("metadata", {})
-        if "model" not in checkpoint:
-            raise ValueError(f"Cannot load checkpoint at '{path}'; dict checkpoint has no 'model' key")
-        return checkpoint["model"], meta
-
-    raise ValueError(f"Cannot load checkpoint at '{path}'; expected a TorchScript archive or a dict with a 'model' key")
-
-
-def _load_torch_metadata(path: str) -> dict[str, Any]:
-    _, metadata = _load_torch_raw(path)
+        metadata = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in checkpoint metadata for '{path}'") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError(
+            f"Invalid checkpoint metadata for '{path}': expected a JSON object, got {type(metadata).__name__}"
+        )
     return metadata
 
 
-def _load_torch_checkpoint(path: str, device: str | wp.Device | None = None):
-    """Load a TorchScript / dict checkpoint as a Torch module."""
-    model, metadata = _load_torch_raw(path)
-    if hasattr(model, "eval"):
-        model = model.eval()
-    return model, metadata
+def _load_torch_raw(path: str, warn: bool = True) -> tuple[Any, dict[str, Any]]:
+    """Load a pt2 / TorchScript / dict checkpoint as ``(module, metadata)``.
+
+    TorchScript and dict modules are put in eval mode here; pt2 modules run
+    with the train/eval mode that was captured at export time.
+
+    ``warn`` controls the deprecation warnings for the legacy formats; its
+    ``stacklevel`` assumes the call chain controller ``__init__`` →
+    :func:`load_checkpoint` → here, so the warning points at the user's code.
+    """
+    torch = _require_torch()
+    entries = _torch_archive_entries(path)
+
+    if "archive_format" in entries or "serialized_exported_program.json" in entries:
+        # Torch <= 2.7 wrote export archives without the pt2 "archive_format"
+        # marker; torch.export.load still handles both layouts.
+        extra_files: dict[str, str] = {_METADATA_FILE: ""}
+        exported = torch.export.load(path, extra_files=extra_files)
+        return exported.module(), _parse_metadata_json(extra_files[_METADATA_FILE], path)
+
+    if "constants.pkl" in entries:
+        # torch.jit.save always writes constants.pkl; torch.save archives don't.
+        extra_files = {_METADATA_FILE: ""}
+        net = torch.jit.load(path, map_location="cpu", _extra_files=extra_files)
+        if warn:
+            warnings.warn(
+                f"Loading TorchScript checkpoints (torch.jit.save) is deprecated; "
+                f"re-export '{path}' as a pt2 archive via torch.export.save().",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        metadata = _parse_metadata_json(extra_files[_METADATA_FILE], path)
+        net.eval()
+        return net, metadata
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(checkpoint, dict):
+        if "model" not in checkpoint:
+            raise ValueError(f"Cannot load checkpoint at '{path}'; dict checkpoint has no 'model' key")
+        if warn:
+            warnings.warn(
+                f"Loading dict checkpoints (torch.save) is deprecated; "
+                f"re-export '{path}' as a pt2 archive via torch.export.save().",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        net = checkpoint["model"]
+        if hasattr(net, "eval"):
+            net.eval()
+        return net, checkpoint.get("metadata", {})
+
+    raise ValueError(
+        f"Cannot load checkpoint at '{path}'; expected a pt2 archive (torch.export.save), "
+        f"a TorchScript archive, or a dict with a 'model' key"
+    )
+
+
+def _load_torch_metadata(path: str) -> dict[str, Any]:
+    """Read checkpoint metadata without deserializing the network when possible.
+
+    pt2 and TorchScript archives store extra files as plain zip entries under
+    ``<archive_name>/extra/`` (``extra_files/`` for Torch <= 2.7 export
+    archives), so metadata can be read directly. Dict checkpoints keep their
+    metadata inside the pickle and need a full load.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            entries = {name.split("/", 1)[-1]: name for name in zf.namelist()}
+            metadata_entry = entries.get(f"extra/{_METADATA_FILE}") or entries.get(_METADATA_FILE)
+            if metadata_entry is not None:
+                return _parse_metadata_json(zf.read(metadata_entry), path)
+            if (
+                "archive_format" in entries
+                or "constants.pkl" in entries
+                or "serialized_exported_program.json" in entries
+            ):
+                return {}
+    except (OSError, zipfile.BadZipFile):
+        pass
+    _, metadata = _load_torch_raw(path, warn=False)
+    return metadata
