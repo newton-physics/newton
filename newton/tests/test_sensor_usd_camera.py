@@ -353,7 +353,7 @@ class TestSensorCameraRays(unittest.TestCase):
         builder.add_shape_sphere(body, radius=0.5)
         model = builder.finalize(device="cpu")
         state = model.state()
-        newton.geometry.build_bvh_shape(model, state)
+        model.bvh_build_shapes(state)
 
         sensor = SensorTiledCamera(model)
         camera_transforms = wp.array(

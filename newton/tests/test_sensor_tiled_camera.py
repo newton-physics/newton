@@ -193,7 +193,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             dtype=wp.transformf,
             device="cpu",
         )
-        camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(60.0))
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, math.radians(60.0))
         depth_image = sensor.utils.create_depth_image_output(width, height)
 
         sensor.update(model.state(), camera_transforms, camera_rays, depth_image=depth_image)
