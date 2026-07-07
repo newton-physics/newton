@@ -343,8 +343,8 @@ class TestSensorContact(unittest.TestCase):
         model = _make_two_world_model(include_ground=True)
         sensor = SensorContact(model, sensing_bodies="*", counterpart_shapes="*", measure_total=False)
         self.assertIsNone(sensor.total_force)
-        self.assertIsNotNone(sensor.contact_position_matrix)
-        self.assertEqual(sensor.contact_position_matrix.shape, sensor.force_matrix.shape)
+        self.assertIsNotNone(sensor.position_matrix)
+        self.assertEqual(sensor.position_matrix.shape, sensor.force_matrix.shape)
 
         contacts = create_contacts(model.device, [(0, 2)], naconmax=4, forces=[5.0])
         sensor.update(None, contacts)
@@ -352,10 +352,10 @@ class TestSensorContact(unittest.TestCase):
         net = sensor.force_matrix.numpy()
         ground_col = sensor.counterpart_indices[0].index(2)
         np.testing.assert_allclose(net[0, ground_col], [0, 0, 5.0], atol=1e-5)
-        # positions were never refreshed (no state passed), so all entries hold the zero allocation
-        np.testing.assert_array_equal(sensor.contact_position_matrix.numpy(), 0.0)
+        # no state passed, so positions are reset and never populated
+        np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
 
-    def test_contact_position_matrix(self):
+    def test_position_matrix(self):
         """Contact positions are force-weighted world-space midpoints grouped by counterpart."""
         device = wp.get_device()
 
@@ -373,8 +373,8 @@ class TestSensorContact(unittest.TestCase):
             counterpart_shapes="*",
             measure_total=False,
         )
-        self.assertIsNotNone(sensor.contact_position_matrix)
-        self.assertEqual(sensor.contact_position_matrix.shape, sensor.force_matrix.shape)
+        self.assertIsNotNone(sensor.position_matrix)
+        self.assertEqual(sensor.position_matrix.shape, sensor.force_matrix.shape)
 
         state = types.SimpleNamespace(
             body_q=wp.array(
@@ -439,7 +439,7 @@ class TestSensorContact(unittest.TestCase):
         col_b = sensor.counterpart_indices[row_a].index(shape_b)
         col_ground_a = sensor.counterpart_indices[row_a].index(ground)
         col_ground_b = sensor.counterpart_indices[row_b].index(ground)
-        positions = sensor.contact_position_matrix.numpy()
+        positions = sensor.position_matrix.numpy()
         # surface points are the offset-shifted contact points in world space
         # A-B: weights 2 and 5 over surface midpoints (6, 12, 0) and (4, 13.5, 0)
         expected_ab = [32.0 / 7.0, 91.5 / 7.0, 0.0]
@@ -456,21 +456,22 @@ class TestSensorContact(unittest.TestCase):
         # a second update with the same inputs must give identical results
         # (catches stale weight accumulation across updates)
         sensor.update(state, contacts)
-        np.testing.assert_allclose(sensor.contact_position_matrix.numpy(), positions, rtol=1e-6)
+        np.testing.assert_allclose(sensor.position_matrix.numpy(), positions, rtol=1e-6)
 
-        positions_before = positions.copy()
+        # updates without body transforms reset positions to zero so they cannot pair with the new forces
         forces_before = sensor.force_matrix.numpy().copy()
         changed_contacts = create_contacts(device, [(shape_a, shape_b)], naconmax=4, forces=[11.0])
         sensor.update(None, changed_contacts)
-        np.testing.assert_array_equal(sensor.contact_position_matrix.numpy(), positions_before)
+        np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
         self.assertFalse(np.array_equal(sensor.force_matrix.numpy(), forces_before))
 
+        sensor.update(state, contacts)  # repopulate positions
         sensor.update(types.SimpleNamespace(body_q=None), changed_contacts)
-        np.testing.assert_array_equal(sensor.contact_position_matrix.numpy(), positions_before)
+        np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
 
         zero_force_contacts = create_contacts(device, [(shape_a, shape_b)], naconmax=4, forces=[0.0])
         sensor.update(state, zero_force_contacts)
-        positions = sensor.contact_position_matrix.numpy()
+        positions = sensor.position_matrix.numpy()
         np.testing.assert_array_equal(positions, 0.0)
 
     def test_duplicate_sensing_objects_raises(self):
@@ -646,7 +647,7 @@ class TestSensorContact(unittest.TestCase):
         model = _make_two_world_model()
         sensor = SensorContact(model, sensing_bodies="*")
         self.assertIsNone(sensor.force_matrix_friction)
-        self.assertIsNone(sensor.contact_position_matrix)
+        self.assertIsNone(sensor.position_matrix)
         self.assertIsNotNone(sensor.total_force_friction)
 
     def test_purely_normal_force_has_zero_friction(self):
@@ -786,7 +787,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         shape_base, shape_a, shape_b = 0, 1, 2
         row_a = sensor.sensing_indices.index(body_a)
         row_b = sensor.sensing_indices.index(body_b)
-        positions = sensor.contact_position_matrix.numpy()
+        positions = sensor.position_matrix.numpy()
         np.testing.assert_allclose(
             positions[row_a, sensor.counterpart_indices[row_a].index(shape_base)], [0.0, 0.0, 0.25], atol=0.05
         )
