@@ -538,9 +538,11 @@ def _cable_attachment_anchors(
 ) -> list[tuple[int, wp.vec3]] | None:
     """Resolve a cable attachment site to ``(body, local_point)`` anchors.
 
-    ``point`` sites map to the cable's per-point anchors; ``segment`` sites place the anchor on
-    the body using the proposal segment coordinate ``coord`` ``(u, s, t)``. Returns ``None`` if
-    ``src_path`` is not an imported cable, or ``[]`` (with a warning) for an unresolved site.
+    ``point`` sites resolve to a single anchor (the proposal solves each site as one
+    point-point constraint, even on an interior point bordering two segment bodies);
+    ``segment`` sites place the anchor on the body using the proposal segment coordinate
+    ``coord`` ``(u, s, t)``. Returns ``None`` if ``src_path`` is not an imported cable,
+    or ``[]`` (with a warning) for an unresolved site.
     """
     segment_map = segment_maps.get(src_path)
     point_anchors = point_anchor_maps.get(src_path)
@@ -556,7 +558,12 @@ def _cable_attachment_anchors(
                 stacklevel=2,
             )
             return []
-        return list(anchors)
+        # An interior point borders two segment bodies, but the proposal solves each
+        # attachment site as a single point-point constraint; a second joint would pin
+        # the same vertex to the same target twice. Use one anchor (the incoming
+        # segment's endpoint) -- the flanking bodies already share the vertex through
+        # the cable's own joint.
+        return [anchors[0]]
 
     if site_type != "segment":
         return None

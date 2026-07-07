@@ -227,8 +227,11 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         child_anchor_world = wp.transform_point(builder.body_q[builder.joint_child[j]], builder.joint_X_c[j].p)
         np.testing.assert_allclose(np.array(child_anchor_world), np.array(builder.joint_X_p[j].p), atol=1e-5)
 
-    def test_physics_attachment_interior_point_to_rigid_imports_incident_segment_joints(self):
-        """A cable point attachment maps an interior point to both incident segment bodies."""
+    def test_physics_attachment_interior_point_imports_single_joint(self):
+        """A point attachment site is a single point-point constraint per the proposal, so
+        an interior cable point (which borders two segment bodies) creates exactly one ball
+        joint, anchored to one flanking body at the shared vertex, not one joint per
+        incident segment."""
         from pxr import UsdGeom, UsdPhysics
 
         stage = _deformable_stage()
@@ -250,14 +253,18 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         result = builder.add_usd(stage, deformable_results=True)
 
         rigid_body = result["path_body_map"]["/World/Rigid"]
-        b0, _ = group_range(builder, "cable", "/World/Cable", "body")
+        b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         joints = result["path_attachment_map"]["/World/AttachPoint"]
-        self.assertEqual(len(joints), 2)
-        self.assertEqual({builder.joint_child[j] for j in joints}, {b0, b0 + 1})
-        self.assertTrue(all(builder.joint_parent[j] == rigid_body for j in joints))
-        for j in joints:
-            self.assertEqual(builder.joint_type[j], newton.JointType.BALL)
-            np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [0.1, 0.0, 1.0], atol=1e-6)
+        self.assertEqual(len(joints), 1)
+        j = joints[0]
+        self.assertEqual(builder.joint_type[j], newton.JointType.BALL)
+        self.assertEqual(builder.joint_parent[j], rigid_body)
+        self.assertIn(builder.joint_child[j], range(b0, b1))
+        # Both frames name the authored vertex: the parent anchor directly, and the child
+        # anchor through its body transform (so the single joint pins the shared point).
+        np.testing.assert_allclose(np.array(builder.joint_X_p[j].p), [0.1, 0.0, 1.0], atol=1e-6)
+        child_anchor_world = wp.transform_point(builder.body_q[builder.joint_child[j]], builder.joint_X_c[j].p)
+        np.testing.assert_allclose(np.array(child_anchor_world), [0.1, 0.0, 1.0], atol=1e-6)
 
     def test_physics_attachment_to_kinematic_body_finalizes(self):
         """A cable attached to a jointless kinematic body must finalize().
