@@ -213,9 +213,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        self.use_cuda_graph = False
-        if self.device.is_cuda and wp.is_mempool_enabled(self.device):
-            self.use_cuda_graph = True
+        self.use_graph = False
+        if newton.utils.is_graph_capture_allocation_enabled(self.device):
+            self.use_graph = True
             self.control.joint_target_q = wp.zeros(
                 self._num_prefix_zeros + self._num_dofs, dtype=wp.float32, device=self.device
             )
@@ -225,7 +225,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
 
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()

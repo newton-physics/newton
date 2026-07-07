@@ -118,8 +118,8 @@ class Example:
         self.capture()
 
     def capture(self):
-        # Capture all the kernel launches into a CUDA graph so that they can
-        # all be run in a single graph launch, which helps with performance.
+        # Capture all the kernel launches into a graph so that they can all be
+        # run in a single graph launch, which helps with performance.
         with wp.ScopedCapture() as capture:
             self.forward_backward()
         self.graph = capture.graph

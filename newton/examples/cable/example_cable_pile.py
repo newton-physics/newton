@@ -190,7 +190,7 @@ class Example:
         self.capture()
 
     def capture(self):
-        """Capture simulation loop into a CUDA graph for optimal GPU performance."""
+        """Capture simulation loop into a graph for optimal performance."""
         with wp.ScopedCapture() as cap:
             self.simulate()
         self.graph = cap.graph

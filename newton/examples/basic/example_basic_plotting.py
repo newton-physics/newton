@@ -93,7 +93,7 @@ class Example:
             self.graph = capture.graph
         except Exception as exc:
             self.graph = None
-            warnings.warn(f"CUDA graph capture failed: {exc}", stacklevel=2)
+            warnings.warn(f"Graph capture failed: {exc}", stacklevel=2)
 
     def simulate(self):
         for _ in range(self.sim_substeps):

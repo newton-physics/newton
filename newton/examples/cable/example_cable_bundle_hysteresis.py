@@ -319,7 +319,7 @@ class Example:
         # Time tracking for obstacle motion (stored in device array for graph capture)
         self.sim_time_array = wp.zeros(1, dtype=float, device=self.solver.device)
 
-        # Initialize CUDA graph
+        # Initialize graph capture
         self.capture()
 
     def capture(self):
