@@ -212,7 +212,9 @@ def _load_torch_raw(path: str, warn: bool = True) -> tuple[Any, dict[str, Any]]:
     torch = _require_torch()
     entries = _torch_archive_entries(path)
 
-    if "archive_format" in entries:
+    if "archive_format" in entries or "serialized_exported_program.json" in entries:
+        # Torch <= 2.7 wrote export archives without the pt2 "archive_format"
+        # marker; torch.export.load still handles both layouts.
         extra_files: dict[str, str] = {_METADATA_FILE: ""}
         exported = torch.export.load(path, extra_files=extra_files)
         return exported.module(), _parse_metadata_json(extra_files[_METADATA_FILE], path)
@@ -258,16 +260,21 @@ def _load_torch_metadata(path: str) -> dict[str, Any]:
     """Read checkpoint metadata without deserializing the network when possible.
 
     pt2 and TorchScript archives store extra files as plain zip entries under
-    ``<archive_name>/extra/``, so metadata can be read directly. Dict
-    checkpoints keep their metadata inside the pickle and need a full load.
+    ``<archive_name>/extra/`` (``extra_files/`` for Torch <= 2.7 export
+    archives), so metadata can be read directly. Dict checkpoints keep their
+    metadata inside the pickle and need a full load.
     """
     try:
         with zipfile.ZipFile(path) as zf:
             entries = {name.split("/", 1)[-1]: name for name in zf.namelist()}
-            metadata_entry = entries.get(f"extra/{_METADATA_FILE}")
+            metadata_entry = entries.get(f"extra/{_METADATA_FILE}") or entries.get(_METADATA_FILE)
             if metadata_entry is not None:
                 return _parse_metadata_json(zf.read(metadata_entry), path)
-            if "archive_format" in entries or "constants.pkl" in entries:
+            if (
+                "archive_format" in entries
+                or "constants.pkl" in entries
+                or "serialized_exported_program.json" in entries
+            ):
                 return {}
     except (OSError, zipfile.BadZipFile):
         pass

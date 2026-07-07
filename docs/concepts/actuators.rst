@@ -195,16 +195,13 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
-Differentiability and Graph Capture
------------------------------------
+Neural-Network Checkpoints
+--------------------------
 
-Whether an actuator supports differentiability and CUDA graph capture depends on
-its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
-graphable.  Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX checkpoints
-use Warp-NN's Warp-backed runtime and are graphable, while Torch checkpoints
-use the Torch backend, require PyTorch, and are not graphable due to framework
-interop overhead.
+Neural-network controllers (:class:`ControllerNeuralMLP`,
+:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX
+checkpoints (``.onnx``) run on Warp-NN's Warp-backed runtime, while Torch
+checkpoints use the Torch backend and require PyTorch.
 
 Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
@@ -220,13 +217,20 @@ extra file:
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
 :class:`ControllerNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
-the metadata of pt2 checkpoints, since exported modules no longer expose the
-``torch.nn.LSTM`` submodule that legacy checkpoints are inspected for.  The
-legacy TorchScript (``.pt`` / ``.pth``, saved with ``torch.jit.save``) and
-dict (saved with ``torch.save``) formats still load but are deprecated.
+the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
+may omit them: they contain the original module, whose ``torch.nn.LSTM``
+submodule is inspected directly, while ``torch.export`` flattens the network
+into a computation graph that no longer exposes it.
 
-:meth:`Actuator.is_graphable` returns ``True`` when all components can be
-captured in a CUDA graph.
+Differentiability and Graph Capture
+-----------------------------------
+
+Whether an actuator supports differentiability and CUDA graph capture depends on
+its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
+graphable.  For neural-network controllers it depends on the checkpoint
+backend: ONNX checkpoints are graphable, while Torch checkpoints are not due
+to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
+when all components can be captured in a CUDA graph.
 
 Available Components
 --------------------

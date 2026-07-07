@@ -77,16 +77,16 @@ class ControllerNeuralLSTM(Controller):
     ``torch.export.save``; preferred) and the deprecated TorchScript (``.pt``
     saved with ``torch.jit.save``) and module-bundle
     (``{"model": <network module>, "metadata": {...}}`` saved with
-    ``torch.save``) formats. ``num_layers`` and ``hidden_size`` are taken from
-    a live ``lstm`` attribute (``torch.nn.LSTM``) when the network exposes
-    one, otherwise from checkpoint metadata. Exported pt2 modules no longer
-    expose that attribute, so their checkpoints must record ``num_layers``
-    and ``hidden_size`` in metadata.
+    ``torch.save``) formats.
+
+    ``.pt2`` and ``.onnx`` checkpoints must record ``num_layers`` and
+    ``hidden_size`` in metadata; only legacy Torch checkpoints may omit them,
+    since their loaded networks expose a live ``lstm`` attribute to inspect.
 
     ``.onnx`` checkpoints use Warp-NN. The exported ONNX model must have three
-    inputs: input, initial hidden, and initial cell. It must have three graph
-    outputs: effort, hidden output, and cell output. Metadata properties map
-    those names to controller roles.
+    inputs (input, initial hidden, and initial cell) and three graph outputs
+    (effort, hidden output, and cell output). Metadata properties map those
+    names to controller roles.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
