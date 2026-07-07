@@ -357,6 +357,39 @@ class TestShapeColors(unittest.TestCase):
 
         self.assertLessEqual(len(groups), MAX_TRIANGLE_OPACITY_GROUPS)
 
+    def test_viewer_caches_triangle_opacity_groups_until_mutated(self):
+        builder = newton.ModelBuilder()
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=5,
+            dim_y=4,
+            cell_x=1.0,
+            cell_y=1.0,
+            mass=1.0,
+        )
+        model = builder.finalize(device=self.device)
+        opacities = np.full(model.tri_count, 0.5, dtype=np.float32)
+        opacities[: model.tri_count // 2] = 0.25
+        model.tri_opacity = wp.array(opacities, dtype=wp.float32, device=self.device)
+        viewer = ViewerNull()
+        viewer.set_model(model)
+
+        groups_first, _ = viewer._get_triangle_opacity_groups()
+        groups_second, stale_second = viewer._get_triangle_opacity_groups()
+        self.assertIs(groups_second, groups_first)
+        self.assertEqual(stale_second, [])
+
+        # An in-place mutation must invalidate the cached groups.
+        opacities[:] = 0.75
+        wp.copy(model.tri_opacity, wp.array(opacities, dtype=wp.float32, device=self.device))
+        groups_third, stale_third = viewer._get_triangle_opacity_groups()
+        self.assertIsNot(groups_third, groups_first)
+        self.assertEqual(len(groups_third), 1)
+        self.assertAlmostEqual(groups_third[0][2], 0.75, places=6)
+        self.assertEqual(stale_third, groups_first)
+
     def test_opaque_and_transparent_shapes_use_separate_batches(self):
         builder = newton.ModelBuilder()
         body0 = builder.add_body(mass=1.0)

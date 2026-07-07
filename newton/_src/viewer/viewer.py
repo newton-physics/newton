@@ -24,6 +24,7 @@ from .kernels import (
     compact,
     compute_hydro_contact_surface_lines,
     estimate_world_extents,
+    flag_changed_floats,
     repack_shape_colors,
     repack_shape_opacities,
     transform_points,
@@ -518,6 +519,8 @@ class ViewerBase(ABC):
         layer._shape_instances = {}
         layer._triangle_opacity_groups: list[tuple[str, wp.array[wp.int32], float]] | None = None
         layer._triangle_opacity_signature: tuple[int, str] | None = None
+        layer._triangle_opacity_cached: wp.array[wp.float32] | None = None
+        layer._triangle_opacity_change_flag: wp.array[wp.int32] | None = None
         # Inertia box wireframe line vertices (12 lines per body)
         layer._inertia_box_points0 = None
         layer._inertia_box_points1 = None
@@ -713,6 +716,8 @@ class ViewerBase(ABC):
         self._shape_transparent_mask = None
         self._triangle_opacity_groups = None
         self._triangle_opacity_signature = None
+        self._triangle_opacity_cached = None
+        self._triangle_opacity_change_flag = None
 
         self._populate_shapes()
         if self._user_spacing is not None:
@@ -2815,6 +2820,27 @@ class ViewerBase(ABC):
             hidden=not self.show_com or self._layer_force_hidden(),
         )
 
+    def _triangle_opacities_changed(self) -> bool:
+        """Detect ``Model.tri_opacity`` mutations without downloading the array."""
+        current = self.model.tri_opacity
+        cached = self._triangle_opacity_cached
+        if cached is None or len(cached) != len(current):
+            return True
+        if not current.device.is_cuda:
+            return not np.array_equal(current.numpy(), cached.numpy())
+        if self._triangle_opacity_change_flag is None:
+            self._triangle_opacity_change_flag = wp.zeros(1, dtype=wp.int32, device=current.device)
+        else:
+            self._triangle_opacity_change_flag.zero_()
+        wp.launch(
+            flag_changed_floats,
+            dim=len(current),
+            inputs=[current, cached, self._triangle_opacity_change_flag],
+            device=current.device,
+            record_tape=False,
+        )
+        return bool(self._triangle_opacity_change_flag.numpy()[0])
+
     def _get_triangle_opacity_groups(
         self,
     ) -> tuple[
@@ -2826,7 +2852,19 @@ class ViewerBase(ABC):
             stale_groups = self._triangle_opacity_groups or []
             self._triangle_opacity_groups = []
             self._triangle_opacity_signature = None
+            self._triangle_opacity_cached = None
             return [], stale_groups
+
+        # Fast path: reuse cached groups unless tri_opacity itself was mutated.
+        # The change check runs on device, avoiding a per-frame download + hash
+        # of the full opacity array.
+        if self._triangle_opacity_groups is not None and self._triangle_opacity_signature is not None:
+            if self.model.tri_opacity is None:
+                cache_valid = self._triangle_opacity_cached is None
+            else:
+                cache_valid = self._triangle_opacity_cached is not None and not self._triangle_opacities_changed()
+            if cache_valid:
+                return self._triangle_opacity_groups, []
 
         tri_count = self.model.tri_count
         if self.model.tri_opacity is None:
@@ -2889,6 +2927,7 @@ class ViewerBase(ABC):
 
         self._triangle_opacity_groups = groups
         self._triangle_opacity_signature = signature
+        self._triangle_opacity_cached = wp.clone(self.model.tri_opacity) if self.model.tri_opacity is not None else None
         return groups, stale_groups
 
     def _log_triangles(self, state: newton.State):
