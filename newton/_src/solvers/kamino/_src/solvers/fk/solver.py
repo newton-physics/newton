@@ -184,13 +184,15 @@ class ForwardKinematicsSolver:
 
         # Resolve custom actuation types
         joints_act_type_prev = self.model.joints.act_type.numpy().copy()
-        if self.model.joints.fk_act_type is not None:
-            joints_fk_act_type = self.model.joints.fk_act_type.numpy()
-            overwrite_mask = joints_fk_act_type != -1
+        if self.model.joints.fk_act_flag is not None:
+            joints_fk_act_flag = self.model.joints.fk_act_flag.numpy()
+            mapping = np.array([-1, JointActuationType.PASSIVE, JointActuationType.FORCE])
+            joints_fk_act_type = mapping[joints_fk_act_flag + 1]  # Map 0/1 flags to enum constants
+            overwrite_mask = joints_fk_act_flag != -1
             joints_act_type_prev[overwrite_mask] = joints_fk_act_type[overwrite_mask]
 
         # Retrieve / compute dimensions - Actuated coordinates/dofs (main model)
-        if self.model.joints.fk_act_type is None:
+        if self.model.joints.fk_act_flag is None:
             actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
             actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
         else:
@@ -2230,13 +2232,13 @@ def compute_fk_equivalence_classes(model: ModelKamino) -> list[list[int]]:
         sig_base_joint,
     ]
 
-    if model.joints.fk_act_type is not None:
-        sig_joint_fk_act_type = DiscreteSignature(
+    if model.joints.fk_act_flag is not None:
+        sig_joint_fk_act_flag = DiscreteSignature(
             num_worlds=model.size.num_worlds,
-            data=model.joints.fk_act_type,
+            data=model.joints.fk_act_flag,
             world_offset=model.info.joints_offset,
             world_size=model.info.num_joints,
         )
-        signatures.append(sig_joint_fk_act_type)
+        signatures.append(sig_joint_fk_act_flag)
 
     return compute_equivalence_classes(signatures)

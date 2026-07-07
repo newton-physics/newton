@@ -138,9 +138,11 @@ def run_test_single_joint_examples(
 def get_actuators_q_quaternion_first_ids(model: ModelKamino, use_fk_actuators: bool = False):
     """Lists the first index of every unit quaternion 4-segment in the model's actuated coordinates."""
     act_types = model.joints.act_type.numpy()
-    if use_fk_actuators and model.joints.fk_act_type is not None:
-        fk_act_types = model.joints.fk_act_type.numpy()
-        overwrite_mask = fk_act_types != -1
+    if use_fk_actuators and model.joints.fk_act_flag is not None:
+        fk_act_flags = model.joints.fk_act_flag.numpy()
+        mapping = np.array([-1, JointActuationType.PASSIVE, JointActuationType.FORCE])
+        fk_act_types = mapping[fk_act_flags + 1]  # Map 0/1 flags to enum constants
+        overwrite_mask = fk_act_flags != -1
         act_types[overwrite_mask] = fk_act_types[overwrite_mask]
     dof_types = model.joints.dof_type.numpy()
     num_coords = model.joints.num_coords.numpy()
@@ -168,10 +170,12 @@ def actuator_coords_from_units(
     coords = []
     joint_dof_type_np = model.joints.dof_type.numpy()
     joint_act_type_np = model.joints.act_type.numpy()
-    if use_fk_actuators and model.joints.fk_act_type is not None:
-        fk_act_type_np = model.joints.fk_act_type.numpy()
-        overwrite_mask = fk_act_type_np != -1
-        joint_act_type_np[overwrite_mask] = fk_act_type_np[overwrite_mask]
+    if use_fk_actuators and model.joints.fk_act_flag is not None:
+        fk_act_flags = model.joints.fk_act_flag.numpy()
+        mapping = np.array([-1, JointActuationType.PASSIVE, JointActuationType.FORCE])
+        fk_act_types = mapping[fk_act_flags + 1]  # Map 0/1 flags to enum constants
+        overwrite_mask = fk_act_flags != -1
+        joint_act_type_np[overwrite_mask] = fk_act_types[overwrite_mask]
     for jid in range(model.size.sum_of_num_joints):
         if joint_act_type_np[jid] == JointActuationType.PASSIVE:
             continue
@@ -205,10 +209,12 @@ def actuator_dofs_from_units(
     dofs = []
     joint_dof_type_np = model.joints.dof_type.numpy()
     joint_act_type_np = model.joints.act_type.numpy()
-    if use_fk_actuators and model.joints.fk_act_type is not None:
-        fk_act_type_np = model.joints.fk_act_type.numpy()
-        overwrite_mask = fk_act_type_np != -1
-        joint_act_type_np[overwrite_mask] = fk_act_type_np[overwrite_mask]
+    if use_fk_actuators and model.joints.fk_act_flag is not None:
+        fk_act_flags = model.joints.fk_act_flag.numpy()
+        mapping = np.array([-1, JointActuationType.PASSIVE, JointActuationType.FORCE])
+        fk_act_types = mapping[fk_act_flags + 1]  # Map 0/1 flags to enum constants
+        overwrite_mask = fk_act_flags != -1
+        joint_act_type_np[overwrite_mask] = fk_act_types[overwrite_mask]
     for jid in range(model.size.sum_of_num_joints):
         if joint_act_type_np[jid] == JointActuationType.PASSIVE:
             continue

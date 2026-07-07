@@ -200,10 +200,10 @@ def compute_actuated_coords_and_dofs_data(model: ModelKamino):
 
     # Filter for actuators only
     joint_is_actuator = model.joints.act_type.numpy() != JointActuationType.PASSIVE
-    if model.joints.fk_act_type is not None:
-        fk_act_type_np = model.joints.fk_act_type.numpy()
-        joint_is_actuator_fk = fk_act_type_np != JointActuationType.PASSIVE
-        overwrite_mask = fk_act_type_np != -1
+    if model.joints.fk_act_flag is not None:
+        fk_act_flag_np = model.joints.fk_act_flag.numpy()
+        joint_is_actuator_fk = fk_act_flag_np == 1
+        overwrite_mask = fk_act_flag_np != -1
         joint_is_actuator[overwrite_mask] = joint_is_actuator_fk[overwrite_mask]
     actuated_coord_offsets = coord_offsets[joint_is_actuator]
     actuated_coords_sizes = joint_num_coords[joint_is_actuator]
@@ -648,7 +648,7 @@ class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
         self.assertTrue(success)
 
 
-class CarpoleRandomPosesCheckForwardKinematics(unittest.TestCase):
+class CartpoleRandomPosesCheckForwardKinematics(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -667,8 +667,8 @@ class CarpoleRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Get builder for the cartpole model
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        fk_actuation_types = {1: JointActuationType.FORCE}  # Actuate the revolute joint for FK
-        newton.solvers.SolverKamino.register_custom_attributes(robot_builder, fk_actuation_types=fk_actuation_types)
+        fk_actuation_flags = {1: 1}  # Actuate the revolute joint for FK
+        newton.solvers.SolverKamino.register_custom_attributes(robot_builder, fk_actuation_flags=fk_actuation_flags)
         build_cartpole(builder=robot_builder, ground=False)
 
         # Finalize model and convert to ModelKamino

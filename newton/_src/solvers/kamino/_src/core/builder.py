@@ -1006,7 +1006,7 @@ class ModelBuilderKamino:
         joints_jid = []
         joints_dofid = []
         joints_actid = []
-        joints_fk_actid = []
+        joints_fk_act_flag = []
         joints_q_j_0 = []
         joints_dq_j_0 = []
         joints_bid_B = []
@@ -1138,7 +1138,7 @@ class ModelBuilderKamino:
                 joints_jid.append(joint.jid)
                 joints_dofid.append(joint.dof_type.value)
                 joints_actid.append(joint.act_type.value)
-                joints_fk_actid.append(-1 if joint.fk_act_type is None else joint.fk_act_type.value)
+                joints_fk_act_flag.append(joint.fk_act_flag)
                 joints_B_r_Bj.append(joint.B_r_Bj)
                 joints_F_r_Fj.append(joint.F_r_Fj)
                 joints_X_Bj.append(joint.X_Bj)
@@ -1406,8 +1406,8 @@ class ModelBuilderKamino:
                 jid=to_warp_int32_array(joints_jid),
                 dof_type=to_warp_int32_array(joints_dofid),
                 act_type=to_warp_int32_array(joints_actid),
-                fk_act_type=to_warp_int32_array(joints_fk_actid)
-                if any(actid != -1 for actid in joints_fk_actid)
+                fk_act_flag=to_warp_int32_array(joints_fk_act_flag)
+                if any(act_flag != -1 for act_flag in joints_fk_act_flag)
                 else None,
                 bid_B=to_warp_int32_array(joints_bid_B),
                 bid_F=to_warp_int32_array(joints_bid_F),

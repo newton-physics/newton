@@ -309,7 +309,7 @@ def joint_indexing_kernel(
     joint_num_dofs: wp.array[wp.int32],
     joint_num_kinematic_cts: wp.array[wp.int32],
     joint_num_dynamic_cts: wp.array[wp.int32],
-    model_fk_act_type: wp.array[wp.int32],
+    model_fk_act_flag: wp.array[wp.int32],
     # Outputs:
     num_passive_joints: wp.array[wp.int32],
     num_actuated_joints: wp.array[wp.int32],
@@ -388,14 +388,14 @@ def joint_indexing_kernel(
             num_actuated_j += 1
             num_actuated_coords += ncoords_j
             num_actuated_dofs += ndofs_j
-            if not model_fk_act_type or model_fk_act_type[joint_id] == -1:
+            if not model_fk_act_flag or model_fk_act_flag[joint_id] == -1:
                 num_fk_actuated_coords += ncoords_j
                 num_fk_actuated_dofs += ndofs_j
         else:
             num_passive_j += 1
             num_passive_coords += ncoords_j
             num_passive_dofs += ndofs_j
-        if model_fk_act_type and model_fk_act_type[joint_id] > JointActuationType.PASSIVE:
+        if model_fk_act_flag and model_fk_act_flag[joint_id] == 1:
             num_fk_actuated_coords += ncoords_j
             num_fk_actuated_dofs += ndofs_j
 
@@ -941,7 +941,7 @@ def convert_joints(
             joint_num_dofs,
             joint_num_kinematic_cts,
             joint_num_dynamic_cts,
-            model.fk_actuation_type if hasattr(model, "fk_actuation_type") else None,
+            model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         ],
         outputs=[
             num_passive_joints,
@@ -1231,7 +1231,7 @@ def convert_joints(
         jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
-        fk_act_type=model.fk_actuation_type if hasattr(model, "fk_actuation_type") else None,
+        fk_act_flag=model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         bid_B=model.joint_parent,
         bid_F=model.joint_child,
         B_r_Bj=joint_B_r_B,
