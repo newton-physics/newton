@@ -552,7 +552,7 @@ class TestDeformableRenderMeshUSDImport(unittest.TestCase):
     def test_untagged_mesh_under_volume_body_imports_and_skins(self):
         """An untagged graphics Mesh under a volume deformable body becomes a tet
         render mesh with USD ownership metadata, without any custom relationship
-        and without deformable_results."""
+        and without return_deformable_results."""
         stage = self._stage()
         self._add_volume_body(stage, "/World/Tire")
         self._add_graphics_mesh(stage, "/World/Tire/Skin")
