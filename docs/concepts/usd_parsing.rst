@@ -133,8 +133,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
   copy behind), and a dedicated point-based collider (every one warns) only toggles the
   simulation geometry's collision as described above and never becomes a separate rigid
   shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
-  deformable is skipped (disabled, kinematic, or malformed) it imports as nothing, with a
-  warning, rather than falling back to a rigid representation.
+  deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
+  rather than falling back to a rigid representation. A disabled
+  (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
+  it is not simulated, but its collision geometry persists as static colliders (TetMesh
+  and BasisCurves simulation geometry has no static representation and stays out).
 * **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
   synthesized. One stiffness value, computed from the mean segment length, applies to a whole
   curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a

@@ -110,6 +110,45 @@ def _deformable_rigid_body_conflict(prim) -> bool:
     return True
 
 
+def _deformable_body_disabled(prim) -> bool:
+    """Whether the candidate's governing body authors ``physics:bodyEnabled = false``.
+
+    Reads the raw canonical attribute: the scout runs before the schema-resolver context
+    exists. Vendor-namespaced flags still take the passes' warn-and-skip path (whose
+    geometry stays excluded from the native parse).
+    """
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    body_prim = usd._find_deformable_body_prim(prim) or prim
+    attr = body_prim.GetAttribute("physics:bodyEnabled")
+    value = attr.Get() if attr else None
+    return value is not None and not bool(value)
+
+
+def _scout_claims_candidate(buckets, prim, family: str) -> bool:
+    """Gate a sim candidate: rigid conflicts and disabled bodies are not claimed.
+
+    A ``physics:bodyEnabled = false`` deformable is not simulated, but by rigid-body
+    precedent its collision geometry persists as static colliders: the candidate is left
+    to the native loader instead of being excluded, except TetMesh / BasisCurves
+    simulation geometry, which the native loader cannot represent.
+    """
+    if _deformable_rigid_body_conflict(prim):
+        return False
+    if _deformable_body_disabled(prim):
+        path = str(prim.GetPath())
+        if family != "mesh":
+            buckets.native_physics_exclude_paths.append(path)
+        warnings.warn(
+            f"{path}: physics:bodyEnabled is false; skipping the deformable import. Dedicated "
+            f"colliders and Mesh simulation geometry persist as static colliders; TetMesh / "
+            f"BasisCurves simulation geometry has no static representation.",
+            stacklevel=2,
+        )
+        return False
+    return True
+
+
 def _warn_subset_material_bindings(prim, path: str) -> None:
     """Warn when the simulation geometry carries per-``UsdGeomSubset`` physics materials.
 
@@ -833,7 +872,7 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
             continue
         if family == "tet":
             if "PhysicsVolumeDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                if not _deformable_rigid_body_conflict(prim):
+                if _scout_claims_candidate(buckets, prim, family):
                     buckets.tetmeshes.append(prim)
                     claim_body(prim)
             else:
@@ -841,11 +880,11 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
                 buckets.tetmeshes.append(prim)
         elif family == "curves":
             if "PhysicsCurvesDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                if not _deformable_rigid_body_conflict(prim):
+                if _scout_claims_candidate(buckets, prim, family):
                     buckets.cables.append(prim)
                     claim_body(prim)
         elif "PhysicsSurfaceDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-            if not _deformable_rigid_body_conflict(prim):
+            if _scout_claims_candidate(buckets, prim, family):
                 buckets.cloth.append(prim)
                 claim_body(prim)
 

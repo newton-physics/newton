@@ -171,6 +171,45 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertTrue(any("/World/ClothKin" in m and "kinematic deformables" in m for m in messages))
         self.assertTrue(any("/World/SoftOff/sim" in m and "bodyEnabled is false" in m for m in messages))
 
+    def test_disabled_body_collision_geometry_stays_static(self):
+        """A physics:bodyEnabled=false deformable is not simulated, but by rigid-body
+        precedent its collision geometry persists as static colliders instead of
+        vanishing with the body: the cloth sim mesh's own CollisionAPI and a volume
+        body's dedicated mesh collider import as body-less shapes."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/ClothOff")  # authors an enabled CollisionAPI
+        cloth.GetPrim().CreateAttribute("physics:bodyEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+        body = UsdGeom.Xform.Define(stage, "/World/SoftOff")
+        body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        body.GetPrim().CreateAttribute("physics:bodyEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+        _author_unit_tet(stage, "/World/SoftOff/sim")
+        collider = UsdGeom.Mesh.Define(stage, "/World/SoftOff/Col")
+        collider.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)])
+        collider.CreateFaceVertexCountsAttr([3])
+        collider.CreateFaceVertexIndicesAttr([0, 1, 2])
+        collider.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage, deformable_results=True)
+        messages = [str(w.message) for w in caught]
+
+        # Nothing simulates, but the collision geometry survives as static shapes.
+        self.assertEqual(builder.particle_count, 0)
+        self.assertEqual(builder.body_count, 0)
+        self.assertTrue(any("/World/ClothOff" in m and "bodyEnabled is false" in m for m in messages))
+        self.assertTrue(any("/World/SoftOff/sim" in m and "bodyEnabled is false" in m for m in messages))
+        cloth_shape = result["path_shape_map"]["/World/ClothOff"]
+        collider_shape = result["path_shape_map"]["/World/SoftOff/Col"]
+        self.assertEqual(builder.shape_body[cloth_shape], -1)
+        self.assertEqual(builder.shape_body[collider_shape], -1)
+        # The TetMesh itself has no native representation and stays excluded.
+        self.assertNotIn("/World/SoftOff/sim", result["path_shape_map"])
+        builder.finalize()
+
     def test_unsupported_rest_and_velocity_fields_warn(self):
         """Authored rest state and velocities warn per prim but do not block the import."""
         from pxr import Sdf, UsdGeom
