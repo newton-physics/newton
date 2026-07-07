@@ -123,7 +123,15 @@ class Picking:
         )
 
     def set_torque_scale(self, scale: float) -> None:
-        """Set the effective mouse-picking lever-arm scale."""
+        """Set the effective mouse-picking lever-arm scale.
+
+        Args:
+            scale: Effective lever-arm scale in ``[0, 1]``; ``0`` translates the
+                center of mass without torque, while ``1`` preserves point-force behavior.
+
+        Raises:
+            ValueError: If ``scale`` is outside ``[0, 1]``.
+        """
         scale = float(scale)
         if not 0.0 <= scale <= 1.0:
             raise ValueError("Picking torque scale must be in [0, 1].")

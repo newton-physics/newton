@@ -257,10 +257,16 @@ def test_picking_setup_device(test: TestPickingSetup, device):
 
 
 def test_picking_torque_scale(test: TestPickingSetup, device):
-    """Picking lever-arm torque scales without weakening translation force."""
-    model = _make_single_sphere_model(device=device)
+    """Picking scales torque while preserving consistent point-force behavior."""
+    model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0))
     state = model.state()
-    picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0)
+    picking = Picking(model, pick_stiffness=4.0, pick_damping=2.0, pick_max_acceleration=1.0e6)
+
+    def apply_scale(scale: float) -> np.ndarray:
+        picking.set_torque_scale(scale)
+        state.body_f.zero_()
+        picking._apply_picking_force(state)
+        return state.body_f.numpy()[0].copy()
 
     ray_start = wp.vec3(0.0, 0.0, -2.0)
     ray_dir = wp.vec3(0.0, 0.0, 1.0)
@@ -268,25 +274,52 @@ def test_picking_torque_scale(test: TestPickingSetup, device):
     test.assertTrue(picking.is_picking())
 
     picking.update(wp.vec3(0.5, 0.0, -2.0), ray_dir)
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    normal_force = state.body_f.numpy()[0].copy()
+    normal_force = apply_scale(1.0)
     test.assertFalse(np.allclose(normal_force[:3], np.zeros(3), atol=1e-9))
     test.assertFalse(np.allclose(normal_force[3:], np.zeros(3), atol=1e-9))
 
-    picking.set_torque_scale(0.5)
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    half_torque_force = state.body_f.numpy()[0]
+    half_torque_force = apply_scale(0.5)
     assert_np_equal(half_torque_force[:3], normal_force[:3], tol=1e-6)
     assert_np_equal(half_torque_force[3:], 0.5 * normal_force[3:], tol=1e-6)
 
-    picking.set_torque_scale(0.0)
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    force_only = state.body_f.numpy()[0]
+    force_only = apply_scale(0.0)
     assert_np_equal(force_only[:3], normal_force[:3], tol=1e-6)
     assert_np_equal(force_only[3:], np.zeros(3), tol=1e-9)
+
+    # Exercise the previous point-force formula and an intermediate virtual
+    # attachment with nonzero rotation, linear/angular velocity, and damping.
+    state.body_q.assign(
+        wp.array(
+            [
+                wp.transform(
+                    wp.vec3(0.1, 0.2, 0.3),
+                    wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi),
+                )
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+    )
+    state.body_qd.assign(
+        wp.array(
+            [wp.spatial_vector(0.2, -0.1, 0.3, 1.0, 0.0, 0.0)],
+            dtype=wp.spatial_vector,
+            device=device,
+        )
+    )
+    pick_state = picking.pick_state.numpy()
+    pick_state[0]["picking_target_world"] = (0.4, 0.6, 0.2)
+    picking.pick_state.assign(pick_state)
+
+    force_multiplier = 10.0 + model.body_mass.numpy()[0]
+
+    scale_one_force = force_multiplier * np.array([0.8, -0.2, -2.0])
+    scale_one_expected = np.concatenate((scale_one_force, np.cross([0.0, 0.5, 0.0], scale_one_force)))
+    assert_np_equal(apply_scale(1.0), scale_one_expected, tol=1e-5)
+
+    half_scale_force = force_multiplier * np.array([0.8, 0.8, -0.5])
+    half_scale_expected = np.concatenate((half_scale_force, np.cross([0.0, 0.25, 0.0], half_scale_force)))
+    assert_np_equal(apply_scale(0.5), half_scale_expected, tol=1e-5)
 
 
 def test_zero_torque_scale_tracks_com(test: TestPickingSetup, device):
