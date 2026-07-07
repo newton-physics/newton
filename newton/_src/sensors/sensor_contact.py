@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 from ..sim import Contacts, Model, State
+from ..sim.contacts import contact_surface_point
 from ..utils.selection import match_labels
 
 _UNSET = object()
@@ -67,8 +68,14 @@ def accumulate_contact_forces_kernel(
     num_contacts: wp.array[wp.int32],
     contact_shape0: wp.array[wp.int32],
     contact_shape1: wp.array[wp.int32],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
     contact_force: wp.array[wp.spatial_vector],
     contact_normal: wp.array[wp.vec3],
+    shape_body: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
     sensing_shape_to_row: wp.array[wp.int32],
     counterpart_shape_to_col: wp.array[wp.int32],
     # output
@@ -76,8 +83,10 @@ def accumulate_contact_forces_kernel(
     total_force: wp.array[wp.vec3],
     force_matrix_friction: wp.array2d[wp.vec3],
     total_force_friction: wp.array[wp.vec3],
+    position_matrix: wp.array2d[wp.vec3],
+    position_weight: wp.array2d[float],
 ):
-    """Accumulate per-contact forces and friction into total and/or per-counterpart arrays. Parallelizes over contacts."""
+    """Accumulate per-contact forces, friction, and weighted positions. Parallelizes over contacts."""
     contact_index = wp.tid()
     if contact_index >= num_contacts[0]:
         return
@@ -112,12 +121,50 @@ def accumulate_contact_forces_kernel(
         assert force_matrix_friction
         col0 = counterpart_shape_to_col[shape0]
         col1 = counterpart_shape_to_col[shape1]
-        if row0 >= 0 and col1 >= 0:
+        matched0 = row0 >= 0 and col1 >= 0
+        matched1 = row1 >= 0 and col0 >= 0
+        if matched0:
             wp.atomic_add(force_matrix, row0, col1, force)
             wp.atomic_add(force_matrix_friction, row0, col1, friction)
-        if row1 >= 0 and col0 >= 0:
+        if matched1:
             wp.atomic_add(force_matrix, row1, col0, -force)
             wp.atomic_add(force_matrix_friction, row1, col0, -friction)
+
+        if position_matrix:
+            assert position_weight
+            weight = wp.length(force)
+            if weight > 0.0 and (matched0 or matched1):
+                body0 = shape_body[shape0]
+                body1 = shape_body[shape1]
+                transform0 = wp.where(body0 >= 0, body_q[wp.max(body0, 0)], wp.transform_identity())
+                transform1 = wp.where(body1 >= 0, body_q[wp.max(body1, 0)], wp.transform_identity())
+                point0_world = contact_surface_point(
+                    transform0, contact_point0[contact_index], contact_offset0[contact_index]
+                )
+                point1_world = contact_surface_point(
+                    transform1, contact_point1[contact_index], contact_offset1[contact_index]
+                )
+                midpoint = 0.5 * (point0_world + point1_world)
+                weighted_midpoint = weight * midpoint
+
+                if matched0:
+                    wp.atomic_add(position_matrix, row0, col1, weighted_midpoint)
+                    wp.atomic_add(position_weight, row0, col1, weight)
+                if matched1:
+                    wp.atomic_add(position_matrix, row1, col0, weighted_midpoint)
+                    wp.atomic_add(position_weight, row1, col0, weight)
+
+
+@wp.kernel(enable_backward=False)
+def normalize_contact_positions_kernel(
+    position_matrix: wp.array2d[wp.vec3],
+    position_weight: wp.array2d[float],
+):
+    """Normalize force-weighted contact position sums in place; entries with no contributing contacts stay zero."""
+    row, col = wp.tid()
+    weight = position_weight[row, col]
+    if weight > 0.0:
+        position_matrix[row, col] /= weight
 
 
 @wp.kernel(enable_backward=False)
@@ -229,14 +276,24 @@ def _assign_counterpart_columns(
 
 
 class SensorContact:
-    """Measures contact forces on a set of **sensing objects** (bodies or shapes).
+    """Measures contact forces, friction, and force-weighted positions on **sensing objects** (bodies or shapes).
 
-    In its simplest form the sensor reports :attr:`total_force` — the total contact force on each sensing object.
-    Optionally, specify **counterparts** to get a per-counterpart breakdown in :attr:`force_matrix`.
+    In its simplest form the sensor reports :attr:`total_force` — the total contact force on each sensing object — and
+    :attr:`total_force_friction`, its tangential (friction) component. Optionally, specify **counterparts** to separate
+    these measurements by interacting body or shape. :attr:`force_matrix` reports the per-counterpart contact forces,
+    :attr:`force_matrix_friction` reports their frictional (tangential) components, and :attr:`position_matrix` reports
+    the average interaction positions. In each matrix, row ``i`` corresponds to ``sensing_indices[i]`` and column ``j``
+    within that row corresponds to ``counterpart_indices[i][j]``. Columns beyond a row's counterpart list are zero
+    padding.
 
-    :attr:`total_force` and :attr:`force_matrix` are each nullable: ``total_force`` is ``None`` when
-    ``measure_total=False``; ``force_matrix`` is ``None`` when no counterparts are specified. Their friction
-    counterparts :attr:`total_force_friction` and :attr:`force_matrix_friction` follow the same rules.
+    Each :attr:`position_matrix` entry is the average of the contact midpoints accumulated at that index, weighted by
+    contact-force magnitude. It provides a representative location for where each counterpart interacts with the
+    sensing object. Force weighting reduces the influence of weak contacts, so adding or removing a low-force contact
+    perturbs the reported position less.
+
+    :attr:`total_force` and :attr:`total_force_friction` are ``None`` when ``measure_total=False``. Per-counterpart
+    outputs :attr:`force_matrix`, :attr:`force_matrix_friction`, and :attr:`position_matrix` are ``None`` when
+    no counterparts are specified.
 
     .. rubric:: Multi-world behavior
 
@@ -247,8 +304,9 @@ class SensorContact:
     In single-world models where no ``add_world()`` call was made (all entities are global / ``world=-1``), the sensor
     treats the entire model as one implicit world and all entities are valid sensing objects.
 
-    When counterparts are specified, the force matrix has shape ``(sum_of_sensors_across_worlds, max_counterparts)``
-    where ``max_counterparts`` is the maximum counterpart count of any single world. Row order matches
+    When counterparts are specified, the per-counterpart matrices have shape
+    ``(sum_of_sensors_across_worlds, max_counterparts)``, where ``max_counterparts`` is the maximum counterpart count
+    of any single world. Row order matches
     :attr:`sensing_indices`. Columns beyond a world's own counterpart count are zero-padded.
 
     :attr:`sensing_indices` and :attr:`counterpart_indices` are flat lists that describe the structure of the output
@@ -332,6 +390,13 @@ class SensorContact:
     dtype :class:`vec3`. Entry ``[i, j]`` is the friction force on sensing object ``i`` from counterpart
     ``counterpart_indices[i][j]``, in world frame. ``None`` when no counterparts are specified."""
 
+    position_matrix: wp.array2d[wp.vec3] | None
+    """Average contact positions [m] per counterpart, shape ``(n_sensing, max_counterparts)``, dtype :class:`vec3`.
+    Entry ``[i, j]`` is the average world-frame interaction position between ``sensing_indices[i]`` and
+    ``counterpart_indices[i][j]``. It averages the midpoint of all contacts between these objects, weighted by linear
+    contact-force magnitude. Entries are zero when the interaction force is zero or :meth:`update` receives no body
+    transforms. ``None`` when no counterparts are specified."""
+
     sensing_transforms: wp.array[wp.transform]
     """World-frame transforms of sensing objects [m, unitless quaternion],
     shape ``(n_sensing,)``, dtype :class:`transform`."""
@@ -398,7 +463,8 @@ class SensorContact:
 
         Exactly one of ``sensing_bodies`` or ``sensing_shapes`` must be specified to define the sensing objects. At most
         one of ``counterpart_bodies`` or ``counterpart_shapes`` may be specified. If neither is specified, only
-        :attr:`total_force` and :attr:`total_force_friction` are available (no per-counterpart breakdown).
+        :attr:`total_force` and :attr:`total_force_friction` are available (no per-counterpart breakdown or contact
+        positions).
 
         Args:
             model: The simulation model providing shape/body definitions and world layout.
@@ -577,9 +643,13 @@ class SensorContact:
         if max_readings > 0:
             self.force_matrix = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
             self.force_matrix_friction = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
+            self.position_matrix = wp.zeros((n_rows, max_readings), dtype=wp.vec3, device=self.device)
+            self._position_weight = wp.zeros((n_rows, max_readings), dtype=wp.float32, device=self.device)
         else:
             self.force_matrix = None
             self.force_matrix_friction = None
+            self.position_matrix = None
+            self._position_weight = None
 
         self.sensing_type = "body" if sensing_is_body else "shape"
         self.counterpart_type = "body" if counterpart_is_body else ("shape" if counterpart_indices else None)
@@ -612,11 +682,13 @@ class SensorContact:
         """Update the contact sensor readings based on the provided state and contacts.
 
         Computes world-frame transforms for all sensing objects and evaluates contact forces and their friction
-        (tangential) components (total and/or per-counterpart, depending on sensor configuration).
+        (tangential) components (total and/or per-counterpart, depending on sensor configuration). When ``state``
+        provides body transforms, also computes force-weighted per-counterpart contact positions.
 
         Args:
-            state: The simulation state providing body transforms, or None to skip
-                the transform update.
+            state: The simulation state providing body transforms. If None (or a state without ``body_q``),
+                :attr:`sensing_transforms` is left unchanged and :attr:`position_matrix` is reset to zero.
+                Contact-force outputs are updated in either case.
             contacts: The contact data to evaluate.
 
         Raises:
@@ -647,16 +719,20 @@ class SensorContact:
             )
         if contacts.device != self.device:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
-        self._eval_forces(contacts)
+        self._eval_forces(state, contacts)
 
-    def _eval_forces(self, contacts: Contacts):
-        """Zero and recompute force and friction arrays from the given contacts."""
+    def _eval_forces(self, state: State | None, contacts: Contacts):
+        """Recompute force outputs and, when ``state.body_q`` is available, contact positions."""
         if self.total_force is not None:
             self.total_force.zero_()
             self.total_force_friction.zero_()
         if self.force_matrix is not None:
             self.force_matrix.zero_()
             self.force_matrix_friction.zero_()
+            # reset positions together with forces so entries never pair a fresh force with a stale position
+            self.position_matrix.zero_()
+            self._position_weight.zero_()
+        update_contact_positions = self.position_matrix is not None and state is not None and state.body_q is not None
         wp.launch(
             accumulate_contact_forces_kernel,
             dim=contacts.rigid_contact_max,
@@ -664,8 +740,16 @@ class SensorContact:
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_offset0,
+                contacts.rigid_contact_offset1,
                 contacts.force,
                 contacts.rigid_contact_normal,
+                self._model.shape_body,
+                # body_q and the two position outputs below must be all-None or all-set:
+                # the kernel dereferences body_q only under `if position_matrix`
+                state.body_q if update_contact_positions else None,
                 self._sensing_shape_to_row,
                 self._counterpart_shape_to_col,
             ],
@@ -674,6 +758,15 @@ class SensorContact:
                 self.total_force,
                 self.force_matrix_friction,
                 self.total_force_friction,
+                self.position_matrix if update_contact_positions else None,
+                self._position_weight if update_contact_positions else None,
             ],
             device=self.device,
         )
+        if update_contact_positions:
+            wp.launch(
+                normalize_contact_positions_kernel,
+                dim=self.position_matrix.shape,
+                inputs=[self.position_matrix, self._position_weight],
+                device=self.device,
+            )
