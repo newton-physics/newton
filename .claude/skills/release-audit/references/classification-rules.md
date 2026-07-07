@@ -79,12 +79,13 @@ When Phase 4d / 5a encounter these patterns, treat them as migration-required ch
 
 ## Deprecation policy (Phase 4d)
 
-AGENTS.md: "Breaking changes require a deprecation first." A prior released `### Deprecated` entry is the preferred evidence. A matching runtime `DeprecationWarning` at the base ref also proves that users received a deprecation window, even if the released CHANGELOG omitted it.
+AGENTS.md: "Breaking changes require a deprecation first." A prior released `### Deprecated` entry is the preferred evidence. A matching runtime `DeprecationWarning` at the base ref also proves that users received a deprecation window, even if the released CHANGELOG omitted it. The warning may be emitted directly or by a shared helper / decorator that clearly applies to the removed API or behavior.
 
 When Phase 4d cannot find the prior Deprecated entry:
 - Resolve the symbol or legacy behavior in code at the base ref.
 - Run a targeted `git grep` for `DeprecationWarning` / `deprecated` in the candidate path and inspect the warning context.
-- If a matching runtime warning exists, record the base ref, source path, and warning text. Do not emit a policy violation; flag the missing released CHANGELOG entry as a documentation gap.
+- If the candidate calls or applies a shared deprecation helper / decorator, resolve that name and inspect its definition at the base ref. Verify that the candidate's call site connects the helper to the exact removed API or behavior and that the helper emits `DeprecationWarning`. A generic helper's existence or import alone is not evidence.
+- If a matching direct or helper-mediated runtime warning exists, record the base ref, warning text, and the direct source path or connected helper application / emission paths. Do not emit a policy violation; flag the missing released CHANGELOG entry as a documentation gap.
 - If no matching warning exists, surface `🚨 Policy: removed without prior deprecation` in the Breaking Changes section and cite the Removed entry in full.
 - Note whether the current CHANGELOG's own `### Deprecated` section also names the same symbol. Deprecating and removing in the same release is a policy violation because the warning did not ship in a prior release.
 

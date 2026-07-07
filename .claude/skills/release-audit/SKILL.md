@@ -247,7 +247,12 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
    git grep -n -E 'DeprecationWarning|deprecated' <base-ref> -- <candidate-paths>
    git show <base-ref>:<candidate-path>
    ```
-   Count this as prior-deprecation evidence only when a `warnings.warn(..., DeprecationWarning)` call at the base ref clearly applies to the removed symbol or behavior. A warning elsewhere in the same file, a docstring without a runtime warning, or a warning added only after the base release does not count. Record the warning text and source path. The base ref proves the deprecation shipped by that release; only claim an earlier introduction version if the same warning is verified at that earlier tag.
+   If the candidate uses a shared deprecation helper or decorator, resolve the imported name and inspect its definition at the base ref too:
+   ```bash
+   git grep -n -F '<helper-or-decorator-name>' <base-ref> -- newton
+   git show <base-ref>:<helper-definition-path>
+   ```
+   Count this as prior-deprecation evidence when a runtime `DeprecationWarning` at the base ref clearly applies to the exact removed symbol or behavior, either through a direct `warnings.warn(...)` call or through a shared helper / decorator. For helper-mediated evidence, verify both sides of the connection: the candidate path applies or calls the helper for the removed API, and the helper definition emits `DeprecationWarning` for the calling mode or behavior being removed. For example, `@deprecate_nonkeyword_arguments` is evidence for removing positional-argument support only when it decorates that callable at the base ref; it is not evidence that the callable itself was deprecated. A generic helper that merely exists or is imported, a warning elsewhere in the same file, a docstring without a runtime warning, or a warning added only after the base release does not count. Record the warning text, the helper application path, and the warning-emission path. The base ref proves the deprecation shipped by that release; only claim an earlier introduction version if the same connected evidence is verified at that earlier tag.
 5. In the rendered Removed entry, include one of these deprecation-window lines:
    - CHANGELOG evidence: `Deprecated in X.Y.Z; removed here.`
    - Runtime-only evidence: `Runtime deprecation present in <base-ref>; removed here. No matching prior CHANGELOG Deprecated entry was found.`
@@ -256,9 +261,9 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
 
 The deprecation window belongs in BOTH the Breaking Changes entry for the removal AND the Changes-to-Existing-API row (in the Description cell or as an appended sentence in the detail block). A reader should never have to ask "was this deprecated first, and for how long?"
 
-**Missing-deprecation flag.** Surface `🚨 Policy: removed without prior deprecation` only when BOTH checks fail: no prior Deprecated entry exists in a previously-released CHANGELOG section, and no matching runtime `DeprecationWarning` exists at the base ref. This fires whether or not the current release's own `### Deprecated` section also names the symbol because a warning added only in the removal release did not ship in a prior release. The release manager needs this to block the release or add migration tooling.
+**Missing-deprecation flag.** Surface `🚨 Policy: removed without prior deprecation` only when BOTH checks fail: no prior Deprecated entry exists in a previously-released CHANGELOG section, and no matching direct or helper-mediated runtime `DeprecationWarning` exists at the base ref. This fires whether or not the current release's own `### Deprecated` section also names the symbol because a warning added only in the removal release did not ship in a prior release. The release manager needs this to block the release or add migration tooling.
 
-If a matching runtime warning exists at the base ref but the released CHANGELOG has no corresponding Deprecated entry, the deprecation window is real. Do not emit a policy violation. Instead, add a non-blocking `🧾 Deprecation omitted from CHANGELOG` review note with the base ref, source path, and warning text so the release-note gap remains visible.
+If a matching runtime warning exists at the base ref but the released CHANGELOG has no corresponding Deprecated entry, the deprecation window is real. Do not emit a policy violation. Instead, add a non-blocking `🧾 Deprecation omitted from CHANGELOG` review note with the base ref, warning text, and the direct source path or connected helper application / emission paths so the release-note gap remains visible.
 
 **Exception: `1.0.0` pre-stable cleanup.** Removed entries in the `1.0.0` release (and `1.0.0rcN`) are exempt from the deprecation-first policy — PRs labeled `1.0-release` are the pre-stable API cleanup and were not required to go through a prior deprecation window. When the target version is `1.0.0` or `1.0.0rcN`, do not emit the `🚨 Policy` flag or the "No prior **Deprecated** entry found" line for its Removed entries. Still render the deprecation-window line if a matching Deprecated entry happens to exist; otherwise note `1.0 pre-stable cleanup; no prior deprecation required.`
 
@@ -379,9 +384,9 @@ For each flag class, run the check below and record one of three outcomes per fl
 The calibration section groups results by flag class and, within each, by outcome. Never drop a flag from the original report body because of calibration — the calibration is a separate layer of commentary.
 
 **🚨 Missing-deprecation (Removed without prior evidence):**
-- Validated if: (a) no prior released CHANGELOG section names the deprecation, (b) no matching runtime `DeprecationWarning` exists at the retrospective base ref, and (c) the symbol stays removed. Users actually lost the API without a deprecation window.
+- Validated if: (a) no prior released CHANGELOG section names the deprecation, (b) no matching direct or helper-mediated runtime `DeprecationWarning` exists at the retrospective base ref, and (c) the symbol stays removed. Users actually lost the API without a deprecation window.
 - Invalidated if: a prior Deprecated entry existed that Claude missed. Re-scan CHANGELOG scope with fuzzier matching (different casing, plural / singular, alternate backtick placement). Report the missed entry with its version.
-- Invalidated if: the base ref contains a matching runtime `DeprecationWarning`. Report the warning text and source path, and classify the missing CHANGELOG bullet as a documentation gap rather than a deprecation-policy violation.
+- Invalidated if: the base ref contains a matching direct or helper-mediated runtime `DeprecationWarning`. Report the warning text and the direct source path or connected helper application / emission paths, and classify the missing CHANGELOG bullet as a documentation gap rather than a deprecation-policy violation.
 - Invalidated if: a later patch (`vX.Y.<Z+1>`) added the symbol *back* (revert). Name the revert commit and note "removal reverted in vX.Y.<Z+1>".
 
 **🕵️ Private-only (new public API with `_src`-only reachability):**
