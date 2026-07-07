@@ -10513,6 +10513,20 @@ def Xform "World" ()
         custom float physics:youngsModulus = 300000
         custom float physics:poissonsRatio = 0.3
     }
+    def TetMesh "UnscopedBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/UnscopedMaterial>
+    }
+    def Material "UnscopedMaterial"
+    {
+        custom float physics:density = 40
+        custom float physics:youngsModulus = 300000
+        custom float physics:poissonsRatio = 0.3
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
@@ -10543,6 +10557,19 @@ def Xform "World" ()
             tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
         self.assertAlmostEqual(tm_canonical_default.density, 40.0)
         self.assertIsNotNone(tm_canonical_default.k_mu)
+
+        # Canonical physics: moduli on a material WITHOUT the deformable material API: the
+        # deprecated default reads them off any bound material, but canonical-only scopes
+        # moduli to API-applied materials and drops them. The default is load-bearing, so
+        # it must warn.
+        unscoped = stage.GetPrimAtPath("/World/UnscopedBody")
+        with self.assertWarns(DeprecationWarning):
+            tm_unscoped_default = usd.get_tetmesh(unscoped)
+        self.assertIsNotNone(tm_unscoped_default.k_mu)
+        self.assertAlmostEqual(tm_unscoped_default.density, 40.0)
+        tm_unscoped_canonical = usd.get_tetmesh(unscoped, compat_namespaces=())
+        self.assertIsNone(tm_unscoped_canonical.k_mu)
+        self.assertIsNone(tm_unscoped_canonical.density)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_tetmesh_no_material(self):
