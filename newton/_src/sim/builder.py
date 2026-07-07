@@ -10665,15 +10665,14 @@ class ModelBuilder:
                     # scale/margin/resolution end up with distinct SDFs.
                     if mesh_sdf is None and (sdf_max_resolution is not None or sdf_target_voxel_size is not None):
                         # An explicit mesh-sign flag also selects the bake sign
-                        # method: PARITY -> parity; NORMAL -> winding (the bake
-                        # pipeline's non-watertight method; it has no
-                        # pseudo-normal sampler). AUTO keeps the topology-based
-                        # default of SDF.create_from_mesh.
+                        # method; AUTO keeps the topology-based default of
+                        # SDF.create_from_mesh (parity if watertight, else
+                        # winding).
                         mesh_sign_flags = shape_flags & ShapeFlags.MESH_SIGN_METHOD_MASK
                         if mesh_sign_flags == ShapeFlags.MESH_SIGN_PARITY:
                             sdf_sign_method = "parity"
                         elif mesh_sign_flags == ShapeFlags.MESH_SIGN_NORMAL:
-                            sdf_sign_method = "winding"
+                            sdf_sign_method = "normal"
                         else:
                             sdf_sign_method = "auto"
                         sdf_kwargs = {"narrow_band_range": tuple(sdf_narrow_band_range)}

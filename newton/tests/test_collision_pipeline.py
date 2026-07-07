@@ -985,9 +985,9 @@ def test_shape_config_mesh_sign_flags(test, device):
 
 def test_mesh_sign_flags_select_bake_sign_method(test, device):
     """An explicit mesh-sign flag also selects the sign method of SDFs baked
-    during finalization: PARITY -> parity, NORMAL -> winding (the bake
-    pipeline's non-watertight method), AUTO -> topology-based default. Each
-    distinct method gets its own bake even when shapes share one mesh.
+    during finalization: PARITY -> parity, NORMAL -> normal, AUTO ->
+    topology-based default. Each distinct method gets its own bake even when
+    shapes share one mesh.
 
     ``cfg.sdf_*`` is rejected for mesh shapes at add time, so the deferred
     bake is reached the way importers do it: by setting the builder's
@@ -1013,7 +1013,7 @@ def test_mesh_sign_flags_select_bake_sign_method(test, device):
     with mock.patch.object(SDF, "create_from_mesh", staticmethod(spy)):
         builder.finalize(device=device)
 
-    test.assertEqual(captured, ["parity", "winding", "auto"])
+    test.assertEqual(captured, ["parity", "normal", "auto"])
 
 
 def test_build_sdf_sign_method_passthrough(test, device):
@@ -1024,7 +1024,7 @@ def test_build_sdf_sign_method_passthrough(test, device):
     with test.assertRaisesRegex(ValueError, "sign_method"):
         mesh.build_sdf(max_resolution=8, sign_method="bogus", device=device)
 
-    mesh.build_sdf(max_resolution=8, sign_method="winding", device=device)
+    mesh.build_sdf(max_resolution=8, sign_method="normal", device=device)
     test.assertIsNotNone(mesh.sdf)
 
 

@@ -25,12 +25,19 @@ import numpy as np
 import warp as wp
 
 from .sdf_mc import MC_EDGE_CLAMP_MAX, MC_EDGE_CLAMP_MIN, MC_EDGE_VAL_DIFF_EPS
-from .sdf_utils import get_distance_to_mesh, get_distance_to_mesh_parity
+from .sdf_utils import get_distance_to_mesh, get_distance_to_mesh_normal, get_distance_to_mesh_parity
 
 # Sentinel values for subgrid indirection slots.
 # Plain int so wp.static() works in kernels; numpy casts on assignment.
 SLOT_EMPTY = 0xFFFFFFFF  # No subgrid data (empty/far-field cell)
 SLOT_LINEAR = 0xFFFFFFFE  # Subgrid demoted to coarse interpolation
+
+# Inside/outside sign strategies for the mesh distance queries during the
+# bake. Winding is 0 so a legacy ``use_parity`` boolean maps onto the same
+# semantics (False -> winding, True -> parity).
+SIGN_MODE_WINDING = 0
+SIGN_MODE_PARITY = 1
+SIGN_MODE_NORMAL = 2
 
 # ============================================================================
 # SDF texture-sampling paths
@@ -133,11 +140,13 @@ def _query_mesh_sdf(
     point: wp.vec3,
     max_dist: wp.float32,
     winding_threshold: wp.float32,
-    use_parity: wp.int32,
+    sign_mode: wp.int32,
 ) -> float:
-    """Dispatch to winding-number or parity sign query based on *use_parity*."""
-    if use_parity != 0:
+    """Dispatch to the winding-number, parity, or pseudo-normal sign query per *sign_mode*."""
+    if sign_mode == SIGN_MODE_PARITY:
         return get_distance_to_mesh_parity(mesh, point, max_dist)
+    if sign_mode == SIGN_MODE_NORMAL:
+        return get_distance_to_mesh_normal(mesh, point, max_dist)
     return get_distance_to_mesh(mesh, point, max_dist, winding_threshold)
 
 
@@ -225,7 +234,7 @@ def _check_subgrid_occupied_kernel(
     mesh: wp.uint64,
     threshold: wp.vec2f,
     winding_threshold: float,
-    use_parity: wp.int32,
+    sign_mode: wp.int32,
     subgrid_required: wp.array[wp.int32],
     cells_per_subgrid: int,
     num_subgrids_x: int,
@@ -242,7 +251,7 @@ def _check_subgrid_occupied_kernel(
         (float(coords[2] * cells_per_subgrid) + float(cells_per_subgrid) * 0.5) * cell_size[2],
     )
 
-    signed_distance = _query_mesh_sdf(mesh, sample_pos, 10000.0, winding_threshold, use_parity)
+    signed_distance = _query_mesh_sdf(mesh, sample_pos, 10000.0, winding_threshold, sign_mode)
     if _is_in_narrow_band(signed_distance, threshold):
         subgrid_required[tid] = 1
     else:
@@ -259,7 +268,7 @@ def _accumulate_subgrid_linearity_error_kernel(
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
-    use_parity: wp.int32,
+    sign_mode: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
     num_subgrids_z: int,
@@ -309,7 +318,7 @@ def _accumulate_subgrid_linearity_error_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    mesh_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    mesh_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, sign_mode)
 
     inv_cpsg = 1.0 / float(cells_per_subgrid)
     coarse_val = _interp_coarse_sdf(
@@ -362,7 +371,7 @@ def _build_coarse_sdf_from_mesh_kernel(
     bg_size_y: int,
     bg_size_z: int,
     winding_threshold: float,
-    use_parity: wp.int32,
+    sign_mode: wp.int32,
 ):
     """Populate background SDF by querying mesh at subgrid corner positions."""
     tid = wp.tid()
@@ -382,7 +391,7 @@ def _build_coarse_sdf_from_mesh_kernel(
         float(z_block * cells_per_subgrid) * cell_size[2],
     )
 
-    background_sdf[tid] = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    background_sdf[tid] = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, sign_mode)
 
 
 @wp.kernel
@@ -396,7 +405,7 @@ def _populate_subgrid_texture_float32_kernel(
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
-    use_parity: wp.int32,
+    sign_mode: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
     num_subgrids_z: int,
@@ -437,7 +446,7 @@ def _populate_subgrid_texture_float32_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, sign_mode)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
@@ -461,7 +470,7 @@ def _populate_subgrid_texture_uint16_kernel(
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
-    use_parity: wp.int32,
+    sign_mode: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
     num_subgrids_z: int,
@@ -504,7 +513,7 @@ def _populate_subgrid_texture_uint16_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, sign_mode)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
@@ -529,7 +538,7 @@ def _populate_subgrid_texture_uint8_kernel(
     min_corner: wp.vec3,
     cell_size: wp.vec3,
     winding_threshold: float,
-    use_parity: wp.int32,
+    sign_mode: wp.int32,
     num_subgrids_x: int,
     num_subgrids_y: int,
     num_subgrids_z: int,
@@ -572,7 +581,7 @@ def _populate_subgrid_texture_uint8_kernel(
         float(gy) * cell_size[1],
         float(gz) * cell_size[2],
     )
-    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, use_parity)
+    sdf_val = _query_mesh_sdf(mesh, pos, 10000.0, winding_threshold, sign_mode)
 
     address = subgrid_addresses[subgrid_idx]
     if address < 0:
@@ -1188,7 +1197,7 @@ def build_sparse_sdf_from_mesh(
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
     linearization_error_threshold: float | None = None,
-    use_parity: bool = False,
+    sign_mode: int = SIGN_MODE_WINDING,
     device: str = "cuda",
 ) -> dict:
     """Build sparse SDF texture representation by querying mesh directly.
@@ -1201,7 +1210,7 @@ def build_sparse_sdf_from_mesh(
 
     Args:
         mesh: Warp mesh.  Must have ``support_winding_number=True`` unless
-            *use_parity* is ``True``.
+            *sign_mode* is :data:`SIGN_MODE_PARITY` or :data:`SIGN_MODE_NORMAL`.
         grid_size_x: fine grid X dimension [sample].
         grid_size_y: fine grid Y dimension [sample].
         grid_size_z: fine grid Z dimension [sample].
@@ -1216,10 +1225,13 @@ def build_sparse_sdf_from_mesh(
             which an occupied subgrid is considered linear and its high-res
             data is omitted.  ``None`` auto-computes from domain extents,
             ``0.0`` disables the optimization.
-        use_parity: when ``True``, use parity-based inside/outside
-            classification (:func:`wp.mesh_query_point_sign_parity`) instead
-            of winding numbers. Cheaper per sample but requires a closed,
-            manifold mesh; results on open meshes are undefined.
+        sign_mode: inside/outside strategy for the distance queries.
+            :data:`SIGN_MODE_WINDING` (default) uses winding numbers (robust
+            for general meshes, needs winding-number support on the mesh);
+            :data:`SIGN_MODE_PARITY` uses parity ray-casts (cheaper, requires
+            a closed manifold mesh); :data:`SIGN_MODE_NORMAL` uses the
+            angle-weighted pseudo-normal (local side-of-surface, for open
+            meshes).
         device: Warp device string.
 
     Returns:
@@ -1249,13 +1261,13 @@ def build_sparse_sdf_from_mesh(
     subgrid_radius = float(np.linalg.norm(half_subgrid))
 
     # -------------------------------------------------------------------
-    # Unified build: *use_parity* selects the cheaper parity-based sign
-    # query (for watertight meshes), otherwise winding numbers are used.
-    # Linearity is evaluated before the texture is sized so that subgrids
-    # whose SDF is well-approximated by the coarse grid consume no
-    # high-resolution texture memory.
+    # Unified build: *sign_mode* selects the inside/outside strategy for
+    # the mesh distance queries (winding numbers, parity ray-casts, or the
+    # angle-weighted pseudo-normal). Linearity is evaluated before the
+    # texture is sized so that subgrids whose SDF is well-approximated by
+    # the coarse grid consume no high-resolution texture memory.
     # -------------------------------------------------------------------
-    parity_flag = wp.int32(1 if use_parity else 0)
+    sign_mode_flag = wp.int32(sign_mode)
 
     background_sdf = wp.zeros(total_bg, dtype=float, device=device)
     wp.launch(
@@ -1271,7 +1283,7 @@ def build_sparse_sdf_from_mesh(
             bg_size_y,
             bg_size_z,
             winding_threshold,
-            parity_flag,
+            sign_mode_flag,
         ],
         device=device,
     )
@@ -1285,7 +1297,7 @@ def build_sparse_sdf_from_mesh(
             mesh.id,
             threshold,
             winding_threshold,
-            parity_flag,
+            sign_mode_flag,
             subgrid_required,
             subgrid_size,
             w,
@@ -1326,7 +1338,7 @@ def build_sparse_sdf_from_mesh(
                 min_corner_wp,
                 cell_size_wp,
                 winding_threshold,
-                parity_flag,
+                sign_mode_flag,
                 w,
                 h,
                 d,
@@ -1404,7 +1416,7 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
-                    parity_flag,
+                    sign_mode_flag,
                     w,
                     h,
                     d,
@@ -1431,7 +1443,7 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
-                    parity_flag,
+                    sign_mode_flag,
                     w,
                     h,
                     d,
@@ -1460,7 +1472,7 @@ def build_sparse_sdf_from_mesh(
                     min_corner_wp,
                     cell_size_wp,
                     winding_threshold,
-                    parity_flag,
+                    sign_mode_flag,
                     w,
                     h,
                     d,
@@ -1596,7 +1608,7 @@ def create_texture_sdf_from_mesh(
     quantization_mode: int = QuantizationMode.UINT16,
     winding_threshold: float = 0.5,
     scale_baked: bool = False,
-    use_parity: bool = False,
+    sign_mode: int = SIGN_MODE_WINDING,
     device: str | None = None,
     return_sparse_data: bool = False,
 ) -> tuple[TextureSDFData, wp.Texture3D, wp.Texture3D] | tuple[TextureSDFData, wp.Texture3D, wp.Texture3D, dict | None]:
@@ -1607,7 +1619,7 @@ def create_texture_sdf_from_mesh(
 
     Args:
         mesh: Warp mesh.  Must have ``support_winding_number=True`` unless
-            *use_parity* is ``True``.
+            *sign_mode* is :data:`SIGN_MODE_PARITY` or :data:`SIGN_MODE_NORMAL`.
         margin: extra AABB padding [m].
         narrow_band_range: signed narrow-band distance range [m] as ``(inner, outer)``.
         max_resolution: maximum grid dimension [voxel]. Used when
@@ -1622,10 +1634,11 @@ def create_texture_sdf_from_mesh(
         quantization_mode: :class:`QuantizationMode` value.
         winding_threshold: winding number threshold for inside/outside classification.
         scale_baked: whether shape scale was baked into the mesh vertices.
-        use_parity: when ``True``, use parity-based inside/outside
-            classification (:func:`wp.mesh_query_point_sign_parity`).
-            Cheaper per sample than winding numbers; requires a closed,
-            manifold mesh.
+        sign_mode: inside/outside strategy for the distance queries.
+            :data:`SIGN_MODE_WINDING` (default) uses winding numbers;
+            :data:`SIGN_MODE_PARITY` uses parity ray-casts (cheaper,
+            requires a closed manifold mesh); :data:`SIGN_MODE_NORMAL`
+            uses the angle-weighted pseudo-normal (for open meshes).
         device: Warp device string. ``None`` uses the mesh's device.
         return_sparse_data: when ``True``, also return the raw cooked
             ``sparse_data`` dict produced by
@@ -1696,7 +1709,7 @@ def create_texture_sdf_from_mesh(
         narrow_band_thickness=narrow_band_thickness,
         quantization_mode=quantization_mode,
         winding_threshold=winding_threshold,
-        use_parity=use_parity,
+        sign_mode=sign_mode,
         device=device,
     )
 

@@ -59,24 +59,25 @@ class ShapeFlags(IntEnum):
     """
 
     MESH_SIGN_NORMAL = 1 << 5
-    """Treat the mesh as non-watertight regardless of topology.
+    """Force the closest-face pseudo-normal sign for mesh point queries.
 
-    Runtime mesh queries use the closest-face pseudo-normal sign; an SDF
-    baked during model finalization uses winding numbers (the bake pipeline
-    has no pseudo-normal sampler). Prefer this for open geometry such as
-    planes or sheets, where parity has no consistent inside. Pre-built SDFs
+    Applies to both runtime mesh queries and SDFs baked during model
+    finalization. Prefer this for open geometry such as planes or sheets,
+    where parity has no consistent inside. Pre-built SDFs
     (:meth:`~newton.Mesh.build_sdf` called before the shape is added) are
-    already baked and remain unaffected.
+    already baked and remain unaffected — pass ``sign_method`` to
+    :meth:`~newton.Mesh.build_sdf` there instead.
     """
 
     MESH_SIGN_PARITY = 2 << 5
-    """Treat the mesh as watertight regardless of topology.
+    """Force the ray-crossing parity sign for mesh point queries.
 
-    Both runtime mesh queries and SDFs baked during model finalization use
-    the ray-crossing parity sign, which is correct and cheap for closed
-    meshes but unreliable on open ones. Set it to recover parity when a
-    closed mesh is conservatively misdetected as open by
-    :attr:`~newton.Mesh.is_watertight`. Pre-built SDFs remain unaffected.
+    Applies to both runtime mesh queries and SDFs baked during model
+    finalization. Parity is correct and cheap for closed meshes but
+    unreliable on open ones; set it to recover parity when a closed mesh is
+    conservatively misdetected as open by
+    :attr:`~newton.Mesh.is_watertight`. Pre-built SDFs remain unaffected —
+    pass ``sign_method`` to :meth:`~newton.Mesh.build_sdf` there instead.
     """
 
     MESH_SIGN_METHOD_MASK = 0b111 << 5

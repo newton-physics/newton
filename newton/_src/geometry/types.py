@@ -807,8 +807,10 @@ class Mesh:
                 or ``"uint8"`` (minimum memory, lower precision).
             sign_method: Inside/outside sign strategy for the bake.
                 ``"auto"`` (default) uses parity rays if
-                :attr:`is_watertight` else winding numbers; ``"parity"``
-                and ``"winding"`` force the respective method.
+                :attr:`is_watertight` else winding numbers; ``"parity"``,
+                ``"winding"``, and ``"normal"`` (angle-weighted
+                pseudo-normal, for open sheets) force the respective
+                method.
             cache_dir: Optional directory for on-disk caching of the cooked
                 sparse SDF. Keyed by mesh content and build parameters
                 (``shape_margin`` is applied at sample time and is *not*
