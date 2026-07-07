@@ -104,7 +104,12 @@ class Contacts:
         prior notice.
     """
 
-    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
+    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(
+        (
+            "rigid_contact_wrench",
+            "soft_contact_force",
+        )
+    )
     """
     Names of optional extended contact attributes that are not allocated by default.
 
@@ -207,9 +212,11 @@ class Contacts:
             contact set changed since the last conversion pass."""
 
             # rigid contacts — never requires_grad (narrow phase has enable_backward=False)
-            self.rigid_contact_point_id = wp.zeros(rigid_contact_max, dtype=wp.int32)
             self.rigid_contact_shape0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            """Shape index for shape 0, shape (rigid_contact_max,), dtype int32."""
             self.rigid_contact_shape1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
+            """Shape index for shape 1, shape (rigid_contact_max,), dtype int32."""
+
             self.rigid_contact_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Body-frame contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
@@ -237,9 +244,6 @@ class Contacts:
             self.rigid_contact_margin1 = wp.zeros(rigid_contact_max, dtype=wp.float32)
             """Surface thickness for shape 1: effective radius + margin [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
-            # to be filled by the solver (currently unused)
-            self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)
-            """Contact force [N], shape (rigid_contact_max,), dtype :class:`vec3`."""
 
             # Differentiable rigid contact arrays -- only allocated when requires_grad
             # is True.  Populated by the post-processing kernel in
@@ -331,18 +335,24 @@ class Contacts:
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
 
-            # Extended contact attributes (optional, allocated on demand)
-            self.force: wp.array | None = None
-            """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
-            Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
-            First three entries: linear force [N]; last three entries: torque (moment) [N·m].
-            When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
+            # Extended contact attributes (optional, allocated on demand).
+            self.rigid_contact_wrench: wp.array[wp.spatial_vector] | None = None
+            """Contact wrench at the contact midpoint [N, N·m], shape (rigid_contact_max,), dtype :class:`spatial_vector`.
 
-            This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
-            """
-            if requested_attributes and "force" in requested_attributes:
-                total_contacts = rigid_contact_max + soft_contact_max
-                self.force = wp.zeros(total_contacts, dtype=wp.spatial_vector, requires_grad=requires_grad)
+            Sign convention: exerted by body 0 on body 1. ``None`` unless requested;
+            see :ref:`extended_contact_attributes`."""
+            self.soft_contact_force: wp.array[wp.vec3] | None = None
+            """Particle contact force [N], shape (soft_contact_max,), dtype :class:`vec3`.
+
+            Sign convention: exerted by the shape on the particle. ``None`` unless requested;
+            see :ref:`extended_contact_attributes`."""
+            if requested_attributes:
+                if "rigid_contact_wrench" in requested_attributes:
+                    self.rigid_contact_wrench = wp.zeros(
+                        rigid_contact_max, dtype=wp.spatial_vector, requires_grad=requires_grad
+                    )
+                if "soft_contact_force" in requested_attributes:
+                    self.soft_contact_force = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
 
         self.requires_grad = requires_grad
 
@@ -383,10 +393,11 @@ class Contacts:
             self.rigid_contact_shape0.fill_(-1)
             self.rigid_contact_shape1.fill_(-1)
             self.rigid_contact_tids.fill_(-1)
-            self.rigid_contact_force.zero_()
 
-            if self.force is not None:
-                self.force.zero_()
+            if self.rigid_contact_wrench is not None:
+                self.rigid_contact_wrench.zero_()
+            if self.soft_contact_force is not None:
+                self.soft_contact_force.zero_()
 
             if self.rigid_contact_diff_distance is not None:
                 self.rigid_contact_diff_distance.zero_()
