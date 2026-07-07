@@ -3080,5 +3080,5 @@ class SolverVBD(SolverBase, CouplingInterface):
         Args:
             state:  The state whose particle positions (:attr:`~newton.State.particle_q`) will be used for rebuilding the BVHs.
         """
-        if self.model.particle_count > 0 and self.particle_enable_self_contact:
+        if self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)

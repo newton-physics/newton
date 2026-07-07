@@ -2001,7 +2001,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Refresh optional sub-solver spatial caches from reset entry states."""
         for entry in self._entries.values():
             rebuild_bvh = getattr(entry.solver, "rebuild_bvh", None)
-            if callable(rebuild_bvh):
+            # Current rebuild hooks consume particle positions; rigid-only entries
+            # have no compatible cache input to refresh.
+            if callable(rebuild_bvh) and entry.state_0.particle_q is not None:
                 rebuild_bvh(entry.state_0)
 
     def _step_coupled(
