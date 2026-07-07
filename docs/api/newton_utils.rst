@@ -30,8 +30,10 @@ newton.utils
    color_linear_to_srgb
    color_srgb_to_linear
    compute_world_offsets
+   create_cable_spline_points
    create_cable_stiffness_from_elastic_moduli
    create_parallel_transport_cable_quaternions
+   create_rotation_minimizing_cable_quaternions
    create_straight_cable_points
    create_straight_cable_points_and_quaternions
    download_asset
