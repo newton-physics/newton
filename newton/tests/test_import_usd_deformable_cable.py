@@ -1239,8 +1239,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.1, 0.2, 1.0)]
         trunk = _add_cable_curve(stage, "/World/Trunk", trunk_pts)
         branch = _add_cable_curve(stage, "/World/Branch", branch_pts)
-        _bind_deformable_material(stage, trunk.GetPrim(), "/World/TrunkMat", thickness=0.02)
-        _bind_deformable_material(stage, branch.GetPrim(), "/World/BranchMat", thickness=0.06)
+        _bind_deformable_material(stage, trunk.GetPrim(), "/World/TrunkMat", thickness=0.02, density=1000.0)
+        _bind_deformable_material(stage, branch.GetPrim(), "/World/BranchMat", thickness=0.06, density=2000.0)
         _add_physics_attachment(
             stage,
             "/World/Junction",
@@ -1261,6 +1261,19 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
         self.assertAlmostEqual(result["path_cable_attrs"]["/World/Trunk"]["material"]["thickness"], 0.02, places=5)
         self.assertAlmostEqual(result["path_cable_attrs"]["/World/Branch"]["material"]["thickness"], 0.06, places=5)
+        # resolved_density reports the value actually used: the representative's density
+        # applies to every welded member (which curve is the representative depends on the
+        # weld's component root). The authored value stays in "material".
+        rep_density = result["path_cable_attrs"]["/World/Trunk"]["resolved_density"]
+        self.assertEqual(result["path_cable_attrs"]["/World/Branch"]["resolved_density"], rep_density)
+        self.assertIn(rep_density, (1000.0, 2000.0))
+        self.assertEqual(result["path_cable_attrs"]["/World/Trunk"]["material"]["density"], 1000.0)
+        self.assertEqual(result["path_cable_attrs"]["/World/Branch"]["material"]["density"], 2000.0)
+        # The realized masses match the reported density: a branch segment of length 0.1 at
+        # the representative's radius and density -> cylinder mass rho*pi*r^2*L.
+        rep_radius = 0.5 * (0.02 if rep_density == 1000.0 else 0.06)
+        bb0, _bb1 = group_range(builder, "cable", "/World/Branch", "body")
+        self.assertAlmostEqual(float(builder.body_mass[bb0]), rep_density * math.pi * rep_radius**2 * 0.1, delta=1e-3)
 
 
 if __name__ == "__main__":

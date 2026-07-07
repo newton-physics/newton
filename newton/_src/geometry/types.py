@@ -1836,7 +1836,9 @@ class TetMesh:
         Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
         (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
         are read off any bound material, matching the pre-canonical behavior. That default is
-        deprecated and emits a ``DeprecationWarning`` when a physics material is bound; a future
+        deprecated and emits a ``DeprecationWarning`` when the bound material actually authors
+        legacy vendor-namespaced deformable attributes (canonical or render-only materials do
+        not warn); a future
         release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
         the canonical-only behavior now -- moduli are then read only from a material that applies
         ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.

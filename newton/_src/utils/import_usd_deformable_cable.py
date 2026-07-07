@@ -438,7 +438,9 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             path_cable_map[key] = (per_prim_bodies.get(key, []), [])
             path_cable_attrs[key] = {
                 "material": dict(rec.material),
-                "resolved_density": rec.density,
+                # The representative's density built every welded segment; the curve's own
+                # authored density stays available in "material".
+                "resolved_density": rep.density,
                 "closed": rec.closed,
                 "graph_component": cid,
             }
