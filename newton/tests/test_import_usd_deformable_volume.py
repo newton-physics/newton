@@ -185,6 +185,40 @@ class TestUSDDeformableVolume(unittest.TestCase):
         # (mass found on the ancestor Xform; no extra graphics or second-sim mass).
         self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
 
+    def test_nested_graphics_tetmesh_is_not_simulated(self):
+        """A bare TetMesh anywhere in a deformable body's subtree is graphics/collision
+        geometry, not a second soft body, including below an intermediate prim. A nested
+        rigid body bounds the subtree: its bare TetMesh is native content and keeps the
+        legacy soft-body import."""
+        from pxr import UsdGeom, UsdPhysics
+
+        with self.subTest(case="deep_graphics_tetmesh_skipped"):
+            stage = _deformable_stage()
+            body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+            _apply_deformable_body_api(body)
+            _author_tet_cube(stage, "/World/Body/Sim")
+            UsdGeom.Xform.Define(stage, "/World/Body/Group")
+            _author_unit_tet(stage, "/World/Body/Group/Graphics")  # bare: no sim API
+
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "/World/Body/Group/Graphics.*graphics/collision"):
+                result = builder.add_usd(stage, deformable_results=True)
+            self.assertEqual(group_labels(builder, "soft"), ["/World/Body/Sim"])
+            self.assertNotIn("/World/Body/Group/Graphics", result["path_soft_map"])
+
+        with self.subTest(case="rigid_boundary_keeps_legacy_import"):
+            stage = _deformable_stage()
+            body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+            _apply_deformable_body_api(body)
+            _author_tet_cube(stage, "/World/Body/Sim")
+            rigid = UsdGeom.Xform.Define(stage, "/World/Body/Rig").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(rigid)
+            _author_unit_tet(stage, "/World/Body/Rig/Tet")  # native side of the boundary
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(stage, deformable_results=True)
+            self.assertIn("/World/Body/Rig/Tet", result["path_soft_map"])
+
     def test_body_api_on_distant_ancestor_is_not_used(self):
         """The proposal allows PhysicsDeformableBodyAPI on the simulation geometry itself or
         on its direct parent; an API on a deeper ancestor does not govern the mesh. The

@@ -65,23 +65,26 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         # prototype masters never appear under a scene-root traversal.
         if _is_ignored_path(path, ignore_paths):
             continue
+        is_volume_deformable = usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI")
+        # Inside a PhysicsDeformableBodyAPI hierarchy only the single simulation mesh is simulated:
+        # a non-simulation TetMesh anywhere in the subtree is graphics/collision geometry and a
+        # second simulation mesh is malformed, so both are skipped (else they add mass beyond the
+        # body's authored total). Subtree ownership stops at rigid/articulation boundaries; a bare
+        # TetMesh with no deformable-body ancestor still imports as a legacy soft body. This runs
+        # before the body-flag checks: a graphics TetMesh never becomes a body.
+        if not is_volume_deformable:
+            owner_body = usd._deformable_body_ancestor(prim)
+            if owner_body is not None:
+                warnings.warn(
+                    f"{path}: non-simulation TetMesh under deformable body {owner_body.GetPath()}; "
+                    f"treated as graphics/collision geometry (not simulated).",
+                    stacklevel=2,
+                )
+                continue
+
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
         if skip_reason is not None:
             warnings.warn(f"{path}: {skip_reason}; skipping soft-body import.", stacklevel=2)
-            continue
-
-        is_volume_deformable = usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI")
-        # Inside a PhysicsDeformableBodyAPI hierarchy only the single simulation mesh is simulated:
-        # a non-simulation TetMesh is graphics/collision geometry and a second simulation mesh is
-        # malformed, so both are skipped (else they add mass beyond the body's authored total). A bare
-        # TetMesh with no deformable-body ancestor still imports as a legacy soft body.
-        body_root = usd._find_deformable_body_prim(prim)
-        if body_root is not None and not is_volume_deformable:
-            warnings.warn(
-                f"{path}: non-simulation TetMesh under deformable body {body_root.GetPath()}; "
-                f"treated as graphics/collision geometry (not simulated).",
-                stacklevel=2,
-            )
             continue
         # One simulation geometry per deformable body across ALL families (the scout picks the
         # first candidate in traversal order), so a body-level mass is applied exactly once.

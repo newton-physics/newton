@@ -1606,6 +1606,27 @@ def _get_physics_material_density(material_prim) -> float | None:
     return None
 
 
+def _deformable_body_ancestor(prim: Usd.Prim) -> Usd.Prim | None:
+    """Find the deformable body whose subtree contains ``prim`` (ownership, not governance).
+
+    Unlike :func:`_find_deformable_body_prim`, which resolves the *governing* body of a
+    simulation geometry (the prim itself or its direct parent), this walks every ancestor
+    to answer subtree containment: the proposal makes all PointBased prims in a body's
+    subtree part of that body. The walk stops at a rigid body or articulation root, whose
+    subtree is native content the deformable must not claim.
+    """
+    from pxr import UsdPhysics
+
+    p = prim
+    while p and p.IsValid():
+        if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
+            return p
+        if p.HasAPI(UsdPhysics.RigidBodyAPI) or p.HasAPI(UsdPhysics.ArticulationRootAPI):
+            return None
+        p = p.GetParent()
+    return None
+
+
 def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
     """Find the ``PhysicsDeformableBodyAPI`` prim governing a simulation geometry.
 
@@ -1614,14 +1635,21 @@ def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
     it. A body API found only on a distant ancestor warns (so its intended overrides
     are not silently dropped) and is not used.
     """
+    from pxr import UsdPhysics
+
     if has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
         return prim
     parent = prim.GetParent()
     if parent and parent.IsValid():
         if has_applied_api_schema(parent, "PhysicsDeformableBodyAPI"):
             return parent
-        p = parent.GetParent()
+        # Advisory walk: warn when a body API sits deeper, so its intended overrides
+        # are not dropped silently. Stop at a rigid or articulation boundary: that
+        # content is native and a body API above it does not relate to this prim.
+        p = parent
         while p and p.IsValid():
+            if p.HasAPI(UsdPhysics.RigidBodyAPI) or p.HasAPI(UsdPhysics.ArticulationRootAPI):
+                break
             if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
                 warnings.warn(
                     f"{prim.GetPath()}: PhysicsDeformableBodyAPI on ancestor {p.GetPath()} does not "
