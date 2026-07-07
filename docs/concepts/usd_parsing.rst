@@ -94,8 +94,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
 (``physics:bodyEnabled = false``) and kinematic (``physics:kinematicEnabled = true``)
-deformables are skipped, malformed topology or curves are skipped, and compliant (finite
-stiffness or damped) attachments and non-coincident cable junctions are kept as data but not
+deformables are skipped, malformed topology or curves are skipped, and compliant
+(finite-stiffness) attachments and non-coincident cable junctions are kept as data but not
 imported. Dynamic and static friction belong to collision geometry and are not mapped onto
 the deformable collision approximation yet.
 
@@ -111,10 +111,10 @@ Known gaps of the experimental importer, tracked as follow-ups:
   itself is still built relaxed at the current ``points`` pose, and mass distribution also uses
   the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
   instead of springing back.
-* **Springy attachments** -- attachments with a finite stiffness or damping are not simulated.
-  They are preserved in ``path_attachment_attrs`` with their authored stiffness and damping
-  (silently hardening them would change the authored physics); only hard attachments
-  (``stiffness = inf``) become joints.
+* **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
+  preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
+  hardening them would change the authored physics); only hard attachments (unauthored or
+  infinite stiffness; damping does not affect hardness) become joints.
 * **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
   deformables are skipped rather than simulated.
 * **Per-element materials** -- ``GeomSubset`` material bindings are ignored; one material
@@ -165,12 +165,12 @@ segment and the ``(u, s, t)`` position along it).
 
 The importer supports attachments on cables. When ``src0`` is an imported cable, ``type0`` is
 ``point`` or ``segment``, and ``type1`` is ``xform``, each attachment site becomes a ball joint.
-The joint connects the cable segment body (for a cable point, the neighboring segment bodies) to
-the target: an xform, a rigid body (kinematic bodies included), or the world frame. The created
-joints are returned in ``path_attachment_map``. Every parsed attachment, including unsupported
-ones, is described in ``path_attachment_attrs``. A finite attachment stiffness or damping cannot
-be represented yet, so compliant attachments warn and are preserved as metadata instead of
-becoming joints. Attachments on cloth or volume sites warn and are kept in
+The joint connects the cable segment body (for an interior cable point, one flanking segment
+body -- each site is a single point-point constraint) to the target: an xform, a rigid body
+(kinematic bodies included), or the world frame. The created joints are returned in
+``path_attachment_map``. Every parsed attachment, including unsupported ones, is described in
+``path_attachment_attrs``. A finite attachment stiffness cannot be represented yet, so
+compliant attachments warn and are preserved as metadata instead of becoming joints. Attachments on cloth or volume sites warn and are kept in
 ``path_attachment_attrs`` until Newton has a constraint for them.
 
 A ``point``->``point`` attachment between two imported cables can be a weld. Welding happens
