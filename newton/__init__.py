@@ -80,6 +80,7 @@ from ._src.sim import (  # noqa: E402
     Contacts,
     Control,
     EqType,
+    InverseDynamics,
     JointTargetMode,
     JointType,
     Model,
@@ -89,6 +90,8 @@ from ._src.sim import (  # noqa: E402
     StateFlags,
     eval_fk,
     eval_ik,
+    eval_inverse_dynamics,
+    eval_inverse_dynamics_force,
     eval_jacobian,
     eval_mass_matrix,
 )
@@ -99,6 +102,7 @@ __all__ += [
     "Contacts",
     "Control",
     "EqType",
+    "InverseDynamics",
     "JointTargetMode",
     "JointType",
     "Model",
@@ -108,6 +112,8 @@ __all__ += [
     "StateFlags",
     "eval_fk",
     "eval_ik",
+    "eval_inverse_dynamics",
+    "eval_inverse_dynamics_force",
     "eval_jacobian",
     "eval_mass_matrix",
 ]
