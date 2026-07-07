@@ -3421,11 +3421,14 @@ class ModelBuilder:
             if xform is not None:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
-                        qi = builder.joint_q_start[i]
-                        xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
-                        tf = transform_mul(xform, xform_prev)
-                        qi += start_q
-                        self.joint_q[qi : qi + 7] = tf
+                        if builder.joint_parent[i] == -1:
+                            qi = builder.joint_q_start[i]
+                            xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
+                            X_pj = builder.joint_X_p[i]
+                            xform_local = transform_mul(transform_mul(wp.transform_inverse(X_pj), xform), X_pj)
+                            tf = transform_mul(xform_local, xform_prev)
+                            qi += start_q
+                            self.joint_q[qi : qi + 7] = tf
                     elif builder.joint_parent[i] == -1:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
@@ -4580,7 +4583,7 @@ class ModelBuilder:
     ) -> int:
         """Adds a free joint to the model.
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
-        The positional dofs are initialized by the child body's transform (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
+        The positional dofs are initialized so that forward kinematics reproduces the child body's transform, accounting for the parent body and both joint anchor transforms (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
 
         Args:
             child: The index of the child body.
@@ -4619,8 +4622,11 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
         q_start = self.joint_q_start[joint_id]
-        # set the positional dofs to the child body's transform
-        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
+        # Initialize the coordinates so FK preserves the authored child pose.
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
+        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(joint_q)
         return joint_id
 
     @deprecate_nonkeyword_arguments
