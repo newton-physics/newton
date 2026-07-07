@@ -3,6 +3,7 @@
 
 import unittest
 from enum import IntFlag, auto
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -19,6 +20,7 @@ from newton._src.geometry.kernels import (
     mesh_sdf,
     resolve_mesh_sign_method,
 )
+from newton._src.geometry.sdf_utils import SDF
 from newton._src.sim.collide import CollisionPipeline, _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
@@ -864,9 +866,10 @@ def test_parity_sign_accuracy_exceeds_normal_query(test, device):
     )
 
 
-# A mesh-sign flag value with both method bits set at once: an ambiguous,
-# invalid encoding used to exercise the automatic-fallback and validation paths.
-_AMBIGUOUS_MESH_SIGN_FLAGS = int(ShapeFlags.MESH_SIGN_NORMAL | ShapeFlags.MESH_SIGN_PARITY)
+# A reserved mesh sign-method field value (the slot after PARITY, earmarked for
+# a future WINDING method): rejected at validation, and resolved to the safe
+# automatic behavior if it reaches a kernel.
+_RESERVED_MESH_SIGN_FLAGS = 0b011 << 5
 
 
 class _CountingMesh(newton.Mesh):
@@ -928,8 +931,8 @@ def test_mesh_sign_flags_override_mesh_properties(test, device):
             int(ShapeFlags.MESH_SIGN_NORMAL),
             0,
             0,
-            _AMBIGUOUS_MESH_SIGN_FLAGS,
-            _AMBIGUOUS_MESH_SIGN_FLAGS,
+            _RESERVED_MESH_SIGN_FLAGS,
+            _RESERVED_MESH_SIGN_FLAGS,
         ],
         dtype=wp.int32,
         device=device,
@@ -968,16 +971,61 @@ def test_shape_config_mesh_sign_flags(test, device):
     with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
         cfg.validate(GeoType.MESH)
 
-    cfg.flags = _AMBIGUOUS_MESH_SIGN_FLAGS
+    cfg.flags = _RESERVED_MESH_SIGN_FLAGS
     with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
         cfg.validate(GeoType.MESH)
 
     vertices, faces = _make_open_square()
     builder = newton.ModelBuilder(gravity=0.0)
     shape = builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, faces, compute_inertia=False))
-    builder.shape_flags[shape] |= _AMBIGUOUS_MESH_SIGN_FLAGS
+    builder.shape_flags[shape] |= _RESERVED_MESH_SIGN_FLAGS
     with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
         builder.finalize(device=device)
+
+
+def test_mesh_sign_flags_select_bake_sign_method(test, device):
+    """An explicit mesh-sign flag also selects the sign method of SDFs baked
+    during finalization: PARITY -> parity, NORMAL -> winding (the bake
+    pipeline's non-watertight method), AUTO -> topology-based default. Each
+    distinct method gets its own bake even when shapes share one mesh.
+
+    ``cfg.sdf_*`` is rejected for mesh shapes at add time, so the deferred
+    bake is reached the way importers do it: by setting the builder's
+    per-shape SDF fields directly.
+    """
+    vertices, faces = _make_open_box()
+    mesh = newton.Mesh(vertices, faces, compute_inertia=False)
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    for mesh_sign_flag in (ShapeFlags.MESH_SIGN_PARITY, ShapeFlags.MESH_SIGN_NORMAL, ShapeFlags.MESH_SIGN_AUTO):
+        cfg = newton.ModelBuilder.ShapeConfig()
+        cfg.flags |= mesh_sign_flag
+        shape = builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
+        builder.shape_sdf_max_resolution[shape] = 8
+
+    captured = []
+    original_create = SDF.create_from_mesh
+
+    def spy(mesh_arg, **kwargs):
+        captured.append(kwargs.get("sign_method", "auto"))
+        return original_create(mesh_arg, **kwargs)
+
+    with mock.patch.object(SDF, "create_from_mesh", staticmethod(spy)):
+        builder.finalize(device=device)
+
+    test.assertEqual(captured, ["parity", "winding", "auto"])
+
+
+def test_build_sdf_sign_method_passthrough(test, device):
+    """Mesh.build_sdf forwards sign_method to SDF.create_from_mesh."""
+    vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+    mesh = newton.Mesh(vertices, faces, compute_inertia=False)
+
+    with test.assertRaisesRegex(ValueError, "sign_method"):
+        mesh.build_sdf(max_resolution=8, sign_method="bogus", device=device)
+
+    mesh.build_sdf(max_resolution=8, sign_method="winding", device=device)
+    test.assertIsNotNone(mesh.sdf)
 
 
 def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties: int, extra_flags: int) -> np.ndarray:
@@ -1073,6 +1121,20 @@ add_function_test(
     TestMeshSignQueries,
     "test_open_mesh_soft_contact_uses_normal_sign",
     test_open_mesh_soft_contact_uses_normal_sign,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_mesh_sign_flags_select_bake_sign_method",
+    test_mesh_sign_flags_select_bake_sign_method,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_build_sdf_sign_method_passthrough",
+    test_build_sdf_sign_method_passthrough,
     devices=devices,
     check_output=False,
 )
