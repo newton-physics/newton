@@ -785,6 +785,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_sensor_lidar",
+    devices=test_devices,
+    test_options={"num-frames": 200},  # allow the cube to settle
+    use_viewer=True,
+)
+
 
 class TestMPMExamples(unittest.TestCase):
     pass
