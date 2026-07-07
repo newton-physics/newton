@@ -43,9 +43,9 @@ class TestSelection(unittest.TestCase):
         index_view = ArticulationView(model, pattern=[0, 2])
         assert_np_equal(index_view.articulation_ids.numpy(), [[0, 2]])
 
-        with self.assertRaisesRegex(ValueError, "must be unique and sorted in increasing order"):
+        with self.assertRaisesRegex(ValueError, "must be unique and in ascending order"):
             ArticulationView(model, pattern=[2, 0])
-        with self.assertRaisesRegex(ValueError, "must be unique and sorted in increasing order"):
+        with self.assertRaisesRegex(ValueError, "must be unique and in ascending order"):
             ArticulationView(model, pattern=[0, 0])
         with self.assertRaisesRegex(ValueError, r"must be in range \[0, 3\)"):
             ArticulationView(model, pattern=[3])
