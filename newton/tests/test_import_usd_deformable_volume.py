@@ -94,7 +94,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         stage = _deformable_stage()
         author_fn(stage)
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
         return builder, result
 
     def test_volume_mass_precedence(self):
@@ -202,7 +202,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "/World/Body/Group/Graphics.*graphics/collision"):
-                result = builder.add_usd(stage, deformable_results=True)
+                result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(group_labels(builder, "soft"), ["/World/Body/Sim"])
             self.assertNotIn("/World/Body/Group/Graphics", result["path_soft_map"])
 
@@ -216,7 +216,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
             _author_unit_tet(stage, "/World/Body/Rig/Tet")  # native side of the boundary
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
             self.assertIn("/World/Body/Rig/Tet", result["path_soft_map"])
 
     def test_body_api_on_distant_ancestor_is_not_used(self):
@@ -321,7 +321,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         builder.default_tet_density = 123.5
-        result = builder.add_usd(stage, deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
 
         self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
 
@@ -388,7 +388,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 builder.default_tet_density = 123.5
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
-                    result = builder.add_usd(stage, deformable_results=True)
+                    result = builder.add_usd(stage, return_deformable_results=True)
                 invalid_warnings = [w for w in caught if "invalid volume material density" in str(w.message)]
                 if density == 0.0:
                     self.assertEqual(invalid_warnings, [], "zero is the schema fallback, not an invalid value")

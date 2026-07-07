@@ -132,7 +132,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         messages = [str(w.message) for w in caught]
         # Only the material that authors shearStiffness warns, attributed to its prim path.
         self.assertTrue(any("/World/ClothA" in m and "shearStiffness is not applied" in m for m in messages))
@@ -230,7 +230,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The bare cloth resolves no thickness, so the importer assumes its default (2 mm)
         # for the surface conversion and must say so instead of assuming silently.
         with self.assertWarnsRegex(UserWarning, "/World/ClothBare.*assuming the default thickness"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
         def total_mass(path):
             p0, p1 = group_range(builder, "cloth", path, "particle")
@@ -271,7 +271,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "/World/Bad.*degenerate"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         self.assertNotIn("/World/Bad", result["path_cloth_map"])
         self.assertIn("/World/Good", result["path_cloth_map"])
         self.assertEqual(builder.particle_count, 4)  # the good quad only
@@ -318,7 +318,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         messages = [str(w.message) for w in caught]
         self.assertFalse(any("approximated" in m for m in messages))
         # The cloth authors no collider, so the limitation warning names it instead.
@@ -345,7 +345,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = builder.add_usd(stage, ignore_paths=[".*Collider"], deformable_results=True)
+            result = builder.add_usd(stage, ignore_paths=[".*Collider"], return_deformable_results=True)
         messages = [str(w.message) for w in caught]
         self.assertFalse(any("approximated" in m for m in messages))
         self.assertEqual(builder.body_count, 2)  # the cable imported
@@ -402,7 +402,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "/World/Cloth.*RigidBodyAPI"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
         self.assertEqual(builder.particle_count, 0)
         self.assertNotIn("/World/Cloth", result["path_cloth_map"])
@@ -499,7 +499,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "/World/Body/Graphics.*cannot deform"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
         # The graphics mesh is excluded from the native loader: no shape imports for it.
         self.assertEqual(builder.shape_count, 0)
@@ -524,7 +524,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         messages = [str(w.message) for w in caught]
         approximations = [m for m in messages if "approximated by the simulation geometry" in m]
         self.assertEqual(len(approximations), 1)

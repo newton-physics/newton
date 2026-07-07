@@ -69,7 +69,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(UserWarning, regex):
-                    result = builder.add_usd(stage, deformable_results=True)
+                    result = builder.add_usd(stage, return_deformable_results=True)
                 # Two independent cables in their own articulations.
                 self.assertEqual(len(group_labels(builder, "cable")), 2)
                 self.assertEqual(len(builder.articulation_label), 2)
@@ -109,7 +109,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "collapses segment 0 of '/World/CableB'"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
         # Both curves import individually with all their authored segments.
         self.assertEqual(len(builder.articulation_label), 2)
@@ -127,7 +127,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         stage = self._author_attached_cable_pair(gap=0.0, stiffness=math.inf, damping=5.0)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
 
         # One welded component: single articulation, shared graph component, junction consumed.
         self.assertEqual(len(builder.articulation_label), 1)
@@ -148,7 +148,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             stage = self._author_attached_cable_pair(gap=0.0)
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(len(builder.articulation_label), 1)
             self.assertEqual(
                 result["path_cable_attrs"]["/World/CableA"]["graph_component"],
@@ -177,7 +177,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
             # Both curves import as one welded component; the junction is consumed as topology.
             self.assertIn("/World/Trunk", group_labels(builder, "cable"))
@@ -226,7 +226,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             # shear / twist are preserved in the attrs but cannot be expressed by the rod, so the importer warns.
             with self.assertWarnsRegex(UserWarning, "cannot be expressed"):
-                result = builder.add_usd(stage, deformable_results=True)
+                result = builder.add_usd(stage, return_deformable_results=True)
             b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
             j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
             self.assertEqual(b1 - b0, 3)
@@ -267,7 +267,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
             j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
             # Stretch DOF target_ke is the authored 0.0, not add_rod's 1.0e5 default.
             dof0 = builder.joint_qd_start[j0]
@@ -336,7 +336,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         builder = newton.ModelBuilder()
         # The family-less material is ignored, so the cable falls back to the default radius and warns.
         with self.assertWarnsRegex(UserWarning, "no cable thickness"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         # Without the family API the material is ignored: no attrs, default rod stiffness.
         self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"], {})
         j0, _ = group_range(builder, "cable", "/World/Cable", "joint")
@@ -365,7 +365,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         _bind_deformable_material(stage, curves.GetPrim(), "/World/CableMat", thickness=0.02)  # no density
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
         attrs = result["path_cable_attrs"]["/World/Cable"]
         self.assertEqual(attrs["resolved_density"], builder.default_shape_cfg.density)
 
@@ -868,7 +868,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "zero-length segment"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         # The import did not abort; the valid trunk imported as a single (unwrapped) cable.
         self.assertIn("/World/Trunk", group_labels(builder, "cable"))
         j0, j1 = group_range(builder, "cable", "/World/Trunk", "joint")
@@ -984,7 +984,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 )
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(UserWarning, "/World/Bad.*curveVertexCounts"):
-                    result = builder.add_usd(stage, deformable_results=True)
+                    result = builder.add_usd(stage, return_deformable_results=True)
                 # The malformed prim mutates nothing; the valid cable is unaffected.
                 self.assertEqual(group_labels(builder, "cable"), ["/World/Good"])
                 self.assertNotIn("/World/Bad", result["path_cable_map"])
@@ -1013,7 +1013,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         )
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "/World/Bad.*curveVertexCounts"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         self.assertEqual(group_labels(builder, "cable"), ["/World/Good"])
         self.assertNotIn("/World/Bad", result["path_cable_attrs"])
         # The valid peer stays an independent cable rather than entering a welded graph.
@@ -1072,7 +1072,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "cycle"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
         # Both curves import individually: 3 loop bodies + 2 branch bodies, two articulations.
         lb0, lb1 = group_range(builder, "cable", "/World/Loop", "body")
@@ -1115,7 +1115,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "collapses segment 0 of '/World/Branch'"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         # No welded graph: both curves import individually with their own articulations.
         self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
         self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
@@ -1148,7 +1148,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "restShapePoints is dropped"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         self.assertIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
 
     def test_ignored_curve_to_curve_junction_does_not_weld(self):
@@ -1175,7 +1175,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, ignore_paths=["/World/Junction"], deformable_results=True)
+        result = builder.add_usd(stage, ignore_paths=["/World/Junction"], return_deformable_results=True)
 
         # Both curves still import, but as independent single cables (not a welded graph):
         # single cables expose their cable joints for the caller to wrap, so joints are non-empty.
@@ -1220,7 +1220,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(UserWarning, regex):
-                    result = builder.add_usd(stage, deformable_results=True)
+                    result = builder.add_usd(stage, return_deformable_results=True)
 
                 # The malformed junction does not weld: both curves import independently.
                 tj0, tj1 = group_range(builder, "cable", "/World/Trunk", "joint")
@@ -1254,7 +1254,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "differing radius/density/stiffness"):
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
 
         # Still welded into one graph; each curve keeps its own authored material in the attrs.
         self.assertIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])

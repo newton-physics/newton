@@ -159,7 +159,7 @@ shape instead, but rest state is not imported yet (see the limitations above), s
 saved pose shifts mass with it.
 
 Every imported deformable can be looked up by its prim path in the mapping
-:meth:`~newton.ModelBuilder.add_usd` returns when called with ``deformable_results=True``:
+:meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
 ``path_cable_map`` holds each cable's body and joint indices, and ``path_cloth_map`` /
 ``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
 ranges. Without the flag the return shape carries no deformable entries.
@@ -201,7 +201,7 @@ close a loop, so they stay outside the articulation.
 
 .. code-block:: python
 
-    result = builder.add_usd("cables.usda", deformable_results=True)
+    result = builder.add_usd("cables.usda", return_deformable_results=True)
     # Look up an imported cable by prim path:
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready

@@ -69,7 +69,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             builder.default_tet_density = 1.0
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
-                result = builder.add_usd(stage, deformable_results=True)
+                result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 600.0)
             # density 600 over the unit tet (V = 1/6) -> total particle mass = 100.
             self.assertAlmostEqual(sum(builder.particle_mass), 100.0, delta=1e-3)
@@ -81,7 +81,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             builder = newton.ModelBuilder()
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
-                result = builder.add_usd(stage, deformable_results=True)
+                result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(result["path_cloth_attrs"]["/World/Cloth"]["resolved_density"], 600.0)
 
         with self.subTest(family="cable"):
@@ -93,7 +93,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             builder = newton.ModelBuilder()
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
-                result = builder.add_usd(stage, deformable_results=True)
+                result = builder.add_usd(stage, return_deformable_results=True)
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["resolved_density"], 600.0)
 
     def test_mixed_scene_imports_and_finalizes(self):
@@ -248,7 +248,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.default_shape_cfg.density = 0.0
             builder.default_tet_density = 0.0
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
             masses = [float(m) for m in builder.particle_mass]
             self.assertAlmostEqual(sum(masses), 8.0, places=4)
             self.assertAlmostEqual(masses[4] / masses[0], 2.0, places=5)
@@ -281,7 +281,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = builder.add_usd(stage, deformable_results=True)
+            result = builder.add_usd(stage, return_deformable_results=True)
         messages = [str(w.message) for w in caught]
 
         # Nothing simulates, but the collision geometry survives as static shapes.
@@ -408,7 +408,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertAlmostEqual(sum(builder.particle_mass), 10.0, places=4)
 
     def test_deformable_results_are_opt_in(self):
-        """The default add_usd return carries no deformable entries; deformable_results=True
+        """The default add_usd return carries no deformable entries; return_deformable_results=True
         adds exactly the documented map and attrs keys."""
         keys = (
             "path_cable_map",
@@ -426,7 +426,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             self.assertNotIn(key, result)
 
         opt_in = newton.ModelBuilder()
-        result = opt_in.add_usd(_ASSET, deformable_results=True)
+        result = opt_in.add_usd(_ASSET, return_deformable_results=True)
         for key in keys:
             self.assertIn(key, result)
         self.assertIn("/World/CableA/sim", result["path_cable_map"])
