@@ -387,8 +387,8 @@ class Utils:
         self,
         width: int,
         height: int,
-        camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
         *,
+        camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
         focal_length: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
         horizontal_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
         vertical_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
@@ -407,20 +407,31 @@ class Utils:
         USD-style millimeters. The unit must match across *focal_length*,
         apertures, and aperture offsets.
 
+        Leave *focal_length*, *horizontal_aperture*, and
+        *vertical_aperture* as ``None`` to use *camera_fovs*. Supplying any of
+        those aperture parameters selects aperture mode, requires all three,
+        and ignores *camera_fovs*.
+
         Args:
             width: Image width [px].
             height: Image height [px].
-            camera_fovs: Vertical FOV angles [rad], shape
-                ``(camera_count,)``. Required unless *focal_length*,
-                *horizontal_aperture*, and *vertical_aperture* are supplied.
-            focal_length: Focal length [mm or any consistent unit].
+            camera_fovs: Vertical FOV angles [rad], scalar or shape
+                ``(camera_count,)``. If ``None``, aperture mode must be used;
+                if no aperture parameters are provided, raises
+                ``ValueError``.
+            focal_length: Focal length [mm or any consistent unit]. If
+                ``None`` and the other aperture parameters are also ``None``,
+                uses *camera_fovs*.
             horizontal_aperture: Horizontal aperture [mm or any consistent
-                unit].
+                unit]. If ``None`` and the other aperture parameters are
+                also ``None``, uses *camera_fovs*.
             vertical_aperture: Vertical aperture [mm or any consistent unit].
+                If ``None`` and the other aperture parameters are also
+                ``None``, uses *camera_fovs*.
             horizontal_aperture_offset: Horizontal aperture offset [mm or any
-                consistent unit].
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
             vertical_aperture_offset: Vertical aperture offset [mm or any
-                consistent unit].
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
             out_rays: Optional output array to write into, shape
                 ``(out_camera_count, height, width, 2)``. If ``None``,
                 allocates a new array.
@@ -531,20 +542,31 @@ class Utils:
         USD-style millimeters. The unit must match across *focal_length*,
         apertures, and aperture offsets.
 
+        Leave *focal_length*, *horizontal_aperture*, and
+        *vertical_aperture* as ``None`` to use *camera_fovs*. Supplying any of
+        those aperture parameters selects aperture mode, requires all three,
+        and ignores *camera_fovs*.
+
         Args:
             width: Image width [px].
             height: Image height [px].
-            camera_fovs: Vertical FOV angles [rad], shape
-                ``(camera_count,)``. Required unless *focal_length*,
-                *horizontal_aperture*, and *vertical_aperture* are supplied.
-            focal_length: Focal length [mm or any consistent unit].
+            camera_fovs: Vertical FOV angles [rad], scalar or shape
+                ``(camera_count,)``. If ``None``, aperture mode must be used;
+                if no aperture parameters are provided, raises
+                ``ValueError``.
+            focal_length: Focal length [mm or any consistent unit]. If
+                ``None`` and the other aperture parameters are also ``None``,
+                uses *camera_fovs*.
             horizontal_aperture: Horizontal aperture [mm or any consistent
-                unit].
+                unit]. If ``None`` and the other aperture parameters are
+                also ``None``, uses *camera_fovs*.
             vertical_aperture: Vertical aperture [mm or any consistent unit].
+                If ``None`` and the other aperture parameters are also
+                ``None``, uses *camera_fovs*.
             horizontal_aperture_offset: Horizontal aperture offset [mm or any
-                consistent unit].
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
             vertical_aperture_offset: Vertical aperture offset [mm or any
-                consistent unit].
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
             out_rays: Optional output array to write into, shape
                 ``(out_camera_count, height, width, 2)``. If ``None``,
                 allocates a new array.
@@ -565,7 +587,7 @@ class Utils:
         return self.compute_camera_rays_pinhole(
             width,
             height,
-            camera_fovs,
+            camera_fovs=camera_fovs,
             focal_length=focal_length,
             horizontal_aperture=horizontal_aperture,
             vertical_aperture=vertical_aperture,

@@ -98,13 +98,21 @@ class TestSensorCameraRays(unittest.TestCase):
         utils = _make_utils()
         width, height = 3, 3
         fov = math.radians(45.0)
-        expected = utils.compute_camera_rays_pinhole(width, height, fov).numpy()[0]
+        expected = utils.compute_camera_rays_pinhole(width, height, camera_fovs=fov).numpy()[0]
         out_rays = wp.zeros((2, height, width, 2), dtype=wp.vec3f, device="cpu")
 
-        got = utils.compute_camera_rays_pinhole(width, height, fov, out_rays=out_rays, camera_index=1).numpy()
+        got = utils.compute_camera_rays_pinhole(
+            width, height, camera_fovs=fov, out_rays=out_rays, camera_index=1
+        ).numpy()
 
         np.testing.assert_array_equal(got[0], np.zeros_like(got[0]))
         np.testing.assert_allclose(got[1], expected, atol=1e-6)
+
+    def test_pinhole_rays_require_keyword_camera_fovs(self):
+        utils = _make_utils()
+
+        with self.assertRaises(TypeError):
+            utils.compute_camera_rays_pinhole(1, 1, math.radians(45.0))
 
     def test_pinhole_aperture_matches_fov_helper(self):
         utils = _make_utils()
@@ -120,7 +128,7 @@ class TestSensorCameraRays(unittest.TestCase):
             horizontal_aperture=horizontal_aperture,
             vertical_aperture=vertical_aperture,
         ).numpy()
-        expected = utils.compute_camera_rays_pinhole(width, height, fov).numpy()
+        expected = utils.compute_camera_rays_pinhole(width, height, camera_fovs=fov).numpy()
 
         np.testing.assert_allclose(got, expected, atol=1e-6)
 

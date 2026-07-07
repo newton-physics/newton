@@ -42,7 +42,7 @@ class SensorTiledCamera:
         ::
 
             sensor = SensorTiledCamera(model)
-            rays = sensor.utils.compute_camera_rays_pinhole(width, height, fov)
+            rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=fov)
             color = sensor.utils.create_color_image_output(width, height)
 
             # BVHs are built for the initial state by ModelBuilder.finalize().
