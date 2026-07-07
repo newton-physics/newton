@@ -21,6 +21,7 @@ import warp as wp
 from .import_usd_deformable_utils import (
     _DEFAULT_CABLE_RADIUS,
     _apply_cable_masses,
+    _bake_world_points,
     _cable_segment_quaternions,
     _CurveDeformableRecord,
     _deformable_body_skip_reason,
@@ -29,6 +30,7 @@ from .import_usd_deformable_utils import (
     _is_ignored_path,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
+    _UnionFind,
     _validate_attachment_index_pairs,
     _warn_collision_approximated,
     _warn_dropped_velocities,
@@ -146,7 +148,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             continue
         wmat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Apply the full world affine so non-uniform scale, shear, and reflections are exact.
-        positions = [wp.transform_point(wmat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in pts]
+        positions = _bake_world_points(pts, wmat)
         mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
         radius = 0.5 * mat["thickness"] if "thickness" in mat else _DEFAULT_CABLE_RADIUS / linear_unit
         density = _resolve_deformable_density(prim, mat.get("density"), deformable_read)
@@ -163,18 +165,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         return consumed_curves, consumed_attachments
 
     # Union-find over curve prim paths; record the per-attachment welded point pairs.
-    parent = {p: p for p in curve_recs}
-
-    def find(a: str) -> str:
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = parent[a]
-        return a
-
-    def union(a: str, b: str) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
+    curve_sets = _UnionFind(curve_recs)
 
     welds: list[tuple[str, int, str, int]] = []
     weld_attachments: list[tuple[str, str]] = []  # (src0 curve path, attachment prim path)
@@ -230,7 +221,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 stacklevel=2,
             )
             continue
-        union(src0, src1)
+        curve_sets.union(src0, src1)
         for a, b in zip(idx0, idx1, strict=True):
             welds.append((src0, a, src1, b))
         # Consumed only after the component actually builds (below): a failed graph falls back
@@ -240,41 +231,25 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
 
     components: dict[str, list[str]] = {}
     for p in curve_recs:
-        components.setdefault(find(p), []).append(p)
+        components.setdefault(curve_sets.find(p), []).append(p)
     welds_by_comp: dict[str, list[tuple[str, int, str, int]]] = {}
     for w in welds:
-        welds_by_comp.setdefault(find(w[0]), []).append(w)
+        welds_by_comp.setdefault(curve_sets.find(w[0]), []).append(w)
     attachments_by_comp: dict[str, set[str]] = {}
     for src0, att_path in weld_attachments:
-        attachments_by_comp.setdefault(find(src0), set()).add(att_path)
+        attachments_by_comp.setdefault(curve_sets.find(src0), set()).add(att_path)
 
     def _build_graph_component(cid, comp_paths, comp_welds) -> bool:
         # Merge welded control points into shared graph nodes (union-find over (path, index)).
-        node_parent: dict[tuple[str, int], tuple[str, int]] = {}
-
-        def node_find(node: tuple[str, int]) -> tuple[str, int]:
-            node_parent.setdefault(node, node)
-            while node_parent[node] != node:
-                node_parent[node] = node_parent[node_parent[node]]
-                node = node_parent[node]
-            return node
-
-        def node_union(a: tuple[str, int], b: tuple[str, int]) -> None:
-            ra, rb = node_find(a), node_find(b)
-            if ra != rb:
-                node_parent[rb] = ra
-
-        for key in comp_paths:
-            for i in range(len(curve_recs[key].positions)):
-                node_find((key, i))
+        nodes = _UnionFind((key, i) for key in comp_paths for i in range(len(curve_recs[key].positions)))
         for s0, i0, s1, i1 in comp_welds:
-            node_union((s0, i0), (s1, i1))
+            nodes.union((s0, i0), (s1, i1))
 
         node_positions: list[wp.vec3] = []
         node_id: dict[tuple[str, int], int] = {}
 
         def global_node(local: tuple[str, int]) -> int:
-            root = node_find(local)
+            root = nodes.find(local)
             if root not in node_id:
                 node_id[root] = len(node_positions)
                 rk, ri = root
@@ -665,9 +640,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 )
                 flat_segment_index += curve_segment_count
                 continue
-            positions = [
-                wp.transform_point(world_mat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in local_pts
-            ]
+            positions = _bake_world_points(local_pts, world_mat)
             # For a periodic curve the closing segment (v[-1] -> v[0]) is a real
             # segment: close the polyline so add_rod builds a body for it (add_rod
             # makes len(positions) - 1 bodies; closed=True then adds the loop joint).
@@ -703,10 +676,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             # the cable is not pre-stressed. Apply the full affine so the rest lengths are exact under
             # reflection / shear (translation cancels in the segment differences).
             if rest_shape_points is not None:
-                rest_pts = [
-                    wp.transform_point(world_mat, wp.vec3(float(rp[0]), float(rp[1]), float(rp[2])))
-                    for rp in rest_shape_points[start : start + n]
-                ]
+                rest_pts = _bake_world_points(rest_shape_points[start : start + n], world_mat)
                 if closed:
                     rest_pts = [*rest_pts, rest_pts[0]]
                 rest_seg_lengths = [float(wp.length(rest_pts[i + 1] - rest_pts[i])) for i in range(num_seg)]

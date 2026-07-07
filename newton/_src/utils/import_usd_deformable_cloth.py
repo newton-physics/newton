@@ -19,6 +19,7 @@ import warp as wp
 from .import_usd_deformable_utils import (
     _DEFAULT_CLOTH_THICKNESS,
     _apply_particle_masses,
+    _bake_world_points,
     _deformable_body_skip_reason,
     _deformable_collision_enabled,
     _DeformableImportContext,
@@ -122,9 +123,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # add_cloth_mesh creates one particle per mesh vertex and takes only a uniform scale, so bake
         # the full world affine (incl. non-uniform scale, shear, reflection) into the vertices and
         # pass an identity placement -- wp.transform_decompose would drop reflection parity.
-        cloth_vertices = [
-            wp.transform_point(world_mat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in mesh_points
-        ]
+        cloth_vertices = _bake_world_points(mesh_points, world_mat)
 
         # A zero-area triangle cannot form an FEM element; add_cloth_mesh would drop it and
         # leave a partial import (particles without their triangle). Contain it like other

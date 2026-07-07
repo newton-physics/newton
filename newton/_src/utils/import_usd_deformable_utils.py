@@ -37,6 +37,39 @@ _DEFAULT_CLOTH_THICKNESS = 0.002
 _DEFAULT_CABLE_RADIUS = 0.0025
 
 
+def _bake_world_points(points, world_mat) -> list[wp.vec3]:
+    """Bake the full world affine into points (vectorized), returning ``wp.vec3`` s.
+
+    Applies non-uniform scale, shear, and reflection exactly -- a rotation/scale
+    decomposition cannot represent either. Shared by the cable / cloth / volume passes.
+    """
+    m = np.array(world_mat, dtype=np.float64).reshape(4, 4)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    baked = pts @ m[:3, :3].T + m[:3, 3]
+    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in baked]
+
+
+class _UnionFind:
+    """Union-find with path compression over hashable keys (an unseen key is its own root)."""
+
+    def __init__(self, keys: Iterable = ()):
+        self.parent = {k: k for k in keys}
+
+    def find(self, key):
+        parent = self.parent
+        if key not in parent:
+            parent[key] = key
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(self, a, b) -> None:
+        root_a, root_b = self.find(a), self.find(b)
+        if root_a != root_b:
+            self.parent[root_b] = root_a
+
+
 def _validate_mass_array(values: Iterable[float], path: str) -> list[float] | None:
     """Validate an authored per-point ``physics:masses`` array.
 

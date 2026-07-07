@@ -18,6 +18,7 @@ import warp as wp
 
 from .import_usd_deformable_utils import (
     _apply_particle_masses,
+    _bake_world_points,
     _deformable_body_skip_reason,
     _deformable_collision_enabled,
     _DeformableImportContext,
@@ -117,13 +118,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         # Bake the full world affine into the tet vertices and pass an identity placement, so a
         # reflective or sheared transform is applied exactly. wp.transform_decompose drops the
         # reflection parity, which would mirror the soft body back to a non-reflected pose.
-        world_vertices = np.array(
-            [
-                wp.transform_point(soft_mesh_mat, wp.vec3(float(v[0]), float(v[1]), float(v[2])))
-                for v in tetmesh_for_builder.vertices
-            ],
-            dtype=np.float32,
-        )
+        world_vertices = np.array(_bake_world_points(tetmesh_for_builder.vertices, soft_mesh_mat), dtype=np.float32)
         if is_volume_deformable:
             # Newton has no per-particle collision toggle, so authored no-collision
             # intent cannot be honored; the legacy bare-TetMesh path is unchanged.
