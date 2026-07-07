@@ -3,7 +3,7 @@ name: release-audit
 description: "Use when auditing a Newton release for keep/defer decisions before a cut, reviewing an RC for readiness, or calibrating the skill against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(rm /tmp/newton-*-prerelease-report.md) Bash(rm /tmp/newton-*-rc-report.md) Bash(rm /tmp/newton-*-retrospective-report.md) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
