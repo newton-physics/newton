@@ -138,8 +138,10 @@ Known gaps of the experimental importer, tracked as follow-ups:
   curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a
   standalone cable authors valid ``restShapePoints``, its segment lengths are used for this
   conversion; the current ``points`` still define the rod's constructed and relaxed pose.
-* **Cloth thickness fallback** -- without an authored thickness, a volumetric density
-  (kg/m^3) cannot be converted to Newton's per-area density and is used as-is.
+* **Thickness fallbacks** -- without an authored thickness the importer assumes a default
+  (2 mm cloth shell thickness, 2.5 mm cable radius) for the mass, stiffness, and
+  collision-radius conversions, and warns with the assumed value. Author
+  ``physics:thickness`` on the material to override.
 * **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
   the rod representation needs at least two segments. A periodic two-point curve closes into
   two segments and imports.

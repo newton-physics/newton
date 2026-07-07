@@ -1523,6 +1523,16 @@ def _read_deformable_material(
         if name in ("thickness", "density"):
             if val > 0.0:
                 out[name] = val
+            elif name == "thickness" or val < 0.0:
+                # A finite non-positive thickness (or negative density) is malformed, not the
+                # unauthored sentinel (-inf); say it is dropped so users can tell it apart
+                # from an unauthored value. An authored density of exactly 0 stays silent:
+                # that is the proposal's "ignored" sentinel.
+                warnings.warn(
+                    f"{material_prim.GetPath()}: invalid physics:{name} {val:g} (expected > 0); "
+                    f"treating it as unauthored.",
+                    stacklevel=2,
+                )
         elif val >= 0.0:
             out[name] = val
     return out

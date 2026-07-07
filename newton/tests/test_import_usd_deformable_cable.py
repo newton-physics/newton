@@ -477,6 +477,20 @@ class TestUSDDeformableCable(unittest.TestCase):
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertAlmostEqual(sum(builder.body_mass[b] for b in range(b0, b1)), 2.5, places=4)
 
+    def test_malformed_material_thickness_warns_and_uses_default(self):
+        """An authored non-positive physics:thickness is malformed (the unauthored sentinel
+        is -inf, not 0): the importer says it is dropped, so users can tell it apart from an
+        unauthored value, and the default radius applies."""
+        stage = _deformable_stage(up_axis="y")
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        curves = _add_cable_curve(stage, "/World/Cable", pts, thickness=None)
+        _bind_deformable_material(stage, curves.GetPrim(), "/World/Mat", thickness=-1.0)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "invalid physics:thickness"):
+            builder.add_usd(stage)
+        self.assertAlmostEqual(float(builder.shape_scale[0][0]), 0.0025, places=6)
+
     def test_cable_density_segment_mass_is_cylinder_not_capsule(self):
         """A density-derived cable segment gets the cylinder mass m = rho*pi*r^2*L per segment
         (so mass scales with density and segment length), not add_rod's capsule mass whose
@@ -504,7 +518,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
     def test_cable_default_radius_scales_with_stage_units(self):
         """With no authored thickness the importer assumes a default radius derived from the stage's
-        linear unit, so it is the same physical size (~0.05 m) on a centimeter stage as on a meter
+        linear unit, so it is the same physical size (~0.0025 m) on a centimeter stage as on a meter
         stage, and it warns that a default was assumed (rather than a meters-flavored literal)."""
         from pxr import UsdGeom
 
@@ -518,9 +532,9 @@ class TestUSDDeformableCable(unittest.TestCase):
                 builder.add_usd(stage)
             return float(builder.shape_scale[0][0])  # capsule radius is stored as scale.x
 
-        # ~0.05 m on a meter stage; 0.05 / 0.01 = 5 stage units on a cm stage (still ~0.05 m physical).
-        self.assertAlmostEqual(capsule_radius(1.0), 0.05, places=4)
-        self.assertAlmostEqual(capsule_radius(0.01), 5.0, places=3)
+        # ~0.0025 m on a meter stage; 0.0025 / 0.01 = 0.25 stage units on a cm stage (same physical size).
+        self.assertAlmostEqual(capsule_radius(1.0), 0.0025, places=5)
+        self.assertAlmostEqual(capsule_radius(0.01), 0.25, places=4)
 
         stage = _deformable_stage(up_axis="y")
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]

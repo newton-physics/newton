@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 from .import_usd_deformable_utils import (
+    _DEFAULT_CLOTH_THICKNESS,
     _apply_particle_masses,
     _deformable_body_skip_reason,
     _deformable_collision_enabled,
@@ -151,13 +152,16 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if thickness is None and any(
             key in cloth_mat for key in ("stretchStiffness", "bendStiffness", "shearStiffness", "density")
         ):
-            # The proposal authors volumetric quantities; without a thickness there is no
-            # physical surface conversion, so say the values pass through unconverted.
+            # The proposal authors volumetric quantities and its unauthored-thickness
+            # sentinel delegates to a simulator default; assume a fabric-like shell so the
+            # values get a physical surface conversion.
+            thickness = _DEFAULT_CLOTH_THICKNESS / ctx.linear_unit
             warnings.warn(
                 f"{path}: the surface material authors volumetric values but no thickness is "
-                f"resolvable; stiffness moduli and density are used as surface values unconverted. "
-                f"Author physics:thickness on the material (or a shell mass model) for the "
-                f"physical conversion.",
+                f"resolvable; assuming the default thickness of {thickness:g} stage units "
+                f"(~{_DEFAULT_CLOTH_THICKNESS:g} m) for the mass, stiffness, and collision-radius "
+                f"conversions. Author physics:thickness on the material (or a shell mass model) "
+                f"to override.",
                 stacklevel=2,
             )
 

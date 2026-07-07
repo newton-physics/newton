@@ -108,6 +108,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         stage = _deformable_stage(up_axis="y")
         mesh = _add_cloth_mesh(stage, "/World/ClothA")
         stretch, shear, bend = 1.0e3, 5.0e2, 2.0e1  # distinct stretch != shear
+        # thickness=1 makes the modulus -> membrane conversion (E*h, E*h^3) the identity,
+        # so the assertions below pin the mapping itself, not the thickness scaling.
         _bind_deformable_material(
             stage,
             mesh.GetPrim(),
@@ -115,6 +117,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             stretchStiffness=stretch,
             shearStiffness=shear,
             bendStiffness=bend,
+            thickness=1.0,
         )
         zero = _add_cloth_mesh(stage, "/World/ClothZero")
         _bind_deformable_material(
@@ -123,6 +126,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             "/World/MatZero",
             stretchStiffness=0.0,
             bendStiffness=bend,
+            thickness=1.0,
         )
 
         builder = newton.ModelBuilder()
@@ -149,6 +153,24 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(builder.tri_materials[tz][1], 0.0)  # tri_ka (area): no default leaks in
         self.assertEqual(result["path_cloth_attrs"]["/World/ClothZero"]["material"]["stretchStiffness"], 0.0)
 
+    def test_cloth_default_thickness_converts_authored_density(self):
+        """A surface material that authors a volumetric density but no thickness gets the
+        importer's default thickness for the areal conversion, and the assumed default is
+        warned."""
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0)
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "assuming the default thickness"):
+            builder.add_usd(stage)
+
+        p0, p1 = group_range(builder, "cloth", "/World/Cloth", "particle")
+        # Unit quad (area 1): mass = density * default thickness * area = 1000 * 0.002 = 2 kg.
+        self.assertAlmostEqual(sum(builder.particle_mass[p0:p1]), 2.0, places=5)
+        # The collision radius describes the same assumed shell: half the default thickness.
+        self.assertAlmostEqual(builder.particle_radius[p0], 0.001, places=6)
+
     def test_cloth_thickness_density_and_radius(self):
         """Surface thickness (material attribute, or NewtonMassAPI shell fallback when the
         material omits it) converts the volumetric material density to an areal density and
@@ -170,21 +192,22 @@ class TestUSDDeformableCloth(unittest.TestCase):
         _bind_deformable_material(stage, bare.GetPrim(), "/World/MatBare", density=1000.0)
 
         builder = newton.ModelBuilder()
-        # The bare cloth resolves no thickness, so its volumetric material values are used as
-        # surface values unconverted; the importer must say so instead of converting silently.
-        with self.assertWarnsRegex(UserWarning, "/World/ClothBare.*unconverted"):
+        # The bare cloth resolves no thickness, so the importer assumes its default (2 mm)
+        # for the surface conversion and must say so instead of assuming silently.
+        with self.assertWarnsRegex(UserWarning, "/World/ClothBare.*assuming the default thickness"):
             result = builder.add_usd(stage, deformable_results=True)
 
         def total_mass(path):
             p0, p1 = group_range(builder, "cloth", path, "particle")
             return sum(builder.particle_mass[p0:p1])
 
-        # Without thickness the density is used as areal; with thickness it scales by thickness.
+        # Mass scales with the resolved thickness: the bare cloth uses the 0.002 default,
+        # so the authored 0.01 comes out exactly 5x heavier.
         m_bare = total_mass("/World/ClothBare")
         self.assertGreater(m_bare, 0.0)
-        self.assertAlmostEqual(total_mass("/World/ClothThick") / m_bare, thickness, places=4)
+        self.assertAlmostEqual(total_mass("/World/ClothThick") / m_bare, thickness / 0.002, places=4)
         # The NewtonMassAPI shell thickness areal-scales exactly like the material attribute.
-        self.assertAlmostEqual(total_mass("/World/ClothShell") / m_bare, thickness, places=4)
+        self.assertAlmostEqual(total_mass("/World/ClothShell") / m_bare, thickness / 0.002, places=4)
 
         # Volumetric density (1000), not the areal 1000 * thickness passed to add_cloth_mesh.
         self.assertEqual(result["path_cloth_attrs"]["/World/ClothThick"]["resolved_density"], 1000.0)

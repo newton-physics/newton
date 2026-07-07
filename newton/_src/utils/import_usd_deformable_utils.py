@@ -27,6 +27,15 @@ if TYPE_CHECKING:
 
     from ..sim.builder import ModelBuilder
 
+# Assumed physical sizes [m] for deformables whose material authors no thickness. The
+# proposal's unauthored-thickness sentinel (-inf) delegates to a simulator default, so
+# fabric- / wire-like sizes are assumed; every use warns with the assumed value, and an
+# authored physics:thickness always overrides.
+# TODO: evaluate moving these to configurable ModelBuilder defaults (like
+# default_particle_radius) when deformable import leaves its experimental phase.
+_DEFAULT_CLOTH_THICKNESS = 0.002
+_DEFAULT_CABLE_RADIUS = 0.0025
+
 
 def _validate_mass_array(values: Iterable[float], path: str) -> list[float] | None:
     """Validate an authored per-point ``physics:masses`` array.

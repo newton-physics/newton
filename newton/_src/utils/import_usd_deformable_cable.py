@@ -19,6 +19,7 @@ from dataclasses import replace
 import warp as wp
 
 from .import_usd_deformable_utils import (
+    _DEFAULT_CABLE_RADIUS,
     _apply_cable_masses,
     _cable_segment_quaternions,
     _CurveDeformableRecord,
@@ -146,7 +147,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # Apply the full world affine so non-uniform scale, shear, and reflections are exact.
         positions = [wp.transform_point(wmat, wp.vec3(float(p[0]), float(p[1]), float(p[2]))) for p in pts]
         mat = usd._get_curve_deformable_material(prim, deformable_read) or {}
-        radius = 0.5 * mat["thickness"] if "thickness" in mat else 0.05 / linear_unit
+        radius = 0.5 * mat["thickness"] if "thickness" in mat else _DEFAULT_CABLE_RADIUS / linear_unit
         density = _resolve_deformable_density(prim, mat.get("density"), deformable_read)
         curve_recs[path] = _CurveDeformableRecord(
             prim=prim,
@@ -607,13 +608,14 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             radius = 0.5 * cable_mat["thickness"]
         else:
             # No authored thickness: assume a default radius. Express it via the stage's linear
-            # unit (meters per unit) so the assumed size is a fixed physical ~0.05 m regardless
-            # of cm / mm / m authoring, rather than a meters-flavored literal in stage units.
-            radius = 0.05 / linear_unit
+            # unit (meters per unit) so the assumed size is a fixed physical wire-like radius
+            # regardless of cm / mm / m authoring, rather than a meters-flavored literal in
+            # stage units.
+            radius = _DEFAULT_CABLE_RADIUS / linear_unit
             warnings.warn(
                 f"{path}: no cable thickness authored (physics:thickness); assuming a default "
-                f"radius of {radius:g} stage units (~0.05 m). Author physics:thickness on the "
-                f"bound material to set it.",
+                f"radius of {radius:g} stage units (~{_DEFAULT_CABLE_RADIUS:g} m). Author "
+                f"physics:thickness on the bound material to set it.",
                 stacklevel=2,
             )
         # Density precedence resolved here; total-mass/per-point overrides applied after add_rod.
