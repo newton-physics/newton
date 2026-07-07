@@ -130,8 +130,8 @@ class SchemaResolverNewton(SchemaResolver):
             "armature": SchemaAttribute("newton:armature", 0.0),
             "damping": SchemaAttribute("newton:damping", None),
             "friction": SchemaAttribute("newton:friction", 0.0),
-            "limit_ke": SchemaAttribute("newton:limitStiffness", float("-inf")),
-            "limit_kd": SchemaAttribute("newton:limitDamping", float("-inf")),
+            "limit_ke": SchemaAttribute("newton:limitStiffness", None),
+            "limit_kd": SchemaAttribute("newton:limitDamping", None),
             "velocity_limit": SchemaAttribute("newton:velocityLimit", float("inf")),
             # Non-schema per-DOF limit attrs (deprecated; use newton:limitStiffness / newton:limitDamping)
             "limit_linear_ke": SchemaAttribute(

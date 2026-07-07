@@ -1838,8 +1838,8 @@ class TestSchemaResolver(unittest.TestCase):
         # letting the importer fall back to the builder default without unit conversion.
         self.assertIsNone(resolver_n.get_value(joint, PrimType.JOINT, "damping", default=None))
         self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "friction", default=None), 0.0)
-        self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "limit_ke", default=None), float("-inf"))
-        self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "limit_kd", default=None), float("-inf"))
+        self.assertIsNone(resolver_n.get_value(joint, PrimType.JOINT, "limit_ke", default=None))
+        self.assertIsNone(resolver_n.get_value(joint, PrimType.JOINT, "limit_kd", default=None))
         self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "velocity_limit", default=None), float("inf"))
 
         # --- All 6 Newton attrs authored ---

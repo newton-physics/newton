@@ -59,21 +59,18 @@ _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pa
 # Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
 _HARD_LIMIT_KE = 1.0e8
 
-# Sentinel indicating that no resolver found an authored value for the attribute.
-_NEWTON_LIMIT_UNSET = object()
-
 
 def _resolve_newton_limit_ke(
-    limit_ke: float | object,
+    limit_ke: float | None,
     fallback: float,
     fallback_source: str,
     builder_default: float,
 ) -> tuple[float, str]:
     """Resolve a NewtonJointAPI ``newton:limitStiffness`` value.
 
-    ``limit_ke`` is either the sentinel :data:`_NEWTON_LIMIT_UNSET` (attribute not
-    authored), ``-inf`` (authored, meaning "select the engine/builder default"),
-    ``+inf`` (hard limit), or a finite stiffness value.
+    ``limit_ke`` is ``None`` when the attribute is not authored, ``-inf`` when
+    authored as the engine-default sentinel, ``+inf`` for a hard limit, or a
+    finite stiffness value.
 
     ``fallback`` is the per-DOF stiffness resolved from lower-priority schemas
     (PhysX/MuJoCo).  ``builder_default`` is the ModelBuilder engine default.
@@ -85,7 +82,7 @@ def _resolve_newton_limit_ke(
     Returns (resolved_value, source) where source is ``"force"`` when Newton
     broadcast values are used, or the original ``fallback_source`` otherwise.
     """
-    if limit_ke is _NEWTON_LIMIT_UNSET:
+    if limit_ke is None:
         return fallback, fallback_source
     if limit_ke == float("-inf"):
         return builder_default, "force"
@@ -95,8 +92,8 @@ def _resolve_newton_limit_ke(
 
 
 def _resolve_newton_limit_kd(
-    limit_ke: float | object,
-    limit_kd: float | object,
+    limit_ke: float | None,
+    limit_kd: float | None,
     fallback: float,
     fallback_source: str,
     builder_default: float,
@@ -106,19 +103,19 @@ def _resolve_newton_limit_kd(
     Hard limits (``limit_ke`` or ``limit_kd`` == ``+inf``) have no damping.
     An authored ``-inf`` selects the builder default (engine default), taking
     precedence over per-DOF fallbacks from lower-priority schemas.
-    When neither Newton attribute is authored (sentinel), the per-DOF ``fallback``
+    When neither Newton attribute is authored (``None``), the per-DOF ``fallback``
     from other resolvers is used.
 
     Returns (resolved_value, source) where source is ``"force"`` when Newton
     broadcast values are used, or the original ``fallback_source`` otherwise.
     """
     # Hard-limit stiffness or damping → zero damping.
-    if limit_ke is not _NEWTON_LIMIT_UNSET and limit_ke == float("inf"):
+    if limit_ke is not None and limit_ke == float("inf"):
         return 0.0, "force"
-    if limit_kd is not _NEWTON_LIMIT_UNSET and limit_kd == float("inf"):
+    if limit_kd is not None and limit_kd == float("inf"):
         return 0.0, "force"
     # Not authored → lower-priority per-DOF fallback.
-    if limit_kd is _NEWTON_LIMIT_UNSET:
+    if limit_kd is None:
         return fallback, fallback_source
     # Authored -inf → builder default.
     if limit_kd == float("-inf"):
@@ -1291,12 +1288,8 @@ def parse_usd(
         # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
         if joint_velocity_limit == float("inf"):
             joint_velocity_limit = None
-        limit_ke = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=_NEWTON_LIMIT_UNSET, verbose=verbose
-        )
-        limit_kd = R.get_value(
-            joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=_NEWTON_LIMIT_UNSET, verbose=verbose
-        )
+        limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
+        limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -1576,11 +1569,16 @@ def parse_usd(
                         default_joint_limit_kd * DegreesToRadian,
                     )
                     current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-                        limit_ke, fallback_limit_ke, limit_ke_source,
+                        limit_ke,
+                        fallback_limit_ke,
+                        limit_ke_source,
                         default_joint_limit_ke * DegreesToRadian,
                     )
                     current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source,
+                        limit_ke,
+                        limit_kd,
+                        fallback_limit_kd,
+                        limit_kd_source,
                         default_joint_limit_kd * DegreesToRadian,
                     )
 
@@ -1824,10 +1822,10 @@ def parse_usd(
 
             limit_key = "limit_angular" if is_revolute else "limit_linear"
             j_newton_limit_ke = R.get_value(
-                jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=_NEWTON_LIMIT_UNSET, verbose=verbose
+                jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose
             )
             j_newton_limit_kd = R.get_value(
-                jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=_NEWTON_LIMIT_UNSET, verbose=verbose
+                jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose
             )
             fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 jp_prim,
@@ -1840,11 +1838,16 @@ def parse_usd(
                 default_joint_limit_kd * limit_gains_scaling,
             )
             limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-                j_newton_limit_ke, fallback_limit_ke, limit_ke_source,
+                j_newton_limit_ke,
+                fallback_limit_ke,
+                limit_ke_source,
                 default_joint_limit_ke * limit_gains_scaling,
             )
             limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-                j_newton_limit_ke, j_newton_limit_kd, fallback_limit_kd, limit_kd_source,
+                j_newton_limit_ke,
+                j_newton_limit_kd,
+                fallback_limit_kd,
+                limit_kd_source,
                 default_joint_limit_kd * limit_gains_scaling,
             )
 
