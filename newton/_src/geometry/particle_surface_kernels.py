@@ -23,6 +23,7 @@ _MESH_VERTEX_COUNT = wp.constant(0)
 _MESH_INDEX_COUNT = wp.constant(1)
 
 _MAX_CAPACITY_LAUNCH_THREADS = 4_194_304
+_AABB_TILE_SIZE = 256
 
 
 @wp.func
@@ -105,17 +106,34 @@ def compute_particle_bounds(
     upper: wp.array[wp.vec3],
     active_count: wp.array[wp.int32],
 ):
-    i = wp.tid()
-    if not _is_active(flags, use_flags, i):
-        return
+    block, lane = wp.tid()
+    i = block * wp.block_dim() + lane
 
-    p = positions[i]
-    if not _is_finite_position(p):
-        return
+    p = wp.vec3(0.0)
+    valid = False
+    if i < positions.shape[0]:
+        p = positions[i]
+        valid = _is_active(flags, use_flags, i) and _is_finite_position(p)
 
-    wp.atomic_min(lower, 0, p)
-    wp.atomic_max(upper, 0, p)
-    wp.atomic_add(active_count, _GRID_ACTIVE_COUNT, wp.int32(1))
+    min_value = wp.vec3(1.0e30)
+    max_value = wp.vec3(-1.0e30)
+    valid_count = wp.int32(0)
+    if valid:
+        min_value = p
+        max_value = p
+        valid_count = wp.int32(1)
+
+    min_x = wp.tile_min(wp.tile(min_value[0]))[0]
+    min_y = wp.tile_min(wp.tile(min_value[1]))[0]
+    min_z = wp.tile_min(wp.tile(min_value[2]))[0]
+    max_x = wp.tile_max(wp.tile(max_value[0]))[0]
+    max_y = wp.tile_max(wp.tile(max_value[1]))[0]
+    max_z = wp.tile_max(wp.tile(max_value[2]))[0]
+    tile_valid_count = wp.tile_sum(wp.tile(valid_count))[0]
+    if lane == 0:
+        wp.atomic_min(lower, 0, wp.vec3(min_x, min_y, min_z))
+        wp.atomic_max(upper, 0, wp.vec3(max_x, max_y, max_z))
+        wp.atomic_add(active_count, _GRID_ACTIVE_COUNT, tile_valid_count)
 
 
 @wp.kernel
@@ -226,30 +244,37 @@ def compute_kernel_bounds(
     lower: wp.array[wp.vec3],
     upper: wp.array[wp.vec3],
 ):
-    i = wp.tid()
-    if not _is_active(flags, use_flags, i):
-        return
+    block, lane = wp.tid()
+    i = block * wp.block_dim() + lane
 
-    radius = radii[i]
-    if radius <= 0.0 or not wp.isfinite(radius):
-        return
+    min_value = wp.vec3(1.0e30)
+    max_value = wp.vec3(-1.0e30)
+    if i < positions.shape[0] and _is_active(flags, use_flags, i):
+        radius = radii[i]
+        position = positions[i]
+        if radius > 0.0 and wp.isfinite(radius) and _is_finite_position(position):
+            reach = _kernel_reach(
+                i,
+                radii,
+                det_G,
+                density_reach,
+                particle_sdf_radius_scale,
+                particle_sdf_band,
+                particle_sdf,
+                anisotropic,
+            )
+            min_value = position - reach
+            max_value = position + reach
 
-    position = positions[i]
-    if not _is_finite_position(position):
-        return
-
-    reach = _kernel_reach(
-        i,
-        radii,
-        det_G,
-        density_reach,
-        particle_sdf_radius_scale,
-        particle_sdf_band,
-        particle_sdf,
-        anisotropic,
-    )
-    wp.atomic_min(lower, 0, position - reach)
-    wp.atomic_max(upper, 0, position + reach)
+    min_x = wp.tile_min(wp.tile(min_value[0]))[0]
+    min_y = wp.tile_min(wp.tile(min_value[1]))[0]
+    min_z = wp.tile_min(wp.tile(min_value[2]))[0]
+    max_x = wp.tile_max(wp.tile(max_value[0]))[0]
+    max_y = wp.tile_max(wp.tile(max_value[1]))[0]
+    max_z = wp.tile_max(wp.tile(max_value[2]))[0]
+    if lane == 0:
+        wp.atomic_min(lower, 0, wp.vec3(min_x, min_y, min_z))
+        wp.atomic_max(upper, 0, wp.vec3(max_x, max_y, max_z))
 
 
 @wp.kernel
