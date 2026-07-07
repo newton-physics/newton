@@ -34,14 +34,17 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.enums import EqType, JointTargetMode
+from ..sim.enums import JointTargetMode
 from ..sim.model import Model
+from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
+from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
     mjc_polycoef_has_higher_order,
 )
+from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
@@ -100,6 +103,7 @@ def parse_usd(
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
+    legacy_margin_gap: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -108,7 +112,7 @@ def parse_usd(
     See :ref:`usd_parsing` for more information.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
         override_root_xform: If ``True``, the articulation root's world-space
@@ -229,6 +233,10 @@ def parse_usd(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+        legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+            where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
+            Use for USD files authored against MuJoCo <= 3.8. Defaults to
+            False (identity translation matching MuJoCo 3.9 semantics).
 
     Returns:
         The returned mapping has the following entries:
@@ -285,6 +293,7 @@ def parse_usd(
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
+    require_newton_usd_schemas(Usd)
 
     from .topology import topological_sort_undirected  # noqa: PLC0415
 
@@ -347,6 +356,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get mass unit: {e}")
+    if not math.isclose(mass_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit mass units are not supported. "
+            f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
     linear_unit = 1.0
     try:
         if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
@@ -354,6 +369,12 @@ def parse_usd(
     except Exception as e:
         if verbose:
             print(f"Failed to get linear unit: {e}")
+    if not math.isclose(linear_unit, 1.0):
+        warnings.warn(
+            "USD stages with non-unit linear units are not supported. "
+            f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
+            stacklevel=_external_stacklevel(),
+        )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
@@ -364,6 +385,8 @@ def parse_usd(
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
+    mjc_resolver = next((resolver for resolver in schema_resolvers if resolver.name == "mjc"), None)
+    solreflimit_mode_key = "mujoco:solreflimit_mode"
 
     # mapping from prim path to body index in ModelBuilder
     path_body_map: dict[str, int] = {}
@@ -432,6 +455,63 @@ def parse_usd(
     def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
 
+    def _should_write_solreflimit_mode() -> bool:
+        return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
+
+    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
+    def _get_mjc_joint_limit_default(prim: Usd.Prim, key: str) -> float | None:
+        if mjc_resolver is None or not _has_api_schema(prim, "MjcJointAPI"):
+            return None
+        spec = mjc_resolver.mapping.get(PrimType.JOINT, {}).get(key)
+        if spec is None or spec.default is None:
+            return None
+        if spec.usd_value_transformer is not None:
+            return spec.usd_value_transformer(spec.default)
+        return spec.default
+
+    def _resolve_joint_limit_gain(
+        prim: Usd.Prim, key: str, builder_default: float
+    ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
+        """Resolve a limit gain and report the semantics of its source."""
+        for resolver in R.resolvers:
+            spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
+            if spec is None:
+                continue
+
+            if resolver.name == "mjc":
+                raw_value = usd.get_attribute(prim, spec.name)
+                if raw_value is None:
+                    continue
+                R._collect_on_first_use(resolver, prim)
+                authored_value = (
+                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
+                )
+                if authored_value is not None:
+                    return authored_value, "mjc_authored"
+                mjc_default = _get_mjc_joint_limit_default(prim, key)
+                if mjc_default is not None:
+                    return mjc_default, "mjc_authored"
+                return builder_default, "mjc_authored"
+
+            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
+            if authored_value is not None:
+                R._collect_on_first_use(resolver, prim)
+                return authored_value, "force"
+
+        if mjc_resolver is not None:
+            mjc_default = _get_mjc_joint_limit_default(prim, key)
+            if mjc_default is not None:
+                return mjc_default, "mjc_default"
+        return builder_default, "force"
+
+    def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
+        """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
+        if ke_source == kd_source == "mjc_authored":
+            return SOLREF_MODE_RAW
+        if ke_source == kd_source == "mjc_default":
+            return SOLREF_MODE_MJCF_DEFAULT
+        return SOLREF_MODE_FORCE_SPACE
+
     def _get_rigid_body_ancestor_path(prim: Usd.Prim) -> str | None:
         current = prim
         while current and current.IsValid():
@@ -441,8 +521,22 @@ def parse_usd(
             current = current.GetParent()
         return None
 
-    def _get_target_body_and_local_pos(target_path: str) -> tuple[int, wp.vec3] | None:
+    def _is_world_target(target_path: str) -> bool:
+        """Return whether the target path represents the world body."""
         if target_path in ("", "/"):
+            return True
+
+        default_prim = stage.GetDefaultPrim()
+        return bool(
+            default_prim
+            and default_prim.IsValid()
+            and target_path == str(default_prim.GetPath())
+            and target_path not in path_body_map
+        )
+
+    def _get_target_body_and_local_pos(target_path: str) -> tuple[int, wp.vec3] | None:
+        """Resolve a target to its body index and body-local position."""
+        if _is_world_target(target_path):
             return (-1, wp.vec3())
 
         target_prim = stage.GetPrimAtPath(target_path)
@@ -759,7 +853,6 @@ def parse_usd(
         return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
     bodies_with_visual_shapes: set[int] = set()
-    warned_deprecated_body_armature_paths: set[str] = set()
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
         prim_world_mat = usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
@@ -845,7 +938,7 @@ def parse_usd(
                 side_lengths = scale * size
                 shape_id = builder.add_shape_box(
                     parent_body_id,
-                    xform,
+                    xform=xform,
                     hx=side_lengths[0] / 2,
                     hy=side_lengths[1] / 2,
                     hz=side_lengths[2] / 2,
@@ -860,8 +953,8 @@ def parse_usd(
                 radius = usd.get_float(prim, "radius", 1.0) * max(scale)
                 shape_id = builder.add_shape_sphere(
                     parent_body_id,
-                    xform,
-                    radius,
+                    xform=xform,
+                    radius=radius,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -891,9 +984,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_capsule(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -907,9 +1000,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cylinder(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -923,9 +1016,9 @@ def parse_usd(
                 xform = wp.transform(xform.p, xform.q * quat_between_axes(Axis.Z, axis))
                 shape_id = builder.add_shape_cone(
                     parent_body_id,
-                    xform,
-                    radius,
-                    half_height,
+                    xform=xform,
+                    radius=radius,
+                    half_height=half_height,
                     cfg=visual_shape_cfg_for_prim,
                     color=shape_color,
                     as_site=is_site,
@@ -937,7 +1030,7 @@ def parse_usd(
                     for subset_path, subset_mesh in subset_meshes:
                         subset_shape_id = builder.add_shape_mesh(
                             parent_body_id,
-                            xform,
+                            xform=xform,
                             scale=scale,
                             mesh=subset_mesh,
                             cfg=visual_shape_cfg_for_prim,
@@ -957,7 +1050,7 @@ def parse_usd(
                     mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
                     shape_id = builder.add_shape_mesh(
                         parent_body_id,
-                        xform,
+                        xform=xform,
                         scale=scale,
                         mesh=mesh,
                         cfg=visual_shape_cfg_for_prim,
@@ -997,7 +1090,6 @@ def parse_usd(
         prim: Usd.Prim,
         xform: wp.transform,
         label: str,
-        armature: float | None,
         articulation_root_xform: wp.transform | None = None,
         is_kinematic: bool = False,
     ) -> int:
@@ -1006,13 +1098,10 @@ def parse_usd(
         body_custom_attrs = usd.get_custom_attribute_values(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
-        body_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * armature if armature is not None else None
 
         b = builder.add_link(
             xform=xform,
             label=label,
-            inertia=body_inertia,
-            armature=0.0 if armature is not None else None,
             is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
@@ -1044,28 +1133,6 @@ def parse_usd(
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
 
-        body_armature_source_path: str | None = None
-        body_armature = usd.get_float(prim, "newton:armature", None)
-        if body_armature is not None:
-            body_armature_source_path = path
-        if body_armature is None and physics_scene_prim:
-            body_armature = usd.get_float(physics_scene_prim, "newton:armature", None)
-            if body_armature is not None:
-                body_armature_source_path = str(physics_scene_prim.GetPath())
-
-        if (
-            body_armature_source_path is not None
-            and body_armature_source_path not in warned_deprecated_body_armature_paths
-        ):
-            warnings.warn(
-                f"USD-authored 'newton:armature' on {body_armature_source_path} is deprecated and will be "
-                "removed in a future release. Add any isotropic artificial inertia directly to the body's "
-                "inertia instead.",
-                DeprecationWarning,
-                stacklevel=_external_stacklevel(),
-            )
-            warned_deprecated_body_armature_paths.add(body_armature_source_path)
-
         is_kinematic = rigid_body_desc.kinematicBody
 
         if add_body_to_builder:
@@ -1073,7 +1140,6 @@ def parse_usd(
                 prim,
                 origin,
                 path,
-                body_armature,
                 articulation_root_xform=articulation_root_xform,
                 is_kinematic=is_kinematic,
             )
@@ -1082,7 +1148,6 @@ def parse_usd(
                 "prim": prim,
                 "xform": origin,
                 "label": path,
-                "armature": body_armature,
                 "is_kinematic": is_kinematic,
             }
             if articulation_root_xform is not None:
@@ -1164,6 +1229,7 @@ def parse_usd(
             "parent_xform": parent_tf,
             "child_xform": child_tf,
             "label": joint_path,
+            "collision_filter_parent": parent_id != -1 and not joint_desc.collisionEnabled,
             "enabled": joint_desc.jointEnabled,
             "custom_attributes": joint_custom_attrs,
         }
@@ -1178,21 +1244,19 @@ def parse_usd(
             else:
                 limit_gains_scaling = 1.0
 
-            # Resolve limit gains with precedence, fallback to builder defaults when missing
-            current_joint_limit_ke = R.get_value(
+            limit_key = "limit_angular" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear"
+            current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 joint_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_ke" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_ke",
-                default=default_joint_limit_ke * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_ke",
+                default_joint_limit_ke * limit_gains_scaling,
             )
-            current_joint_limit_kd = R.get_value(
+            current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 joint_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_kd" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear_kd",
-                default=default_joint_limit_kd * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_kd",
+                default_joint_limit_kd * limit_gains_scaling,
             )
+            if _should_write_solreflimit_mode():
+                joint_custom_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
             joint_params["axis"] = usd_axis_to_axis[joint_desc.axis]
             joint_params["limit_lower"] = joint_desc.limit.lower
             joint_params["limit_upper"] = joint_desc.limit.upper
@@ -1268,6 +1332,8 @@ def parse_usd(
             d6_initial_velocities = {}
             # Track which axes were added as DOFs (in order)
             d6_dof_axes = []
+            linear_solref_modes: list[int] = []
+            angular_solref_modes: list[int] = []
             # print(joint_desc.jointLimits, joint_desc.jointDrives)
             # print(joint_desc.body0)
             # print(joint_desc.body1)
@@ -1353,19 +1419,15 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke = R.get_value(
+                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{trans_name}_ke",
-                        default=default_joint_limit_ke,
-                        verbose=verbose,
+                        f"limit_{trans_name}_ke",
+                        default_joint_limit_ke,
                     )
-                    current_joint_limit_kd = R.get_value(
+                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{trans_name}_kd",
-                        default=default_joint_limit_kd,
-                        verbose=verbose,
+                        f"limit_{trans_name}_kd",
+                        default_joint_limit_kd,
                     )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -1387,6 +1449,7 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
+                    linear_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(trans_name)
                 elif free_axis and dof in _rot_axes:
@@ -1407,19 +1470,15 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke = R.get_value(
+                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{rot_name}_ke",
-                        default=default_joint_limit_ke * DegreesToRadian,
-                        verbose=verbose,
+                        f"limit_{rot_name}_ke",
+                        default_joint_limit_ke * DegreesToRadian,
                     )
-                    current_joint_limit_kd = R.get_value(
+                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
-                        prim_type=PrimType.JOINT,
-                        key=f"limit_{rot_name}_kd",
-                        default=default_joint_limit_kd * DegreesToRadian,
-                        verbose=verbose,
+                        f"limit_{rot_name}_kd",
+                        default_joint_limit_kd * DegreesToRadian,
                     )
 
                     angular_axes.append(
@@ -1442,9 +1501,13 @@ def parse_usd(
                             actuator_mode=actuator_mode,
                         )
                     )
+                    angular_solref_modes.append(_joint_limit_solref_mode(limit_ke_source, limit_kd_source))
                     # Track that this axis was added as a DOF
                     d6_dof_axes.append(rot_name)
                     num_dofs += 1
+
+            if _should_write_solreflimit_mode():
+                joint_custom_attrs[solreflimit_mode_key] = linear_solref_modes + angular_solref_modes
 
             joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
         elif key == UsdPhysics.ObjectType.DistanceJoint:
@@ -1557,6 +1620,7 @@ def parse_usd(
         angular_initial_pos: list[float | None] = []
         angular_initial_vel: list[float | None] = []
         enabled_count = 0
+        collision_filter_parent = False
 
         # Find the first enabled joint to use as representative for transforms and metadata
         first_desc = None
@@ -1619,6 +1683,7 @@ def parse_usd(
             jd = joint_descriptions[jp]
             if not jd.jointEnabled and only_load_enabled_joints:
                 continue
+            collision_filter_parent = collision_filter_parent or not jd.collisionEnabled
             jp_prim = stage.GetPrimAtPath(jd.primPath)
             if collect_schema_attrs:
                 R.collect_prim_attrs(jp_prim)
@@ -1646,19 +1711,16 @@ def parse_usd(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
 
-            limit_ke = R.get_value(
+            limit_key = "limit_angular" if is_revolute else "limit_linear"
+            limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 jp_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_ke" if is_revolute else "limit_linear_ke",
-                default=default_joint_limit_ke * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_ke",
+                default_joint_limit_ke * limit_gains_scaling,
             )
-            limit_kd = R.get_value(
+            limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 jp_prim,
-                prim_type=PrimType.JOINT,
-                key="limit_angular_kd" if is_revolute else "limit_linear_kd",
-                default=default_joint_limit_kd * limit_gains_scaling,
-                verbose=verbose,
+                f"{limit_key}_kd",
+                default_joint_limit_kd * limit_gains_scaling,
             )
 
             limit_lower = jd.limit.lower
@@ -1757,6 +1819,8 @@ def parse_usd(
 
             # Collect per-DOF custom attributes from this sibling prim
             sibling_dof_attrs = usd.get_custom_attribute_values(jp_prim, dof_freq_attrs, context={"builder": builder})
+            if _should_write_solreflimit_mode():
+                sibling_dof_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
 
             if is_revolute:
                 angular_axes.append(ax)
@@ -1813,6 +1877,7 @@ def parse_usd(
             parent_xform=parent_tf,
             child_xform=child_tf,
             label=label,
+            collision_filter_parent=parent_id != -1 and collision_filter_parent,
             enabled=first_desc.jointEnabled,
             custom_attributes=joint_custom_attrs,
         )
@@ -1852,7 +1917,7 @@ def parse_usd(
             print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
-        builder.gravity = -scene_desc.gravityMagnitude * linear_unit
+        builder.gravity = -scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
@@ -2087,6 +2152,12 @@ def parse_usd(
     # This allows us to parse orphan joints (joints not included in any articulation)
     # even when articulations are present in the USD.
     processed_joints: set[str] = set()
+    authored_articulation_root_paths = [
+        str(prim.GetPath())
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies())
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
+    authored_articulation_root_paths.sort(key=len, reverse=True)
 
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
@@ -2548,7 +2619,7 @@ def parse_usd(
     )
 
     # insert remaining bodies that were not part of any articulation so far
-    # (joints for these bodies will be added later by _add_base_joints_to_floating_bodies)
+    # (root joints for these bodies will be added after mass properties are resolved)
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
@@ -2562,33 +2633,48 @@ def parse_usd(
     # This can happen when:
     # 1. No articulations are defined in the USD (no_articulations == True)
     # 2. A joint connects bodies that are not under any PhysicsArticulationRootAPI
-    orphan_joints = []
+    orphan_joints_by_body_pair: dict[tuple[str, str], list[str]] = {}
     for joint_path, joint_desc in joint_descriptions.items():
-        # Skip joints that were already processed as part of an articulation
+        # Earlier passes already own articulation and equality joints.
         if joint_path in processed_joints:
             continue
         if joint_path in mjc_equality_connect_or_weld_paths:
             if verbose:
                 print(f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
             continue
-        # Skip disabled joints if only_load_enabled_joints is True
+
+        # Apply the importer filters before grouping the remaining candidates.
         if only_load_enabled_joints and not joint_desc.jointEnabled:
             continue
         if any(re.match(p, joint_path) for p in ignore_paths):
             continue
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
             continue
-        # Skip body-to-world joints (where one body is empty/world) only when
-        # FREE joints will be auto-inserted for remaining bodies — but always
-        # keep body-to-world FIXED joints so the body is properly welded to
-        # world instead of receiving an incorrect FREE base joint.
+
+        # Shared endpoints identify joints that may form one compound joint.
+        body_pair = (str(joint_desc.body0), str(joint_desc.body1))
+        orphan_joints_by_body_pair.setdefault(body_pair, []).append(joint_path)
+
+    # A multi-axis D6 joint may be authored as stacked 1-DOF joints between the same bodies.
+    mergeable_joint_types = {UsdPhysics.ObjectType.RevoluteJoint, UsdPhysics.ObjectType.PrismaticJoint}
+    orphan_joint_groups: list[list[str]] = []
+    for joint_group in orphan_joints_by_body_pair.values():
+        if len(joint_group) > 1 and all(
+            joint_descriptions[joint_path].type in mergeable_joint_types for joint_path in joint_group
+        ):
+            orphan_joint_groups.append(joint_group)
+        else:
+            # Normalize non-mergeable joints to singleton groups for the parsing pass below.
+            orphan_joint_groups.extend([[joint_path] for joint_path in joint_group])
+
+    for joint_group in orphan_joint_groups:
+        # All members of a merged group share these endpoints, so the first is representative.
+        joint_path = joint_group[0]
+        joint_desc = joint_descriptions[joint_path]
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
+        # World-connected joints need a reconstructed parent frame before they can be parsed.
         is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
-        is_fixed_joint = joint_desc.type == UsdPhysics.ObjectType.FixedJoint
-        free_joints_auto_inserted = not (no_articulations and has_joints)
-        if is_body_to_world and free_joints_auto_inserted and not is_fixed_joint:
-            continue
         try:
             # Body-to-world joints (the world side may be body0 or body1) have no
             # world-side prim to inherit a frame from, and authoring tools often
@@ -2615,37 +2701,13 @@ def parse_usd(
                     child_world_xform_o = usd.get_transform(child_prim_o, local=False, xform_cache=xform_cache)
                     world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
                     orphan_incoming_xform = incoming_world_xform * world_body_xform_o
-            joint_index = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
-            # Handle body-to-world FIXED joints separately to ensure proper welding.
-            # Creates an articulation for the body-to-world FIXED joint (consistent with MuJoCo approach)
-            if joint_index is not None and is_body_to_world and is_fixed_joint:
-                child_body = builder.joint_child[joint_index]
-                builder.add_articulation([joint_index], label=builder.body_label[child_body])
+            if len(joint_group) > 1:
+                parse_merged_joints(joint_group, incoming_xform=orphan_incoming_xform)
             else:
-                orphan_joints.append(joint_path)
+                parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
         except ValueError as exc:
             if verbose:
-                print(f"Skipping joint {joint_path}: {exc}")
-
-    if len(orphan_joints) > 0:
-        if no_articulations:
-            warn_str = (
-                f"No articulation was found but {len(orphan_joints)} joints were parsed: [{', '.join(orphan_joints)}]. "
-            )
-            warn_str += (
-                "Make sure your USD asset includes an articulation root prim with the PhysicsArticulationRootAPI.\n"
-            )
-        else:
-            warn_str = (
-                f"{len(orphan_joints)} joints were not included in any articulation and were parsed as orphan joints: "
-                f"[{', '.join(orphan_joints)}]. "
-            )
-            warn_str += (
-                "This can happen when a joint connects bodies that are not under any PhysicsArticulationRootAPI.\n"
-            )
-        warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=True) "
-        warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
-        warnings.warn(warn_str, stacklevel=2)
+                print(f"Skipping joint group {joint_group}: {exc}")
 
     def _build_mass_info_from_authored_properties(
         prim: Usd.Prim,
@@ -2858,7 +2920,7 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
-                margin_val = R.get_value(
+                margin_val, margin_resolver = R.get_value_with_resolver(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="margin",
@@ -2873,6 +2935,18 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
+                if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
+                    # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
+                    mjc_gap = usd.get_attribute(prim, "mjc:gap")
+                    mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
+                    newton_margin = float(margin_val) - mjc_gap
+                    if newton_margin < 0.0:
+                        warnings.warn(
+                            f"Prim '{prim.GetPath()}': legacy translation yields "
+                            f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
+                            stacklevel=2,
+                        )
+                    margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
@@ -3482,7 +3556,7 @@ def parse_usd(
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for path, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
+        for path, rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
@@ -3543,7 +3617,8 @@ def parse_usd(
                     # created by schema resolvers are not real USD prims). Fall back to
                     # builder-accumulated mass properties from add_shape_*() calls.
                     cmp_mass = builder.body_mass[body_id]
-                    cmp_com = builder.body_com[body_id]
+                    if not has_authored_com:
+                        cmp_com = builder.body_com[body_id]
                     # When the body has an authored density, rescale accumulated mass
                     # and inertia from the builder's default shape density to the
                     # body-level density (USD body density overrides per-shape density).
@@ -3560,6 +3635,10 @@ def parse_usd(
                         )
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+
+            if has_authored_com:
+                # Match the scale/frame convention used by OpenUSD's collider and joint descriptors.
+                cmp_com = Gf.CompMult(mass_api.GetCenterOfMassAttr().Get(), rigid_body_desc.scale)
 
             # Inertia: newton:inertia > physics:diagonalInertia + physics:principalAxes > mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia
@@ -3627,11 +3706,7 @@ def parse_usd(
             builder.body_mass[body_id] = mass
             builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0
 
-            # Center of mass: authored value takes precedence over mass computer.
-            if has_authored_com:
-                builder.body_com[body_id] = wp.vec3(*mass_api.GetCenterOfMassAttr().Get())
-            else:
-                builder.body_com[body_id] = wp.vec3(*cmp_com)
+            builder.body_com[body_id] = wp.vec3(*cmp_com)
 
             # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated.
             I_m = np.array(builder.body_inertia[body_id])
@@ -3668,12 +3743,19 @@ def parse_usd(
                     )
 
     # add joints to floating bodies (bodies not connected as children to any joint)
-    if not (no_articulations and has_joints):
-        new_bodies = list(path_body_map.values())
+    new_bodies = list(path_body_map.values())
+    if no_articulations and has_joints:
+        # Preserve authored orphan-joint graphs while still articulating unrelated bodies (#3002).
+        connected_bodies = set(builder.joint_parent) | set(builder.joint_child)
+        bodies_to_articulate = [body_id for body_id in new_bodies if body_id not in connected_bodies]
+    else:
+        bodies_to_articulate = new_bodies
+
+    if bodies_to_articulate:
         if parent_body != -1:
             # When parent_body is specified, manually add joints to floating bodies with correct parent
             joint_children = set(builder.joint_child)
-            for body_id in new_bodies:
+            for body_id in bodies_to_articulate:
                 if body_id in joint_children:
                     continue  # Already has a joint
                 if builder.body_mass[body_id] <= 0:
@@ -3695,7 +3777,31 @@ def parse_usd(
                     articulation_label=None,
                 )
         else:
-            builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
+            joint_children = set(builder.joint_child)
+            for body_id in bodies_to_articulate:
+                if body_id in joint_children:
+                    continue
+                if builder.body_mass[body_id] <= 0:
+                    continue
+
+                joint_id = builder._add_base_joint(body_id, floating=floating, base_joint=base_joint)
+                body_path = builder.body_label[body_id]
+                articulation_root_path = next(
+                    (
+                        root
+                        for root in authored_articulation_root_paths
+                        if body_path == root or body_path.startswith("/" if root == "/" else f"{root}/")
+                    ),
+                    None,
+                )
+                if articulation_root_path is not None:
+                    builder._finalize_imported_articulation(
+                        joint_indices=[joint_id],
+                        parent_body=parent_body,
+                        articulation_label=articulation_root_path,
+                    )
+                else:
+                    builder.add_articulation([joint_id], label=body_path)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
@@ -3785,7 +3891,7 @@ def parse_usd(
                     # only when target0 is a site prim that is not itself a body.
                     anchor = (
                         wp.vec3(*joint_desc.localPose0Position)
-                        if (target0 in ("", "/") or target0 in path_body_map)
+                        if (_is_world_target(target0) or target0 in path_body_map)
                         else site0_local_pos
                     )
                     if convert_mjc_equality_constraints:
@@ -3820,7 +3926,7 @@ def parse_usd(
                     # body/world targets use localPose1; site targets use the site position.
                     anchor = (
                         wp.vec3(*joint_desc.localPose1Position)
-                        if (target1 in ("", "/") or target1 in path_body_map)
+                        if (_is_world_target(target1) or target1 in path_body_map)
                         else site1_local_pos
                     )
                     relpose_rot = local_rot0 * wp.quat_inverse(local_rot1)
@@ -4282,7 +4388,6 @@ def parse_usd(
             value = attr.values[row] if row < len(attr.values) else None
             return attr.default if value is None else value
 
-        autolimits = bool(_row("mujoco:autolimits", 0))
         converted = 0
 
         for row in range(mjc_actuator_count):
@@ -4296,9 +4401,9 @@ def parse_usd(
             # actuators with default dyntype/gaintype/biastype/gear, so non-default
             # values for those force the actuator to stay CTRL_DIRECT.
             #
-            # Authored ctrlrange/forcerange are not gating: ctrlrange has no
-            # equivalent under Control.joint_target_q/qd (matching MJCF's
-            # behavior), and forcerange is propagated below into joint_effort_limit.
+            # ctrlrange/forcerange don't gate: the rebuild re-attaches them
+            # (see joint_target_ranges in _init_actuators). Effort limit
+            # (jnt_actfrcrange) comes from the joint, not the actuator.
             if (
                 int(_row("mujoco:actuator_biastype", row)) != biastype_affine
                 or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
@@ -4343,21 +4448,10 @@ def parse_usd(
             # so _init_actuators routes through MuJoCo's joint_target_mode actuators.
             builder.custom_attributes["mujoco:ctrl_source"].values[row] = ctrl_source_joint_target
             builder.custom_attributes["mujoco:actuator_trnid"].values[row] = wp.vec2i(dof, 0)
-
-            # Tighten the joint effort limit when the actuator authored a forceRange.
-            if bool(_row("mujoco:actuator_has_forcerange", row)):
-                limited = int(_row("mujoco:actuator_forcelimited", row))
-                if limited == 1 or (limited == 2 and autolimits):
-                    force_range = list(_row("mujoco:actuator_forcerange", row))
-                    limit = max(abs(force_range[0]), abs(force_range[1]))
-                    current = builder.joint_effort_limit[dof]
-                    if not np.isfinite(current) or limit < current:
-                        if np.isfinite(current) and verbose:
-                            print(
-                                f"MuJoCo USD actuator {row} narrows joint DOF {dof} "
-                                f"effort limit from {current} to {limit}"
-                            )
-                        builder.joint_effort_limit[dof] = limit
+            # Record the kind classified above so the solver doesn't re-derive it.
+            builder.custom_attributes["mujoco:ctrl_type"].values[row] = int(
+                SolverMuJoCo.CtrlType.POSITION if is_position else SolverMuJoCo.CtrlType.VELOCITY
+            )
 
             converted += 1
 

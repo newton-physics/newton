@@ -500,8 +500,8 @@ class TestSDFUSDParsing(unittest.TestCase):
         self.assertGreaterEqual(idx1, 0)
         self.assertNotEqual(idx0, idx1)
 
-    def test_add_shape_convex_hull_rejects_hydroelastic(self):
-        """add_shape_convex_hull must raise when cfg.is_hydroelastic is set, regardless of mesh.sdf."""
+    def test_add_shape_convex_hull_rejects_hydroelastic_without_sdf(self):
+        """add_shape_convex_hull must raise for hydroelastic convex meshes without mesh.sdf."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         # 4-vertex tetrahedron — minimum valid input for a convex hull
@@ -510,7 +510,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             indices=[0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3],
         )
         cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True)
-        with self.assertRaisesRegex(ValueError, "Hydroelastic is not supported on GeoType.CONVEX_MESH"):
+        with self.assertRaisesRegex(ValueError, "Hydroelastic mesh-backed shapes require mesh.sdf"):
             builder.add_shape_convex_hull(body, mesh=mesh, cfg=cfg)
 
     def test_approximate_meshes_rejects_sdf_state(self):

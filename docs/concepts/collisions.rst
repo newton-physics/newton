@@ -503,7 +503,10 @@ UsdPhysics ``physics:filteredPairs`` relationships).
 
 Filter pairs are automatically populated in several cases:
 
-- **Adjacent bodies**: Parent-child body pairs connected by joints (when ``collision_filter_parent=True``). Also applies to max-coordinate jointed bodies.
+- **Adjacent bodies**: Parent-child body pairs connected by joints (when
+  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
+  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
+  create a body-pair filter. Also applies to max-coordinate jointed bodies.
 - **Same-body shapes**: Shapes attached to the same rigid body
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
@@ -1059,7 +1062,9 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``is_hydroelastic``
      - Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See :ref:`Hydroelastic Contacts`. Default: False.
    * - ``kh``
-     - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
+     - Hydroelastic contact stiffness coefficient. Under the default linear
+       pressure law, pressure scales with ``kh`` and penetration depth; contact
+       force also scales with contact area. Default: 1.0e10.
 
 .. _margin-gap-semantics:
 
@@ -1638,74 +1643,68 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 
 .. list-table::
    :header-rows: 1
-   :widths: 10 25 18 9 19 19
+   :widths: 12 34 10 22 22
 
    * - Property
      - Description
-     - Solvers
      - Default
      - ShapeConfig
      - Model Array
    * - ``mu``
-     - Dynamic friction coefficient
-     - All
+     - Coefficient of friction
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
    * - ``ke``
-     - Contact elastic stiffness
-     - SemiImplicit, Featherstone, MuJoCo
+     - Normal contact stiffness
      - 2.5e3
      - :attr:`~ModelBuilder.ShapeConfig.ke`
      - :attr:`~Model.shape_material_ke`
    * - ``kd``
-     - Contact damping
-     - SemiImplicit, Featherstone, MuJoCo
+     - Normal contact damping
      - 100.0
      - :attr:`~ModelBuilder.ShapeConfig.kd`
      - :attr:`~Model.shape_material_kd`
    * - ``kf``
-     - Friction damping coefficient
-     - SemiImplicit, Featherstone
+     - Tangential friction response gain
      - 1000.0
      - :attr:`~ModelBuilder.ShapeConfig.kf`
      - :attr:`~Model.shape_material_kf`
    * - ``ka``
      - Adhesion distance
-     - SemiImplicit, Featherstone
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.ka`
      - :attr:`~Model.shape_material_ka`
    * - ``restitution``
-     - Bounciness (requires ``enable_restitution=True`` in solver)
-     - XPBD
+     - Bounciness
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.restitution`
      - :attr:`~Model.shape_material_restitution`
    * - ``mu_torsional``
      - Resistance to spinning at contact
-     - XPBD, MuJoCo
      - 0.005
      - :attr:`~ModelBuilder.ShapeConfig.mu_torsional`
      - :attr:`~Model.shape_material_mu_torsional`
    * - ``mu_rolling``
      - Resistance to rolling motion
-     - XPBD, MuJoCo
      - 0.0001
      - :attr:`~ModelBuilder.ShapeConfig.mu_rolling`
      - :attr:`~Model.shape_material_mu_rolling`
    * - ``kh``
-     - Hydroelastic stiffness
-     - SemiImplicit, Featherstone, MuJoCo
+     - Hydroelastic stiffness coefficient
      - 1.0e10
      - :attr:`~ModelBuilder.ShapeConfig.kh`
      - :attr:`~Model.shape_material_kh`
 
 .. note::
-   Material properties interact differently with each solver. ``ke``, ``kd``, ``kf``, and ``ka``
-   are used by force-based solvers (SemiImplicit, Featherstone, MuJoCo), while ``restitution``
-   only applies to XPBD. See the :doc:`../api/newton_solvers` API reference for solver-specific
-   behavior.
+   Material properties are generic model data. Solvers and contact backends may
+   use, combine, or ignore fields according to their formulation. See the
+   :ref:`Contact material support` reference for built-in solver behavior, and
+   external solver documentation for third-party solvers.
+
+.. note::
+   :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
+   the solver constructor before ``restitution`` takes effect.
 
 Example:
 
@@ -1716,7 +1715,7 @@ Example:
         mu=0.8,           # High friction
         ke=1.0e6,         # Stiff contact
         kd=1000.0,        # Damping
-        restitution=0.5,  # Bouncy (XPBD only)
+        restitution=0.5,  # Bouncy where supported
     )
 
 .. _USD Collision:
@@ -2226,7 +2225,7 @@ See Also
 
 **Related documentation:**
 
-- :doc:`../api/newton_solvers` - Solver API reference (material property behavior per solver)
+- :ref:`Contact material support` - Material property behavior by solver
 - :doc:`custom_attributes` - USD custom attributes for collision properties
 - :doc:`usd_parsing` - USD import options including collision settings
 - :doc:`sites` - Non-colliding reference points

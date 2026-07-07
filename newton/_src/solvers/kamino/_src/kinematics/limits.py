@@ -3,6 +3,8 @@
 
 """Provides data types, operations & interfaces for joint-limit detection."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 import warp as wp
@@ -15,16 +17,8 @@ from ..core.math import (
 )
 from ..core.model import ModelKamino
 from ..core.types import (
-    float32,
-    int32,
     to_warp_int32_array,
-    uint32,
-    uint64,
     vec1f,
-    vec2f,
-    vec2i,
-    vec3f,
-    vec4f,
     vec6f,
     vec7f,
 )
@@ -60,118 +54,118 @@ class LimitsKaminoData:
 
     model_max_limits_host: int = 0
     """
-    Host-side cache of the maximum number of limits allocated across all worlds.\n
+    Host-side cache of the maximum number of limits allocated across all worlds.
     The number of allocated limits in the model is determined by the ModelBuilder when finalizing
-    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.\n
-    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.\n
+    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.
+    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.
     This is cached on the host-side for managing data allocations and setting thread sizes in kernels.
     """
 
     world_max_limits_host: list[int] = field(default_factory=list)
     """
-    Host-side cache of the maximum number of limits allocated per world.\n
+    Host-side cache of the maximum number of limits allocated per world.
     The number of allocated limits per world is determined by the ModelBuilder when finalizing a
-    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.\n
-    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.\n
+    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.
+    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.
     This is cached on the host-side for managing data allocations and setting thread sizes in kernels.
     """
 
-    model_max_limits: wp.array | None = None
+    model_max_limits: wp.array[wp.int32] | None = None
     """
-    The maximum number of limits allocated for the model across all worlds.\n
+    The maximum number of limits allocated for the model across all worlds.
     The number of allocated limits in the model is determined by the ModelBuilder when finalizing
-    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.\n
-    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.\n
-    Shape of ``(1,)`` and type :class:`int32`.
+    a ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint.
+    The single entry is then less than or equal to the total ``num_joint_dofs`` of the entire model.
+    Shape of ``(1,)``.
     """
 
-    model_active_limits: wp.array | None = None
+    model_active_limits: wp.array[wp.int32] | None = None
     """
-    The total number of active limits currently active in the model across all worlds.\n
-    Shape of ``(1,)`` and type :class:`int32`.
+    The total number of active limits currently active in the model across all worlds.
+    Shape of ``(1,)``.
     """
 
-    world_max_limits: wp.array | None = None
+    world_max_limits: wp.array[wp.int32] | None = None
     """
-    The maximum number of limits allocated per world.\n
+    The maximum number of limits allocated per world.
     The number of allocated limits per world is determined by the ModelBuilder when finalizing a
-    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.\n
-    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    ``ModelKamino``, and is equal to the sum over all finite-valued limits defined by each joint of each world.
+    Each entry is then less than or equal to the total ``num_joint_dofs`` of the corresponding world.
+    Shape of ``(num_worlds,)``.
     """
 
-    world_active_limits: wp.array | None = None
+    world_active_limits: wp.array[wp.int32] | None = None
     """
-    The total number of active limits currently active per world.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
-    """
-
-    wid: wp.array | None = None
-    """
-    The world index of each limit.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
+    The total number of active limits currently active per world.
+    Shape of ``(num_worlds,)``.
     """
 
-    lid: wp.array | None = None
+    wid: wp.array[wp.int32] | None = None
     """
-    The element index of each limit w.r.t its world.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
-    """
-
-    jid: wp.array | None = None
-    """
-    The element index of the corresponding joint w.r.t the model.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
+    The world index of each limit.
+    Shape of ``(model_max_limits_host,)``.
     """
 
-    bids: wp.array | None = None
+    lid: wp.array[wp.int32] | None = None
     """
-    The element indices of the interacting bodies w.r.t the model.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`vec2i`.
-    """
-
-    dof: wp.array | None = None
-    """
-    The DoF indices along which limits are active w.r.t the model.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
+    The element index of each limit w.r.t its world.
+    Shape of ``(model_max_limits_host,)``.
     """
 
-    side: wp.array | None = None
+    jid: wp.array[wp.int32] | None = None
     """
-    The direction (i.e. side) of the active limit.\n
-    `1.0` for active min limits, `-1.0` for active max limits.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
-    """
-
-    r_q: wp.array | None = None
-    """
-    The amount of generalized coordinate violation per joint-limit.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
+    The element index of the corresponding joint w.r.t the model.
+    Shape of ``(model_max_limits_host,)``.
     """
 
-    key: wp.array | None = None
+    bids: wp.array[wp.vec2i] | None = None
     """
-    Integer key uniquely identifying each limit.\n
+    The element indices of the interacting bodies w.r.t the model.
+    Shape of ``(model_max_limits_host,)``.
+    """
+
+    dof: wp.array[wp.int32] | None = None
+    """
+    The DoF indices along which limits are active w.r.t the model.
+    Shape of ``(model_max_limits_host,)``.
+    """
+
+    side: wp.array[wp.float32] | None = None
+    """
+    The direction (i.e. side) of the active limit.
+    `1.0` for active min limits, `-1.0` for active max limits.
+    Shape of ``(model_max_limits_host,)``.
+    """
+
+    r_q: wp.array[wp.float32] | None = None
+    """
+    The amount of generalized coordinate violation per joint-limit.
+    Shape of ``(model_max_limits_host,)``.
+    """
+
+    key: wp.array[wp.uint64] | None = None
+    """
+    Integer key uniquely identifying each limit.
     The per-limit key assignment is implementation-dependent, but is typically
     computed from the associated joint index as well as additional information such as:
-    - limit index w.r.t the associated B/F body-pair\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`uint64`.
+    - limit index w.r.t the associated B/F body-pair
+    Shape of ``(model_max_limits_host,)``.
     """
 
-    reaction: wp.array | None = None
+    reaction: wp.array[wp.float32] | None = None
     """
-    The constraint reaction per joint-limit.\n
+    The constraint reaction per joint-limit.
     This is to be set by solvers at each step, and also
-    facilitates limit visualization and warm-starting.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
+    facilitates limit visualization and warm-starting.
+    Shape of ``(model_max_limits_host,)``.
     """
 
-    velocity: wp.array | None = None
+    velocity: wp.array[wp.float32] | None = None
     """
-    The constraint velocity per joint-limit.\n
+    The constraint velocity per joint-limit.
     This is to be set by solvers at each step, and also
-    facilitates limit visualization and warm-starting.\n
-    Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
+    facilitates limit visualization and warm-starting.
+    Shape of ``(model_max_limits_host,)``.
     """
 
     def clear(self):
@@ -189,7 +183,7 @@ class LimitsKaminoData:
         self.clear()
         self.wid.fill_(-1)
         self.jid.fill_(-1)
-        self.bids.fill_(vec2i(-1, -1))
+        self.bids.fill_(wp.vec2i(-1, -1))
         self.dof.fill_(-1)
         self.key.fill_(make_bitmask(63))
         self.reaction.zero_()
@@ -202,7 +196,7 @@ class LimitsKaminoData:
 
 
 @wp.func
-def map_joint_coords_to_dofs_free(q_j: vec7f) -> vec6f:
+def map_joint_coords_to_dofs_free(q_j: vec7f) -> wp.spatial_vectorf:
     """Maps free joint quaternion to a local axes-aligned rotation vector."""
     v_j = quat_log(quat_from_vec4(q_j[3:7]))
     return screw(q_j[0:3], v_j)
@@ -221,32 +215,26 @@ def map_joint_coords_to_dofs_prismatic(q_j: vec1f) -> vec1f:
 
 
 @wp.func
-def map_joint_coords_to_dofs_cylindrical(q_j: vec2f) -> vec2f:
+def map_joint_coords_to_dofs_cylindrical(q_j: wp.vec2f) -> wp.vec2f:
     """No mapping needed for cylindrical joints."""
     return q_j
 
 
 @wp.func
-def map_joint_coords_to_dofs_universal(q_j: vec2f) -> vec2f:
+def map_joint_coords_to_dofs_universal(q_j: wp.vec2f) -> wp.vec2f:
     """No mapping needed for universal joints."""
     return q_j
 
 
 @wp.func
-def map_joint_coords_to_dofs_spherical(q_j: vec4f) -> vec3f:
+def map_joint_coords_to_dofs_spherical(q_j: wp.vec4f) -> wp.vec3f:
     """Maps quaternion coordinates of a spherical
     joint to a local axes-aligned rotation vector."""
     return quat_log(quat_from_vec4(q_j))
 
 
 @wp.func
-def map_joint_coords_to_dofs_gimbal(q_j: vec3f) -> vec3f:
-    """No mapping needed for gimbal joints."""
-    return q_j
-
-
-@wp.func
-def map_joint_coords_to_dofs_cartesian(q_j: vec3f) -> vec3f:
+def map_joint_coords_to_dofs_cartesian(q_j: wp.vec3f) -> wp.vec3f:
     """No mapping needed for cartesian joints."""
     return q_j
 
@@ -268,8 +256,6 @@ def get_joint_coords_to_dofs_mapping_function(dof_type: JointDoFType):
         return map_joint_coords_to_dofs_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return map_joint_coords_to_dofs_spherical
-    elif dof_type == JointDoFType.GIMBAL:
-        return map_joint_coords_to_dofs_gimbal
     elif dof_type == JointDoFType.CARTESIAN:
         return map_joint_coords_to_dofs_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -295,12 +281,12 @@ def make_read_joint_coords_map_and_limits(dof_type: JointDoFType):
     @wp.func
     def _read_joint_coords_map_and_limits(
         # Inputs:
-        dofs_offset: int32,  # Index offset of the joint DoFs
-        coords_offset: int32,  # Index offset of the joint coordinates
-        model_joint_q_j_min: wp.array[float32],
-        model_joint_q_j_max: wp.array[float32],
-        state_joints_q_j: wp.array[float32],
-    ) -> tuple[int32, vec6f, vec6f, vec6f]:
+        dofs_offset: wp.int32,  # Index offset of the joint DoFs
+        coords_offset: wp.int32,  # Index offset of the joint coordinates
+        model_joint_q_j_min: wp.array[wp.float32],
+        model_joint_q_j_max: wp.array[wp.float32],
+        state_joints_q_j: wp.array[wp.float32],
+    ) -> tuple[wp.int32, vec6f, vec6f, vec6f]:
         # Statically define the joint DoF counts
         d_j = wp.static(num_dofs)
 
@@ -334,13 +320,13 @@ def make_read_joint_coords_map_and_limits(dof_type: JointDoFType):
 
 @wp.func
 def read_joint_coords_map_and_limits(
-    dof_type: int32,
-    dofs_offset: int32,
-    coords_offset: int32,
-    model_joint_q_j_min: wp.array[float32],
-    model_joint_q_j_max: wp.array[float32],
-    state_joints_q_j: wp.array[float32],
-) -> tuple[int32, vec6f, vec6f, vec6f]:
+    dof_type: wp.int32,
+    dofs_offset: wp.int32,
+    coords_offset: wp.int32,
+    model_joint_q_j_min: wp.array[wp.float32],
+    model_joint_q_j_max: wp.array[wp.float32],
+    state_joints_q_j: wp.array[wp.float32],
+) -> tuple[wp.int32, vec6f, vec6f, vec6f]:
     if dof_type == JointDoFType.REVOLUTE:
         d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.REVOLUTE))(
             dofs_offset,
@@ -386,15 +372,6 @@ def read_joint_coords_map_and_limits(
             state_joints_q_j,
         )
 
-    elif dof_type == JointDoFType.GIMBAL:
-        d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.GIMBAL))(
-            dofs_offset,
-            coords_offset,
-            model_joint_q_j_min,
-            model_joint_q_j_max,
-            state_joints_q_j,
-        )
-
     elif dof_type == JointDoFType.CARTESIAN:
         d_j, q_j_min, q_j_max, q_j_map = wp.static(make_read_joint_coords_map_and_limits(JointDoFType.CARTESIAN))(
             dofs_offset,
@@ -413,7 +390,7 @@ def read_joint_coords_map_and_limits(
             state_joints_q_j,
         )
     else:
-        d_j = int32(0)
+        d_j = wp.int32(0)
         q_j_min = vec6f(0.0)
         q_j_max = vec6f(0.0)
         q_j_map = vec6f(0.0)
@@ -425,28 +402,28 @@ def read_joint_coords_map_and_limits(
 @wp.func
 def detect_active_dof_limit(
     # Inputs:
-    model_max_limits: int32,
-    world_max_limits: int32,
-    wid: int32,
-    jid: int32,
-    dof: int32,
-    dofid: int32,
-    bid_B: int32,
-    bid_F: int32,
-    q: float32,
-    qmin: float32,
-    qmax: float32,
+    model_max_limits: wp.int32,
+    world_max_limits: wp.int32,
+    wid: wp.int32,
+    jid: wp.int32,
+    dof: wp.int32,
+    dofid: wp.int32,
+    bid_B: wp.int32,
+    bid_F: wp.int32,
+    q: wp.float32,
+    qmin: wp.float32,
+    qmax: wp.float32,
     # Outputs:
-    limits_model_num: wp.array[int32],
-    limits_world_num: wp.array[int32],
-    limits_wid: wp.array[int32],
-    limits_lid: wp.array[int32],
-    limits_jid: wp.array[int32],
-    limits_bids: wp.array[vec2i],
-    limits_dof: wp.array[int32],
-    limits_side: wp.array[float32],
-    limits_r_q: wp.array[float32],
-    limits_key: wp.array[uint64],
+    limits_model_num: wp.array[wp.int32],
+    limits_world_num: wp.array[wp.int32],
+    limits_wid: wp.array[wp.int32],
+    limits_lid: wp.array[wp.int32],
+    limits_jid: wp.array[wp.int32],
+    limits_bids: wp.array[wp.vec2i],
+    limits_dof: wp.array[wp.int32],
+    limits_side: wp.array[wp.float32],
+    limits_r_q: wp.array[wp.float32],
+    limits_key: wp.array[wp.uint64],
 ):
     # Retrieve the state of the joint
     r_min = q - qmin
@@ -461,11 +438,11 @@ def detect_active_dof_limit(
             limits_wid[mlid] = wid
             limits_lid[mlid] = wlid
             limits_jid[mlid] = jid
-            limits_bids[mlid] = vec2i(bid_B, bid_F)
+            limits_bids[mlid] = wp.vec2i(bid_B, bid_F)
             limits_dof[mlid] = dofid
             limits_side[mlid] = 1.0 if exceeds_min else -1.0
             limits_r_q[mlid] = r_min if exceeds_min else r_max
-            limits_key[mlid] = build_pair_key2(uint32(jid), uint32(dof))
+            limits_key[mlid] = build_pair_key2(wp.uint32(jid), wp.uint32(dof))
 
 
 ###
@@ -475,28 +452,28 @@ def detect_active_dof_limit(
 
 @wp.kernel
 def _detect_active_joint_configuration_limits(
-    model_joint_wid: wp.array[int32],
-    model_joint_dof_type: wp.array[int32],
-    model_joint_dofs_offset: wp.array[int32],
-    model_joint_coords_offset: wp.array[int32],
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    model_joint_q_j_min: wp.array[float32],
-    model_joint_q_j_max: wp.array[float32],
-    state_joints_q_j: wp.array[float32],
-    limits_model_max: wp.array[int32],
-    limits_world_max: wp.array[int32],
+    model_joint_wid: wp.array[wp.int32],
+    model_joint_dof_type: wp.array[wp.int32],
+    model_joint_dofs_offset: wp.array[wp.int32],
+    model_joint_coords_offset: wp.array[wp.int32],
+    model_joint_bid_B: wp.array[wp.int32],
+    model_joint_bid_F: wp.array[wp.int32],
+    model_joint_q_j_min: wp.array[wp.float32],
+    model_joint_q_j_max: wp.array[wp.float32],
+    state_joints_q_j: wp.array[wp.float32],
+    limits_model_max: wp.array[wp.int32],
+    limits_world_max: wp.array[wp.int32],
     # Outputs:
-    limits_model_num: wp.array[int32],
-    limits_world_num: wp.array[int32],
-    limits_wid: wp.array[int32],
-    limits_lid: wp.array[int32],
-    limits_jid: wp.array[int32],
-    limits_bids: wp.array[vec2i],
-    limits_dof: wp.array[int32],
-    limits_side: wp.array[float32],
-    limits_r_q: wp.array[float32],
-    limits_key: wp.array[uint64],
+    limits_model_num: wp.array[wp.int32],
+    limits_world_num: wp.array[wp.int32],
+    limits_wid: wp.array[wp.int32],
+    limits_lid: wp.array[wp.int32],
+    limits_jid: wp.array[wp.int32],
+    limits_bids: wp.array[wp.vec2i],
+    limits_dof: wp.array[wp.int32],
+    limits_side: wp.array[wp.float32],
+    limits_r_q: wp.array[wp.float32],
+    limits_key: wp.array[wp.uint64],
 ):
     # Retrieve the joint index for the current thread
     # This will be the index w.r.r the model
@@ -627,128 +604,128 @@ class LimitsKamino:
         return self._data.world_max_limits_host
 
     @property
-    def model_max_limits(self) -> wp.array:
+    def model_max_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of maximum limits for the model.\n
-        Shape of ``(1,)`` and type :class:`int32`.
+        Returns the total number of maximum limits for the model.
+        Shape of ``(1,)``.
         """
         self._assert_has_data()
         return self._data.model_max_limits
 
     @property
-    def model_active_limits(self) -> wp.array:
+    def model_active_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of active limits for the model.\n
-        Shape of ``(1,)`` and type :class:`int32`.
+        Returns the total number of active limits for the model.
+        Shape of ``(1,)``.
         """
         self._assert_has_data()
         return self._data.model_active_limits
 
     @property
-    def world_max_limits(self) -> wp.array:
+    def world_max_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of maximum limits per world.\n
-        Shape of ``(num_worlds,)`` and type :class:`int32`.
+        Returns the total number of maximum limits per world.
+        Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
         return self._data.world_max_limits
 
     @property
-    def world_active_limits(self) -> wp.array:
+    def world_active_limits(self) -> wp.array[wp.int32]:
         """
-        Returns the total number of active limits per world.\n
-        Shape of ``(num_worlds,)`` and type :class:`int32`.
+        Returns the total number of active limits per world.
+        Shape of ``(num_worlds,)``.
         """
         self._assert_has_data()
         return self._data.world_active_limits
 
     @property
-    def wid(self) -> wp.array:
+    def wid(self) -> wp.array[wp.int32]:
         """
-        Returns the world index of each limit.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
+        Returns the world index of each limit.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.wid
 
     @property
-    def lid(self) -> wp.array:
+    def lid(self) -> wp.array[wp.int32]:
         """
-        Returns the element index of each limit w.r.t its world.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
+        Returns the element index of each limit w.r.t its world.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.lid
 
     @property
-    def jid(self) -> wp.array:
+    def jid(self) -> wp.array[wp.int32]:
         """
-        Returns the element index of the corresponding joint w.r.t the model.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
+        Returns the element index of the corresponding joint w.r.t the model.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.jid
 
     @property
-    def bids(self) -> wp.array:
+    def bids(self) -> wp.array[wp.vec2i]:
         """
-        Returns the element indices of the interacting bodies w.r.t the model.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`vec2i`.
+        Returns the element indices of the interacting bodies w.r.t the model.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.bids
 
     @property
-    def dof(self) -> wp.array:
+    def dof(self) -> wp.array[wp.int32]:
         """
-        Returns the DoF indices along which limits are active w.r.t the model.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`int32`.
+        Returns the DoF indices along which limits are active w.r.t the model.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.dof
 
     @property
-    def side(self) -> wp.array:
+    def side(self) -> wp.array[wp.float32]:
         """
-        Returns the direction (i.e. side) of the active limit.\n
-        `1.0` for active min limits, `-1.0` for active max limits.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
+        Returns the direction (i.e. side) of the active limit.
+        `1.0` for active min limits, `-1.0` for active max limits.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.side
 
     @property
-    def r_q(self) -> wp.array:
+    def r_q(self) -> wp.array[wp.float32]:
         """
-        Returns the amount of generalized coordinate violation per joint-limit.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
+        Returns the amount of generalized coordinate violation per joint-limit.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.r_q
 
     @property
-    def key(self) -> wp.array:
+    def key(self) -> wp.array[wp.uint64]:
         """
-        Returns the integer key uniquely identifying each limit.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`uint64`.
+        Returns the integer key uniquely identifying each limit.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.key
 
     @property
-    def reaction(self) -> wp.array:
+    def reaction(self) -> wp.array[wp.float32]:
         """
-        Returns constraint velocity per joint-limit.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
+        Returns constraint reaction per joint-limit.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.reaction
 
     @property
-    def velocity(self) -> wp.array:
+    def velocity(self) -> wp.array[wp.float32]:
         """
-        Returns constraint velocity per joint-limit.\n
-        Shape of ``(model_max_limits_host,)`` and type :class:`float32`.
+        Returns constraint velocity per joint-limit.
+        Shape of ``(model_max_limits_host,)``.
         """
         self._assert_has_data()
         return self._data.velocity
@@ -796,19 +773,19 @@ class LimitsKamino:
                 model_max_limits_host=model_max_limits,
                 world_max_limits_host=world_max_limits,
                 model_max_limits=to_warp_int32_array([model_max_limits]),
-                model_active_limits=wp.zeros(shape=1, dtype=int32),
+                model_active_limits=wp.zeros(shape=1, dtype=wp.int32),
                 world_max_limits=to_warp_int32_array(world_max_limits),
-                world_active_limits=wp.zeros(shape=len(world_max_limits), dtype=int32),
-                wid=wp.zeros(shape=model_max_limits, dtype=int32),
-                lid=wp.zeros(shape=model_max_limits, dtype=int32),
-                jid=wp.zeros(shape=model_max_limits, dtype=int32),
-                bids=wp.zeros(shape=model_max_limits, dtype=vec2i),
-                dof=wp.zeros(shape=model_max_limits, dtype=int32),
-                side=wp.zeros(shape=model_max_limits, dtype=float32),
-                r_q=wp.zeros(shape=model_max_limits, dtype=float32),
-                key=wp.full(shape=model_max_limits, value=make_bitmask(63), dtype=uint64),
-                reaction=wp.zeros(shape=model_max_limits, dtype=float32),
-                velocity=wp.zeros(shape=model_max_limits, dtype=float32),
+                world_active_limits=wp.zeros(shape=len(world_max_limits), dtype=wp.int32),
+                wid=wp.zeros(shape=model_max_limits, dtype=wp.int32),
+                lid=wp.zeros(shape=model_max_limits, dtype=wp.int32),
+                jid=wp.zeros(shape=model_max_limits, dtype=wp.int32),
+                bids=wp.zeros(shape=model_max_limits, dtype=wp.vec2i),
+                dof=wp.zeros(shape=model_max_limits, dtype=wp.int32),
+                side=wp.zeros(shape=model_max_limits, dtype=wp.float32),
+                r_q=wp.zeros(shape=model_max_limits, dtype=wp.float32),
+                key=wp.full(shape=model_max_limits, value=make_bitmask(63), dtype=wp.uint64),
+                reaction=wp.zeros(shape=model_max_limits, dtype=wp.float32),
+                velocity=wp.zeros(shape=model_max_limits, dtype=wp.float32),
             )
 
     def clear(self):
@@ -825,7 +802,7 @@ class LimitsKamino:
         if self._data is not None and self._data.model_max_limits_host > 0:
             self._data.reset()
 
-    def detect(self, q_j: wp.array[float32]):
+    def detect(self, q_j: wp.array[wp.float32]):
         """
         Detects the active joint limits in the model and updates the limits data.
 
@@ -840,7 +817,7 @@ class LimitsKamino:
         if q_j is None:
             raise ValueError("LimitsKamino: data must be specified for detection (got None)")
         elif not isinstance(q_j, wp.array):
-            raise TypeError("LimitsKamino: q_j must be an instance of wp.array[float32]")
+            raise TypeError("LimitsKamino: q_j must be an instance of wp.array[wp.float32]")
         elif q_j.device != self._model.device:
             raise ValueError(f"LimitsKamino: q_j device {q_j.device} does not match limits device {self._model.device}")
 

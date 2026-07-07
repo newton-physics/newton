@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
+import inspect
 import math
 import sys
+import textwrap
 import unittest
 import warnings
 from types import SimpleNamespace
@@ -12,6 +15,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.utils
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
@@ -28,168 +32,77 @@ def _eq_set_value(builder, name, idx, value):
     attr.values[idx] = value
 
 
+class TestModelAttributeSpecs(unittest.TestCase):
+    def test_attribute_frequencies_have_count_metadata(self):
+        model = newton.Model(device="cpu")
+        frequency = newton.Model.AttributeFrequency
+        expected_count_frequencies = set(frequency).difference({frequency.ONCE})
+        actual_count_frequencies = set(model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS)
+        self.assertEqual(
+            actual_count_frequencies,
+            expected_count_frequencies,
+            "Keep Model.AttributeFrequency and Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS in sync. "
+            "Add a count-attribute mapping for each new frequency and remove mappings for deleted frequencies.",
+        )
+
+        for attribute_frequency, count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.items():
+            with self.subTest(frequency=attribute_frequency):
+                self.assertTrue(
+                    hasattr(model, count_attribute),
+                    f"Model.AttributeFrequency.{attribute_frequency.name} maps to missing attribute "
+                    f"Model.{count_attribute}. Add the count attribute or correct "
+                    "Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.",
+                )
+                self.assertEqual(
+                    model._attribute_frequency_count(attribute_frequency),
+                    getattr(model, count_attribute),
+                    f"Model._attribute_frequency_count() must resolve Model.AttributeFrequency."
+                    f"{attribute_frequency.name} through Model.{count_attribute}.",
+                )
+
+    def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        model = newton.Model(device="cpu")
+
+        prefixes = tuple(
+            count_attribute.removesuffix("count") for count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.values()
+        )
+        private_prefixes = tuple(f"_{prefix}" for prefix in prefixes)
+        indexed_container_types = (wp.array, np.ndarray, list, dict, set, tuple)
+        indexed_attributes = {
+            name
+            for name, value in model.__dict__.items()
+            if name.startswith(prefixes + private_prefixes) and isinstance(value, indexed_container_types)
+        }
+
+        # Most Warp arrays are None until finalization, so runtime inspection alone cannot find them.
+        init_source = textwrap.dedent(inspect.getsource(newton.Model.__init__))
+        init_node = ast.parse(init_source).body[0]
+        for node in ast.walk(init_node):
+            if not (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Attribute)
+                and isinstance(node.target.value, ast.Name)
+                and node.target.value.id == "self"
+            ):
+                continue
+            name = node.target.attr
+            annotation = ast.unparse(node.annotation)
+            is_indexed_container = any(
+                container in annotation for container in ("wp.array", "np.ndarray", "list[", "dict[", "set[", "tuple[")
+            )
+            if name.startswith(prefixes + private_prefixes) and is_indexed_container:
+                indexed_attributes.add(name)
+
+        missing = sorted(indexed_attributes.difference(model.attribute_specs))
+        self.assertEqual(
+            missing,
+            [],
+            "Model attributes are missing AttributeSpec metadata. Add each listed attribute to "
+            "Model._CORE_ATTRIBUTE_SPECS with the correct frequency, references, row width, and compaction policy.",
+        )
+
+
 class TestModelBuilderDeprecations(unittest.TestCase):
-    def test_equality_constraint_model_fields_warn_and_forward_to_mujoco_namespace(self):
-        builder = ModelBuilder()
-        body1 = builder.add_body()
-        body2 = builder.add_body()
-        _add_equality_constraint(
-            builder,
-            constraint_type=newton.EqType.CONNECT,
-            body1=body1,
-            body2=body2,
-            anchor=wp.vec3(1.0, 2.0, 3.0),
-        )
-
-        model = builder.finalize(skip_all_validations=True)
-
-        self.assertEqual(model.mujoco.equality_constraint_count, 1)
-        self.assertNotIn("_equality_constraint_body1", model.__dict__)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            np.testing.assert_array_equal(model.equality_constraint_body1.numpy(), np.array([body1], dtype=np.int32))
-
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("Model.equality_constraint_body1 is deprecated in Newton 1.3", str(caught[0].message))
-        self.assertIn("model.mujoco.equality_constraint_body1", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertEqual(model.equality_constraint_count, 1)
-
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("Model.equality_constraint_count is deprecated in Newton 1.3", str(caught[0].message))
-        self.assertIn("model.mujoco.equality_constraint_count", str(caught[0].message))
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_count = 2
-
-        self.assertEqual(model.mujoco.equality_constraint_count, 2)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        model.mujoco.equality_constraint_count = 1
-
-        new_body1 = wp.array([body2], dtype=wp.int32, device=model.device)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_body1 = new_body1
-
-        self.assertIs(model.mujoco.equality_constraint_body1, new_body1)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-
-        namespaced_body1 = wp.array([body1], dtype=wp.int32, device=model.device)
-        model.mujoco.equality_constraint_body1 = namespaced_body1
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertIs(model.equality_constraint_body1, namespaced_body1)
-
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-
-    def test_equality_constraint_model_fields_are_created_lazily_for_bare_models(self):
-        model = newton.Model()
-        self.assertFalse(hasattr(model, "mujoco"))
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertIsNone(model.equality_constraint_body1)
-
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertTrue(hasattr(model, "mujoco"))
-        self.assertIsNone(model.mujoco.equality_constraint_body1)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_label.append("legacy")
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(model.mujoco.equality_constraint_label, ["legacy"])
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            model.equality_constraint_count = 3
-
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(model.mujoco.equality_constraint_count, 3)
-
-    def test_default_body_armature_get_and_set_warn(self):
-        builder = ModelBuilder()
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.default_body_armature = 0.25
-            value = builder.default_body_armature
-
-        self.assertAlmostEqual(value, 0.25)
-        self.assertEqual(len(caught), 2)
-        self.assertTrue(all(issubclass(item.category, DeprecationWarning) for item in caught))
-        self.assertTrue(all("default_body_armature" in str(item.message) for item in caught))
-        self.assertTrue(all(item.filename.endswith("test_model.py") for item in caught))
-
-    def test_add_link_armature_warns_and_preserves_inertia(self):
-        builder = ModelBuilder()
-        inertia = np.diag([1.0, 2.0, 3.0]).astype(np.float32)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            body = builder.add_link(mass=1.0, inertia=inertia, armature=0.5)
-
-        self.assertEqual(body, 0)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("add_link(..., armature=...)", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
-        np.testing.assert_allclose(
-            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-            inertia + np.eye(3, dtype=np.float32) * 0.5,
-            atol=1e-6,
-        )
-
-    def test_add_body_armature_warns_and_preserves_inertia(self):
-        builder = ModelBuilder()
-        inertia = np.diag([1.5, 2.5, 3.5]).astype(np.float32)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            body = builder.add_body(mass=1.0, inertia=inertia, armature=0.25)
-
-        self.assertEqual(body, 0)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("add_body(..., armature=...)", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
-        np.testing.assert_allclose(
-            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-            inertia + np.eye(3, dtype=np.float32) * 0.25,
-            atol=1e-6,
-        )
-
-    def test_add_link_uses_default_body_armature_without_extra_warning(self):
-        builder = ModelBuilder()
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            builder.default_body_armature = 0.125
-            body = builder.add_link()
-
-        self.assertEqual(body, 0)
-        self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
-        self.assertIn("default_body_armature", str(caught[0].message))
-        self.assertTrue(caught[0].filename.endswith("test_model.py"))
-        np.testing.assert_allclose(
-            np.asarray(builder.body_inertia[body]).reshape(3, 3),
-            np.eye(3, dtype=np.float32) * 0.125,
-            atol=1e-6,
-        )
-
     def test_joint_target_pos_vel_aliases_warn(self):
         """Legacy ``joint_target_pos`` / ``joint_target_vel`` warn under the
         default flag and raise under ``use_coord_layout_targets=True``;
@@ -292,6 +205,57 @@ class TestModelBuilderDeprecations(unittest.TestCase):
             newton.use_coord_layout_targets = prev_flag
 
 
+class TestModelBuilderBvhConstructor(unittest.TestCase):
+    def test_model_builder_forwards_bvh_constructors(self):
+        builder = ModelBuilder()
+        builder.default_bvh_cfg.mesh_constructor = "cubql"
+        builder.default_bvh_cfg.gaussian_constructor = "sah"
+        builder.default_bvh_cfg.shape_constructor = "lbvh"
+
+        mesh = newton.Mesh(
+            vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+            indices=np.array([0, 1, 2], dtype=np.int32),
+            compute_inertia=False,
+        )
+        gaussian = newton.Gaussian(positions=np.zeros((1, 3), dtype=np.float32))
+        builder.add_shape_mesh(body=-1, mesh=mesh)
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.Mesh") as wp_mesh,
+            mock.patch.object(
+                newton.Gaussian, "finalize", autospec=True, return_value=newton.Gaussian.Data()
+            ) as finalize,
+            mock.patch.object(newton.Model, "bvh_build_shapes", autospec=True) as build_shapes,
+            mock.patch.object(newton.Model, "bvh_build_particles", autospec=True),
+        ):
+            wp_mesh.return_value.id = 123
+            model = builder.finalize(device="cpu")
+
+        wp_mesh.assert_called_once()
+        self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
+        finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
+        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+
+    def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
+        gaussian = newton.Gaussian(
+            positions=np.zeros((1, 3), dtype=np.float32),
+            rotations=np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+            scales=np.ones((1, 3), dtype=np.float32),
+            opacities=np.ones(1, dtype=np.float32),
+            sh_coeffs=np.ones((1, 3), dtype=np.float32),
+        )
+
+        with (
+            mock.patch("newton._src.geometry.types.wp.launch"),
+            mock.patch("newton._src.geometry.types.wp.Bvh") as wp_bvh,
+        ):
+            wp_bvh.return_value.id = 456
+            gaussian.finalize(device="cpu", bvh_constructor="sah")
+
+        self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
+
+
 class TestModelMesh(unittest.TestCase):
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
@@ -330,13 +294,22 @@ class TestModelMesh(unittest.TestCase):
                 t[0],
                 t[1],
                 t[2],
-                tri_ke[i],
-                tri_ka[i],
-                tri_kd[i],
-                tri_drag[i],
-                tri_lift[i],
+                tri_ke=tri_ke[i],
+                tri_ka=tri_ka[i],
+                tri_kd=tri_kd[i],
+                tri_drag=tri_drag[i],
+                tri_lift=tri_lift[i],
             )
-        builder2.add_triangles(tris[:, 0], tris[:, 1], tris[:, 2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        builder2.add_triangles(
+            tris[:, 0],
+            tris[:, 1],
+            tris[:, 2],
+            tri_ke=tri_ke,
+            tri_ka=tri_ka,
+            tri_kd=tri_kd,
+            tri_drag=tri_drag,
+            tri_lift=tri_lift,
+        )
 
         assert_np_equal(np.array(builder1.tri_indices), np.array(builder2.tri_indices))
         assert_np_equal(np.array(builder1.tri_poses), np.array(builder2.tri_poses), tol=1.0e-6)
@@ -373,12 +346,215 @@ class TestModelMesh(unittest.TestCase):
         edge_ke = rng.standard_normal(size=2)
         edge_kd = rng.standard_normal(size=2)
         for i in range(2):
-            builder1.add_edge(edges[i, 0], edges[i, 1], edges[i, 2], edges[i, 3], rest[i], edge_ke[i], edge_kd[i])
-        builder2.add_edges(edges[:, 0], edges[:, 1], edges[:, 2], edges[:, 3], rest, edge_ke, edge_kd)
+            builder1.add_edge(
+                edges[i, 0],
+                edges[i, 1],
+                edges[i, 2],
+                edges[i, 3],
+                rest=rest[i],
+                edge_ke=edge_ke[i],
+                edge_kd=edge_kd[i],
+            )
+        builder2.add_edges(
+            edges[:, 0],
+            edges[:, 1],
+            edges[:, 2],
+            edges[:, 3],
+            rest=rest,
+            edge_ke=edge_ke,
+            edge_kd=edge_kd,
+        )
 
         assert_np_equal(np.array(builder1.edge_indices), np.array(builder2.edge_indices))
         assert_np_equal(np.array(builder1.edge_rest_angle), np.array(builder2.edge_rest_angle), tol=1.0e-4)
         assert_np_equal(np.array(builder1.edge_bending_properties), np.array(builder2.edge_bending_properties))
+
+    def test_soft_mesh_adjacency_from_cloth_mesh(self):
+        builder = ModelBuilder()
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+                wp.vec3(0.0, 1.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=1.0,
+        )
+
+        # The adjacency is built in finalize() from the accumulated edges and triangles.
+        model = builder.finalize(device="cpu")
+        adjacency = model.soft_mesh_adjacency
+        self.assertIsNotNone(adjacency)
+        np.testing.assert_array_equal(
+            adjacency.tri_edge_indices,
+            np.array([[0, 1, 2], [2, 3, 4]], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            adjacency.edge_tri_indices,
+            np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
+        )
+        # Vertex adjacency stays unset until the solver builds it via init_vertex_adjacency.
+        self.assertIsNone(adjacency.v_adj_tris)
+        self.assertIsNone(adjacency.v_adj_edges_offsets)
+
+    def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
+        builder = ModelBuilder()
+        builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(), 1.0)
+        builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(), 1.0)
+        builder.add_particle(wp.vec3(0.0, 1.0, 0.0), wp.vec3(), 1.0)
+        builder.add_triangle(0, 1, 2)
+        builder.add_edge(-1, -1, 0, 1)
+
+        # A bare triangle and a placeholder edge (o0 == o1 == -1) stay unlinked: the triangle's
+        # opposite vertex matches neither stored opposite, so finalize leaves both map rows at -1.
+        model = builder.finalize(device="cpu")
+        adjacency = model.soft_mesh_adjacency
+        self.assertIsNotNone(adjacency)
+        np.testing.assert_array_equal(adjacency.tri_edge_indices, np.array([[-1, -1, -1]], dtype=np.int32))
+        np.testing.assert_array_equal(adjacency.edge_tri_indices, np.array([[-1, -1]], dtype=np.int32))
+
+    def test_add_builder_offsets_soft_mesh_adjacency(self):
+        base = ModelBuilder()
+        base.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+                wp.vec3(0.0, 1.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=1.0,
+        )
+
+        combined = ModelBuilder()
+        combined.add_builder(base)
+        combined.add_builder(base)
+
+        # add_builder concatenates the edge/triangle tables; finalize() rebuilds the maps, so the
+        # second copy's rows are the first's with triangle ids +2 and edge ids +5.
+        base_adj = base.finalize(device="cpu").soft_mesh_adjacency
+        combined_adj = combined.finalize(device="cpu").soft_mesh_adjacency
+
+        np.testing.assert_array_equal(combined_adj.tri_edge_indices[:2], base_adj.tri_edge_indices)
+        np.testing.assert_array_equal(combined_adj.edge_tri_indices[:5], base_adj.edge_tri_indices)
+        np.testing.assert_array_equal(combined_adj.tri_edge_indices[2:], base_adj.tri_edge_indices + 5)
+        np.testing.assert_array_equal(
+            combined_adj.edge_tri_indices[5:],
+            np.array([[2, -1], [2, -1], [2, 3], [3, -1], [3, -1]], dtype=np.int32),
+        )
+
+    def test_soft_mesh_adjacency_mixes_cloth_and_bare_triangles(self):
+        # A cloth mesh (with bending edges) plus a bare add_triangle (no edges) in one builder:
+        # finalize() sizes tri_edge_indices to every triangle, leaves the bare triangle's row at -1,
+        # keeps the cloth rows linked, and never synthesizes edges for the bare triangle.
+        builder = ModelBuilder()
+        builder.add_cloth_mesh(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            vertices=[
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+                wp.vec3(0.0, 1.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3],
+            density=1.0,
+        )
+        p0 = builder.add_particle(wp.vec3(2.0, 0.0, 0.0), wp.vec3(), 1.0)
+        p1 = builder.add_particle(wp.vec3(3.0, 0.0, 0.0), wp.vec3(), 1.0)
+        p2 = builder.add_particle(wp.vec3(2.0, 1.0, 0.0), wp.vec3(), 1.0)
+        builder.add_triangle(p0, p1, p2)
+
+        adjacency = builder.finalize(device="cpu").soft_mesh_adjacency
+        np.testing.assert_array_equal(
+            adjacency.tri_edge_indices,
+            np.array([[0, 1, 2], [2, 3, 4], [-1, -1, -1]], dtype=np.int32),
+        )
+        np.testing.assert_array_equal(
+            adjacency.edge_tri_indices,
+            np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
+        )
+
+    def test_mesh_adjacency_public_deprecated(self):
+        tris = [[0, 1, 2], [0, 2, 3]]
+        # Construction from triangle indices is supported (no warning) and eager.
+        adj = newton.utils.MeshAdjacency(tris)
+        self.assertEqual(adj.edge_indices.shape, (5, 4))
+        self.assertEqual(adj.edge_tri_indices.shape, (5, 2))
+        self.assertEqual(adj.tri_edge_indices.shape, (2, 3))
+        # The legacy .edges dict stays available but is deprecated.
+        with self.assertWarns(DeprecationWarning):
+            edges = adj.edges
+        self.assertEqual(len(edges), 5)
+        shared = edges[(0, 2)]
+        self.assertEqual({shared.f0, shared.f1}, {0, 1})
+
+    def test_mesh_adjacency_indices_deprecated_alias(self):
+        tris = [[0, 1, 2], [0, 2, 3]]
+        # `indices` is a deprecated alias for `tri_indices` and builds the same tables.
+        with self.assertWarns(DeprecationWarning):
+            adj = newton.utils.MeshAdjacency(indices=tris)
+        np.testing.assert_array_equal(adj.edge_indices, newton.utils.MeshAdjacency(tri_indices=tris).edge_indices)
+        # Passing both names with conflicting values is rejected.
+        with self.assertRaises(ValueError):
+            newton.utils.MeshAdjacency(tri_indices=tris, indices=[[0, 1, 2]])
+
+    def test_mesh_adjacency_add_edge_deprecated(self):
+        adj = newton.utils.MeshAdjacency()
+        # add_edge is a deprecated incremental shim; it updates edge_indices / edge_tri_indices.
+        with self.assertWarns(DeprecationWarning):
+            adj.add_edge(0, 1, 2, 0)
+        self.assertEqual(adj.edge_indices.shape, (1, 4))
+        self.assertEqual(adj.edge_tri_indices.shape, (1, 2))
+        with self.assertWarns(DeprecationWarning):
+            adj.add_edge(1, 0, 3, 1)  # second adjacent triangle (endpoints reversed)
+        np.testing.assert_array_equal(adj.edge_indices[0], [2, 3, 0, 1])
+        np.testing.assert_array_equal(adj.edge_tri_indices[0], [0, 1])
+        with self.assertWarns(DeprecationWarning):
+            edges = adj.edges
+        self.assertEqual({edges[(0, 1)].f0, edges[(0, 1)].f1}, {0, 1})
+
+    def test_mesh_adjacency_to_without_vertex_adjacency_warns(self):
+        # to() before init_vertex_adjacency: uploads the topology maps, leaves v_adj_* None + warns.
+        adj = newton.utils.MeshAdjacency([[0, 1, 2], [0, 2, 3]])
+        with self.assertWarns(UserWarning):
+            data = adj.to("cpu")
+        self.assertIsNotNone(data.edge_tri_indices)
+        self.assertIsNotNone(data.tri_edge_indices)
+        self.assertIsNone(data.v_adj_tris)
+        self.assertIsNone(data.v_adj_edges_offsets)
+
+    def test_mesh_adjacency_owns_index_copies(self):
+        # The constructor stores owned int32 copies, detached from the input arrays/lists.
+        tris = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+        adj = newton.utils.MeshAdjacency(tris)
+        tris[0, 0] = 99
+        self.assertEqual(int(adj.indices[0, 0]), 0)
+
+    def test_expand_edge_parameter(self):
+        expand = newton.ModelBuilder._expand_edge_parameter
+        # Scalars broadcast to one value per generated edge.
+        self.assertEqual(expand(2.0, 3), [2.0, 2.0, 2.0])
+        # A 0-D array is treated as a scalar, not iterated.
+        self.assertEqual(expand(np.array(2.0), 3), [2.0, 2.0, 2.0])
+        # A per-edge sequence of matching length passes through.
+        self.assertEqual(expand([1.0, 2.0, 3.0], 3), [1.0, 2.0, 3.0])
+        # None is preserved so add_edges() can substitute its default.
+        self.assertIsNone(expand(None, 3))
+        # A length mismatch is rejected instead of silently desyncing.
+        with self.assertRaises(ValueError):
+            expand([1.0, 2.0], 3)
 
     def test_mesh_approximation(self):
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
@@ -1651,10 +1827,12 @@ class TestModelJoints(unittest.TestCase):
     def test_articulation_validation_orphan_joint(self):
         """Test that joints not belonging to an articulation raise an error on finalize."""
         builder = ModelBuilder()
-        body = builder.add_link()
+        parent = builder.add_link()
+        child = builder.add_link()
 
-        # Add joint but do NOT add it to an articulation
-        builder.add_joint_revolute(parent=-1, child=body, label="orphan_joint")
+        # World-root joints are intentionally allowed without articulation
+        # metadata, so use a non-root joint to exercise orphan validation.
+        builder.add_joint_revolute(parent=parent, child=child, label="orphan_joint")
 
         # finalize() should raise ValueError about orphan joints
         with self.assertRaises(ValueError) as context:
@@ -1663,15 +1841,27 @@ class TestModelJoints(unittest.TestCase):
         self.assertIn("not belonging to any articulation", str(context.exception))
         self.assertIn("orphan_joint", str(context.exception))
 
+    def test_articulation_validation_allows_standalone_world_root(self):
+        """Test that a standalone world-root joint does not require an articulation."""
+        builder = ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_fixed(parent=-1, child=body, label="standalone_root")
+
+        model = builder.finalize()
+
+        self.assertEqual(model.articulation_count, 0)
+        self.assertEqual(model.joint_articulation.numpy()[joint], -1)
+
     def test_articulation_validation_multiple_orphan_joints(self):
         """Test error message shows multiple orphan joints."""
         builder = ModelBuilder()
         body1 = builder.add_link()
         body2 = builder.add_link()
+        body3 = builder.add_link()
 
-        # Add multiple joints without articulations
-        builder.add_joint_revolute(parent=-1, child=body1, label="first_joint")
-        builder.add_joint_revolute(parent=body1, child=body2, label="second_joint")
+        # Add multiple non-root joints without articulations.
+        builder.add_joint_revolute(parent=body1, child=body2, label="first_joint")
+        builder.add_joint_revolute(parent=body2, child=body3, label="second_joint")
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()
@@ -1892,11 +2082,11 @@ class TestModelJoints(unittest.TestCase):
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
-        parent_body = builder.add_body(wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_body = builder.add_body(xform=wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
         parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
         builder.add_articulation([parent_joint])  # Register parent body into an articulation
 
-        child_body = builder.add_body(wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        child_body = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
         joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
 
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
@@ -2368,7 +2558,7 @@ class TestModelValidation(unittest.TestCase):
         body2 = builder.add_body(mass=1.0)
         _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.WELD,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.WELD,
             body1=body1,
             body2=body2,
             label="test_constraint",
@@ -2397,7 +2587,7 @@ class TestModelValidation(unittest.TestCase):
         # Add a joint equality constraint
         _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.JOINT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.JOINT,
             joint1=joint1,
             joint2=joint2,
             label="joint_constraint",
@@ -2434,8 +2624,9 @@ class TestModelValidation(unittest.TestCase):
     def test_skip_all_validations(self):
         """Test that skip_all_validations skips all validation checks."""
         builder = ModelBuilder()
-        body = builder.add_link(mass=1.0)
-        builder.add_joint_revolute(parent=-1, child=body, label="orphan_joint")
+        parent = builder.add_link(mass=1.0)
+        child = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=parent, child=child, label="orphan_joint")
         # Don't add articulation - this would normally fail _validate_joints
 
         # Without skip_all_validations, should raise ValueError about orphan joint
@@ -2446,8 +2637,9 @@ class TestModelValidation(unittest.TestCase):
         # With skip_all_validations=True, should NOT raise the validation error
         # Create a fresh builder for clean test
         builder2 = ModelBuilder()
-        body2 = builder2.add_link(mass=1.0)
-        builder2.add_joint_revolute(parent=-1, child=body2, label="orphan_joint2")
+        parent2 = builder2.add_link(mass=1.0)
+        child2 = builder2.add_link(mass=1.0)
+        builder2.add_joint_revolute(parent=parent2, child=child2, label="orphan_joint2")
         # This should succeed (validation skipped)
         model = builder2.finalize(skip_all_validations=True)
         self.assertIsNotNone(model)

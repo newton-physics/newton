@@ -102,14 +102,14 @@ def build_sphere_on_plane(
     Constructs a basic model of a free-floating 'box' body and a ground box geom.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -194,14 +194,14 @@ def build_box_on_plane(
     Constructs a basic model of a free-floating 'box' body and a ground box geom.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -292,24 +292,24 @@ def build_box_pendulum(
     This version initializes the pendulum in a horizontal configuration.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
             :meth:`ModelBuilder.end_world`.\n
             If `False`, the caller must already be inside an active world; the model is then
             added to that currently active world.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to attach non-zero armature and friction terms to the revolute joint
             so that its dynamics are better conditioned for stiff integrators.
-        implicit_pd (bool):
+        implicit_pd:
             Whether to configure the revolute joint with a position/velocity target mode
             (implicit PD) instead of the default effort-based actuation.
 
@@ -409,14 +409,14 @@ def build_box_pendulum_vertical(
     This version initializes the pendulum in a vertical configuration.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -505,21 +505,21 @@ def build_cartpole(
     Constructs a basic model of a cartpole mounted onto a rail.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
             :meth:`ModelBuilder.end_world`.\n
             If `False`, the caller must already be inside an active world; the model is then
             added to that currently active world.
-        limits (bool):
+        limits:
             Whether to apply finite position limits on the prismatic rail joint.\n
             If `True`, the cart is restricted to the range `[-4, 4]` along the rail.\n
             If `False`, the joint limits are set to the largest representable float32 range.
@@ -682,14 +682,14 @@ def build_boxes_stacked_on_plane(
     Constructs a basic model of a free-floating 'box' body and a ground box geom.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -811,20 +811,20 @@ def build_boxes_hinged(
         between the world and the ``base`` body to form a valid articulation tree.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to attach non-zero armature and friction terms to the hinge joint
             so that its dynamics are better conditioned for stiff integrators.
-        implicit_pd (bool):
+        implicit_pd:
             Whether to configure the hinge joint with a position/velocity target mode
             (implicit PD) instead of the default effort-based actuation.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -975,14 +975,14 @@ def build_boxes_nunchaku(
         ``box_bottom`` body so the chain is a valid Newton articulation tree.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -1131,14 +1131,14 @@ def build_boxes_nunchaku_vertical(
         ``box_bottom`` body so the chain is a valid Newton articulation tree.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -1289,40 +1289,40 @@ def build_boxes_fourbar(
     Constructs a basic model of a four-bar linkage.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        fixedbase (bool):
+        fixedbase:
             Whether to attach ``link_1`` to the world with a fixed joint.
-        floatingbase (bool):
+        floatingbase:
             Whether to attach ``link_1`` to the world with a free (6-DoF) joint.
-        limits (bool):
+        limits:
             Whether to apply finite position limits on every revolute joint.\n
             If `True`, each hinge is restricted to `[-pi/4, pi/4]`.\n
             If `False`, the joint limits are set to the largest representable float32 range.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to attach non-zero armature and friction terms to the first
             actuated revolute joint so that its dynamics are better conditioned
             for stiff integrators.
-        implicit_pd (bool):
+        implicit_pd:
             Whether to configure the first actuated revolute joint with a
             position/velocity target mode (implicit PD) instead of the default
             effort-based actuation.
-        verbose (bool):
+        verbose:
             If `True`, prints the computed body inertias and the initial body and
             joint positions during construction.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
             :meth:`ModelBuilder.end_world`.\n
             If `False`, the caller must already be inside an active world; the model is then
             added to that currently active world.
-        actuator_ids (list[int] | None):
+        actuator_ids:
             1-based indices of the revolute joints (``1`` through ``4``) that should be
             driven by an actuator. Any joint whose index is not listed is treated as a
             passive revolute joint.\n
@@ -1669,15 +1669,15 @@ def make_basics_heterogeneous_builder(
     original ``make_basics_heterogeneous_builder``.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to each sub-model.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to enable dynamic (armature/friction) joint terms in the sub-models
             that expose the option (box pendulum, hinged boxes, four-bar).
-        implicit_pd (bool):
+        implicit_pd:
             Whether to drive the actuated joints of those sub-models with a
             position/velocity target (implicit PD) instead of effort-based actuation.
 

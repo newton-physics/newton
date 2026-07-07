@@ -178,7 +178,9 @@ class TestSensorTiledCamera(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         sensor = SensorTiledCamera(model=model)
-        render_context = sensor.render_context
+        # The public render_context alias was removed; this regression test needs
+        # the internal mesh state that drives first-render construction.
+        render_context = sensor._SensorTiledCamera__render_context
 
         # init_from_model copies model.particle_q/tri_indices into triangle_points/
         # triangle_indices but does not build wp.Mesh until the first render call.
@@ -202,6 +204,13 @@ class TestSensorTiledCamera(unittest.TestCase):
         # Depth hits prove the mesh was passed into the render kernel, not just created.
         self.assertGreater(int(np.sum(depth_image.numpy() > 0.0)), 0)
 
+    def test_checkerboard_material_requires_keyword_arguments(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+
+        with self.assertRaises(TypeError):
+            sensor.utils.assign_checkerboard_material([0])
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_golden_image(self):
         model = self._shared_model
@@ -216,7 +225,9 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
         tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
-        tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
+        tiled_camera_sensor.utils.assign_checkerboard_material(
+            shape_indices=np.arange(model.shape_count, dtype=np.int32)
+        )
 
         camera_rays = tiled_camera_sensor.utils.compute_camera_rays_pinhole(width, height, math.radians(45.0))
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
@@ -236,6 +247,14 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         self.__compare_images(color_image.numpy(), golden_color_data, allowed_difference=0.1)
         self.__compare_images(depth_image.numpy(), golden_depth_data, allowed_difference=0.1)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
+    def test_deprecated_checkerboard_material_to_all_shapes_warns(self):
+        model = self._shared_model
+        tiled_camera_sensor = SensorTiledCamera(model=model)
+
+        with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material"):
+            tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA")
     def test_output_image_parameters(self):

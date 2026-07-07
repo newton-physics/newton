@@ -28,7 +28,7 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
         res = 16
         sensor = SensorTiledCamera(model=model)
         sensor.utils.create_default_light(enable_shadows=False)
-        sensor.utils.assign_checkerboard_material_to_all_shapes()
+        sensor.utils.assign_checkerboard_material(shape_indices=[0])
         # 30-deg fov: footprint half-extent at depth 4 is 4*tan(15)=1.07 < 2,
         # so the terrain robustly fills the whole frame.
         rays = sensor.utils.compute_camera_rays_pinhole(res, res, math.radians(30.0))

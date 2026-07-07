@@ -23,6 +23,8 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
 )
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
     RigidContactHistory,
+    build_body_body_contact_lists,
+    build_body_particle_contact_lists,
     compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
     evaluate_body_particle_contact,
@@ -317,6 +319,7 @@ def _eval_body_particle_contact_damping_kernel(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     forces: wp.array[wp.vec3],
 ):
     i = wp.tid()
@@ -342,6 +345,7 @@ def _eval_body_particle_contact_damping_kernel(
         contact_body_pos,
         contact_body_vel,
         contact_normal,
+        shape_margin,
         0.1,
     )
     forces[i] = force
@@ -537,6 +541,7 @@ def _eval_body_particle_contact_rigid_motion_kernel(
     contact_body_pos: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
     damping_delta_norms: wp.array[float],
 ):
     sample = wp.tid()
@@ -562,6 +567,7 @@ def _eval_body_particle_contact_rigid_motion_kernel(
         contact_body_pos,
         contact_body_vel,
         contact_normal,
+        shape_margin,
         dt,
     )
     body_particle_force_undamped, _body_particle_hessian_undamped = evaluate_body_particle_contact(
@@ -584,6 +590,7 @@ def _eval_body_particle_contact_rigid_motion_kernel(
         contact_body_pos,
         contact_body_vel,
         contact_normal,
+        shape_margin,
         dt,
     )
     damping_delta_norms[sample] = wp.length(body_particle_force_damped - body_particle_force_undamped)
@@ -1115,6 +1122,7 @@ def _body_particle_contact_damping_is_absolute(test, device):
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                wp.zeros(0, dtype=float, device=device),
             ],
             outputs=[forces],
             device=device,
@@ -1184,6 +1192,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                wp.zeros(0, dtype=float, device=device),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -1453,6 +1462,7 @@ def _contact_damping_ignores_rigid_motion(test, device):
                 contact_body_pos,
                 contact_body_vel,
                 contact_normal,
+                wp.zeros(0, dtype=float, device=device),
             ],
             outputs=[body_particle_delta_norms],
             device=device,
@@ -1897,6 +1907,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         bend_stiffness=1.0e-4,
         bend_damping=1.0e-4,
         label="cable",
+        body_frame_origin="com",
     )
     builder.color(balance_colors=False)
 
@@ -2008,10 +2019,90 @@ def _collect_rigid_contact_forces_reports_surface_points(test, device):
     np.testing.assert_allclose(reported1_np[:count], expected1, atol=1.0e-5)
 
 
+def _body_body_contact_lists_skip_static_kinematic(test, device):
+    """An immovable body must not cause a spurious per-body list overflow."""
+    buffer_pre_alloc = 1
+    # Effective inverse mass folds together zero-mass and kinematic bodies.
+    # Bodies 0 and 2 are dynamic; body 1 is immovable.
+    body_inv_mass_effective = wp.array([1.0, 0.0, 1.0], dtype=float, device=device)
+    shape_body = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    # Both contacts touch body 1, but each dynamic body has only one contact.
+    rigid_contact_count = wp.array([2], dtype=int, device=device)
+    rigid_contact_shape0 = wp.array([0, 1], dtype=int, device=device)
+    rigid_contact_shape1 = wp.array([1, 2], dtype=int, device=device)
+
+    body_contact_counts = wp.zeros(3, dtype=wp.int32, device=device)
+    body_contact_indices = wp.full(3 * buffer_pre_alloc, -1, dtype=wp.int32, device=device)
+    body_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=device)
+
+    wp.launch(
+        build_body_body_contact_lists,
+        dim=2,
+        inputs=[
+            rigid_contact_count,
+            rigid_contact_shape0,
+            rigid_contact_shape1,
+            shape_body,
+            body_inv_mass_effective,
+            buffer_pre_alloc,
+        ],
+        outputs=[body_contact_counts, body_contact_indices, body_contact_overflow_max],
+        device=device,
+    )
+
+    np.testing.assert_array_equal(body_contact_counts.numpy(), np.array([1, 0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(body_contact_indices.numpy(), np.array([0, -1, 1], dtype=np.int32))
+    test.assertEqual(int(body_contact_overflow_max.numpy()[0]), 0)
+
+
+def _body_particle_contact_lists_skip_static_kinematic(test, device):
+    """Immovable body-particle contacts must not cause a list overflow."""
+    buffer_pre_alloc = 1
+    # Body 0 is dynamic; body 1 represents a static or kinematic body.
+    body_inv_mass_effective = wp.array([1.0, 0.0], dtype=float, device=device)
+    shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
+    body_particle_contact_count = wp.array([3], dtype=int, device=device)
+    body_particle_contact_shape = wp.array([0, 1, 1], dtype=int, device=device)
+
+    counts = wp.zeros(2, dtype=wp.int32, device=device)
+    indices = wp.full(2 * buffer_pre_alloc, -1, dtype=wp.int32, device=device)
+    overflow_max = wp.zeros(1, dtype=wp.int32, device=device)
+
+    wp.launch(
+        build_body_particle_contact_lists,
+        dim=3,
+        inputs=[
+            body_particle_contact_count,
+            body_particle_contact_shape,
+            shape_body,
+            body_inv_mass_effective,
+            buffer_pre_alloc,
+        ],
+        outputs=[counts, indices, overflow_max],
+        device=device,
+    )
+
+    np.testing.assert_array_equal(counts.numpy(), np.array([1, 0], dtype=np.int32))
+    np.testing.assert_array_equal(indices.numpy(), np.array([0, -1], dtype=np.int32))
+    test.assertEqual(int(overflow_max.numpy()[0]), 0)
+
+
 class TestSolverVBD(unittest.TestCase):
     pass
 
 
+add_function_test(
+    TestSolverVBD,
+    "test_body_body_contact_lists_skip_static_kinematic",
+    _body_body_contact_lists_skip_static_kinematic,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_body_particle_contact_lists_skip_static_kinematic",
+    _body_particle_contact_lists_skip_static_kinematic,
+    devices=devices,
+)
 add_function_test(
     TestSolverVBD, "test_self_contact_barrier_c2_at_tau", test_self_contact_barrier_c2_at_tau, devices=devices
 )

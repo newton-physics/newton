@@ -17,7 +17,7 @@ import warp as wp
 from ....config import ForwardKinematicsSolverConfig
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.model import ModelKamino
-from ...core.types import assign_to_warp_int32_array, to_warp_int32_array, vec6f
+from ...core.types import assign_to_warp_int32_array, to_warp_int32_array
 from ...linalg.blas import (
     block_sparse_ATA_blockwise_3_4_inv_diagonal_2d,
     block_sparse_ATA_inv_diagonal_2d,
@@ -104,13 +104,10 @@ class ForwardKinematicsSolver:
         """
         Initializes the solver to solve forward kinematics for a given model.
 
-        Parameters
-        ----------
-        model : ModelKamino, optional
-            ModelKamino for which to solve forward kinematics. If not provided, the finalize() method
-            must be called at a later time for deferred initialization (default: None).
-        config : ForwardKinematicsSolver.Config, optional
-            Solver config. If not provided, the default config will be used (default: None).
+        Args:
+            model: Model for which to solve forward kinematics. If not provided, the finalize() method
+                must be called at a later time for deferred initialization.
+            config: Solver config. If not provided, the default config will be used.
         """
 
         self.model: ModelKamino | None = None
@@ -140,14 +137,11 @@ class ForwardKinematicsSolver:
         This method only needs to be called manually if a model was not provided in the constructor,
         or to reset the solver for a new model.
 
-        Parameters
-        ----------
-        model : ModelKamino, optional
-            ModelKamino for which to solve forward kinematics. If not provided, the model given to the
-            constructor will be used. Must be provided if not given to the constructor (default: None).
-        config : ForwardKinematicsSolver.Config, optional
-            Solver config. If not provided, the config given to the constructor, or if not, the
-            default config will be used (default: None).
+        Args:
+            model: Model for which to solve forward kinematics. If not provided, the model given to the
+                constructor will be used. Must be provided if not given to the constructor.
+            config: Solver config. If not provided, the config given to the constructor, or if not, the
+                default config will be used.
         """
 
         # Initialize the model and config if provided
@@ -571,7 +565,7 @@ class ForwardKinematicsSolver:
 
             # Default base state
             self.base_q_default = wp.from_numpy(base_q_default, dtype=wp.transformf)
-            self.base_u_default = wp.zeros(shape=(self.num_worlds,), dtype=vec6f)
+            self.base_u_default = wp.zeros(shape=(self.num_worlds,), dtype=wp.spatial_vectorf)
 
             # Line search
             self.max_line_search_iterations = wp.array(dtype=wp.int32, shape=(1,))  # Max iterations
@@ -977,10 +971,15 @@ class ForwardKinematicsSolver:
             device=self.device,
         )
 
-    def _initialize_incremental_solve(self, bodies_q: wp.array[wp.transformf]):
+    def _eval_actuator_coords(
+        self,
+        bodies_q: wp.array[wp.transformf],
+        actuators_q: wp.array[wp.float32],
+        actuators_q_ref: wp.array[wp.float32] | None = None,
+    ):
         """
-        Internal function running all necessary precomputations for the incremental solve.
-        Assumes without check that data related to incremental solve is allocated.
+        Internal evaluator evaluating effective actuator coordinates based on body poses,
+        with 2 Pi / quaternion sign correction w.r.t. reference coordinates if provided.
         """
         # Extract current actuator coordinates
         wp.launch(
@@ -998,22 +997,31 @@ class ForwardKinematicsSolver:
                 self.joints_F_r_Fj,
                 bodies_q,
                 self.actuated_coord_offsets,
-                self.actuators_q_prev,
+                actuators_q,
             ],
             device=self.device,
         )
-        # Correct target actuator coordinates w.r.t. current
-        wp.launch(
-            _correct_actuator_coords,
-            dim=(self.num_joints_tot,),
-            inputs=[
-                self.actuated_coord_offsets,
-                self.joints_dof_type,
-                self.actuators_q_prev,
-                self.actuators_q_next,
-            ],
-            device=self.device,
-        )
+        # Correct w.r.t. reference coordinates
+        if actuators_q_ref is not None:
+            wp.launch(
+                _correct_actuator_coords,
+                dim=(self.num_joints_tot,),
+                inputs=[
+                    self.actuated_coord_offsets,
+                    self.joints_dof_type,
+                    actuators_q_ref,
+                    actuators_q,
+                ],
+                device=self.device,
+            )
+
+    def _initialize_incremental_solve(self, bodies_q: wp.array[wp.transformf]):
+        """
+        Internal function running all necessary precomputations for the incremental solve.
+        Assumes without check that data related to incremental solve is allocated.
+        """
+        # Extract current actuator coordinates, and correct w.r.t. target coordinates
+        self._eval_actuator_coords(bodies_q, self.actuators_q_prev, self.actuators_q_next)
         # Compute necessary number of Newton steps, before the incremental target matches the true target
         self.min_newton_iterations.zero_()
         wp.launch_tiled(
@@ -1681,10 +1689,10 @@ class ForwardKinematicsSolver:
     def _solve_for_body_velocities(
         self,
         target_rel_transforms: wp.array[wp.transformf],
-        base_u: wp.array[vec6f],
+        base_u: wp.array[wp.spatial_vectorf],
         actuators_u: wp.array[wp.float32],
         bodies_q: wp.array[wp.transformf],
-        bodies_u: wp.array[vec6f],
+        bodies_u: wp.array[wp.spatial_vectorf],
         world_mask: wp.array[wp.bool],
     ):
         """
@@ -1806,7 +1814,7 @@ class ForwardKinematicsSolver:
 
     def eval_kinematic_constraints(
         self, bodies_q: wp.array[wp.transformf], target_rel_transforms: wp.array[wp.transformf]
-    ):
+    ) -> wp.array2d[wp.float32]:
         """
         Evaluates and returns the kinematic constraints vector given the body poses and the position
         control transformations.
@@ -1828,7 +1836,7 @@ class ForwardKinematicsSolver:
 
     def eval_kinematic_constraints_jacobian(
         self, bodies_q: wp.array[wp.transformf], target_rel_transforms: wp.array[wp.transformf]
-    ):
+    ) -> wp.array3d[wp.float32]:
         """
         Evaluates and returns the kinematic constraints Jacobian (w.r.t. body poses) given the body poses
         and the position control transformations.
@@ -1858,11 +1866,11 @@ class ForwardKinematicsSolver:
 
     def solve_for_body_velocities(
         self,
-        target_rel_transforms: wp.array[wp.transformf],
         actuators_u: wp.array[wp.float32],
         bodies_q: wp.array[wp.transformf],
-        bodies_u: wp.array[vec6f],
-        base_u: wp.array[vec6f] | None = None,
+        bodies_u: wp.array[wp.spatial_vectorf],
+        base_u: wp.array[wp.spatial_vectorf] | None = None,
+        target_rel_transforms: wp.array[wp.transformf] | None = None,
         world_mask: wp.array[wp.bool] | None = None,
     ):
         """
@@ -1870,47 +1878,50 @@ class ForwardKinematicsSolver:
         More specifically, solves for body twists yielding zero constraint velocities, except at
         actuated dofs and at the base joint, where velocities must match prescribed velocities.
 
-        Parameters
-        ----------
-        target_rel_transforms : wp.array
-            Array of position-control transforms, encoding actuated coordinates and base pose.
-            Expects shape of ``(num_fk_joints,)`` and type :class:`transform`
-        actuators_u : wp.array
-            Array of actuated joint velocities.
-            Expects shape of ``(sum_of_num_actuated_joint_dofs,)`` and type :class:`float`.
-        bodies_q : wp.array
-            Array of rigid body poses. Must be the solution of FK given the position-control transforms.
-            Expects shape of ``(num_bodies,)`` and type :class:`transform`.
-        bodies_u : wp.array
-            Array of rigid body velocities (twists), written out by the solver.
-            Expects shape of ``(num_bodies,)`` and type :class:`vec6`.
-        base_u : wp.array, optional
-            Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
-            absolute otherwise.
-            If not provided, will default to zero. Ignored if no base body or joint was set for this model.
-            If this function is captured in a graph, must be either always or never provided.
-            Expects shape of ``(num_worlds,)`` and type :class:`vec6`.
-        world_mask : wp.array, optional
-            Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
-            If not provided, all worlds are processed.
-            If this function is captured in a graph, must be either always or never provided.
-            Expects shape of ``(num_worlds,)`` and type :class:`bool`.
+        Args:
+            actuators_u: Array of actuated joint velocities.
+                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+            bodies_q: Array of rigid body poses. Must be the solution of FK given the position-control transforms.
+                Expects shape of ``(num_bodies,)``.
+            bodies_u: Array of rigid body velocities (twists), written out by the solver.
+                Expects shape of ``(num_bodies,)``.
+            base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
+                absolute otherwise.
+                If not provided, will default to zero. Ignored if no base body or joint was set for this model.
+                If this function is captured in a graph, must be either always or never provided.
+                Expects shape of ``(num_worlds,)``.
+            target_rel_transforms: Array of position-control transforms, encoding actuated coordinates and base pose.
+                Expects shape of ``(num_fk_joints,)``.
+                If not provided, will be inferred from bodies_q, reading actuated coordinates and base pose
+                from body poses (assuming they are consistent).
+                If this function is captured in a graph, must be either always or never provided.
+            world_mask: Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
+                If not provided, all worlds are processed.
+                If this function is captured in a graph, must be either always or never provided.
+                Expects shape of ``(num_worlds,)``.
         """
-        assert target_rel_transforms.device == self.device
         assert actuators_u.device == self.device
         assert bodies_q.device == self.device
         assert bodies_u.device == self.device
         assert base_u is None or base_u.device == self.device
+        assert target_rel_transforms is None or target_rel_transforms.device == self.device
         assert world_mask is None or world_mask.device == self.device
 
         # Use default base velocity if not provided
         if base_u is None:
             base_u = self.base_u_default
 
-        internal_mask = self.all_worlds_mask if world_mask is None else world_mask
+        # Use default mask with all worlds if not provided
+        world_mask = self.all_worlds_mask if world_mask is None else world_mask
+
+        # Extract target relative transformations from state if not provided
+        if target_rel_transforms is None:
+            self._eval_actuator_coords(bodies_q, self.actuators_q_next)
+            self._eval_target_relative_transformations(self.actuators_q_next, self.target_rel_transforms)
+            target_rel_transforms = self.target_rel_transforms
 
         # Compute velocities
-        self._solve_for_body_velocities(target_rel_transforms, base_u, actuators_u, bodies_q, bodies_u, internal_mask)
+        self._solve_for_body_velocities(target_rel_transforms, base_u, actuators_u, bodies_q, bodies_u, world_mask)
 
     def run_fk_solve(
         self,
@@ -1918,8 +1929,8 @@ class ForwardKinematicsSolver:
         bodies_q: wp.array[wp.transformf],
         base_q: wp.array[wp.transformf] | None = None,
         actuators_u: wp.array[wp.float32] | None = None,
-        base_u: wp.array[vec6f] | None = None,
-        bodies_u: wp.array[vec6f] | None = None,
+        base_u: wp.array[wp.spatial_vectorf] | None = None,
+        bodies_u: wp.array[wp.spatial_vectorf] | None = None,
         world_mask: wp.array[wp.bool] | None = None,
     ):
         """
@@ -1930,41 +1941,33 @@ class ForwardKinematicsSolver:
         base pose. Optionally also solves for rigid body velocities
         given actuator and base body velocities.
 
-        Parameters
-        ----------
-        actuators_q : wp.array
-            Array of actuated joint coordinates.
-            Expects shape of ``(sum_of_num_actuated_joint_coords,)`` and type :class:`float`.
-        bodies_q : wp.array
-            Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
-            solver setting is False.
-            Expects shape of ``(num_bodies,)`` and type :class:`transform`.
-        base_q : wp.array, optional
-            Pose of the base body for each world, in the frame of the base joint if it was set, or absolute otherwise.
-            If not provided, will default to zero coordinates of the base joint, or the initial pose of the base body.
-            If no base body or joint was set for this model, will be ignored.
-            If this function is captured in a graph, must be either always or never provided.
-            Expects shape of ``(num_worlds,)`` and type :class:`transform`.
-        actuators_u : wp.array, optional
-            Array of actuated joint velocities.
-            Must be provided when solving for body velocities, i.e. if bodies_u is provided.
-            If this function is captured in a graph, must be either always or never provided.
-            Expects shape of ``(sum_of_num_actuated_joint_dofs,)`` and type :class:`float`.
-        base_u : wp.array, optional
-            Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
-            absolute otherwise.
-            If not provided, will default to zero. Ignored if no base body or joint was set for this model.
-            If this function is captured in a graph, must be either always or never provided.
-            Expects shape of ``(num_worlds,)`` and type :class:`vec6`.
-        bodies_u : wp.array, optional
-            Array of rigid body velocities (twists), written out by the solver if provided.
-            If this function is captured in a graph, must be either always or never provided.
-            Expects shape of ``(num_bodies,)`` and type :class:`vec6`.
-        world_mask : wp.array, optional
-            Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
-            If not provided, all worlds are processed.
-            If this function is captured in a graph, must be either always or never provided.
-            Expects shape of ``(num_worlds,)`` and type :class:`bool`.
+        Args:
+            actuators_q: Array of actuated joint coordinates.
+                Expects shape of ``(sum_of_num_actuated_joint_coords,)``.
+            bodies_q: Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
+                solver setting is False.
+                Expects shape of ``(num_bodies,)``.
+            base_q: Pose of the base body for each world, in the frame of the base joint if it was set, or absolute otherwise.
+                If not provided, will default to zero coordinates of the base joint, or the initial pose of the base body.
+                If no base body or joint was set for this model, will be ignored.
+                If this function is captured in a graph, must be either always or never provided.
+                Expects shape of ``(num_worlds,)``.
+            actuators_u: Array of actuated joint velocities.
+                Must be provided when solving for body velocities, i.e. if bodies_u is provided.
+                If this function is captured in a graph, must be either always or never provided.
+                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+            base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
+                absolute otherwise.
+                If not provided, will default to zero. Ignored if no base body or joint was set for this model.
+                If this function is captured in a graph, must be either always or never provided.
+                Expects shape of ``(num_worlds,)``.
+            bodies_u: Array of rigid body velocities (twists), written out by the solver if provided.
+                If this function is captured in a graph, must be either always or never provided.
+                Expects shape of ``(num_bodies,)``.
+            world_mask: Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
+                If not provided, all worlds are processed.
+                If this function is captured in a graph, must be either always or never provided.
+                Expects shape of ``(num_worlds,)``.
         """
         # Check that actuators_u are provided if we need to solve for bodies_u
         if bodies_u is not None and actuators_u is None:
@@ -2048,8 +2051,8 @@ class ForwardKinematicsSolver:
         bodies_q: wp.array[wp.transformf],
         base_q: wp.array[wp.transformf] | None = None,
         actuators_u: wp.array[wp.float32] | None = None,
-        base_u: wp.array[vec6f] | None = None,
-        bodies_u: wp.array[vec6f] | None = None,
+        base_u: wp.array[wp.spatial_vectorf] | None = None,
+        bodies_u: wp.array[wp.spatial_vectorf] | None = None,
         world_mask: wp.array[wp.bool] | None = None,
         verbose: bool = False,
         return_status: bool = False,
@@ -2062,48 +2065,36 @@ class ForwardKinematicsSolver:
         coordinates and base pose. Optionally also solves for rigid body velocities
         given actuator and base body velocities.
 
-        Parameters
-        ----------
-        actuators_q : wp.array
-            Array of actuated joint coordinates.
-            Expects shape of ``(sum_of_num_actuated_joint_coords,)`` and type :class:`float`.
-        bodies_q : wp.array
-            Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
-            solver setting is False.
-            Expects shape of ``(num_bodies,)`` and type :class:`transform`.
-        base_q : wp.array, optional
-            Pose of the base body for each world, in the frame of the base joint if it was set, or absolute otherwise.
-            If not provided, will default to zero coordinates of the base joint, or the initial pose of the base body.
-            If no base body or joint was set for this model, will be ignored.
-            Expects shape of ``(num_worlds,)`` and type :class:`transform`.
-        actuators_u : wp.array, optional
-            Array of actuated joint velocities.
-            Must be provided when solving for body velocities, i.e. if bodies_u is provided.
-            Expects shape of ``(sum_of_num_actuated_joint_dofs,)`` and type :class:`float`.
-        base_u : wp.array, optional
-            Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
-            absolute otherwise.
-            If not provided, will default to zero. Ignored if no base body or joint was set for this model.
-            Expects shape of ``(num_worlds,)`` and type :class:`vec6`.
-        bodies_u : wp.array, optional
-            Array of rigid body velocities (twists), written out by the solver if provided.
-            Expects shape of ``(num_bodies,)`` and type :class:`vec6`.
-        world_mask : wp.array, optional
-            Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
-            If not provided, all worlds are processed.
-            Expects shape of ``(num_worlds,)`` and type :class:`bool`.
-        verbose : bool, optional
-            whether to write a status message at the end (default: False)
-        return_status : bool, optional
-            whether to return the detailed solver status (default: False)
-        use_graph : bool, optional
-            whether to use graph capture internally to accelerate multiple calls to this function. Can be turned
-            off for profiling individual kernels (default: True)
+        Args:
+            actuators_q: Array of actuated joint coordinates.
+                Expects shape of ``(sum_of_num_actuated_joint_coords,)``.
+            bodies_q: Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
+                solver setting is False.
+                Expects shape of ``(num_bodies,)``.
+            base_q: Pose of the base body for each world, in the frame of the base joint if it was set, or absolute otherwise.
+                If not provided, will default to zero coordinates of the base joint, or the initial pose of the base body.
+                If no base body or joint was set for this model, will be ignored.
+                Expects shape of ``(num_worlds,)``.
+            actuators_u: Array of actuated joint velocities.
+                Must be provided when solving for body velocities, i.e. if bodies_u is provided.
+                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+            base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
+                absolute otherwise.
+                If not provided, will default to zero. Ignored if no base body or joint was set for this model.
+                Expects shape of ``(num_worlds,)``.
+            bodies_u: Array of rigid body velocities (twists), written out by the solver if provided.
+                Expects shape of ``(num_bodies,)``.
+            world_mask: Per-world boolean flags selecting which worlds to process (``False`` leaves a world unchanged).
+                If not provided, all worlds are processed.
+                Expects shape of ``(num_worlds,)``.
+            verbose: Whether to write a status message at the end (default: False)
+            return_status: Whether to return the detailed solver status (default: False)
+            use_graph: Whether to use graph capture internally to accelerate multiple calls to this function. Can be turned
+                off for profiling individual kernels (default: True)
 
-        Returns
-        -------
-        solver_status : ForwardKinematicsSolverStatus, optional
-            the detailed solver status with success flag, number of iterations and constraint residual per world
+        Returns:
+            If return_status is True, the detailed solver status with success flag, number of iterations
+            and constraint residual per world; otherwise nothing.
         """
         assert base_q is None or base_q.device == self.device
         assert actuators_q.device == self.device
