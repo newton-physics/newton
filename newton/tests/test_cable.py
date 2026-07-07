@@ -5028,6 +5028,8 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
         tau = wp.array([0.2, 0.2], dtype=float, device=device)
         sigma_start = wp.zeros(2, dtype=wp.vec3, device=device)
         C_fric = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_world = wp.zeros(2, dtype=wp.int32, device=device)
+        rebaseline_mask = wp.zeros(1, dtype=wp.bool, device=device)
 
         wp.launch(
             compute_cable_dahl_parameters,
@@ -5035,6 +5037,8 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
             inputs=[
                 joint_type,
                 joint_enabled,
+                joint_world,
+                rebaseline_mask,
                 joint_parent,
                 joint_child,
                 joint_x,
@@ -5507,13 +5511,17 @@ def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     state_1 = model.state()
     control = model.control()
 
-    body_q = state_0.body_q.numpy()
+    # First step at the rest pose consumes the initial pose-rebaseline mask
+    # (main's reset semantics), establishing the Dahl baseline at identity.
+    solver.step(state_0, state_1, control, None, 1.0 / 60.0)
+
+    body_q = state_1.body_q.numpy()
     body_q[bend_body] = [0.0, 0.0, 0.0, *wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)]
     body_q[twist_body] = [0.0, 0.0, 0.0, *wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.1)]
-    state_0.body_q.assign(body_q)
     state_1.body_q.assign(body_q)
+    state_0.body_q.assign(body_q)
 
-    solver.step(state_0, state_1, control, None, 1.0 / 60.0)
+    solver.step(state_1, state_0, control, None, 1.0 / 60.0)
 
     sigma = solver.joint_sigma_prev.numpy()
     kappa = solver.joint_kappa_prev.numpy()

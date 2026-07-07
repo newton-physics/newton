@@ -229,9 +229,9 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``examples``
      - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt`` / ``.pth`` policies (includes ``examples``)
+     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``torch-cu13``
-     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt`` / ``.pth`` policies (includes ``examples``)
+     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
