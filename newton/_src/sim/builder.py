@@ -3937,10 +3937,10 @@ class ModelBuilder:
             The index of the added joint.
 
         .. note::
-            Avoid creating two joints between the same ``parent`` and ``child``, as this is ambiguous and
-            may be handled differently by different solvers. Bodies created with :meth:`add_body` are
-            implicitly connected to the world by a free joint; to connect a body to the world with a
-            different joint type, use :meth:`add_link` instead.
+            Avoid creating several joints between the same pair of bodies, as this is ambiguous and may be handled
+            differently by different solvers. Bodies created with :meth:`add_body` are implicitly connected to the
+            world by a free joint. To connect a body to the world with a different joint type, use :meth:`add_link`
+            instead.
         """
         if linear_axes is None:
             linear_axes = []
@@ -3979,8 +3979,11 @@ class ModelBuilder:
 
         has_parallel_joint = False
         parallel_free = False
-        for existing_parent, existing_joint_idx in self.joint_parents.get(child, ()):
-            if existing_parent == parent:
+        for existing_body, existing_joint_idx in (
+            *self.joint_parents.get(child, ()),
+            *self.joint_children.get(child, ()),
+        ):
+            if existing_body == parent:
                 has_parallel_joint = True
                 parallel_free = joint_type == JointType.FREE or self.joint_type[existing_joint_idx] == JointType.FREE
                 if parallel_free:

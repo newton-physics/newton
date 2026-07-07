@@ -223,6 +223,15 @@ class TestParallelJointWarning(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "undefined"):
             builder.add_joint_prismatic(parent=-1, child=link)
 
+    def test_reversed_parent_child_warns_undefined(self):
+        builder = ModelBuilder()
+        body_a = builder.add_link(mass=1.0, label="A")
+        body_b = builder.add_link(mass=1.0, label="B")
+        builder.add_joint_revolute(parent=body_a, child=body_b)
+
+        with self.assertWarnsRegex(UserWarning, "undefined"):
+            builder.add_joint_prismatic(parent=body_b, child=body_a)
+
 
 class TestModelBuilderBvhConstructor(unittest.TestCase):
     def test_model_builder_forwards_bvh_constructors(self):
