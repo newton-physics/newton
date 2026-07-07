@@ -42,9 +42,6 @@
   - Add standalone multiphysics examples and regression coverage for MuJoCo/Kamino, VBD, XPBD, MPM, and ADMM contacts.
   - Add `--coupled-view` to coupled multiphysics examples and expose `SolverCoupled` entry view/state helpers for rendering individual sub-solver views.
 - Add `BODY_F`, `PARTICLE_F`, and `JOINT_F` to `StateFlags`.
-- Add fixed-grid `ParticleSurface.configure_field_grid()` and `update_field()` APIs for CUDA graph-capturable particle density/SDF field extraction.
-- Add public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs for particle surface extraction, with optional SDF redistancing and MPM collider extrapolation support.
-- Add particle surface extraction for MPM and general particle sets through the public `newton.geometry.ParticleSurface` and `extract_particle_surface()` APIs.
 - Add opt-in `validate_mesh` parameter to `ModelBuilder.add_cloth_mesh()`, `ModelBuilder.add_soft_mesh()`, and `style3d.add_cloth_mesh()` that warns on degenerate geometry; add public `newton.utils.validate_triangle_mesh()` and `newton.utils.validate_tet_mesh()` utilities
 - Add `ViewerGL.show_loading_splash()` / `ViewerGL.hide_loading_splash()` displaying a stylized Newton's-cradle overlay while the GL viewer waits on Warp kernel compilation; raised automatically by `newton.examples.init()` for visible GL viewers
 
