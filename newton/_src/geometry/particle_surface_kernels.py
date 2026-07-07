@@ -33,6 +33,11 @@ def _is_active(flags: wp.array[wp.int32], use_flags: int, i: int) -> bool:
 
 
 @wp.func
+def _is_finite_position(position: wp.vec3) -> bool:
+    return wp.isfinite(position[0]) and wp.isfinite(position[1]) and wp.isfinite(position[2])
+
+
+@wp.func
 def _node_index(i: int, j: int, k: int, dims: wp.vec3i) -> int:
     return (i * dims[1] + j) * dims[2] + k
 
@@ -105,7 +110,7 @@ def compute_particle_bounds(
         return
 
     p = positions[i]
-    if not wp.isfinite(p[0]) or not wp.isfinite(p[1]) or not wp.isfinite(p[2]):
+    if not _is_finite_position(p):
         return
 
     wp.atomic_min(lower, 0, p)
@@ -157,6 +162,10 @@ def smooth_positions_flagged(
         return
 
     xi = positions[i]
+    if not _is_finite_position(xi):
+        smoothed[i] = xi
+        return
+
     offset_sum = wp.vec3(0.0)
     weight_sum = float(0.0)
     radius_sq = search_radius * search_radius
@@ -226,6 +235,9 @@ def compute_kernel_bounds(
         return
 
     position = positions[i]
+    if not _is_finite_position(position):
+        return
+
     reach = _kernel_reach(
         i,
         radii,
@@ -339,7 +351,7 @@ def evaluate_density(
 
     position = smoothed[particle]
     radius = radii[particle]
-    if radius <= 0.0 or not wp.isfinite(radius):
+    if not _is_finite_position(position) or radius <= 0.0 or not wp.isfinite(radius):
         return
 
     volume = 8.0 * radius * radius * radius
@@ -399,7 +411,7 @@ def evaluate_particle_sdf_isotropic(
 
     position = smoothed[particle]
     radius = radii[particle] * radius_scale
-    if radius <= 0.0 or not wp.isfinite(radius):
+    if not _is_finite_position(position) or radius <= 0.0 or not wp.isfinite(radius):
         return
     reach = band * radius
     origin = grid_origin[0]
@@ -451,7 +463,7 @@ def evaluate_particle_sdf_anisotropic(
 
     position = smoothed[particle]
     radius = radii[particle] * radius_scale
-    if radius <= 0.0 or not wp.isfinite(radius):
+    if not _is_finite_position(position) or radius <= 0.0 or not wp.isfinite(radius):
         return
 
     G = G_matrices[particle]
@@ -843,6 +855,10 @@ def _smooth_positions(
 ):
     i = wp.tid()
     xi = positions[i]
+    if not _is_finite_position(xi):
+        smoothed[i] = xi
+        return
+
     offset_sum = wp.vec3(0.0)
     w_sum = float(0.0)
     radius_sq = search_radius * search_radius
@@ -895,6 +911,12 @@ def _compute_anisotropy(
         return
 
     xi = smoothed[i]
+    if not _is_finite_position(xi):
+        G_out[i] = wp.mat33(0.0)
+        det_G_out[i] = 0.0
+        density_reach_out[i] = wp.vec3(0.0)
+        return
+
     h = search_radius
 
     mean_offset = wp.vec3(0.0)

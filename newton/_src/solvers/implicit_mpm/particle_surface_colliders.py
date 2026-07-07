@@ -87,7 +87,7 @@ def _mirror_capacity_sdf_into_colliders(
         position = origin + voxel_size * wp.vec3(float(i), float(j), float(k))
 
         distance, normal, _velocity, _collider_id, _material_id = collision_sdf(
-            position, collider, body_q, body_qd, body_q_prev, 0.0
+            position, collider, body_q, body_qd, body_q_prev, 1.0
         )
         depth = onset - distance
         if depth >= 0.0 and depth <= max_depth:
@@ -113,8 +113,6 @@ def extrapolate_surface_sdf_into_colliders(
     surface: ParticleSurface,
     collider: Collider,
     body_q: wp.array[wp.transform],
-    body_qd: wp.array | None = None,
-    body_q_prev: wp.array | None = None,
     *,
     max_depth: float | None = None,
     onset: float = 0.0,
@@ -127,8 +125,6 @@ def extrapolate_surface_sdf_into_colliders(
         surface: Particle surface containing the SDF field.
         collider: MPM collider representation to extrapolate into.
         body_q: Current rigid body transforms, shape ``(body_count,)``.
-        body_qd: Optional rigid body spatial velocities, shape ``(body_count,)``.
-        body_q_prev: Optional previous rigid body transforms, shape ``(body_count,)``.
         max_depth: Maximum extrapolation depth inside colliders [m]. Defaults to
             ``4 * surface.voxel_size``.
         onset: Signed collider distance where extrapolation starts [m]. A value
@@ -168,8 +164,8 @@ def extrapolate_surface_sdf_into_colliders(
                 max_depth,
                 collider,
                 body_q,
-                body_qd,
-                body_q_prev,
+                None,
+                None,
                 capacity.launch_threads,
             ],
             device=capacity.device,
