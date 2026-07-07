@@ -693,6 +693,45 @@ def _make_open_square() -> tuple[np.ndarray, np.ndarray]:
     return vertices, faces
 
 
+def _make_open_box() -> tuple[np.ndarray, np.ndarray]:
+    """Unit box centered at the origin with the +z (top) face removed.
+
+    A non-watertight mesh whose interior is still well defined below the
+    opening: parity ray-casts leak out through the missing face and wrongly sign
+    points near the opening, whereas the pseudo-normal stays correct.
+    """
+    vertices = np.array(
+        [
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [-0.5, 0.5, -0.5],
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+        ],
+        dtype=np.float32,
+    )
+    # Outward-facing (CCW) triangles for every face except the top (4, 5, 6, 7).
+    faces = np.array(
+        [
+            [0, 2, 1],
+            [0, 3, 2],  # -z
+            [0, 1, 5],
+            [0, 5, 4],  # -y
+            [1, 2, 6],
+            [1, 6, 5],  # +x
+            [2, 3, 7],
+            [2, 7, 6],  # +y
+            [3, 0, 4],
+            [3, 4, 7],  # -x
+        ],
+        dtype=np.int32,
+    )
+    return vertices, faces
+
+
 def test_mixed_winding_convex_pile_contact_normal(test, device):
     vertices, faces = _make_mixed_winding_convex_pile_proxy()
     mesh = _make_warp_mesh(vertices, faces, device)
@@ -941,10 +980,99 @@ def test_shape_config_mesh_sign_flags(test, device):
         builder.finalize(device=device)
 
 
+def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties: int, extra_flags: int) -> np.ndarray:
+    """Run ``create_soft_contacts`` for one particle against an open-box mesh and
+    return the resulting world-space contact normal (asserting a hit)."""
+    count = wp.zeros(1, dtype=wp.int32, device=device)
+    contact_particle = wp.empty(1, dtype=wp.int32, device=device)
+    contact_shape = wp.empty(1, dtype=wp.int32, device=device)
+    contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_normal = wp.empty(1, dtype=wp.vec3, device=device)
+    contact_tids = wp.empty(1, dtype=wp.int32, device=device)
+    wp.launch(
+        create_soft_contacts,
+        dim=1,
+        inputs=[
+            wp.array([wp.vec2i(0, 0)], dtype=wp.vec2i, device=device),
+            points,
+            wp.array([0.4], dtype=wp.float32, device=device),
+            wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.transform, device=device),
+            wp.array([wp.transform()], dtype=wp.transform, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            wp.array([int(GeoType.MESH)], dtype=wp.int32, device=device),
+            wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
+            wp.array([mesh_id], dtype=wp.uint64, device=device),
+            wp.array([mesh_properties], dtype=wp.int32, device=device),
+            wp.array([-1], dtype=wp.int32, device=device),
+            0.0,
+            wp.array([0.0], dtype=wp.float32, device=device),
+            1,
+            wp.array([int(ShapeFlags.COLLIDE_PARTICLES | extra_flags)], dtype=wp.int32, device=device),
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.empty(0, dtype=HeightfieldData, device=device),
+            wp.empty(0, dtype=wp.float32, device=device),
+        ],
+        outputs=[
+            count,
+            contact_particle,
+            contact_shape,
+            contact_body_pos,
+            contact_body_vel,
+            contact_normal,
+            contact_tids,
+        ],
+        device=device,
+    )
+    test.assertEqual(int(count.numpy()[0]), 1)
+    return np.asarray(contact_normal.numpy()[0], dtype=np.float32)
+
+
+def test_open_mesh_soft_contact_uses_normal_sign(test, device):
+    """End-to-end soft contact against an open (non-watertight) mesh.
+
+    Reproduces issue #3242 at the contact level: a particle just below the
+    missing top face of an open box is signed incorrectly by parity (its ray
+    leaks out through the opening), which inverts the contact response. The
+    automatically selected normal method signs it correctly; forcing parity
+    flips the contact normal to the opposite direction.
+    """
+    vertices, faces = _make_open_box()
+    mesh = _make_warp_mesh(vertices, faces, device)
+
+    # Interior point near the opening whose unique closest wall is +x at x=0.5.
+    points = wp.array(np.array([[0.25, 0.0, 0.3]], dtype=np.float32), dtype=wp.vec3, device=device)
+
+    parity_sign = wp.zeros(1, dtype=wp.float32, device=device)
+    normal_sign = wp.zeros(1, dtype=wp.float32, device=device)
+    wp.launch(_query_mesh_signs, dim=1, inputs=[mesh.id, points, 10.0, parity_sign, normal_sign], device=device)
+    # Parity wrongly signs the interior point as outside; normal correctly reports inside.
+    test.assertGreater(float(parity_sign.numpy()[0]), 0.0)
+    test.assertLess(float(normal_sign.numpy()[0]), 0.0)
+
+    # Open mesh (mesh_properties = 0) with no override -> automatic normal method:
+    # the contact normal points out through the nearest wall (+x), which is correct.
+    auto_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, 0, 0)
+    test.assertGreater(float(np.dot(auto_normal, np.array([1.0, 0.0, 0.0], dtype=np.float32))), 0.99)
+
+    # Forcing parity inverts the sign, and therefore the contact normal.
+    parity_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, 0, int(ShapeFlags.MESH_SIGN_PARITY))
+    test.assertLess(float(np.dot(auto_normal, parity_normal)), -0.99)
+
+
 add_function_test(
     TestMeshSignQueries,
     "test_mixed_winding_convex_pile_contact_normal",
     test_mixed_winding_convex_pile_contact_normal,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestMeshSignQueries,
+    "test_open_mesh_soft_contact_uses_normal_sign",
+    test_open_mesh_soft_contact_uses_normal_sign,
     devices=devices,
     check_output=False,
 )
