@@ -2974,10 +2974,9 @@ def parse_usd(
                 if any(re.match(p, path) for p in ignore_paths):
                     continue
                 prim = stage.GetPrimAtPath(xpath)
-                if key == UsdPhysics.ObjectType.MeshShape and usd.has_applied_api_schema(
-                    prim, "PhysicsSurfaceDeformableSimAPI"
-                ):
-                    continue
+                # Deformable-owned meshes never reach this loop: the scout excludes them
+                # from the native parse. A sim-API mesh seen here was deliberately left
+                # rigid (e.g. its body API conflicts with RigidBodyAPI), so import it.
                 if path in path_shape_map:
                     if verbose:
                         print(f"Shape at {path} already added, skipping.")

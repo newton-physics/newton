@@ -353,6 +353,29 @@ class TestUSDDeformableCloth(unittest.TestCase):
             mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
         return mesh
 
+    def test_deformable_body_with_rigid_body_api_imports_rigid(self):
+        """The proposal forbids PhysicsDeformableBodyAPI on a prim that has RigidBodyAPI.
+        The rigid interpretation wins (an invalid API application must not steal a working
+        rigid body): the importer warns, skips the deformable, and the native loader keeps
+        the rigid body and its collision shape."""
+        from pxr import UsdPhysics
+
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")  # sim API + enabled CollisionAPI
+        _apply_deformable_body_api(cloth.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(cloth.GetPrim())
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "/World/Cloth.*RigidBodyAPI"):
+            result = builder.add_usd(stage, deformable_results=True)
+
+        self.assertEqual(builder.particle_count, 0)
+        self.assertNotIn("/World/Cloth", result["path_cloth_map"])
+        self.assertIn("/World/Cloth", result["path_body_map"])
+        self.assertEqual(builder.body_count, 1)
+        self.assertGreaterEqual(builder.shape_count, 1)
+        builder.finalize()
+
     def test_subset_physics_material_binding_warns(self):
         """Per-UsdGeomSubset physics material bindings (per-element density, per-edge
         bendStiffness in the proposal) are not supported: the importer resolves one

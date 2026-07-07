@@ -86,6 +86,30 @@ def _is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
     return any(re.match(pattern, path) for pattern in ignore_paths)
 
 
+def _deformable_rigid_body_conflict(prim) -> bool:
+    """Whether the candidate's governing ``PhysicsDeformableBodyAPI`` prim has ``RigidBodyAPI``.
+
+    The proposal forbids applying ``PhysicsDeformableBodyAPI`` to a prim with
+    ``RigidBodyAPI``. The rigid interpretation wins -- an invalid API application must not
+    steal a working rigid body -- so a conflicted candidate is not claimed as deformable
+    (the native rigid loader keeps the prim) and the conflict warns.
+    """
+    from pxr import UsdPhysics
+
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    body_root = usd._find_deformable_body_prim(prim)
+    if body_root is None or not body_root.HasAPI(UsdPhysics.RigidBodyAPI):
+        return False
+    warnings.warn(
+        f"{prim.GetPath()}: PhysicsDeformableBodyAPI on {body_root.GetPath()} conflicts with "
+        f"its RigidBodyAPI (the proposal forbids the combination); skipping the deformable "
+        f"interpretation and importing the prim as rigid.",
+        stacklevel=2,
+    )
+    return True
+
+
 def _warn_subset_material_bindings(prim, path: str) -> None:
     """Warn when the simulation geometry carries per-``UsdGeomSubset`` physics materials.
 
@@ -789,19 +813,27 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
             buckets.element_filters.append(prim)
             continue
         # Exact concrete names classify without IsA; unknown type names (derived geometry
-        # schemas) fall back to the IsA checks so subclasses keep working.
+        # schemas) fall back to the IsA checks so subclasses keep working. A sim candidate
+        # whose governing body prim conflicts with RigidBodyAPI is not bucketed at all:
+        # the native rigid loader keeps the prim.
         if type_name == "TetMesh" or prim.IsA(UsdGeom.TetMesh):
-            buckets.tetmeshes.append(prim)
             if "PhysicsVolumeDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                claim_body(prim)
+                if not _deformable_rigid_body_conflict(prim):
+                    buckets.tetmeshes.append(prim)
+                    claim_body(prim)
+            else:
+                # Bare TetMeshes take the legacy soft-body path.
+                buckets.tetmeshes.append(prim)
         elif type_name == "BasisCurves" or prim.IsA(UsdGeom.BasisCurves):
             if "PhysicsCurvesDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                buckets.cables.append(prim)
-                claim_body(prim)
+                if not _deformable_rigid_body_conflict(prim):
+                    buckets.cables.append(prim)
+                    claim_body(prim)
         elif type_name == "Mesh" or prim.IsA(UsdGeom.Mesh):
             if "PhysicsSurfaceDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
-                buckets.cloth.append(prim)
-                claim_body(prim)
+                if not _deformable_rigid_body_conflict(prim):
+                    buckets.cloth.append(prim)
+                    claim_body(prim)
 
     # Every PointBased prim governed by an imported deformable body belongs to the
     # deformable contract, never to the native rigid loader: colliders feed the
