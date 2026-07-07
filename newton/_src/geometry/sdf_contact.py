@@ -21,6 +21,12 @@ from .contact_reduction_global import (
 )
 from .kernels import MeshSignMethod, mesh_query_point_sign, resolve_mesh_sign_method
 
+# Generous upper bound (mesh-local units) on the closest-point search for the
+# mesh sign queries below. It is not a physical contact range: culling uses
+# tight ``1.01 * threshold`` bounds, and these queries only run at points the
+# narrow phase already placed near the surface, so the value is never binding.
+# Kept finite (rather than ``wp.inf``) so the no-hit branches return a
+# well-behaved sentinel distance instead of propagating infinity into contacts.
 _MESH_QUERY_MAX_DIST = 1000.0
 
 # Launch-side block size for the mesh-SDF narrow-phase kernels. Must match

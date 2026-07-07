@@ -825,20 +825,28 @@ def test_parity_sign_accuracy_exceeds_normal_query(test, device):
     )
 
 
+# A mesh-sign flag value with both method bits set at once: an ambiguous,
+# invalid encoding used to exercise the automatic-fallback and validation paths.
+_AMBIGUOUS_MESH_SIGN_FLAGS = int(ShapeFlags.MESH_SIGN_NORMAL | ShapeFlags.MESH_SIGN_PARITY)
+
+
+class _CountingMesh(newton.Mesh):
+    """Mesh subclass that counts reads of its ``is_watertight`` property."""
+
+    watertight_query_count = 0
+
+    @property
+    def is_watertight(self):
+        self.watertight_query_count += 1
+        return super().is_watertight
+
+
 def test_model_mesh_properties_track_watertight(test, device):
     open_vertices, open_faces = _make_open_square()
     closed_vertices, closed_faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
 
-    class CountingMesh(newton.Mesh):
-        watertight_query_count = 0
-
-        @property
-        def is_watertight(self):
-            self.watertight_query_count += 1
-            return super().is_watertight
-
     open_mesh = newton.Mesh(open_vertices, open_faces, compute_inertia=False)
-    closed_mesh = CountingMesh(closed_vertices, closed_faces, compute_inertia=False)
+    closed_mesh = _CountingMesh(closed_vertices, closed_faces, compute_inertia=False)
 
     builder = newton.ModelBuilder(gravity=0.0)
     open_shape = builder.add_shape_mesh(body=-1, mesh=open_mesh)
@@ -857,15 +865,7 @@ def test_model_mesh_properties_track_watertight(test, device):
 def test_visual_only_mesh_properties_skip_watertight_query(test, device):
     vertices, faces = _make_watertight_box((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
 
-    class CountingMesh(newton.Mesh):
-        watertight_query_count = 0
-
-        @property
-        def is_watertight(self):
-            self.watertight_query_count += 1
-            return super().is_watertight
-
-    mesh = CountingMesh(vertices, faces, compute_inertia=False)
+    mesh = _CountingMesh(vertices, faces, compute_inertia=False)
     cfg = newton.ModelBuilder.ShapeConfig(
         density=0.0,
         has_shape_collision=False,
@@ -889,8 +889,8 @@ def test_mesh_sign_flags_override_mesh_properties(test, device):
             int(ShapeFlags.MESH_SIGN_NORMAL),
             0,
             0,
-            1 << 7,
-            1 << 7,
+            _AMBIGUOUS_MESH_SIGN_FLAGS,
+            _AMBIGUOUS_MESH_SIGN_FLAGS,
         ],
         dtype=wp.int32,
         device=device,
@@ -929,14 +929,14 @@ def test_shape_config_mesh_sign_flags(test, device):
     with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
         cfg.validate(GeoType.MESH)
 
-    cfg.flags = 1 << 7
+    cfg.flags = _AMBIGUOUS_MESH_SIGN_FLAGS
     with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
         cfg.validate(GeoType.MESH)
 
     vertices, faces = _make_open_square()
     builder = newton.ModelBuilder(gravity=0.0)
     shape = builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, faces, compute_inertia=False))
-    builder.shape_flags[shape] |= 1 << 7
+    builder.shape_flags[shape] |= _AMBIGUOUS_MESH_SIGN_FLAGS
     with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
         builder.finalize(device=device)
 

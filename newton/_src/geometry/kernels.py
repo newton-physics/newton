@@ -15,21 +15,33 @@ from .types import (
 
 
 class MeshSignMethod(enum.IntEnum):
-    """Methods used to determine the sign of mesh point queries."""
+    """Method used to determine the inside/outside sign of a mesh point query."""
 
     NORMAL = 0
+    """Angle-weighted closest-face pseudo-normal; robust for open surfaces."""
     PARITY = 1
+    """Ray-crossing parity; correct and cheap for watertight (closed) meshes."""
 
 
 class MeshProperties(enum.IntFlag):
-    """Mesh properties used by collision kernels."""
+    """Per-shape mesh properties consumed by the collision kernels."""
 
     WATERTIGHT = 1 << 0
+    """The source mesh is closed (every edge shared by exactly two triangles)."""
 
 
 @wp.func
 def resolve_mesh_sign_method(shape_flags: int, mesh_properties: int):
-    """Resolve the mesh sign method, honoring an explicit per-shape override."""
+    """Resolve the mesh sign method for a shape, honoring an explicit override.
+
+    An explicit ``ShapeFlags.MESH_SIGN_NORMAL`` / ``MESH_SIGN_PARITY`` bit wins.
+    Otherwise the method follows the mesh topology: parity for watertight
+    meshes, pseudo-normal otherwise. Normal (rather than the winding number the
+    baked ``build_sdf`` path uses for non-watertight meshes) is the open-mesh
+    choice on purpose: for a genuinely open surface the generalized winding
+    number is ~0.5 and gives no clean inside, whereas the pseudo-normal yields a
+    stable local side-of-surface, which is what open collision geometry needs.
+    """
     method_flags = shape_flags & ShapeFlags.MESH_SIGN_METHOD_MASK
     if method_flags == ShapeFlags.MESH_SIGN_NORMAL:
         return int(MeshSignMethod.NORMAL)

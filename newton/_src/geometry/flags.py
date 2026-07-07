@@ -45,13 +45,32 @@ class ShapeFlags(IntEnum):
     """Indicates that the shape uses hydroelastic collision."""
 
     MESH_SIGN_NORMAL = 1 << 5
-    """Use the closest face normal to determine the sign of mesh point queries."""
+    """Force the closest-face pseudo-normal sign for mesh point queries,
+    overriding the automatic watertight-based selection.
+
+    Honored by the runtime paths that query a triangle mesh directly: soft and
+    particle contacts, and the mesh-mesh SDF narrow phase driven by
+    :class:`~newton.CollisionPipeline`. It has no effect on
+    :meth:`~newton.Mesh.build_sdf`, which chooses its own sign method through
+    its ``sign_method`` argument. Prefer this for open (non-watertight)
+    geometry such as planes or sheets, where parity has no consistent inside.
+    """
 
     MESH_SIGN_PARITY = 1 << 6
-    """Use ray intersection parity to determine the sign of mesh point queries."""
+    """Force the ray-crossing parity sign for mesh point queries, overriding the
+    automatic watertight-based selection.
 
-    MESH_SIGN_METHOD_MASK = 0b111 << 5
-    """Bit mask for the encoded mesh sign method."""
+    Honored by the same runtime paths as :attr:`MESH_SIGN_NORMAL`. Parity is
+    correct and cheap for watertight (closed) meshes but unreliable on open
+    ones; set it to recover parity when a closed mesh is conservatively
+    misdetected as open by :attr:`~newton.Mesh.is_watertight`. Leaving both
+    mesh-sign bits unset selects automatically (parity for watertight meshes,
+    normal otherwise).
+    """
+
+    MESH_SIGN_METHOD_MASK = MESH_SIGN_NORMAL | MESH_SIGN_PARITY
+    """Mask over the two mesh sign-method bits. Setting both at once is an
+    ambiguous encoding and is rejected at model finalization."""
 
 
 __all__ = [

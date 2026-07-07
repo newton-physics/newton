@@ -1716,6 +1716,9 @@ class NarrowPhase:
             num_shapes = shape_aabb_lower.shape[0] if shape_aabb_lower is not None else max_candidate_pairs
             self._empty_edge_indices = wp.zeros(1, dtype=wp.vec2i, device=device)
             self._empty_edge_range = wp.full(max(num_shapes, 1), (-1, 0), dtype=wp.vec2i, device=device)
+            # Indexed by shape id; all-zero means "no watertight bit set" so the
+            # sign method falls back to automatic selection (see resolve_mesh_sign_method).
+            self._empty_mesh_properties = wp.zeros(max(num_shapes, 1), dtype=wp.int32, device=device)
 
             if hydroelastic_sdf is not None:
                 self.shape_pairs_sdf_sdf = wp.zeros(hydroelastic_sdf.max_num_shape_pairs, dtype=wp.vec2i, device=device)
@@ -1831,7 +1834,7 @@ class NarrowPhase:
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
         if shape_mesh_properties is None:
-            shape_mesh_properties = wp.zeros(shape_types.shape[0], dtype=wp.int32, device=device)
+            shape_mesh_properties = self._empty_mesh_properties
         if shape_edge_range is None:
             shape_edge_range = self._empty_edge_range
 
