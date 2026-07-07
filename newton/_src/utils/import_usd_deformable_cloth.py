@@ -149,19 +149,24 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
                 if float(shell_thickness_val) > 0.0:
                     thickness = float(shell_thickness_val)
-        if thickness is None and any(
-            key in cloth_mat for key in ("stretchStiffness", "bendStiffness", "shearStiffness", "density")
+        # Resolve the volumetric density before the thickness fallback: a density authored on
+        # the deformable body or a base physics material carries no thickness by construction
+        # (only the surface material can author one), yet still needs the areal conversion.
+        vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"), deformable_read)
+        if thickness is None and (
+            vol_density is not None
+            or any(key in cloth_mat for key in ("stretchStiffness", "bendStiffness", "shearStiffness"))
         ):
             # The proposal authors volumetric quantities and its unauthored-thickness
             # sentinel delegates to a simulator default; assume a fabric-like shell so the
             # values get a physical surface conversion.
             thickness = _DEFAULT_CLOTH_THICKNESS / ctx.linear_unit
             warnings.warn(
-                f"{path}: the surface material authors volumetric values but no thickness is "
+                f"{path}: volumetric physics values are authored but no thickness is "
                 f"resolvable; assuming the default thickness of {thickness:g} stage units "
                 f"(~{_DEFAULT_CLOTH_THICKNESS:g} m) for the mass, stiffness, and collision-radius "
-                f"conversions. Author physics:thickness on the material (or a shell mass model) "
-                f"to override.",
+                f"conversions. Author physics:thickness on the surface material (or a shell mass "
+                f"model) to override.",
                 stacklevel=2,
             )
 
@@ -197,9 +202,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                 f"tri_aniso_ke) can honor it; the value is preserved in path_cloth_attrs.",
                 stacklevel=2,
             )
-        # Newton cloth density is areal; convert the volumetric material density with the
-        # surface thickness (required for surface mass per the proposal). Body density overrides.
-        vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"), deformable_read)
+        # Newton cloth density is areal; convert the volumetric density (resolved above) with
+        # the surface thickness (required for surface mass per the proposal).
         resolved_cloth_density = vol_density if vol_density is not None else builder.default_shape_cfg.density
         # The areal value is builder-specific; keep it local to add_cloth_mesh. The weight
         # density stays neutral-positive when a body mass must be distributed over it.

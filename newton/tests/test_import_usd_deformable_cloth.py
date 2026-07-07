@@ -171,6 +171,41 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The collision radius describes the same assumed shell: half the default thickness.
         self.assertAlmostEqual(builder.particle_radius[p0], 0.001, places=6)
 
+    def test_cloth_default_thickness_converts_body_and_base_material_density(self):
+        """A volumetric density resolved from the deformable body API or a base physics
+        material still gets the default-thickness areal conversion. Neither source can
+        author a surface thickness, so without the default the volumetric value would be
+        passed to add_cloth_mesh() as areal density (~500x too heavy at 1000 kg/m^3)."""
+        from pxr import Sdf, UsdShade
+
+        stage = _deformable_stage()
+        body_cloth = _add_cloth_mesh(stage, "/World/ClothBodyDensity")
+        _apply_deformable_body_api(body_cloth.GetPrim(), density=1000.0)
+        base_cloth = _add_cloth_mesh(stage, "/World/ClothBaseMat")
+        # A plain rigid-style physics material: base PhysicsMaterialAPI density, no
+        # surface-deformable material API.
+        mat = UsdShade.Material.Define(stage, "/World/BaseMat")
+        mat.GetPrim().AddAppliedSchema("PhysicsMaterialAPI")
+        mat.GetPrim().CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(1000.0)
+        UsdShade.MaterialBindingAPI.Apply(base_cloth.GetPrim()).Bind(mat, materialPurpose="physics")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+        messages = [str(w.message) for w in caught]
+
+        for path in ("/World/ClothBodyDensity", "/World/ClothBaseMat"):
+            self.assertTrue(
+                any(path in m and "assuming the default thickness" in m for m in messages),
+                f"{path}: expected a default-thickness warning",
+            )
+            p0, p1 = group_range(builder, "cloth", path, "particle")
+            # Unit quad (area 1): mass = density * default thickness * area = 1000 * 0.002 = 2 kg.
+            self.assertAlmostEqual(sum(builder.particle_mass[p0:p1]), 2.0, places=5)
+            # The collision radius describes the same assumed shell: half the default thickness.
+            self.assertAlmostEqual(builder.particle_radius[p0], 0.001, places=6)
+
     def test_cloth_thickness_density_and_radius(self):
         """Surface thickness (material attribute, or NewtonMassAPI shell fallback when the
         material omits it) converts the volumetric material density to an areal density and
