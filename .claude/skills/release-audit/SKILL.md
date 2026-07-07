@@ -475,7 +475,7 @@ Open the summary with a 2-3 sentence intro paragraph that names the shape of the
 
 ### 7b — Fill template
 
-Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including the `{{HEADLINE_SUMMARY}}` produced in 7a and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
+Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including `{{DOCUMENT_VERSION_CONTROL}}`, the `{{HEADLINE_SUMMARY}}` produced in 7a, and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
 
 For either gist destination, compose and validate the report as a normal markdown file at `/tmp/<gist-filename>`; do not stream the full report through chat or repeated command output. When revising an existing gist, first materialize its current file as the editable baseline:
 
@@ -484,6 +484,8 @@ gh gist view <id> --filename <gist-filename> --raw > /tmp/<gist-filename>
 ```
 
 Re-audit all findings against the current refs rather than assuming unchanged baseline text is still correct. Apply report edits to the local file, run all final checks there, and upload that same validated file in Phase 7c.
+
+Use the existing gist baseline to fill Document Version Control. For a revision, name the previous and current audited heads and commit counts, then give a compact list of materially changed report sections so prior reviewers know where to focus. Revalidate everything else, replace outdated body text with the current conclusion, and state that unchanged findings were revalidated. For a first publication, identify it as the initial report instead of inventing a prior revision.
 
 **Rendering conventions live in `references/render-rules.md`.** Read that file when starting 7b. It covers:
 

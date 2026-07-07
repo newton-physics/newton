@@ -17,6 +17,25 @@ Generated: {{REPORT_DATE}}
      Retrospective: "Retrospective audit of shipped release v<version>; calibration
                      pass cross-references Claude's flags against post-target history" -->
 
+## Document Version Control
+
+{{DOCUMENT_VERSION_CONTROL}}
+
+<!-- Keep this section short and reviewer-oriented.
+
+     For a first publication, state that this is the initial report and name the
+     audited head and commit count.
+
+     For a revised gist, compare the prior report's audited head and commit count
+     with the current values, then list only the report sections whose conclusions
+     materially changed. Tell prior reviewers where to focus. End by stating that
+     every other finding was revalidated and that the report body contains only
+     current conclusions rather than retaining superseded text.
+
+     Do not use this section as a historical changelog. Gist history preserves old
+     revisions; this section is a compact review map for the immediately preceding
+     revision. -->
+
 
 **Headline counts**
 
@@ -110,6 +129,7 @@ just the `##` top-level sections. List each per-symbol / per-topic heading
 as a sub-bullet under its parent section. Example shape (replace with the
 real symbols / topics present in this specific report):
 
+- [Document Version Control](#document-version-control)
 - [New API](#new-api)
   - [`newton.<symbol>`](#newtonsymbol)
   - [`newton.<submodule>.<symbol>`](#newtonsubmodulesymbol)
