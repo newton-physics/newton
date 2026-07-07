@@ -71,6 +71,7 @@ class LockedPackage:
     registry: str | None
     source: str | None
     markers: tuple[str, ...]
+    dependencies: tuple[str, ...] = ()
 
 
 def _git(repo: Path, *args: str, required: bool = True) -> str:
@@ -197,6 +198,13 @@ def _parse_lock(text: str) -> list[LockedPackage]:
         if marker := package.get("marker"):
             markers.append(str(marker))
         markers.extend(str(marker) for marker in package.get("resolution-markers", []))
+        dependencies = []
+        dependency_groups = [package.get("dependencies", [])]
+        dependency_groups.extend((package.get("optional-dependencies") or {}).values())
+        for group in dependency_groups:
+            for dependency in group:
+                if isinstance(dependency, dict) and dependency.get("name"):
+                    dependencies.append(_normalize_name(str(dependency["name"])))
         packages.append(
             LockedPackage(
                 name=name,
@@ -205,6 +213,7 @@ def _parse_lock(text: str) -> list[LockedPackage]:
                 registry=registry,
                 source=_source_description(source),
                 markers=tuple(dict.fromkeys(markers)),
+                dependencies=tuple(dict.fromkeys(dependencies)),
             )
         )
     return packages
@@ -217,6 +226,26 @@ def _lock_by_name(packages: list[LockedPackage]) -> dict[str, list[LockedPackage
             continue
         by_name.setdefault(package.normalized_name, []).append(package)
     return by_name
+
+
+def _dependency_roots(packages: list[LockedPackage], roots: set[str]) -> dict[str, set[str]]:
+    """Map each reachable locked package name to its direct dependency roots."""
+    graph: dict[str, set[str]] = {}
+    for package in packages:
+        graph.setdefault(package.normalized_name, set()).update(package.dependencies)
+
+    reachable_from: dict[str, set[str]] = {}
+    for root in roots:
+        pending = [root]
+        visited = set()
+        while pending:
+            name = pending.pop()
+            if name in visited:
+                continue
+            visited.add(name)
+            reachable_from.setdefault(name, set()).add(root)
+            pending.extend(graph.get(name, ()))
+    return reachable_from
 
 
 def _fetch_pypi_license(package: str, version: str | None, timeout: float) -> dict[str, str]:
@@ -453,6 +482,20 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
         if {pkg.version for pkg in base_lock_by_name[name]} != {pkg.version for pkg in head_lock_by_name[name]}
     )
 
+    head_external_names = {req.normalized_name for req in head_project.requirements if _is_external(req)}
+    existing_direct_roots = base_external_names & head_external_names
+    new_direct_roots = head_external_names - base_external_names
+    dependency_roots = _dependency_roots(head_lock, head_external_names)
+    existing_dependency_added_names = []
+    new_resolved_names = []
+    for name in added_locked_names:
+        package_roots = dependency_roots.get(name, set())
+        if package_roots & existing_direct_roots and not package_roots & new_direct_roots:
+            existing_dependency_added_names.append(name)
+        else:
+            new_resolved_names.append(name)
+    resolved_change_names = sorted([*changed_version_names, *existing_dependency_added_names])
+
     project_license_rows = []
     if base_project.license != head_project.license:
         project_license_rows.append(["project.license", base_project.license, head_project.license])
@@ -506,8 +549,8 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
     direct_external_names = {
         req.normalized_name for req in [*base_project.requirements, *head_project.requirements] if _is_external(req)
     }
-    direct_version_changes = sum(name in direct_external_names for name in changed_version_names)
-    transitive_version_changes = len(changed_version_names) - direct_version_changes
+    direct_version_changes = sum(name in direct_external_names for name in resolved_change_names)
+    transitive_version_changes = len(resolved_change_names) - direct_version_changes
     license_scope = ", ".join(f"`{path}`" for path in license_pathspecs) or "none declared"
 
     lines = [
@@ -517,9 +560,9 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
         "",
         f"- New external direct dependency names: {len(new_direct_external)}",
         f"- Added external direct requirement scopes: {len(added_external_reqs)}",
-        f"- New resolved package names: {len(added_locked_names)}",
+        f"- New resolved package names: {len(new_resolved_names)}",
         f"- Removed resolved package names: {len(removed_locked_names)}",
-        f"- Existing resolved package version-set changes: {len(changed_version_names)} "
+        f"- Existing resolved package version-set changes: {len(resolved_change_names)} "
         f"({direct_version_changes} direct, {transitive_version_changes} transitive)",
         f"- Project license metadata changes: {len(project_license_rows)}",
         f"- In-tree license notice file changes: {len(license_rows)}",
@@ -570,9 +613,9 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
             ]
         )
 
-    if added_locked_names:
+    if new_resolved_names:
         rows = []
-        for name in added_locked_names:
+        for name in new_resolved_names:
             for package in head_lock_by_name[name]:
                 metadata = _locked_license(package, skip_pypi, pypi_timeout, license_cache)
                 rows.append(
@@ -612,16 +655,21 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
             ]
         )
 
-    if changed_version_names:
+    if resolved_change_names:
         rows = []
-        for name in changed_version_names:
-            base_license, base_evidence = _license_summary(
-                base_lock_by_name[name],
-                skip_pypi,
-                pypi_timeout,
-                license_cache,
-                concise=True,
-            )
+        for name in resolved_change_names:
+            if name in base_lock_by_name:
+                base_license, base_evidence = _license_summary(
+                    base_lock_by_name[name],
+                    skip_pypi,
+                    pypi_timeout,
+                    license_cache,
+                    concise=True,
+                )
+                base_versions = _format_versions(base_lock_by_name[name])
+            else:
+                base_license, base_evidence = "not resolved", ""
+                base_versions = "(not resolved)"
             head_license, head_evidence = _license_summary(
                 head_lock_by_name[name],
                 skip_pypi,
@@ -630,11 +678,18 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
                 concise=True,
             )
             evidence = "; ".join(url for url in (base_evidence, head_evidence) if url)
+            if name in direct_external_names:
+                scope = "direct"
+            elif name in existing_dependency_added_names:
+                roots = sorted(dependency_roots.get(name, set()) & existing_direct_roots)
+                scope = f"transitive via {', '.join(roots)}"
+            else:
+                scope = "transitive"
             rows.append(
                 [
                     head_lock_by_name[name][0].name,
-                    "direct" if name in direct_external_names else "transitive",
-                    _format_versions(base_lock_by_name[name]),
+                    scope,
+                    base_versions,
                     _format_versions(head_lock_by_name[name]),
                     _license_delta(base_license, head_license),
                     evidence,
@@ -707,7 +762,7 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
             added_external_reqs,
             added_locked_names,
             removed_locked_names,
-            changed_version_names,
+            resolved_change_names,
             project_license_rows,
             license_rows,
         ]

@@ -3,7 +3,7 @@ name: release-audit
 description: "Use when auditing a Newton release for keep/defer decisions before a cut, reviewing an RC for readiness, or calibrating the skill against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
@@ -155,6 +155,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
    Interpretation rules for `dependency_license_audit_md`:
    - A newly introduced external direct dependency or new resolved package name is license-relevant even when it lives behind an optional extra. Do not dismiss optional dependencies; state the extra or install path that pulls them in.
+   - A package that first appears in the lockfile only beneath a direct dependency already declared at the base is resolved-set churn, not a new dependency. The helper renders it in Existing Resolved Package Version-Set Changes with `(not resolved)` as the base and attributes the existing direct root. Reserve New Resolved Packages for packages introduced by a new direct dependency root or packages whose root cannot be established.
    - A new optional extra whose dependencies are all already present is a support/install-surface change, but not a new package-license change.
    - Existing package version bumps are not new licenses by themselves. The helper separates direct requirement moves from transitive-only churn; only elevate version bumps to release highlights or Behavioral & Support Changes when the package pin or compatibility constraint is user-visible.
    - In-tree notice-file additions, removals, or modifications under the declared `project.license-files` pathspecs always appear in the dependency/license section. If a notice file is missing for a new bundled asset or vendored component, flag it in CHANGELOG Review Notes.
@@ -476,6 +477,14 @@ Open the summary with a 2-3 sentence intro paragraph that names the shape of the
 
 Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including the `{{HEADLINE_SUMMARY}}` produced in 7a and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
 
+For either gist destination, compose and validate the report as a normal markdown file at `/tmp/<gist-filename>`; do not stream the full report through chat or repeated command output. When revising an existing gist, first materialize its current file as the editable baseline:
+
+```bash
+gh gist view <id> --filename <gist-filename> --raw > /tmp/<gist-filename>
+```
+
+Re-audit all findings against the current refs rather than assuming unchanged baseline text is still correct. Apply report edits to the local file, run all final checks there, and upload that same validated file in Phase 7c.
+
 **Rendering conventions live in `references/render-rules.md`.** Read that file when starting 7b. It covers:
 
 - URL shapes for commits and issues, `diff`-fence preservation, and the anomaly-banner condition.
@@ -506,7 +515,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    - Headline counts (N new APIs, K breaking, M changed, L behavioral, F fixes).
 
 **If destination is `new-gist`:**
-1. Write to `/tmp/<gist-filename>` (stable name, no date) using the Write tool.
+1. Use the validated `/tmp/<gist-filename>` composed in Phase 7b (stable name, no date).
 2. Create the gist:
    ```bash
    gh gist create --desc "<stable-desc>" /tmp/<gist-filename>
@@ -518,7 +527,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    - Headline counts.
 
 **If destination is `revise-gist:<id>`:**
-1. Write to `/tmp/<gist-filename>` (same stable name the existing gist already uses) using the Write tool.
+1. Use the validated `/tmp/<gist-filename>` composed from the existing gist baseline in Phase 7b.
 2. Revise the gist:
    ```bash
    gh gist edit <id> /tmp/<gist-filename>
