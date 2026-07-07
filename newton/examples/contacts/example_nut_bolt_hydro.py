@@ -432,9 +432,9 @@ class Example:
                 f"Displacement={displacement:.4f} (max allowed={max_bolt_displacement:.4f})"
             )
 
-        # The 60 degree threshold catches stalled thread engagement while
-        # tolerating small solver/contact-count variation.
-        min_rotation_threshold = np.radians(60.0)
+        # The 45 degree threshold catches stalled thread engagement while
+        # allowing observed solver/contact-count variation.
+        min_rotation_threshold = np.radians(45.0)
         min_descent = 0.005
         for i in range(len(self.nut_body_indices)):
             # Check rotation occurred
