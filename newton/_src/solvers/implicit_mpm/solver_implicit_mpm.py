@@ -1533,7 +1533,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             surface,
             self._mpm_model.collider,
             state.body_q,
-            state.body_qd,
             max_depth=collider_extrapolation_depth,
             onset=collider_extrapolation_onset,
             compute_normals=compute_normals,

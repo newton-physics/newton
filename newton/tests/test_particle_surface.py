@@ -140,6 +140,26 @@ def test_empty_particles(test, device):
     test.assertIsNone(normals)
 
 
+def test_nonfinite_positions_are_skipped(test, device):
+    reference_positions = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    reference_radii = wp.array([0.05], dtype=wp.float32, device=device)
+    positions = wp.array(
+        [[0.0, 0.0, 0.0], [np.inf, np.nan, -np.inf]],
+        dtype=wp.vec3,
+        device=device,
+    )
+    radii = wp.array([0.05, 0.05], dtype=wp.float32, device=device)
+
+    reference = ParticleSurface(voxel_size=0.05, kernel_radius=0.15, device=device)
+    surface = ParticleSurface(voxel_size=0.05, kernel_radius=0.15, device=device)
+    reference.update_field(reference_positions, reference_radii)
+    surface.update_field(positions, radii)
+
+    test.assertEqual(surface.grid_dims, reference.grid_dims)
+    np.testing.assert_allclose(surface.grid_origin, reference.grid_origin)
+    np.testing.assert_allclose(surface.field.numpy(), reference.field.numpy())
+
+
 def test_radii_length_mismatch(test, device):
     positions = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     radii = wp.full(3, value=0.05, dtype=float, device=device)
@@ -477,7 +497,7 @@ def test_isotropic_particle_sdf_values(test, device):
     ctx.update_field(positions, radii)
 
     field = ctx.field.numpy()
-    center = tuple(int(round(-float(value) / ctx.voxel_size)) for value in ctx.grid_origin)
+    center = tuple(round(-float(value) / ctx.voxel_size) for value in ctx.grid_origin)
     test.assertAlmostEqual(float(field[center]), -0.5)
     test.assertAlmostEqual(float(field[center[0] - 1, center[1], center[2]]), 0.5)
     test.assertAlmostEqual(float(field[center[0], center[1] - 1, center[2]]), 0.5)
@@ -788,6 +808,12 @@ add_function_test(
 )
 add_function_test(TestParticleSurface, "test_mesh_smoothing", test_mesh_smoothing, devices=devices)
 add_function_test(TestParticleSurface, "test_empty_particles", test_empty_particles, devices=devices)
+add_function_test(
+    TestParticleSurface,
+    "test_nonfinite_positions_are_skipped",
+    test_nonfinite_positions_are_skipped,
+    devices=devices,
+)
 add_function_test(TestParticleSurface, "test_radii_length_mismatch", test_radii_length_mismatch, devices=devices)
 add_function_test(TestParticleSurface, "test_radii_device_mismatch", test_radii_device_mismatch, devices=devices)
 add_function_test(TestParticleSurface, "test_array_layout_validation", test_array_layout_validation, devices=devices)
