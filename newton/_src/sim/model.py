@@ -243,6 +243,7 @@ class Model:
         ),
         "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
