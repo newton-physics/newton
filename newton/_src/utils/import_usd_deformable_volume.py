@@ -23,6 +23,7 @@ from .import_usd_deformable_utils import (
     _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
+    _mass_weight_density,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
     _warn_collision_approximated,
@@ -144,10 +145,24 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             flipped[:, [1, 2]] = flipped[:, [2, 1]]
             add_soft_mesh_kwargs["indices"] = flipped.reshape(-1)
         # Body density overrides the TetMesh's material density.
+        neutral_weight = False
         if is_volume_deformable:
             resolved_density = _resolve_deformable_density(prim, tetmesh_for_builder.density, deformable_read)
             if resolved_density is not None:
                 add_soft_mesh_kwargs["density"] = resolved_density
+            else:
+                # Mirror add_soft_mesh's own fallback to see the density that would build the
+                # particle masses: a non-positive one leaves nothing for the body-mass rescale
+                # in _apply_particle_masses to distribute. The neutral weight keeps the masses
+                # volume-proportional, which the rescale turns into the proposal's
+                # density-independent m_p = m_tot * V_p / V_tot (as the cable/cloth paths do).
+                fallback_density = tetmesh_for_builder.density
+                if fallback_density is None:
+                    fallback_density = builder.default_tet_density
+                weight_density = _mass_weight_density(prim, fallback_density, deformable_read)
+                if weight_density != fallback_density:
+                    add_soft_mesh_kwargs["density"] = weight_density
+                    neutral_weight = True
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
@@ -164,7 +179,11 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         )
         # The density actually used, mirroring add_soft_mesh's own resolution order:
         # explicit override, else the TetMesh's material density, else the builder default.
+        # A neutral weight only distributes a body-mass total and is not a physical
+        # density, so the metadata reports the unmodified resolution instead.
         effective_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)
+        if neutral_weight:
+            effective_density = tetmesh_for_builder.density
         if effective_density is None:
             effective_density = builder.default_tet_density
         path_soft_attrs[path] = {

@@ -173,9 +173,10 @@ class TestUSDDeformableMixed(unittest.TestCase):
 
     def test_body_mass_applies_with_zero_fallback_density(self):
         """An authored PhysicsDeformableBodyAPI mass must not depend on the lower-precedence
-        builder fallback density: with default_shape_cfg.density = 0 the geometric weights
-        are built at a neutral density and the body total distributes over them
-        (measure-proportional, not uniform), in all three families."""
+        builder fallback density: with zero builder fallbacks (default_shape_cfg.density,
+        default_tet_density) the geometric weights are built at a neutral density and the
+        body total distributes over them (measure-proportional, not uniform), in all three
+        families."""
         from pxr import Sdf, UsdGeom
 
         def _with_body_mass(prim, mass):
@@ -222,17 +223,40 @@ class TestUSDDeformableMixed(unittest.TestCase):
                 self.assertTrue(np.all(np.isfinite(np.array(builder.body_inv_inertia[b]))))
 
         with self.subTest(family="volume"):
-            # The volume pass already distributed a body total correctly; pin it.
             stage = _deformable_stage()
             body = UsdGeom.Xform.Define(stage, "/World/Soft").GetPrim()
             _with_body_mass(body, 8.0)
-            tet = _author_unit_tet(stage, "/World/Soft/Sim")
+            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft/Sim")
+            # Two disjoint tets with volumes 1/6 and 2/6, so the distributed masses are
+            # volume-proportional: each particle of the second tet carries 2x the first's.
+            tet.CreatePointsAttr(
+                [
+                    (0.0, 0.0, 1.0),
+                    (1.0, 0.0, 1.0),
+                    (0.0, 1.0, 1.0),
+                    (0.0, 0.0, 2.0),
+                    (2.0, 0.0, 1.0),
+                    (3.0, 0.0, 1.0),
+                    (2.0, 1.0, 1.0),
+                    (2.0, 0.0, 3.0),
+                ]
+            )
+            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3), (4, 5, 6, 7)])
+            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
             tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
 
             builder = newton.ModelBuilder()
             builder.default_shape_cfg.density = 0.0
-            builder.add_usd(stage)
-            self.assertAlmostEqual(sum(builder.particle_mass), 8.0, places=4)
+            builder.default_tet_density = 0.0
+            result = builder.add_usd(stage, deformable_results=True)
+            masses = [float(m) for m in builder.particle_mass]
+            self.assertAlmostEqual(sum(masses), 8.0, places=4)
+            self.assertAlmostEqual(masses[4] / masses[0], 2.0, places=5)
+            model = builder.finalize()
+            self.assertTrue(all(im > 0.0 for im in model.particle_inv_mass.numpy()))
+            # The neutral build weight is not a physical density; the metadata reports the
+            # unmodified resolution (the zero builder fallback here).
+            self.assertEqual(result["path_soft_attrs"]["/World/Soft/Sim"]["resolved_density"], 0.0)
 
     def test_disabled_body_collision_geometry_stays_static(self):
         """A physics:bodyEnabled=false deformable is not simulated, but by rigid-body
