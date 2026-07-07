@@ -436,7 +436,6 @@ class ViewerUSD(ViewerBase):
         return requested_opacity
 
     def _preview_surface_ior_value(self, requested_opacity: float) -> float | None:
-        del requested_opacity
         return None
 
     def _get_preview_surface_material(

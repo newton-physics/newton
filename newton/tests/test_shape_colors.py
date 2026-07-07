@@ -24,7 +24,6 @@ class _ShapeColorProbe(ViewerNull):
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials, *, opacities=None, hidden=False):
         """Capture the most recent instance appearance values sent to the viewer."""
-        del name, mesh, xforms, scales, materials, hidden
         self.last_colors = None if colors is None else colors.numpy().copy()
         self.last_opacities = None if opacities is None else opacities.numpy().copy()
 
@@ -50,7 +49,6 @@ class _TriangleOpacityProbe(ViewerNull):
         opacity=None,
     ):
         """Capture opacity for visible triangle mesh logs."""
-        del points, indices, normals, uvs, texture, backface_culling
         if not hidden:
             self.mesh_opacities[name] = opacity
 

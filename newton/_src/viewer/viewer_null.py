@@ -92,7 +92,6 @@ class ViewerNull(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
-        del opacity, color, roughness, metallic
         pass
 
     @override
@@ -121,7 +120,6 @@ class ViewerNull(ViewerBase):
             opacities: Instance opacities.
             hidden: Whether the instances are hidden.
         """
-        del opacities
         pass
 
     @override

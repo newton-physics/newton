@@ -27,7 +27,6 @@ class _RecordingViewer(ViewerNull):
         self.mesh_calls: list[tuple[str, bool]] = []
 
     def log_instances(self, name, mesh, xforms, scales, colors, materials, opacities=None, hidden=False):
-        del opacities
         self.instance_calls.append((name, hidden))
         if xforms is not None:
             self.instance_xforms.append((name, xforms.numpy().copy()))

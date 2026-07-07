@@ -1345,7 +1345,6 @@ class ViewerFile(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
-        del opacity, color, roughness, metallic
         pass
 
     @override
@@ -1373,7 +1372,6 @@ class ViewerFile(ViewerBase):
             opacities: Optional per-instance opacity values.
             hidden: Whether the instance batch is hidden.
         """
-        del opacities
         pass
 
     @override
