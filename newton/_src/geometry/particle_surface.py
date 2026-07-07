@@ -177,10 +177,12 @@ class ParticleSurfaceCapacity:
         sentinel_distance: float,
     ) -> None:
         if positions.shape[0] > 0:
+            tile_size = kernels._AABB_TILE_SIZE if self.device.is_cuda else 1
             wp.launch(
                 kernels.compute_particle_bounds,
-                dim=positions.shape[0],
+                dim=((positions.shape[0] + tile_size - 1) // tile_size, tile_size),
                 inputs=[positions, flags, use_flags, self.lower, self.upper, self.grid_counts],
+                block_dim=tile_size,
                 device=self.device,
             )
         wp.launch(
@@ -205,9 +207,10 @@ class ParticleSurfaceCapacity:
     ) -> None:
         wp.launch(kernels.reset_bounds, dim=1, inputs=[self.lower, self.upper], device=self.device)
         if positions.shape[0] > 0:
+            tile_size = kernels._AABB_TILE_SIZE if self.device.is_cuda else 1
             wp.launch(
                 kernels.compute_kernel_bounds,
-                dim=positions.shape[0],
+                dim=((positions.shape[0] + tile_size - 1) // tile_size, tile_size),
                 inputs=[
                     positions,
                     radii,
@@ -222,6 +225,7 @@ class ParticleSurfaceCapacity:
                     self.lower,
                     self.upper,
                 ],
+                block_dim=tile_size,
                 device=self.device,
             )
         wp.launch(
