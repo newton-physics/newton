@@ -799,14 +799,14 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         if dt <= 0.0:
-            wp.copy(dest=self.body_q_prev, src=state.body_q)
+            # A reset distributes state before its world mask selects histories.
+            if not iteration_restart:
+                wp.copy(dest=self.body_q_prev, src=state.body_q)
             return
 
         if iteration_restart:
             # Restore the beginning-of-iteration history after a previous solve advanced it.
             wp.copy(dest=self.body_q_prev, src=self._coupling_body_q_prev_snapshot)
-        else:
-            wp.copy(dest=self._coupling_body_q_prev_snapshot, src=self.body_q_prev)
 
         wp.launch(
             _update_vbd_body_input_state_kernel,
@@ -815,12 +815,18 @@ class SolverVBD(SolverBase, CouplingInterface):
                 float(dt),
                 self.model.body_flags,
                 int(BodyFlags.KINEMATIC),
+                self.model.body_world,
+                self._rigid_pose_rebaseline_mask,
                 state.body_q,
                 self.body_q_prev,
                 state.body_qd,
             ],
             device=self.device,
         )
+
+        if not iteration_restart:
+            # Snapshot pass-0 history so restarted iterations restore the same baseline.
+            wp.copy(dest=self._coupling_body_q_prev_snapshot, src=self.body_q_prev)
 
     def coupling_prepare_proxy_contacts(
         self,
@@ -1694,19 +1700,20 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid :meth:`step` consumes the pose and cable rebaseline even when
         ``contacts=None``, so author the final pose (or run :func:`~newton.eval_fk`)
         before stepping; contact invalidation instead waits for a fresh refresh.
-        With ``rigid_contact_history=True``, use ``contact_matching="latest"``. Reset
-        does not change ``set_rigid_history_update()``; leave rigid-history refresh
-        enabled for the next contact-bearing step. Reusing contacts
-        (``set_rigid_history_update(False)``) is unsupported only while contact
-        invalidation is still pending.
+        With ``rigid_contact_history=True``, only ``contact_matching="latest"``
+        is supported; VBD cannot invalidate sticky matcher state owned by the
+        collision pipeline. Reset does not change ``set_rigid_history_update()``;
+        leave rigid-history refresh enabled for the next contact-bearing step.
+        Reusing contacts (``set_rigid_history_update(False)``) is unsupported
+        only while contact invalidation is still pending.
 
         Args:
             state: The simulation state to reset (modified in place).
-            world_mask: Boolean mask of shape ``(world_count,)`` selecting local
-                worlds to reset. ``None`` selects every local world plus entities
-                not assigned to a world. Any explicit mask excludes those global
-                entities, including an all-true mask. The mask must be a
-                one-dimensional Warp boolean array on the solver device.
+            world_mask: One-dimensional Warp boolean mask on the solver device.
+                Shape ``(world_count,)`` selects local worlds only. Shape
+                ``(world_count + 1,)`` additionally uses the final entry for
+                entities not assigned to a world (``world == -1``). ``None``
+                selects all local and unassigned entities.
             flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
                 fields to copy from the model defaults. VBD honors
                 :attr:`~newton.StateFlags.BODY_Q` and
@@ -1718,9 +1725,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         if world_mask is not None:
             if not isinstance(world_mask, wp.array) or world_mask.ndim != 1 or world_mask.dtype != wp.bool:
                 raise ValueError("world_mask must be a one-dimensional Warp boolean array.")
-            if world_mask.shape[0] != model.world_count:
+            mask_length = world_mask.shape[0]
+            if mask_length not in (model.world_count, model.world_count + 1):
                 raise ValueError(
-                    f"world_mask has length {world_mask.shape[0]}, expected {model.world_count} (one entry per world)."
+                    f"world_mask has length {mask_length}, expected {model.world_count} or {model.world_count + 1}."
                 )
             if world_mask.device != self.device:
                 raise ValueError(f"world_mask is on device {world_mask.device}, expected solver device {self.device}.")
@@ -3072,5 +3080,5 @@ class SolverVBD(SolverBase, CouplingInterface):
         Args:
             state:  The state whose particle positions (:attr:`~newton.State.particle_q`) will be used for rebuilding the BVHs.
         """
-        if self.particle_enable_self_contact:
+        if self.model.particle_count > 0 and self.particle_enable_self_contact:
             self.trimesh_collision_detector.rebuild(state.particle_q)

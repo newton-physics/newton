@@ -1699,6 +1699,8 @@ def _rigid_reset_state_and_history(test, device):
     model_qd = model.body_qd.numpy()
     selected_bodies = body_world == 0
     selected_joints = joint_world == 0
+    global_bodies = body_world < 0
+    global_joints = joint_world < 0
     world_mask = wp.array([True, False], dtype=wp.bool, device=device)
 
     solver = newton.solvers.SolverVBD(model, iterations=0)
@@ -1730,7 +1732,7 @@ def _rigid_reset_state_and_history(test, device):
         solver.reset(None)
     with test.assertRaisesRegex(ValueError, "one-dimensional Warp boolean array"):
         solver.reset(state, world_mask=wp.array([1, 0], dtype=wp.int32, device=device))
-    with test.assertRaisesRegex(ValueError, "world_mask has length 1, expected 2"):
+    with test.assertRaisesRegex(ValueError, "world_mask has length 1, expected 2 or 3"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)
 
@@ -1844,6 +1846,45 @@ def _rigid_reset_state_and_history(test, device):
     masked_qd = state.body_qd.numpy()
     np.testing.assert_allclose(masked_qd[selected_bodies, 0], 0.0, atol=1.0e-3)
     np.testing.assert_allclose(masked_qd[~selected_bodies, 0], masked_delta / dt, atol=1.0e-1)
+
+    # Phase 7: the extended mask's final entry selects only global entities.
+    global_mask = wp.array([False, False, True], dtype=wp.bool, device=device)
+    custom_q = jump_q.copy()
+    custom_q[:, 0] += 6.0
+    custom_qd = np.full_like(model_qd, 2.0)
+    state.body_q.assign(custom_q)
+    state.body_qd.assign(custom_qd)
+    solver.joint_lambda_lin.fill_(10.0)
+    solver.reset(state, world_mask=global_mask, flags=newton.StateFlags.BODY_Q)
+
+    result_q = state.body_q.numpy()
+    np.testing.assert_allclose(result_q[global_bodies], model_q[global_bodies])
+    np.testing.assert_allclose(result_q[~global_bodies], custom_q[~global_bodies])
+    np.testing.assert_allclose(state.body_qd.numpy(), custom_qd)
+    np.testing.assert_allclose(solver.joint_lambda_lin.numpy()[global_joints], 0.0)
+    np.testing.assert_allclose(solver.joint_lambda_lin.numpy()[~global_joints], 10.0)
+
+    global_delta = 2.0
+    final_global_q = jump_q.copy()
+    final_global_q[:, 0] += global_delta
+    state.body_q.assign(final_global_q)
+    state.body_qd.zero_()
+    step_swap()
+    global_qd = state.body_qd.numpy()
+    np.testing.assert_allclose(global_qd[global_bodies], 0.0, atol=1.0e-3)
+    np.testing.assert_allclose(global_qd[~global_bodies, 0], global_delta / dt, atol=1.0e-1)
+
+    # An extended all-true mask has the same immediate selection as None.
+    state.body_q.assign(custom_q)
+    state.body_qd.assign(custom_qd)
+    solver.joint_lambda_lin.fill_(11.0)
+    solver.reset(
+        state,
+        world_mask=wp.array([True, True, True], dtype=wp.bool, device=device),
+    )
+    np.testing.assert_allclose(state.body_q.numpy(), model_q)
+    np.testing.assert_allclose(state.body_qd.numpy(), model_qd)
+    np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 0.0)
 
 
 def _rigid_reset_replays_captured_step(test, device):

@@ -84,6 +84,23 @@ def _world_selected(world: int, mask: wp.array[wp.bool]):
 
 
 @wp.func
+def _reset_world_selected(
+    world: int,
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+):
+    """Query a public reset mask whose optional final entry selects unassigned entities."""
+    if reset_all:
+        return True
+    if world < 0:
+        if world_mask.shape[0] == world_count:
+            return False
+        world = world_count
+    return world_mask[world]
+
+
+@wp.func
 def _shape_world_selected(
     shape: int,
     shape_world: wp.array[wp.int32],
@@ -1877,9 +1894,10 @@ def reset_rigid_state(
     tid = wp.tid()
 
     if tid < world_count + 1:
-        select_slot = reset_all
-        if not reset_all and tid < world_count:
-            select_slot = world_mask[tid]
+        world = tid
+        if tid == world_count:
+            world = -1
+        select_slot = _reset_world_selected(world, world_mask, reset_all, world_count)
         if select_slot:
             rigid_pose_rebaseline_mask[tid] = True
             # Contact-reset state is allocated only with contact warm-starting on.
@@ -1893,12 +1911,7 @@ def reset_rigid_state(
 
     # A non-null output is the caller's request to reset that field.
     if (body_q or body_qd) and tid < body_world.shape[0]:
-        body_selected = reset_all
-        if not reset_all:
-            world = body_world[tid]
-            body_selected = False
-            if world >= 0:
-                body_selected = world_mask[world]
+        body_selected = _reset_world_selected(body_world[tid], world_mask, reset_all, world_count)
         if body_selected:
             if body_q:
                 body_q[tid] = model_body_q[tid]
@@ -1906,12 +1919,7 @@ def reset_rigid_state(
                 body_qd[tid] = model_body_qd[tid]
 
     if tid < joint_world.shape[0]:
-        joint_selected = reset_all
-        if not reset_all:
-            world = joint_world[tid]
-            joint_selected = False
-            if world >= 0:
-                joint_selected = world_mask[world]
+        joint_selected = _reset_world_selected(joint_world[tid], world_mask, reset_all, world_count)
         if joint_selected:
             _reset_joint_history(
                 tid,
