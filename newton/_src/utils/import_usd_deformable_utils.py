@@ -628,6 +628,37 @@ class _DeformablePrimBuckets:
         return bool(self.cables or self.cloth or self.tetmeshes or self.attachments or self.element_filters)
 
 
+# Concrete USD type names that can never classify as deformable candidates: they are not
+# TetMesh / BasisCurves / Mesh (or derived from them) and not the attachment / filter prim
+# types. The scout skips them after a single GetTypeName call; type names NOT in this set
+# fall through to full IsA classification, so derived geometry schemas keep working.
+_SCOUT_SKIP_TYPE_NAMES = frozenset(
+    {
+        "",  # untyped prims
+        "Xform",
+        "Scope",
+        "Camera",
+        "Material",
+        "Shader",
+        "GeomSubset",
+        "PhysicsScene",
+        "Cube",
+        "Sphere",
+        "Capsule",
+        "Cylinder",
+        "Cone",
+        "Plane",
+        "Points",
+        "PhysicsFixedJoint",
+        "PhysicsRevoluteJoint",
+        "PhysicsPrismaticJoint",
+        "PhysicsSphericalJoint",
+        "PhysicsDistanceJoint",
+        "PhysicsJoint",
+    }
+)
+
+
 def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = ()) -> _DeformablePrimBuckets:
     """Classify deformable candidate prims in one stage traversal.
 
@@ -635,6 +666,12 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
     re-traversing the stage, so a stage without deformables pays a single scouting walk. Buckets
     match each pass's coarse type filter: cables/cloth require their applied sim API, but every
     ``TetMesh`` is bucketed because bare TetMeshes still import as legacy soft bodies.
+
+    Per-prim work is kept to a minimum because this walk runs on every ``add_usd()`` call,
+    deformables or not: common concrete type names classify with a single ``GetTypeName``
+    (see ``_SCOUT_SKIP_TYPE_NAMES``), and applied API schemas come from one
+    ``GetPrimTypeInfo`` metadata fetch, which -- unlike ``prim.GetAppliedSchemas()`` --
+    includes unregistered token-applied schemas.
     """
     from pxr import Usd, UsdGeom
 
@@ -654,20 +691,26 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
 
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         type_name = str(prim.GetTypeName())
+        if type_name in _SCOUT_SKIP_TYPE_NAMES:
+            continue
         if type_name == "PhysicsAttachment":
             buckets.attachments.append(prim)
-        elif type_name == "PhysicsElementCollisionFilter":
+            continue
+        if type_name == "PhysicsElementCollisionFilter":
             buckets.element_filters.append(prim)
-        elif prim.IsA(UsdGeom.TetMesh):
+            continue
+        # Exact concrete names classify without IsA; unknown type names (derived geometry
+        # schemas) fall back to the IsA checks so subclasses keep working.
+        if type_name == "TetMesh" or prim.IsA(UsdGeom.TetMesh):
             buckets.tetmeshes.append(prim)
-            if usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI"):
+            if "PhysicsVolumeDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                 claim_body(prim)
-        elif prim.IsA(UsdGeom.BasisCurves):
-            if usd.has_applied_api_schema(prim, "PhysicsCurvesDeformableSimAPI"):
+        elif type_name == "BasisCurves" or prim.IsA(UsdGeom.BasisCurves):
+            if "PhysicsCurvesDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                 buckets.cables.append(prim)
                 claim_body(prim)
-        elif prim.IsA(UsdGeom.Mesh):
-            if usd.has_applied_api_schema(prim, "PhysicsSurfaceDeformableSimAPI"):
+        elif type_name == "Mesh" or prim.IsA(UsdGeom.Mesh):
+            if "PhysicsSurfaceDeformableSimAPI" in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
                 buckets.cloth.append(prim)
                 claim_body(prim)
 
