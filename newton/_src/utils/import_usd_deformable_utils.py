@@ -801,9 +801,10 @@ class _DeformablePrimBuckets:
     """Deformable candidate prims discovered by :func:`_scout_deformable_prims`.
 
     Each list keeps stage traversal order, so iterating a bucket visits prims in the same order
-    the per-family full-stage walks used to. The buckets classify by coarse type only;
-    ``ignore_paths`` filtering and per-prim validation stay in the lowering passes so their
-    warnings and skip behavior are unchanged.
+    the per-family full-stage walks used to. The buckets classify by coarse type only; prims
+    matching ``ignore_paths`` are excluded up front (an ignored candidate must not claim body
+    ownership), while per-prim validation stays in the lowering passes so warnings and skip
+    behavior are unchanged.
     """
 
     cables: list[Usd.Prim] = field(default_factory=list)
@@ -897,6 +898,12 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
     for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
         type_name = str(prim.GetTypeName())
         if type_name in _SCOUT_SKIP_TYPE_NAMES:
+            continue
+        # An ignored prim must be as-if-absent from the start: bucketing it or letting it
+        # claim body ownership would let an ignored sim child block a non-ignored sibling
+        # from becoming the body's simulation geometry. Children still traverse, matching
+        # the per-path semantics of the lowering passes' own checks.
+        if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
             continue
         if type_name == "PhysicsAttachment":
             buckets.attachments.append(prim)

@@ -359,6 +359,30 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertAlmostEqual(sum(builder.particle_mass), 10.0, places=4)
         self.assertEqual(builder.body_count, 0, "no cable bodies: mass is counted once")
 
+    def test_ignored_sim_child_does_not_claim_body(self):
+        """An ignore_paths match is as-if-absent for body ownership: an ignored first sim
+        child must not claim the deformable body, so a non-ignored sibling still imports
+        as the body's simulation geometry (with the body mass applied to it)."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+        body.GetPrim().CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(10.0)
+        _add_cloth_mesh(stage, "/World/Body/ClothA")  # first in traversal order, ignored
+        _add_cloth_mesh(stage, "/World/Body/ClothB")
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage, ignore_paths=["/World/Body/ClothA"])
+        messages = [str(w.message) for w in caught]
+        # The sibling is the body's simulation geometry, not "additional" geometry.
+        self.assertFalse(any("already has simulation geometry" in m for m in messages))
+
+        self.assertEqual(group_labels(builder, "cloth"), ["/World/Body/ClothB"])
+        self.assertAlmostEqual(sum(builder.particle_mass), 10.0, places=4)
+
     def test_deformable_results_are_opt_in(self):
         """The default add_usd return carries no deformable entries; deformable_results=True
         adds exactly the documented map and attrs keys."""
