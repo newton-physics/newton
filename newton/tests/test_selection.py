@@ -50,11 +50,36 @@ class TestSelection(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"must be in range \[0, 3\)"):
             ArticulationView(model, pattern=[3])
 
+        # each articulation has a single joint and link
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 1\)"):
+            ArticulationView(model, pattern="robot_a", include_joints=[1])
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 1\)"):
+            ArticulationView(model, pattern="robot_a", include_links=[1])
+
     def test_no_match(self):
         builder = newton.ModelBuilder()
         builder.add_body()
         model = builder.finalize()
         self.assertRaises(KeyError, ArticulationView, model, pattern="no_match")
+
+    def test_unsorted_include_indices_deprecated(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="root")
+        middle = builder.add_link(label="middle")
+        tip = builder.add_link(label="tip")
+        root_joint = builder.add_joint_free(child=root, label="root_joint")
+        middle_joint = builder.add_joint_revolute(parent=root, child=middle, label="middle_joint")
+        tip_joint = builder.add_joint_revolute(parent=middle, child=tip, label="tip_joint")
+        builder.add_articulation([root_joint, middle_joint, tip_joint], label="robot")
+        model = builder.finalize()
+
+        with self.assertWarnsRegex(DeprecationWarning, "include_joints"):
+            joint_view = ArticulationView(model, "robot", include_joints=[2, 0])
+        self.assertEqual(joint_view.joint_names, ["root_joint", "tip_joint"])
+
+        with self.assertWarnsRegex(DeprecationWarning, "include_links"):
+            link_view = ArticulationView(model, "robot", include_links=[2, 0])
+        self.assertEqual(link_view.link_names, ["root", "tip"])
 
     def test_empty_selection(self):
         builder = newton.ModelBuilder()
