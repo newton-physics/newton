@@ -130,7 +130,7 @@ def test_dynamic_grid_uses_realized_support(test, device):
     )
     ctx.extract(positions, radii=radii, compute_mesh=False)
 
-    G = ctx.anisotropy_matrices.numpy()[0]
+    G = ctx._G.numpy()[0]
     reach = 2.0 * np.linalg.norm(np.linalg.inv(G), axis=0)
     grid_min = np.array([ctx.grid_origin[i] for i in range(3)])
     grid_max = grid_min + (np.array(ctx.grid_dims) - 1) * ctx.voxel_size
@@ -259,7 +259,7 @@ def test_anisotropic(test, device):
     test.assertGreater(field_np.max(), 0.5, "Anisotropic field max should be significant")
 
     # G matrices should not all be isotropic (anisotropy should be active)
-    G_np = ctx.anisotropy_matrices.numpy()
+    G_np = ctx._G.numpy()
     diag_spread = np.max(np.abs(G_np[:, 0, 0] - G_np[:, 2, 2]))
     test.assertGreater(diag_spread, 1e-5, "G matrices should have direction-dependent scales")
 
@@ -279,7 +279,7 @@ def test_anisotropy_strength(test, device):
     test.assertIsNotNone(verts)
     test.assertGreater(indices.shape[0], 0)
 
-    G_np = ctx.anisotropy_matrices.numpy()
+    G_np = ctx._G.numpy()
     iso_scale = 1.0 / (ctx.kernel_scale * ctx.kernel_radius)
     np.testing.assert_allclose(G_np[:, 0, 0], iso_scale, rtol=1.0e-5, atol=1.0e-5)
     np.testing.assert_allclose(G_np[:, 1, 1], iso_scale, rtol=1.0e-5, atol=1.0e-5)
@@ -498,8 +498,8 @@ def test_anisotropy_scale(test, device):
     ctx_tight.extract(positions, radii=radii, compute_normals=False)
     ctx_wide.extract(positions, radii=radii, compute_normals=False)
 
-    G_tight = ctx_tight.anisotropy_matrices.numpy()
-    G_wide = ctx_wide.anisotropy_matrices.numpy()
+    G_tight = ctx_tight._G.numpy()
+    G_wide = ctx_wide._G.numpy()
     test.assertGreater(np.max(np.abs(G_tight - G_wide)), 1e-5)
 
 
@@ -523,7 +523,7 @@ def test_anisotropic_kernel_scale_matches_isotropic_scale(test, device):
     ctx.extract(positions, radii=radii, compute_normals=False)
 
     expected_det = 1.0 / (kernel_radius * kernel_scale * anisotropy_scale) ** 3
-    actual_det = np.median(ctx.anisotropy_det.numpy())
+    actual_det = np.median(ctx._det_G.numpy())
     test.assertLess(abs(actual_det - expected_det) / expected_det, 0.05)
 
 
@@ -553,8 +553,8 @@ def test_anisotropy_ratio(test, device):
     ctx_low.extract(positions, radii=radii, compute_normals=False)
     ctx_high.extract(positions, radii=radii, compute_normals=False)
 
-    low_eigs = np.linalg.eigvalsh(ctx_low.anisotropy_matrices.numpy())
-    high_eigs = np.linalg.eigvalsh(ctx_high.anisotropy_matrices.numpy())
+    low_eigs = np.linalg.eigvalsh(ctx_low._G.numpy())
+    high_eigs = np.linalg.eigvalsh(ctx_high._G.numpy())
     low_ratios = low_eigs[:, -1] / np.maximum(low_eigs[:, 0], 1.0e-12)
     high_ratios = high_eigs[:, -1] / np.maximum(high_eigs[:, 0], 1.0e-12)
 
@@ -828,12 +828,12 @@ class TestParticleSurface(unittest.TestCase):
         ctx.extract(positions_cpu, radii=radii_cpu, compute_normals=False)
         self.assertEqual(ctx.field.device, wp.get_device("cpu"))
         self.assertEqual(ctx.smoothed_positions.device, wp.get_device("cpu"))
-        self.assertEqual(ctx.anisotropy_matrices.device, wp.get_device("cpu"))
+        self.assertEqual(ctx._G.device, wp.get_device("cpu"))
 
         ctx.extract(positions_cuda, radii=radii_cuda, compute_normals=False)
         self.assertEqual(ctx.field.device, wp.get_device("cuda:0"))
         self.assertEqual(ctx.smoothed_positions.device, wp.get_device("cuda:0"))
-        self.assertEqual(ctx.anisotropy_matrices.device, wp.get_device("cuda:0"))
+        self.assertEqual(ctx._G.device, wp.get_device("cuda:0"))
         self.assertEqual(ctx._blur_weights.device, wp.get_device("cuda:0"))
 
 
