@@ -290,7 +290,18 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             for seg, (u, v) in enumerate(local_edges):
                 gu, gv = global_node((key, u)), global_node((key, v))
                 if gu == gv:
-                    continue  # zero-length welded edge
+                    # Welding merged both endpoints of an authored segment into one node.
+                    # Dropping the segment would silently import different topology than
+                    # authored (and desynchronize the segment/attachment mappings); reject
+                    # the weld instead so the curves import individually and the junction
+                    # reaches the attachment pass, mirroring the cycle rejection below.
+                    warnings.warn(
+                        f"cable graph '{cid}': welding collapses segment {seg} of '{key}' (both "
+                        f"endpoints merge into one node); skipping the weld so its curves import "
+                        f"individually.",
+                        stacklevel=2,
+                    )
+                    return False
                 edges.append((gu, gv))
                 edge_owner.append((key, seg))
 

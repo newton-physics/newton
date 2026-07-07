@@ -83,6 +83,43 @@ class TestUSDDeformableCable(unittest.TestCase):
                 if name == "zero_stiffness":
                     self.assertEqual(attrs["stiffness"], 0.0)
 
+    def test_weld_collapsing_a_segment_rejects_weld(self):
+        """Welding that merges both endpoints of an authored segment into one graph node
+        rejects the whole weld instead of silently deleting the segment (which would import
+        different topology than authored): the curves import individually and the junction
+        is preserved as unsupported metadata."""
+        stage = _deformable_stage()
+        pts_a = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        # B's first segment is short but valid (1.6e-3 long); both its endpoints sit within
+        # the weld coincidence tolerance (0.1 * radius = 1e-3) of A's point 0, so welding
+        # them both onto A0 merges the segment's endpoints into one node.
+        pts_b = [(0.0008, 0.0, 1.0), (-0.0008, 0.0, 1.0), (-0.0008, 0.1, 1.0)]
+        _add_cable_curve(stage, "/World/CableA", pts_a)
+        _add_cable_curve(stage, "/World/CableB", pts_b)
+        _add_physics_attachment(
+            stage,
+            "/World/Junction",
+            src0="/World/CableB",
+            src1="/World/CableA",
+            type0="point",
+            type1="point",
+            indices0=[0, 1],
+            indices1=[0, 0],
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "collapses segment 0 of '/World/CableB'"):
+            result = builder.add_usd(stage, deformable_results=True)
+
+        # Both curves import individually with all their authored segments.
+        self.assertEqual(len(builder.articulation_label), 2)
+        ba0, ba1 = group_range(builder, "cable", "/World/CableA", "body")
+        bb0, bb1 = group_range(builder, "cable", "/World/CableB", "body")
+        self.assertEqual(ba1 - ba0, 3)
+        self.assertEqual(bb1 - bb0, 2)
+        # The junction is preserved as unsupported, not silently consumed by the weld.
+        self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Junction"])
+
     def test_damped_hard_junction_welds(self):
         """A coincident junction with +inf stiffness and nonzero damping is still hard:
         the proposal's damping attribute only applies when the constraint is not hard,
@@ -1012,21 +1049,21 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Junction"])
         builder.finalize()
 
-    def test_welded_graph_collapse_with_masses_falls_back(self):
-        """Welding two adjacent points of one curve onto the same node collapses a segment. With
-        authored physics:masses the surviving body count no longer matches the per-point lumping; the
-        importer warns and falls back instead of raising and aborting."""
+    def test_rejected_weld_applies_authored_masses(self):
+        """A weld that would collapse a segment (both branch endpoints merging onto an
+        interior trunk node) is rejected, so the curves import individually and the branch's
+        authored per-point physics:masses apply normally instead of being ignored by the
+        welded graph's mismatched body count."""
         from pxr import Sdf
 
         stage = _deformable_stage()
         trunk_pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         # Branch points 0 and 1 both sit within the weld coincidence tolerance of trunk
-        # point 1, so both weld onto that node and the branch edge (0, 1) collapses.
+        # point 1, so welding them both onto that node would collapse branch edge (0, 1).
         branch_pts = [(0.1, 0.0, 1.0), (0.1, 0.0005, 1.0), (0.1, 0.1, 1.0), (0.1, 0.15, 1.0)]
         _add_cable_curve(stage, "/World/Trunk", trunk_pts)
         branch = _add_cable_curve(stage, "/World/Branch", branch_pts)
         branch.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 1.0, 1.0, 1.0])
-        # Weld branch points 0 and 1 both onto trunk point 1 -> collapses branch edge (0, 1).
         _add_physics_attachment(
             stage,
             "/World/Junction",
@@ -1039,11 +1076,14 @@ class TestUSDDeformableCable(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "collapsed a segment"):
+        with self.assertWarnsRegex(UserWarning, "collapses segment 0 of '/World/Branch'"):
             result = builder.add_usd(stage, deformable_results=True)
-        # The welded graph still built (no abort); both curves are present in the graph component.
-        self.assertIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
-        self.assertIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
+        # No welded graph: both curves import individually with their own articulations.
+        self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Trunk"])
+        self.assertNotIn("graph_component", result["path_cable_attrs"]["/World/Branch"])
+        # The branch's per-point masses lump onto its 3 segments: [1+0.5, 0.5+0.5, 0.5+1].
+        bb0, bb1 = group_range(builder, "cable", "/World/Branch", "body")
+        np.testing.assert_allclose([builder.body_mass[b] for b in range(bb0, bb1)], [1.5, 1.0, 1.5], atol=1e-6)
         self.assertEqual(builder.finalize().body_count, builder.body_count)
 
     def test_welded_graph_drops_rest_shape_warns(self):

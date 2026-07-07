@@ -486,11 +486,12 @@ def _apply_cable_masses(
                     for s in range(n - 1)
                 ]
             if len(bodies) != len(seg_masses):
-                # A welded graph can collapse a segment, so the surviving body count no longer matches
-                # the per-point lumping. Ignore per-point masses (fall back to a body-mass total or the
-                # density-derived masses) instead of raising and aborting the whole import.
+                # Defensive containment: welds that would collapse a segment are rejected
+                # upstream, so the body count should always match the per-point lumping. If
+                # it ever does not, ignore per-point masses (fall back to a body-mass total
+                # or the density-derived masses) instead of raising and aborting the import.
                 warnings.warn(
-                    f"{prim.GetPath()}: welded cable collapsed a segment ({len(bodies)} bodies for "
+                    f"{prim.GetPath()}: cable body count does not match ({len(bodies)} bodies for "
                     f"{len(seg_masses)} point-derived segment masses); ignoring per-point physics:masses.",
                     stacklevel=2,
                 )
