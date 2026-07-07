@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 import numpy as np
 import warp as wp
 
@@ -30,6 +28,7 @@ class Picking:
         pick_damping: float = 5.0,
         pick_max_acceleration: float = 5.0,
         world_offsets: wp.array[wp.vec3] | None = None,
+        pick_torque_scale: float = 1.0,
     ) -> None:
         """
         Initializes the picking system.
@@ -42,10 +41,18 @@ class Picking:
                 Clamps the picking force to prevent runaway divergence on light objects
                 near stiff contacts.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
+            pick_torque_scale: Scale of the effective picking lever arm from the body's center of mass to
+                the clicked point. Must be in ``[0, 1]``; ``0`` translates the center of mass without torque
+                and ``1`` preserves normal point-force behavior.
         """
+        pick_torque_scale = float(pick_torque_scale)
+        if not 0.0 <= pick_torque_scale <= 1.0:
+            raise ValueError("Picking torque scale must be in [0, 1].")
+
         self.model = model
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
+        self.pick_torque_scale = pick_torque_scale
         self.world_offsets = world_offsets
         self.visible_worlds_mask: wp.array[int] | None = None
 
@@ -63,20 +70,17 @@ class Picking:
         else:
             self.pick_body = wp.array([-1], dtype=int, device="cpu")
 
-        pick_state_np = np.empty(1, dtype=PickingState.numpy_dtype())
+        pick_state_np = np.zeros(1, dtype=PickingState.numpy_dtype())
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
         pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
+        pick_state_np[0]["pick_torque_scale"] = pick_torque_scale
         self.pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
 
         self.pick_dist = 0.0
         self.picking_active = False
 
         self._default_on_mouse_drag = None
-
-        body_count = model.body_count if model else 0
-        device = model.device if model else "cpu"
-        self._linear_only_body_mask = wp.zeros(body_count, dtype=wp.int32, device=device)
 
         # Pre-compute effective mass per body for picking force clamping.
         # For articulated bodies, use the total articulation mass so that
@@ -114,54 +118,20 @@ class Picking:
                 self.model.body_com,
                 self.model.body_mass,
                 self._pick_effective_mass,
-                self._linear_only_body_mask,
             ],
             device=self.model.device,
         )
 
-    def set_linear_only_bodies(self, body_ids: Iterable[int] | None) -> None:
-        """Configure bodies that should receive no torque from mouse picking.
+    def set_torque_scale(self, scale: float) -> None:
+        """Set the effective mouse-picking lever-arm scale."""
+        scale = float(scale)
+        if not 0.0 <= scale <= 1.0:
+            raise ValueError("Picking torque scale must be in [0, 1].")
 
-        Mouse picking normally applies an offset-induced torque whenever the
-        click point is off-center relative to the body's COM. Bodies listed
-        here only receive the linear (translation) component, which is useful
-        for cables and other low-inertia articulated chains where spurious
-        picking torques would destabilize the solver.
-
-        Args:
-            body_ids: Iterable of body indices into ``model.body_q``. Pass
-                ``None`` (or call :meth:`clear_linear_only_bodies`) to
-                restore normal picking torque for every body.
-
-        Raises:
-            ValueError: If any ``body_id`` falls outside
-                ``[0, model.body_count)``.
-        """
-        if self.model is None:
-            return
-        if body_ids is None:
-            self.clear_linear_only_bodies()
-            return
-
-        mask = np.zeros(self.model.body_count, dtype=np.int32)
-        for raw_body_id in body_ids:
-            body_id = int(raw_body_id)
-            if body_id < 0 or body_id >= self.model.body_count:
-                raise ValueError(f"Body id {body_id} is outside the model body range [0, {self.model.body_count}).")
-            mask[body_id] = 1
-
-        self._linear_only_body_mask.assign(mask)
-
-    def clear_linear_only_bodies(self) -> None:
-        """Restore normal mouse picking torque for all bodies.
-
-        Reverts any previous :meth:`set_linear_only_bodies` configuration so
-        every picked body once again receives both linear force and the
-        offset-induced torque.
-        """
-        if self.model is None:
-            return
-        self._linear_only_body_mask.fill_(0)
+        pick_state = self.pick_state.numpy()
+        pick_state[0]["pick_torque_scale"] = scale
+        self.pick_state.assign(pick_state)
+        self.pick_torque_scale = scale
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
@@ -349,7 +319,7 @@ class Picking:
             wp.launch(
                 kernel=compute_pick_state_kernel,
                 dim=1,
-                inputs=[state.body_q, self.model.body_flags, body_index, hit_point_world],
+                inputs=[state.body_q, self.model.body_com, self.model.body_flags, body_index, hit_point_world],
                 outputs=[self.pick_body, self.pick_state],
                 device=self.model.device,
             )

@@ -7,7 +7,7 @@ import enum
 import os
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -626,25 +626,24 @@ class ViewerBase(ABC):
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
 
-    def set_picking_linear_only_bodies(self, body_ids: Iterable[int] | None) -> None:
-        """Configure bodies that receive no torque from mouse picking.
+    def set_picking_torque_scale(self, scale: float) -> None:
+        """Set the mouse-picking lever-arm scale for the active model.
 
         Args:
-            body_ids: Iterable of body indices into ``model.body_q``. Pass
-                ``None`` to restore normal picking torque for every body.
+            scale: Effective lever-arm scale in ``[0, 1]``. A value of ``0``
+                translates the body's center of mass without torque; ``1``
+                preserves normal point-force behavior.
 
         Raises:
-            ValueError: If any ``body_id`` falls outside the model body range.
+            ValueError: If ``scale`` is outside ``[0, 1]``.
         """
-        picking = getattr(self, "picking", None)
-        if picking is not None:
-            picking.set_linear_only_bodies(body_ids)
+        scale = float(scale)
+        if not 0.0 <= scale <= 1.0:
+            raise ValueError("Picking torque scale must be in [0, 1].")
 
-    def clear_picking_linear_only_bodies(self) -> None:
-        """Restore normal mouse picking torque for all bodies."""
         picking = getattr(self, "picking", None)
         if picking is not None:
-            picking.clear_linear_only_bodies()
+            picking.set_torque_scale(scale)
 
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""

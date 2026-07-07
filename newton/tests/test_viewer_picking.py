@@ -12,13 +12,15 @@ from newton._src.viewer.viewer_null import ViewerNull
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
-def _make_single_sphere_model(device=None, *, is_kinematic: bool = False):
+def _make_single_sphere_model(device=None, *, is_kinematic: bool = False, body_com=None):
     """Model with one body and one sphere at origin (radius 0.5)."""
     builder = newton.ModelBuilder()
     builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        com=body_com,
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        lock_inertia=body_com is not None,
         is_kinematic=is_kinematic,
     )
     builder.add_shape_sphere(body=0, radius=0.5)
@@ -60,7 +62,7 @@ class TestPickingSetup(unittest.TestCase):
     """Tests for the Picking setup (construction, release, pick, update, apply_force)."""
 
     def test_init_state(self):
-        """Picking initializes with no body picked and correct stiffness/damping."""
+        """Picking initializes with no body picked and default torque behavior."""
         model = _make_single_sphere_model(device="cpu")
         picking = Picking(model, pick_stiffness=100.0, pick_damping=10.0)
 
@@ -68,6 +70,7 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(picking.pick_body.numpy()[0], -1)
         self.assertEqual(picking.pick_stiffness, 100.0)
         self.assertEqual(picking.pick_damping, 10.0)
+        self.assertEqual(picking.pick_torque_scale, 1.0)
         self.assertIsNotNone(picking.pick_state)
         self.assertEqual(picking.pick_state.shape[0], 1)
 
@@ -201,32 +204,19 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(forces.shape[0], model.body_count)
         self.assertFalse(np.allclose(forces[0], np.zeros(6), atol=1e-9))
 
-    def test_set_linear_only_bodies_rejects_invalid_body_id(self):
-        """set_linear_only_bodies() validates body ids against the model."""
-        model = _make_single_sphere_model(device="cpu")
-        picking = Picking(model)
-
-        with self.assertRaisesRegex(ValueError, "outside the model body range"):
-            picking.set_linear_only_bodies([model.body_count])
-
-    def test_viewer_linear_only_picking_noops_without_picker(self):
-        """Viewer-level linear-only picking controls are safe when picking is unavailable."""
+    def test_viewer_picking_torque_scale(self):
+        """Viewer-level torque control is safe without a picker and forwards when available."""
         viewer = ViewerNull(num_frames=0)
+        viewer.set_picking_torque_scale(0.5)
+        for scale in (-0.1, 1.1):
+            with self.subTest(scale=scale), self.assertRaisesRegex(ValueError, "must be in"):
+                viewer.set_picking_torque_scale(scale)
 
-        viewer.set_picking_linear_only_bodies([0])
-        viewer.set_picking_linear_only_bodies(None)
-        viewer.clear_picking_linear_only_bodies()
-
-    def test_viewer_linear_only_picking_forwards_to_picker(self):
-        """Viewer-level linear-only picking controls forward to the picking object."""
         model = _make_single_sphere_model(device="cpu")
-        viewer = ViewerNull(num_frames=0)
         viewer.picking = Picking(model)
 
-        viewer.set_picking_linear_only_bodies([0])
-        viewer.clear_picking_linear_only_bodies()
-        with self.assertRaisesRegex(ValueError, "outside the model body range"):
-            viewer.set_picking_linear_only_bodies([model.body_count])
+        viewer.set_picking_torque_scale(0.25)
+        self.assertEqual(viewer.picking.pick_torque_scale, 0.25)
 
     def test_world_offsets_optional(self):
         """Picking can be constructed with optional world_offsets."""
@@ -266,8 +256,8 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     test.assertEqual(picking.pick_body.numpy()[0], -1)
 
 
-def test_linear_only_bodies_remove_picking_torque(test: TestPickingSetup, device):
-    """Linear-only picking keeps translation force while suppressing torque."""
+def test_picking_torque_scale(test: TestPickingSetup, device):
+    """Picking lever-arm torque scales without weakening translation force."""
     model = _make_single_sphere_model(device=device)
     state = model.state()
     picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0)
@@ -280,22 +270,64 @@ def test_linear_only_bodies_remove_picking_torque(test: TestPickingSetup, device
     picking.update(wp.vec3(0.5, 0.0, -2.0), ray_dir)
     state.body_f.zero_()
     picking._apply_picking_force(state)
-    normal_force = state.body_f.numpy()[0]
+    normal_force = state.body_f.numpy()[0].copy()
     test.assertFalse(np.allclose(normal_force[:3], np.zeros(3), atol=1e-9))
     test.assertFalse(np.allclose(normal_force[3:], np.zeros(3), atol=1e-9))
 
-    picking.set_linear_only_bodies([0])
+    picking.set_torque_scale(0.5)
     state.body_f.zero_()
     picking._apply_picking_force(state)
-    linear_only_force = state.body_f.numpy()[0]
-    test.assertFalse(np.allclose(linear_only_force[:3], np.zeros(3), atol=1e-9))
-    assert_np_equal(linear_only_force[3:], np.zeros(3), tol=1e-9)
+    half_torque_force = state.body_f.numpy()[0]
+    assert_np_equal(half_torque_force[:3], normal_force[:3], tol=1e-6)
+    assert_np_equal(half_torque_force[3:], 0.5 * normal_force[3:], tol=1e-6)
 
-    picking.clear_linear_only_bodies()
+    picking.set_torque_scale(0.0)
     state.body_f.zero_()
     picking._apply_picking_force(state)
-    restored_force = state.body_f.numpy()[0]
-    test.assertFalse(np.allclose(restored_force[3:], np.zeros(3), atol=1e-9))
+    force_only = state.body_f.numpy()[0]
+    assert_np_equal(force_only[:3], normal_force[:3], tol=1e-6)
+    assert_np_equal(force_only[3:], np.zeros(3), tol=1e-9)
+
+
+def test_zero_torque_scale_tracks_com(test: TestPickingSetup, device):
+    """Zero torque scale tracks the COM independently of body rotation."""
+    model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0, 0.1, 0.0))
+    state = model.state()
+    picking = Picking(model, pick_stiffness=100.0, pick_damping=5.0, pick_torque_scale=0.0)
+
+    ray_start = wp.vec3(0.0, 0.0, -2.0)
+    ray_dir = wp.vec3(0.0, 0.0, 1.0)
+    picking.pick(state, ray_start, ray_dir)
+    test.assertTrue(picking.is_picking())
+
+    rotated_q = wp.array(
+        [
+            wp.transform(
+                wp.vec3(0.0, 0.1, -0.1),
+                wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi),
+            )
+        ],
+        dtype=wp.transform,
+        device=device,
+    )
+    angular_qd = wp.array(
+        [wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0)],
+        dtype=wp.spatial_vector,
+        device=device,
+    )
+    state.body_q.assign(rotated_q)
+    state.body_qd.assign(angular_qd)
+
+    state.body_f.zero_()
+    picking._apply_picking_force(state)
+    assert_np_equal(state.body_f.numpy()[0], np.zeros(6), tol=1e-5)
+
+    picking.update(wp.vec3(0.5, 0.0, -2.0), ray_dir)
+    state.body_f.zero_()
+    picking._apply_picking_force(state)
+    translated_force = state.body_f.numpy()[0]
+    test.assertFalse(np.allclose(translated_force[:3], np.zeros(3), atol=1e-9))
+    assert_np_equal(translated_force[3:], np.zeros(3), tol=1e-9)
 
 
 # Device-parameterized tests
@@ -307,8 +339,14 @@ add_function_test(
 )
 add_function_test(
     TestPickingSetup,
-    "test_linear_only_bodies_remove_picking_torque",
-    test_linear_only_bodies_remove_picking_torque,
+    "test_picking_torque_scale",
+    test_picking_torque_scale,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_zero_torque_scale_tracks_com",
+    test_zero_torque_scale_tracks_com,
     devices=get_test_devices(),
 )
 

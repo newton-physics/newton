@@ -11,22 +11,25 @@ from typing import Any
 import warp as wp
 
 import newton
-from newton._src.math import orthonormal_basis
+from newton._src.math import orthonormal_basis, velocity_at_point
 
 
 @wp.struct
 class PickingState:
     picked_point_local: wp.vec3
     picked_point_world: wp.vec3
+    initial_pick_offset_world: wp.vec3
     picking_target_world: wp.vec3
     pick_stiffness: float
     pick_damping: float
     pick_max_acceleration: float
+    pick_torque_scale: float
 
 
 @wp.kernel
 def compute_pick_state_kernel(
     body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
     body_flags: wp.array[int],
     body_index: int,
     hit_point_world: wp.vec3,
@@ -50,10 +53,8 @@ def compute_pick_state_kernel(
     X_wb = body_q[body_index]
     X_bw = wp.transform_inverse(X_wb)
 
-    # Compute local space attachment point from the hit point
-    pick_pos_local = wp.transform_point(X_bw, hit_point_world)
-
-    pick_state[0].picked_point_local = pick_pos_local
+    pick_state[0].picked_point_local = wp.transform_point(X_bw, hit_point_world)
+    pick_state[0].initial_pick_offset_world = hit_point_world - wp.transform_point(X_wb, body_com[body_index])
 
     # store target world (current attachment point position)
     pick_state[0].picking_target_world = hit_point_world
@@ -73,7 +74,6 @@ def apply_picking_force_kernel(
     body_com: wp.array[wp.vec3],
     body_mass: wp.array[float],
     pick_effective_mass: wp.array[float],
-    linear_only_body_mask: wp.array[wp.int32],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -83,32 +83,33 @@ def apply_picking_force_kernel(
 
     pick_pos_local = pick_state[0].picked_point_local
     pick_target_world = pick_state[0].picking_target_world
+    pick_scale = pick_state[0].pick_torque_scale
 
     # world space attachment point
     X_wb = body_q[pick_body]
     pick_pos_world = wp.transform_point(X_wb, pick_pos_local)
+    com_world = wp.transform_point(X_wb, body_com[pick_body])
 
     # update current world space picked point on geometry (for visualization)
     pick_state[0].picked_point_world = pick_pos_world
 
-    # Linear velocity at COM
-    vel_com = wp.spatial_top(body_qd[pick_body])
-    # Angular velocity
-    angular_vel = wp.spatial_bottom(body_qd[pick_body])
-
-    # Offset from COM to pick point (in world space)
-    offset = pick_pos_world - wp.transform_point(X_wb, body_com[pick_body])
-
-    # Velocity at the picked point
-    vel_at_offset = vel_com + wp.cross(angular_vel, offset)
+    # pick_scale blends where the pull acts: 0 => through the COM (force only,
+    # no offset torque), 1 => at the clicked point (full point force + torque).
+    # Shift the target the same way so the spring starts at zero error for any
+    # scale (no sudden pull on click).
+    offset = pick_pos_world - com_world
+    effective_lever = pick_scale * offset
+    pick_pos_effective = com_world + effective_lever
+    pick_target_effective = pick_target_world - (1.0 - pick_scale) * pick_state[0].initial_pick_offset_world
+    pick_vel_effective = velocity_at_point(body_qd[pick_body], effective_lever)
 
     # Adjust force to mass for more adaptive manipulation of picked bodies.
     force_multiplier = 10.0 + body_mass[pick_body]
 
     # Compute the force to apply
-    force_at_offset = force_multiplier * (
-        pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world)
-        - (pick_state[0].pick_damping * vel_at_offset)
+    pick_force = force_multiplier * (
+        pick_state[0].pick_stiffness * (pick_target_effective - pick_pos_effective)
+        - (pick_state[0].pick_damping * pick_vel_effective)
     )
 
     # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
@@ -116,20 +117,13 @@ def apply_picking_force_kernel(
     # own mass for free bodies) so picking a light robot link still allows
     # enough force to move the whole chain.
     max_force = pick_state[0].pick_max_acceleration * 9.81 * pick_effective_mass[pick_body]
-    force_mag = wp.length(force_at_offset)
+    force_mag = wp.length(pick_force)
     if force_mag > max_force:
-        force_at_offset = force_at_offset * (max_force / force_mag)
+        pick_force = pick_force * (max_force / force_mag)
 
-    # Compute the resulting torque given the offset from COM to the picked point.
-    # Bodies registered for linear-only picking receive force only,
-    # which keeps mouse picking from injecting destabilizing torques into cables
-    # and other low-inertia articulated chains.
-    if linear_only_body_mask[pick_body] != 0:
-        torque_at_offset = wp.vec3(0.0)
-    else:
-        torque_at_offset = wp.cross(offset, force_at_offset)
+    pick_torque = wp.cross(effective_lever, pick_force)
 
-    wp.atomic_add(body_f, pick_body, wp.spatial_vector(force_at_offset, torque_at_offset))
+    wp.atomic_add(body_f, pick_body, wp.spatial_vector(pick_force, pick_torque))
 
 
 @wp.kernel
