@@ -1348,7 +1348,7 @@ class CollisionPipeline:
             )
 
         # Generate soft contacts for particles and shapes
-        if state.particle_q and self.soft_rigid_contact_pair_count > 0:
+        if state.particle_q and self.soft_contact_max > 0 and self.soft_rigid_contact_pair_count > 0:
             wp.launch(
                 kernel=create_soft_contacts,
                 dim=self.soft_rigid_contact_pair_count,

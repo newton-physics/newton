@@ -12,7 +12,6 @@ import warp as wp
 
 from .....sim.control import Control
 from .conversions import convert_target_coords_to_target_dofs, convert_target_dofs_to_target_coords
-from .types import float32
 
 if TYPE_CHECKING:
     from .model import ModelKamino
@@ -42,32 +41,28 @@ class ControlKamino:
     # Attributes
     ###
 
-    tau_j: wp.array | None = None
+    tau_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint actuation forces.\n
-    Shape is ``(sum(d_j),)`` and dtype is :class:`float32`,\n
-    where ``d_j`` is the number of DoFs of each joint ``j``.
-    """
-
-    q_j_ref: wp.array | None = None
-    """
-    Array of reference generalized joint coordinates for implicit PD control.\n
-    Shape of ``(sum(c_j),)`` and type :class:`float`,
-    where ``c_j`` is the number of coordinates of joint ``j``.
+    Array of generalized joint actuation forces.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    dq_j_ref: wp.array | None = None
+    q_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference generalized joint velocities for implicit PD control.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Array of reference generalized joint coordinates for implicit PD control.
+    Shape of ``(sum_of_num_joint_coords,)``.
     """
 
-    tau_j_ref: wp.array | None = None
+    dq_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference feed-forward generalized joint forces for implicit PD control.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Array of reference generalized joint velocities for implicit PD control.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    tau_j_ref: wp.array[wp.float32] | None = None
+    """
+    Array of reference feed-forward generalized joint forces for implicit PD control.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     ###
@@ -77,7 +72,7 @@ class ControlKamino:
     _needs_coord_conversion: bool = False
     """Whether dofs-to-coords conversion is required for this model."""
 
-    _q_j_ref_coords_space: wp.array | None = None
+    _q_j_ref_coords_space: wp.array[wp.float32] | None = None
     """Owned coords-space reference buffer used when ``dofs != coords``."""
 
     ###
@@ -141,7 +136,7 @@ class ControlKamino:
             and model.size.sum_of_num_joint_dofs != model.size.sum_of_num_joint_coords
         )
         self._q_j_ref_coords_space = (
-            wp.zeros(shape=model.size.sum_of_num_joint_coords, dtype=float32, device=device)
+            wp.zeros(shape=model.size.sum_of_num_joint_coords, dtype=wp.float32, device=device)
             if self._needs_coord_conversion
             else None
         )
