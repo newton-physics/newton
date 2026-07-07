@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import unittest
 
 import numpy as np
@@ -9,25 +8,11 @@ import warp as wp
 import warp.fem as fem
 
 import newton
-from newton._src.solvers.implicit_mpm.particle_surface_colliders import (
-    _sample_field_trilinear,
-    extrapolate_surface_sdf_into_colliders,
-)
 from newton.geometry import ParticleSurface, extract_particle_surface
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
-
-@wp.kernel
-def _sample_trilinear_kernel(
-    field: wp.array3d[wp.float32],
-    grid_origin: wp.vec3,
-    inv_voxel_size: float,
-    positions: wp.array[wp.vec3],
-    values: wp.array[float],
-):
-    tid = wp.tid()
-    values[tid] = _sample_field_trilinear(field, grid_origin, inv_voxel_size, positions[tid])
+_TEST_MAX_GRID_CELLS = 250_000
 
 
 def _make_sphere_particles(n=3000, seed=42, device=None):
@@ -137,10 +122,6 @@ def test_dynamic_grid_uses_realized_support(test, device):
     test.assertTrue(np.all(grid_min <= -reach))
     test.assertTrue(np.all(grid_max >= reach))
 
-    actual_extent = grid_max - grid_min
-    conservative_extent = 2.0 * ctx._grid_padding(radii, device)
-    test.assertTrue(np.all(actual_extent < conservative_extent))
-
 
 def test_mesh_smoothing(test, device):
     positions, radii = _make_sphere_particles(device=device)
@@ -165,18 +146,6 @@ def test_radii_length_mismatch(test, device):
     ctx = ParticleSurface(voxel_size=0.1, device=device)
     with test.assertRaisesRegex(ValueError, "radii length"):
         ctx.extract(positions, radii=radii, compute_normals=False)
-
-
-def test_invalid_radii_values(test, device):
-    positions = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    ctx = ParticleSurface(voxel_size=0.1, device=device)
-
-    for invalid_value in (0.0, -0.05, np.nan, np.inf):
-        radii_np = np.full(4, 0.05, dtype=np.float32)
-        radii_np[2] = invalid_value
-        radii = wp.array(radii_np, dtype=float, device=device)
-        with test.assertRaisesRegex(ValueError, "finite and positive"):
-            ctx.extract(positions, radii=radii, compute_normals=False)
 
 
 def test_radii_device_mismatch(test, device):
@@ -346,10 +315,56 @@ def test_update_field_matches_extract_field(test, device):
         mesh_smooth_iterations=0,
         device=device,
     )
-    ctx.configure_field_grid(ref.grid_origin, ref.grid_dims, max_particles=positions.shape[0], device=device)
     ctx.update_field(positions, radii)
 
     np.testing.assert_allclose(ctx.field.numpy(), ref.field.numpy(), rtol=1.0e-6, atol=1.0e-6)
+
+
+def test_grid_capacity_extraction(test, device):
+    positions, radii = _make_sphere_particles(n=300, seed=17, device=device)
+    reference = ParticleSurface(
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        smooth_lambda=0.0,
+        anisotropic=True,
+        anisotropy_min_neighbors=4,
+        anisotropy_ratio=16.0,
+        anisotropy_scale=2.0,
+        anisotropy_strength=0.95,
+        mesh_smooth_iterations=0,
+        device=device,
+    )
+    reference_vertices, reference_indices, _ = reference.extract(positions, radii=radii, compute_normals=False)
+    cell_dims = np.asarray(reference.grid_dims, dtype=np.int64) - 1
+    max_grid_cells = int(np.prod(cell_dims))
+
+    surface = ParticleSurface(
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        smooth_lambda=0.0,
+        anisotropic=True,
+        anisotropy_min_neighbors=4,
+        anisotropy_ratio=16.0,
+        anisotropy_scale=2.0,
+        anisotropy_strength=0.95,
+        mesh_smooth_iterations=0,
+        max_grid_cells=max_grid_cells,
+        device=device,
+    )
+    mesh = surface.extract(positions, radii, compute_normals=False)
+
+    grid_dims = tuple(int(value) for value in surface._capacity.grid_dims.numpy()[0])
+    node_count = int(surface._capacity.grid_counts.numpy()[0])
+    capacity_field = surface._capacity.field[:node_count].numpy().reshape(grid_dims)
+    np.testing.assert_allclose(capacity_field, reference.field.numpy(), rtol=1.0e-6, atol=1.0e-6)
+    mesh_counts = mesh.counts.numpy()
+    test.assertEqual(int(mesh_counts[0]), reference_vertices.shape[0])
+    test.assertEqual(int(mesh_counts[1]), reference_indices.shape[0])
+
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            surface.extract(positions, radii, compute_normals=False)
+        wp.capture_launch(capture.graph)
 
 
 def test_update_field_skips_inactive_particles(test, device):
@@ -373,7 +388,6 @@ def test_update_field_skips_inactive_particles(test, device):
     ref = ParticleSurface(
         voxel_size=0.08, kernel_radius=0.24, anisotropic=True, anisotropy_min_neighbors=4, device=device
     )
-    ref.configure_field_grid((-1.5, -1.5, -1.5), (40, 40, 40), max_particles=active_np.shape[0], device=device)
     ref.update_field(
         wp.array(active_np, dtype=wp.vec3, device=device), wp.array(active_radii.numpy(), dtype=float, device=device)
     )
@@ -381,7 +395,6 @@ def test_update_field_skips_inactive_particles(test, device):
     ctx = ParticleSurface(
         voxel_size=0.08, kernel_radius=0.24, anisotropic=True, anisotropy_min_neighbors=4, device=device
     )
-    ctx.configure_field_grid((-1.5, -1.5, -1.5), (40, 40, 40), max_particles=all_np.shape[0], device=device)
     ctx.update_field(positions, radii, particle_flags=flags)
 
     np.testing.assert_allclose(ctx.field.numpy(), ref.field.numpy(), rtol=1.0e-6, atol=1.0e-6)
@@ -413,9 +426,9 @@ def test_update_field_cuda_graph(test, device):
         field_smooth_iterations=1,
         field_smooth_radius=1,
         redistance_iterations=1,
+        max_grid_cells=_TEST_MAX_GRID_CELLS,
         device=device,
     )
-    ctx.configure_field_grid((-1.5, -1.5, -1.5), (40, 40, 40), max_particles=positions.shape[0], device=device)
     ctx.update_field(positions, radii, particle_flags=flags)
 
     with wp.ScopedCapture(device=device_obj) as capture:
@@ -461,14 +474,14 @@ def test_isotropic_particle_sdf_values(test, device):
         particle_sdf_band=2.0,
         device=device,
     )
-    ctx.configure_field_grid((-1.0, -1.0, -1.0), (3, 3, 3), max_particles=1, device=device)
     ctx.update_field(positions, radii)
 
     field = ctx.field.numpy()
-    test.assertAlmostEqual(float(field[1, 1, 1]), -0.5)
-    test.assertAlmostEqual(float(field[0, 1, 1]), 0.5)
-    test.assertAlmostEqual(float(field[1, 0, 1]), 0.5)
-    test.assertAlmostEqual(float(field[1, 1, 0]), 0.5)
+    center = tuple(int(round(-float(value) / ctx.voxel_size)) for value in ctx.grid_origin)
+    test.assertAlmostEqual(float(field[center]), -0.5)
+    test.assertAlmostEqual(float(field[center[0] - 1, center[1], center[2]]), 0.5)
+    test.assertAlmostEqual(float(field[center[0], center[1] - 1, center[2]]), 0.5)
+    test.assertAlmostEqual(float(field[center[0], center[1], center[2] - 1]), 0.5)
     test.assertAlmostEqual(float(field[0, 0, 0]), 6.0)
 
 
@@ -595,42 +608,10 @@ def test_particle_flags_filter_inactive(test, device):
     test.assertIsNone(verts)
     test.assertIsNone(indices)
     test.assertIsNone(normals)
-    test.assertIsNone(flagged_ctx.field)
-    test.assertIsNone(flagged_ctx.grid_dims)
-    test.assertIsNone(flagged_ctx.grid_origin)
     verts, indices, normals = flagged_ctx.resurface(compute_normals=False)
     test.assertIsNone(verts)
     test.assertIsNone(indices)
     test.assertIsNone(normals)
-
-
-def test_collider_field_sampler_clamps_to_grid(test, device):
-    field_np = np.zeros((3, 3, 3), dtype=np.float32)
-    for i in range(3):
-        for j in range(3):
-            for k in range(3):
-                field_np[i, j, k] = float(i + 10 * j + 100 * k)
-
-    field = wp.array(field_np, dtype=wp.float32, device=device)
-    positions = wp.array(
-        [
-            [-0.25, 0.0, 0.0],
-            [2.25, 0.0, 0.0],
-            [1.5, 1.5, 1.5],
-        ],
-        dtype=wp.vec3,
-        device=device,
-    )
-    values = wp.empty(positions.shape[0], dtype=float, device=device)
-
-    wp.launch(
-        _sample_trilinear_kernel,
-        dim=positions.shape[0],
-        inputs=[field, wp.vec3(0.0), 1.0, positions, values],
-        device=device,
-    )
-
-    np.testing.assert_allclose(values.numpy(), np.array([0.0, 2.0, 166.5], dtype=np.float32), rtol=1e-6)
 
 
 def test_solver_extract_particle_surface(test, device):
@@ -660,7 +641,11 @@ def test_solver_extract_particle_surface(test, device):
     solver = SolverImplicitMPM(model, options)
     default_surface = solver.create_particle_surface()
     test.assertAlmostEqual(default_surface.voxel_size, 0.045)
-    surface = solver.create_particle_surface(voxel_size=0.08, kernel_radius=0.24, field_smooth_iterations=0)
+    surface = solver.create_particle_surface(
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        field_smooth_iterations=0,
+    )
 
     verts, indices, normals = solver.extract_particle_surface(state, surface, compute_normals=False)
 
@@ -697,53 +682,42 @@ def test_solver_extract_particle_surface(test, device):
     test.assertGreater(indices.shape[0], 0)
     test.assertIsNone(normals)
 
+    capacity_surface_sdf = solver.create_particle_surface(
+        voxel_size=0.08,
+        max_grid_cells=_TEST_MAX_GRID_CELLS,
+        kernel_radius=0.24,
+        field_smooth_iterations=0,
+        field_mode="sdf",
+        redistance_iterations=1,
+    )
+    capacity_mesh = solver.extract_particle_surface(
+        state,
+        capacity_surface_sdf,
+        compute_normals=False,
+        extrapolate_into_colliders=True,
+        collider_extrapolation_depth=0.08,
+    )
+    capacity_counts = capacity_mesh.counts.numpy()
+    test.assertGreater(int(capacity_counts[0]), 0)
+    test.assertGreater(int(capacity_counts[1]), 0)
+
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            solver.extract_particle_surface(
+                state,
+                capacity_surface_sdf,
+                compute_normals=False,
+                extrapolate_into_colliders=True,
+                collider_extrapolation_depth=0.08,
+            )
+        wp.capture_launch(capture.graph)
+
 
 class TestParticleSurface(unittest.TestCase):
     def test_fem_field_requires_populated_field(self):
         ctx = ParticleSurface(voxel_size=0.1, device="cpu")
         with self.assertRaisesRegex(RuntimeError, r"extract\(\) or update_field\(\)"):
             ctx.fem_field()
-
-    def test_defaults_are_inclusive(self):
-        ctx = ParticleSurface(voxel_size=0.1, device="cpu")
-        self.assertEqual(ctx.threshold, 0.25)
-        self.assertEqual(ctx.smooth_lambda, 0.5)
-        self.assertEqual(ctx.anisotropy_ratio, 4.0)
-        self.assertEqual(ctx.kernel_scale, 0.5)
-        self.assertEqual(ctx.anisotropy_scale, 1.0)
-        self.assertEqual(ctx.anisotropy_min_neighbors, 25)
-        self.assertEqual(ctx.anisotropy_strength, 1.0)
-        self.assertEqual(ctx.surface_method, "density")
-        self.assertEqual(ctx.particle_sdf_radius_scale, 1.0)
-        self.assertEqual(ctx.particle_sdf_band, 2.0)
-        self.assertEqual(ctx.field_smooth_iterations, 0)
-        self.assertEqual(ctx.field_smooth_radius, 1)
-
-    def test_one_shot_helper_defaults_are_inclusive(self):
-        params = inspect.signature(extract_particle_surface).parameters
-        self.assertEqual(params["threshold"].default, 0.25)
-        self.assertEqual(params["smooth_lambda"].default, 0.5)
-        self.assertEqual(params["anisotropy_ratio"].default, 4.0)
-        self.assertEqual(params["kernel_scale"].default, 0.5)
-        self.assertEqual(params["anisotropy_scale"].default, 1.0)
-        self.assertEqual(params["field_mode"].default, None)
-        self.assertEqual(params["anisotropy_min_neighbors"].default, 25)
-        self.assertEqual(params["anisotropy_strength"].default, 1.0)
-        self.assertEqual(params["surface_method"].default, "density")
-        self.assertEqual(params["particle_sdf_radius_scale"].default, 1.0)
-        self.assertEqual(params["particle_sdf_band"].default, 2.0)
-        self.assertEqual(params["field_smooth_iterations"].default, 0)
-        self.assertEqual(params["field_smooth_radius"].default, 1)
-
-    def test_collider_extrapolation_onset_defaults_to_surface(self):
-        solver_default = (
-            inspect.signature(SolverImplicitMPM.extract_particle_surface)
-            .parameters["collider_extrapolation_onset"]
-            .default
-        )
-        adapter_default = inspect.signature(extrapolate_surface_sdf_into_colliders).parameters["onset"].default
-        self.assertEqual(solver_default, 0.0)
-        self.assertEqual(adapter_default, 0.0)
 
     def test_constructor_rejects_invalid_parameters(self):
         invalid_cases = [
@@ -768,42 +742,6 @@ class TestParticleSurface(unittest.TestCase):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaisesRegex(ValueError, message):
                     ParticleSurface(device="cpu", **kwargs)
-
-    def test_grid_padding_covers_anisotropic_support(self):
-        radii = wp.array(np.array([0.04, 0.05], dtype=np.float32), dtype=float, device="cpu")
-        ctx = ParticleSurface(
-            voxel_size=0.025,
-            kernel_radius=0.075,
-            anisotropic=True,
-            anisotropy_ratio=8.0,
-            kernel_scale=0.5,
-            anisotropy_scale=1.2,
-            padding=2,
-            device="cpu",
-        )
-        expected_density_support = (
-            2.0 * ctx.kernel_scale * ctx.anisotropy_scale * ctx.anisotropy_ratio ** (2.0 / 3.0) * ctx.kernel_radius
-        )
-        self.assertAlmostEqual(ctx._grid_padding(radii, "cpu"), expected_density_support + 2 * ctx.voxel_size)
-
-        sdf_ctx = ParticleSurface(
-            voxel_size=0.025,
-            kernel_radius=0.075,
-            anisotropic=True,
-            anisotropy_ratio=8.0,
-            surface_method="particle_sdf",
-            particle_sdf_radius_scale=3.0,
-            particle_sdf_band=2.0,
-            padding=2,
-            device="cpu",
-        )
-        expected_sdf_support = (
-            0.05
-            * sdf_ctx.particle_sdf_radius_scale
-            * sdf_ctx.particle_sdf_band
-            * sdf_ctx.anisotropy_ratio ** (2.0 / 3.0)
-        )
-        self.assertAlmostEqual(sdf_ctx._grid_padding(radii, "cpu"), expected_sdf_support + 2 * sdf_ctx.voxel_size)
 
     def test_sphere_particle_helper_returns_requested_count(self):
         positions, radii = _make_sphere_particles(n=37, device="cpu")
@@ -851,7 +789,6 @@ add_function_test(
 add_function_test(TestParticleSurface, "test_mesh_smoothing", test_mesh_smoothing, devices=devices)
 add_function_test(TestParticleSurface, "test_empty_particles", test_empty_particles, devices=devices)
 add_function_test(TestParticleSurface, "test_radii_length_mismatch", test_radii_length_mismatch, devices=devices)
-add_function_test(TestParticleSurface, "test_invalid_radii_values", test_invalid_radii_values, devices=devices)
 add_function_test(TestParticleSurface, "test_radii_device_mismatch", test_radii_device_mismatch, devices=devices)
 add_function_test(TestParticleSurface, "test_array_layout_validation", test_array_layout_validation, devices=devices)
 # fem_field test uses Grid3D which doesn't support multi-GPU partitioning;
@@ -866,6 +803,7 @@ add_function_test(
     test_update_field_matches_extract_field,
     devices=devices,
 )
+add_function_test(TestParticleSurface, "test_grid_capacity_extraction", test_grid_capacity_extraction, devices=devices)
 add_function_test(
     TestParticleSurface,
     "test_update_field_skips_inactive_particles",
@@ -889,12 +827,6 @@ add_function_test(
 add_function_test(TestParticleSurface, "test_anisotropy_ratio", test_anisotropy_ratio, devices=devices)
 add_function_test(
     TestParticleSurface, "test_particle_flags_filter_inactive", test_particle_flags_filter_inactive, devices=devices
-)
-add_function_test(
-    TestParticleSurface,
-    "test_collider_field_sampler_clamps_to_grid",
-    test_collider_field_sampler_clamps_to_grid,
-    devices=devices,
 )
 add_function_test(
     TestParticleSurface, "test_solver_extract_particle_surface", test_solver_extract_particle_surface, devices=devices

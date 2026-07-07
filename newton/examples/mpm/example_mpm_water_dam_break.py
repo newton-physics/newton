@@ -4,6 +4,7 @@
 """Water-like MPM dam break rendered as an extracted surface mesh."""
 
 import argparse
+import warnings
 
 import numpy as np
 import warp as wp
@@ -108,6 +109,7 @@ class Example:
         )
         self.surface = self.solver.create_particle_surface(
             voxel_size=surface_voxel_size,
+            max_grid_cells=args.surface_max_grid_cells,
             kernel_radius=surface_kernel_radius,
             threshold=args.surface_threshold,
             smooth_lambda=args.surface_smoothing,
@@ -136,6 +138,29 @@ class Example:
         self.viewer.show_visual = False
         self.viewer.show_particles = args.show_particles
         self.viewer.set_camera(pos=wp.vec3(5.0, -6.0, 4.0), pitch=-20.0, yaw=130.0)
+        self._capture_surface_extraction()
+
+    def _extract_surface(self) -> newton.geometry.ParticleSurface.ExtractionMesh:
+        return self.solver.extract_particle_surface(
+            self.state_0,
+            self.surface,
+            extrapolate_into_colliders=self.extrapolate_into_colliders,
+            collider_extrapolation_depth=self.collider_extrapolation_depth,
+        )
+
+    def _capture_surface_extraction(self):
+        self.surface_graph = None
+        self.surface_mesh = None
+        if not self.model.device.is_cuda:
+            return
+        if self.sim_substeps % 2 != 0:
+            warnings.warn("Sim substeps must be even for graph capture of surface extraction", stacklevel=2)
+            return
+
+        self.surface_mesh = self._extract_surface()
+        with wp.ScopedCapture(device=self.model.device) as capture:
+            self.surface_mesh = self._extract_surface()
+        self.surface_graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):
@@ -164,12 +189,11 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
 
-        verts, indices, normals = self.solver.extract_particle_surface(
-            self.state_0,
-            self.surface,
-            extrapolate_into_colliders=self.extrapolate_into_colliders,
-            collider_extrapolation_depth=self.collider_extrapolation_depth,
-        )
+        if self.surface_graph is None:
+            self.surface_mesh = self._extract_surface()
+        else:
+            wp.capture_launch(self.surface_graph)
+        verts, indices, normals = self.surface_mesh.to_arrays()
         if verts is None:
             verts = self._empty_surface_points
             indices = self._empty_surface_indices
@@ -414,6 +438,12 @@ class Example:
             type=float,
             default=None,
             help="Surface-grid voxel size [m] (default: 0.3 * --voxel-size)",
+        )
+        parser.add_argument(
+            "--surface-max-grid-cells",
+            type=int,
+            default=12_000_000,
+            help="Maximum logical surface-grid cell count",
         )
         parser.add_argument(
             "--surface-kernel-radius",
