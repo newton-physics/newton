@@ -1202,7 +1202,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         for margin in (0.0, 0.05):
             with self.subTest(margin=margin):
                 sphere = ModelBuilder()
-                body = sphere.add_link()
+                body = sphere.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()))
                 sphere.add_shape_sphere(
                     body,
                     radius=radius,
@@ -1211,7 +1211,7 @@ class TestGeometryContactConversions(unittest.TestCase):
                 joint = sphere.add_joint_free(
                     parent=-1,
                     child=body,
-                    parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()),
+                    parent_xform=wp.transform_identity(),
                     child_xform=wp.transform_identity(),
                 )
                 sphere.add_articulation([joint])
