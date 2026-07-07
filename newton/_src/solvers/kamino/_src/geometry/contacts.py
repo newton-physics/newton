@@ -1285,7 +1285,7 @@ def convert_contacts_newton_to_kamino(
     contacts_out: ContactsKamino,
     convert_forces: bool = False,
     friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
-    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
+    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1323,6 +1323,10 @@ def convert_contacts_newton_to_kamino(
         convert_forces:
             If ``True``, also convert ``contacts_in.force`` into``contacts_out.reaction``.
             If ``False`` or ``contacts_in.force`` is missing, ``contacts_out.reaction`` is left untouched.
+        friction_mix_mode:
+            The mixing mode to use for contact friction. Defaults to `"average"`.
+        restitution_mix_mode:
+            The mixing mode to use for contact restitution. Defaults to `"min"`.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
