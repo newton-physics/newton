@@ -142,6 +142,7 @@ jobs:
           uv run --extra dev -m newton.tests
           --strict-warnings
           --parallel-timeout ${{ matrix.os == 'macos-latest' && 6900 || 3300 }}
+          ${{ matrix.os == 'macos-latest' && '--disable-process-pooling' || '' }}
           --no-cache-clear
           --junit-report-xml rspec.xml
           --coverage
