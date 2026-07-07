@@ -109,7 +109,7 @@ def _resolve_newton_limit_kd(
     Returns (resolved_value, source) where source is ``"force"`` when Newton
     broadcast values are used, or the original ``fallback_source`` otherwise.
     """
-    # Hard-limit stiffness or damping → zero damping.
+    # Hard (rigid) limit: infinite ke or kd means no dissipation is needed.
     if limit_ke is not None and limit_ke == float("inf"):
         return 0.0, "force"
     if limit_kd is not None and limit_kd == float("inf"):
