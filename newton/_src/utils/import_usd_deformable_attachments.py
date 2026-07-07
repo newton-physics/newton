@@ -468,7 +468,10 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
                 stacklevel=2,
             )
             continue
-        pair_count = 0
+        # Overlapping groups and a self-filter's mirrored (sa, sb)/(sb, sa) orderings repeat
+        # shape combinations; dedup locally so each normalized pair is added once (the
+        # builder's filter list itself does not deduplicate).
+        seen_pairs: set[tuple[int, int]] = set()
         skip = False
         for g0, g1 in pairs:
             shapes0 = _src_shapes(src0, g0, path)
@@ -478,10 +481,10 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
                 break
             for sa in shapes0:
                 for sb in shapes1:
-                    if sa != sb:
+                    if sa != sb and (min(sa, sb), max(sa, sb)) not in seen_pairs:
+                        seen_pairs.add((min(sa, sb), max(sa, sb)))
                         builder.add_shape_collision_filter_pair(sa, sb)
-                        pair_count += 1
         if skip:
             continue
         if verbose:
-            print(f"Applied PhysicsElementCollisionFilter {path}: {pair_count} shape pair(s).")
+            print(f"Applied PhysicsElementCollisionFilter {path}: {len(seen_pairs)} shape pair(s).")

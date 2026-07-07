@@ -434,6 +434,32 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                 for sb in b:
                     self.assertIn(tuple(sorted((sa, sb))), pairs)
 
+    def test_element_collision_filter_deduplicates_pairs(self):
+        """Overlapping groups and a self-filter's mirrored (sa, sb)/(sb, sa) orderings repeat
+        the same shape combination; the filter adds each normalized pair once. The pair uses
+        non-adjacent segments because add_rod files its own adjacent-segment filters."""
+        stage = _deformable_stage()
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/CableA", pts)
+        # Three group pairings that all normalize to (A0, A2): forward, mirrored, repeated.
+        _add_element_collision_filter(
+            stage,
+            "/World/Filter",
+            src0="/World/CableA",
+            src1="/World/CableA",
+            indices0=[0, 2, 0],
+            counts0=[1, 1, 1],
+            indices1=[2, 0, 2],
+            counts1=[1, 1, 1],
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        a = self._cable_seg_shapes(builder, "/World/CableA")
+        raw = [tuple(sorted(p)) for p in builder.shape_collision_filter_pairs]
+        self.assertEqual(raw.count(tuple(sorted((a[0], a[2])))), 1, "pair must be stored exactly once")
+
     def test_element_collision_filter_malformed_counts_warns_and_skips(self):
         """groupElemCounts whose sum exceeds the index array warns and applies no filter pairs."""
         with self.assertWarnsRegex(UserWarning, "sum exceeds"):
