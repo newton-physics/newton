@@ -159,6 +159,8 @@ jobs:
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
+          # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
+          COVERAGE_CORE: "sysmon"
         run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Check disk space (post-test)

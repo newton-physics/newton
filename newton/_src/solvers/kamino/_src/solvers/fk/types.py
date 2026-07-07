@@ -46,10 +46,9 @@ class FKJointDoFType(IntEnum):
     CYLINDRICAL = 3
     UNIVERSAL = 4
     SPHERICAL = 5
-    GIMBAL = 6
-    CARTESIAN = 7
-    FIXED = 8
-    AXIS = 9
+    CARTESIAN = 6
+    FIXED = 7
+    AXIS = 8
 
 
 class ForwardKinematicsPreconditionerType(IntEnum):
