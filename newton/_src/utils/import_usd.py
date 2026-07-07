@@ -3537,8 +3537,6 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
-    # Mass precedence (proposal): per-point physics:masses > body mass > body density
-    # > material density; per-element weighting is left to the add_* builders.
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
         prims = iter(Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()))
@@ -3865,6 +3863,8 @@ def parse_usd(
     # importer-created ones (e.g. kinematic anchors), preserving ascending articulation order.
     # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
     # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
+    # Mass precedence (proposal): per-point physics:masses > body mass > body density
+    # > material density; per-element weighting is left to the add_* builders.
     if _deformable_prims.has_candidates():
         _deformable_ctx = _DeformableImportContext(
             builder=builder,
