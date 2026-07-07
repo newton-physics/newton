@@ -28,6 +28,7 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass, field
 from enum import IntEnum
+from typing import Literal
 
 import warp as wp
 
@@ -853,14 +854,14 @@ class ContactsKamino:
 @functools.cache
 def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
-    restitution_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
+    restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
 ):
     """
     Generates a kernel to Newton contacts to the Kamino format.
 
     Args:
-        friction_mixing_mode: The mixing mode to use for friction.
-        restitution_mixing_mode: The mixing mode to use for restitution.
+        friction_mix_mode: The mixing mode to use for friction.
+        restitution_mix_mode: The mixing mode to use for restitution.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -1283,8 +1284,8 @@ def convert_contacts_newton_to_kamino(
     contacts_in: Contacts,
     contacts_out: ContactsKamino,
     convert_forces: bool = False,
-    friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
-    restitution_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
+    friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
+    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1363,7 +1364,10 @@ def convert_contacts_newton_to_kamino(
     contacts_out.clear()
 
     # Generate the conversion kernel
-    _convert_contacts_newton_to_kamino = make_convert_contacts_newton_to_kamino(friction_mix_mode, restitution_mix_mode)
+    _convert_contacts_newton_to_kamino = make_convert_contacts_newton_to_kamino(
+        friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
+        restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
+    )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format
     # NOTE: To reduce overhead, the total thread count is set to the smallest of
