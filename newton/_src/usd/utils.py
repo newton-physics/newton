@@ -1597,15 +1597,28 @@ def _get_physics_material_density(material_prim) -> float | None:
 def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
     """Find the ``PhysicsDeformableBodyAPI`` prim governing a simulation geometry.
 
-    The deformable proposal allows the body API on the simulation geometry itself
-    or on an ancestor ``Xform`` whose direct child is the simulation geometry, so
-    this walks up the prim hierarchy until it finds the body API (or runs out).
+    The deformable proposal allows the body API on the simulation geometry itself or
+    on the prim whose direct child is the simulation geometry; nothing deeper governs
+    it. A body API found only on a distant ancestor warns (so its intended overrides
+    are not silently dropped) and is not used.
     """
-    p = prim
-    while p and p.IsValid():
-        if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
-            return p
-        p = p.GetParent()
+    if has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
+        return prim
+    parent = prim.GetParent()
+    if parent and parent.IsValid():
+        if has_applied_api_schema(parent, "PhysicsDeformableBodyAPI"):
+            return parent
+        p = parent.GetParent()
+        while p and p.IsValid():
+            if has_applied_api_schema(p, "PhysicsDeformableBodyAPI"):
+                warnings.warn(
+                    f"{prim.GetPath()}: PhysicsDeformableBodyAPI on ancestor {p.GetPath()} does not "
+                    f"govern this simulation geometry (the deformable proposal allows the body API "
+                    f"only on the geometry itself or its direct parent); ignoring it.",
+                    stacklevel=2,
+                )
+                break
+            p = p.GetParent()
     return None
 
 

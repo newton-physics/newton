@@ -185,6 +185,28 @@ class TestUSDDeformableVolume(unittest.TestCase):
         # (mass found on the ancestor Xform; no extra graphics or second-sim mass).
         self.assertAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
 
+    def test_body_api_on_distant_ancestor_is_not_used(self):
+        """The proposal allows PhysicsDeformableBodyAPI on the simulation geometry itself or
+        on its direct parent; an API on a deeper ancestor does not govern the mesh. The
+        importer warns instead of silently applying the distant overrides, and the mesh
+        imports with its own (density-derived) mass."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        UsdGeom.Xform.Define(stage, "/World/Root")
+        UsdGeom.Xform.Define(stage, "/World/Root/Group")
+        _apply_deformable_body_api(stage.GetPrimAtPath("/World/Root"), mass=12.0)
+        _author_tet_cube(stage, "/World/Root/Group/Sim")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "direct parent"):
+            builder.add_usd(stage)
+
+        # The mesh still imports, but the distant ancestor's 12 kg override is not applied.
+        self.assertEqual(group_labels(builder, "soft"), ["/World/Root/Group/Sim"])
+        self.assertGreater(sum(builder.particle_mass), 0.0)
+        self.assertNotAlmostEqual(sum(builder.particle_mass), 12.0, places=4)
+
     def test_legacy_vendor_material_keeps_deprecation_window(self):
         """A TetMesh material authoring only vendor-namespaced (omniphysics:) moduli still
         imports its stiffness/density through add_usd() during the deprecation window, with a
