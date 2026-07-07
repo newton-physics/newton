@@ -3,57 +3,51 @@
 
 """Solver flags."""
 
-from enum import IntEnum
+import warnings
+from enum import EnumMeta, IntEnum
+
+from ..sim.enums import ModelFlags
 
 
-# model update flags - used for solver.notify_model_update()
-class SolverNotifyFlags(IntEnum):
-    """
-    Flags indicating which parts of the model have been updated and require the solver to be notified.
+class _DeprecatedSolverNotifyFlagsMeta(EnumMeta):
+    def __getattribute__(cls, name: str):
+        value = super().__getattribute__(name)
+        if not name.startswith("_"):
+            member_map = super().__getattribute__("_member_map_")
+            if name in member_map:
+                _warn_solver_notify_flags_deprecated()
+        return value
 
-    These flags are used with `solver.notify_model_update()` to specify which properties have changed,
-    allowing the solver to efficiently update only the necessary components.
-    """
+    def __call__(cls, *args, **kwargs):
+        _warn_solver_notify_flags_deprecated()
+        return super().__call__(*args, **kwargs)
 
-    JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
 
-    JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
-
-    BODY_PROPERTIES = 1 << 2
-    """Indicates body property updates: body_q, body_qd, body_flags."""
-
-    BODY_INERTIAL_PROPERTIES = 1 << 3
-    """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
-
-    SHAPE_PROPERTIES = 1 << 4
-    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_ke, shape_material_kd, rigid_contact_mu_torsional, rigid_contact_mu_rolling."""
-
-    MODEL_PROPERTIES = 1 << 5
-    """Indicates model property updates: gravity and other global parameters."""
-
-    CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates constraint property updates: equality constraints (equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled)."""
-
-    TENDON_PROPERTIES = 1 << 7
-    """Indicates tendon properties: eg tendon_stiffness."""
-
-    ACTUATOR_PROPERTIES = 1 << 8
-    """Indicates actuator property updates: gains, biases, limits, etc."""
-
-    ALL = (
-        JOINT_PROPERTIES
-        | JOINT_DOF_PROPERTIES
-        | BODY_PROPERTIES
-        | BODY_INERTIAL_PROPERTIES
-        | SHAPE_PROPERTIES
-        | MODEL_PROPERTIES
-        | CONSTRAINT_PROPERTIES
-        | TENDON_PROPERTIES
-        | ACTUATOR_PROPERTIES
+def _warn_solver_notify_flags_deprecated() -> None:
+    warnings.warn(
+        "SolverNotifyFlags is deprecated, use ModelFlags instead.",
+        DeprecationWarning,
+        stacklevel=3,
     )
-    """Indicates all property updates."""
+
+
+class SolverNotifyFlags(IntEnum, metaclass=_DeprecatedSolverNotifyFlagsMeta):
+    """Deprecated alias for :class:`~newton.ModelFlags`.
+
+    .. deprecated:: 1.3
+        Use :class:`~newton.ModelFlags` instead.
+    """
+
+    JOINT_PROPERTIES = ModelFlags.JOINT_PROPERTIES.value
+    JOINT_DOF_PROPERTIES = ModelFlags.JOINT_DOF_PROPERTIES.value
+    BODY_PROPERTIES = ModelFlags.BODY_PROPERTIES.value
+    BODY_INERTIAL_PROPERTIES = ModelFlags.BODY_INERTIAL_PROPERTIES.value
+    SHAPE_PROPERTIES = ModelFlags.SHAPE_PROPERTIES.value
+    MODEL_PROPERTIES = ModelFlags.MODEL_PROPERTIES.value
+    CONSTRAINT_PROPERTIES = ModelFlags.CONSTRAINT_PROPERTIES.value
+    TENDON_PROPERTIES = ModelFlags.TENDON_PROPERTIES.value
+    ACTUATOR_PROPERTIES = ModelFlags.ACTUATOR_PROPERTIES.value
+    ALL = ModelFlags.ALL.value
 
 
 __all__ = [

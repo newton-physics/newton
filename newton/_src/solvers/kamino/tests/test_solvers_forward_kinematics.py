@@ -17,14 +17,22 @@ import newton
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointCorrectionMode, JointDoFType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solvers.fk import ForwardKinematicsSolver
 from newton._src.solvers.kamino._src.utils.io.usd import USDImporter
 from newton._src.solvers.kamino.tests import setup_tests, test_context
-from newton._src.solvers.kamino.tests.utils.diff_check import diff_check, run_test_single_joint_examples
+from newton._src.solvers.kamino.tests.utils.diff_check import diff_check
+from newton._src.solvers.kamino.tests.utils.joints import (
+    run_test_single_joint_examples,
+)
+from newton._src.solvers.kamino.tests.utils.sampling import (
+    sample_actuator_coords,
+    sample_actuator_velocities,
+    sample_base_state,
+    sample_body_poses,
+)
 
 ###
 # Module configs
@@ -120,22 +128,58 @@ class JacobianCheckForwardKinematics(unittest.TestCase):
         self.assertTrue(success)
 
 
-def get_actuators_q_quaternion_first_ids(model: ModelKamino):
-    """Lists the first index of every unit quaternion 4-segment in the model's actuated coordinates."""
-    act_types = model.joints.act_type.numpy()
-    dof_types = model.joints.dof_type.numpy()
-    num_coords = model.joints.num_coords.numpy()
-    coord_id = 0
-    quat_ids = []
-    for jt_id in range(model.size.sum_of_num_joints):
-        if act_types[jt_id] == JointActuationType.PASSIVE:
-            continue
-        if dof_types[jt_id] == JointDoFType.SPHERICAL:
-            quat_ids.append(coord_id)
-        elif dof_types[jt_id] == JointDoFType.FREE:
-            quat_ids.append(coord_id + 3)
-        coord_id += num_coords[jt_id]
-    return quat_ids
+class WorldMaskInitializationForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_initial_line_search_success_honors_world_mask(self):
+        num_worlds = 3
+        solver = ForwardKinematicsSolver.__new__(ForwardKinematicsSolver)
+        solver.device = self.default_device
+        solver.num_worlds = num_worlds
+        solver.config = ForwardKinematicsSolver.Config(
+            max_newton_iterations=1,
+            reset_state=False,
+            use_incremental_solve=False,
+            use_regularization=False,
+        )
+
+        with wp.ScopedDevice(self.default_device):
+            solver.all_worlds_mask = wp.full(shape=(num_worlds,), value=True, dtype=wp.bool)
+            solver.newton_iteration = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.newton_success = wp.empty(shape=(num_worlds,), dtype=wp.bool)
+            solver.newton_mask = wp.empty(shape=(num_worlds,), dtype=wp.bool)
+            solver.min_newton_iterations = wp.empty(shape=(num_worlds,), dtype=wp.int32)
+            solver.max_newton_iterations = wp.array([solver.config.max_newton_iterations], dtype=wp.int32)
+            solver.newton_loop_condition = wp.empty(shape=(1,), dtype=wp.int32)
+            solver.line_search_success = wp.empty(shape=(num_worlds,), dtype=wp.bool)
+            solver.tolerance = wp.array([solver.config.tolerance], dtype=wp.float32)
+            solver.jacobian_early_update_mask = wp.empty(shape=0, dtype=wp.bool)
+            solver.jacobian_late_update_mask = wp.empty(shape=0, dtype=wp.bool)
+            solver.base_q_default = wp.empty(shape=(num_worlds,), dtype=wp.transformf)
+            solver.actuators_q_next = wp.empty(shape=0, dtype=wp.float32)
+            solver.target_rel_transforms = wp.empty(shape=0, dtype=wp.transformf)
+            solver.constraints = wp.empty(shape=(num_worlds, 0), dtype=wp.float32)
+            solver.grad = wp.empty(shape=(num_worlds, 0), dtype=wp.float32)
+            solver.max_residual = wp.zeros(shape=(num_worlds,), dtype=wp.float32)
+            actuators_q = wp.empty(shape=0, dtype=wp.float32)
+            bodies_q = wp.empty(shape=0, dtype=wp.transformf)
+            world_mask = wp.array([True, False, True], dtype=wp.bool)
+
+        solver._eval_target_actuators_q = lambda base_q, actuators_q, actuators_q_next: None
+        solver._eval_target_relative_transformations = lambda actuators_q_next, target_rel_transforms: None
+        solver._eval_kinematic_constraints = lambda bodies_q, target_rel_transforms, world_mask, constraints: None
+        solver._eval_max_residual = lambda constraints, grad, max_residual: None
+        solver._run_newton_iteration = lambda bodies_q: None
+
+        solver.run_fk_solve(actuators_q, bodies_q, world_mask=world_mask)
+
+        np.testing.assert_array_equal(solver.line_search_success.numpy(), np.array([1, 0, 1], dtype=np.int32))
 
 
 def compute_actuated_coords_and_dofs_data(model: ModelKamino):
@@ -229,104 +273,25 @@ def compute_constraint_residual_mask(model: ModelKamino):
     return mask
 
 
-def generate_random_inputs_q(
-    model: ModelKamino,
-    num_poses: int,
-    max_base_q: np.ndarray,
-    max_actuators_q: np.ndarray,
-    rng: np.random._generator.Generator,
-    unit_quaternions=True,
-):
-    # Check dimensions
-    base_q_size = 7 * model.size.num_worlds
-    actuators_q_size = model.size.sum_of_num_actuated_joint_dofs
-    assert len(max_base_q) == base_q_size
-    assert len(max_actuators_q) == actuators_q_size
-
-    # Generate (random) base_q, actuators_q
-    base_q_np = np.zeros((num_poses, base_q_size))
-    for i in range(base_q_size):
-        base_q_np[:, i] = rng.uniform(-max_base_q[i], max_base_q[i], num_poses)
-    actuators_q_np = np.zeros((num_poses, actuators_q_size))
-    for i in range(actuators_q_size):
-        actuators_q_np[:, i] = rng.uniform(-max_actuators_q[i], max_actuators_q[i], num_poses)
-
-    # Normalize quaternions in base_q, actuators_q
-    if unit_quaternions:
-        for i in range(model.size.num_worlds):
-            base_q_np[:, 7 * i + 3 : 7 * i + 7] /= np.linalg.norm(base_q_np[:, 7 * i + 3 : 7 * i + 7], axis=1)[:, None]
-        quat_ids = get_actuators_q_quaternion_first_ids(model)
-        for i in quat_ids:
-            actuators_q_np[:, i : i + 4] /= np.linalg.norm(actuators_q_np[:, i : i + 4], axis=1)[:, None]
-
-    return base_q_np, actuators_q_np
-
-
-def generate_random_inputs_u(
-    model: ModelKamino,
-    num_poses: int,
-    max_base_u: np.ndarray,
-    max_actuators_u: np.ndarray,
-    rng: np.random._generator.Generator,
-):
-    # Check dimensions
-    base_u_size = 6 * model.size.num_worlds
-    actuators_u_size = model.size.sum_of_num_actuated_joint_dofs
-    assert len(max_base_u) == base_u_size
-    assert len(max_actuators_u) == actuators_u_size
-
-    # Generate (random) base_u, actuators_u
-    base_u_np = np.zeros((num_poses, base_u_size))
-    for i in range(base_u_size):
-        base_u_np[:, i] = rng.uniform(-max_base_u[i], max_base_u[i], num_poses)
-    actuators_u_np = np.zeros((num_poses, actuators_u_size))
-    for i in range(actuators_u_size):
-        actuators_u_np[:, i] = rng.uniform(-max_actuators_u[i], max_actuators_u[i], num_poses)
-
-    return base_u_np, actuators_u_np
-
-
-def generate_random_poses(
-    model: ModelKamino,
-    num_poses: int,
-    max_bodies_q: np.ndarray,
-    rng: np.random._generator.Generator,
-    unit_quaternions=True,
-):
-    # Check dimensions
-    bodies_q_size = 7 * model.size.sum_of_num_bodies
-    assert len(max_bodies_q) == bodies_q_size
-
-    # Generate (random) bodies_q
-    bodies_q_np = np.zeros((num_poses, bodies_q_size))
-    for i in range(bodies_q_size):
-        bodies_q_np[:, i] = rng.uniform(-max_bodies_q[i], max_bodies_q[i], num_poses)
-
-    # Normalize quaternions in bodies_q
-    if unit_quaternions:
-        for i in range(model.size.num_worlds):
-            bodies_q_np[:, 7 * i + 3 : 7 * i + 7] /= np.linalg.norm(bodies_q_np[:, 7 * i + 3 : 7 * i + 7], axis=1)[
-                :, None
-            ]
-
-    return bodies_q_np
-
-
 def simulate_random_poses(
     model: ModelKamino,
     num_poses: int,
-    max_base_q: np.ndarray,
-    max_actuators_q: np.ndarray,
-    max_base_u: np.ndarray,
-    max_actuators_u: np.ndarray,
-    rng: np.random._generator.Generator,
+    rng: np.random.Generator,
+    max_pos: float = 0.1,
+    max_angle: float = np.radians(20.0),
+    max_quat: float = 0.5,
+    max_lin_vel: float = 0.5,
+    max_ang_vel: float = np.radians(90.0),
     use_graph: bool = False,
     verbose: bool = False,
     **config_kwargs,
 ):
     # Generate random inputs
-    base_q_np, actuators_q_np = generate_random_inputs_q(model, num_poses, max_base_q, max_actuators_q, rng)
-    base_u_np, actuators_u_np = generate_random_inputs_u(model, num_poses, max_base_u, max_actuators_u, rng)
+    base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng, num_poses)
+    actuators_q_np = sample_actuator_coords(
+        model, rng, num_poses, max_pos=max_pos, max_angle=max_angle, max_quat=max_quat
+    )
+    actuators_u_np = sample_actuator_velocities(model, rng, num_poses, max_lin_vel=max_lin_vel, max_ang_vel=max_ang_vel)
 
     # Precompute offset arrays for extracting actuator coordinates/dofs
     actuated_coord_offsets, actuated_coords_sizes, actuated_dof_offsets, actuated_dofs_sizes, actuator_dof_types = (
@@ -344,8 +309,8 @@ def simulate_random_poses(
         bodies_q = wp.array(shape=(model.size.sum_of_num_bodies), dtype=wp.transformf)
         base_q = wp.array(shape=(model.size.num_worlds), dtype=wp.transformf)
         actuators_q = wp.array(shape=(actuators_q_np.shape[1]), dtype=wp.float32)
-        bodies_u = wp.array(shape=(model.size.sum_of_num_bodies), dtype=vec6f)
-        base_u = wp.array(shape=(model.size.num_worlds), dtype=vec6f)
+        bodies_u = wp.array(shape=(model.size.sum_of_num_bodies), dtype=wp.spatial_vectorf)
+        base_u = wp.array(shape=(model.size.num_worlds), dtype=wp.spatial_vectorf)
         actuators_u = wp.array(shape=(actuators_u_np.shape[1]), dtype=wp.float32)
     data = model.data(device=model.device)
     epsilon = 1e-3 if config.use_regularization else 1e-4
@@ -438,18 +403,10 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Generate helper function to simulate random poses
         num_poses = 30
-        base_q_max = np.array(3 * [0.2] + 4 * [1.0])
-        actuators_q_max = np.radians([360.0])
-        base_u_max = np.array(3 * [0.1] + 3 * [0.5])
-        actuators_u_max = np.array([0.5])
         simulate_function = partial(
             simulate_random_poses,
             model,
             num_poses,
-            base_q_max,
-            actuators_q_max,
-            base_u_max,
-            actuators_u_max,
             rng,
             use_graph=self.has_cuda,
             verbose=self.verbose,
@@ -493,20 +450,13 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Generate helper function to simulate random poses
         num_poses = 30
-        theta_max = np.radians(10.0)  # Angles too far from the initial pose lead to singularities
-        base_q_max = np.array(3 * [0.2] + 4 * [1.0])
-        actuators_q_max = np.array(model.size.sum_of_num_actuated_joint_coords * [theta_max])
-        base_u_max = np.array(3 * [0.5] + 3 * [0.5])
-        actuators_u_max = np.array(model.size.sum_of_num_actuated_joint_dofs * [0.5])
         simulate_function = partial(
             simulate_random_poses,
             model,
             num_poses,
-            base_q_max,
-            actuators_q_max,
-            base_u_max,
-            actuators_u_max,
             rng,
+            max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
+            max_ang_vel=np.radians(30.0),
             use_graph=self.has_cuda,
             verbose=self.verbose,
             reset_state=True,
@@ -552,21 +502,13 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Generate helper function to simulate random poses
         num_poses = 30
-        theta_max_test_mech = np.radians(360.0)
-        theta_max_dr_legs = np.radians(10.0)
-        base_q_max = np.array(3 * [0.2] + 4 * [1.0] + 3 * [0.2] + 4 * [1.0])
-        actuators_q_max = np.array([theta_max_test_mech] + builder1.num_actuated_joint_coords * [theta_max_dr_legs])
-        base_u_max = np.array(3 * [0.1] + 3 * [0.5] + 3 * [0.5] + 3 * [0.5])
-        actuators_u_max = np.array(model.size.sum_of_num_actuated_joint_dofs * [0.5])
         simulate_function = partial(
             simulate_random_poses,
             model,
             num_poses,
-            base_q_max,
-            actuators_q_max,
-            base_u_max,
-            actuators_u_max,
             rng,
+            max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
+            max_ang_vel=np.radians(30.0),
             use_graph=self.has_cuda,
             verbose=self.verbose,
             reset_state=True,
@@ -606,19 +548,10 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
 
         # Generate helper function to simulate random poses
         num_poses = 30
-        theta_max = np.radians(30.0)
-        base_q_max = np.array(builder.num_worlds * (3 * [0.2] + 4 * [1.0]))
-        actuators_q_max = np.array(builder.num_actuated_joint_coords * [theta_max])
-        base_u_max = np.array(builder.num_worlds * (3 * [0.5] + 3 * [0.5]))
-        actuators_u_max = np.array(model.size.sum_of_num_actuated_joint_dofs * [0.5])
         simulate_function = partial(
             simulate_random_poses,
             model,
             num_poses,
-            base_q_max,
-            actuators_q_max,
-            base_u_max,
-            actuators_u_max,
             rng,
             use_graph=self.has_cuda,
             verbose=self.verbose,
@@ -674,13 +607,9 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
 
         # Generate random poses
         num_poses = 30
-        bodies_q_max = np.array(model.size.sum_of_num_bodies * [0.2, 0.2, 0.2, 1.0, 1.0, 1.0, 1.0])
-        theta_max_test_mech = np.radians(360.0)
-        theta_max_dr_legs = np.radians(10.0)
-        base_q_max = np.array(3 * [0.2] + 4 * [1.0] + 3 * [0.2] + 4 * [1.0])
-        actuators_q_max = np.array([theta_max_test_mech] + builder1.num_actuated_joint_coords * [theta_max_dr_legs])
-        bodies_q_np = generate_random_poses(model, num_poses, bodies_q_max, rng, False)
-        base_q_np, actuators_q_np = generate_random_inputs_q(model, num_poses, base_q_max, actuators_q_max, rng)
+        bodies_q_np = sample_body_poses(model.size.sum_of_num_bodies, rng, num_poses, unit_quaternions=False)
+        base_q_np, _ = sample_base_state(model.size.num_worlds, rng, num_poses)
+        actuators_q_np = sample_actuator_coords(model, rng, num_poses)
 
         # Assemble and compare dense and sparse Jacobian for each pose
         solver = ForwardKinematicsSolver(model, config=ForwardKinematicsSolver.Config(use_sparsity=True))

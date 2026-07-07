@@ -44,8 +44,7 @@ class CodeInfo:
         Initialize a CodeInfo object.
 
         Args:
-            path (str | None):
-                The path to the git repository. If None, the current working directory is used.
+            path: The path to the git repository. If None, the current working directory is used.
 
         Raises:
             RuntimeError: If there is an error retrieving git repository info from the specified path.
@@ -129,8 +128,8 @@ class StatsFloat:
         Initialize a StatsFloat object.
 
         Args:
-            data (np.ndarray): A floating-point data array.
-            name (str | None): An optional name for the statistics object.
+            data: A floating-point data array.
+            name: An optional name for the statistics object.
 
         Raises:
             ValueError: If the data array is not of a floating-point type.
@@ -174,9 +173,9 @@ class StatsInteger:
         Initialize a StatsInteger object.
 
         Args:
-            data (np.ndarray): An integer data array.
-            num_bins (int): Number of bins for histogram (default: 20).
-            name (str | None): An optional name for the statistics object.
+            data: An integer data array.
+            num_bins: Number of bins for histogram (default: 20).
+            name: An optional name for the statistics object.
 
         Raises:
             ValueError: If the data array is not of an integer type.
@@ -220,8 +219,8 @@ class StatsBinary:
         Initialize a StatsBinary object.
 
         Args:
-            data (np.ndarray): A binary (boolean) data array.
-            name (str | None): An optional name for the statistics object.
+            data: A binary (boolean) data array.
+            name: An optional name for the statistics object.
 
         Raises:
             ValueError: If the data array is not of a binary (boolean) type.
@@ -633,8 +632,7 @@ class BenchmarkMetrics:
         table to a text file at the specified path.
 
         Args:
-            path (`str`):
-                File path to save the table as a text file.
+            path: File path to save the table as a text file.
 
         Raises:
             ValueError: If the total metrics (memory used, total time, total FPS) are not available.
@@ -662,8 +660,7 @@ class BenchmarkMetrics:
         the table to a text file at the specified path.
 
         Args:
-            path (`str`):
-                File path to save the table as a text file.
+            path: File path to save the table as a text file.
 
         Raises:
             ValueError: If the step time metrics are not available.
@@ -724,8 +721,7 @@ class BenchmarkMetrics:
         file at the specified path.
 
         Args:
-            path (`str`):
-                File path to save the table as a text file.
+            path: File path to save the table as a text file.
 
         Raises:
             ValueError: If the PADMM solver metrics are not available.
@@ -842,8 +838,7 @@ class BenchmarkMetrics:
         saves the table to a text file at the specified path.
 
         Args:
-            path (`str`):
-                File path to save the table as a text file.
+            path: File path to save the table as a text file.
 
         Raises:
             ValueError: If the physics metrics are not available.
@@ -1066,8 +1061,7 @@ class BenchmarkMetrics:
         optionally saves the plots to a file at the specified path.
 
         Args:
-            path (`str`):
-                Target file path of the generated plot image.\n
+            path: Target file path of the generated plot image.
 
         Raises:
             ValueError: If the PADMM solver metrics are not available.
@@ -1160,8 +1154,7 @@ class BenchmarkMetrics:
         saves the plots to a file at the specified path.
 
         Args:
-            path (`str`):
-                Target file path of the generated plot image.\n
+            path: Target file path of the generated plot image.
 
         Raises:
             ValueError: If the physics metrics are not available.

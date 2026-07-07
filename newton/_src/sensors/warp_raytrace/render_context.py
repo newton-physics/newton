@@ -3,13 +3,12 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
 
-from ...geometry import Gaussian, Mesh
+from ...geometry import Gaussian, GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
@@ -68,6 +67,7 @@ class RenderContext:
         self.shape_source_ptr: wp.array[wp.uint64] | None = None
         self.shape_texture_ids: wp.array[wp.int32] | None = None
         self.shape_mesh_data_ids: wp.array[wp.int32] | None = None
+        self.shape_render_type: wp.array[wp.int32] | None = None
 
         self.mesh_data: wp.array[MeshData] | None = None
         self.texture_data: wp.array[TextureData] | None = None
@@ -83,11 +83,10 @@ class RenderContext:
 
         Populates shape, triangle, and texture data from *model*. BVH
         acceleration structures for shapes and particles live on
-        :class:`~newton.Model` and must be built via
-        :func:`~newton.geometry.build_bvh_shape` and
-        :func:`~newton.geometry.build_bvh_particle` before first use, then
-        refit via :func:`~newton.geometry.refit_bvh_shape` and
-        :func:`~newton.geometry.refit_bvh_particle` before later frames that
+        :class:`~newton.Model` and are built for the initial state by
+        :meth:`~newton.ModelBuilder.finalize`; refit them via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` before later frames that
         change geometry.
 
         Args:
@@ -106,6 +105,21 @@ class RenderContext:
         self.shape_world_index = model.shape_world
         self.shape_source_ptr = model.shape_source_ptr
 
+        # Heightfields are triangulated meshes (their wp.Mesh lives in
+        # shape_source_ptr), so the renderer treats them as meshes: it reuses
+        # the MESH ray-intersection path, which keeps heightfield handling out
+        # of the render kernels entirely (no extra shape-type branch, so no
+        # register/occupancy cost). The remapped type array is what the render
+        # kernel dispatches on; model.shape_type (HFIELD) is left untouched for
+        # collision and BVH bounds.
+        self.shape_render_type = model.shape_type
+        if model.shape_type is not None:
+            shape_type_np = model.shape_type.numpy()
+            if np.any(shape_type_np == int(GeoType.HFIELD)):
+                shape_type_np = shape_type_np.copy()
+                shape_type_np[shape_type_np == int(GeoType.HFIELD)] = int(GeoType.MESH)
+                self.shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
+
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
             if model.tri_indices is not None and model.tri_indices.shape[0]:
@@ -121,11 +135,9 @@ class RenderContext:
     def update(self, model: Model, state: State):
         """Synchronize triangle-mesh points from the current simulation state.
 
-        Shape and particle BVHs are built and refit separately via
-        :func:`~newton.geometry.build_bvh_shape`,
-        :func:`~newton.geometry.build_bvh_particle`,
-        :func:`~newton.geometry.refit_bvh_shape`, and
-        :func:`~newton.geometry.refit_bvh_particle`.
+        Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
+        and refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
             model: Newton simulation model (for shape metadata).
@@ -156,12 +168,11 @@ class RenderContext:
         output arrays must have shape
         ``(world_count, camera_count, height, width)``.
 
-        Shape and particle BVHs on *model* must be built once via
-        :func:`~newton.geometry.build_bvh_shape` and
-        :func:`~newton.geometry.build_bvh_particle` before first use. Before
-        later frames that change geometry, refit them via
-        :func:`~newton.geometry.refit_bvh_shape` and
-        :func:`~newton.geometry.refit_bvh_particle` before calling this
+        Shape and particle BVHs on *model* are built for the initial state by
+        :meth:`~newton.ModelBuilder.finalize`. Before later frames that change
+        geometry, refit them via
+        :meth:`~newton.Model.bvh_refit_shapes` and
+        :meth:`~newton.Model.bvh_refit_particles` before calling this
         method.
 
         Args:
@@ -183,11 +194,14 @@ class RenderContext:
                 for the render megakernel.
         """
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
-            raise RuntimeError("build_bvh_shape() must be called before rendering shapes.")
+            raise RuntimeError(
+                "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                "call model.bvh_build_shapes(state) for manually populated models."
+            )
 
         has_shapes = model.bvh_shape_count_enabled > 0
         if has_shapes and (model.bvh_shapes is None or model.bvh_shapes_group_roots is None):
-            raise RuntimeError("Shape BVH is incomplete; build it with build_bvh_shape().")
+            raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
 
         has_particles = (
             self.config.enable_particles
@@ -196,12 +210,15 @@ class RenderContext:
             and state.particle_q.shape[0] > 0
         )
         if has_particles and (model.bvh_particles is None or model.bvh_particles_group_roots is None):
-            raise RuntimeError("build_bvh_particle() must be called before rendering particles.")
+            raise RuntimeError(
+                "Particle BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
+                "call model.bvh_build_particles(state) for manually populated models."
+            )
 
         if has_shapes or has_particles or self.has_triangle_mesh or self.has_gaussians:
             if self.has_triangle_mesh:
                 if self.triangle_mesh is None:
-                    self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, device=self.device)
+                    self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices)
                 else:
                     self.triangle_mesh.refit()
 
@@ -301,7 +318,7 @@ class RenderContext:
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model.bvh_shape_enabled,
-                    model.shape_type,
+                    self.shape_render_type,  # HFIELD remapped to MESH; renderer treats heightfields as meshes
                     model.shape_scale,
                     self.shape_colors,
                     model.bvh_shape_world_transforms,
@@ -479,81 +496,3 @@ class RenderContext:
 
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
-
-    def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for color rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_color_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_color_image_output is deprecated, use SensorTiledCamera.utils.create_color_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_color_image_output(width, height, camera_count)
-
-    def create_depth_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.float32]:
-        """Create an output array for depth rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_depth_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_depth_image_output is deprecated, use SensorTiledCamera.utils.create_depth_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_depth_image_output(width, height, camera_count)
-
-    def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for shape-index rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_shape_index_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_shape_index_image_output is deprecated, use SensorTiledCamera.utils.create_shape_index_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_shape_index_image_output(width, height, camera_count)
-
-    def create_normal_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
-        """Create an output array for surface-normal rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_normal_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_normal_image_output is deprecated, use SensorTiledCamera.utils.create_normal_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_normal_image_output(width, height, camera_count)
-
-    def create_albedo_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
-        """Create an output array for albedo rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_albedo_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_albedo_image_output is deprecated, use SensorTiledCamera.utils.create_albedo_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_albedo_image_output(width, height, camera_count)
-
-    def create_hdr_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.vec3f]:
-        """Create an output array for linear HDR color rendering.
-
-        .. deprecated:: 1.1
-            Use :meth:`SensorTiledCamera.utils.create_hdr_color_image_output`.
-        """
-        warnings.warn(
-            "RenderContext.create_hdr_color_image_output is deprecated, use SensorTiledCamera.utils.create_hdr_color_image_output instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.utils.create_hdr_color_image_output(width, height, camera_count)

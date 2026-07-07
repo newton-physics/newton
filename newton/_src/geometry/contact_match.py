@@ -508,6 +508,12 @@ class _ReplayData:
     offset0: wp.array[wp.vec3]
     offset1: wp.array[wp.vec3]
     normal: wp.array[wp.vec3]
+    shape0: wp.array[wp.int32]
+    shape1: wp.array[wp.int32]
+    margin0: wp.array[wp.float32]
+    margin1: wp.array[wp.float32]
+    body_q: wp.array[wp.transform]
+    shape_body: wp.array[wp.int32]
 
 
 @wp.kernel(enable_backward=False)
@@ -518,6 +524,20 @@ def _replay_matched_kernel(data: _ReplayData):
     idx = data.match_index[tid]
     if idx < wp.int32(0):
         return  # MATCH_NOT_FOUND or MATCH_BROKEN -- keep new-frame data.
+
+    body0 = data.shape_body[data.shape0[tid]]
+    body1 = data.shape_body[data.shape1[tid]]
+    p0_world = data.point0[tid]
+    p1_world = data.point1[tid]
+    if body0 >= wp.int32(0):
+        p0_world = wp.transform_point(data.body_q[body0], p0_world)
+    if body1 >= wp.int32(0):
+        p1_world = wp.transform_point(data.body_q[body1], p1_world)
+
+    fresh_gap = wp.dot(p1_world - p0_world, data.normal[tid]) - (data.margin0[tid] + data.margin1[tid])
+    if fresh_gap > wp.float32(0.0):
+        return
+
     data.point0[tid] = data.prev_point0[idx]
     data.point1[tid] = data.prev_point1[idx]
     data.offset0[tid] = data.prev_offset0[idx]
@@ -898,6 +918,12 @@ class ContactMatcher:
         offset0: wp.array[wp.vec3],
         offset1: wp.array[wp.vec3],
         normal: wp.array[wp.vec3],
+        shape0: wp.array[wp.int32],
+        shape1: wp.array[wp.int32],
+        margin0: wp.array[wp.float32],
+        margin1: wp.array[wp.float32],
+        body_q: wp.array[wp.transform],
+        shape_body: wp.array[wp.int32],
         device: Devicelike = None,
     ) -> None:
         """Overwrite matched rows with the saved previous-frame contact geometry.
@@ -914,7 +940,9 @@ class ContactMatcher:
             contact_count: Single-element int array with the active contact count.
             match_index: Sorted match_index array (from :class:`Contacts`).
             point0, point1, offset0, offset1, normal: Current-frame sorted
-                contact record to be overwritten on matched rows.
+                contact record to be overwritten on matched penetrating rows.
+            shape0, shape1, margin0, margin1, body_q, shape_body: Current-frame
+                arrays used to keep separated speculative rows on fresh geometry.
             device: Device to launch on.
         """
         if not self._sticky:
@@ -936,6 +964,12 @@ class ContactMatcher:
         data.offset0 = offset0
         data.offset1 = offset1
         data.normal = normal
+        data.shape0 = shape0
+        data.shape1 = shape1
+        data.margin0 = margin0
+        data.margin1 = margin1
+        data.body_q = body_q
+        data.shape_body = shape_body
 
         wp.launch(_replay_matched_kernel, dim=self._capacity, inputs=[data], device=device)
 

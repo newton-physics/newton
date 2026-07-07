@@ -108,7 +108,7 @@ def _build_collision_only(mesh, shape_type, shape_pos, shape_scale=None, shape_r
         builder.add_shape_capsule(body, radius=radius, half_height=half_height)
     elif shape_type == GeoType.ELLIPSOID:
         sx, sy, sz = shape_scale if shape_scale else (0.1, 0.15, 0.08)
-        builder.add_shape_ellipsoid(body, a=sx, b=sy, c=sz)
+        builder.add_shape_ellipsoid(body, rx=sx, ry=sy, rz=sz)
     elif shape_type == GeoType.CONVEX_MESH:
         convex = newton.Mesh.create_box(0.1, 0.1, 0.1, compute_inertia=False)
         builder.add_shape_convex_hull(body, mesh=convex)

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import warp as wp
 
+from ...utils.color import ColorSpace
+
 
 class RenderLightType(enum.IntEnum):
     """Light types supported by the Warp raytracer."""
@@ -59,6 +61,13 @@ class RenderConfig:
 
     enable_backface_culling: bool = True
     """Cull back-facing triangles."""
+
+    output_color_space: ColorSpace = ColorSpace.SRGB
+    """Color space for packed color and albedo outputs.
+
+    Use ``ColorSpace.SRGB`` for display-encoded bytes or
+    ``ColorSpace.LINEAR`` for linear RGB bytes.
+    """
 
     render_order: int = RenderOrder.PIXEL_PRIORITY
     """Render traversal order (see :class:`RenderOrder`)."""

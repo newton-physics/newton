@@ -15,6 +15,7 @@ import ctypes
 import math
 import sys
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -333,22 +334,39 @@ class ImageLogger:
     construction and owns only its own GL/Warp state.
     """
 
-    def __init__(self, device: wp.Device, sidebar_width_px: float = 300.0):
+    def __init__(self, device: wp.Device, sidebar_width_px: float = 300.0, dpi_scale: float = 1.0):
         """Create an ``ImageLogger``.
 
         Args:
             device: The CUDA device used by the viewer. Warp arrays on this
                 device are uploaded via the GPU path (PBO + kernel); all
                 others fall back to a CPU copy.
-            sidebar_width_px: Width of the viewer's main sidebar [px]. Used
+            sidebar_width_px: Width of the viewer's main sidebar in
+                framebuffer pixels (already DPI-scaled by the caller). Used
                 to avoid placing newly-opened image windows underneath the
                 sidebar on their first appearance.
+            dpi_scale: Framebuffer-pixels-per-logical-pixel scale factor
+                applied to the initial window/tile/padding/spacing sizes so
+                logged image windows render at their intended physical size
+                on HiDPI / Retina displays. The viewer keeps this value in
+                sync via :attr:`dpi_scale` when the window crosses displays.
         """
         self._device = device
         self._sidebar_width_px = sidebar_width_px
+        self._dpi_scale: float = float(dpi_scale) if dpi_scale > 0 else 1.0
         self._images: dict[str, LoggedImage] = {}
         self._warned_device_mismatch: dict[str, wp.Device] = {}
         self._selected: str | None = None
+
+    @property
+    def dpi_scale(self) -> float:
+        """Framebuffer-pixels-per-logical-pixel scale used for initial sizing."""
+        return self._dpi_scale
+
+    @dpi_scale.setter
+    def dpi_scale(self, value: float) -> None:
+        if value > 0:
+            self._dpi_scale = float(value)
 
     @property
     def device(self) -> wp.Device:
@@ -405,20 +423,26 @@ class ImageLogger:
         if entry is None or entry.n == 0 or entry.tex_id == 0:
             return
 
+        # Scale layout constants by the current DPI so logged image windows
+        # render at their intended physical size on HiDPI / Retina displays.
+        s = self._dpi_scale
+        tile_px = _INITIAL_TILE_PX * s
+        spacing_px = _TILE_SPACING_PX * s
+        pad_x = _INITIAL_WINDOW_PAD_X * s
+        pad_y = _INITIAL_WINDOW_PAD_Y * s
+        max_w = _INITIAL_WINDOW_MAX_W * s
+        max_h = _INITIAL_WINDOW_MAX_H * s
+
         if not entry.window_initialized:
             init_cols = max(1, math.ceil(math.sqrt(entry.n)))
             init_rows = math.ceil(entry.n / init_cols)
             w_px = min(
-                int(init_cols * _INITIAL_TILE_PX + (init_cols - 1) * _TILE_SPACING_PX + _INITIAL_WINDOW_PAD_X),
-                _INITIAL_WINDOW_MAX_W,
+                int(init_cols * tile_px + (init_cols - 1) * spacing_px + pad_x),
+                int(max_w),
             )
             h_px = min(
-                int(
-                    init_rows * _INITIAL_TILE_PX * entry.tile_aspect
-                    + (init_rows - 1) * _TILE_SPACING_PX
-                    + _INITIAL_WINDOW_PAD_Y
-                ),
-                _INITIAL_WINDOW_MAX_H,
+                int(init_rows * tile_px * entry.tile_aspect + (init_rows - 1) * spacing_px + pad_y),
+                int(max_h),
             )
             viewport = imgui.get_main_viewport()
             vp_w = viewport.work_size.x
@@ -435,7 +459,7 @@ class ImageLogger:
             if expanded:
                 imgui.push_style_var(
                     imgui.StyleVar_.item_spacing,
-                    imgui.ImVec2(_TILE_SPACING_PX, _TILE_SPACING_PX),
+                    imgui.ImVec2(spacing_px, spacing_px),
                 )
                 content_w = imgui.get_content_region_avail().x
                 content_h = imgui.get_content_region_avail().y
@@ -444,8 +468,8 @@ class ImageLogger:
                     entry.tile_aspect,
                     content_w,
                     content_h,
-                    spacing_x=_TILE_SPACING_PX,
-                    spacing_y=_TILE_SPACING_PX,
+                    spacing_x=spacing_px,
+                    spacing_y=spacing_px,
                 )
                 # UVs sample tile ``i`` from atlas slot
                 # ``(i // atlas_cols, i % atlas_cols)``. The display grid
@@ -506,6 +530,15 @@ class ImageLogger:
             self._free_entry(entry)
         self._images.clear()
         self._selected = None
+
+    def clear_matching(self, predicate: Callable[[str], bool]) -> None:
+        """Destroy GL resources for images whose names match ``predicate``."""
+        for name, entry in list(self._images.items()):
+            if predicate(name):
+                self._free_entry(entry)
+                self._images.pop(name, None)
+        if self._selected not in self._images:
+            self._selected = None
 
     # --- Internals ---
 

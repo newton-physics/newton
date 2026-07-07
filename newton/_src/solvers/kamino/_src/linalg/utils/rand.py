@@ -49,22 +49,23 @@ def eigenvalues_from_distribution(
         - The final counts are adjusted to sum to 'size'.
 
     Args:
-        size (int): The total size of the eigenvalue distribution.
-        num_pos (int | float): The number of positive eigenvalues (count or percentage).
-        num_pos_eps (int | float): The number of positive epsilon eigenvalues (count or percentage).
-        num_zero (int | float): The number of zero eigenvalues (count or percentage).
-        num_neg_eps (int | float): The number of negative epsilon eigenvalues (count or percentage).
-        num_neg (int | float): The number of negative eigenvalues (count or percentage).
-        max_pos (float): The maximum value for positive eigenvalues.
-        min_pos (float): The minimum value for positive eigenvalues.
-        eps_val (float): The value for epsilon eigenvalues.
-        max_neg (float): The maximum value for negative eigenvalues.
-        min_neg (float): The minimum value for negative eigenvalues.
-        dtype (np.dtype): The data type for the eigenvalues.
-        shuffle (bool): Whether to shuffle the eigenvalues.
+        size: The total size of the eigenvalue distribution.
+        num_pos: The number of positive eigenvalues (count or percentage).
+        num_pos_eps: The number of positive epsilon eigenvalues (count or percentage).
+        num_zero: The number of zero eigenvalues (count or percentage).
+        num_neg_eps: The number of negative epsilon eigenvalues (count or percentage).
+        num_neg: The number of negative eigenvalues (count or percentage).
+        max_pos: The maximum value for positive eigenvalues.
+        min_pos: The minimum value for positive eigenvalues.
+        eps_val: The value for epsilon eigenvalues.
+        max_neg: The maximum value for negative eigenvalues.
+        min_neg: The minimum value for negative eigenvalues.
+        dtype: The data type for the eigenvalues.
+        seed: Seed for the random number generator.
+        shuffle: Whether to shuffle the eigenvalues.
 
     Returns:
-        np.ndarray: The generated eigenvalue array.
+        The generated eigenvalue array.
     """
 
     # Helper to convert count/percentage to int
@@ -144,16 +145,17 @@ def random_symmetric_matrix(
     Generate a random symmetric matrix of size (dim, dim).
 
     Args:
-    - dim (int): The size of the matrix.
-    - dtype (data-type, optional): Data type of the matrix (default is float64).
-    - scale (float, optional): Scale factor for the matrix (default is 1.0).
-    - seed (int, optional): Seed for the random number generator.
-    - rank (int, optional): Rank of the matrix (must be <= dim).
-    - eigenvalues (array-like, optional): Eigenvalues for the matrix (must be of length dim).
-    - return_source (bool, optional): Whether to return the source matrix (default is False).
+        dim: The size of the matrix.
+        dtype: Data type of the matrix (default is np.float64).
+        scale: Scale factor for the matrix (default is 1.0).
+        seed: Seed for the random number generator.
+        rank: Rank of the matrix (must be <= dim).
+        eigenvalues: Eigenvalues for the matrix (must be of length dim).
+        return_source: Whether to return the source matrix (default is False).
 
     Returns:
-    - A (ndarray): A (dim, dim) symmetric matrix.
+        A (dim, dim) symmetric matrix, or a tuple of the matrix and source when
+        return_source is True.
     """
     # Set the random seed if specified and valid
     if seed is not None:
@@ -227,14 +229,16 @@ def random_spd_matrix(
     Generate a symmetric positive definite (SPD) matrix of shape (n, n).
 
     Args:
-    - n (int): The size of the matrix.
-    - dtype (data-type, optional): Data type of the matrix (default is float64).
-    - scale (float, optional): Scale factor for the matrix (default is 1.0).
-    - seed (int, optional): Seed for the random number generator.
-    - return_source (bool, optional): Whether to return the source matrix (default is False).
+        dim: The size of the matrix.
+        dtype: Data type of the matrix (default is np.float64).
+        scale: Scale factor for the matrix (default is 1.0).
+        eta: Diagonal regularizer added to ensure positive definiteness.
+        seed: Seed for the random number generator.
+        return_source: Whether to return the source matrix (default is False).
 
     Returns:
-    - A (ndarray): An n x n symmetric positive definite matrix.
+        An n x n symmetric positive definite matrix, or a tuple of the matrix and
+        source when return_source is True.
     """
     # Set the random seed if specified and valid
     if seed is not None:
@@ -285,12 +289,14 @@ def random_rhs_for_matrix(
     Generate a random RHS vector b that is in the range space of A.
 
     Args:
-        A (np.ndarray): The input matrix.
-        scale (float): Scale factor for the random vector (default is 1.0).
-        return_source (bool): Whether to return the source vector used to generate the RHS (default is False).
+        A: The input matrix.
+        scale: Scale factor for the random vector (default is 1.0).
+        seed: Seed for the random number generator.
+        return_source: Whether to return the source vector used to generate the RHS (default is False).
 
     Returns:
-        np.ndarray: A random RHS vector b in the range space of A.
+        A random RHS vector b in the range space of A, or a tuple of b and the
+        source vector when return_source is True.
     """
     # Set the random seed if specified and valid
     if seed is not None:

@@ -195,8 +195,12 @@ def assert_builders_equal(
             f"Joint {j} F_r_Fj:\nleft:\n{joint1.F_r_Fj}\nright:\n{joint2.F_r_Fj}",
         )
         test.assertTrue(
-            matrices_equal(joint1.X_j, joint2.X_j),
-            f"Joint {j} X_j:\nleft:\n{joint1.X_j}\nright:\n{joint2.X_j}",
+            matrices_equal(joint1.X_Bj, joint2.X_Bj),
+            f"Joint {j} X_Bj:\nleft:\n{joint1.X_Bj}\nright:\n{joint2.X_Bj}",
+        )
+        test.assertTrue(
+            matrices_equal(joint1.X_Fj, joint2.X_Fj),
+            f"Joint {j} X_Fj:\nleft:\n{joint1.X_Fj}\nright:\n{joint2.X_Fj}",
         )
         test.assertTrue(
             arrays_equal(joint1.q_j_min, joint2.q_j_min),

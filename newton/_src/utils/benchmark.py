@@ -43,7 +43,7 @@ class EventTracer:
     def __init__(self, enabled: bool = True):
         """
         Args:
-            enabled (bool): If True, elapsed times of annotated functions are measured.
+            enabled: If True, elapsed times of annotated functions are measured.
         """
         if enabled:
             self._STACK = {}

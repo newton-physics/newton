@@ -3,7 +3,7 @@ name: release-audit
 description: "Use when auditing a Newton release for keep/defer decisions before a cut, reviewing an RC for readiness, or calibrating the skill against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
@@ -134,11 +134,35 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    ```
    from the repo root (`$(git rev-parse --show-toplevel)`). Capture stdout as the `commit_list_json`.
 
-2. Read `CHANGELOG.md` using the Read tool. Choose the section by mode:
+2. Run the dependency and license audit helper:
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py \
+     --base <base-ref> \
+     --head <head-ref>
+   ```
+   from the repo root. The helper requires Python 3.11+ for stdlib TOML parsing and exits with a clear preflight error on older Python versions. Capture stdout as `dependency_license_audit_md`. The helper compares:
+   - Direct requirements in `pyproject.toml`, grouped by runtime and optional extra.
+   - Resolved package names, duplicate variants, and version sets in `uv.lock` when present.
+   - `project.license` and `project.license-files` metadata in `pyproject.toml`.
+   - In-tree notice files matched by the `project.license-files` pathspecs declared at the base or head ref.
+   - Version-specific PyPI license metadata for newly introduced package names and changed locked package versions when network access is available. If metadata lookup fails, keep the helper's "not checked" text and surface that uncertainty rather than filling in a guessed license. If the helper was run with `--skip-pypi`, treat package-index metadata as deliberately deferred, not as per-package review failures.
+
+   The helper is intentionally stdlib-only. Do not replace it with a dependency inventory tool during the audit run: Newton avoids new release-only dependencies, and this script needs deterministic comparisons across arbitrary git refs without installing the target environment. External tools such as `pip-licenses`, `cyclonedx-py`, `pip-audit`, or `syft` can supplement a deeper investigation, but they do not replace this git-ref diff over `pyproject.toml`, `uv.lock`, declared license files, and version-specific PyPI metadata.
+
+   Interpretation rules for `dependency_license_audit_md`:
+   - A newly introduced external direct dependency or new resolved package name is license-relevant even when it lives behind an optional extra. Do not dismiss optional dependencies; state the extra or install path that pulls them in.
+   - A new optional extra whose dependencies are all already present is a support/install-surface change, but not a new package-license change.
+   - Existing package version bumps are not new licenses by themselves. The helper separates direct requirement moves from transitive-only churn; only elevate version bumps to release highlights or Behavioral & Support Changes when the package pin or compatibility constraint is user-visible.
+   - In-tree notice-file additions, removals, or modifications under the declared `project.license-files` pathspecs always appear in the dependency/license section. If a notice file is missing for a new bundled asset or vendored component, flag it in CHANGELOG Review Notes.
+   - If the helper reports license metadata as "not checked" due to lookup failure or "not declared" for a new package, keep that wording and mark it as needing release-manager review. Do not infer a license from package authorship or project name.
+   - If the helper reports "not evaluated (--skip-pypi)", say that package-index metadata was deferred and should be checked before final release sign-off. Do not turn that into a per-package review list.
+   - If a new package is proprietary, copyleft, commercial, unknown, not declared, or not checked due to lookup failure, mention that in the release highlights only when users can install it through a published extra or documented workflow.
+
+3. Read `CHANGELOG.md` using the Read tool. Choose the section by mode:
    - **Pre-release / RC**: read `CHANGELOG.md` at HEAD. Locate the `## [Unreleased]` header. Collect all content from that header up to (but not including) the next `## [X.Y.Z]` header.
    - **Retrospective**: read `CHANGELOG.md` at HEAD (the current working tree — CHANGELOG is append-only, so the section for a prior release is still present). Locate the `## [<target-version>]` header (e.g., `## [1.1.0] - 2026-04-13`; match the prefix `## [<target-version>]` and tolerate optional date text after it). Collect content from that header up to (but not including) the next `## [X.Y.Z]` header (the previous release's section). If the header cannot be found at HEAD, fall back to `git show v<target>:CHANGELOG.md` and parse that file the same way (in case the section was renamed or removed in a later refactor).
 
-3. Parse subsections. Each starts with `### Added`, `### Removed`, `### Deprecated`, `### Changed`, `### Fixed`, or `### Documentation`. For every bullet under each subsection, extract:
+4. Parse subsections. Each starts with `### Added`, `### Removed`, `### Deprecated`, `### Changed`, `### Fixed`, or `### Documentation`. For every bullet under each subsection, extract:
    - **Raw text (FULL — never truncate)**: the full bullet content (may span multiple lines).
    - **Section**: one of the six names above.
    - **GH refs**: regex `GH-(\d+)` over the bullet text. Dedup. (Newton commits and CHANGELOG entries sometimes also reference `#NNNN` as a bare PR number; capture these too.)
@@ -292,6 +316,10 @@ From `commit_list_json`:
 - Bucket each commit's `days_in_main` into **🟢 (>14 days)**, **🟡 (7–14 days)**, **🟠 (<7 days)**. Commits whose `days_in_main` is `null` (no main equivalent) skip bucketing — do NOT coerce `null` to `0` or compare it to a numeric threshold; those commits are accounted for in the next bullet instead.
 - Count anomalies: commits with `main_equivalent_sha == null`. If non-zero, prepare the ⚠️ banner for the report header.
 
+### 5c — Dependency and license audit
+
+Use `dependency_license_audit_md` from Phase 2 as the report's `{{DEPENDENCY_LICENSE_AUDIT}}` section. Apply the interpretation rules listed with the helper invocation in Phase 2.
+
 ## Phase 6 — Calibration Notes (retrospective mode only)
 
 **Skip this phase entirely in pre-release / RC mode.** There is no shipped history to calibrate against.
@@ -388,6 +416,7 @@ Before filling the template, synthesize the `{{HEADLINE_SUMMARY}}` section. This
 - It is a migration-required change that needs a note in the release post.
 - It is user-facing and is explicitly experimental (readers need to know the stability bar).
 - It unlocks a workflow that was previously impossible or awkward (e.g., Gaussian splat support, deterministic contact ordering, differentiable contacts).
+- It introduces a new dependency or optional extra with license metadata that needs release-manager review.
 - Multiple smaller entries form a coherent theme worth a single combined bullet (e.g., "new MPM examples: beam twist, snow ball, viscous coiling").
 
 An item does NOT belong in the highlights if any of these is true (drop even if the CHANGELOG entry is present):
@@ -414,7 +443,7 @@ Open the summary with a 2-3 sentence intro paragraph that names the shape of the
 
 ### 7b — Fill template
 
-Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including the `{{HEADLINE_SUMMARY}}` produced in 7a. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
+Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including the `{{HEADLINE_SUMMARY}}` produced in 7a and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
 
 **Rendering conventions live in `references/render-rules.md`.** Read that file when starting 7b. It covers:
 

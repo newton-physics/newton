@@ -4,9 +4,9 @@
 ###########################################################################
 # Example Robot control via keyboard
 #
-# Shows how to control robots pretrained in IsaacLab with RL.  Policies are
-# loaded from ONNX files and run via Newton's Warp-backed
-# :class:`~newton.utils.OnnxRuntime` (no PyTorch dependency).
+# Shows how to control robots pretrained in IsaacLab with RL. Policies are
+# loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
+# is not required for policy inference.
 #
 # Press "p" to reset the robot.
 # Press "i", "j", "k", "l", "u", "o" to move the robot.
@@ -24,11 +24,13 @@ from typing import Any
 import numpy as np
 import warp as wp
 import yaml
+from warp_nn.runtime import OnnxRuntime
 
 import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode
+from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 
 
 @dataclass
@@ -41,8 +43,6 @@ class RobotConfig:
     yaml_path: str
 
 
-# Policy paths are now ONNX files.  These names mirror the original ``.pt``
-# layout under ``rl_policies/`` but with the ``.onnx`` extension.
 ROBOT_CONFIGS = {
     "anymal": RobotConfig(
         asset_dir="anybotics_anymal_c",
@@ -73,27 +73,16 @@ ROBOT_CONFIGS = {
 
 @wp.kernel
 def _compute_obs_kernel(
-    joint_q: wp.array[float],  # full joint_q, [px,py,pz, qx,qy,qz,qw, q0..]
-    joint_qd: wp.array[float],  # full joint_qd, [vx,vy,vz, wx,wy,wz, qd0..]
-    joint_pos_initial: wp.array[float],  # (num_dofs,) reference posture
-    physx_to_mjc_idx: wp.array[int],  # (num_dofs,) reordering
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_pos_initial: wp.array[float],
+    physx_to_mjc_idx: wp.array[int],
     gravity_w: wp.vec3,
     command: wp.vec3,
-    prev_act: wp.array2d[float],  # (1, num_dofs)
+    prev_act: wp.array2d[float],
     num_dofs: int,
-    obs: wp.array2d[float],  # (1, 12 + 3*num_dofs)
+    obs: wp.array2d[float],
 ):
-    """Build the IsaacLab-style observation entirely on-device.
-
-    Layout (constant 12-float prefix + three num_dofs blocks):
-      [0:3]                 body-frame linear velocity
-      [3:6]                 body-frame angular velocity
-      [6:9]                 body-frame projected gravity
-      [9:12]                command (fwd, lat, yaw)
-      [12 : 12+N]           joint position error, reordered
-      [12+N : 12+2N]        joint velocity, reordered
-      [12+2N : 12+3N]       previous action
-    """
     q = wp.quat(joint_q[3], joint_q[4], joint_q[5], joint_q[6])
 
     lin_w = wp.vec3(joint_qd[0], joint_qd[1], joint_qd[2])
@@ -124,20 +113,14 @@ def _compute_obs_kernel(
 
 
 @wp.kernel
-def _build_joint_target_pos_kernel(
-    act: wp.array2d[float],  # (1, num_dofs) on device
-    joint_pos_initial: wp.array[float],  # (num_dofs,) on device
-    reorder: wp.array[int],  # (num_dofs,) mjc_to_physx mapping
+def _build_joint_target_q_kernel(
+    act: wp.array2d[float],
+    joint_pos_initial: wp.array[float],
+    reorder: wp.array[int],
     action_scale: float,
     num_prefix_zeros: int,
-    out: wp.array[float],  # (num_prefix_zeros + num_dofs,)
+    out: wp.array[float],
 ):
-    """Reorder, scale, and prepend ``num_prefix_zeros`` zeros into ``out``.
-
-    Single kernel that replaces the NumPy reorder + concatenate + per-step
-    ``wp.array(..., device=device)`` upload, keeping the control target on
-    device for the rest of the simulation step.
-    """
     i = wp.tid()
     if i < num_prefix_zeros:
         out[i] = 0.0
@@ -148,44 +131,35 @@ def _build_joint_target_pos_kernel(
 
 
 def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, joint_pos_slice: slice):
-    """Load ONNX policy and setup device buffers for the on-device policy step."""
+    """Load ONNX policy and setup device buffers for the policy step."""
     print("[INFO] Loading policy from:", policy_path)
-    example.policy = newton.utils.OnnxRuntime(policy_path, device=str(example.device))
+    example.policy = OnnxRuntime(policy_path, device=example.device)
     example.policy_input_name = example.policy.input_names[0]
     example.policy_output_name = example.policy.output_names[0]
 
-    # All policy inputs and intermediate buffers live on device.  Reference
-    # posture is sliced on-device with wp.clone to avoid a startup host sync.
     if example.state_0.joint_q is not None:
         example._joint_pos_initial_wp = wp.clone(example.state_0.joint_q[joint_pos_slice])
     else:
         example._joint_pos_initial_wp = wp.zeros(num_dofs, dtype=wp.float32, device=example.device)
 
-    # Cross-check three things that all have to agree: the YAML's declared
-    # obs size (when present), the ONNX model's input shape, and the
-    # 12 + 3*num_dofs layout that ``_compute_obs_kernel`` actually writes.
-    # If they drift, fail loudly here instead of producing wrong inferences
-    # at the first OnnxRuntime call.
-    model_obs_dim = int(example.policy._shapes[example.policy_input_name][1])
     expected = 12 + 3 * num_dofs
-    config_obs_dim = int(example.config["num_observations"]) if "num_observations" in example.config else None
-    if config_obs_dim is not None and config_obs_dim != model_obs_dim:
+    obs_dim = int(example.config["num_observations"]) if "num_observations" in example.config else expected
+    if obs_dim != expected:
         raise ValueError(
-            f"load_policy_and_setup_arrays: config num_observations={config_obs_dim} does not match "
-            f"the ONNX model's declared input shape ({model_obs_dim}); update the YAML or re-export "
-            f"the policy."
+            f"load_policy_and_setup_arrays: config num_observations={obs_dim} does not match the expected "
+            f"layout (12 + 3*num_dofs = {expected})"
         )
-    if model_obs_dim != expected:
-        raise ValueError(
-            f"load_policy_and_setup_arrays: policy obs_dim={model_obs_dim} does not match the expected "
-            f"layout (12 + 3*num_dofs = {expected}); the on-device _compute_obs_kernel only "
-            f"supports the IsaacLab-style 12 + 3N observation."
-        )
-    example._obs_wp = wp.zeros((1, model_obs_dim), dtype=wp.float32, device=example.device)
+    validate_policy_io_shapes(
+        policy_path,
+        example.policy_input_name,
+        example.policy_output_name,
+        obs_width=obs_dim,
+        action_width=num_dofs,
+        context="load_policy_and_setup_arrays",
+    )
+    example._obs_wp = wp.zeros((1, obs_dim), dtype=wp.float32, device=example.device)
     example._prev_act_wp = wp.zeros((1, num_dofs), dtype=wp.float32, device=example.device)
 
-    # The two reorder permutations are pre-uploaded as int32 device arrays
-    # (the kernel takes them as wp.array[int]).
     example._physx_to_mjc_wp = wp.array(
         np.asarray(example.physx_to_mjc_indices, dtype=np.int32), dtype=wp.int32, device=example.device
     )
@@ -211,10 +185,6 @@ def find_physx_mjwarp_mapping(mjwarp_joint_names, physx_joint_names):
 
 class Example:
     def __init__(self, viewer, args):
-        # Resolve robot configuration, asset paths, and joint mapping from args.
-        # Done in __init__ (rather than at module level) so the example can be
-        # rebuilt by _ExampleBrowser.reset() with the same (viewer, args) call
-        # convention as every other example.
         if args.robot not in ROBOT_CONFIGS:
             raise ValueError(f"Unknown robot: {args.robot}. Available: {list(ROBOT_CONFIGS.keys())}")
         robot_config = ROBOT_CONFIGS[args.robot]
@@ -226,10 +196,11 @@ class Example:
         yaml_file_path = f"{asset_directory}/{robot_config.yaml_path}"
         with open(yaml_file_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
-        print(f"[INFO] Loaded config with {config['num_dofs']} DOFs")
+        num_dofs = config["num_dofs"]
+        print(f"[INFO] Loaded config with {num_dofs} DOFs")
 
-        mjc_to_physx = list(range(config["num_dofs"]))
-        physx_to_mjc = list(range(config["num_dofs"]))
+        mjc_to_physx = list(range(num_dofs))
+        physx_to_mjc = list(range(num_dofs))
 
         if args.physx:
             if "physx" not in robot_config.policy_path or "physx_joint_names" not in config:
@@ -241,6 +212,15 @@ class Example:
             mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(
                 config["mjw_joint_names"], config["physx_joint_names"]
             )
+            if len(mjc_to_physx) != num_dofs or len(physx_to_mjc) != num_dofs:
+                missing_mjw = sorted(set(config["physx_joint_names"]) - set(config["mjw_joint_names"]))
+                missing_physx = sorted(set(config["mjw_joint_names"]) - set(config["physx_joint_names"]))
+                raise ValueError(
+                    "PhysX/MJWarp joint mapping is incomplete: "
+                    f"expected {num_dofs} DOFs, got {len(mjc_to_physx)} MJWarp-to-PhysX and "
+                    f"{len(physx_to_mjc)} PhysX-to-MJWarp entries. "
+                    f"Missing from MJWarp: {missing_mjw}; missing from PhysX: {missing_physx}"
+                )
         else:
             policy_path = f"{asset_directory}/{robot_config.policy_path['mjw']}"
 
@@ -323,8 +303,6 @@ class Example:
 
         self.physx_to_mjc_indices = np.asarray(physx_to_mjc, dtype=np.int64)
         self.mjc_to_physx_indices = np.asarray(mjc_to_physx, dtype=np.int64)
-        # Kernel reads these as wp.vec3 values passed by argument; the
-        # command is mutated each frame from keyboard input.
         self._gravity_w = wp.vec3(0.0, 0.0, -1.0)
         self._command = wp.vec3(0.0, 0.0, 0.0)
         self._reset_key_prev = False
@@ -332,7 +310,6 @@ class Example:
         self.policy = None
         self.policy_input_name = None
         self.policy_output_name = None
-        # Device-resident buffers; populated by load_policy_and_setup_arrays.
         self._joint_pos_initial_wp = None
         self._obs_wp = None
         self._prev_act_wp = None
@@ -340,7 +317,6 @@ class Example:
         self._mjc_to_physx_wp = None
         self._num_dofs = None
 
-        # Load policy weights and prepare device buffers used by step().
         load_policy_and_setup_arrays(self, policy_path, config["num_dofs"], slice(7, None))
 
         self.capture()
@@ -351,7 +327,7 @@ class Example:
         if wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()):
             print("[INFO] Using CUDA graph")
             self.use_cuda_graph = True
-            self.control.joint_target_pos = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)
+            self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -381,8 +357,6 @@ class Example:
         wp.copy(self.state_1.joint_qd, self._initial_joint_qd)
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.state_1.joint_q, self.state_1.joint_qd, self.state_1)
-        # Clear stale policy history so the first observation after reset is
-        # built purely from the restored kinematic state.
         if self._prev_act_wp is not None:
             self._prev_act_wp.zero_()
 
@@ -391,15 +365,12 @@ class Example:
             fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
             lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
             rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
-            # ``wp.vec3`` is immutable; rebuild it on key change so the next
-            # _compute_obs_kernel launch sees the latest command.
             self._command = wp.vec3(float(fwd), float(lat), float(rot))
             reset_down = bool(self.viewer.is_key_down("p"))
             if reset_down and not self._reset_key_prev:
                 self.reset()
             self._reset_key_prev = reset_down
 
-        # Build obs on device.  No host syncs in the policy step pipeline.
         wp.launch(
             _compute_obs_kernel,
             dim=1,
@@ -419,9 +390,8 @@ class Example:
         out = self.policy({self.policy_input_name: self._obs_wp})
         act_wp = out[self.policy_output_name]
 
-        # Build joint_target_pos on device: reorder, scale, prepend zeros.
         wp.launch(
-            _build_joint_target_pos_kernel,
+            _build_joint_target_q_kernel,
             dim=6 + self._num_dofs,
             inputs=[
                 act_wp,
@@ -429,12 +399,11 @@ class Example:
                 self._mjc_to_physx_wp,
                 float(self.config["action_scale"]),
                 6,
-                self.control.joint_target_pos,
+                self.control.joint_target_q,
             ],
             device=self.device,
         )
 
-        # Stash the action for the *next* obs build, on device (no sync).
         wp.copy(self._prev_act_wp, act_wp)
 
         for _ in range(self.decimation):

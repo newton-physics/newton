@@ -1,14 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the LLTSequentialSolver from linalg/linear.py"""
+"""Unit tests for the LLTBlockedSolver from linalg/linear.py"""
 
 import unittest
 
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.types import float32
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize import (
     llt_blocked_factorize,
@@ -71,7 +70,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             dims=N,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
 
@@ -228,7 +227,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             maxdims=N_max,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
 
@@ -383,7 +382,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             dims=N,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
         msg.debug("Problem:\n%s\n", problem)
@@ -552,7 +551,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             maxdims=N_max,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
         msg.debug("Problem:\n%s\n", problem)

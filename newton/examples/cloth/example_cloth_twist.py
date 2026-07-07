@@ -155,14 +155,14 @@ class Example:
             density=0.2,
             tri_ke=1.0e3,
             tri_ka=1.0e3,
-            tri_kd=2.0e-7,
+            tri_kd=2.0e-4,
             edge_ke=1e-3,
-            edge_kd=1e-4,
+            edge_kd=1e-2,
         )
         scene.color()
         self.model = scene.finalize()
         self.model.soft_contact_ke = 1.0e3
-        self.model.soft_contact_kd = 1.0e-4
+        self.model.soft_contact_kd = 1.0e-1
         self.model.soft_contact_mu = 0.2
 
         cloth_size = 50
@@ -179,7 +179,7 @@ class Example:
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
-            self.iterations,
+            iterations=self.iterations,
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.002,
             particle_self_contact_margin=0.0035,

@@ -16,11 +16,6 @@ from ._src.sensors.sensor_imu import (
     SensorIMU,
 )
 
-# Raycast sensors
-from ._src.sensors.sensor_raycast import (
-    SensorRaycast,
-)
-
 # Tiled camera sensors
 from ._src.sensors.sensor_tiled_camera import (
     SensorTiledCamera,
@@ -30,6 +25,5 @@ __all__ = [
     "SensorContact",
     "SensorFrameTransform",
     "SensorIMU",
-    "SensorRaycast",
     "SensorTiledCamera",
 ]

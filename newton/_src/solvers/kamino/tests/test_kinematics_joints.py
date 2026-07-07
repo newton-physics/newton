@@ -12,7 +12,6 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp, screw, screw_angular, screw_linear
 from newton._src.solvers.kamino._src.core.model import ModelKamino
-from newton._src.solvers.kamino._src.core.types import float32, int32, mat33f, transformf, vec3f, vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
@@ -32,9 +31,9 @@ wp.set_module_options({"enable_backward": False})
 Q_X_J = 0.5 * math.pi
 THETA_Y_J = 0.1
 THETA_Z_J = -0.2
-J_DR_J = vec3f(0.01, 0.02, 0.03)
-J_DV_J = vec3f(0.1, -0.2, 0.3)
-J_DOMEGA_J = vec3f(-1.0, 0.04, -0.05)
+J_DR_J = wp.vec3f(0.01, 0.02, 0.03)
+J_DV_J = wp.vec3f(0.1, -0.2, 0.3)
+J_DOMEGA_J = wp.vec3f(-1.0, 0.04, -0.05)
 
 # Compute revolute joint rotational residual: sin(angle) * axis
 ROT_RES_VEC = np.array([0.0, THETA_Y_J, THETA_Z_J])
@@ -48,12 +47,13 @@ ROT_RES = (np.sin(ROT_RES_ANGLE) / ROT_RES_ANGLE) * ROT_RES_VEC
 
 @wp.kernel
 def _set_joint_follower_body_state(
-    model_joint_bid_F: wp.array[int32],
-    model_joint_B_r_Bj: wp.array[vec3f],
-    model_joint_F_r_Fj: wp.array[vec3f],
-    model_joint_X_j: wp.array[mat33f],
-    state_body_q_i: wp.array[transformf],
-    state_body_u_i: wp.array[vec6f],
+    model_joint_bid_F: wp.array[wp.int32],
+    model_joint_B_r_Bj: wp.array[wp.vec3f],
+    model_joint_F_r_Fj: wp.array[wp.vec3f],
+    model_joint_X_Bj: wp.array[wp.mat33f],
+    model_joint_X_Fj: wp.array[wp.mat33f],
+    state_body_q_i: wp.array[wp.transformf],
+    state_body_u_i: wp.array[wp.spatial_vectorf],
 ):
     """
     Set the state of the bodies to a certain values in order to check computations of joint states.
@@ -65,11 +65,12 @@ def _set_joint_follower_body_state(
     bid_F = model_joint_bid_F[jid]
     B_r_Bj = model_joint_B_r_Bj[jid]
     F_r_Fj = model_joint_F_r_Fj[jid]
-    X_j = model_joint_X_j[jid]
+    X_Bj = model_joint_X_Bj[jid]
+    X_Fj = model_joint_X_Fj[jid]
 
     # The base body is assumed to be at the origin with no rotation or twist
-    p_B = transformf(vec3f(0.0), wp.quat_identity())
-    u_B = vec6f(0.0)
+    p_B = wp.transformf(wp.vec3f(0.0), wp.quat_identity())
+    u_B = wp.spatial_vectorf(0.0)
     r_B = wp.transform_get_translation(p_B)
     q_B = wp.transform_get_rotation(p_B)
     R_B = wp.quat_to_matrix(q_B)
@@ -77,10 +78,8 @@ def _set_joint_follower_body_state(
     omega_B = screw_angular(u_B)
 
     # Define the joint rotation offset
-    # NOTE: X_j projects quantities into the joint frame
-    # NOTE: X_j^T projects quantities into the outer frame (world or body)
-    j_dR_yz_j = vec3f(0.0, THETA_Y_J, THETA_Z_J)  # Joint residual as rotation vector
-    j_dR_x_j = vec3f(Q_X_J, 0.0, 0.0)  # Joint dof rotation as rotation vector
+    j_dR_yz_j = wp.vec3f(0.0, THETA_Y_J, THETA_Z_J)  # Joint residual as rotation vector
+    j_dR_x_j = wp.vec3f(Q_X_J, 0.0, 0.0)  # Joint dof rotation as rotation vector
     q_jq = quat_exp(j_dR_yz_j) * quat_exp(j_dR_x_j)  # Total joint offset
     R_jq = wp.quat_to_matrix(q_jq)  # Joint offset as rotation matrix
 
@@ -92,8 +91,8 @@ def _set_joint_follower_body_state(
     j_domega_j = J_DOMEGA_J
 
     # Follower body rotation via the Base and joint frames
-    R_B_X_j = R_B @ X_j
-    R_F_new = R_B_X_j @ R_jq @ wp.transpose(X_j)
+    R_B_X_j = R_B @ X_Bj
+    R_F_new = R_B_X_j @ R_jq @ wp.transpose(X_Fj)
     q_F_new = wp.quat_from_matrix(R_F_new)
 
     # Follower body position via the Base and joint frames
@@ -107,7 +106,7 @@ def _set_joint_follower_body_state(
     v_F_new = R_B_X_j @ j_dv_j + v_B + wp.cross(omega_B, r_Bj) - wp.cross(omega_F_new, r_Fj)
 
     # Offset the bose of the body by a fixed amount
-    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=float32)
+    state_body_q_i[bid_F] = wp.transformation(r_F_new, q_F_new, dtype=wp.float32)
     state_body_u_i[bid_F] = screw(v_F_new, omega_F_new)
 
 
@@ -124,7 +123,8 @@ def set_joint_follower_body_state(model: ModelKamino, data: DataKamino):
             model.joints.bid_F,
             model.joints.B_r_Bj,
             model.joints.F_r_Fj,
-            model.joints.X_j,
+            model.joints.X_Bj,
+            model.joints.X_Fj,
             data.bodies.q_i,
             data.bodies.u_i,
         ],
@@ -257,6 +257,12 @@ class TestKinematicsJoints(unittest.TestCase):
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 
+        # Set actuation data
+        data.joints.tau_j.fill_(1.5)
+        data.joints.q_j_ref.fill_(0.2)
+        data.joints.dq_j_ref.fill_(1.2)
+        data.joints.tau_j_ref.fill_(2.5)
+
         # Optionally print model parameters for debugging
         msg.info("model.time.dt: %s", model.time.dt)
         msg.info("model.joints.a_j: %s", model.joints.a_j)
@@ -288,6 +294,7 @@ class TestKinematicsJoints(unittest.TestCase):
         m_j_np = data.joints.m_j.numpy().copy()
         inv_m_j_np = data.joints.inv_m_j.numpy().copy()
         dq_b_j_np = data.joints.dq_b_j.numpy().copy()
+        tau_j_np = data.joints.tau_j.numpy().copy()
         q_j_ref_np = data.joints.q_j_ref.numpy().copy()
         dq_j_ref_np = data.joints.dq_j_ref.numpy().copy()
         tau_j_ref_np = data.joints.tau_j_ref.numpy().copy()
@@ -298,6 +305,7 @@ class TestKinematicsJoints(unittest.TestCase):
         msg.info("[measured]: m_j: %s", m_j_np)
         msg.info("[measured]: inv_m_j: %s", inv_m_j_np)
         msg.info("[measured]: dq_b_j: %s\n", dq_b_j_np)
+        msg.info("[measured]: tau_j: %s\n", tau_j_np)
         msg.info("[measured]: q_j_ref: %s", q_j_ref_np)
         msg.info("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
         msg.info("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
@@ -311,7 +319,9 @@ class TestKinematicsJoints(unittest.TestCase):
         k_d_j_np = model.joints.k_d_j.numpy().copy()
         m_j_exp_val = a_j_np[0] + dt * (b_j_np[0] + k_d_j_np[0]) + dt * dt * k_p_j_np[0]
         inv_m_j_exp_val = 1.0 / m_j_exp_val
-        tau_j_exp_val = tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        tau_j_exp_val = (
+            tau_j_np[0] + tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        )
         h_j_exp_val = a_j_np[0] * dq_j_np[0] + dt * tau_j_exp_val
         dq_b_j_exp_val = inv_m_j_exp_val * h_j_exp_val
 
@@ -355,6 +365,12 @@ class TestKinematicsJoints(unittest.TestCase):
         data = model.data(device=self.default_device)
         model.time.set_uniform_timestep(0.01)
 
+        # Set actuation data
+        data.joints.tau_j.fill_(1.5)
+        data.joints.q_j_ref.fill_(0.2)
+        data.joints.dq_j_ref.fill_(1.2)
+        data.joints.tau_j_ref.fill_(2.5)
+
         # Optionally print model parameters for debugging
         msg.info("model.time.dt: %s", model.time.dt)
         msg.info("model.joints.a_j: %s", model.joints.a_j)
@@ -386,6 +402,7 @@ class TestKinematicsJoints(unittest.TestCase):
         m_j_np = data.joints.m_j.numpy().copy()
         inv_m_j_np = data.joints.inv_m_j.numpy().copy()
         dq_b_j_np = data.joints.dq_b_j.numpy().copy()
+        tau_j_np = data.joints.tau_j.numpy().copy()
         q_j_ref_np = data.joints.q_j_ref.numpy().copy()
         dq_j_ref_np = data.joints.dq_j_ref.numpy().copy()
         tau_j_ref_np = data.joints.tau_j_ref.numpy().copy()
@@ -396,6 +413,7 @@ class TestKinematicsJoints(unittest.TestCase):
         msg.info("[measured]: m_j: %s", m_j_np)
         msg.info("[measured]: inv_m_j: %s", inv_m_j_np)
         msg.info("[measured]: dq_b_j: %s\n", dq_b_j_np)
+        msg.info("[measured]: tau_j: %s\n", tau_j_np)
         msg.info("[measured]: q_j_ref: %s", q_j_ref_np)
         msg.info("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
         msg.info("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
@@ -409,7 +427,9 @@ class TestKinematicsJoints(unittest.TestCase):
         k_d_j_np = model.joints.k_d_j.numpy().copy()
         m_j_exp_val = a_j_np[0] + dt * (b_j_np[0] + k_d_j_np[0]) + dt * dt * k_p_j_np[0]
         inv_m_j_exp_val = 1.0 / m_j_exp_val
-        tau_j_exp_val = tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        tau_j_exp_val = (
+            tau_j_np[0] + tau_j_ref_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0]) + k_d_j_np[0] * dq_j_ref_np[0]
+        )
         h_j_exp_val = a_j_np[0] * dq_j_np[0] + dt * tau_j_exp_val
         dq_b_j_exp_val = inv_m_j_exp_val * h_j_exp_val
 
@@ -449,6 +469,37 @@ class TestKinematicsJoints(unittest.TestCase):
         np.testing.assert_almost_equal(m_j_np, m_j_expected)
         np.testing.assert_almost_equal(inv_m_j_np, inv_m_j_expected)
         np.testing.assert_almost_equal(dq_b_j_np, dq_b_j_expected)
+
+    def test_05_implicit_dynamics_minimum_mass(self):
+        # Construct the model description with implicit actuator dynamics
+        builder = build_unary_revolute_joint_test(
+            dynamic=True,
+            implicit_pd=True,
+            ground=False,
+        )
+
+        # Create the model and data
+        model = builder.finalize(device=self.default_device)
+        data = model.data(device=self.default_device)
+        model.time.set_uniform_timestep(0.01)
+
+        # Set dynamic joint properties to zero
+        model.joints.a_j.zero_()
+        model.joints.b_j.zero_()
+        model.joints.k_p_j.zero_()
+        model.joints.k_d_j.zero_()
+
+        # Set the state of the Follower body to a known state
+        set_joint_follower_body_state(model, data)
+        # Update the state of the joints
+        compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
+
+        # Check that effective inertia is clamped to a small positive value, and
+        # the inverse of it is a valid number
+        m_j_np = data.joints.m_j.numpy().copy()
+        inv_m_j_np = data.joints.inv_m_j.numpy().copy()
+        self.assertTrue(m_j_np[0] > 0, "Internal effective inertia should be positive.")
+        self.assertFalse(math.isnan(inv_m_j_np[0]), "Inverse internal effective inertia should be valid number.")
 
 
 ###

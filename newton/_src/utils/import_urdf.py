@@ -7,6 +7,7 @@ import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlsplit
 
@@ -19,7 +20,12 @@ from ..geometry import Mesh
 from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
-from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
+from .import_utils import (
+    collapse_massless_fixed_root_joints,
+    parse_custom_attributes,
+    sanitize_xml_content,
+    should_show_collider,
+)
 from .mesh import load_meshes_from_file
 from .texture import load_texture
 from .topology import topological_sort
@@ -71,6 +77,7 @@ def parse_urdf(
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
     collapse_fixed_joints: bool = False,
+    collapse_massless_fixed_root: bool = False,
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
@@ -79,7 +86,7 @@ def parse_urdf(
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
-        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
+        builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the URDF file to parse, or the URDF XML string content.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
         override_root_xform: If ``True``, the articulation root's world-space
@@ -165,6 +172,7 @@ def parse_urdf(
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
+        collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
         mesh_maxhullvert: Maximum vertices for convex hull approximation of meshes.
         force_position_velocity_actuation: If True and both position (stiffness) and velocity
             (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
@@ -273,8 +281,14 @@ def parse_urdf(
                     fn = filename.replace("package://", "")
                     package_name = fn.split("/")[0]
                     urdf_folder = os.path.dirname(source)
-                    if package_name in urdf_folder:
-                        filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+                    package_root = None
+                    urdf_parts = Path(os.path.abspath(urdf_folder)).parts
+                    for index in range(len(urdf_parts) - 1, -1, -1):
+                        if urdf_parts[index] == package_name:
+                            package_root = Path(*urdf_parts[:index])
+                            break
+                    if package_root is not None:
+                        filename = os.path.join(os.fspath(package_root), fn)
                     else:
                         warnings.warn(
                             f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
@@ -321,9 +335,9 @@ def parse_urdf(
         if color_el is not None:
             rgba = color_el.get("rgba")
             if rgba:
-                values = np.fromstring(rgba, sep=" ", dtype=np.float32)
-                if len(values) >= 3:
-                    color = (float(values[0]), float(values[1]), float(values[2]))
+                parts = rgba.split()
+                if len(parts) >= 3:
+                    color = (float(parts[0]), float(parts[1]), float(parts[2]))
 
         texture_el = material_element.find("texture")
         if texture_el is not None:
@@ -359,6 +373,14 @@ def parse_urdf(
         if material_element is None:
             return {"color": None, "texture": None}
         mat_name = material_element.get("name")
+
+        # Fast path: pure name reference to an already-parsed material. URDFs
+        # typically define materials once at the top level and then reference
+        # them by name on individual geoms (`<material name="foo"/>` with no
+        # children). Skip the XML re-parse in that common case.
+        if mat_name and mat_name in materials and len(material_element) == 0:
+            return dict(materials[mat_name])
+
         color, texture = _parse_material_properties(material_element)
 
         if mat_name and mat_name in materials:
@@ -424,9 +446,7 @@ def parse_urdf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
-            material_info = {"color": None, "texture": None}
-            if just_visual:
-                material_info = resolve_material(geom_group.find("material"))
+            material_info = resolve_material(geom_group.find("material"))
 
             for box in geo.findall("box"):
                 size = box.get("size") or "1 1 1"
@@ -436,6 +456,7 @@ def parse_urdf(
                     hx=size[0] * 0.5 * scale,
                     hy=size[1] * 0.5 * scale,
                     hz=size[2] * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -444,6 +465,7 @@ def parse_urdf(
                 s = builder.add_shape_sphere(
                     xform=tf,
                     radius=float(sphere.get("radius") or "1") * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -455,6 +477,7 @@ def parse_urdf(
                     xform=xform,
                     radius=float(cylinder.get("radius") or "1") * scale,
                     half_height=float(cylinder.get("length") or "1") * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -466,6 +489,7 @@ def parse_urdf(
                     xform=xform,
                     radius=float(capsule.get("radius") or "1") * scale,
                     half_height=float(capsule.get("height") or "1") * 0.5 * scale,
+                    color=material_info["color"],
                     **shape_kwargs,
                 )
                 shapes.append(s)
@@ -807,7 +831,7 @@ def parse_urdf(
             created_joint_idx = builder.add_joint_d6(
                 linear_axes=[
                     ModelBuilder.JointDofConfig(
-                        u,
+                        axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
@@ -815,7 +839,7 @@ def parse_urdf(
                         actuator_mode=actuator_mode,
                     ),
                     ModelBuilder.JointDofConfig(
-                        v,
+                        axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_damping,
@@ -882,3 +906,5 @@ def parse_urdf(
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
+    elif collapse_massless_fixed_root:
+        collapse_massless_fixed_root_joints(builder, joint_indices)

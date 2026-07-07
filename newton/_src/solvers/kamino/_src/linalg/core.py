@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ..core.types import FloatType, IntType, VecIntType, float32, int32
+from ..core.types import FloatType, IntType, VecIntType
 from ..utils import logger as msg
 
 ###
@@ -87,10 +87,10 @@ class DenseRectangularMultiLinearInfo:
     This is equal to `sum(maxdim[i][0] for i in range(num_blocks))`.
     """
 
-    dtype: FloatType = float32
+    dtype: FloatType = wp.float32
     """The data type of the underlying matrix and vector data arrays."""
 
-    itype: IntType = int32
+    itype: IntType = wp.int32
     """The integer type used for indexing the underlying data arrays."""
 
     device: wp.DeviceLike | None = None
@@ -148,8 +148,8 @@ class DenseRectangularMultiLinearInfo:
     def finalize(
         self,
         dimensions: list[tuple[int, int]],
-        dtype: FloatType = float32,
-        itype: IntType = int32,
+        dtype: FloatType = wp.float32,
+        itype: IntType = wp.int32,
         device: wp.DeviceLike = None,
     ) -> None:
         """
@@ -209,7 +209,7 @@ class DenseRectangularMultiLinearInfo:
         mio: wp.array,
         rvio: wp.array,
         ivio: wp.array,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike = None,
     ) -> None:
         """
@@ -344,10 +344,10 @@ class DenseSquareMultiLinearInfo:
     This is equal to `sum(maxdim[i][1] for i in range(num_blocks))`.
     """
 
-    dtype: FloatType = float32
+    dtype: FloatType = wp.float32
     """The data type of the underlying matrix and vector data arrays."""
 
-    itype: IntType = int32
+    itype: IntType = wp.int32
     """The integer type used for indexing the underlying data arrays."""
 
     device: wp.DeviceLike | None = None
@@ -391,7 +391,11 @@ class DenseSquareMultiLinearInfo:
         return dims
 
     def finalize(
-        self, dimensions: list[int], dtype: FloatType = float32, itype: IntType = int32, device: wp.DeviceLike = None
+        self,
+        dimensions: list[int],
+        dtype: FloatType = wp.float32,
+        itype: IntType = wp.int32,
+        device: wp.DeviceLike = None,
     ) -> None:
         """
         Constructs and allocates the data of the square multi-linear system info on the specified device.
@@ -438,7 +442,7 @@ class DenseSquareMultiLinearInfo:
         dim: wp.array,
         mio: wp.array,
         vio: wp.array,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike = None,
     ) -> None:
         """
@@ -541,7 +545,7 @@ class DenseLinearOperatorData:
 ###
 
 
-def make_dtype_tolerance(tol: FloatType | float | None = None, dtype: FloatType = float32) -> FloatType:
+def make_dtype_tolerance(tol: FloatType | float | None = None, dtype: FloatType = wp.float32) -> FloatType:
     # First ensure the specified dtype is a valid warp type
     if not issubclass(dtype, FloatType):
         raise ValueError("data type 'dtype' must be a FloatType, e.g. a `wp.float32` or `wp.float64` value etc.")

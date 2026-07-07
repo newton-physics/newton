@@ -4,7 +4,7 @@
 import warp as wp
 
 from ..geometry import ParticleFlags
-from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, State
+from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
 
 
 @wp.kernel
@@ -233,11 +233,11 @@ class SolverBase:
         Integrate the rigid bodies of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            angular_damping (float, optional): The angular damping factor.
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
+            angular_damping: The angular damping factor.
                 Defaults to 0.0.
         """
         if model.body_count:
@@ -274,10 +274,10 @@ class SolverBase:
         Integrate the particles of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
         """
         if model.particle_count:
             wp.launch(
@@ -298,6 +298,32 @@ class SolverBase:
                 device=model.device,
             )
 
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Reset the solver internal state data.
+
+        Modifies the given *state* in place.  Derived solvers override this
+        to reset solver-specific internal buffers or custom state attributes
+        when environments are reset (e.g. during RL training).
+
+        The default implementation is a no-op so solvers that do not require
+        special reset logic need not override this method.
+
+        Args:
+            state: The simulation state to reset (modified in place).
+            world_mask: Optional boolean mask of shape ``(num_worlds,)``
+                specifying which worlds to reset.  If ``None``, all worlds
+                are reset.
+            flags: Optional :class:`~newton.StateFlags` or ``int`` bitmask controlling
+                which state attributes need to be reset.  If ``None``, all
+                state attributes are reset.
+        """
+        pass
+
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
     ) -> None:
@@ -315,31 +341,39 @@ class SolverBase:
         """
         raise NotImplementedError()
 
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Notify the solver that parts of the :class:`~newton.Model` were modified.
 
         The *flags* argument is a bit-mask composed of the
-        :class:`~newton.solvers.SolverNotifyFlags` enums defined in :mod:`newton.solvers`.
+        :class:`~newton.ModelFlags` enums or custom ``int`` bits.
         Each flag represents a category of model data that may have been
         updated after the solver was created.  Passing the appropriate
         combination of flags enables a solver implementation to refresh its
         internal buffers without having to recreate the whole solver object.
         Valid flags are:
 
-        ==============================================  =============================================================
-        Constant                                        Description
-        ==============================================  =============================================================
-        ``SolverNotifyFlags.JOINT_PROPERTIES``            Joint transforms or coordinates have changed.
-        ``SolverNotifyFlags.JOINT_DOF_PROPERTIES``        Joint axis limits, targets, modes, DOF state, or force buffers have changed.
-        ``SolverNotifyFlags.BODY_PROPERTIES``             Rigid-body pose or velocity buffers have changed.
-        ``SolverNotifyFlags.BODY_INERTIAL_PROPERTIES``    Rigid-body mass or inertia tensors have changed.
-        ``SolverNotifyFlags.SHAPE_PROPERTIES``            Shape transforms or geometry have changed.
-        ``SolverNotifyFlags.MODEL_PROPERTIES``            Model global properties (e.g., gravity) have changed.
-        ==============================================  =============================================================
+        * ``ModelFlags.JOINT_PROPERTIES``: Joint transforms or coordinates
+          have changed.
+        * ``ModelFlags.JOINT_DOF_PROPERTIES``: Joint axis limits, targets,
+          modes, DOF state, or force buffers have changed.
+        * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
+          have changed.
+        * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
+          tensors have changed.
+        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms or geometry have
+          changed.
+        * ``ModelFlags.MODEL_PROPERTIES``: Model global properties (e.g.,
+          gravity) have changed.
+        * ``ModelFlags.CONSTRAINT_PROPERTIES``: Constraint definitions,
+          coefficients, or enable flags have changed.
+        * ``ModelFlags.TENDON_PROPERTIES``: Tendon stiffness or related tendon
+          properties have changed.
+        * ``ModelFlags.ACTUATOR_PROPERTIES``: Actuator gains, biases, limits,
+          or force properties have changed.
 
         Args:
-            flags (int): Bit-mask of model-update flags indicating which model
-                properties changed.
+            flags: Bit-mask of :class:`~newton.ModelFlags` or custom ``int``
+                bits indicating which model properties changed.
 
         """
         pass
@@ -361,6 +395,6 @@ class SolverBase:
         Register custom attributes for the solver.
 
         Args:
-            builder (ModelBuilder): The model builder to register the custom attributes to.
+            builder: The model builder to register the custom attributes to.
         """
         pass

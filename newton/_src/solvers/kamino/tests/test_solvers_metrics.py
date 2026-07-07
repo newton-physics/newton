@@ -608,7 +608,7 @@ class TestSolverMetrics(unittest.TestCase):
         # Perturb solution to have non-trivial metrics
         rng = np.random.default_rng(seed=self.seed)
 
-        def perturb_array(arr: wp.array):
+        def perturb_array(arr: wp.array[wp.float32]):
             arr_np = arr.numpy()
             arr_np += 0.1 * rng.standard_normal(arr_np.shape, dtype=np.float32)
             arr.assign(arr_np)
@@ -719,7 +719,7 @@ class TestSolverMetrics(unittest.TestCase):
         # Perturb problem to have non-trivial metrics
         rng = np.random.default_rng(seed=self.seed)
 
-        def perturb_array(arr: wp.array):
+        def perturb_array(arr: wp.array[wp.float32]):
             arr_np = arr.numpy()
             arr_np += rng.standard_normal(arr_np.shape, dtype=np.float32)
             arr.assign(arr_np)

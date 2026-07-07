@@ -12,7 +12,6 @@ import warp as wp
 
 from .....sim.control import Control
 from .conversions import convert_target_coords_to_target_dofs, convert_target_dofs_to_target_coords
-from .types import float32
 
 if TYPE_CHECKING:
     from .model import ModelKamino
@@ -42,32 +41,28 @@ class ControlKamino:
     # Attributes
     ###
 
-    tau_j: wp.array | None = None
+    tau_j: wp.array[wp.float32] | None = None
     """
-    Array of generalized joint actuation forces.\n
-    Shape is ``(sum(d_j),)`` and dtype is :class:`float32`,\n
-    where ``d_j`` is the number of DoFs of each joint ``j``.
-    """
-
-    q_j_ref: wp.array | None = None
-    """
-    Array of reference generalized joint coordinates for implicit PD control.\n
-    Shape of ``(sum(c_j),)`` and type :class:`float`,
-    where ``c_j`` is the number of coordinates of joint ``j``.
+    Array of generalized joint actuation forces.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    dq_j_ref: wp.array | None = None
+    q_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference generalized joint velocities for implicit PD control.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Array of reference generalized joint coordinates for implicit PD control.
+    Shape of ``(sum_of_num_joint_coords,)``.
     """
 
-    tau_j_ref: wp.array | None = None
+    dq_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference feed-forward generalized joint forces for implicit PD control.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Array of reference generalized joint velocities for implicit PD control.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    tau_j_ref: wp.array[wp.float32] | None = None
+    """
+    Array of reference feed-forward generalized joint forces for implicit PD control.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     ###
@@ -77,7 +72,7 @@ class ControlKamino:
     _needs_coord_conversion: bool = False
     """Whether dofs-to-coords conversion is required for this model."""
 
-    _q_j_ref_coords_space: wp.array | None = None
+    _q_j_ref_coords_space: wp.array[wp.float32] | None = None
     """Owned coords-space reference buffer used when ``dofs != coords``."""
 
     ###
@@ -117,73 +112,73 @@ class ControlKamino:
             raise ValueError("Error copying from/to uninitialized ControlKamino")
         wp.copy(self.tau_j, other.tau_j)
 
-    def finalize(self, model: ModelKamino, device: wp.DeviceLike = None) -> None:
-        """
-        Allocates any required internal buffer to interface with a :class:`newton.Control`.
+    def finalize(self, model: ModelKamino, device: wp.DeviceLike | None = None) -> None:
+        """Allocate the coord-space side buffer used to interface with a
+        :class:`newton.Control`.
 
-        More specifically, an internal buffer is allocated for models for which joint coordinates
-        and DoFs differ (i.e. models with spherical or free joints); otherwise, no allocation
-        is performed.
+        The buffer is allocated only when the wrapped Newton model was built
+        under :data:`newton.use_coord_layout_targets` ``False`` *and* contains
+        spherical or free joints — i.e. when ``Control.joint_target_q`` is
+        DOF-shaped and needs Euler→quat conversion. Otherwise no allocation
+        happens. The layout is read from
+        :attr:`ModelKamino.use_coord_layout_targets` (snapshot) so toggling
+        the global flag after ``finalize`` can't desynchronize.
 
         Args:
             model: The Kamino model describing the system.
-            device: Optional device to create the state on. If not specified, the model's device is used.
+            device: Optional allocation device. Defaults to the model's device.
         """
         if device is None:
             device = model.device
 
-        if model.size.sum_of_num_joint_dofs != model.size.sum_of_num_joint_coords:
-            self._needs_coord_conversion = True
-            self._q_j_ref_coords_space = wp.zeros(
-                shape=model.size.sum_of_num_joint_coords,
-                dtype=float32,
-                device=device,
-            )
-        else:
-            self._needs_coord_conversion = False
-            self._q_j_ref_coords_space = None
+        self._needs_coord_conversion = (
+            not model.use_coord_layout_targets
+            and model.size.sum_of_num_joint_dofs != model.size.sum_of_num_joint_coords
+        )
+        self._q_j_ref_coords_space = (
+            wp.zeros(shape=model.size.sum_of_num_joint_coords, dtype=wp.float32, device=device)
+            if self._needs_coord_conversion
+            else None
+        )
 
     def from_newton(self, control: Control, model: ModelKamino) -> None:
-        """
-        Reads a source :class:`newton.Control` object into this :class:`ControlKamino` instance.
-        Arrays are simply aliased whenever possible, but in some cases a necessary conversion from joint
-        target DoFs to coords is performed.
+        """Adopt arrays from a :class:`newton.Control`. Aliases directly when
+        possible; runs Euler→quat conversion on ``joint_target_q`` only if the
+        wrapped Newton model is DOF-layout (flag=False) and has spherical or
+        free joints.
 
         Args:
-            control: The source :class:`newton.Control` object to be interfaced.
-            model: The source Kamino model holding the time-invariant description of the system.
+            control: Source :class:`newton.Control` to read from.
+            model: The Kamino model holding the system description.
         """
         self.tau_j = control.joint_f
-        self.tau_j_ref = control.joint_act
-        self.dq_j_ref = control.joint_target_vel
+        self.dq_j_ref = control.joint_target_qd
         if self._needs_coord_conversion:
             self.q_j_ref = self._q_j_ref_coords_space
             convert_target_dofs_to_target_coords(
-                joint_target_dofs=control.joint_target_pos,
+                joint_target_dofs=control.joint_target_q,
                 joint_target_coords=self.q_j_ref,
                 model=model,
             )
         else:
-            self.q_j_ref = control.joint_target_pos
+            self.q_j_ref = control.joint_target_q
 
     def to_newton(self, control: Control, model: ModelKamino) -> None:
-        """
-        Writes this :class:`ControlKamino` instance into a destination :class:`newton.Control` object.
-        Arrays are simply aliased whenever possible, but in some cases a necessary conversion from joint
-        target coords to DoFs is performed.
+        """Write back into a :class:`newton.Control`. Aliases directly when
+        possible; runs quat→Euler conversion only if the wrapped Newton model
+        is DOF-layout (flag=False) and has spherical or free joints.
 
         Args:
-            control: The destination :class:`newton.Control` object to be interfaced.
-            model: The source Kamino model holding the time-invariant description of the system.
+            control: Destination :class:`newton.Control` to write into.
+            model: The Kamino model holding the system description.
         """
         control.joint_f = self.tau_j
-        control.joint_act = self.tau_j_ref
-        control.joint_target_vel = self.dq_j_ref
+        control.joint_target_qd = self.dq_j_ref
         if self._needs_coord_conversion:
             convert_target_coords_to_target_dofs(
                 joint_target_coords=self.q_j_ref,
-                joint_target_dofs=control.joint_target_pos,
+                joint_target_dofs=control.joint_target_q,
                 model=model,
             )
         else:
-            control.joint_target_pos = self.q_j_ref
+            control.joint_target_q = self.q_j_ref

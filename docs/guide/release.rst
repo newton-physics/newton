@@ -10,8 +10,8 @@ release.  It is intended for release engineers and maintainers.
 Overview
 --------
 
-Newton follows PEP 440 versioning as described in the
-:ref:`versioning <versioning>` section of the installation guide.
+Newton follows PEP 440 versioning; see :ref:`versioning` in the
+compatibility guide for details.
 
 Releases are published to `PyPI <https://pypi.org/p/newton>`__ and
 documentation is deployed to
@@ -28,29 +28,28 @@ installed package metadata via ``importlib.metadata``.
 Dependency versioning strategy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``pyproject.toml`` specifies **minimum** compatible versions
+``pyproject.toml`` generally specifies **minimum** compatible versions
 (e.g. ``warp-lang>=1.12.0``).  ``uv.lock`` pins the **latest known-good**
 versions for reproducible installs.
 
-Exception: on the **release branch**, ``mujoco`` and ``mujoco-warp`` use
-**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow patch
-updates while locking the minor version.  MuJoCo follows
-`semantic versioning from 3.5.0 onward <https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning>`__,
-so patch releases are safe to pick up automatically.  ``main`` uses a
-version floor like other dependencies.
+``mujoco`` and ``mujoco-warp`` instead use **compatible-release** pins on
+both ``main`` and release branches (e.g. ``mujoco~=3.5.0``) to allow
+``3.5.x`` updates while excluding ``3.6.0`` and later.  MuJoCo follows
+`custom versioning from 3.5.0 onward`_; its third component is
+``MINOR_OR_PATCH`` and guarantees API backward compatibility.
+
+.. _custom versioning from 3.5.0 onward:
+   https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning
 
 
-.. _deprecation-timeline:
+Deprecation and removal timeline
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Deprecation timeline
-^^^^^^^^^^^^^^^^^^^^
-
-Following `Warp's deprecation policy
-<https://nvidia.github.io/warp/user_guide/compatibility.html#deprecation-timeline>`__,
-a deprecated feature is maintained for **two full minor release cycles**
-after deprecation (e.g. deprecated in 1.2.0 → removed in 1.4.0).
-Deprecations and removals only happen in minor releases, never in patch
-releases.
+The user-facing deprecation and removal policy lives in
+:ref:`deprecation-policy`.  Release engineers should ensure that every
+deprecation, removal, or other breaking change in a minor release is
+reflected in ``CHANGELOG.md`` and the API documentation, and that
+deprecations emit a runtime ``DeprecationWarning`` where applicable.
 
 
 Pre-release planning
@@ -63,8 +62,9 @@ Pre-release planning
    * - ☐
      - Determine target version (``X.Y.Z``).
    * - ☐
-     - Confirm dependency versions and availability: warp-lang, mujoco,
-       mujoco-warp, newton-usd-schemas.
+     - Select release dependency versions and confirm their availability on
+       public PyPI: warp-lang, mujoco, mujoco-warp, newton-usd-schemas.  Land
+       release-ready versions on ``main`` before the branch cut when possible.
    * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐
@@ -72,16 +72,19 @@ Pre-release planning
 
        - Review all new/changed symbols since the last release for unintended
          breaking changes.
+       - Confirm intended public API changes and breaking changes have
+         maintainer approval.
        - Verify deprecated symbols carry proper deprecation warnings and
-         migration guidance (see :ref:`deprecation-timeline`).
+         migration guidance (see :ref:`deprecation-policy`).
+       - Verify experimental public API is explicitly marked with
+         ``.. experimental::`` in API or concept documentation, following the
+         :ref:`developer guidance <experimental-features>`.
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
 
        Run the ``release-audit`` Claude Code skill
        (``.claude/skills/release-audit``) in **pre-release mode** to automate
        this audit.
-   * - ☐
-     - Communicate the timeline to the community.
 
 
 Code freeze and release branch creation
@@ -95,17 +98,17 @@ Code freeze and release branch creation
      - Create ``release-X.Y`` branch from ``main`` and push it.
    * - ☐
      - On **main**: bump the version in ``pyproject.toml`` to ``X.(Y+1).0.dev0`` and run
-       ``uv run docs/generate_api.py``.
+       ``uv run docs/generate_api.py``, then regenerate ``uv.lock`` (``uv lock``).
    * - ☐
      - On **release-X.Y**: bump the version in ``pyproject.toml`` to ``X.Y.ZrcN`` and
-       run ``uv run docs/generate_api.py``.
+       run ``uv run docs/generate_api.py``, then regenerate ``uv.lock`` (``uv lock``).
    * - ☐
      - On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
-       to RC versions where applicable and remove the NVIDIA package index
-       (``[[tool.uv.index]]`` entry for ``nvidia`` **and** the
-       ``warp-lang`` entry in ``[tool.uv.sources]`` that references it) so
-       the release wheel installs purely from PyPI, then regenerate
-       ``uv.lock`` (``uv lock``) and commit.
+       to RC or stable versions where applicable and remove the NVIDIA package
+       index (``[[tool.uv.index]]`` entry for ``nvidia`` **and** the
+       ``warp-lang`` entry in ``[tool.uv.sources]`` that references it) so the
+       release wheel installs purely from PyPI, then regenerate ``uv.lock``
+       (``uv lock``) and commit.
    * - ☐
      - Run the ``release-audit`` skill in **release-candidate mode** against
        ``release-X.Y``; address or acknowledge flagged entries before
@@ -139,9 +142,10 @@ branch and open a pull request targeting ``release-X.Y`` — never push
 directly to the release branch.
 
 For each new RC (``rc2``, ``rc3``, …) bump the version in
-``pyproject.toml`` and run ``uv run docs/generate_api.py``, then tag and push.
-Resolve any cherry-pick conflicts or missing dependent cherry-picks that
-cause CI failures before tagging.
+``pyproject.toml``, run ``uv run docs/generate_api.py``, and regenerate
+``uv.lock`` (``uv lock``), then tag and push.  Resolve any cherry-pick
+conflicts or missing dependent cherry-picks that cause CI failures before
+tagging.
 
 .. _testing-criteria:
 
@@ -150,7 +154,7 @@ Testing criteria
 
 The release engineer and maintainers decide which issues must be fixed
 before GA and which can ship as known issues documented in the release
-notes.  Features explicitly marked **experimental** have a lower bar —
+materials.  Features marked experimental have a lower bar —
 regressions in experimental APIs do not necessarily block a release.
 
 As a guideline, an RC is typically ready for GA when:
@@ -175,6 +179,9 @@ As a guideline, an RC is typically ready for GA when:
    * - ☐
      - Re-run the ``release-audit`` skill after final cherry-picks; confirm
        no new flags since the last RC.
+   * - ☐
+     - Prepare draft GitHub Release notes: summary, a few highlights, link
+       to ``CHANGELOG.md``, acknowledgments.
    * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
@@ -204,7 +211,7 @@ otherwise.
        ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
 
        - **Missing entries** — cross-check merged PRs since the last GA
-         release (or patch) to catch changes that were not recorded in the
+         release (or micro release) to catch changes that were not recorded in the
          changelog.
        - **Redundant entries** — consolidate or remove duplicates for changes
          within the same release period (e.g. a bug fix for a feature added
@@ -220,11 +227,12 @@ otherwise.
      - Verify all dependency pins in ``pyproject.toml`` use stable
        (non-pre-release) versions.
    * - ☐
-     - Regenerate ``uv.lock`` (``uv lock``) and verify that no pre-release
-       dependencies remain in the lock file.
-   * - ☐
      - Bump the version in ``pyproject.toml`` to ``X.Y.Z`` (remove the RC suffix) and
        run ``uv run docs/generate_api.py``.
+   * - ☐
+     - Regenerate ``uv.lock`` (``uv lock``) after all ``pyproject.toml``
+       changes and verify that no pre-release dependencies remain in the lock
+       file.
    * - ☐
      - Commit and push tag ``vX.Y.Z``.  Automated workflows trigger:
 
@@ -234,6 +242,10 @@ otherwise.
          on gh-pages, updates ``switcher.json``.
    * - ☐
      - PyPI publish approved and verified: ``pip install newton==X.Y.Z``.
+   * - ☐
+     - Review the draft GitHub Release notes before publishing.  Keep them
+       concise: summary, a few highlights, link to ``CHANGELOG.md``,
+       acknowledgments.
    * - ☐
      - GitHub Release un-drafted and published.
    * - ☐
@@ -261,10 +273,10 @@ Post-release
      - Verify published docs render correctly.
 
 
-Patch releases
+Micro releases
 --------------
 
-Patch releases continue cherry-picking fixes to the existing
+Micro releases continue cherry-picking fixes to the existing
 ``release-X.Y`` branch.  For example, ``1.0.1`` follows ``1.0.0``.
 Follow the same :ref:`final-release` flow — bump version, update changelog,
 tag, and push.  There is no need to create a new branch or bump ``main``.

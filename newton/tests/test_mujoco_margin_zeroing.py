@@ -13,7 +13,8 @@ import unittest
 import numpy as np
 
 import newton
-from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton import ModelFlags
+from newton.solvers import SolverMuJoCo
 
 
 class TestMuJoCoMarginZeroing(unittest.TestCase):
@@ -40,40 +41,35 @@ class TestMuJoCoMarginZeroing(unittest.TestCase):
         )
         return builder.finalize()
 
-    def test_mj_model_geom_margin_zero(self):
-        """The compiled MjModel must have zero geom_margin (zeroed in MjSpec before compilation)."""
+    def test_geom_margin_zeroed_throughout_lifecycle(self):
+        """Under use_mujoco_contacts=True, geom_margin must be zero at every
+        stage: in the MJCF spec, after put_model(), and after notify_model_changed().
+        mujoco_warp's _check_margin rejects non-zero geom_margin at put_model()
+        time, so Newton zeros it (#2106)."""
         model = self._build_model_with_margin(margin=1e-5)
         with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
             solver = SolverMuJoCo(model, use_mujoco_contacts=True)
+
+        # 1. MjSpec / MjModel level (before put_model)
         np.testing.assert_array_equal(
             solver.mj_model.geom_margin,
             np.zeros_like(solver.mj_model.geom_margin),
             err_msg="MjModel geom_margin should be zero in the spec",
         )
 
-    def test_geom_margin_zero_with_mujoco_contacts(self):
-        """When MuJoCo handles collisions, mjw_model.geom_margin must stay zero."""
-        model = self._build_model_with_margin(margin=1e-5)
-        with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
-            solver = SolverMuJoCo(model, use_mujoco_contacts=True)
-        geom_margin = solver.mjw_model.geom_margin.numpy()
+        # 2. mjw_model level (after put_model)
         np.testing.assert_array_equal(
-            geom_margin,
-            np.zeros_like(geom_margin),
-            err_msg="geom_margin should be zero when use_mujoco_contacts=True",
+            solver.mjw_model.geom_margin.numpy(),
+            np.zeros_like(solver.mjw_model.geom_margin.numpy()),
+            err_msg="mjw_model.geom_margin should be zero after put_model()",
         )
 
-    def test_geom_margin_stays_zero_after_notify(self):
-        """Margins must stay zero after notify_model_changed with MuJoCo contacts."""
-        model = self._build_model_with_margin(margin=1e-5)
-        with self.assertWarnsRegex(UserWarning, r"zeroed for NATIVECCD/MULTICCD"):
-            solver = SolverMuJoCo(model, use_mujoco_contacts=True)
-        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
-        geom_margin = solver.mjw_model.geom_margin.numpy()
+        # 3. After runtime update via notify_model_changed
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         np.testing.assert_array_equal(
-            geom_margin,
-            np.zeros_like(geom_margin),
-            err_msg="geom_margin should remain zero after notify_model_changed",
+            solver.mjw_model.geom_margin.numpy(),
+            np.zeros_like(solver.mjw_model.geom_margin.numpy()),
+            err_msg="mjw_model.geom_margin should remain zero after notify_model_changed",
         )
 
 

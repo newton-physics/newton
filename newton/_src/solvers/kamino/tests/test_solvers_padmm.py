@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.math import screw, vec3f
+from newton._src.solvers.kamino._src.core.math import screw
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
@@ -52,7 +52,7 @@ class TestSetup:
         # Set ad-hoc configurations
         self.builder.gravity[0].enabled = gravity
         if perturb:
-            u_0 = screw(vec3f(+10.0, 0.0, 0.0), vec3f(0.0, 0.0, 0.0))
+            u_0 = screw(wp.vec3f(+10.0, 0.0, 0.0), wp.vec3f(0.0, 0.0, 0.0))
             for body in self.builder.all_bodies:
                 body.u_i_0 = u_0
 
@@ -401,7 +401,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=False,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Solve the test problem
@@ -446,7 +446,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.NONE,
             use_acceleration=True,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Solve the test problem
@@ -490,7 +490,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=False,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -537,7 +537,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=False,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -586,7 +586,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.INTERNAL,
             use_acceleration=True,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -634,7 +634,7 @@ class TestPADMMSolver(unittest.TestCase):
             config=config,
             warmstart=PADMMWarmStartMode.CONTAINERS,
             use_acceleration=True,
-            collect_info=True,
+            collect_info=self.savefig,
         )
 
         # Initial cold-started solve
@@ -657,7 +657,7 @@ class TestPADMMSolver(unittest.TestCase):
             path = self.output_path / "test_07_padmm_solve_with_acceleration_and_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
-    def test_10_padmm_solve_single_contact(self):
+    def test_08_padmm_solve_single_contact(self):
         """
         Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem (no
         constraints and limits) with a single contact.
@@ -666,7 +666,7 @@ class TestPADMMSolver(unittest.TestCase):
         test = TestSetup(builder_fn=basics.build_box_on_plane, max_world_contacts=1, device=self.default_device)
 
         # Create the PADMM solver
-        solver = PADMMSolver(model=test.model)
+        solver = PADMMSolver(model=test.model, collect_info=self.savefig)
 
         # Solve the test problem
         test.build()
@@ -675,9 +675,9 @@ class TestPADMMSolver(unittest.TestCase):
         solver.solve(problem=test.problem)
 
         # Extract solver info
-        if self.savefig:
+        if self.savefig and solver.data.info is not None:
             msg.notif("Generating solver info plots...")
-            path = self.output_path / "test_10_padmm_solve.pdf"
+            path = self.output_path / "test_08_padmm_solve.pdf"
             save_solver_info(solver=solver, path=str(path))
 
         # Check solution

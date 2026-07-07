@@ -14,21 +14,24 @@ import sys
 
 import numpy as np
 import warp as wp
+from warp_nn.runtime import OnnxRuntime
 
 import newton
 import newton.examples
 import newton.utils
 from newton.examples.robot.example_robot_anymal_c_walk import (
-    _build_joint_target_pos_kernel,
+    _build_joint_target_q_kernel,
     _compute_obs_kernel,
     lab_to_mujoco,
     mujoco_to_lab,
 )
+from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 from newton.solvers import SolverImplicitMPM
 
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         voxel_size = args.voxel_size
         particles_per_cell = args.particles_per_cell
         tolerance = args.tolerance
@@ -145,7 +148,7 @@ class Example:
             ls_iterations=50,
             njmax=50,  # ls_iterations=50 for determinism
         )
-        self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
+        self.mpm_solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         # simulation state
         self.state_0 = self.model.state()
@@ -163,28 +166,26 @@ class Example:
         # Setup control policy
         self.control = self.model.control()
 
-        # Load the ONNX policy bundled with Newton (Warp-backed runtime, no torch dependency).
         policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
-        self.policy = newton.utils.OnnxRuntime(policy_path, device=str(self.device))
+        self.policy = OnnxRuntime(policy_path, device=self.device)
         self._policy_input_name = self.policy.input_names[0]
         self._policy_output_name = self.policy.output_names[0]
+        validate_policy_io_shapes(
+            policy_path,
+            self._policy_input_name,
+            self._policy_output_name,
+            obs_width=48,
+            action_width=12,
+            context="example_mpm_anymal",
+        )
 
-        # Everything the policy step touches is on-device.  The host never
-        # syncs joint state, builds the obs vector, or copies the action back.
-        # Reference posture is sliced on-device to avoid a startup host sync.
         self._joint_pos_initial_wp = wp.clone(self.state_0.joint_q[7:])
         self._lab_to_mujoco_wp = wp.array(np.asarray(lab_to_mujoco, dtype=np.int32), dtype=wp.int32, device=self.device)
         self._mujoco_to_lab_wp = wp.array(np.asarray(mujoco_to_lab, dtype=np.int32), dtype=wp.int32, device=self.device)
         self._gravity_w = wp.vec3(0.0, 0.0, -1.0)
         self._command = wp.vec3(0.0, 0.0, 0.0)
-
         self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
         self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
-
-        # joint_target_pos is allocated by self.model.control() above; ensure
-        # it lives on device so the kernel can write to it directly.
-        if self.control.joint_target_pos is None or self.control.joint_target_pos.device != self.device:
-            self.control.joint_target_pos = wp.zeros(18, dtype=wp.float32, device=self.device)
 
         self._auto_forward = True
 
@@ -207,7 +208,6 @@ class Example:
             self.sand_graph = capture.graph
 
     def apply_control(self):
-        # Build obs -> run policy -> write joint_target_pos, all on device.
         wp.launch(
             _compute_obs_kernel,
             dim=1,
@@ -227,20 +227,18 @@ class Example:
         act_wp = out[self._policy_output_name]
 
         wp.launch(
-            _build_joint_target_pos_kernel,
-            dim=6 + 12,
+            _build_joint_target_q_kernel,
+            dim=19,
             inputs=[
                 act_wp,
                 self._joint_pos_initial_wp,
                 self._mujoco_to_lab_wp,
                 0.5,
-                6,
-                self.control.joint_target_pos,
+                7,
+                self.control.joint_target_q,
             ],
             device=self.device,
         )
-
-        # Stash the action for the *next* obs build, on device (no sync).
         wp.copy(self._prev_act_wp, act_wp)
 
     def simulate_robot(self):
@@ -257,9 +255,6 @@ class Example:
 
     def step(self):
         # Build command from viewer keyboard
-        fwd = 0.0
-        lat = 0.0
-        rot = 0.0
         if hasattr(self.viewer, "is_key_down"):
             fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
             lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
@@ -269,11 +264,10 @@ class Example:
                 # disable forward motion
                 self._auto_forward = False
 
+            self._command = wp.vec3(float(fwd), float(lat), float(rot))
+
         if self._auto_forward:
-            fwd = 1.0
-        # ``wp.vec3`` is immutable; rebuild it so the next _compute_obs_kernel
-        # launch sees the latest command without touching device memory.
-        self._command = wp.vec3(float(fwd), float(lat), float(rot))
+            self._command = wp.vec3(1.0, 0.0, 0.0)
 
         # compute control before graph/step
         self.apply_control()

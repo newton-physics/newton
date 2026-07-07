@@ -27,6 +27,7 @@ from .collision_primitive import (
 from .contact_match import MATCH_BROKEN, MATCH_NOT_FOUND
 from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_inertia
+from .raycast import intersect_ray as intersect_ray
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
 from .types import (

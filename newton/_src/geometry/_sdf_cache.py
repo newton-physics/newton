@@ -34,8 +34,6 @@ Cooked array layout (``.npz`` contents)
   coarse cell to subgrid slot.
 * ``subgrid_required`` — ``int32 (w*h*d,)``: 1D occupancy flags for
   non-linear subgrids.
-* ``subgrid_occupied`` — ``int32 (w*h*d,)``: 1D pre-linearization
-  narrow-band occupancy.
 * Plus the scalar metadata ``coarse_dims``, ``subgrid_tex_size``,
   ``num_subgrids``, ``min_extents``, ``max_extents``, ``cell_size``,
   ``subgrid_size``, ``quantization_mode``, ``subgrids_min_sdf_value``,
@@ -102,7 +100,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-CACHE_FORMAT_VERSION: int = 1
+CACHE_FORMAT_VERSION: int = 2
 """Version of the on-disk cooked-SDF cache format.
 
 Bump when the dictionary returned by
@@ -125,7 +123,6 @@ _NDARRAY_KEYS: tuple[str, ...] = (
     "subgrid_data",
     "subgrid_start_slots",
     "subgrid_required",
-    "subgrid_occupied",
 )
 
 # (key, save_dtype, load_caster). ``save_dtype`` is the on-disk dtype;

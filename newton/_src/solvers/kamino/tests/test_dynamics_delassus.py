@@ -965,7 +965,7 @@ class TestDelassusOperatorSparse(unittest.TestCase):
             mask_np = np.ones((model.size.num_worlds,), dtype=np.int32)
             if mask_worlds:
                 mask_np[::2] = 0
-            world_mask = wp.from_numpy(mask_np, dtype=wp.int32, device=self.default_device)
+            world_mask = wp.from_numpy(mask_np, dtype=wp.bool, device=self.default_device)
 
             # Compute different products (simple matvec, gemv, and gemv with beta = 0.0)
             delassus.matvec(input_vec, output_vec_matmul, world_mask)

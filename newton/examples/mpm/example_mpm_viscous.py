@@ -68,7 +68,7 @@ class Example:
         mpm_options.collider_basis = options.collider_basis
         mpm_options.solver = options.solver
 
-        self.solver = SolverImplicitMPM(self.model, mpm_options)
+        self.solver = SolverImplicitMPM(self.model, config=mpm_options)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

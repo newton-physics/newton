@@ -69,6 +69,77 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
         self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
 
+    def test_labels_preserve_full_paths(self):
+        """Two-finger gripper whose distal bodies, finger joints, and tip
+        shapes each share a colliding leaf name. ``*_names`` attributes
+        collapse to the leaf; ``*_labels`` attributes expose the
+        full slash-delimited labels from the template articulation so
+        callers can still distinguish entries and recover selection order.
+        """
+        builder = newton.ModelBuilder()
+        palm = builder.add_link(label="palm")
+        left = builder.add_link(label="palm/left/fingertip")
+        right = builder.add_link(label="palm/right/fingertip")
+        builder.add_shape_box(body=left, hx=0.01, hy=0.01, hz=0.02, label="palm/left/tip_collision")
+        builder.add_shape_box(body=right, hx=0.01, hy=0.01, hz=0.02, label="palm/right/tip_collision")
+        j_root = builder.add_joint_free(parent=-1, child=palm, label="root")
+        j_left = builder.add_joint_revolute(
+            parent=palm, child=left, axis=(0.0, 0.0, 1.0), label="palm/left/fingertip_joint"
+        )
+        j_right = builder.add_joint_revolute(
+            parent=palm, child=right, axis=(0.0, 0.0, 1.0), label="palm/right/fingertip_joint"
+        )
+        builder.add_articulation([j_root, j_left, j_right], label="gripper")
+        model = builder.finalize()
+
+        view = ArticulationView(model, "gripper", include_links="fingertip")
+
+        # Leaf collisions are visible on the *_names attributes...
+        self.assertEqual(view.link_count, 2)
+        self.assertEqual(view.link_names, ["fingertip", "fingertip"])
+        self.assertEqual(view.shape_names, ["tip_collision", "tip_collision"])
+
+        # ...and disambiguated on the *_labels attributes.
+        self.assertEqual(
+            view.link_labels,
+            ["palm/left/fingertip", "palm/right/fingertip"],
+        )
+        self.assertEqual(
+            view.shape_labels,
+            ["palm/left/tip_collision", "palm/right/tip_collision"],
+        )
+        self.assertIn("palm/left/fingertip_joint", view.joint_labels)
+        self.assertIn("palm/right/fingertip_joint", view.joint_labels)
+        self.assertEqual(len(view.joint_labels), view.joint_count)
+        self.assertEqual(view.body_labels, view.link_labels)
+
+    def test_duplicate_joint_child_is_one_link(self):
+        """BODY-frequency link axis uses unique physical bodies, not joint slots."""
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="root")
+        tip = builder.add_link(label="tip")
+        builder.add_shape_box(body=tip, hx=0.01, hy=0.01, hz=0.01, label="tip_shape")
+
+        j_root = builder.add_joint_free(parent=-1, child=root, label="root_joint")
+        j_tip = builder.add_joint_revolute(parent=root, child=tip, axis=wp.vec3(0.0, 0.0, 1.0), label="tip_joint")
+        j_tip_duplicate = builder.add_joint_fixed(parent=root, child=tip, label="tip_duplicate_joint")
+        builder.add_articulation([j_root, j_tip, j_tip_duplicate], label="robot")
+        model = builder.finalize()
+
+        view = ArticulationView(model, "robot")
+
+        self.assertEqual(list(model.body_label), ["root", "tip"])
+        self.assertEqual(view.link_count, 2)
+        self.assertEqual(view.link_names, ["root", "tip"])
+        self.assertEqual(view.link_labels, ["root", "tip"])
+        self.assertEqual(view.shape_count, 1)
+        self.assertEqual(view.shape_labels, ["tip_shape"])
+
+        body_layout = view.frequency_layouts[newton.Model.AttributeFrequency.BODY]
+        self.assertEqual(body_layout.value_count, len(model.body_label))
+        self.assertEqual(view.get_link_transforms(model).shape, (1, 1, 2))
+        self.assertEqual(view.get_link_velocities(model).shape, (1, 1, 2))
+
     def _test_selection_shapes(self, floating: bool):
         # load articulation
         ant = newton.ModelBuilder()
@@ -373,12 +444,12 @@ class TestSelection(unittest.TestCase):
 
         # test default mask
         model_mask = view.get_model_articulation_mask()
-        expected = np.full(num_artis, 1, dtype=np.bool)
+        expected = np.full(num_artis, 1, dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
         # test per-world mask
         model_mask = view.get_model_articulation_mask(mask=[0, 1, 1, 0])
-        expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
         # test world-arti mask
@@ -389,7 +460,7 @@ class TestSelection(unittest.TestCase):
             [0, 0, 0],
         ]
         model_mask = view.get_model_articulation_mask(mask=m)
-        expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
     def run_test_joint_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
@@ -463,7 +534,7 @@ class TestSelection(unittest.TestCase):
         # Get the attributes associated with "joint3"
         joint_dof_positions = joint_view.get_dof_positions(model).numpy().copy()
         joint_limit_lower = joint_view.get_attribute("joint_limit_lower", model).numpy().copy()
-        joint_target_pos = joint_view.get_attribute("joint_target_pos", model).numpy().copy()
+        joint_target_pos = joint_view.get_attribute("joint_target_q", model).numpy().copy()
 
         # Modify the attributes associated with "joint3"
         val = 1.0
@@ -739,15 +810,15 @@ class TestSelection(unittest.TestCase):
         joint_view.set_dof_positions(state_0, wp_joint_dof_positions, mask)
         joint_view.set_dof_positions(model, wp_joint_dof_positions, mask)
         joint_view.set_attribute("joint_limit_lower", model, wp_joint_limit_lowers, mask)
-        joint_view.set_attribute("joint_target_pos", control, wp_joint_target_pos, mask)
-        joint_view.set_attribute("joint_target_pos", model, wp_joint_target_pos, mask)
+        joint_view.set_attribute("joint_target_q", control, wp_joint_target_pos, mask)
+        joint_view.set_attribute("joint_target_q", model, wp_joint_target_pos, mask)
 
         # Get the updated values from model, state, control.
         measured_state_joint_dof_positions = state_0.joint_q.numpy()
         measured_model_joint_dof_positions = model.joint_q.numpy()
         measured_model_joint_limit_lower = model.joint_limit_lower.numpy()
-        measured_control_joint_target_pos = control.joint_target_pos.numpy()
-        measured_model_joint_target_pos = model.joint_target_pos.numpy()
+        measured_control_joint_target_pos = control.joint_target_q.numpy()
+        measured_model_joint_target_pos = model.joint_target_q.numpy()
 
         # Test that the modified values were correctly set in model, state and control
         for i in range(0, num_joints):
@@ -1193,6 +1264,26 @@ class TestSelection(unittest.TestCase):
 
         qfrc_actuator = view.get_attribute("mujoco.qfrc_actuator", state)
         self.assertEqual(qfrc_actuator.shape[2], 1)  # 1 revolute DOF
+
+    def test_loop_closing_joint_selection_is_opt_in(self):
+        """ArticulationView excludes loop-closing joints unless requested."""
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="root")
+        tip = builder.add_link(label="tip")
+        j_root = builder.add_joint_revolute(-1, root, label="root_joint")
+        j_tip = builder.add_joint_revolute(root, tip, label="tip_joint")
+        builder.add_articulation([j_root, j_tip], label="robot")
+        builder.add_joint_ball(tip, root, label="loop_joint")
+
+        model = builder.finalize()
+        np.testing.assert_array_equal(model.articulation_start.numpy(), np.array([0, 3], dtype=np.int32))
+        np.testing.assert_array_equal(model.articulation_end.numpy(), np.array([2], dtype=np.int32))
+
+        view = ArticulationView(model, "robot")
+        self.assertEqual(view.joint_names, ["root_joint", "tip_joint"])
+
+        view_with_loop = ArticulationView(model, "robot", include_loop_closing_joints=True)
+        self.assertEqual(view_with_loop.joint_names, ["root_joint", "tip_joint", "loop_joint"])
 
 
 class TestSelectionFixedTendons(unittest.TestCase):

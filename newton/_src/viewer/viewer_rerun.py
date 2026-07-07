@@ -113,6 +113,7 @@ class ViewerRerun(ViewerBase):
         self,
         *,
         app_id: str | None = None,
+        rec_id: str | None = None,
         address: str | None = None,
         serve_web_viewer: bool = True,
         web_port: int = 9090,
@@ -131,6 +132,9 @@ class ViewerRerun(ViewerBase):
         Args:
             app_id: Application ID for rerun (defaults to 'newton-viewer').
                                  Use different IDs to differentiate between parallel viewer instances.
+            rec_id: Recording ID for rerun. If provided, multiple processes using the
+                                 same recording ID will share a single recording, allowing their data
+                                 to be visualized together. If None, a random ID is generated.
             address: Optional server address to connect to a remote rerun server via gRPC.
                                   You will need to start a stand-alone rerun server first, e.g. by typing ``rerun`` in your terminal.
                                   See rerun.io documentation for supported address formats.
@@ -150,9 +154,11 @@ class ViewerRerun(ViewerBase):
         if rr is None:
             raise ImportError("rerun package is required for ViewerRerun. Install with: pip install rerun-sdk")
 
+        self._rerun_initialized = False
         super().__init__()
 
         self.app_id = app_id or "newton-viewer"
+        self.rec_id = rec_id
         self._running = True
         self._viewer_process = None
         self.keep_historical_data = keep_historical_data
@@ -167,7 +173,7 @@ class ViewerRerun(ViewerBase):
 
         # Initialize rerun using a blueprint that only shows the 3D view and a collapsed time panel
         blueprint = self._get_blueprint()
-        rr.init(self.app_id, default_blueprint=blueprint)
+        rr.init(self.app_id, recording_id=self.rec_id, default_blueprint=blueprint)
 
         if record_to_rrd is not None:
             rr.save(record_to_rrd, default_blueprint=blueprint)
@@ -192,6 +198,7 @@ class ViewerRerun(ViewerBase):
 
         # Make sure the timeline is set up
         rr.set_time("time", timestamp=0.0)
+        self._rerun_initialized = True
 
     def _get_blueprint(self):
         scalar_panel = None
@@ -205,6 +212,34 @@ class ViewerRerun(ViewerBase):
             rrb.TimePanel(timeline="time", state="collapsed"),
             collapse_panels=True,
         )
+
+    @override
+    def clear_model(self):
+        """Clear the active layer's local caches and Rerun entity subtree."""
+        owns = self._is_layer_owned_path
+
+        if getattr(self, "_rerun_initialized", False):
+            prefix = self.layer.name_prefix
+            if prefix:
+                rr.log(prefix, rr.Clear(recursive=True))
+            else:
+                names = (
+                    set(getattr(self, "_meshes", {}))
+                    | set(getattr(self, "_instances", {}))
+                    | set(getattr(self, "_scalars", {}))
+                )
+                for name in names:
+                    if owns(name):
+                        rr.log(name, rr.Clear(recursive=True))
+
+        if hasattr(self, "_meshes"):
+            self._meshes = {name: value for name, value in self._meshes.items() if not owns(name)}
+        if hasattr(self, "_instances"):
+            self._instances = {name: value for name, value in self._instances.items() if not owns(name)}
+        if hasattr(self, "_scalars"):
+            self._scalars = {name: value for name, value in self._scalars.items() if not owns(name)}
+
+        super().clear_model()
 
     @override
     def log_mesh(
@@ -240,6 +275,8 @@ class ViewerRerun(ViewerBase):
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
         """
+        name = self._qualify(name)
+
         if not hidden:
             assert isinstance(points, wp.array)
             assert isinstance(indices, wp.array)
@@ -340,6 +377,9 @@ class ViewerRerun(ViewerBase):
             materials: Instance materials.
             hidden: Whether the instances are hidden.
         """
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if hidden:
             if name in self._instances:
                 rr.log(name, rr.Clear(recursive=False))
@@ -515,11 +555,14 @@ class ViewerRerun(ViewerBase):
             width: Line width.
             hidden: Whether the lines are hidden.
         """
+        name = self._qualify(name)
 
         if hidden:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Do not log hidden lines
 
         if starts is None or ends is None:
+            rr.log(name, rr.Clear(recursive=False))
             return  # Nothing to log
 
         # Convert inputs to numpy for rerun API compatibility
@@ -562,6 +605,8 @@ class ViewerRerun(ViewerBase):
             name: Name of the array.
             array: The array data (can be a wp.array or a numpy array).
         """
+        name = self._qualify(name)
+
         if array is None:
             return
         array_np = self._to_numpy(array)
@@ -579,6 +624,7 @@ class ViewerRerun(ViewerBase):
         # Basic scalar logging for rerun: log as a 'Scalar' component (if present)
         if name is None:
             return
+        name = self._qualify(name)
 
         # Only support standard Python/numpy scalars, not generic objects for now
         if hasattr(value, "item"):
@@ -658,11 +704,15 @@ class ViewerRerun(ViewerBase):
             colors: Point colors (can be a wp.array or a numpy array).
             hidden: Whether the points are hidden.
         """
+        name = self._qualify(name)
+
         if hidden:
             # Optionally, skip logging hidden points
+            rr.log(name, rr.Clear(recursive=False))
             return
 
         if points is None:
+            rr.log(name, rr.Clear(recursive=False))
             return
 
         pts = self._to_numpy(points)

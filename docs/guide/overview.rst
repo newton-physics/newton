@@ -20,7 +20,8 @@ Key Features
 ------------
 
 * **GPU-accelerated**: Leverages NVIDIA Warp for fast, scalable simulation.
-* **Multiple solver implementations**: XPBD, VBD, MuJoCo, Featherstone, SemiImplicit.
+* **Multiple solver implementations**: XPBD, VBD, MuJoCo, Featherstone,
+  SemiImplicit, Kamino, ImplicitMPM, and Style3D.
 * **Modular design**: Easily extendable with new solvers and components.
 * **Differentiable**: Supports differentiable simulation for machine learning and optimization.
 * **Rich Import/Export**: Load models from URDF, MJCF, USD, and more.
@@ -99,10 +100,10 @@ Core Concepts
   attributes such as contact forces for sensing and analysis.
 - :class:`~newton.Control`: Encodes control inputs such as joint targets
   and forces applied during the simulation loop.
-- :doc:`Solver <../api/newton_solvers>`: Advances the simulation by
+- :doc:`Solver </solvers/index>`: Advances the simulation by
   integrating physics, handling contacts, and enforcing constraints.
   Newton provides multiple solver backends, including XPBD, VBD,
-  MuJoCo, Featherstone, and SemiImplicit.
+  MuJoCo, Featherstone, SemiImplicit, Kamino, ImplicitMPM, and Style3D.
 - :doc:`Sensors <../concepts/sensors>`: Compute observations from
   :class:`~newton.State`, :class:`~newton.Contacts`, sites, and shapes.
   Many sensors rely on optional :doc:`extended attributes
@@ -124,7 +125,7 @@ Simulation Loop
    and :class:`~newton.Contacts`.
 4. Call :meth:`Model.collide <newton.Model.collide>` to populate the
    contact set for the current state.
-5. Step a :doc:`solver <../api/newton_solvers>` using the current
+5. Step a :doc:`solver </solvers/index>` using the current
    state, control, and contacts.
 6. Update sensors, inspect outputs, render, or export the results.
 
@@ -133,6 +134,7 @@ Quick Links
 
 - :doc:`installation` — Setup Newton and run a first example in a couple of minutes
 - :doc:`tutorials` — Browse the guide's tutorial landing page
+- :doc:`Solver guide </solvers/index>` — Compare solver features and find backend-specific guidance
 - :doc:`Introduction tutorial </tutorials/00_introduction>` — Walk through a first hands-on tutorial
 - :doc:`../faq` — Frequently asked questions
 - :doc:`development` — For developers and code contributors

@@ -3,6 +3,8 @@
 
 """Implicit MPM model."""
 
+from __future__ import annotations
+
 import math
 from typing import TYPE_CHECKING
 
@@ -288,7 +290,7 @@ class ImplicitMPMModel:
         options: Options controlling particle and collider defaults.
     """
 
-    def __init__(self, model: newton.Model, options: "SolverImplicitMPM.Config"):
+    def __init__(self, model: newton.Model, options: SolverImplicitMPM.Config):
         self.model = model
         self._options = options
 
@@ -311,6 +313,7 @@ class ImplicitMPMModel:
         self.collider_body_mass = None
         self.collider_body_inv_inertia = None
         self.collider_body_q = None
+        self.deformable_collider_vertex_ranges: list[tuple[int, int, int]] = []
 
         self.notify_particle_material_changed()
         self.setup_collider()
@@ -345,11 +348,6 @@ class ImplicitMPMModel:
         self.material_parameters.dilatancy = model.mpm.dilatancy
         self.material_parameters.viscosity = model.mpm.viscosity
 
-        self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()))
-        self.max_hardening = float(np.max(self.material_parameters.hardening.numpy()))
-        self.has_viscosity = bool(np.any(self.material_parameters.viscosity.numpy() > 0))
-        self.has_dilatancy = bool(np.any(self.material_parameters.dilatancy.numpy() > 0))
-
         # Recompute particle volume and density from available particle data.
         # Assume that particles represent a cuboid volume of space, i.e., V = 8 r**3
         # (particles are typically laid out in a grid, and represent a uniform material).
@@ -365,6 +363,46 @@ class ImplicitMPMModel:
                 outputs=[self.particle_volume, self.particle_density],
             )
 
+        self._refresh_particle_flags_and_extrema()
+
+    def _refresh_particle_flags_and_extrema(self):
+        """Refresh transfer/material particle masks and material extrema."""
+        model = self.model
+        active_flag = int(newton.ParticleFlags.ACTIVE)
+        proxy_flag = int(newton.ParticleFlags.PROXY)
+
+        transfer_flags = model.particle_flags.numpy().copy()
+        material_flags = transfer_flags.copy()
+
+        collider_particle_ids = getattr(self.collider, "collider_particle_ids", None)
+        if collider_particle_ids is not None:
+            collider_particle_ids_np = collider_particle_ids.numpy()
+            if collider_particle_ids_np.size:
+                transfer_flags[collider_particle_ids_np] &= ~active_flag
+                material_flags[collider_particle_ids_np] &= ~active_flag
+
+        proxy_mask = (material_flags & proxy_flag) != 0
+        material_flags[proxy_mask] &= ~active_flag
+
+        self.particle_flags = wp.array(transfer_flags, dtype=wp.int32, device=model.device)
+        self.material_particle_flags = wp.array(material_flags, dtype=wp.int32, device=model.device)
+
+        material_active = (material_flags & active_flag) != 0
+        material_particle_volume = self.particle_volume.numpy().copy()
+        material_particle_volume[~material_active] = 0.0
+        self.material_particle_volume = wp.array(material_particle_volume, dtype=float, device=model.device)
+
+        if np.any(material_active):
+            self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()[material_active]))
+            self.max_hardening = float(np.max(self.material_parameters.hardening.numpy()[material_active]))
+            self.has_viscosity = bool(np.any(self.material_parameters.viscosity.numpy()[material_active] > 0.0))
+            self.has_dilatancy = bool(np.any(self.material_parameters.dilatancy.numpy()[material_active] > 0.0))
+        else:
+            self.min_young_modulus = math.inf
+            self.max_hardening = 0.0
+            self.has_viscosity = False
+            self.has_dilatancy = False
+
     def notify_collider_changed(self):
         """Refresh cached extrema for collider parameters.
 
@@ -376,6 +414,12 @@ class ImplicitMPMModel:
         dynamic_body_ids = body_ids[body_ids >= 0]
         dynamic_body_ids = dynamic_body_ids[body_mass[dynamic_body_ids] > 0.0]
         dynamic_body_masses = body_mass[dynamic_body_ids]
+        deformable_particle_ids = self.collider.collider_particle_ids.numpy()
+        if deformable_particle_ids.size:
+            particle_mass = self.model.particle_mass.numpy()
+            deformable_particle_masses = particle_mass[deformable_particle_ids]
+            deformable_particle_masses = deformable_particle_masses[deformable_particle_masses > 0.0]
+            dynamic_body_masses = np.concatenate((dynamic_body_masses, deformable_particle_masses))
 
         self.min_collider_mass = np.min(dynamic_body_masses, initial=np.inf)
         self.collider.query_max_dist = self.voxel_size * math.sqrt(3.0)
@@ -389,6 +433,7 @@ class ImplicitMPMModel:
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
+        collider_particle_ids: list[list[int] | wp.array[int] | None] | None = None,
         model: newton.Model | None = None,
         body_com: wp.array | None = None,
         body_mass: wp.array | None = None,
@@ -416,6 +461,7 @@ class ImplicitMPMModel:
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold, i.e. how far below the surface the
               particle may be before it is projected out. (m)
+            collider_particle_ids: For deformable mesh colliders, model particle ids corresponding to each mesh vertex.
             model: The model to read collider properties from. Default to self.model.
             body_com: For dynamic colliders, per-body center of mass. Default to model.body_com.
             body_mass: For dynamic colliders, per-body mass. Default to model.body_mass.
@@ -459,11 +505,14 @@ class ImplicitMPMModel:
             collider_friction = [None] * collider_count
         if collider_adhesion is None:
             collider_adhesion = [None] * collider_count
+        if collider_particle_ids is None:
+            collider_particle_ids = [None] * collider_count
 
         assert len(collider_body_ids) == len(collider_thicknesses)
         assert len(collider_body_ids) == len(collider_projection_threshold)
         assert len(collider_body_ids) == len(collider_friction)
         assert len(collider_body_ids) == len(collider_adhesion)
+        assert len(collider_body_ids) == len(collider_particle_ids)
 
         if body_com is None:
             body_com = model.body_com
@@ -541,6 +590,43 @@ class ImplicitMPMModel:
             max((material_thickness[material_id] for material_id in collider_material_ids[collider_id]), default=0.0)
             for collider_id in range(collider_count)
         ]
+        collider_particle_offsets = [0]
+        collider_particle_id_chunks = []
+        for collider_id, particle_ids in enumerate(collider_particle_ids):
+            if particle_ids is None:
+                collider_particle_offsets.append(collider_particle_offsets[-1])
+                continue
+
+            if collider_body_ids[collider_id] is not None:
+                raise ValueError("collider_particle_ids may only be provided for mesh colliders")
+            if collider_meshes[collider_id] is None:
+                raise ValueError("collider_particle_ids requires a collider mesh")
+
+            if isinstance(particle_ids, wp.array):
+                particle_ids_np = particle_ids.numpy()
+            else:
+                particle_ids_np = np.asarray(particle_ids, dtype=int)
+
+            vertex_count = collider_meshes[collider_id].points.shape[0]
+            if particle_ids_np.shape[0] != vertex_count:
+                raise ValueError(
+                    f"collider_particle_ids[{collider_id}] has {particle_ids_np.shape[0]} entries, "
+                    f"but collider mesh has {vertex_count} vertices"
+                )
+            if particle_ids_np.size and (
+                np.min(particle_ids_np) < 0 or np.max(particle_ids_np) >= model.particle_count
+            ):
+                raise ValueError(f"collider_particle_ids[{collider_id}] contains particle ids outside the model")
+
+            collider_particle_id_chunks.append(particle_ids_np)
+            collider_particle_offsets.append(collider_particle_offsets[-1] + particle_ids_np.shape[0])
+
+        if not collider_particle_id_chunks:
+            flat_collider_particle_ids = np.empty(0, dtype=int)
+        elif len(collider_particle_id_chunks) == 1:
+            flat_collider_particle_ids = collider_particle_id_chunks[0]
+        else:
+            flat_collider_particle_ids = np.concatenate(collider_particle_id_chunks)
 
         # Create device arrays
         with wp.ScopedDevice(self.model.device):
@@ -566,6 +652,8 @@ class ImplicitMPMModel:
                 face_material_ids.append(mesh_face_material_ids)
 
             self.collider.collider_body_index = wp.array(collider_body_ids, dtype=int)
+            self.collider.collider_particle_offsets = wp.array(collider_particle_offsets, dtype=int)
+            self.collider.collider_particle_ids = wp.array(flat_collider_particle_ids, dtype=int)
             self.collider.collider_mesh = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)
             self.collider.collider_max_thickness = wp.array(collider_max_thickness, dtype=float)
 
@@ -581,7 +669,13 @@ class ImplicitMPMModel:
         self.collider_body_inv_inertia = body_inv_inertia
         self.collider_body_q = body_q
         self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
+        self.deformable_collider_vertex_ranges = [
+            (collider_id, collider_particle_offsets[collider_id], collider_particle_offsets[collider_id + 1])
+            for collider_id in range(collider_count)
+            if collider_particle_offsets[collider_id + 1] > collider_particle_offsets[collider_id]
+        ]
 
+        self._refresh_particle_flags_and_extrema()
         self.notify_collider_changed()
 
     @property

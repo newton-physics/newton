@@ -10,6 +10,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+from newton._src.core.types import Axis
 from newton._src.solvers.kamino._src.core.bodies import RigidBodyDescriptor
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.geometry import GeometryDescriptor
@@ -22,7 +23,6 @@ from newton._src.solvers.kamino._src.core.joints import JointActuationType, Join
 from newton._src.solvers.kamino._src.core.materials import MaterialDescriptor
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.shapes import SphereShape
-from newton._src.solvers.kamino._src.core.types import Axis, mat33f, transformf, vec6f
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -208,9 +208,9 @@ class TestModelBuilder(unittest.TestCase):
         bid = builder.add_rigid_body(
             name="test_rigid_body",
             m_i=1.0,
-            i_I_i=mat33f(np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
             world_index=wid,
         )
 
@@ -221,7 +221,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.bodies[wid][bid].wid, wid)
         self.assertEqual(builder.bodies[wid][bid].m_i, 1.0)
         np.testing.assert_array_equal(builder.bodies[wid][bid].i_I_i, np.eye(3, dtype=np.float32).flatten())
-        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(transformf(), dtype=np.float32))
+        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(wp.transformf(), dtype=np.float32))
         np.testing.assert_array_equal(builder.bodies[wid][bid].u_i_0, np.zeros(6, dtype=np.float32))
 
     def test_04_add_rigid_body_descriptor(self):
@@ -231,9 +231,9 @@ class TestModelBuilder(unittest.TestCase):
         body = RigidBodyDescriptor(
             name="test_rigid_body",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         bid = builder.add_rigid_body_descriptor(body, world_index=wid)
 
@@ -244,7 +244,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.bodies[wid][bid].wid, wid)
         self.assertEqual(builder.bodies[wid][bid].m_i, 2.0)
         np.testing.assert_array_equal(builder.bodies[wid][bid].i_I_i, 2.0 * np.eye(3, dtype=np.float32).flatten())
-        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(transformf(), dtype=np.float32))
+        np.testing.assert_array_equal(builder.bodies[wid][bid].q_i_0, np.array(wp.transformf(), dtype=np.float32))
         np.testing.assert_array_equal(builder.bodies[wid][bid].u_i_0, np.zeros(6, dtype=np.float32))
 
     def test_05_add_duplicate_rigid_body(self):
@@ -254,9 +254,9 @@ class TestModelBuilder(unittest.TestCase):
         body_0 = RigidBodyDescriptor(
             name="test_rigid_body",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         builder.add_rigid_body_descriptor(body_0, world_index=wid)
 
@@ -271,16 +271,16 @@ class TestModelBuilder(unittest.TestCase):
         body_0 = RigidBodyDescriptor(
             name="test_rigid_body_0",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         body_1 = RigidBodyDescriptor(
             name="test_rigid_body_1",
             m_i=1.0,
-            i_I_i=mat33f(1.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(1.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         bid_0 = builder.add_rigid_body_descriptor(body_0, world_index=wid)
         bid_1 = builder.add_rigid_body_descriptor(body_1, world_index=wid)
@@ -321,16 +321,16 @@ class TestModelBuilder(unittest.TestCase):
         body_0 = RigidBodyDescriptor(
             name="test_rigid_body_0",
             m_i=2.0,
-            i_I_i=mat33f(2.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(2.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         body_1 = RigidBodyDescriptor(
             name="test_rigid_body_1",
             m_i=1.0,
-            i_I_i=mat33f(1.0 * np.eye(3, dtype=np.float32)),
-            q_i_0=transformf(),
-            u_i_0=vec6f(),
+            i_I_i=wp.mat33f(1.0 * np.eye(3, dtype=np.float32)),
+            q_i_0=wp.transformf(),
+            u_i_0=wp.spatial_vectorf(),
         )
         bid_0 = builder.add_rigid_body_descriptor(body_0, world_index=wid)
         bid_1 = builder.add_rigid_body_descriptor(body_1, world_index=wid)
