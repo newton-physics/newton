@@ -816,6 +816,39 @@ class Utils:
             device=self.__render_context.device,
         )
 
+    def register_textures(self, sources: list[str | np.ndarray]) -> list[int]:
+        """Append textures to the render context's texture pool.
+
+        See :meth:`RenderContext.register_textures`. Register all candidate
+        textures once up front; per-frame swaps via :meth:`set_shape_texture_ids`
+        are then pure index writes with no texture I/O.
+
+        Args:
+            sources: Texture file paths or RGBA/RGB pixel ``np.ndarray`` entries.
+
+        Returns:
+            Pool index of each registered texture, aligned with ``sources``.
+        """
+        return self.__render_context.register_textures(sources)
+
+    def set_shape_texture_ids(
+        self,
+        shape_indices: wp.array | np.ndarray | list[int],
+        texture_ids: wp.array | np.ndarray | list[int],
+    ):
+        """Reassign texture-pool indices for a subset of shapes in place.
+
+        See :meth:`RenderContext.set_shape_texture_ids`. With device-resident
+        ``wp.array[wp.int32]`` inputs this is a single scatter-kernel
+        launch with no host synchronization.
+
+        Args:
+            shape_indices: Shape indices to modify, shape (K,), int32.
+            texture_ids: Texture-pool index per shape (``-1`` = untextured),
+                shape (K,), int32.
+        """
+        self.__render_context.set_shape_texture_ids(shape_indices, texture_ids)
+
     def assign_checkerboard_material(
         self,
         *,
