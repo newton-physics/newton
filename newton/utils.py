@@ -70,16 +70,20 @@ __all__ += [
 # ==================================================================================
 from ._src.utils.cable import (  # noqa: E402
     CableStiffness,
+    create_cable_spline_points,
     create_cable_stiffness_from_elastic_moduli,
     create_parallel_transport_cable_quaternions,
+    create_rotation_minimizing_cable_quaternions,
     create_straight_cable_points,
     create_straight_cable_points_and_quaternions,
 )
 
 __all__ += [
     "CableStiffness",
+    "create_cable_spline_points",
     "create_cable_stiffness_from_elastic_moduli",
     "create_parallel_transport_cable_quaternions",
+    "create_rotation_minimizing_cable_quaternions",
     "create_straight_cable_points",
     "create_straight_cable_points_and_quaternions",
 ]
