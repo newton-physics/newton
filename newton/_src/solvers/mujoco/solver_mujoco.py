@@ -2400,17 +2400,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             authored_margin = float(pair_margin[i]) if pair_margin is not None else 0.0
             authored_gap = float(pair_gap[i]) if pair_gap is not None else 0.0
             if self._zero_margins_for_native_ccd:
-                # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
-                # When use_mujoco_contacts=False, real values are written back
-                # at runtime via notify_model_changed -> _update_pair_properties().
+                # NATIVECCD/MULTICCD reject non-zero margin at put_model (#2106);
+                # gap is unrestricted under MuJoCo 3.9, so forward it.
                 pair_kwargs["margin"] = 0.0
-                pair_kwargs["gap"] = 0.0
-                if self._use_mujoco_contacts and (authored_margin > 0.0 or authored_gap > 0.0):
+                if pair_gap is not None:
+                    pair_kwargs["gap"] = authored_gap
+                if self._use_mujoco_contacts and authored_margin > 0.0:
                     warnings.warn(
-                        f"Pair ({geom_name1}, {geom_name2}): authored margin={authored_margin}, "
-                        f"gap={authored_gap} zeroed for NATIVECCD/MULTICCD compatibility (#2106). "
-                        f"To honor these values, switch to Newton's collision pipeline by "
-                        f"constructing the solver with use_mujoco_contacts=False and feeding "
+                        f"Pair ({geom_name1}, {geom_name2}): authored margin="
+                        f"{authored_margin} zeroed for NATIVECCD/MULTICCD "
+                        f"compatibility (#2106). To honor this value, switch "
+                        f"to Newton's collision pipeline by constructing the "
+                        f"solver with use_mujoco_contacts=False and feeding "
                         f"Newton-generated contacts into step().",
                         stacklevel=2,
                     )
@@ -3197,7 +3198,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         disable_contacts: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        ls_parallel: bool | None = None,  # Deprecated: being removed from mujoco_warp
+        ls_parallel: bool | None = None,  # Deprecated: ignored since mujoco_warp 3.9.1
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
@@ -3236,16 +3237,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             disable_contacts: If True, disable contact computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
-            ls_parallel: Deprecated. Parallel line search is being removed from ``mujoco_warp``; passing this option emits a ``DeprecationWarning``.
+            ls_parallel: Deprecated and ignored. Parallel line search was removed from ``mujoco_warp`` in 3.9.1; passing this option emits a ``DeprecationWarning`` and has no effect.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
         """
         if ls_parallel is not None:
             warnings.warn(
-                "ls_parallel is deprecated. Parallel line search is being removed "
-                "from mujoco_warp; this argument will stop having an effect in a "
-                "future release.",
+                "ls_parallel is deprecated and no longer has any effect: parallel "
+                "line search was removed from mujoco_warp in 3.9.1.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -3483,7 +3483,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 solver=solver,
                 integrator=integrator,
                 target_filename=save_to_mjcf,
-                ls_parallel=ls_parallel,
                 include_sites=include_sites,
                 skip_visual_only_geoms=skip_visual_only_geoms,
             )
@@ -4592,7 +4591,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         target_filename: str | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
-        ls_parallel: bool | None = None,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
         Convert a Newton model and state to MuJoCo (Warp) model and data.
@@ -4633,7 +4631,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             target_filename: Optional path to save generated MJCF file.
             skip_visual_only_geoms: If True, skip geoms that are visual-only.
             include_sites: If True, include sites in the model.
-            ls_parallel: Deprecated. If not None, sets ``mjw_model.opt.ls_parallel``.
 
         Returns:
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
@@ -4826,6 +4823,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             spec.option.magnetic = np.array(magnetic)
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
+        # alignfree would erase the offset used below to force general qM storage.
+        spec.compiler.alignfree = False
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
             spec.compiler.autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
 
@@ -4870,6 +4869,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mu_torsional = model.shape_material_mu_torsional.numpy()
         shape_mu_rolling = model.shape_material_mu_rolling.numpy()
         shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -4980,6 +4980,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         }
 
         mj_bodies = [spec.worldbody]
+        full_inertia_bodies = []
         # mapping from Newton body id to MuJoCo body id
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom name
@@ -5442,8 +5443,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     geom_params["solimp"] = shape_geom_solimp[shape]
                 if shape_geom_solmix is not None:
                     geom_params["solmix"] = shape_geom_solmix[shape]
-                # Newton does not use the MuJoCo `gap` concept, always zero.
-                geom_params["gap"] = 0.0
+                geom_params["gap"] = float(shape_gap[shape])
                 authored_margin = float(shape_margin[shape])
                 if self._zero_margins_for_native_ccd:
                     # Zeroed in the spec for NATIVECCD/MULTICCD compatibility (#2106).
@@ -5570,8 +5570,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             j_type = int(joint_type[j])
             # Compute body transform for the MjSpec body pos/quat.
-            # For free joints, the parent/child xforms are identity and the
-            # initial position lives in body_q (see add_joint_free docstring).
+            # A free joint body's initial world pose is stored directly in body_q.
             child_xform = wp.transform(*joint_child_xform[j])
             if j_type == JointType.FREE:
                 bq = body_q[child]
@@ -5600,12 +5599,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 body_kwargs["gravcomp"] = float(body_gravcomp[child])
             if mass > 0.0:
                 body_kwargs["mass"] = mass
-                body_kwargs["ipos"] = body_com[child, :]
-                # Use diaginertia when off-diagonals are exactly zero to preserve
-                # MuJoCo's sameframe optimization (body_simple=1).  fullinertia
-                # triggers eigendecomposition that reorders eigenvalues and applies
-                # a permutation rotation, setting body_simple=0 even for diagonal
-                # matrices whose entries are not in descending order.
+                body_ipos = body_com[child, :].copy()
+                compile_ipos = body_ipos.copy()
+                compile_ipos[0] += 1.0e-3 if compile_ipos[0] >= 0.0 else -1.0e-3
+                # A temporary COM offset forces qM storage that remains valid after inertia edits.
+                body_kwargs["ipos"] = compile_ipos
                 if inertia[0, 1] == 0.0 and inertia[0, 2] == 0.0 and inertia[1, 2] == 0.0:
                     body_kwargs["inertia"] = [inertia[0, 0], inertia[1, 1], inertia[2, 2]]
                 else:
@@ -5620,6 +5618,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
+            if mass > 0.0:
+                full_inertia_bodies.append((body_mapping[child], body, body_ipos))
             return body, parent, child, child_is_kinematic, j_type, child_xform
 
         # Standalone world-fixed bodies are static (or mocap when kinematic)
@@ -6329,8 +6329,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_target_q_axis_idx = None
             self.mjc_actuator_to_newton_ball_jnt = None
 
+        dampratio_actuators = [
+            (actuator.id, actuator.biasprm[2])
+            for actuator in spec.actuators
+            if actuator.biastype == mujoco.mjtBias.mjBIAS_AFFINE
+            and actuator.gaintype == mujoco.mjtGain.mjGAIN_FIXED
+            and actuator.gainprm[0] > 0.0
+            and actuator.biasprm[0] == 0.0
+            and abs(actuator.biasprm[1] + actuator.gainprm[0]) < 1e-8
+            and actuator.biasprm[2] > 0.0
+        ]
+
         self.mj_model = spec.compile()
+        # Keep the compiled qM layout, but restore the physical COM and derived constants.
+        for body_id, body, body_ipos in full_inertia_bodies:
+            body.ipos = body_ipos
+            self.mj_model.body_ipos[body_id] = body_ipos
+            self.mj_model.body_sameframe[body_id] = mujoco.mjtSameFrame.mjSAMEFRAME_NONE
+        # mj_setConst only recomputes dampratio actuators from positive placeholders.
+        for actuator_id, dampratio in dampratio_actuators:
+            self.mj_model.actuator_biasprm[actuator_id, 2] = dampratio
         self.mj_data = mujoco.MjData(self.mj_model)
+        mujoco.mj_setConst(self.mj_model, self.mj_data)
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.
         # These map Newton template joint index → MuJoCo qpos/qvel start.
@@ -6620,10 +6640,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         mjc_tendon_to_newton_tendon_np[w, mjc_tendon] = w * tendons_per_world + template_tendon
                 self.mjc_tendon_to_newton_tendon = wp.array(mjc_tendon_to_newton_tendon_np, dtype=wp.int32)
 
-            # set mjwarp-only settings (ls_parallel is deprecated; only set when explicitly requested)
-            if ls_parallel is not None:
-                self.mjw_model.opt.ls_parallel = ls_parallel
-
             if separate_worlds:
                 nworld = model.world_count
             else:
@@ -6775,6 +6791,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "actuator_gear",
             "actuator_cranklength",
             "actuator_acc0",
+            "actuator_lengthrange",
             "pair_solref",
             "pair_solreffriction",
             "pair_solimp",
@@ -6839,6 +6856,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if field in model_fields_to_expand:
                 array = getattr(mj_model, field)
                 setattr(mj_model, field, tile(array))
+
+        mj_model.stat.meaninertia = tile(mj_model.stat.meaninertia)
 
         for field in mj_model.opt.__dataclass_fields__:
             if field in opt_fields_to_expand:
@@ -7209,8 +7228,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Build reference joint coordinates from model data and ``dof_ref``.
 
         Launches ``build_ref_q_kernel`` to produce joint coordinates in
-        Newton convention (xyzw quaternions). FREE/DISTANCE joints source
-        position and orientation from ``body_q`` of the child body, BALL
+        Newton convention (xyzw quaternions). FREE/DISTANCE joints copy
+        position and orientation from ``joint_q``, BALL
         joints use identity, and hinge/slide/D6 joints use ``dof_ref``.
 
         Args:
@@ -7229,11 +7248,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dim=model.joint_count,
             inputs=[
                 model.joint_type,
+                model.joint_q,
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
-                model.joint_child,
-                model.body_q,
                 dof_ref,
             ],
             outputs=[
@@ -7638,6 +7656,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 shape_mjc_solref,
                 shape_mjc_solref_mode,
                 self.model.shape_margin,
+                self.model.shape_gap,
                 int(self._use_mujoco_contacts and self._zero_margins_for_native_ccd),
             ],
             outputs=[
@@ -7851,12 +7870,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         pair_solref = getattr(mujoco_attrs, "pair_solref", None)
         pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
         pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
-        # Restore pair margin/gap at runtime when Newton is handling contacts.
-        # Spec-level values only carry template-world data (MuJoCo replicates the
-        # template pair across worlds), so the kernel applies per-world variance.
-        # When MuJoCo handles contacts, keep margins at zero for NATIVECCD compat (#2106).
-        pair_margin = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_margin", None)
-        pair_gap = None if self._use_mujoco_contacts else getattr(mujoco_attrs, "pair_gap", None)
+        # Restore pair margin/gap at runtime: the spec carries only template-world
+        # values, so per-world variance must be reapplied. margin is suppressed only
+        # under NATIVECCD/MULTICCD (#2106); gap is always forwarded (MuJoCo 3.9).
+        pair_margin = (
+            None
+            if (self._use_mujoco_contacts and self._zero_margins_for_native_ccd)
+            else getattr(mujoco_attrs, "pair_margin", None)
+        )
+        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
         pair_friction = getattr(mujoco_attrs, "pair_friction", None)
 
         # Only launch kernel if at least one attribute is defined
