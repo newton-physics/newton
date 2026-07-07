@@ -1633,6 +1633,172 @@ def Xform "Articulation" (
         self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_limit_sentinel_precedence_over_mjc(self):
+        """Authored newton:limitStiffness=-inf must select the builder default,
+        not fall through to a lower-priority MuJoCo per-DOF gain."""
+        from pxr import Sdf, Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
+        # Prismatic joint with MjcJointAPI authoring mjc:solreflimit = [0.04, 2]
+        # AND Newton authoring limitStiffness = -inf, limitDamping = -inf.
+        # Expected: builder defaults win (Newton sentinel overrides MuJoCo).
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsPrismaticJoint "Joint" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+        uniform double[] mjc:solreflimit = [0.04, 2]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+        # Author Newton sentinels on the joint prim.
+        joint_prim = stage.GetPrimAtPath("/Articulation/Joint")
+        joint_prim.CreateAttribute("newton:limitStiffness", Sdf.ValueTypeNames.Float, custom=True).Set(float("-inf"))
+        joint_prim.CreateAttribute("newton:limitDamping", Sdf.ValueTypeNames.Float, custom=True).Set(float("-inf"))
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_joint_cfg.limit_ke = 999.0
+        builder.default_joint_cfg.limit_kd = 88.0
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        model = builder.finalize()
+
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint")])
+        # Authored -inf must select builder defaults (999.0 / 88.0), NOT the MuJoCo
+        # solreflimit-derived values.
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), 999.0, places=2)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 88.0, places=2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_limit_unset_falls_through_to_mjc(self):
+        """When newton:limitStiffness is NOT authored, MuJoCo per-DOF gains
+        from mjc:solreflimit must flow through as the fallback."""
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
+        # Prismatic joint with MjcJointAPI authoring solreflimit but NO Newton
+        # limitStiffness / limitDamping authored.
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsPrismaticJoint "Joint" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+        uniform double[] mjc:solreflimit = [0.04, 2]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_joint_cfg.limit_ke = 999.0
+        builder.default_joint_cfg.limit_kd = 88.0
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        model = builder.finalize()
+
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint")])
+        # No Newton limitStiffness authored -> MuJoCo solreflimit-derived gains must flow.
+        # solreflimit = [0.04, 2] -> ke = 1/(d*d) = 1/0.0016 = 625, kd = 2/(d) = 50
+        # (exact values depend on the MuJoCo gain conversion; just verify NOT builder default)
+        limit_ke = float(model.joint_limit_ke.numpy()[dof])
+        limit_kd = float(model.joint_limit_kd.numpy()[dof])
+        self.assertNotAlmostEqual(limit_ke, 999.0, places=0)
+        self.assertNotAlmostEqual(limit_kd, 88.0, places=0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
         builder_dfs = newton.ModelBuilder()
         builder_dfs.add_usd(
