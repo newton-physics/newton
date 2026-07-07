@@ -35,7 +35,8 @@ from .types import Axis, GeoType
 
 # Fixed iteration counts -> data-independent loops -> CUDA-graph-capturable. Passed as kernel args
 # (uniform across threads/launches). Tuned against a brute-force grid reference
-# (tests/test_water_tight_soft_contact.py): edge golden-section is accurate (~1e-4); the face
+# (newton/tests/test_collision_pipeline.py, TestWaterTightSoftContact): edge golden-section is
+# accurate (~1e-4); the face
 # Frank-Wolfe tail is ~O(1/iters) (~3e-3 at 24 iters), sufficient for contact within margin.
 SDF_EDGE_ITERS = 24
 SDF_FACE_ITERS = 24
