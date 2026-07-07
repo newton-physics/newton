@@ -395,11 +395,29 @@ def _resolve_deformable_density(prim: Usd.Prim, material_density: float | None, 
 def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
     """Set body ``b``'s mass and scale its inertia tensor to match (keeps the segment's shape)."""
     orig = builder.body_mass[b]
-    s = (m / orig) if orig > 0.0 else 0.0
+    if orig > 0.0:
+        builder.body_inertia[b] = builder.body_inertia[b] * (m / orig)
+    elif m > 0.0:
+        # No original mass to scale from (e.g. a zero default density): rebuild the inertia
+        # from the segment's capsule geometry at the new mass. Scaling by m/orig would zero
+        # the tensor and poison its inverse below.
+        from ..geometry.inertia import compute_inertia_capsule  # noqa: PLC0415
+
+        shapes = builder.body_shapes[b]
+        if shapes:
+            radius = float(builder.shape_scale[shapes[0]][0])
+            half_height = float(builder.shape_scale[shapes[0]][1])
+            unit_mass, _, unit_inertia = compute_inertia_capsule(1.0, radius, half_height)
+            if unit_mass > 0.0:
+                builder.body_inertia[b] = unit_inertia * (m / unit_mass)
+    else:
+        builder.body_inertia[b] = wp.mat33(0.0)
     builder.body_mass[b] = m
-    builder.body_inertia[b] = builder.body_inertia[b] * s
     builder.body_inv_mass[b] = (1.0 / m) if m > 0.0 else 0.0
-    builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if m > 0.0 else wp.mat33(0.0)
+    # Guard the inverse on the tensor, not just the mass: a singular inertia (shapeless or
+    # degenerate segment) must not produce a non-finite inverse.
+    invertible = m > 0.0 and abs(float(wp.determinant(builder.body_inertia[b]))) > 0.0
+    builder.body_inv_inertia[b] = wp.inverse(builder.body_inertia[b]) if invertible else wp.mat33(0.0)
 
 
 def _apply_particle_masses(builder: ModelBuilder, prim: Usd.Prim, p0: int, p1: int, read_attr: Callable) -> None:

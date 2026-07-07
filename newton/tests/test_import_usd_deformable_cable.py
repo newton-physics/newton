@@ -477,6 +477,30 @@ class TestUSDDeformableCable(unittest.TestCase):
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         self.assertAlmostEqual(sum(builder.body_mass[b] for b in range(b0, b1)), 2.5, places=4)
 
+    def test_per_point_masses_with_zero_density_keep_finite_inertia(self):
+        """Per-point physics:masses on a cable whose density-derived mass is zero (the
+        caller sets default_shape_cfg.density = 0) rebuild the segment inertia from the
+        capsule geometry at the new mass. Scaling the zero tensor by m/orig instead would
+        zero it and its inverse would poison body_inv_inertia with non-finite values."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        curves = _add_cable_curve(stage, "/World/Cable", pts)
+        curves.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set([1.0, 1.0, 1.0, 1.0])
+
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.density = 0.0
+        builder.add_usd(stage)
+
+        b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
+        self.assertEqual(b1 - b0, 3)
+        for b in range(b0, b1):
+            self.assertGreater(builder.body_mass[b], 0.0)
+            inv = np.array(builder.body_inv_inertia[b])
+            self.assertTrue(np.all(np.isfinite(inv)), f"body {b} inv inertia not finite: {inv}")
+            self.assertGreater(np.linalg.det(np.array(builder.body_inertia[b]).reshape(3, 3)), 0.0)
+
     def test_malformed_material_thickness_warns_and_uses_default(self):
         """An authored non-positive physics:thickness is malformed (the unauthored sentinel
         is -inf, not 0): the importer says it is dropped, so users can tell it apart from an
