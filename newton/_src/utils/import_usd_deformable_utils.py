@@ -868,7 +868,9 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
     Replaces the per-family full-stage walks: the lowering passes iterate these buckets instead of
     re-traversing the stage, so a stage without deformables pays a single scouting walk. Buckets
     match each pass's coarse type filter: cables/cloth require their applied sim API, but every
-    ``TetMesh`` is bucketed because bare TetMeshes still import as legacy soft bodies.
+    ``TetMesh`` is bucketed because bare TetMeshes still import as legacy soft bodies. The walk
+    uses ``TraverseInstanceProxies``, so instance proxies are covered on behalf of every
+    consuming pass; prototype masters never appear under a scene-root traversal.
 
     Per-prim work is kept to a minimum because this walk runs on every ``add_usd()`` call,
     deformables or not: common concrete type names classify with a single ``GetTypeName``

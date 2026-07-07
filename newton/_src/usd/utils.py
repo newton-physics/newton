@@ -1224,8 +1224,8 @@ _TETMESH_SCHEMA_ATTRS = frozenset(
 
 
 # Vendor attribute namespaces that get_tetmesh() read by default before the canonical
-# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read these
-# vendor namespaces off any bound material (under these namespaces).
+# ``physics:`` deformable schema existed. Pass as ``compat_namespaces`` to read them
+# off a bound material.
 DEFORMABLE_LEGACY_NAMESPACES: tuple[str, ...] = ("omniphysics", "physxDeformableBody")
 
 
@@ -1523,7 +1523,8 @@ def _read_deformable_material(
         val = float(val)
         if not math.isfinite(val):
             continue  # drops the -inf "simulator default" sentinel
-        # Stiffness range is [0, inf): preserve an authored zero. thickness / density are strictly positive.
+        # Stiffness accepts [0, inf), so an authored zero is preserved. Thickness and
+        # density must be strictly positive.
         if name in ("thickness", "density"):
             if val > 0.0:
                 out[name] = val

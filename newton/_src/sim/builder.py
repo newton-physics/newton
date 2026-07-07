@@ -2495,7 +2495,7 @@ class ModelBuilder:
         body_range: tuple[int, int],
         joint_range: tuple[int, int],
     ) -> None:
-        """Register an imported cable as an addressable, world-tagged group (see cable_label)."""
+        """Register an imported cable as an addressable, world-tagged group."""
         self._cable_label.append(label)
         self._cable_world.append(self.current_world)
         self._cable_body_start.append(body_range[0])
@@ -2510,7 +2510,7 @@ class ModelBuilder:
         tri_range: tuple[int, int],
         edge_range: tuple[int, int],
     ) -> None:
-        """Register an imported cloth as an addressable, world-tagged group (see cloth_label)."""
+        """Register an imported cloth as an addressable, world-tagged group."""
         self._cloth_label.append(label)
         self._cloth_world.append(self.current_world)
         self._cloth_particle_start.append(particle_range[0])
@@ -2526,7 +2526,7 @@ class ModelBuilder:
         particle_range: tuple[int, int],
         tet_range: tuple[int, int],
     ) -> None:
-        """Register an imported soft volume as an addressable, world-tagged group (see soft_label)."""
+        """Register an imported soft volume as an addressable, world-tagged group."""
         self._soft_label.append(label)
         self._soft_world.append(self.current_world)
         self._soft_particle_start.append(particle_range[0])
@@ -5216,8 +5216,8 @@ class ModelBuilder:
 
             # The first joint of the pair is the tree edge; parallel joints between the
             # same pair (e.g. an attachment with several point sites) close loops. They are
-            # retained after the tree edge is processed (see below), so a fixed tree joint's
-            # merge is already recorded when their child endpoint is remapped.
+            # retained via retain_loop_joints() after the tree edge is processed, so a fixed
+            # tree joint's merge is already recorded when their child endpoint is remapped.
             entry_xform = incoming_xform
             entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]

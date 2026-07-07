@@ -61,17 +61,14 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         return
     for prim in ctx.prims.tetmeshes:
         path = str(prim.GetPath())
-        # The scout traverses with TraverseInstanceProxies, so instance proxies are covered;
-        # prototype masters never appear under a scene-root traversal.
         if _is_ignored_path(path, ignore_paths):
             continue
         is_volume_deformable = usd.has_applied_api_schema(prim, "PhysicsVolumeDeformableSimAPI")
-        # Inside a PhysicsDeformableBodyAPI hierarchy only the single simulation mesh is simulated:
-        # a non-simulation TetMesh anywhere in the subtree is graphics/collision geometry and a
-        # second simulation mesh is malformed, so both are skipped (else they add mass beyond the
-        # body's authored total). Subtree ownership stops at rigid/articulation boundaries; a bare
-        # TetMesh with no deformable-body ancestor still imports as a legacy soft body. This runs
-        # before the body-flag checks: a graphics TetMesh never becomes a body.
+        # A deformable-body subtree simulates only its simulation mesh: any other TetMesh in it
+        # is graphics/collision geometry and is skipped, else it would add mass beyond the body's
+        # authored total. Ownership stops at rigid/articulation boundaries, so a bare TetMesh
+        # still imports as a legacy soft body. This runs before the body-flag checks: a graphics
+        # TetMesh never becomes a body.
         if not is_volume_deformable:
             owner_body = usd._deformable_body_ancestor(prim)
             if owner_body is not None:

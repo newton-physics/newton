@@ -63,8 +63,6 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         return
     for prim in ctx.prims.cloth:
         path = str(prim.GetPath())
-        # The scout traverses with TraverseInstanceProxies, so instance proxies are covered;
-        # prototype masters never appear under a scene-root traversal.
         if _is_ignored_path(path, ignore_paths):
             continue
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
@@ -191,7 +189,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if thickness is not None:
             tri_ke = tri_ke * thickness if tri_ke is not None else None
             edge_ke = edge_ke * thickness**3 if edge_ke is not None else None
-        tri_ka = 0.0  # see above: no proposal attribute -> no fabricated area term
+        tri_ka = 0.0  # No proposal Poisson term; None would inject the builder's area default.
         if "shearStiffness" in cloth_mat:
             warnings.warn(
                 f"{path}: shearStiffness is not applied -- Newton's isotropic cloth membrane makes "

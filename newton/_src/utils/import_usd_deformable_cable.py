@@ -500,8 +500,6 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         path = str(prim.GetPath())
         if path in consumed_cable_curve_paths:
             continue  # already built as part of a welded rod graph
-        # The scout traverses with TraverseInstanceProxies, so instance proxies are covered;
-        # prototype masters never appear under a scene-root traversal.
         if _is_ignored_path(path, ignore_paths):
             continue
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
@@ -549,11 +547,9 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Centerline and rest points use the full affine (below) so reflections / shears are exact.
-        # The curve normal is a material-frame director (the segment's cross-section
-        # orientation, which may encode shear), not a surface normal: it co-deforms with the
-        # segment tangent, so it transforms by the full 3x3 linear block M like the points,
-        # not by the covector rule M^-T (that rule preserves a perpendicularity this frame
-        # does not have). Recover the linear block from basis images (its columns).
+        # The curve normal is a material-frame director, not a surface normal: it co-deforms with
+        # the segment tangent, so it transforms by the full linear block M like the points, not by
+        # the covector rule M^-T. Recover the linear block from basis images (its columns).
         _o = wp.transform_point(world_mat, wp.vec3(0.0, 0.0, 0.0))
         _cx = wp.transform_point(world_mat, wp.vec3(1.0, 0.0, 0.0)) - _o
         _cy = wp.transform_point(world_mat, wp.vec3(0.0, 1.0, 0.0)) - _o
@@ -692,7 +688,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 rest_seg_lengths = [float(wp.length(rest_pts[i + 1] - rest_pts[i])) for i in range(num_seg)]
                 if min(rest_seg_lengths, default=0.0) > 1.0e-8:
                     seg_len = sum(rest_seg_lengths) / max(1, num_seg)
-            # Convert each authored modulus (see above); either may be absent -> None -> builder default.
+            # An absent modulus stays None so the builder default applies.
             stretch_stiffness = bend_stiffness = None
             if seg_len > 0.0:
                 if "stretchStiffness" in cable_mat:

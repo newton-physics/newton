@@ -464,22 +464,18 @@ def parse_usd(
     # Import-internal deformable index maps (not returned): the attachment and collapse passes
     # look up a curve/cloth/soft prim's element indices by path while building. The equivalent
     # per-group index ranges are recorded on the builder/Model registries for callers.
-    # cable prim path -> its (body indices, joint indices) from add_rod
     path_cable_map: dict[str, tuple[list[int], list[int]]] = {}
-    # cloth prim path -> its particle / triangle / bending-edge [start, end) index ranges
     path_cloth_map: dict[str, dict[str, tuple[int, int]]] = {}
-    # volume (TetMesh) soft-body prim path -> its particle / tet [start, end) index ranges
     path_soft_map: dict[str, dict[str, tuple[int, int]]] = {}
-    # as-authored, solver-neutral deformable attributes per prim path (the parsed
-    # material moduli, incl. ones the VBD build ignores, and the resolved density),
-    # so a non-VBD consumer can rebuild the deformable without re-parsing the stage.
+    # Solver-neutral deformable attributes per prim path: the parsed material moduli
+    # (including ones the VBD build ignores) and the resolved density, so a non-VBD
+    # consumer can rebuild the deformable without re-parsing the stage.
     path_cable_attrs: dict[str, dict[str, Any]] = {}
     path_cloth_attrs: dict[str, dict[str, Any]] = {}
     path_soft_attrs: dict[str, dict[str, Any]] = {}
-    # mapping from PhysicsAttachment prim path to joint indices created for supported attachments.
     path_attachment_map: dict[str, list[int]] = {}
-    # parsed attachment attributes are preserved even when the current builder cannot
-    # lower the attachment faithfully (e.g. cloth/volume feature attachments).
+    # Attachment attributes are preserved even when the current builder cannot lower
+    # the attachment faithfully (e.g. cloth/volume feature attachments).
     path_attachment_attrs: dict[str, dict[str, Any]] = {}
     # Internal cable maps used by the PhysicsAttachment post-pass. Proposal
     # point/segment indices are flattened across each BasisCurves prim in curve order.
