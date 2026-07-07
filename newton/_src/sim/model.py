@@ -494,7 +494,7 @@ class Model:
         self.particle_kd: float = 1.0e2
         """Particle normal contact damping [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kf: float = 1.0e2
-        """Particle friction force stiffness [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle contact friction gain [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_mu: float = 0.5
         """Particle friction coefficient [dimensionless]."""
         self.particle_cohesion: float = 0.0
@@ -544,7 +544,7 @@ class Model:
         self.shape_material_kd: wp.array[wp.float32] | None = None
         """Shape contact damping [N·s/m], shape [shape_count], float."""
         self.shape_material_kf: wp.array[wp.float32] | None = None
-        """Shape tangential friction response gain [N·s/m], shape [shape_count], float."""
+        """Shape contact friction gain [N·s/m], shape [shape_count], float."""
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu: wp.array[wp.float32] | None = None
@@ -990,7 +990,7 @@ class Model:
         self.soft_contact_kd: float = 10.0
         """Damping of soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kf: float = 1.0e3
-        """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Soft contact friction gain [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_mu: float = 0.5
         """Friction coefficient of soft contacts [dimensionless]."""
         self.soft_contact_restitution: float = 0.0

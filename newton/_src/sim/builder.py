@@ -287,7 +287,7 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The tangential friction response gain [N·s/m]."""
+        """The contact friction gain [N·s/m]."""
         ka: float = 0.0
         """The contact adhesion distance [m]."""
         mu: float = 1.0
@@ -1004,7 +1004,7 @@ class ModelBuilder:
         self.shape_material_kd: list[float] = []
         """Contact damping values accumulated for :attr:`Model.shape_material_kd`."""
         self.shape_material_kf: list[float] = []
-        """Tangential friction response gains accumulated for :attr:`Model.shape_material_kf`."""
+        """Contact friction gains [N·s/m] accumulated for :attr:`Model.shape_material_kf`."""
         self.shape_material_ka: list[float] = []
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
         self.shape_material_mu: list[float] = []

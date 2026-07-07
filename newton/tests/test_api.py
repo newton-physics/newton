@@ -90,6 +90,17 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_contact_friction_gain_terminology(self):
+        import newton  # noqa: PLC0415
+
+        shape_config_source = inspect.getsource(newton.ModelBuilder.ShapeConfig)
+        model_init_source = inspect.getsource(newton.Model.__init__)
+
+        self.assertIn("The contact friction gain [N·s/m].", shape_config_source)
+        self.assertIn("Particle contact friction gain [N·s/m]", model_init_source)
+        self.assertIn("Shape contact friction gain [N·s/m]", model_init_source)
+        self.assertIn("Soft contact friction gain [N·s/m]", model_init_source)
+
     def test_builder_urdf_signature_parity(self):
         from newton import ModelBuilder  # noqa: PLC0415
         from newton._src.utils.import_urdf import parse_urdf  # noqa: PLC0415
