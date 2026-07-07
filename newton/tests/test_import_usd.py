@@ -10497,6 +10497,22 @@ def Xform "World" ()
         float omniphysics:youngsModulus = 300000
         float omniphysics:poissonsRatio = 0.3
     }
+    def TetMesh "CanonicalBody" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        int4[] tetVertexIndices = [(0, 1, 2, 3)]
+        rel material:binding:physics = </World/CanonicalMaterial>
+    }
+    def Material "CanonicalMaterial" (
+        prepend apiSchemas = ["PhysicsVolumeDeformableMaterialAPI"]
+    )
+    {
+        custom float physics:density = 40
+        custom float physics:youngsModulus = 300000
+        custom float physics:poissonsRatio = 0.3
+    }
 }
 """
         stage = Usd.Stage.CreateInMemory()
@@ -10519,6 +10535,14 @@ def Xform "World" ()
         self.assertIsNotNone(tm_legacy.k_mu)
         self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
         self.assertAlmostEqual(tm_legacy.density, 40.0)
+
+        # A canonical material under the deprecated default reads identically and must NOT
+        # warn: the default change alters nothing for it (the gate matches add_usd's).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
+        self.assertAlmostEqual(tm_canonical_default.density, 40.0)
+        self.assertIsNotNone(tm_canonical_default.k_mu)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_tetmesh_no_material(self):

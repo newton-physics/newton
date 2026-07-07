@@ -1330,9 +1330,11 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
 
     material_prim = _find_physics_material_prim(prim)
     if compat_namespaces is None:
-        # Deprecated legacy default: read vendor namespaces off any bound material. Warn only when a
-        # physics material is actually bound, so the default change is visible exactly where it matters.
-        if material_prim is not None:
+        # Deprecated legacy default: read vendor namespaces off any bound material. Warn only
+        # when the bound material actually authors legacy vendor-namespaced deformable
+        # attributes, matching the add_usd() gate: for any other material (canonical,
+        # render-only) the default change does not alter what is read.
+        if _material_authors_legacy_deformable_attrs(prim):
             warnings.warn(
                 "get_tetmesh(): reading legacy vendor-namespaced deformable material attributes "
                 "(omniphysics: / physxDeformableBody:) off any bound material by default is deprecated; "

@@ -5479,12 +5479,10 @@ class ModelBuilder:
         # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
         # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
         def _remap_body_id(body_id: int) -> int:
-            if body_id in body_remap:
-                return body_remap[body_id]
-            if body_id in body_merged_parent:
-                parent = body_merged_parent[body_id]
-                return body_remap.get(parent, parent)
-            return body_id
+            # Cable bodies are linked only by non-fixed cable joints, so collapse must never
+            # merge or drop them; a violation would silently corrupt every recorded range.
+            assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
+            return body_remap[body_id]
 
         for i in range(len(self._cable_label)):
             if self._cable_body_end[i] > self._cable_body_start[i]:
@@ -5492,10 +5490,12 @@ class ModelBuilder:
                 self._cable_body_start[i] = new_start
                 self._cable_body_end[i] = _remap_body_id(self._cable_body_end[i] - 1) + 1
             if self._cable_joint_end[i] > self._cable_joint_start[i]:
-                self._cable_joint_start[i] = joint_remap.get(self._cable_joint_start[i], self._cable_joint_start[i])
-                self._cable_joint_end[i] = (
-                    joint_remap.get(self._cable_joint_end[i] - 1, self._cable_joint_end[i] - 1) + 1
+                first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
+                assert first in joint_remap and last in joint_remap, (
+                    f"cable joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
                 )
+                self._cable_joint_start[i] = joint_remap[first]
+                self._cable_joint_end[i] = joint_remap[last] + 1
             else:
                 # A welded-graph curve owns no tree joints, but its empty [b, b) boundary must
                 # still shift with the retained joints, else it can point past the collapsed
