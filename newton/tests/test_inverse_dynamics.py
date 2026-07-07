@@ -2531,16 +2531,15 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             com=wp.vec3(0.0, 0.0, 0.0),
             inertia=wp.mat33(*I_local.flatten().tolist()),
         )
-        builder.add_articulation(
-            [
-                builder.add_joint_free(
-                    parent=-1,
-                    child=link,
-                    parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
-                    child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
-                )
-            ]
+        joint = builder.add_joint_free(
+            parent=-1,
+            child=link,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), qx),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
+        builder.add_articulation([joint])
+        q_start = builder.joint_q_start[joint]
+        builder.joint_q[q_start : q_start + 7] = list(wp.transform_identity())
         model = builder.finalize(device=self.device)
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -2624,6 +2623,8 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 j_fixed = builder.add_joint_fixed(parent=-1, child=body1, parent_xform=identity, child_xform=identity)
                 j_floating = add_joint(builder, body1, body2)
                 builder.add_articulation([j_fixed, j_floating])
+                q_start = builder.joint_q_start[j_floating]
+                builder.joint_q[q_start : q_start + 7] = list(identity)
                 model = builder.finalize(device=self.device)
                 state = model.state()
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
