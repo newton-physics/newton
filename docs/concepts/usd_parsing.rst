@@ -117,8 +117,8 @@ Known gaps of the experimental importer, tracked as follow-ups:
   infinite stiffness; damping does not affect hardness) become joints.
 * **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
   deformables are skipped rather than simulated.
-* **Per-element materials** -- ``GeomSubset`` material bindings are ignored; one material
-  applies to the whole simulation prim.
+* **Per-element materials** -- ``GeomSubset`` physics material bindings warn and are
+  ignored; one material applies to the whole simulation prim.
 * **Collision participation** -- follows the rigid semantics: a deformable collides when
   its simulation geometry (or, approximated with a warning, another prim in its deformable
   body hierarchy) carries an enabled ``PhysicsCollisionAPI``; ``physics:collisionEnabled``

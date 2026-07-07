@@ -29,6 +29,7 @@ from .import_usd_deformable_utils import (
     _warn_collision_not_disableable,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
+    _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
@@ -116,6 +117,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         )
         _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsSurfaceDeformableMaterialAPI", deformable_read)
+        _warn_subset_material_bindings(prim, path)
 
         # add_cloth_mesh creates one particle per mesh vertex and takes only a uniform scale, so bake
         # the full world affine (incl. non-uniform scale, shear, reflection) into the vertices and

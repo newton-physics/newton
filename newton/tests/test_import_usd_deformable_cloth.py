@@ -353,6 +353,39 @@ class TestUSDDeformableCloth(unittest.TestCase):
             mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
         return mesh
 
+    def test_subset_physics_material_binding_warns(self):
+        """Per-UsdGeomSubset physics material bindings (per-element density, per-edge
+        bendStiffness in the proposal) are not supported: the importer resolves one
+        material for the whole simulation geometry, so a subset binding a physics
+        material warns instead of being dropped silently. Render-only subset bindings
+        and the sim prim's own inherited binding stay silent."""
+        from pxr import Sdf, UsdGeom, UsdShade
+
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _bind_deformable_material(stage, cloth.GetPrim(), "/World/Mat", density=1000.0, thickness=0.01)
+        subset = UsdGeom.Subset.Define(stage, "/World/Cloth/Patch")
+        subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+        subset.CreateIndicesAttr().Set([0])
+
+        with self.subTest(binding="render_only"):
+            render_mat = UsdShade.Material.Define(stage, "/World/RenderMat")
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(render_mat)
+            builder = newton.ModelBuilder()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                builder.add_usd(stage)
+            self.assertFalse(any("GeomSubset" in str(w.message) for w in caught))
+
+        with self.subTest(binding="physics"):
+            patch_mat = UsdShade.Material.Define(stage, "/World/PatchMat")
+            patch_mat.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableMaterialAPI")
+            patch_mat.GetPrim().CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(2000.0)
+            UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(patch_mat, materialPurpose="physics")
+            builder = newton.ModelBuilder()
+            with self.assertWarnsRegex(UserWarning, "/World/Cloth/Patch.*physics material"):
+                builder.add_usd(stage)
+
     def test_every_dropped_dedicated_collider_warns(self):
         """Every enabled CollisionAPI on a non-sim prim of a deformable body is dropped
         (approximated by the simulation geometry), so every one must warn: the 2nd+

@@ -86,6 +86,44 @@ def _is_ignored_path(path: str, ignore_paths: Sequence[str]) -> bool:
     return any(re.match(pattern, path) for pattern in ignore_paths)
 
 
+def _warn_subset_material_bindings(prim, path: str) -> None:
+    """Warn when the simulation geometry carries per-``UsdGeomSubset`` physics materials.
+
+    The proposal assigns per-element materials (per-element density, per-edge
+    bendStiffness) through ``GeomSubset`` children with their own physics material
+    binding; the importer resolves one material for the whole simulation geometry, so a
+    subset binding imports as uniform and must not be dropped silently. Only *direct*
+    bindings on the subset count: the sim prim's own material inherits onto every
+    subset, and render/visual subset bindings are not physics data.
+    """
+    from pxr import UsdGeom, UsdShade
+
+    physics_material_apis = (
+        "PhysicsMaterialAPI",
+        "PhysicsSurfaceDeformableMaterialAPI",
+        "PhysicsVolumeDeformableMaterialAPI",
+        "PhysicsCurvesDeformableMaterialAPI",
+    )
+    for child in prim.GetChildren():
+        if not child.IsA(UsdGeom.Subset):
+            continue
+        binding_api = UsdShade.MaterialBindingAPI(child)
+        material = binding_api.GetDirectBinding("physics").GetMaterial().GetPrim()
+        if not (material and material.IsValid()):
+            # An all-purpose direct binding counts when the material is a physics one.
+            material = binding_api.GetDirectBinding().GetMaterial().GetPrim()
+            if not (material and material.IsValid()) or not any(
+                s in physics_material_apis for s in material.GetPrimTypeInfo().GetAppliedAPISchemas()
+            ):
+                continue
+        warnings.warn(
+            f"{path}: GeomSubset {child.GetPath()} binds a physics material; per-element "
+            f"materials are not supported yet, so the whole simulation geometry uses the "
+            f"one resolved material.",
+            stacklevel=2,
+        )
+
+
 def _enabled_collider_prim(prim) -> bool:
     """Whether a prim carries an enabled ``PhysicsCollisionAPI``.
 

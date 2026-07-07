@@ -33,6 +33,7 @@ from .import_usd_deformable_utils import (
     _warn_collision_approximated,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
+    _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
 
@@ -559,6 +560,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         _warn_unsupported_rest_fields(prim, path, ("restNormals",), deformable_read)
         _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
+        _warn_subset_material_bindings(prim, path)
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Centerline and rest points use the full affine (below) so reflections / shears are exact.
