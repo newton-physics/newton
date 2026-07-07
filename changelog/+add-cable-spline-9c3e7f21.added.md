@@ -1,0 +1,1 @@
+Add `ModelBuilder.add_cable_spline()` for building cables along Catmull-Rom splines through control points, with rotation-minimizing per-segment frames, uniform arc-length sampling, optional twist, and closed loops; add `newton.utils.create_cable_spline_points()` and `newton.utils.create_rotation_minimizing_cable_quaternions()`.
