@@ -1276,7 +1276,9 @@ class TestSelection(unittest.TestCase):
         j_root = builder.add_joint_revolute(-1, root, label="root_joint")
         j_tip = builder.add_joint_revolute(root, tip, label="tip_joint")
         builder.add_articulation([j_root, j_tip], label="robot")
-        builder.add_joint_ball(tip, root, label="loop_joint")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+            builder.add_joint_ball(tip, root, label="loop_joint")
 
         model = builder.finalize()
         np.testing.assert_array_equal(model.articulation_start.numpy(), np.array([0, 3], dtype=np.int32))

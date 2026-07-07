@@ -7306,12 +7306,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j1 = builder.add_joint_revolute(b0, b1)
         builder.add_articulation([j0, j1])
         # add a loop joint with asymmetric xforms to exercise relpose computation
-        builder.add_joint_fixed(
-            b1,
-            b0,
-            parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 0.1, -0.3), wp.quat_identity()),
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+            builder.add_joint_fixed(
+                b1,
+                b0,
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.0, 0.1, -0.3), wp.quat_identity()),
+            )
         world_count = 4
         world_builder = newton.ModelBuilder()
         # force the ModelBuilder to correct zero mass/inertia values
@@ -7409,7 +7411,9 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         j0 = builder.add_joint_revolute(-1, b0, axis=(0.0, 0.0, 1.0))
         j1 = builder.add_joint_revolute(b0, b1, axis=(0.0, 1.0, 0.0))
         builder.add_articulation([j0, j1])
-        builder.add_joint_revolute(b1, b0, axis=(0.0, 0.0, 1.0))
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+            builder.add_joint_revolute(b1, b0, axis=(0.0, 0.0, 1.0))
 
         world_count = 3
         world_builder = newton.ModelBuilder()
@@ -7737,12 +7741,14 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder.add_articulation([j0, j1])
 
         # Ball loop joint BEFORE the free body — creates 4q/3qd offset
-        loop_j = builder.add_joint_ball(
-            b1,
-            b0,
-            parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+            loop_j = builder.add_joint_ball(
+                b1,
+                b0,
+                parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+            )
         builder.joint_articulation[loop_j] = -1
 
         # Free body added AFTER loop joint — use distinctive pose (see revolute variant).

@@ -4,6 +4,7 @@
 """Tests for joint equality constraints verified with simulation steps."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -1359,12 +1360,14 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
 
             # FIXED loop joint: body_a (parent) -> root_body (child)
             # Creates 1 WELD constraint
-            builder.add_joint_fixed(
-                parent=body_a,
-                child=root_body,
-                parent_xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()),
-                child_xform=wp.transform(wp.vec3(0.0, 0.1, 0.0), wp.quat_identity()),
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+                builder.add_joint_fixed(
+                    parent=body_a,
+                    child=root_body,
+                    parent_xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()),
+                    child_xform=wp.transform(wp.vec3(0.0, 0.1, 0.0), wp.quat_identity()),
+                )
 
             all_worlds_builder.add_world(builder)
 
