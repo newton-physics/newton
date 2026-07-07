@@ -596,6 +596,49 @@ class TestUSDDeformableCable(unittest.TestCase):
             np.testing.assert_allclose(z_world, [1.0, 0.0, 0.0], atol=1e-5)  # +Z -> tangent +X
             np.testing.assert_allclose(y_world, [0.0, 1.0, 0.0], atol=1e-5)  # +Y -> normal
 
+    def test_cable_normals_transform_by_full_linear_map(self):
+        """Curve normals are material-frame directors that co-deform with the segment
+        tangent, so they transform by the full linear block M like the points, not by the
+        covector rule M^-T. Under a non-uniform scale + shear the two rules give visibly
+        different cross-section rolls; under a pure rotation they agree (regression guard)."""
+        from pxr import Gf, UsdGeom
+
+        def _import_frame_y(m):
+            """Author a +X cable with +Y normals under transform ``m``; return each body's world +Y."""
+            stage = _deformable_stage()
+            pts = [(i * 0.1, 0.0, 1.0) for i in range(4)]
+            curves = _add_cable_curve(stage, "/World/Cable", pts)
+            curves.CreateNormalsAttr([(0.0, 1.0, 0.0)] * len(pts))
+            curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+            UsdGeom.Xformable(curves).AddTransformOp().Set(m)
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
+            frames = []
+            for body in range(b0, b1):
+                t = builder.body_q[body]
+                q = wp.quat(float(t[3]), float(t[4]), float(t[5]), float(t[6]))
+                frames.append(np.array(wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0)), dtype=np.float32))
+            return frames
+
+        with self.subTest(xform="scale_and_shear"):
+            # Row-vector Gf matrix: scale y by 2 with shear z += 0.75*y. The tangent (+X) is
+            # unaffected, so the frame's +Y is the normalized transformed normal directly:
+            # the full map sends +Y to (0, 2, 0.75); the inverse-transpose sends it to
+            # (0, 0.5, 0), i.e. it loses the shear tilt this asserts.
+            s = 0.75
+            m = Gf.Matrix4d(1.0, 0.0, 0.0, 0.0, 0.0, 2.0, s, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+            expected = np.array([0.0, 2.0, s]) / np.linalg.norm([0.0, 2.0, s])
+            for y_world in _import_frame_y(m):
+                np.testing.assert_allclose(y_world, expected, atol=1e-5)
+
+        with self.subTest(xform="pure_rotation"):
+            # Rotate 90 degrees about X: the normal +Y must land exactly on +Z (M^-T equals
+            # M for rotations, so this pins the behavior the fix must not change).
+            m = Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), 90.0))
+            for y_world in _import_frame_y(m):
+                np.testing.assert_allclose(y_world, [0.0, 0.0, 1.0], atol=1e-5)
+
     def test_cable_normals_source_selection(self):
         """Indexed primvars:normals take precedence over the schema normals attribute, and
         normals with non-per-point interpolation are warned and ignored, not misapplied."""
@@ -641,9 +684,9 @@ class TestUSDDeformableCable(unittest.TestCase):
     def test_cable_full_affine_xform_is_exact(self):
         """Cable import honors the full affine world transform. Under a reflected + sheared
         xform: body positions mirror (reflection parity preserved), authored normals orient
-        by the inverse-transpose of the linear block, and rest segment lengths (for E*A/L)
-        measure the full linear map. A rotation + per-axis-scale decomposition would drop
-        both the reflection and the shear."""
+        by the full linear block, and rest segment lengths (for E*A/L) measure the full
+        linear map. A rotation + per-axis-scale decomposition would drop both the
+        reflection and the shear."""
         from pxr import Gf, Sdf, UsdGeom
 
         stage = _deformable_stage()
@@ -678,8 +721,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             expected_origin = [mid_x, -0.5, 1.0 + k * mid_x]
             np.testing.assert_allclose(np.array(t[:3], dtype=np.float32), expected_origin, atol=1e-5)
             q = wp.quat(float(t[3]), float(t[4]), float(t[5]), float(t[6]))
-            # Normals: the inverse-transpose of the linear block maps +Y -> -Y (reflection
-            # parity); a rot/scale decomposition would drop the reflection and keep +Y.
+            # Normals: the full linear block maps +Y -> -Y (reflection parity); a
+            # rot/scale decomposition would drop the reflection and keep +Y.
             y_world = np.array(wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0)), dtype=np.float32)
             np.testing.assert_allclose(y_world, [0.0, -1.0, 0.0], atol=1e-5)
             # The segment frame's +Z tracks the sheared tangent.

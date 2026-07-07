@@ -550,19 +550,16 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Centerline and rest points use the full affine (below) so reflections / shears are exact.
-        # Normals transform by the inverse-transpose of the world map's 3x3 linear block (the correct
-        # rule under non-uniform scale, shear, and reflection); a rot/scale decomposition would drop
-        # the reflection parity and cannot represent shear. Recover the linear block from basis images
-        # (its columns) and invert-transpose it with warp.
+        # The curve normal is a material-frame director (the segment's cross-section
+        # orientation, which may encode shear), not a surface normal: it co-deforms with the
+        # segment tangent, so it transforms by the full 3x3 linear block M like the points,
+        # not by the covector rule M^-T (that rule preserves a perpendicularity this frame
+        # does not have). Recover the linear block from basis images (its columns).
         _o = wp.transform_point(world_mat, wp.vec3(0.0, 0.0, 0.0))
         _cx = wp.transform_point(world_mat, wp.vec3(1.0, 0.0, 0.0)) - _o
         _cy = wp.transform_point(world_mat, wp.vec3(0.0, 1.0, 0.0)) - _o
         _cz = wp.transform_point(world_mat, wp.vec3(0.0, 0.0, 1.0)) - _o
-        _linear = wp.mat33(_cx[0], _cy[0], _cz[0], _cx[1], _cy[1], _cz[1], _cx[2], _cy[2], _cz[2])
-        # Degenerate (singular) linear block -> use authored normals unchanged.
-        normal_linear_inv_t = (
-            wp.transpose(wp.inverse(_linear)) if abs(float(wp.determinant(_linear))) > 1.0e-12 else None
-        )
+        normal_linear = wp.mat33(_cx[0], _cy[0], _cz[0], _cx[1], _cy[1], _cz[1], _cx[2], _cy[2], _cz[2])
 
         # Per-point normals give each segment's cross-section frame (twist).
         # ``primvars:normals`` takes precedence over the schema ``normals`` attribute and
@@ -672,19 +669,16 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 )
                 flat_segment_index += curve_segment_count
                 continue
-            # Authored normals set each segment's cross-section twist; map them to world via the
-            # inverse-transpose computed above (``_cable_segment_quaternions`` normalizes each).
+            # Authored normals set each segment's cross-section twist; map them to world via
+            # the full linear block computed above. A singular block can only degenerate a
+            # normal to (near-)zero, which ``_cable_segment_quaternions`` already falls back
+            # from (roll-free frame), so no special-casing here.
             quaternions = None
             if normals is not None:
-                if normal_linear_inv_t is not None:
-                    seg_normals = [
-                        wp.mul(normal_linear_inv_t, wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])))
-                        for nv in normals[start : start + n]
-                    ]
-                else:
-                    seg_normals = [
-                        wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])) for nv in normals[start : start + n]
-                    ]
+                seg_normals = [
+                    wp.mul(normal_linear, wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])))
+                    for nv in normals[start : start + n]
+                ]
                 quaternions = _cable_segment_quaternions(positions, seg_normals)
             # Per-joint stiffness needs a per-segment rest length: the mean of the
             # actual segment lengths (the straight-line endpoint distance would
