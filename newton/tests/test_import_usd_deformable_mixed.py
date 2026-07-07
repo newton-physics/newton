@@ -171,6 +171,69 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertTrue(any("/World/ClothKin" in m and "kinematic deformables" in m for m in messages))
         self.assertTrue(any("/World/SoftOff/sim" in m and "bodyEnabled is false" in m for m in messages))
 
+    def test_body_mass_applies_with_zero_fallback_density(self):
+        """An authored PhysicsDeformableBodyAPI mass must not depend on the lower-precedence
+        builder fallback density: with default_shape_cfg.density = 0 the geometric weights
+        are built at a neutral density and the body total distributes over them
+        (measure-proportional, not uniform), in all three families."""
+        from pxr import Sdf, UsdGeom
+
+        def _with_body_mass(prim, mass):
+            prim.AddAppliedSchema("PhysicsDeformableBodyAPI")
+            prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Float).Set(mass)
+
+        with self.subTest(family="cloth"):
+            stage = _deformable_stage()
+            mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+            # Two triangles with areas 0.5 and 1.0, so the lumped particle masses are
+            # measure-proportional: p1/p0 = 3 and p3/p0 = 2 at any uniform density.
+            mesh.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (3.0, 0.0, 1.0)])
+            mesh.CreateFaceVertexCountsAttr([3, 3])
+            mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 1, 3, 2])
+            mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+            mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+            _with_body_mass(mesh.GetPrim(), 8.0)
+
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg.density = 0.0
+            builder.add_usd(stage)
+            masses = [float(m) for m in builder.particle_mass]
+            self.assertAlmostEqual(sum(masses), 8.0, places=4)
+            self.assertAlmostEqual(masses[3] / masses[0], 2.0, places=4)
+            model = builder.finalize()
+            self.assertTrue(all(im > 0.0 for im in model.particle_inv_mass.numpy()))
+
+        with self.subTest(family="cable"):
+            stage = _deformable_stage()
+            curve = _add_cable_curve(stage, "/World/Cable", [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.3, 0.0, 1.0)])
+            _with_body_mass(curve.GetPrim(), 8.0)
+
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg.density = 0.0
+            builder.add_usd(stage)
+            b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
+            masses = [float(builder.body_mass[b]) for b in range(b0, b1)]
+            self.assertAlmostEqual(sum(masses), 8.0, places=4)
+            # The proposal's formula m_e = m_tot * V_e / V_tot, exactly: the cylinder
+            # correction runs before the body-total rescale, so the 2x-longer segment
+            # carries exactly 2x the mass (no capsule end-cap bias).
+            self.assertAlmostEqual(masses[1] / masses[0], 2.0, places=5)
+            for b in range(b0, b1):
+                self.assertTrue(np.all(np.isfinite(np.array(builder.body_inv_inertia[b]))))
+
+        with self.subTest(family="volume"):
+            # The volume pass already distributed a body total correctly; pin it.
+            stage = _deformable_stage()
+            body = UsdGeom.Xform.Define(stage, "/World/Soft").GetPrim()
+            _with_body_mass(body, 8.0)
+            tet = _author_unit_tet(stage, "/World/Soft/Sim")
+            tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+
+            builder = newton.ModelBuilder()
+            builder.default_shape_cfg.density = 0.0
+            builder.add_usd(stage)
+            self.assertAlmostEqual(sum(builder.particle_mass), 8.0, places=4)
+
     def test_disabled_body_collision_geometry_stays_static(self):
         """A physics:bodyEnabled=false deformable is not simulated, but by rigid-body
         precedent its collision geometry persists as static colliders instead of

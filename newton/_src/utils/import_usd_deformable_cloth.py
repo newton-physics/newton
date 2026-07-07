@@ -24,6 +24,7 @@ from .import_usd_deformable_utils import (
     _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
+    _mass_weight_density,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
     _warn_collision_approximated,
@@ -202,8 +203,10 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # surface thickness (required for surface mass per the proposal). Body density overrides.
         vol_density = _resolve_deformable_density(prim, cloth_mat.get("density"), deformable_read)
         resolved_cloth_density = vol_density if vol_density is not None else builder.default_shape_cfg.density
-        # The areal value is builder-specific; keep it local to add_cloth_mesh.
-        density = resolved_cloth_density * thickness if thickness is not None else resolved_cloth_density
+        # The areal value is builder-specific; keep it local to add_cloth_mesh. The weight
+        # density stays neutral-positive when a body mass must be distributed over it.
+        weight_density = _mass_weight_density(prim, resolved_cloth_density, deformable_read)
+        density = weight_density * thickness if thickness is not None else weight_density
         # Collision radius from the shell's physical half-thickness rather than the generic default.
         particle_radius = 0.5 * thickness if thickness is not None else None
 

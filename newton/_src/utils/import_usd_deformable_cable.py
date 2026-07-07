@@ -28,6 +28,7 @@ from .import_usd_deformable_utils import (
     _deformable_collision_enabled,
     _DeformableImportContext,
     _is_ignored_path,
+    _mass_weight_density,
     _resolve_deformable_density,
     _skip_for_deformable_body_owner,
     _UnionFind,
@@ -372,9 +373,16 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                 f"curves; the whole graph collides.",
                 stacklevel=2,
             )
+        # A zero representative density still needs geometric weights when any member
+        # curve authors a body mass total (the per-curve rescale distributes it).
+        graph_weight_density = rep.density
+        if graph_weight_density <= 0.0 and any(
+            usd._get_deformable_body_overrides(curve_recs[p].prim, deformable_read)[0] is not None for p in comp_paths
+        ):
+            graph_weight_density = 1.0
         cfg = replace(
             builder.default_shape_cfg,
-            density=rep.density,
+            density=graph_weight_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
@@ -602,7 +610,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
         _warn_collision_approximated(path, approximated_from)
         cable_cfg = replace(
             builder.default_shape_cfg,
-            density=resolved_cable_density,
+            density=_mass_weight_density(prim, resolved_cable_density, deformable_read),
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )

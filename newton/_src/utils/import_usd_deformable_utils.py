@@ -543,6 +543,24 @@ def _resolve_deformable_density(prim: Usd.Prim, material_density: float | None, 
     return usd._get_physics_material_density(usd._find_physics_material_prim(prim))
 
 
+def _mass_weight_density(prim, density: float, read_attr: Callable) -> float:
+    """Density used to build a deformable's mass weights.
+
+    When the resolved density is zero (nothing authored and a zero builder default) but
+    the body authors a total ``physics:mass``, the geometric weights (segment length,
+    triangle area, tet volume) must still exist for the body-total rescale to distribute
+    the authored mass per the proposal's precedence. A neutral density of 1.0 provides
+    them; the rescale replaces its magnitude, and the reported ``resolved_density``
+    values are taken from the unmodified resolution.
+    """
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    if density > 0.0:
+        return density
+    body_mass, _ = usd._get_deformable_body_overrides(prim, read_attr)
+    return 1.0 if body_mass is not None else density
+
+
 def _set_body_mass(builder: ModelBuilder, b: int, m: float) -> None:
     """Set body ``b``'s mass and scale its inertia tensor to match (keeps the segment's shape)."""
     orig = builder.body_mass[b]
