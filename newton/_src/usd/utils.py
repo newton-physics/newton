@@ -1074,8 +1074,48 @@ def get_mesh(
 ) -> tuple[Mesh, np.ndarray | None]: ...
 
 
+@overload
 def get_mesh(
-    source: Usd.Prim | Usd.Stage | str | os.PathLike[str],
+    source: None = None,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[False] = False,
+    root_path: str | None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    *,
+    prim: Usd.Prim,
+) -> Mesh: ...
+
+
+@overload
+def get_mesh(
+    source: None = None,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int | None = None,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[True] = True,
+    root_path: None = None,
+    compute_inertia: bool = True,
+    apply_stage_units: bool = True,
+    *,
+    prim: Usd.Prim,
+) -> tuple[Mesh, np.ndarray | None]: ...
+
+
+def get_mesh(
+    source: Usd.Prim | Usd.Stage | str | os.PathLike[str] | None = None,
     load_normals: bool = False,
     load_uvs: bool = False,
     maxhullvert: int | None = None,
@@ -1088,6 +1128,8 @@ def get_mesh(
     root_path: str | None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
+    *,
+    prim: Usd.Prim | None = None,
 ) -> Mesh | tuple[Mesh, np.ndarray | None]:
     """
     Load a triangle mesh from a USD mesh prim, stage, file path, or URL.
@@ -1118,6 +1160,7 @@ def get_mesh(
 
     Args:
         source: USD mesh prim, stage, file path, or URL to load the mesh from.
+        prim: Legacy keyword alias for ``source`` when loading a USD prim.
         load_normals: Whether to load the normals.
         load_uvs: Whether to load the UVs.
         maxhullvert: The maximum number of vertices for the convex hull approximation.
@@ -1166,6 +1209,13 @@ def get_mesh(
         newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
         ``return_uv_indices`` is True.
     """
+    if prim is not None:
+        if source is not None:
+            raise TypeError("get_mesh() received both 'source' and legacy 'prim'; pass only one.")
+        source = prim
+    elif source is None:
+        raise TypeError("get_mesh() missing required argument: 'source'.")
+
     if maxhullvert is None:
         maxhullvert = Mesh.MAX_HULL_VERTICES
 

@@ -1517,7 +1517,7 @@ class Mesh:
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(source, **kwargs) -> "Mesh":
+    def create_from_usd(source=None, *, prim=None, **kwargs) -> "Mesh":
         """Load a Mesh from a USD mesh prim, stage, file path, or URL.
 
         This is a convenience wrapper around :func:`newton.usd.get_mesh`.
@@ -1526,6 +1526,7 @@ class Mesh:
         Args:
             source: USD mesh prim, stage, file path, or URL to load the mesh
                 from.
+            prim: Legacy keyword alias for ``source`` when loading a USD prim.
             **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
                 (e.g. ``root_path``, ``load_normals``, ``load_uvs``).
 
@@ -1533,6 +1534,11 @@ class Mesh:
             Mesh: A new Mesh instance.
         """
         from ..usd.utils import get_mesh  # noqa: PLC0415
+
+        if prim is not None:
+            if source is not None:
+                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
+            source = prim
 
         result = get_mesh(source, **kwargs)
         if isinstance(result, tuple):

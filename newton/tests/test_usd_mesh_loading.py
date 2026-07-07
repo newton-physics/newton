@@ -41,6 +41,23 @@ def _create_referenced_mesh_stage(tmpdir: str) -> Path:
     return stage_path
 
 
+def _define_triangle_mesh(stage, path="/Triangle"):
+    """Define a simple triangle mesh prim on a USD stage."""
+    from pxr import Gf, UsdGeom
+
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr(
+        [
+            Gf.Vec3f(0.0, 0.0, 0.0),
+            Gf.Vec3f(1.0, 0.0, 0.0),
+            Gf.Vec3f(0.0, 1.0, 0.0),
+        ]
+    )
+    mesh.CreateFaceVertexCountsAttr([3])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
+    return mesh
+
+
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUsdMeshHelpers(unittest.TestCase):
     """Tests for loading Newton meshes from USD source variants."""
@@ -105,6 +122,50 @@ class TestUsdMeshHelpers(unittest.TestCase):
         result = newton.usd.get_mesh(mesh.GetPrim(), compute_inertia=False)
 
         assert_np_equal(result.vertices[1], np.array([100.0, 0.0, 0.0], dtype=np.float32))
+
+    def test_get_mesh_accepts_legacy_prim_keyword(self):
+        """Keep ``prim=`` working for compatibility with the existing API."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh_prim = _define_triangle_mesh(stage).GetPrim()
+
+        mesh = newton.usd.get_mesh(prim=mesh_prim, compute_inertia=False)
+
+        self.assertIsInstance(mesh, newton.Mesh)
+        assert_np_equal(mesh.indices, np.array([0, 1, 2], dtype=np.int32))
+
+    def test_mesh_create_from_usd_accepts_legacy_prim_keyword(self):
+        """Keep ``Mesh.create_from_usd(prim=...)`` working."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh_prim = _define_triangle_mesh(stage).GetPrim()
+
+        mesh = newton.Mesh.create_from_usd(prim=mesh_prim, compute_inertia=False)
+
+        self.assertIsInstance(mesh, newton.Mesh)
+        assert_np_equal(mesh.vertices[1], np.array([1.0, 0.0, 0.0], dtype=np.float32))
+
+    def test_get_mesh_rejects_source_and_legacy_prim_keyword(self):
+        """Reject ambiguous calls that provide both source names."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh_prim = _define_triangle_mesh(stage).GetPrim()
+
+        with self.assertRaisesRegex(TypeError, "received both 'source' and legacy 'prim'"):
+            newton.usd.get_mesh(mesh_prim, prim=mesh_prim, compute_inertia=False)
+
+    def test_mesh_create_from_usd_rejects_source_and_legacy_prim_keyword(self):
+        """Reject ambiguous factory calls that provide both source names."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh_prim = _define_triangle_mesh(stage).GetPrim()
+
+        with self.assertRaisesRegex(TypeError, "received both 'source' and legacy 'prim'"):
+            newton.Mesh.create_from_usd(mesh_prim, prim=mesh_prim, compute_inertia=False)
 
     def test_get_mesh_merges_multiple_mesh_prims(self):
         """Merge multiple mesh prims under a selected root."""
