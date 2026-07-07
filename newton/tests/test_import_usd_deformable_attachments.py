@@ -3,6 +3,7 @@
 
 """Tests for USD deformable attachments and element collision filters on cable bodies."""
 
+import math
 import unittest
 
 import numpy as np
@@ -150,6 +151,33 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         self.assertEqual(attrs["stiffness"], 500.0)
         self.assertEqual(attrs["damping"], 2.0)
         self.assertIn("unsupported_reason", attrs)
+        builder.finalize()
+
+    def test_damped_hard_attachment_imports_joint(self):
+        """A +inf-stiffness attachment with nonzero damping is hard per the proposal
+        (damping only applies when the constraint is not hard) and imports as a ball
+        joint instead of being preserved as unsupported metadata."""
+        stage = _deformable_stage()
+        pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
+        _add_cable_curve(stage, "/World/Cable", pts)
+        _add_physics_attachment(
+            stage,
+            "/World/HardDamped",
+            src0="/World/Cable",
+            type0="point",
+            indices0=[0],
+            coords1=[(0.0, 0.0, 1.0)],
+            stiffness=math.inf,
+            damping=5.0,
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, deformable_results=True)
+
+        joints = result["path_attachment_map"]["/World/HardDamped"]
+        self.assertEqual(len(joints), 1)
+        self.assertEqual(builder.joint_type[joints[0]], newton.JointType.BALL)
+        self.assertNotIn("unsupported_reason", result["path_attachment_attrs"]["/World/HardDamped"])
         builder.finalize()
 
     def test_physics_attachment_segment_to_world_imports_ball_joint(self):

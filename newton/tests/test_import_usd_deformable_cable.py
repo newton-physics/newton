@@ -83,6 +83,23 @@ class TestUSDDeformableCable(unittest.TestCase):
                 if name == "zero_stiffness":
                     self.assertEqual(attrs["stiffness"], 0.0)
 
+    def test_damped_hard_junction_welds(self):
+        """A coincident junction with +inf stiffness and nonzero damping is still hard:
+        the proposal's damping attribute only applies when the constraint is not hard,
+        so authored damping must not disqualify the weld."""
+        stage = self._author_attached_cable_pair(gap=0.0, stiffness=math.inf, damping=5.0)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, deformable_results=True)
+
+        # One welded component: single articulation, shared graph component, junction consumed.
+        self.assertEqual(len(builder.articulation_label), 1)
+        self.assertEqual(
+            result["path_cable_attrs"]["/World/CableA"]["graph_component"],
+            result["path_cable_attrs"]["/World/CableB"]["graph_component"],
+        )
+        self.assertNotIn("/World/Junction", result["path_attachment_attrs"])
+
     def test_hard_coincident_junction_welds_rod_graph(self):
         """A hard, coincident curve-to-curve attachment welds the curves into one rod graph.
 

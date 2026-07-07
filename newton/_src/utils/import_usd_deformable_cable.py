@@ -199,21 +199,19 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         ):
             continue  # malformed junction: leave both curves to the per-curve pass
         # Welding replaces the attachment constraint with shared topology, which is only
-        # equivalent for a hard (unauthored / infinite stiffness, zero damping) attachment
-        # whose sites already occupy the same point. A compliant or non-coincident junction
-        # is left to the attachment post-pass, which preserves it in path_attachment_attrs
-        # as unsupported instead of silently snapping the geometry together.
+        # equivalent for a hard (unauthored / infinite stiffness) attachment whose sites
+        # already occupy the same point. A compliant or non-coincident junction is left to
+        # the attachment post-pass, which preserves it in path_attachment_attrs as
+        # unsupported instead of silently snapping the geometry together.
         stiffness_val = deformable_read(prim, "stiffness")
-        damping_val = deformable_read(prim, "damping")
-        # Hard means the proposal's +inf sentinel exactly; NaN, -inf, or finite values
-        # (compliant or nonconforming) must not weld curves into shared topology.
-        hard = (stiffness_val is None or float(stiffness_val) == math.inf) and (
-            damping_val is None or float(damping_val) == 0.0
-        )
+        # Hard means the proposal's +inf stiffness sentinel exactly; NaN, -inf, or finite
+        # values (compliant or nonconforming) must not weld curves into shared topology.
+        # Damping does not affect hardness: it only applies when the constraint is not hard.
+        hard = stiffness_val is None or float(stiffness_val) == math.inf
         if not hard:
             warnings.warn(
                 f"{prim.GetPath()}: curve-to-curve attachment does not author a hard "
-                f"(+inf stiffness, zero damping) constraint; not welded.",
+                f"(+inf stiffness) constraint; not welded.",
                 stacklevel=2,
             )
             continue

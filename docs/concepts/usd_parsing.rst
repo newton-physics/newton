@@ -174,8 +174,8 @@ becoming joints. Attachments on cloth or volume sites warn and are kept in
 ``path_attachment_attrs`` until Newton has a constraint for them.
 
 A ``point``->``point`` attachment between two imported cables can be a weld. Welding happens
-only when the attachment is **hard** (no authored stiffness, or infinite, with zero damping)
-**and** the two attached points sit at the same position. Such a junction is shared structure,
+only when the attachment is **hard** (no authored stiffness, or infinite; authored damping
+does not affect hardness) **and** the two attached points sit at the same position. Such a junction is shared structure,
 not a runtime constraint: the two points become one node, and every curve connected through such
 junctions is built as one rod graph with a single :meth:`~newton.ModelBuilder.add_rod_graph`
 call (one capsule body per segment, junction nodes shared). Welded junction attachments are
