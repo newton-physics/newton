@@ -40,7 +40,7 @@ MuJoCo-style contact, limit, and equality constraints are not explicit
 spring-damper penalties in world space. A more accurate picture is a *soft servo
 in constraint space*. For one scalar constraint row with residual ``r``,
 constraint-space velocity ``v``, impedance ``d`` (from ``solimp``), and the
-unconstrained acceleration ``a0``:
+constrained and unconstrained accelerations ``a`` and ``a0``:
 
 .. math::
 
@@ -48,60 +48,7 @@ unconstrained acceleration ``a0``:
 
 ``solref`` sets *how* the constraint corrects error (``b``/``k``, i.e.
 ``timeconst``/``dampratio``); ``solimp`` sets *how much authority* it has
-(impedance ``d(r)`` and regularization). Newton ``ke``/``kd`` arrays retain their
-documented units (``N/m`` and ``N·s/m``), but their realized meaning on the
-:class:`~newton.solvers.SolverMuJoCo` path depends on the active mapping. The
-legacy per-geometry conversion treats their numeric values as unit-mass
-reference dynamics and does not preserve a physical force-space response across
-masses. Existing force-space-mode contacts apply inverse-weight scaling before
-the same conversion. Neither path is a Young's modulus or a world-space penalty
-spring; see :ref:`mujoco-contact-solref-conversion`.
-
-Reference Dynamics
-------------------
-
-For one constraint row, MuJoCo-Warp computes the reference acceleration as
-
-.. math::
-
-   a_{\mathrm{ref}} = -k_0\,d\,\mathtt{pos} - b_0\,\mathtt{vel}
-
-where ``d`` is the current impedance ``d(r)`` and the gains depend on the active
-``solref`` format:
-
-- **Positive format**
-  :math:`k_0 = \dfrac{1}{d_{\max}^2\,\mathtt{timeconst}^2\,\mathtt{dampratio}^2}`,
-  :math:`b_0 = \dfrac{2}{d_{\max}\,\mathtt{timeconst}}`.
-- **Direct format**
-  :math:`k_0 = \dfrac{\mathtt{stiffness}}{d_{\max}^2}`,
-  :math:`b_0 = \dfrac{\mathtt{damping}}{d_{\max}}`.
-
-The ``solimp`` plateau impedance ``dmax`` therefore normalizes both gains; raising
-``dmax`` hardens the row but couples into ``k_0`` and ``b_0`` together.
-
-Identify the Active Contact Mapping
------------------------------------
-
-Before tuning ``ke`` and ``kd``, determine whether the contact uses authored raw
-MuJoCo values, Newton's per-geometry conversion, or the per-contact force-space
-path. The active interpretation depends on imported metadata, contact path, and
-backend. See :ref:`shape-material-contact-stiffness-and-damping` for the mode
-definitions and path conditions, and :ref:`mujoco-contact-solref-conversion` for
-the exact conversion and ``refsafe`` behavior.
-
-Authored raw ``solref`` retains native MuJoCo meaning. Existing force-space-mode
-contacts aim to make normal-contact tuning more transferable across effective
-masses, but the mode constants and direct symbolic selection are internal; do
-not import them from ``newton._src`` or use a magic integer to opt in. Imported
-metadata selects authored/default behavior automatically. The force-space mode
-is documented here to interpret existing models and implementation behavior,
-not as a supported user-selection workflow.
-
-If an existing model uses force-space mode, evaluate damping and timestep safety
-with :ref:`contact-stiffness-sanity-checks`. The mode does not add friction,
-normal force, contacts, or controller effort. If ``refsafe`` limits the requested
-positive-format response, reduce ``dt`` or increase substeps rather than
-repeatedly raising the gains.
+(impedance ``d(r)`` and regularization).
 
 ``solref`` Formats
 ------------------
@@ -145,10 +92,75 @@ regularization and the soft-to-hard transition.
      - shape of the transition curve
      - controls smoothness; larger is not simply harder
 
-The solver-side regularization satisfies ``R_eff = max(invweight·(1-d)/d, ε)``
-and ``efc_D = 1/R_eff``; smaller ``R_eff`` (larger ``efc_D``) is a harder
-constraint row but can condition worse. ``efc_D`` is the inverse regularization,
-not the regularizer itself.
+At solver level, ``invweight`` is the row's inverse weight and ``ε`` prevents
+division by zero. The effective regularization satisfies
+``R_eff = max(invweight·(1-d)/d, ε)`` and ``efc_D = 1/R_eff``. A smaller
+``R_eff`` (larger ``efc_D``) is a harder constraint row but can condition worse;
+``efc_D`` is the inverse regularization, not the regularizer itself.
+
+Reference Dynamics
+------------------
+
+For one constraint row, MuJoCo-Warp computes the reference acceleration as
+
+.. math::
+
+   a_{\mathrm{ref}} = -k_0\,d\,\mathtt{pos} - b_0\,\mathtt{vel}
+
+Here ``pos`` and ``vel`` are the implementation names for the constraint
+residual ``r`` and constraint-space velocity ``v`` introduced above, and ``d``
+is the current impedance ``d(r)``. The gains depend on the active ``solref``
+format:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 45 35
+
+   * - Format
+     - :math:`k_0`
+     - :math:`b_0`
+   * - Positive
+     - :math:`\dfrac{1}{d_{\max}^2\,\mathtt{timeconst}^2\,\mathtt{dampratio}^2}`
+     - :math:`\dfrac{2}{d_{\max}\,\mathtt{timeconst}}`
+   * - Direct
+     - :math:`\dfrac{\mathtt{stiffness}}{d_{\max}^2}`
+     - :math:`\dfrac{\mathtt{damping}}{d_{\max}}`
+
+The ``solimp`` plateau impedance ``dmax`` therefore normalizes both gains; raising
+``dmax`` hardens the row but couples into ``k_0`` and ``b_0`` together.
+
+Identify the Active Contact Mapping
+-----------------------------------
+
+Newton ``ke``/``kd`` arrays retain their documented units (``N/m`` and
+``N·s/m``), but their realized meaning on the
+:class:`~newton.solvers.SolverMuJoCo` path depends on the active mapping. The
+legacy per-geometry conversion treats their numeric values as unit-mass
+reference dynamics and does not preserve a physical force-space response across
+masses. Existing force-space-mode contacts apply inverse-weight scaling before
+the same conversion. Neither path is a Young's modulus or a world-space penalty
+spring; see :ref:`mujoco-contact-solref-conversion`.
+
+Before tuning ``ke`` and ``kd``, determine whether the contact uses authored raw
+MuJoCo values, Newton's per-geometry conversion, or the per-contact force-space
+path. The active interpretation depends on imported metadata, contact path, and
+backend. See :ref:`shape-material-contact-stiffness-and-damping` for the mode
+definitions and path conditions, and :ref:`mujoco-contact-solref-conversion` for
+the exact conversion and ``refsafe`` behavior.
+
+Authored raw ``solref`` retains native MuJoCo meaning. Existing force-space-mode
+contacts aim to make normal-contact tuning more transferable across effective
+masses, but the mode constants and direct symbolic selection are internal; do
+not import them from ``newton._src`` or use a magic integer to opt in. Imported
+metadata selects authored/default behavior automatically. The force-space mode
+is documented here to interpret existing models and implementation behavior,
+not as a supported user-selection workflow.
+
+If an existing model uses force-space mode, evaluate damping and timestep safety
+with :ref:`contact-stiffness-sanity-checks`. The mode does not add friction,
+normal force, contacts, or controller effort. If ``refsafe`` limits the requested
+positive-format response, reduce ``dt`` or increase substeps rather than
+repeatedly raising the gains.
 
 Make Harder vs. Make Stable
 ---------------------------
