@@ -460,15 +460,16 @@ def _compute_anisotropy(
     density_reach_out: wp.array[wp.vec3],
 ):
     i = wp.tid()
-    xi = smoothed[i]
-    h = search_radius
 
     if not _is_active_particle(flags, use_flags, i):
-        inv_h = 1.0 / h
-        G_out[i] = wp.identity(n=3, dtype=float) * inv_h
-        det_G_out[i] = inv_h * inv_h * inv_h
-        density_reach_out[i] = wp.vec3(_DENSITY_KERNEL_SUPPORT * h)
+        # Keep inactive slots recognizable if internal buffers are inspected.
+        G_out[i] = wp.mat33(0.0)
+        det_G_out[i] = 0.0
+        density_reach_out[i] = wp.vec3(0.0)
         return
+
+    xi = smoothed[i]
+    h = search_radius
 
     mean_offset = wp.vec3(0.0)
     moment_xx = float(0.0)
@@ -573,12 +574,20 @@ def _compute_anisotropy(
 def _fill_isotropic_G(
     kernel_radius: float,
     kernel_scale: float,
+    flags: wp.array[wp.int32],
+    use_flags: int,
     G_out: wp.array[wp.mat33],
     det_G_out: wp.array[float],
     density_reach_out: wp.array[wp.vec3],
 ):
-    """Fill all particles with the same isotropic G = (1/(kernel_scale*h)) * I."""
+    """Fill active particles with isotropic G and zero inactive slots."""
     i = wp.tid()
+    if not _is_active_particle(flags, use_flags, i):
+        G_out[i] = wp.mat33(0.0)
+        det_G_out[i] = 0.0
+        density_reach_out[i] = wp.vec3(0.0)
+        return
+
     scale = 1.0 / (kernel_scale * kernel_radius)
     G_out[i] = wp.identity(n=3, dtype=float) * scale
     det_G_out[i] = scale * scale * scale
@@ -1136,16 +1145,6 @@ class ParticleSurface:
         """Smoothed particle positions from the last extraction [m]."""
         return self._smoothed
 
-    @property
-    def anisotropy_matrices(self) -> wp.array[wp.mat33] | None:
-        """Per-particle inverse kernel transforms ``G`` [1/m]."""
-        return self._G
-
-    @property
-    def anisotropy_det(self) -> wp.array[float] | None:
-        """Per-particle ``det(G)`` values [1/m³]."""
-        return self._det_G
-
     def configure_field_grid(
         self,
         grid_origin: wp.vec3 | tuple[float, float, float],
@@ -1432,50 +1431,7 @@ class ParticleSurface:
 
         # Step 4: Marching cubes.
         self._mc.surface(self._field, self._marching_threshold())
-        verts = self._mc.verts
-        indices = self._mc.indices
-
-        # In density mode, high values are inside, so MC's low-to-high
-        # orientation is inward. In SDF mode, low values are inside and the
-        # default orientation is already outward.
-        if self.field_mode == "density" and indices is not None and indices.shape[0] > 0:
-            wp.launch(_flip_winding, dim=indices.shape[0] // 3, inputs=[indices], device=device)
-
-        if verts is None or verts.shape[0] == 0:
-            self._verts = self._indices = self._normals = None
-            return None, None, None
-
-        # Step 5: Laplacian smoothing
-        if self.mesh_smooth_iterations > 0 and indices.shape[0] > 0:
-            num_verts = verts.shape[0]
-            num_tri_verts = indices.shape[0]
-            smoothed = wp.empty(num_verts, dtype=wp.vec3, device=device)
-            neighbor_sum = wp.zeros(num_verts, dtype=wp.vec3, device=device)
-            valence = wp.zeros(num_verts, dtype=wp.int32, device=device)
-
-            for _ in range(self.mesh_smooth_iterations):
-                neighbor_sum.zero_()
-                valence.zero_()
-                wp.launch(
-                    _laplacian_scatter, dim=num_tri_verts, inputs=[indices, verts, neighbor_sum, valence], device=device
-                )
-                wp.launch(
-                    _laplacian_apply,
-                    dim=num_verts,
-                    inputs=[verts, neighbor_sum, valence, smoothed, self.mesh_smooth_lambda],
-                    device=device,
-                )
-                verts, smoothed = smoothed, verts
-
-        # Step 6: Vertex normals
-        normals = None
-        if compute_normals:
-            normals = compute_vertex_normals(verts, indices)
-
-        self._verts = verts
-        self._indices = indices
-        self._normals = normals
-        return verts, indices, normals
+        return self._postprocess_mesh(self._mc.verts, self._mc.indices, compute_normals=compute_normals)
 
     def redistance(self, iterations: int | None = None) -> None:
         """Apply Eikonal redistancing to the current SDF field.
@@ -1520,13 +1476,24 @@ class ParticleSurface:
             return None, None, None
 
         self._mc.surface(self._field, self._marching_threshold())
-        verts = self._mc.verts
-        indices = self._mc.indices
+        return self._postprocess_mesh(self._mc.verts, self._mc.indices, compute_normals=compute_normals)
 
+    # -- Internal helpers --
+
+    def _postprocess_mesh(
+        self,
+        verts: wp.array[wp.vec3] | None,
+        indices: wp.array[wp.int32] | None,
+        *,
+        compute_normals: bool,
+    ) -> tuple[wp.array[wp.vec3] | None, wp.array[wp.int32] | None, wp.array[wp.vec3] | None]:
+        """Apply winding, smoothing, and normals to marching-cubes output."""
+
+        # Density is high inside, so marching cubes produces inward winding.
         if self.field_mode == "density" and indices is not None and indices.shape[0] > 0:
             wp.launch(_flip_winding, dim=indices.shape[0] // 3, inputs=[indices], device=self._device)
 
-        if verts is None or verts.shape[0] == 0:
+        if verts is None or indices is None or verts.shape[0] == 0:
             self._verts = self._indices = self._normals = None
             return None, None, None
 
@@ -1562,8 +1529,6 @@ class ParticleSurface:
         self._indices = indices
         self._normals = normals
         return verts, indices, normals
-
-    # -- Internal helpers --
 
     def _clear_results(self, *, clear_field: bool):
         self._verts = None
@@ -1696,7 +1661,7 @@ class ParticleSurface:
             wp.launch(
                 _fill_isotropic_G,
                 dim=n,
-                inputs=[self.kernel_radius, self.kernel_scale, G, det_G, density_reach],
+                inputs=[self.kernel_radius, self.kernel_scale, flags, use_flags, G, det_G, density_reach],
                 device=device,
             )
 

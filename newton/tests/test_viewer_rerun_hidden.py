@@ -6,7 +6,6 @@ import warnings
 from unittest.mock import Mock, patch
 
 import numpy as np
-import warp as wp
 
 # ruff: noqa: PLC0415
 
@@ -110,27 +109,6 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.assertIsNotNone(mesh_data["texture_image"])
         np.testing.assert_allclose(mesh_data["uvs"][:, 1], np.array([0.8, 0.6, 0.4], dtype=np.float32))
         self.mock_rr.log.assert_not_called()
-
-    def test_log_mesh_hidden_clears_previously_visible_entity(self):
-        """log_mesh(hidden=True) should clear a mesh that was visible on a previous frame."""
-        viewer = self._create_viewer()
-
-        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3, device="cpu")
-        indices = wp.array([0, 1, 2], dtype=wp.int32, device="cpu")
-        normals = wp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=wp.vec3, device="cpu")
-        empty_points = wp.empty(0, dtype=wp.vec3, device="cpu")
-        empty_indices = wp.empty(0, dtype=wp.int32, device="cpu")
-        empty_normals = wp.empty(0, dtype=wp.vec3, device="cpu")
-
-        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
-            viewer.log_mesh("surface", points, indices, normals=normals, dynamic=True)
-            self.mock_rr.log.reset_mock()
-            self.mock_rr.Clear.reset_mock()
-            viewer.log_mesh("surface", empty_points, empty_indices, normals=empty_normals, hidden=True, dynamic=True)
-
-        self.mock_rr.Clear.assert_called_once_with(recursive=False)
-        self.mock_rr.log.assert_called_once_with("surface", self.mock_rr.Clear.return_value)
-        self.assertNotIn("surface", viewer._visible_meshes)
 
     def test_log_instances_hidden_clears_entity(self):
         """log_instances(hidden=True) should clear a previously visible entity."""

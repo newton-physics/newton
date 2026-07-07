@@ -236,9 +236,8 @@ class MeshGL:
         self.color = (0.7, 0.5, 0.3)
         self.material = (0.5, 0.0, 0.0, 0.0)
 
-        # Dynamic CUDA meshes avoid a device-host-device round trip even when
-        # interop remains disabled for the viewer's legacy static paths.
-        if (ENABLE_CUDA_INTEROP or self.dynamic) and self.device.is_cuda:
+        # Create CUDA-GL interop buffer for efficient updates
+        if ENABLE_CUDA_INTEROP and self.device.is_cuda:
             self.vertex_cuda_buffer = wp.RegisteredGLBuffer(
                 int(self.vbo.value),
                 self.device,
@@ -282,7 +281,7 @@ class MeshGL:
 
         if self.indices is None or self.dynamic:
             self.indices = wp.clone(indices).view(dtype=wp.uint32)
-            self.num_indices = int(len(self.indices))
+            self.num_indices = len(self.indices)
 
             ebo_usage = gl.GL_DYNAMIC_DRAW if self.dynamic else gl.GL_STATIC_DRAW
             host_indices = self.indices.numpy()
