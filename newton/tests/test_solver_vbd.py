@@ -38,6 +38,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
+cuda_devices = [device for device in devices if device.is_cuda]
 
 
 def _quat_rotate_np(q, v):
@@ -1845,6 +1846,67 @@ def _rigid_reset_state_and_history(test, device):
     np.testing.assert_allclose(masked_qd[~selected_bodies, 0], masked_delta / dt, atol=1.0e-1)
 
 
+def _rigid_reset_replays_captured_step(test, device):
+    """A reset issued after capture is consumed by the existing step graph."""
+    template = newton.ModelBuilder(gravity=0.0)
+    body = template.add_body(mass=1.0, is_kinematic=True)
+    template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_world(template)
+    builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    model = builder.finalize(device=device)
+
+    np.testing.assert_array_equal(model.body_world.numpy(), [0, 1])
+
+    solver = newton.solvers.SolverVBD(model, iterations=0)
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    dt = 1.0e-2
+
+    # Finish lazy initialization and consume the constructor's initial baseline
+    # before capturing the fixed state-buffer bindings used below.
+    solver.step(state_in, state_out, control, None, dt)
+    wp.synchronize_device(device)
+
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state_in, state_out, control, None, dt)
+    graph = capture.graph
+    test.assertIsNotNone(graph)
+
+    # reset() runs after capture. Its device-side mask write must be visible when
+    # replaying the graph, while post-reset pose preparation remains authoritative.
+    world_mask = wp.array([True, False], dtype=wp.bool, device=device)
+    solver.reset(state_in, world_mask=world_mask, flags=0)
+    reset_q = model.body_q.numpy()
+    reset_q[:, 0] += 1.0
+    state_in.body_q.assign(reset_q)
+    state_in.body_qd.zero_()
+
+    wp.capture_launch(graph)
+
+    np.testing.assert_allclose(state_out.body_q.numpy(), reset_q, atol=1.0e-6)
+    expected_qd = np.zeros_like(model.body_qd.numpy())
+    expected_qd[1, 0] = 1.0 / dt
+    np.testing.assert_allclose(state_out.body_qd.numpy(), expected_qd, rtol=1.0e-5, atol=1.0e-3)
+
+    # The captured clear consumes reset intent once. A second replay of the same
+    # graph must finite-difference an ordinary pose edit for both worlds.
+    delta = 0.25
+    next_q = reset_q.copy()
+    next_q[:, 0] += delta
+    state_in.body_q.assign(next_q)
+    state_in.body_qd.zero_()
+
+    wp.capture_launch(graph)
+
+    np.testing.assert_allclose(state_out.body_q.numpy(), next_q, atol=1.0e-6)
+    expected_qd[:, 0] = delta / dt
+    np.testing.assert_allclose(state_out.body_qd.numpy(), expected_qd, rtol=1.0e-5, atol=1.0e-3)
+
+
 def _rigid_contact_reset_lifecycle(test, device):
     """A reset cold-starts only selected-world contacts, once, on the next refresh."""
     cfg = newton.ModelBuilder.ShapeConfig(ke=100.0, kd=0.0, mu=0.5)
@@ -2654,6 +2716,12 @@ add_function_test(
     "test_rigid_reset_state_and_history",
     _rigid_reset_state_and_history,
     devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_reset_replays_captured_step",
+    _rigid_reset_replays_captured_step,
+    devices=cuda_devices,
 )
 add_function_test(
     TestSolverVBD,
