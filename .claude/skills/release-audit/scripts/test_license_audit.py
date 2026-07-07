@@ -228,7 +228,11 @@ source = { git = "https://example.com/fork.git" }
         self.assertIn("| warp-nn |", new_packages)
         self.assertNotIn("cuda-toolkit", new_packages)
         version_changes = audit.split("### Existing Resolved Package Version-Set Changes", 1)[1]
+        self.assertIn("<details>", version_changes)
+        self.assertNotIn("<details open", version_changes)
+        self.assertIn("<summary>2 package version-set changes (click to expand)</summary>", version_changes)
         self.assertIn("| cuda-toolkit | transitive via torch | (not resolved) | 12.8.1 |", version_changes)
+        self.assertIn("</details>", version_changes)
 
     def test_license_file_glob_detects_direct_child_notice_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:

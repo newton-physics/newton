@@ -510,7 +510,9 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
      `--skip-pypi` table with prose from a separate live query. Preserve "not
      checked", "not evaluated (--skip-pypi)", and "not declared" license
      metadata exactly when package-index lookup was unavailable, deferred, or
-     inconclusive. -->
+     inconclusive. Keep the helper's Existing Resolved Package Version-Set
+     Changes table inside its closed `<details>` block so the long table is
+     collapsed by default. -->
 
 ---
 

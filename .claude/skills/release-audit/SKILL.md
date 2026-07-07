@@ -149,7 +149,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
    Use one helper invocation as the source of the entire dependency/license section. Do not splice prose from a live metadata check onto tables produced by `--skip-pypi`. If a sandboxed or deferred run used `--skip-pypi` and a later host-side run can reach package indexes, replace the complete section with the default host-side output. Use `--skip-pypi` only as a fallback when a live metadata pass cannot be completed.
 
-   In Existing Resolved Package Version-Set Changes, the helper keeps standard license expressions and review statuses inline. Legacy or verbose nonstandard license text is rendered as a compact package-metadata link rather than copied into the report.
+   In Existing Resolved Package Version-Set Changes, the helper keeps standard license expressions and review statuses inline. Legacy or verbose nonstandard license text is rendered as a compact package-metadata link rather than copied into the report. The helper wraps this potentially long table in a closed `<details>` block; keep it collapsed by default so it does not dominate report scrolling.
 
    The helper is intentionally stdlib-only. Do not replace it with a dependency inventory tool during the audit run: Newton avoids new release-only dependencies, and this script needs deterministic comparisons across arbitrary git refs without installing the target environment. External tools such as `pip-licenses`, `cyclonedx-py`, `pip-audit`, or `syft` can supplement a deeper investigation, but they do not replace this git-ref diff over `pyproject.toml`, `uv.lock`, declared license files, and version-specific PyPI metadata.
 

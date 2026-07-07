@@ -695,14 +695,20 @@ def build_audit(repo: Path, base: str, head: str, skip_pypi: bool, pypi_timeout:
                     evidence,
                 ]
             )
+        change_label = "change" if len(resolved_change_names) == 1 else "changes"
         lines.extend(
             [
                 "",
                 "### Existing Resolved Package Version-Set Changes",
                 "",
+                "<details>",
+                f"<summary>{len(resolved_change_names)} package version-set {change_label} (click to expand)</summary>",
+                "",
                 _render_table(
                     ["Package", "Scope", "Base versions", "Head versions", "License metadata", "Evidence"], rows
                 ),
+                "",
+                "</details>",
             ]
         )
 
