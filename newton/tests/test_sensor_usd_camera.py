@@ -46,7 +46,7 @@ class TestSensorCameraRays(unittest.TestCase):
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
         camera.AddTranslateOp().Set(Gf.Vec3d(0.0, 1.0, 0.0))
 
-        got = utils.compute_usd_camera_transforms(camera).numpy()[0, 0]
+        got = utils.compute_camera_transforms_usd(camera).numpy()[0, 0]
         expected = wp.transform(wp.vec3(0.0), quat_between_axes(newton.Axis.Y, newton.Axis.Z)) * wp.transform(
             wp.vec3(0.0, 1.0, 0.0),
             wp.quat_identity(),
@@ -72,7 +72,7 @@ class TestSensorCameraRays(unittest.TestCase):
             wp.quat(0.0, 0.0, 0.70710678, 0.70710678),
         )
 
-        got = utils.compute_usd_camera_transforms(camera, xform=import_xform).numpy()[0, 0]
+        got = utils.compute_camera_transforms_usd(camera, xform=import_xform).numpy()[0, 0]
         expected = (
             import_xform
             * wp.transform(wp.vec3(0.0), quat_between_axes(newton.Axis.Y, newton.Axis.Z))
@@ -190,6 +190,13 @@ class TestSensorCameraRays(unittest.TestCase):
 
         np.testing.assert_allclose(got_prim, expected, atol=1e-6)
         np.testing.assert_allclose(got_camera, expected, atol=1e-6)
+
+    @unittest.skipIf(Usd is None, "Requires USD Python bindings")
+    def test_usd_pinhole_camera_rays_rejects_invalid_prim(self):
+        utils = _make_utils()
+
+        with self.assertRaisesRegex(TypeError, "Expected a valid UsdGeom.Camera prim"):
+            utils.compute_camera_rays_usd_pinhole(1, 1, Usd.Prim())
 
     def test_opencv_fisheye_distortion_solves_theta(self):
         utils = _make_utils()

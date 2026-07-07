@@ -122,7 +122,7 @@ attributes, read the attributes you use in your pipeline and pass the numeric va
 
    sensor = SensorTiledCamera(model)
    camera_rays = sensor.utils.compute_camera_rays_usd_pinhole(640, 480, usd_camera)
-   camera_transforms = sensor.utils.compute_usd_camera_transforms(usd_camera)
+   camera_transforms = sensor.utils.compute_camera_transforms_usd(usd_camera)
 
    color = sensor.utils.create_color_image_output(640, 480)
    sensor.update(

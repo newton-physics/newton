@@ -107,7 +107,7 @@ def _coerce_usd_time(time: Any) -> Any:
 
 def _normalize_usd_cameras(cameras: UsdCameraInput) -> list[Any]:
     try:
-        from pxr import UsdGeom
+        from pxr import Usd, UsdGeom
     except ImportError as e:
         raise ImportError("USD camera ray helpers require the pxr USD Python modules.") from e
 
@@ -121,15 +121,20 @@ def _normalize_usd_cameras(cameras: UsdCameraInput) -> list[Any]:
 
     usd_cameras = []
     for camera in camera_items:
-        if hasattr(camera, "GetProjectionAttr") and hasattr(camera, "GetPrim"):
+        if isinstance(camera, UsdGeom.Camera):
             usd_camera = camera
-        elif hasattr(camera, "IsA"):
-            usd_camera = UsdGeom.Camera(camera)
+            prim = usd_camera.GetPrim()
+        elif isinstance(camera, Usd.Prim):
+            prim = camera
+            if not prim.IsValid():
+                raise TypeError("Expected a valid UsdGeom.Camera prim.")
+            usd_camera = UsdGeom.Camera(prim)
         else:
             raise TypeError("Expected a UsdGeom.Camera or Usd.Prim.")
 
-        prim = usd_camera.GetPrim()
-        if not prim.IsValid() or not prim.IsA(UsdGeom.Camera):
+        if not prim.IsValid():
+            raise TypeError("Expected a valid UsdGeom.Camera prim.")
+        if not prim.IsA(UsdGeom.Camera):
             raise TypeError(f"Expected a UsdGeom.Camera prim, got {prim.GetPath()!r}.")
         usd_cameras.append(usd_camera)
 
@@ -188,7 +193,7 @@ def compute_camera_rays_usd_pinhole(
     return out_rays
 
 
-def compute_usd_camera_transforms(
+def compute_camera_transforms_usd(
     cameras: UsdCameraGridInput,
     *,
     world_count: int,
@@ -224,7 +229,7 @@ def compute_usd_camera_transforms(
     if is_per_world:
         if len(cameras) != world_count:
             raise ValueError(
-                f"compute_usd_camera_transforms: per-world cameras outer dimension {len(cameras)} "
+                f"compute_camera_transforms_usd: per-world cameras outer dimension {len(cameras)} "
                 f"must match world_count {world_count}."
             )
         rows = [_normalize_usd_cameras(row) for row in cameras]
@@ -232,7 +237,7 @@ def compute_usd_camera_transforms(
         for world_index, row in enumerate(rows):
             if len(row) != camera_count:
                 raise ValueError(
-                    f"compute_usd_camera_transforms: per-world cameras row {world_index} has "
+                    f"compute_camera_transforms_usd: per-world cameras row {world_index} has "
                     f"{len(row)} cameras, expected {camera_count}."
                 )
         transforms = [
@@ -382,6 +387,7 @@ def _solve_kannala_brandt_k3_theta(
 
 @wp.func
 def _fisheye_direction_from_theta(x: wp.float32, y: wp.float32, radius: wp.float32, theta: wp.float32):
+    # Valid fisheye rays are unit-length by construction; zero is reserved for invalid rays.
     if theta < 0.0:
         return wp.vec3f(0.0)
     if radius <= 1.0e-7:

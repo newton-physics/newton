@@ -877,7 +877,7 @@ class Utils:
 
         return out_rays
 
-    def compute_usd_camera_transforms(
+    def compute_camera_transforms_usd(
         self,
         cameras: camera_utils.UsdCameraGridInput,
         *,
@@ -917,7 +917,7 @@ class Utils:
         Returns:
             Camera-to-world transforms, shape ``(camera_count, world_count)``.
         """
-        return camera_utils.compute_usd_camera_transforms(
+        return camera_utils.compute_camera_transforms_usd(
             cameras,
             world_count=self.__render_context.world_count,
             device=self.__render_context.device,
