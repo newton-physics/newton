@@ -505,12 +505,8 @@ def _query_mesh_signs(
     parity = wp.mesh_query_point_sign_parity(mesh, p, max_dist)
     parity_sign[i] = parity.sign if parity.result else 0.0
 
-    sign = float(0.0)
-    face = int(0)
-    u = float(0.0)
-    v = float(0.0)
-    normal_hit = wp.mesh_query_point_sign_normal(mesh, p, max_dist, sign, face, u, v)
-    normal_sign[i] = sign if normal_hit else 0.0
+    normal = wp.mesh_query_point_sign_normal(mesh, p, max_dist)
+    normal_sign[i] = normal.sign if normal.result else 0.0
 
 
 @wp.kernel

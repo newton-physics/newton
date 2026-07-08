@@ -708,14 +708,10 @@ def get_distance_to_mesh_normal(mesh: wp.uint64, point: wp.vec3, max_dist: wp.fl
     (non-watertight) meshes, where neither parity nor winding numbers define
     a consistent inside. Needs no winding-number acceleration on the mesh.
     """
-    sign = float(0.0)
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    hit = wp.mesh_query_point_sign_normal(mesh, point, max_dist, sign, face_index, face_u, face_v)
-    if hit:
-        closest = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
-        return sign * wp.length(closest - point)
+    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist)
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return res.sign * wp.length(closest - point)
     return max_dist
 
 

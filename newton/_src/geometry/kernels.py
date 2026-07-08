@@ -903,16 +903,11 @@ def closest_edge_coordinate_cylinder(
 def mesh_query_point_sign(mesh: wp.uint64, point: wp.vec3, max_dist: float, sign_method: int):
     if sign_method == MeshSignMethod.PARITY:
         query = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
-        if query.result:
-            return True, query.sign, query.face, query.u, query.v
-        return False, 0.0, int(0), 0.0, 0.0
-
-    face_index = int(0)
-    face_u = float(0.0)
-    face_v = float(0.0)
-    sign = float(0.0)
-    hit = wp.mesh_query_point_sign_normal(mesh, point, max_dist, sign, face_index, face_u, face_v)
-    return hit, sign, face_index, face_u, face_v
+    else:
+        query = wp.mesh_query_point_sign_normal(mesh, point, max_dist)
+    if query.result:
+        return True, query.sign, query.face, query.u, query.v
+    return False, 0.0, int(0), 0.0, 0.0
 
 
 @wp.func
