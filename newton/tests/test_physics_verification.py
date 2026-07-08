@@ -531,7 +531,7 @@ def test_torque_free_precession(test, device, solver_fn):
     for a free rigid body). The body must also precess (the angular velocity
     direction changes) to ensure the test is meaningful.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     # Anisotropic inertia so the gyroscopic coupling between axes is non-trivial.
     link = builder.add_link(
         mass=1.0,

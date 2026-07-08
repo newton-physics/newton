@@ -1678,10 +1678,10 @@ def _rigid_reset_state_and_history(test, device):
         joint = builder.add_joint_fixed(parent=-1, child=body)
         builder.add_articulation([joint])
 
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     add_fixed_body(template, 0.0)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     add_fixed_body(builder, -2.0)  # Global head range.
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
@@ -1889,11 +1889,11 @@ def _rigid_reset_state_and_history(test, device):
 
 def _rigid_reset_replays_captured_step(test, device):
     """A reset issued after capture is consumed by the existing step graph."""
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(mass=1.0, is_kinematic=True)
     template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
@@ -1951,7 +1951,7 @@ def _rigid_reset_replays_captured_step(test, device):
 def _rigid_contact_reset_lifecycle(test, device):
     """A reset cold-starts only selected-world contacts, once, on the next refresh."""
     cfg = newton.ModelBuilder.ShapeConfig(ke=100.0, kd=0.0, mu=0.5)
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
         mass=1.0,
@@ -1959,7 +1959,7 @@ def _rigid_contact_reset_lifecycle(test, device):
     )
     template.add_shape_sphere(body, radius=0.1, cfg=cfg)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_ground_plane(cfg=cfg)
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))

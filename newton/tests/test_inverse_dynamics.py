@@ -912,7 +912,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
 
         # Build a single-world template containing one free body.
         def build_world() -> newton.ModelBuilder:
-            b = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+            b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
             body = b.add_link(
                 xform=identity_xform,
                 mass=m,
@@ -928,7 +928,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             b.add_articulation([j])
             return b
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         for _ in range(3):
             builder.add_world(build_world())
 
@@ -1026,7 +1026,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
 
         for jtype in ("free", "distance"):
             with self.subTest(joint_type=jtype):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
                 body = builder.add_link(
                     xform=identity_xform,
                     mass=m,
@@ -1139,7 +1139,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         neg_half = wp.transform(wp.vec3(-l_2c, 0.0, 0.0), wp.quat_identity())
         y_axis = wp.vec3(0.0, 1.0, 0.0)
 
-        builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
 
         b1 = builder.add_link(
             xform=identity_xform,
@@ -1249,7 +1249,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         I_negligible = wp.mat33(1e-6, 0.0, 0.0, 0.0, 1e-6, 0.0, 0.0, 0.0, 1e-6)
         for link_inertia in (I_negligible, *self.INERTIA_PASSES):
             with self.subTest(inertia=link_inertia):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
 
                 base = builder.add_link(
                     xform=identity_xform,
@@ -1344,7 +1344,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         for link_mass in (0.5, 50.0):
             with self.subTest(mass=link_mass):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
 
                 inner = builder.add_link(
                     xform=identity_xform,
@@ -1442,7 +1442,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         # linear ``omega x m * v_com`` correction.
         r_com = wp.vec3(0.5, 0.2, -0.3)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         body = builder.add_link(
             xform=identity_xform,
             mass=m,
@@ -1552,7 +1552,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         I_body = wp.mat33(I_diag[0], 0.0, 0.0, 0.0, I_diag[1], 0.0, 0.0, 0.0, I_diag[2])
         r_com = wp.vec3(0.5, 0.2, -0.3)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         body = builder.add_link(
             xform=identity_xform,
             mass=m,
@@ -1654,7 +1654,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         I_link = wp.mat33(2.0, 0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0)
         com_link = wp.vec3(0.1, 0.2, -0.15)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         b1 = builder.add_link(xform=identity_xform, mass=1.0, inertia=I_link, com=com_link)
         j1 = builder.add_joint_revolute(
             parent=-1,
@@ -1809,7 +1809,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
                 l1c = 0.5 + com_x
                 l2c = 0.5 + com_x
 
-                builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
                 b1 = builder.add_link(
                     xform=identity_xform,
                     mass=m,
@@ -2525,7 +2525,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         qx = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
         R = np.array(wp.quat_to_matrix(qx), dtype=np.float64).reshape(3, 3)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         link = builder.add_link(
             mass=m_mass,
             com=wp.vec3(0.0, 0.0, 0.0),
@@ -2617,7 +2617,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         ]
         for joint_name, add_joint in joint_cases:
             with self.subTest(joint=joint_name):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
                 body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=self.I_UNIT)
                 body2 = builder.add_link(mass=m_mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=I_local)
                 j_fixed = builder.add_joint_fixed(parent=-1, child=body1, parent_xform=identity, child_xform=identity)

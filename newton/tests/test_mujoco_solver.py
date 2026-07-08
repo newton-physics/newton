@@ -5627,7 +5627,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         """Runtime inertia coupling matches a model compiled with that coupling."""
 
         def build_model(inertia):
-            builder = newton.ModelBuilder(gravity=0.0)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             body = builder.add_link(
                 mass=0.1,
                 com=wp.vec3(0.0, 0.0, 0.0),

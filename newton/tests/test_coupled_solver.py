@@ -1611,7 +1611,7 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
 
 def _coupled_vbd_reset_preserves_pose_history(test, device):
     """Preserve VBD pose history across coupled masked/full resets and restarts."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     def add_free_body(*, is_kinematic=False):
         body = builder.add_link(
