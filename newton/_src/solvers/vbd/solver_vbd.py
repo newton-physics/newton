@@ -59,6 +59,7 @@ from .rigid_vbd_kernels import (
     init_body_body_contact_materials,
     init_body_body_contacts_avbd,
     init_body_particle_contacts,
+    reset_rigid_state,
     snapshot_body_body_contact_history,
     solve_rigid_body,
     step_body_body_contact_C0_lambda,
@@ -616,10 +617,20 @@ class SolverVBD(SolverBase, CouplingInterface):
         # Rigid-only AVBD state (used when SolverVBD integrates bodies)
         # -------------------------------------------------------------
         if not self.integrate_with_external_rigid_solver and model.body_count > 0:
-            # Previous-step body transforms, advanced by update_body_velocity() each step.
-            # Provides contact friction velocity and joint C0 feedforward for kinematic tracking.
-            # Kinematic bodies: set body_q.
-            # Dynamic teleportation: also set body_q_prev and body_qd.
+            # The first step's State establishes pose history; reset marks selected
+            # worlds for a new baseline. Final slot: entities without a world.
+            history_mask_size = model.world_count + 1
+            self._rigid_pose_rebaseline_mask = wp.ones(history_mask_size, dtype=wp.bool, device=self.device)
+            # Contact-reset state is consumed only by the warm-start refresh, so
+            # allocate it (and let the reset kernel write it) only when enabled.
+            if self.rigid_contact_history:
+                self._contact_history_reset_mask = wp.zeros(history_mask_size, dtype=wp.bool, device=self.device)
+                self._contact_history_reset_pending = wp.zeros(1, dtype=wp.int32, device=self.device)
+            else:
+                self._contact_history_reset_mask = None
+                self._contact_history_reset_pending = None
+
+            # Deterministic fallbacks for inspection before the first step overwrites them.
             self.body_q_prev = wp.clone(model.body_q, device=self.device)
             self._coupling_body_q_prev_snapshot = wp.clone(model.body_q, device=self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
@@ -788,14 +799,14 @@ class SolverVBD(SolverBase, CouplingInterface):
             return
 
         if dt <= 0.0:
-            wp.copy(dest=self.body_q_prev, src=state.body_q)
+            # A reset distributes state before its world mask selects histories.
+            if not iteration_restart:
+                wp.copy(dest=self.body_q_prev, src=state.body_q)
             return
 
         if iteration_restart:
             # Restore the beginning-of-iteration history after a previous solve advanced it.
             wp.copy(dest=self.body_q_prev, src=self._coupling_body_q_prev_snapshot)
-        else:
-            wp.copy(dest=self._coupling_body_q_prev_snapshot, src=self.body_q_prev)
 
         wp.launch(
             _update_vbd_body_input_state_kernel,
@@ -804,12 +815,18 @@ class SolverVBD(SolverBase, CouplingInterface):
                 float(dt),
                 self.model.body_flags,
                 int(BodyFlags.KINEMATIC),
+                self.model.body_world,
+                self._rigid_pose_rebaseline_mask,
                 state.body_q,
                 self.body_q_prev,
                 state.body_qd,
             ],
             device=self.device,
         )
+
+        if not iteration_restart:
+            # Snapshot pass-0 history so restarted iterations restore the same baseline.
+            wp.copy(dest=self._coupling_body_q_prev_snapshot, src=self.body_q_prev)
 
     def coupling_prepare_proxy_contacts(
         self,
@@ -1498,7 +1515,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         used by the previous refresh; do not run collision into the contacts
         buffer between refreshes. Passing newly collided contacts while update is
         disabled can mismatch stale per-body contact lists with current contact
-        rows.
+        rows. For the same reason, do not change a body's solvability (mass or
+        kinematic flag) while update is disabled: the per-body lists depend on
+        effective inverse mass and are not rebuilt until the next refresh.
 
         Joint AVBD maintenance (C0 snapshot, lambda decay)
         runs every step regardless of this flag via step_joint_C0_lambda().
@@ -1643,6 +1662,145 @@ class SolverVBD(SolverBase, CouplingInterface):
             state_in, state_out, dt, apply_stick_deadzone=contacts is not None and self.rigid_contact_hard
         )
         self._finalize_particles(state_out, dt)
+
+    @override
+    def reset(
+        self,
+        state: State,
+        world_mask: wp.array[wp.bool] | None = None,
+        flags: StateFlags | int | None = None,
+    ) -> None:
+        """Reset rigid solver history and optional body state for selected worlds.
+
+        Body fields selected by *flags* are copied from the model defaults.
+        Joint penalty is restored to its minimum; joint C0 and AVBD dual history
+        is zeroed immediately. Pose and enabled-cable friction history (curvature,
+        stress, and increment) are rebaselined together from the next :meth:`step`
+        input pose, after any intervening state edits or forward kinematics.
+        Selected-world contact warm-start is cold-started when fresh rigid contacts
+        are next processed. Internal rigid history is reset regardless of *flags*.
+        When an external solver integrates the bodies, reset performs no rigid
+        mutation; ``state`` and ``world_mask`` validation and particle warnings still
+        apply, but body State arrays are not accessed or validated.
+
+        ``BODY_Q`` / ``BODY_QD`` copy ``model.body_q`` / ``model.body_qd`` into
+        *state*; they do not restore a previously supplied state. A requested field
+        is skipped if its *state* array is ``None``. If your initial pose differs
+        from the model defaults, pass ``flags=0`` and author the pose any time
+        before the next step; reset then preserves it and only clears VBD history.
+        ``JOINT_Q`` / ``JOINT_QD`` are ignored (VBD uses maximal ``body_q`` /
+        ``body_qd``); to reset from joint coordinates, run :func:`~newton.eval_fk`
+        after reset so the resulting ``body_q`` supersedes reset's model copy.
+        Particle flags are unsupported and warn only if the model contains
+        particles (``flags=None`` means ``ALL``); particle and body-particle history
+        is unchanged.
+
+        Reset does not run collision detection: after moving bodies, regenerate
+        contacts and let the next :meth:`step` refresh rigid contact state. The next
+        rigid :meth:`step` consumes the pose and cable rebaseline even when
+        ``contacts=None``, so author the final pose (or run :func:`~newton.eval_fk`)
+        before stepping; contact invalidation instead waits for a fresh refresh.
+        With ``rigid_contact_history=True``, only ``contact_matching="latest"``
+        is supported; VBD cannot invalidate sticky matcher state owned by the
+        collision pipeline. Reset does not change ``set_rigid_history_update()``;
+        leave rigid-history refresh enabled for the next contact-bearing step.
+        Reusing contacts (``set_rigid_history_update(False)``) is unsupported
+        only while contact invalidation is still pending.
+
+        Args:
+            state: The simulation state to reset (modified in place).
+            world_mask: One-dimensional Warp boolean mask on the solver device.
+                Shape ``(world_count,)`` selects local worlds only. Shape
+                ``(world_count + 1,)`` additionally uses the final entry for
+                entities not assigned to a world (``world == -1``). ``None``
+                selects all local and unassigned entities.
+            flags: :class:`~newton.StateFlags` (or ``int``) selecting which body
+                fields to copy from the model defaults. VBD honors
+                :attr:`~newton.StateFlags.BODY_Q` and
+                :attr:`~newton.StateFlags.BODY_QD`; ``None`` requests all flags.
+        """
+        if state is None:
+            raise ValueError("'state' argument is required.")
+        model = self.model
+        if world_mask is not None:
+            if not isinstance(world_mask, wp.array) or world_mask.ndim != 1 or world_mask.dtype != wp.bool:
+                raise ValueError("world_mask must be a one-dimensional Warp boolean array.")
+            mask_length = world_mask.shape[0]
+            if mask_length not in (model.world_count, model.world_count + 1):
+                raise ValueError(
+                    f"world_mask has length {mask_length}, expected {model.world_count} or {model.world_count + 1}."
+                )
+            if world_mask.device != self.device:
+                raise ValueError(f"world_mask is on device {world_mask.device}, expected solver device {self.device}.")
+
+        flags_value = int(StateFlags.ALL if flags is None else flags)
+
+        # Only requested BODY flags reach the launch as actionable arrays; everything
+        # else stays None so an unrequested (possibly wrong-device) State array never
+        # binds, and a supplied array is itself the kernel's reset signal.
+        internal_body_reset = not self.integrate_with_external_rigid_solver and model.body_count > 0
+        body_q = None
+        body_qd = None
+        if internal_body_reset:
+            if flags_value & int(StateFlags.BODY_Q) and state.body_q is not None:
+                if state.body_q.device != self.device:
+                    raise ValueError(
+                        f"state.body_q is on device {state.body_q.device}, expected solver device {self.device}."
+                    )
+                body_q = state.body_q
+            if flags_value & int(StateFlags.BODY_QD) and state.body_qd is not None:
+                if state.body_qd.device != self.device:
+                    raise ValueError(
+                        f"state.body_qd is on device {state.body_qd.device}, expected solver device {self.device}."
+                    )
+                body_qd = state.body_qd
+
+        if model.particle_count > 0 and (flags_value & (int(StateFlags.PARTICLE_Q) | int(StateFlags.PARTICLE_QD))):
+            warnings.warn(
+                "SolverVBD.reset() does not yet support particle resets; StateFlags.PARTICLE_Q and "
+                "StateFlags.PARTICLE_QD are ignored; particle and body-particle solver history is unchanged.",
+                stacklevel=2,
+            )
+
+        if not internal_body_reset:
+            return
+
+        # Entity-parallel launch over the widest lane: world slots (+1 global),
+        # joints, and bodies (bodies only when copying model-default body state).
+        reset_dim = max(
+            model.world_count + 1,
+            model.joint_count,
+            model.body_count if (body_q is not None or body_qd is not None) else 0,
+        )
+        wp.launch(
+            kernel=reset_rigid_state,
+            dim=reset_dim,
+            inputs=[
+                world_mask,
+                world_mask is None,
+                model.world_count,
+                model.body_world,
+                model.joint_world,
+                self.joint_constraint_start,
+                self.joint_constraint_dim,
+                model.body_q,
+                model.body_qd,
+                self.joint_penalty_k_min,
+            ],
+            outputs=[
+                body_q,
+                body_qd,
+                self.joint_penalty_k,
+                self.joint_C0_lin,
+                self.joint_C0_ang,
+                self.joint_lambda_lin,
+                self.joint_lambda_ang,
+                self._rigid_pose_rebaseline_mask,
+                self._contact_history_reset_mask,
+                self._contact_history_reset_pending,
+            ],
+            device=self.device,
+        )
 
     def _snapshot_rigid_contact_history(self, contacts: Contacts | None):
         """Write solved contact state for next frame's match-index warm-start."""
@@ -1852,6 +2010,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                             contacts.rigid_contact_shape0,
                             contacts.rigid_contact_shape1,
                             model.shape_body,
+                            self.body_inv_mass_effective,
                             self.body_body_contact_buffer_pre_alloc,
                         ],
                         outputs=[
@@ -1908,6 +2067,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                                 self.rigid_contact_hard,
                                 contacts.rigid_contact_match_index,
                                 history,
+                                self._contact_history_reset_pending,
+                                self._contact_history_reset_mask,
+                                model.shape_world,
+                                model.shape_body,
+                                model.body_world,
                                 self.rigid_contact_k_start_value,
                             ],
                             outputs=[
@@ -1945,6 +2109,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                             device=self.device,
                         )
                         self.body_body_contact_lambda.zero_()
+
+                    # A fresh refresh supersedes the prior contact rows, so consume the
+                    # pending reset (contact-reset state exists only with history on).
+                    if self.rigid_contact_history and contact_launch_dim > 0:
+                        self._contact_history_reset_mask.zero_()
+                        self._contact_history_reset_pending.zero_()
 
             # Per-step k decay + lambda decay + C0 (body_q is still collide frame here).
             if contacts is not None and contacts.rigid_contact_max > 0:
@@ -2022,6 +2192,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dt,
                     model.gravity,
                     model.body_world,
+                    self._rigid_pose_rebaseline_mask,
                     body_f_for_integration,
                     model.body_com,
                     model.body_inertia,
@@ -2031,6 +2202,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     state_in.body_qd,  # input/output
                 ],
                 outputs=[
+                    self.body_q_prev,  # rebaselined for flagged worlds (first step / reset)
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
@@ -2076,6 +2248,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     inputs=[
                         model.joint_type,
                         model.joint_enabled,
+                        model.joint_world,
+                        self._rigid_pose_rebaseline_mask,
                         model.joint_parent,
                         model.joint_child,
                         model.joint_X_p,
@@ -2097,6 +2271,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dim=model.joint_count,
                     device=self.device,
                 )
+
+            # The forward step and any enabled cable update have consumed the mask.
+            self._rigid_pose_rebaseline_mask.zero_()
 
         # ---------------------------
         # Body-particle interaction
@@ -2123,6 +2300,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         contacts.soft_contact_count,
                         contacts.soft_contact_shape,
                         model.shape_body,
+                        self.body_inv_mass_effective,
                         self.body_particle_contact_buffer_pre_alloc,
                     ],
                     outputs=[
@@ -2675,11 +2853,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         Args:
             body_q: Current body transforms (world frame),
                 typically ``state_out.body_q`` after a ``step()`` call.
-            body_q_prev: Previous body transforms (world frame)
-                corresponding to the start of the step. The caller must snapshot
-                ``solver.body_q_prev`` **before** calling ``step()``, because
-                ``step()`` advances the solver's internal ``body_q_prev`` to the
-                end-of-step pose.
+            body_q_prev: Effective previous-pose history used by the step (world frame).
+                Snapshot ``solver.body_q_prev`` before :meth:`step` (it is advanced
+                after the step). On a first or reset step, overwrite each rebaselined
+                row with that step's input ``body_q`` so its reported force matches the
+                solve. For externally integrated bodies, pass the external solver's
+                previous transforms.
             contacts: Contact data buffers containing rigid
                 contact geometry/material references. If None, the function
                 returns default zero/sentinel outputs.

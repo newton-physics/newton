@@ -523,6 +523,71 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
     test.assertGreater(pos_change, 0.1, "Bodies should have moved")
 
 
+def test_torque_free_precession(test, device, solver_fn):
+    """Torque-free anisotropic body on a D6 joint with three angular DOFs.
+
+    With no applied torque and no gravity, angular momentum is conserved in the
+    world frame: ``L = R(t) I_body R(t)^T omega(t) = const`` (Euler's equations
+    for a free rigid body). The body must also precess (the angular velocity
+    direction changes) to ensure the test is meaningful.
+    """
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    # Anisotropic inertia so the gyroscopic coupling between axes is non-trivial.
+    link = builder.add_link(
+        mass=1.0,
+        com=wp.vec3(0.0, 0.0, 0.0),
+        inertia=wp.mat33(0.2, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.4),
+    )
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=link,
+        angular_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y), cfg(axis=newton.Axis.Z)],
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([j])
+    model = builder.finalize(device=device)
+
+    solver = solver_fn(model)
+    state_0 = model.state()
+    state_1 = model.state()
+
+    # Non-zero angular velocity on every DOF. Joint position stays at zero; for
+    # three angular axes the Coriolis bias projects onto the DOFs already there.
+    omega0 = np.array([0.7, -0.5, 0.9], dtype=np.float32)
+    qd = state_0.joint_qd.numpy()
+    qd[:3] = omega0
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    I_body = model.body_inertia.numpy()[0]
+
+    def angular_momentum_world(state):
+        bq = state.body_q.numpy()[0]
+        omega = state.body_qd.numpy()[0, 3:6]
+        R = np.array(wp.quat_to_matrix(wp.quat(*bq[3:7].tolist()))).reshape(3, 3)
+        return (R @ I_body @ R.T) @ omega
+
+    L0 = angular_momentum_world(state_0)
+    quat_0 = state_0.body_q.numpy()[0, 3:7].copy()
+    test.assertGreater(np.linalg.norm(L0), 0.1, "Initial angular momentum should be nonzero")
+
+    sim_dt = 1e-2
+    for _ in range(20):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, None, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    L_drift = np.linalg.norm(angular_momentum_world(state_0) - L0) / np.linalg.norm(L0)
+    test.assertLess(L_drift, 5e-3, f"Angular momentum drift: {L_drift:.6e}")
+
+    # Sanity: the body must actually precess over the interval.
+    quat_f = state_0.body_q.numpy()[0, 3:7]
+    rotation_angle = 2.0 * np.arccos(min(abs(float(np.dot(quat_0, quat_f))), 1.0))
+    test.assertGreater(rotation_angle, 0.1, f"Body should have rotated, got {rotation_angle:.4f} rad")
+
+
 # Coulomb friction is covered by test_rigid_friction_ramp.py (mu, theta) grid.
 
 
@@ -1498,6 +1563,18 @@ for device in devices:
             sim_dt=3e-4 if solver_name in ("xpbd", "semi_implicit") else 1e-3,
             sphere_radius=0.1 if solver_name == "semi_implicit" else 0.01,
         )
+
+        # Torque-free precession exercises the articulated rigid-body dynamics
+        # exactly (rigid joints, no soft constraints), so restrict it to the
+        # exact generalized-coordinate solvers.
+        if solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
+            add_function_test(
+                TestPhysicsVerification,
+                f"test_torque_free_precession_{solver_name}",
+                test_torque_free_precession,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
 
         if solver_name == "semi_implicit":
             continue

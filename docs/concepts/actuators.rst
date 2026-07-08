@@ -195,19 +195,42 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
+Neural-Network Checkpoints
+--------------------------
+
+Neural-network controllers (:class:`ControllerNeuralMLP`,
+:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX
+checkpoints (``.onnx``) run on Warp-NN's Warp-backed runtime, while Torch
+checkpoints use the Torch backend and require PyTorch.
+
+Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
+Checkpoint metadata (scales and network configuration) is stored as a JSON
+extra file:
+
+.. code-block:: python
+
+   import json
+   import torch
+
+   exported = torch.export.export(net, example_inputs)
+   metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
+   torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
+
+:class:`ControllerNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
+the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
+may omit them: they contain the original module, whose ``torch.nn.LSTM``
+submodule is inspected directly, while ``torch.export`` flattens the network
+into a computation graph that no longer exposes it.
+
 Differentiability and Graph Capture
 -----------------------------------
 
 Whether an actuator supports differentiability and CUDA graph capture depends on
 its controller.  :class:`ControllerPD` and :class:`ControllerPID` are fully
-graphable.  Neural-network controllers (:class:`ControllerNeuralMLP`,
-:class:`ControllerNeuralLSTM`) support two checkpoint backends: ONNX checkpoints
-use Warp-NN's Warp-backed runtime and are graphable, while TorchScript
-checkpoints (``.pt`` / ``.pth``) use the Torch backend, require PyTorch, and are
-not graphable due to framework interop overhead.
-
-:meth:`Actuator.is_graphable` returns ``True`` when all components can be
-captured in a CUDA graph.
+graphable.  For neural-network controllers it depends on the checkpoint
+backend: ONNX checkpoints are graphable, while Torch checkpoints are not due
+to framework interop overhead.  :meth:`Actuator.is_graphable` returns ``True``
+when all components can be captured in a CUDA graph.
 
 Available Components
 --------------------

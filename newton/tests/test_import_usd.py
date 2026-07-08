@@ -3264,11 +3264,11 @@ def PhysicsRevoluteJoint "Joint2"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_margin_gap_combined_conversion(self):
-        """Test MuJoCo->Newton conversion when both mjc:margin and mjc:gap are authored.
+        """Test legacy MuJoCo->Newton conversion via legacy_margin_gap=True.
 
-        Verifies that newton_margin = mjc_margin - mjc_gap when mjc:margin is
-        explicitly authored. Also tests the case where only mjc:margin is authored
-        (gap defaults to 0, so no conversion effect).
+        Verifies that newton_margin = mjc_margin - mjc_gap when legacy_margin_gap
+        is enabled.  Also tests the case where only mjc:margin is authored
+        (gap defaults to 0, so no subtraction effect).
         """
         from pxr import Sdf, Usd, UsdPhysics
 
@@ -3284,6 +3284,7 @@ def PhysicsRevoluteJoint "Joint2"
         col1.GetAttribute("size").Set(0.2)
         col1.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.5)
         col1.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Double).Set(0.2)
+        col1.CreateAttribute("newton:contactMargin", Sdf.ValueTypeNames.Double).Set(0.7)
 
         # Body 2: only mjc:margin authored (gap defaults to 0)
         prim2 = stage.DefinePrim("/Body2", "Xform")
@@ -3299,11 +3300,15 @@ def PhysicsRevoluteJoint "Joint2"
         joint.GetBody1Rel().SetTargets(["/Body2"])
         joint.GetAxisAttr().Set("Z")
 
-        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            legacy_margin_gap=True,
+        )
         model = builder.finalize()
 
         shape_margin = model.shape_margin.numpy()
@@ -3314,7 +3319,7 @@ def PhysicsRevoluteJoint "Joint2"
             abs(float(shape_margin[i]) - 0.3) < 1e-4 and abs(float(shape_gap[i]) - 0.2) < 1e-4
             for i in range(model.shape_count)
         )
-        self.assertTrue(found_combined, "Expected margin=0.3, gap=0.2 from combined conversion")
+        self.assertTrue(found_combined, "Expected margin=0.3, gap=0.2 from combined legacy conversion")
 
         # Body 2: mjc_margin=0.4, mjc_gap not authored -> gap defaults to 0.0
         # from SchemaResolverMjc, so newton_margin = 0.4 - 0 = 0.4, gap = 0.0
@@ -3323,6 +3328,50 @@ def PhysicsRevoluteJoint "Joint2"
             for i in range(model.shape_count)
         )
         self.assertTrue(found_margin_only, "Expected margin=0.4 with gap=0.0 when only margin authored")
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],
+            legacy_margin_gap=True,
+        )
+        shape_idx = builder.shape_label.index("/Body1/Collision1")
+        self.assertAlmostEqual(builder.shape_margin[shape_idx], 0.7)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_margin_gap_identity_import(self):
+        """USD import of mjc:margin and mjc:gap is identity under MuJoCo 3.9
+        semantics (margin/gap mean the same as Newton's shape_margin/shape_gap)."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = stage.DefinePrim("/Body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(body)
+        UsdPhysics.ArticulationRootAPI.Apply(body)
+        col = stage.DefinePrim("/Body/Collision", "Cube")
+        UsdPhysics.CollisionAPI.Apply(col)
+        col.GetAttribute("size").Set(0.2)
+        col.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.5)
+        col.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.2)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        found = any(
+            abs(float(shape_margin[i]) - 0.5) < 1e-5 and abs(float(shape_gap[i]) - 0.2) < 1e-5
+            for i in range(model.shape_count)
+        )
+        self.assertTrue(found, "Expected identity: margin=0.5, gap=0.2 (MuJoCo 3.9 default semantics)")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_actuator_mode_inference_from_drive(self):
@@ -6112,6 +6161,75 @@ def Xform "Articulation" (
             np.zeros((3, 3), dtype=np.float32),
             atol=1e-6,
         )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_com_matches_scaled_collider_frame(self):
+        """Authored body COM uses the same scaled frame as collider offsets."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        cases = (
+            ("Nonuniform", (2.0, 3.0, 4.0), 45.0, (0.3, 0.0, 0.0), True),
+            ("Negative", (-2.0, 3.0, 4.0), 30.0, (0.3, 0.2, 0.1), False),
+        )
+        mass_cases = (("Complete", True), ("Partial", False))
+
+        for case_name, scale, angle, com, include_partial in cases:
+            parent = UsdGeom.Xform.Define(stage, f"/World/{case_name}")
+            parent.AddScaleOp().Set(Gf.Vec3d(*scale))
+            for mass_name, author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
+                body_path = f"/World/{case_name}/{mass_name}"
+                body = UsdGeom.Xform.Define(stage, body_path)
+                body.AddRotateZOp().Set(angle)
+                body_prim = body.GetPrim()
+                UsdPhysics.RigidBodyAPI.Apply(body_prim)
+                mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+                mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(*com))
+                if author_all_mass_properties:
+                    mass_api.CreateMassAttr().Set(1.0)
+                    mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.01))
+
+                collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                collider.AddTranslateOp().Set(Gf.Vec3d(*com))
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        for case_name, _scale, _angle, _com, include_partial in cases:
+            for mass_name, _author_all_mass_properties in mass_cases if include_partial else mass_cases[:1]:
+                with self.subTest(case=case_name, mass=mass_name):
+                    body_path = f"/World/{case_name}/{mass_name}"
+                    body_idx = result["path_body_map"][body_path]
+                    shape_idx = result["path_shape_map"][f"{body_path}/Collider"]
+                    shape_pos = builder.shape_transform[shape_idx].p
+                    np.testing.assert_allclose(builder.body_com[body_idx], shape_pos, atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_com_survives_failed_mass_computation(self):
+        """Authored body COM keeps descriptor scale when mass properties cannot be computed."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        parent = UsdGeom.Xform.Define(stage, "/World/Scaled")
+        parent.AddScaleOp().Set(Gf.Vec3d(2.0))
+
+        body = UsdGeom.Xform.Define(stage, "/World/Scaled/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+        mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.3, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "zero mass and zero inertia"):
+            result = builder.add_usd(stage)
+
+        body_idx = result["path_body_map"]["/World/Scaled/Body"]
+        np.testing.assert_allclose(builder.body_com[body_idx], [0.6, 0.0, 0.0], atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
