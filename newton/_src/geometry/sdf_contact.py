@@ -21,13 +21,22 @@ from .contact_reduction_global import (
 )
 from .kernels import MeshSignMethod, mesh_query_point_sign, resolve_mesh_sign_method
 
-# Generous upper bound (mesh-local units) on the closest-point search for the
-# mesh sign queries below. It is not a physical contact range: culling uses
-# tight ``1.01 * threshold`` bounds, and these queries only run at points the
-# narrow phase already placed near the surface, so the value is never binding.
+# Upper bound (mesh-local units) on the closest-point search for the mesh sign
+# queries below. It is not a physical contact range: culling uses the tight
+# ``_SDF_QUERY_RADIUS_SLACK * threshold`` bounds, and these queries only run at
+# points the narrow phase already placed near the surface, so the bound is
+# never binding. The queries operate in mesh-local coordinates (per-shape scale
+# is divided out), so there is no global unit to tie it to; it is simply chosen
+# orders of magnitude beyond any mesh extent under common unit conventions.
 # Kept finite (rather than ``wp.inf``) so the no-hit branches return a
 # well-behaved sentinel distance instead of propagating infinity into contacts.
-_MESH_QUERY_MAX_DIST = 1000.0
+_MESH_QUERY_MAX_DIST = 1.0e6
+
+# Search-radius slack over the narrow-band culling threshold for midpoint SDF
+# queries. Slightly exceeding the threshold guarantees points right at the
+# threshold are classified by a real closest-point query instead of falling
+# into the no-hit sentinel branch.
+_SDF_QUERY_RADIUS_SLACK = 1.01
 
 # Launch-side block size for the mesh-SDF narrow-phase kernels. Must match
 # the ``block_dim`` used in ``wp.launch_tiled`` for
@@ -1135,7 +1144,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 midpoint_sdf = sample_sdf_using_mesh(
                                     mesh_id_sdf,
                                     bsphere_center,
-                                    1.01 * threshold,
+                                    _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
                                 )
                                 add_edge = midpoint_sdf <= threshold
@@ -1544,7 +1553,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 midpoint_sdf = sample_sdf_using_mesh(
                                     mesh_id_sdf,
                                     bsphere_center,
-                                    1.01 * threshold,
+                                    _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
                                 )
                                 add_edge = midpoint_sdf <= threshold
