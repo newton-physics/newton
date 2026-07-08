@@ -195,7 +195,7 @@ def _step_sim(model, cp, solver, s0, s1, ctrl, dt=0.005, substeps=1):
 
 
 class _SimLoop:
-    """Run a simulation loop, using CUDA graph capture when available."""
+    """Run a simulation loop, using graph capture when available."""
 
     def __init__(self, model, cp, solver, s0, s1, ctrl, dt=0.005, substeps=1):
         self.model = model
@@ -221,7 +221,7 @@ class _SimLoop:
     def run(self, steps):
         """Run *steps* frames, returning the final state pair."""
         device = self.model.device
-        use_graph = device is not None and device.is_cuda and wp.is_mempool_enabled(device)
+        use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
 
         if use_graph:
             # Warmup (allocates internal buffers so graph capture sees a stable set).

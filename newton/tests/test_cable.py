@@ -113,7 +113,7 @@ def _assert_surface_attachment(
 
 
 # -----------------------------------------------------------------------------
-# Device-side time kernels (for CUDA graph capture with kinematic bodies)
+# Device-side time kernels (for graph capture with kinematic bodies)
 # -----------------------------------------------------------------------------
 
 
@@ -250,12 +250,12 @@ def _drive_gripper_boxes_graph_kernel(
 
 
 # -----------------------------------------------------------------------------
-# Graph-capture helper
+# Graph capture helper
 # -----------------------------------------------------------------------------
 
 
 def _run_sim_loop(simulate_fn, num_steps, device):
-    """Run a simulation loop with optional CUDA graph capture.
+    """Run a simulation loop with optional graph capture.
 
     ``simulate_fn()`` must be graph-capturable: no host-side branching, no
     scalar time arguments — use device-side ``sim_time`` arrays and the
@@ -264,9 +264,9 @@ def _run_sim_loop(simulate_fn, num_steps, device):
     the same orientation it received them, e.g. by performing an even number of
     ``state0, state1 = state1, state0`` swaps.
     """
-    use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+    use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
     graph = None
-    if use_cuda_graph:
+    if use_graph:
         with wp.ScopedCapture(device) as capture:
             simulate_fn()
         graph = capture.graph
