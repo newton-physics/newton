@@ -882,9 +882,9 @@ class ModelBuilder:
         Args:
             up_axis: The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity: Default gravity vector. The deprecated scalar form applies
-                acceleration along ``up_axis``. If omitted, gravity defaults to
-                -9.81 along ``up_axis``.
+            gravity: Default gravity vector [m/s^2]. The deprecated scalar form
+                applies acceleration along ``up_axis``. If omitted, gravity
+                defaults to -9.81 along ``up_axis``.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
@@ -1247,13 +1247,14 @@ class ModelBuilder:
         """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        """Up axis used by geometry helpers and the deprecated scalar gravity API."""
-        self._gravity: float | wp.vec3 = -9.81
+        """Up axis used by geometry helpers and for resolving default or scalar gravity."""
+        self._gravity: float | wp.vec3 | None = None
+        """Explicitly set gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
         if gravity is not None:
             self._set_gravity(gravity, stacklevel=3)
 
         self.world_gravity: list[Vec3] = []
-        """Per-world gravity vectors retained until :meth:`finalize <ModelBuilder.finalize>` populates
+        """Per-world gravity vectors [m/s^2] retained until :meth:`finalize <ModelBuilder.finalize>` populates
         :attr:`Model.gravity`."""
 
         self.rigid_gap: float = 0.1
@@ -2040,10 +2041,11 @@ class ModelBuilder:
 
     @property
     def gravity(self) -> float | wp.vec3:
-        """Default gravity vector, or a deprecated scalar along :attr:`up_axis`."""
+        """Default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
         if np.isscalar(self._gravity):
             warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self._gravity
+            return self._gravity
+        return self._gravity_as_vector()
 
     @gravity.setter
     def gravity(self, value: float | Vec3) -> None:
@@ -2060,9 +2062,11 @@ class ModelBuilder:
         self._gravity = wp.vec3(*gravity)
 
     def _gravity_as_vector(self) -> wp.vec3:
-        if np.isscalar(self._gravity):
-            return wp.vec3(*(component * self._gravity for component in self.up_vector))
-        return self._gravity
+        """Resolve gravity to a fresh vector so callers never alias builder state."""
+        if self._gravity is None or np.isscalar(self._gravity):
+            magnitude = -9.81 if self._gravity is None else self._gravity
+            return wp.vec3(*(component * magnitude for component in self.up_vector))
+        return wp.vec3(*self._gravity)
 
     @property
     def current_world(self) -> int:
@@ -3085,8 +3089,8 @@ class ModelBuilder:
                 a default label "world_{index}" will be generated.
             attributes: Optional custom attributes to associate
                 with this world for later use.
-            gravity: Optional gravity vector for this world. If None, the world
-                uses the builder's default :attr:`gravity`.
+            gravity: Optional gravity vector [m/s^2] for this world. If None,
+                the world uses the builder's default :attr:`gravity`.
 
         Raises:
             RuntimeError: If called when already inside a world context
@@ -3127,7 +3131,7 @@ class ModelBuilder:
 
         # Initialize this world's gravity
         if gravity is not None:
-            self.world_gravity.append(gravity)
+            self.world_gravity.append(wp.vec3(*gravity))
         else:
             self.world_gravity.append(self._gravity_as_vector())
 

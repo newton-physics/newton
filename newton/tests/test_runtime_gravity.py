@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -38,10 +39,30 @@ class TestRuntimeGravity(unittest.TestCase):
     def test_builder_default_gravity_follows_up_axis(self):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder.up_axis = newton.Axis.X
-        with self.assertWarnsRegex(DeprecationWarning, "Scalar ModelBuilder.gravity"):
-            self.assertEqual(builder.gravity, -9.81)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            np.testing.assert_allclose(builder.gravity, (-9.81, 0.0, 0.0))
         builder.begin_world()
         np.testing.assert_allclose(builder.world_gravity[0], (-9.81, 0.0, 0.0))
+
+    def test_world_gravity_entries_not_aliased(self):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -5.0))
+        builder.begin_world()
+        builder.end_world()
+        builder.begin_world()
+        builder.end_world()
+        self.assertIsNot(builder.world_gravity[0], builder.world_gravity[1])
+        builder.world_gravity[0][2] = 42.0
+        np.testing.assert_allclose(builder.world_gravity[1], (0.0, 0.0, -5.0))
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -5.0))
+
+        source = newton.ModelBuilder(gravity=(0.0, 0.0, -3.0))
+        dest = newton.ModelBuilder()
+        dest.begin_world()
+        dest.add_builder(source)
+        dest.end_world()
+        dest.world_gravity[0][2] = 7.0
+        np.testing.assert_allclose(source.gravity, (0.0, 0.0, -3.0))
 
     def test_builder_rejects_invalid_gravity_vector(self):
         with self.assertRaisesRegex(ValueError, "shape \\(3,\\)"):
