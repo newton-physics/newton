@@ -3,7 +3,6 @@
 
 import unittest
 from enum import IntFlag, auto
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -20,7 +19,6 @@ from newton._src.geometry.kernels import (
     mesh_sdf,
     resolve_mesh_sign_method,
 )
-from newton._src.geometry.sdf_utils import SDF
 from newton._src.sim.collide import CollisionPipeline, _compute_per_world_shape_pairs_max, _estimate_rigid_contact_max
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
@@ -528,12 +526,11 @@ def _query_mesh_sdf(
 
 @wp.kernel
 def _resolve_mesh_sign_methods(
-    shape_flags: wp.array[wp.int32],
     mesh_properties: wp.array[wp.int32],
     methods: wp.array[wp.int32],
 ):
     i = wp.tid()
-    methods[i] = resolve_mesh_sign_method(shape_flags[i], mesh_properties[i])
+    methods[i] = resolve_mesh_sign_method(mesh_properties[i])
 
 
 @wp.func
@@ -772,16 +769,13 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
             wp.array([int(GeoType.CONVEX_MESH)], dtype=wp.int32, device=device),
             wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
             wp.array([mesh.id], dtype=wp.uint64, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
+            # Tagged watertight so the sign method resolves to parity.
+            wp.array([int(MeshProperties.WATERTIGHT)], dtype=wp.int32, device=device),
             wp.array([-1], dtype=wp.int32, device=device),
             0.0,
             wp.array([0.0], dtype=wp.float32, device=device),
             1,
-            wp.array(
-                [int(ShapeFlags.COLLIDE_PARTICLES | ShapeFlags.MESH_SIGN_PARITY)],
-                dtype=wp.int32,
-                device=device,
-            ),
+            wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.empty(0, dtype=HeightfieldData, device=device),
             wp.empty(0, dtype=wp.float32, device=device),
@@ -866,12 +860,6 @@ def test_parity_sign_accuracy_exceeds_normal_query(test, device):
     )
 
 
-# A reserved mesh sign-method field value (the slot after PARITY, earmarked for
-# a future WINDING method): rejected at validation, and resolved to the safe
-# automatic behavior if it reaches a kernel.
-_RESERVED_MESH_SIGN_FLAGS = 0b011 << 5
-
-
 class _CountingMesh(newton.Mesh):
     """Mesh subclass that counts reads of its ``is_watertight`` property."""
 
@@ -924,96 +912,17 @@ def test_visual_only_mesh_properties_skip_watertight_query(test, device):
     test.assertEqual(mesh.watertight_query_count, 0)
 
 
-def test_mesh_sign_flags_override_mesh_properties(test, device):
-    shape_flags = wp.array(
-        [
-            int(ShapeFlags.MESH_SIGN_PARITY),
-            int(ShapeFlags.MESH_SIGN_NORMAL),
-            0,
-            0,
-            _RESERVED_MESH_SIGN_FLAGS,
-            _RESERVED_MESH_SIGN_FLAGS,
-        ],
-        dtype=wp.int32,
-        device=device,
-    )
-    mesh_properties = wp.array(
-        [
-            0,
-            int(MeshProperties.WATERTIGHT),
-            0,
-            int(MeshProperties.WATERTIGHT),
-            0,
-            int(MeshProperties.WATERTIGHT),
-        ],
-        dtype=wp.int32,
-        device=device,
-    )
-    methods = wp.empty(6, dtype=wp.int32, device=device)
+def test_resolve_mesh_sign_method_from_properties(test, device):
+    """The runtime sign method is a pure function of the stored mesh
+    properties: parity for watertight meshes, pseudo-normal otherwise."""
+    mesh_properties = wp.array([0, int(MeshProperties.WATERTIGHT)], dtype=wp.int32, device=device)
+    methods = wp.empty(2, dtype=wp.int32, device=device)
 
-    wp.launch(_resolve_mesh_sign_methods, dim=6, inputs=[shape_flags, mesh_properties, methods], device=device)
+    wp.launch(_resolve_mesh_sign_methods, dim=2, inputs=[mesh_properties, methods], device=device)
 
     methods_np = methods.numpy()
-    test.assertEqual(int(methods_np[0]), MeshSignMethod.PARITY)
-    test.assertEqual(int(methods_np[1]), MeshSignMethod.NORMAL)
-    test.assertEqual(int(methods_np[2]), MeshSignMethod.NORMAL)
-    test.assertEqual(int(methods_np[3]), MeshSignMethod.PARITY)
-    test.assertEqual(int(methods_np[4]), MeshSignMethod.NORMAL)
-    test.assertEqual(int(methods_np[5]), MeshSignMethod.PARITY)
-
-
-def test_shape_config_mesh_sign_flags(test, device):
-    cfg = newton.ModelBuilder.ShapeConfig()
-    cfg.flags |= ShapeFlags.MESH_SIGN_NORMAL
-    test.assertTrue(cfg.flags & ShapeFlags.MESH_SIGN_NORMAL)
-
-    cfg.flags |= ShapeFlags.MESH_SIGN_PARITY
-    with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
-        cfg.validate(GeoType.MESH)
-
-    cfg.flags = _RESERVED_MESH_SIGN_FLAGS
-    with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
-        cfg.validate(GeoType.MESH)
-
-    vertices, faces = _make_open_square()
-    builder = newton.ModelBuilder(gravity=0.0)
-    shape = builder.add_shape_mesh(body=-1, mesh=newton.Mesh(vertices, faces, compute_inertia=False))
-    builder.shape_flags[shape] |= _RESERVED_MESH_SIGN_FLAGS
-    with test.assertRaisesRegex(ValueError, "Invalid mesh sign method"):
-        builder.finalize(device=device)
-
-
-def test_mesh_sign_flags_select_bake_sign_method(test, device):
-    """An explicit mesh-sign flag also selects the sign method of SDFs baked
-    during finalization: PARITY -> parity, NORMAL -> normal, AUTO ->
-    topology-based default. Each distinct method gets its own bake even when
-    shapes share one mesh.
-
-    ``cfg.sdf_*`` is rejected for mesh shapes at add time, so the deferred
-    bake is reached the way importers do it: by setting the builder's
-    per-shape SDF fields directly.
-    """
-    vertices, faces = _make_open_box()
-    mesh = newton.Mesh(vertices, faces, compute_inertia=False)
-
-    builder = newton.ModelBuilder(gravity=0.0)
-    for mesh_sign_flag in (ShapeFlags.MESH_SIGN_PARITY, ShapeFlags.MESH_SIGN_NORMAL, ShapeFlags.MESH_SIGN_AUTO):
-        cfg = newton.ModelBuilder.ShapeConfig()
-        cfg.flags |= mesh_sign_flag
-        shape = builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
-        builder.shape_sdf_max_resolution[shape] = 8
-
-    captured = []
-    original_create = SDF.create_from_mesh
-
-    def spy(mesh_arg, **kwargs):
-        captured.append(kwargs.get("sign_method", "auto"))
-        return original_create(mesh_arg, **kwargs)
-
-    with mock.patch.object(SDF, "create_from_mesh", staticmethod(spy)):
-        builder.finalize(device=device)
-
-    test.assertEqual(captured, ["parity", "normal", "auto"])
+    test.assertEqual(int(methods_np[0]), MeshSignMethod.NORMAL)
+    test.assertEqual(int(methods_np[1]), MeshSignMethod.PARITY)
 
 
 def test_build_sdf_sign_method_passthrough(test, device):
@@ -1028,7 +937,7 @@ def test_build_sdf_sign_method_passthrough(test, device):
     test.assertIsNotNone(mesh.sdf)
 
 
-def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties: int, extra_flags: int) -> np.ndarray:
+def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties: int) -> np.ndarray:
     """Run ``create_soft_contacts`` for one particle against an open-box mesh and
     return the resulting world-space contact normal (asserting a hit)."""
     count = wp.zeros(1, dtype=wp.int32, device=device)
@@ -1058,7 +967,7 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
             0.0,
             wp.array([0.0], dtype=wp.float32, device=device),
             1,
-            wp.array([int(ShapeFlags.COLLIDE_PARTICLES | extra_flags)], dtype=wp.int32, device=device),
+            wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.empty(0, dtype=HeightfieldData, device=device),
             wp.empty(0, dtype=wp.float32, device=device),
@@ -1084,8 +993,9 @@ def test_open_mesh_soft_contact_uses_normal_sign(test, device):
     Reproduces issue #3242 at the contact level: a particle just below the
     missing top face of an open box is signed incorrectly by parity (its ray
     leaks out through the opening), which inverts the contact response. The
-    automatically selected normal method signs it correctly; forcing parity
-    flips the contact normal to the opposite direction.
+    automatically selected normal method signs it correctly; a mesh wrongly
+    tagged watertight resolves to parity and flips the contact normal to the
+    opposite direction.
     """
     vertices, faces = _make_open_box()
     mesh = _make_warp_mesh(vertices, faces, device)
@@ -1100,13 +1010,14 @@ def test_open_mesh_soft_contact_uses_normal_sign(test, device):
     test.assertGreater(float(parity_sign.numpy()[0]), 0.0)
     test.assertLess(float(normal_sign.numpy()[0]), 0.0)
 
-    # Open mesh (mesh_properties = 0) with no override -> automatic normal method:
-    # the contact normal points out through the nearest wall (+x), which is correct.
-    auto_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, 0, 0)
+    # Open mesh (mesh_properties = 0) -> normal method: the contact normal
+    # points out through the nearest wall (+x), which is correct.
+    auto_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, 0)
     test.assertGreater(float(np.dot(auto_normal, np.array([1.0, 0.0, 0.0], dtype=np.float32))), 0.99)
 
-    # Forcing parity inverts the sign, and therefore the contact normal.
-    parity_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, 0, int(ShapeFlags.MESH_SIGN_PARITY))
+    # A mesh wrongly tagged watertight resolves to parity, which inverts the
+    # sign and therefore the contact normal.
+    parity_normal = _launch_open_box_soft_contact(test, device, mesh.id, points, int(MeshProperties.WATERTIGHT))
     test.assertLess(float(np.dot(auto_normal, parity_normal)), -0.99)
 
 
@@ -1121,13 +1032,6 @@ add_function_test(
     TestMeshSignQueries,
     "test_open_mesh_soft_contact_uses_normal_sign",
     test_open_mesh_soft_contact_uses_normal_sign,
-    devices=devices,
-    check_output=False,
-)
-add_function_test(
-    TestMeshSignQueries,
-    "test_mesh_sign_flags_select_bake_sign_method",
-    test_mesh_sign_flags_select_bake_sign_method,
     devices=devices,
     check_output=False,
 )
@@ -1161,15 +1065,8 @@ add_function_test(
 )
 add_function_test(
     TestMeshSignQueries,
-    "test_mesh_sign_flags_override_mesh_properties",
-    test_mesh_sign_flags_override_mesh_properties,
-    devices=devices,
-    check_output=False,
-)
-add_function_test(
-    TestMeshSignQueries,
-    "test_shape_config_mesh_sign_flags",
-    test_shape_config_mesh_sign_flags,
+    "test_resolve_mesh_sign_method_from_properties",
+    test_resolve_mesh_sign_method_from_properties,
     devices=devices,
     check_output=False,
 )

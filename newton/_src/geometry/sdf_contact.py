@@ -952,7 +952,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         texture_sdf_table: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
         shape_mesh_properties: wp.array[wp.int32],
-        shape_flags: wp.array[wp.int32],
         shape_gap: wp.array[float],
         _shape_collision_aabb_lower: wp.array[wp.vec3],
         _shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -1017,7 +1016,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         hfd_tri = heightfield_data[shape_heightfield_index[tri_shape]]
                     if sdf_is_hfield:
                         hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
-                sdf_mesh_query_type = resolve_mesh_sign_method(shape_flags[sdf_shape], shape_mesh_properties[sdf_shape])
+                sdf_mesh_query_type = resolve_mesh_sign_method(shape_mesh_properties[sdf_shape])
 
                 # SDF availability: heightfields always use on-the-fly evaluation
                 use_bvh_for_sdf = False
@@ -1349,7 +1348,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         texture_sdf_table: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
         shape_mesh_properties: wp.array[wp.int32],
-        shape_flags: wp.array[wp.int32],
         shape_gap: wp.array[float],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
@@ -1434,7 +1432,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         hfd_tri = heightfield_data[shape_heightfield_index[tri_shape]]
                     if sdf_is_hfield:
                         hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
-                sdf_mesh_query_type = resolve_mesh_sign_method(shape_flags[sdf_shape], shape_mesh_properties[sdf_shape])
+                sdf_mesh_query_type = resolve_mesh_sign_method(shape_mesh_properties[sdf_shape])
 
                 use_bvh_for_sdf = False
                 if not sdf_is_hfield:

@@ -12,7 +12,7 @@ import math
 import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -369,7 +369,6 @@ class ModelBuilder:
         inflation) and :attr:`margin` (contact-surface inflation). Rejected on
         ``MESH`` / ``CONVEX_MESH`` shapes — pass ``margin`` to
         :meth:`~newton.geometry.Mesh.build_sdf` instead."""
-        _mesh_sign_flags: int = field(default=0, init=False, repr=False)
 
         def configure_sdf(
             self,
@@ -428,16 +427,6 @@ class ModelBuilder:
                 )
             if self.sdf_max_resolution is not None and self.sdf_target_voxel_size is not None:
                 raise ValueError("Set only one of sdf_max_resolution or sdf_target_voxel_size, not both.")
-            if self._mesh_sign_flags not in (
-                ShapeFlags.MESH_SIGN_AUTO,
-                ShapeFlags.MESH_SIGN_NORMAL,
-                ShapeFlags.MESH_SIGN_PARITY,
-            ):
-                raise ValueError(
-                    "Invalid mesh sign method in ShapeConfig.flags; use ShapeFlags.MESH_SIGN_NORMAL, "
-                    "ShapeFlags.MESH_SIGN_PARITY, or MESH_SIGN_AUTO (default) for automatic selection. "
-                    "Other field values are reserved."
-                )
             if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
                 raise ValueError(
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
@@ -489,7 +478,6 @@ class ModelBuilder:
             shape_flags |= ShapeFlags.COLLIDE_PARTICLES if self.has_particle_collision else 0
             shape_flags |= ShapeFlags.SITE if self.is_site else 0
             shape_flags |= ShapeFlags.HYDROELASTIC if self.is_hydroelastic else 0
-            shape_flags |= self._mesh_sign_flags
             return shape_flags
 
         @flags.setter
@@ -498,7 +486,6 @@ class ModelBuilder:
 
             self.is_visible = bool(value & ShapeFlags.VISIBLE)
             self.is_hydroelastic = bool(value & ShapeFlags.HYDROELASTIC)
-            self._mesh_sign_flags = value & ShapeFlags.MESH_SIGN_METHOD_MASK
 
             # Check if SITE flag is being set
             is_site_flag = bool(value & ShapeFlags.SITE)
@@ -10304,18 +10291,6 @@ class ModelBuilder:
             for shape_type, geo, shape_flags in zip(
                 self.shape_type, generated_shape_sources, self.shape_flags, strict=True
             ):
-                mesh_sign_flags = shape_flags & ShapeFlags.MESH_SIGN_METHOD_MASK
-                if mesh_sign_flags not in (
-                    ShapeFlags.MESH_SIGN_AUTO,
-                    ShapeFlags.MESH_SIGN_NORMAL,
-                    ShapeFlags.MESH_SIGN_PARITY,
-                ):
-                    raise ValueError(
-                        "Invalid mesh sign method in shape flags; use ShapeFlags.MESH_SIGN_NORMAL, "
-                        "ShapeFlags.MESH_SIGN_PARITY, or MESH_SIGN_AUTO (default) for automatic selection. "
-                        "Other field values are reserved."
-                    )
-
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if isinstance(geo, Heightfield):
                     if geo_hash not in finalized_geos:
@@ -10355,10 +10330,8 @@ class ModelBuilder:
                     geo_sources.append(0)
 
                 mesh_properties = 0
-                needs_auto_mesh_sign = mesh_sign_flags == ShapeFlags.MESH_SIGN_AUTO and bool(
-                    shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)
-                )
-                if needs_auto_mesh_sign and shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and isinstance(geo, Mesh):
+                is_collidable = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
+                if is_collidable and shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and isinstance(geo, Mesh):
                     source_id = id(geo)
                     mesh_properties = mesh_properties_by_source_id.get(source_id)
                     if mesh_properties is None:
@@ -10664,17 +10637,6 @@ class ModelBuilder:
                     # Build on a Mesh clone so shapes sharing one Mesh at different
                     # scale/margin/resolution end up with distinct SDFs.
                     if mesh_sdf is None and (sdf_max_resolution is not None or sdf_target_voxel_size is not None):
-                        # An explicit mesh-sign flag also selects the bake sign
-                        # method; AUTO keeps the topology-based default of
-                        # SDF.create_from_mesh (parity if watertight, else
-                        # winding).
-                        mesh_sign_flags = shape_flags & ShapeFlags.MESH_SIGN_METHOD_MASK
-                        if mesh_sign_flags == ShapeFlags.MESH_SIGN_PARITY:
-                            sdf_sign_method = "parity"
-                        elif mesh_sign_flags == ShapeFlags.MESH_SIGN_NORMAL:
-                            sdf_sign_method = "normal"
-                        else:
-                            sdf_sign_method = "auto"
                         sdf_kwargs = {"narrow_band_range": tuple(sdf_narrow_band_range)}
                         if sdf_max_resolution is not None:
                             sdf_kwargs["max_resolution"] = sdf_max_resolution
@@ -10683,7 +10645,6 @@ class ModelBuilder:
                         sdf_kwargs["margin"] = sdf_gen_margin
                         sdf_kwargs["scale"] = tuple(shape_scale)
                         sdf_kwargs["texture_format"] = sdf_tex_fmt
-                        sdf_kwargs["sign_method"] = sdf_sign_method
                         deferred_key = (
                             id(shape_src),
                             tuple(shape_scale),
@@ -10692,7 +10653,6 @@ class ModelBuilder:
                             sdf_max_resolution,
                             sdf_tex_fmt,
                             sdf_gen_margin,
-                            sdf_sign_method,
                         )
                         mesh_sdf = deferred_mesh_sdf_cache.get(deferred_key)
                         if mesh_sdf is None:

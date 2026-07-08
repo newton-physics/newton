@@ -15,18 +15,11 @@ from .types import (
 
 
 class MeshSignMethod(enum.IntEnum):
-    """Method used to determine the inside/outside sign of a mesh point query.
+    """Method used to determine the inside/outside sign of a mesh point query."""
 
-    Values match the ``ShapeFlags`` mesh sign-method field: a shape flag of
-    ``method << 5`` encodes the corresponding method.
-    """
-
-    AUTO = 0
-    """Automatic topology-based selection; resolved to a concrete method
-    before any kernel runs (see :func:`resolve_mesh_sign_method`)."""
-    NORMAL = 1
+    NORMAL = 0
     """Angle-weighted closest-face pseudo-normal; robust for open surfaces."""
-    PARITY = 2
+    PARITY = 1
     """Ray-crossing parity; correct and cheap for watertight (closed) meshes."""
 
 
@@ -38,26 +31,16 @@ class MeshProperties(enum.IntFlag):
 
 
 @wp.func
-def resolve_mesh_sign_method(shape_flags: int, mesh_properties: int):
-    """Resolve the runtime mesh sign method for a shape, honoring an explicit override.
+def resolve_mesh_sign_method(mesh_properties: int):
+    """Resolve the runtime mesh sign method for a shape from its mesh properties.
 
-    An explicit ``ShapeFlags.MESH_SIGN_NORMAL`` / ``MESH_SIGN_PARITY`` field
-    value wins. Otherwise (``MESH_SIGN_AUTO``) the method follows the mesh
-    topology: parity for watertight meshes, pseudo-normal otherwise. Normal
-    (rather than the winding number the baked SDF path falls back to) is the
-    open-mesh runtime choice on purpose: for a genuinely open surface the
-    generalized winding number is ~0.5 and gives no clean inside, whereas the
-    pseudo-normal yields a stable local side-of-surface, which is what open
-    collision geometry needs.
+    Parity for watertight meshes, pseudo-normal otherwise. Normal (rather than
+    the winding number the baked SDF path falls back to) is the open-mesh
+    runtime choice on purpose: for a genuinely open surface the generalized
+    winding number is ~0.5 and gives no clean inside, whereas the pseudo-normal
+    yields a stable local side-of-surface, which is what open collision
+    geometry needs.
     """
-    method_flags = shape_flags & ShapeFlags.MESH_SIGN_METHOD_MASK
-    if method_flags == ShapeFlags.MESH_SIGN_NORMAL:
-        return int(MeshSignMethod.NORMAL)
-    if method_flags == ShapeFlags.MESH_SIGN_PARITY:
-        return int(MeshSignMethod.PARITY)
-
-    # MESH_SIGN_AUTO selects automatically. Reserved field values also use the
-    # safe automatic behavior if flags are modified after model finalization.
     if mesh_properties & MeshProperties.WATERTIGHT:
         return int(MeshSignMethod.PARITY)
     return int(MeshSignMethod.NORMAL)
@@ -1179,7 +1162,7 @@ def create_soft_contacts(
             mesh,
             wp.cw_div(x_local, geo_scale),
             margin + s_margin / min_scale + radius / min_scale,
-            resolve_mesh_sign_method(shape_flags[shape_index], shape_mesh_properties[shape_index]),
+            resolve_mesh_sign_method(shape_mesh_properties[shape_index]),
         )
         if hit:
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
