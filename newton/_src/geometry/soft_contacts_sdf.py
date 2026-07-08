@@ -271,6 +271,7 @@ def create_soft_face_contacts(
     body_q: wp.array[wp.transform],
     shape_sdf_index: wp.array[wp.int32],
     texture_sdf_table: wp.array[TextureSDFData],
+    shape_margin: wp.array[float],
     sdf_face_iters: wp.int32,
     sdf_ls_iters: wp.int32,
     margin: float,
@@ -309,7 +310,9 @@ def create_soft_face_contacts(
     b_s = wp.transform_point(X_sw, particle_q[b_idx])
     c_s = wp.transform_point(X_sw, particle_q[c_idx])
     scale = shape_scale[shape_index]
-    threshold = margin + radius
+    # Per-shape contact margin (#2994), same threshold term as the legacy particle pass.
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+    threshold = margin + s_margin + radius
 
     centroid_s = (a_s + b_s + c_s) / 3.0
     phi_c, _grad_c = eval_shape_sdf(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
@@ -362,6 +365,7 @@ def create_soft_edge_contacts(
     body_q: wp.array[wp.transform],
     shape_sdf_index: wp.array[wp.int32],
     texture_sdf_table: wp.array[TextureSDFData],
+    shape_margin: wp.array[float],
     sdf_edge_iters: wp.int32,
     margin: float,
     soft_contact_max: wp.int32,
@@ -415,7 +419,9 @@ def create_soft_edge_contacts(
     p_s = wp.transform_point(X_sw, particle_q[p_idx])
     q_s = wp.transform_point(X_sw, particle_q[q_idx])
     scale = shape_scale[shape_index]
-    threshold = margin + radius
+    # Per-shape contact margin (#2994), same threshold term as the legacy particle pass.
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+    threshold = margin + s_margin + radius
 
     mid_s = 0.5 * (p_s + q_s)
     phi_m, _grad_m = eval_shape_sdf(geo, scale, mid_s, sdf_idx, texture_sdf_table)
@@ -480,6 +486,7 @@ def launch_soft_ef_contacts(*, model, state, contacts, margin: float, device, ed
         state.body_q,
         model._shape_sdf_index,
         model._texture_sdf_data,
+        model.shape_margin,
     ]
     outputs = [
         contacts.soft_contact_count,

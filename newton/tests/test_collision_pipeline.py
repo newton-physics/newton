@@ -2715,6 +2715,63 @@ def test_edge_face_passes_box(test, device):
         test.assertLess(abs(_box_sdf_np(body_pos[i], half)), 1.0e-2)
 
 
+def test_edge_face_respect_shape_margin(test, device):
+    """EDGE/FACE culls must include the per-shape margin (#2994) like the legacy particle pass:
+    a sheet beyond ``soft_contact_margin`` but within ``soft_contact_margin + shape margin``
+    must still emit every edge/face record."""
+    margin = 0.05
+    shape_margin = 0.2
+    builder = newton.ModelBuilder()
+    builder.default_particle_radius = 0.01
+    builder.add_shape_box(
+        body=-1,
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        hx=0.5,
+        hy=0.5,
+        hz=0.5,
+        cfg=newton.ModelBuilder.ShapeConfig(margin=shape_margin),
+    )
+    # Sheet 0.15 above the box top face: outside margin + radius (0.06), inside
+    # margin + shape_margin + radius (0.26).
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.4, -0.4, 0.65),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, 0.0),
+        dim_x=4,
+        dim_y=4,
+        cell_x=0.2,
+        cell_y=0.2,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=margin, soft_contact_max=4096)
+    contacts = pipeline.contacts()
+    state = model.state()
+    contacts.soft_contact_count.zero_()
+    edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
+    face_pairs = _build_soft_face_rigid_contact_pairs(model)
+    launch_soft_ef_contacts(
+        model=model,
+        state=state,
+        contacts=contacts,
+        margin=margin,
+        device=device,
+        edge_pairs=edge_pairs,
+        face_pairs=face_pairs,
+        edge_tri_indices=model.soft_mesh_adjacency_device.edge_tri_indices,
+    )
+
+    # Sanity: the gap really is beyond the threshold without the shape margin, so any record
+    # emitted below can only come from the per-shape margin term.
+    max_radius = float(model.particle_radius.numpy().max())
+    test.assertGreater(0.15, margin + max_radius)
+
+    counts = contacts.soft_contact_count.numpy()
+    n_edges = model.soft_mesh_adjacency.edge_indices.shape[0]
+    test.assertEqual(int(counts[1]), n_edges)
+    test.assertEqual(int(counts[2]), model.tri_count)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch flag — backward-compat (bit-for-bit) and water-tight regression.
 # ---------------------------------------------------------------------------
@@ -2828,6 +2885,7 @@ for _name, _fn in (
     ("test_optimize_edge_sdf_sphere", test_optimize_edge_sdf_sphere),
     ("test_optimize_face_sdf_sphere", test_optimize_face_sdf_sphere),
     ("test_edge_face_passes_box", test_edge_face_passes_box),
+    ("test_edge_face_respect_shape_margin", test_edge_face_respect_shape_margin),
     ("test_backward_compat_bit_for_bit", test_backward_compat_bit_for_bit),
     ("test_water_tight_catches_what_particles_miss", test_water_tight_catches_what_particles_miss),
 ):
