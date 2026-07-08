@@ -16,9 +16,10 @@
 ###########################################################################
 # Example Suction Cup
 #
-# Starting template for a suction-cup surface-gripper demo. For now it just
-# drops a box onto a ground plane; the suction-cup model (seal detection and
-# the spring-damper hold wrench) will be built on top of this scaffolding.
+# A single-pad surface gripper (box A) is sealed onto the top of a larger box (B). Box B rides
+# a prismatic (z) joint to the world that the solver position-drives from 0 up to 3 m, and box
+# A rides along held by the seal, exercising the surface-gripper hold wrench. Seal detection is
+# still trivial (the pad is always engaged); the force model lives in surface_gripper.py.
 #
 # Command: python -m newton.examples suction_cup
 ###########################################################################
@@ -58,20 +59,40 @@ class Example:
             return wp.diag(wp.vec3(s, s, s))
 
         m_a, m_b = 0.5, 1.0
+        gravity = 10.0
+        target_height = 3.0  # box B is position-driven from 0 up to this height, then held
 
-        # B centred at z = 0 (top at LB). A's downward pad (at A_center - LA) touches B's
-        # top when A_center = LA + LB. NOTE: your 2*LA + LB puts the pad LA above B (a gap),
-        # so the seal would latch that gap -- using LA + LB here for a touching seal.
-        pose_a = wp.transform(wp.vec3(0.0, 0.0, LA + LB), wp.quat_identity())
+        # start the A+B stack at 0: B's COM at z = 0, A stacked on top with its pad touching
+        # B's top (A_center = B_center + LA + LB).
         pose_b = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        pose_a = wp.transform(wp.vec3(0.0, 0.0, LA + LB), wp.quat_identity())
 
-        builder = newton.ModelBuilder(gravity=-10.0)
+        builder = newton.ModelBuilder(gravity=-gravity)
 
-        self.box_a = builder.add_body(xform=pose_a, mass=m_a, inertia=box_inertia(m_a, LA), label="gripper_box_A")
+        # lock_inertia=True keeps the explicit mass/inertia above; otherwise add_shape_box would
+        # recompute them from the shape's default density.
+        self.box_a = builder.add_body(
+            xform=pose_a, mass=m_a, inertia=box_inertia(m_a, LA), lock_inertia=True, label="gripper_box_A"
+        )
         builder.add_shape_box(self.box_a, hx=LA, hy=LA, hz=LA)
 
-        self.box_b = builder.add_body(xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), label="gripped_box_B")
+        # box B rides a prismatic (z) joint to the world, position-driven up to target_height by
+        # the solver. velocity_limit keeps it rising smoothly (~1 m/s) instead of snapping there.
+        self.box_b = builder.add_link(
+            xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), lock_inertia=True, label="gripped_box_B"
+        )
         builder.add_shape_box(self.box_b, hx=LB, hy=LB, hz=LB)
+        j_drive = builder.add_joint_prismatic(
+            parent=-1,
+            child=self.box_b,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            target_pos=target_height,
+            target_ke=100.0,
+            target_kd=10.0,
+            velocity_limit=0.3,
+            label="box_b_drive",
+        )
+        builder.add_articulation([j_drive], label="box_b_articulation")
 
         builder.add_ground_plane()
 
@@ -93,12 +114,14 @@ class Example:
             d_normal=100.0,
             f_normal_max=200.0,
             f_grip_max=50.0,
-            k_shear_x=2000.0,
-            k_shear_y=2000.0,
+            # initial run: normal forces only. Zero shear stiffness (also zeros the derived
+            # torsion stiffness) and zero peel damping so only the normal DOF is active.
+            k_shear_x=0.0,
+            k_shear_y=0.0,
             mu_x=1.0,
             mu_y=1.0,
-            d_peel_x=5.0,
-            d_peel_y=5.0,
+            d_peel_x=0.0,
+            d_peel_y=0.0,
             shape=int(PadShape.RECTANGLE),
             dim_a=LA,
             dim_b=LA,
@@ -151,16 +174,20 @@ class Example:
             self.simulate()
 
         self.sim_time += self.frame_dt
+        if int(round(self.sim_time / self.frame_dt)) % 20 == 0:  # DEBUG: height every 20 frames
+            bz = self.state_0.body_q.numpy()[self.box_b][2]
+            az = self.state_0.body_q.numpy()[self.box_a][2]
+            print(f"DEBUG t={self.sim_time:5.2f} Bz={bz:6.3f} Az={az:6.3f}", flush=True)
 
     def test_final(self):
-        # sanity check: the box stayed in a sane range (didn't tunnel through the
-        # ground or fly off) -- replace with a suction-specific check later.
+        # box B is driven up toward 3 m and box A rides along; both should have risen off the
+        # start, stayed on-axis, and not overshot the target (exact height depends on run length).
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "box stays in a sane range",
-            lambda q, qd: 0.0 < q[2] < 0.6 and abs(q[0]) < 0.2 and abs(q[1]) < 0.2,
-            [0],
+            "boxes A and B rise together toward 3 m and stay on-axis",
+            lambda q, qd: 0.5 < q[2] < 3.4 and abs(q[0]) < 0.1 and abs(q[1]) < 0.1,
+            [self.box_a, self.box_b],
         )
 
     def render(self):
