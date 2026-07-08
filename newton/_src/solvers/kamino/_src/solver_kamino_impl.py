@@ -56,7 +56,7 @@ from .kinematics.resets import (
     set_body_q,
     set_floating_base,
 )
-from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
+from .linalg import ConjugateResidualSolver, ConjugateResidualSolverFused, IterativeSolver, LinearSolverNameToType
 from .solvers.fk import ForwardKinematicsSolver
 from .solvers.metrics import SolutionMetrics
 from .solvers.padmm import PADMMSolver, PADMMWarmStartMode
@@ -173,6 +173,20 @@ class SolverKaminoImpl(SolverBase):
                 " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver."
             )
             linear_solver_type = ConjugateResidualSolver
+
+        # ConjugateResidualSolverFused requires a BlockSparseMatrixFreeDelassusOperator,
+        # which is only built when both sparse_dynamics and sparse_jacobian are enabled.
+        if issubclass(linear_solver_type, ConjugateResidualSolverFused):
+            if not self._config.sparse_dynamics:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse dynamics. Enabling sparse_dynamics automatically."
+                )
+                self._config.sparse_dynamics = True
+            if not self._config.sparse_jacobian:
+                msg.warning(
+                    "ConjugateResidualSolverFused requires sparse Jacobians. Enabling sparse_jacobian automatically."
+                )
+                self._config.sparse_jacobian = True
 
         # If graph conditionals are disabled in the PADMM solver, ensure that they
         # are also disabled in the linear solver if it is an iterative solver.

@@ -212,21 +212,25 @@ def make_fill_row_sorted_kernel():
 
 def build_row_index(
     *,
-    num_nzb: wp.array,
-    nzb_start: wp.array,
-    nzb_coords: wp.array,
-    row_offset: wp.array,
+    num_nzb: wp.array[wp.int32],
+    nzb_start: wp.array[wp.int32],
+    nzb_coords: wp.array2d[wp.int32],
+    row_offset: wp.array[wp.int32],
     total_rows: int,
     max_of_num_nzb: int,
     max_blocks: int = MAX_BLOCKS_PER_ROW,
-    out_row_blk: wp.array | None = None,
-    out_slot_count: wp.array | None = None,
+    out_row_blk: wp.array2d[wp.int32] | None = None,
+    out_slot_count: wp.array[wp.int32] | None = None,
     device=None,
-) -> wp.array:
+) -> wp.array2d[wp.int32]:
     """Build (or refill) the per-row block-id index ``row_blk``."""
     n_worlds = num_nzb.shape[0]
-    row_blk = out_row_blk if out_row_blk is not None else wp.empty((total_rows, max_blocks), dtype=wp.int32, device=device)
-    slot_count = out_slot_count if out_slot_count is not None else wp.empty((total_rows,), dtype=wp.int32, device=device)
+    row_blk = (
+        out_row_blk if out_row_blk is not None else wp.empty((total_rows, max_blocks), dtype=wp.int32, device=device)
+    )
+    slot_count = (
+        out_slot_count if out_slot_count is not None else wp.empty((total_rows,), dtype=wp.int32, device=device)
+    )
     row_blk.fill_(-1)
     slot_count.zero_()
     wp.launch(
@@ -241,19 +245,19 @@ def build_row_index(
 
 def build_transpose_index(
     *,
-    num_nzb: wp.array,
-    nzb_start: wp.array,
-    nzb_coords: wp.array,
+    num_nzb: wp.array[wp.int32],
+    nzb_start: wp.array[wp.int32],
+    nzb_coords: wp.array2d[wp.int32],
     total_nnz: int,
     max_of_num_nzb: int,
     max_major_cols: int,
-    out_sort_key: wp.array | None = None,
-    out_sort_val: wp.array | None = None,
-    out_seg_end: wp.array | None = None,
-    out_cursor: wp.array | None = None,
-    out_row_idx_sorted: wp.array | None = None,
+    out_sort_key: wp.array[wp.int32] | None = None,
+    out_sort_val: wp.array[wp.int32] | None = None,
+    out_seg_end: wp.array[wp.int32] | None = None,
+    out_cursor: wp.array2d[wp.int32] | None = None,
+    out_row_idx_sorted: wp.array[wp.int32] | None = None,
     device=None,
-) -> tuple[wp.array, wp.array, wp.array]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array2d[wp.int32]]:
     """Build (or refill) the column-sorted transpose index and per-body cursor.
 
     Returns ``(sort_key, sort_val, cursor)``. ``sort_key``/``sort_val`` are sized
@@ -266,7 +270,9 @@ def build_transpose_index(
     sort_key = out_sort_key if out_sort_key is not None else wp.empty((alloc,), dtype=wp.int32, device=device)
     sort_val = out_sort_val if out_sort_val is not None else wp.empty((alloc,), dtype=wp.int32, device=device)
     seg_end = out_seg_end if out_seg_end is not None else wp.empty((n_worlds,), dtype=wp.int32, device=device)
-    cursor = out_cursor if out_cursor is not None else wp.empty((n_worlds, max_major_cols), dtype=wp.int32, device=device)
+    cursor = (
+        out_cursor if out_cursor is not None else wp.empty((n_worlds, max_major_cols), dtype=wp.int32, device=device)
+    )
     cursor.fill_(-1)
 
     wp.launch(
