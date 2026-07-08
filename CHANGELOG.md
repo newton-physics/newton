@@ -82,6 +82,7 @@
 - Fix `SolverMuJoCo` inertia randomization for bodies initialized with diagonal inertia.
 - Fix `SolverMuJoCo` static worldbody geometry poses so offset batched worlds collide with their local geometry.
 - Fix memory growth in the Style3D solver when CUDA Graph capture is disabled
+- Fix `SolverMuJoCo` site poses for offset batched worlds and runtime shape-transform updates.
 - Fix `newton.eval_jacobian`, `SolverFeatherstone`, and the IK analytic Jacobian building `JointType.D6` angular motion-subspace columns from raw axes, so `J @ joint_qd` now matches `State.body_qd` for two- or three-angular-DOF joints at non-identity configurations.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
 - Fix mesh-SDF contacts with positive contact gaps by making contact reduction prefer margin-depth contacts over gap-only directional fallbacks.

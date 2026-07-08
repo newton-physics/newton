@@ -74,6 +74,7 @@ from .kernels import (
     reset_joint_state_kernel,
     reset_world_buffers_kernel,
     sync_qpos0_kernel,
+    sync_site_xposes_kernel,
     sync_worldbody_geom_xposes_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -96,6 +97,7 @@ from .kernels import (
     update_model_properties_kernel,
     update_pair_properties_kernel,
     update_shape_mappings_kernel,
+    update_site_properties_kernel,
     update_solver_options_kernel,
     update_tendon_properties_kernel,
 )
@@ -3265,6 +3267,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
+        self.mjc_site_to_newton_shape: wp.array2d[wp.int32] | None = None
+        """Mapping from MuJoCo [world, site] to Newton shape index. Shape [nworld, nsite], dtype int32."""
         self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
         self.mjc_jnt_to_newton_dof: wp.array2d[wp.int32] | None = None
@@ -3977,6 +3981,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             need_length_range = True
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
+            self._update_site_properties()
             self._update_pair_properties()
             self._invalidate_contact_fast_path()
         if flags & ModelFlags.MODEL_PROPERTIES:
@@ -4075,6 +4080,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             if flags & ModelFlags.SHAPE_PROPERTIES:
                 self._sync_worldbody_geom_xposes()
+                self._sync_site_xposes()
 
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
         """Mirror equality properties from MJWarp buffers to MuJoCo-C CPU buffers."""
@@ -4107,6 +4113,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[
                 self.mjw_data.geom_xpos,
                 self.mjw_data.geom_xmat,
+            ],
+            device=self.model.device,
+        )
+
+    def _sync_site_xposes(self) -> None:
+        """Refresh derived site poses after per-world model updates."""
+        if self.mj_model.nsite == 0:
+            return
+        wp.launch(
+            sync_site_xposes_kernel,
+            dim=(self.mjw_data.nworld, self.mj_model.nsite),
+            inputs=[
+                self.mjw_model.site_bodyid,
+                self.mjw_model.site_pos,
+                self.mjw_model.site_quat,
+                self.mjw_data.xpos,
+                self.mjw_data.xquat,
+            ],
+            outputs=[
+                self.mjw_data.site_xpos,
+                self.mjw_data.site_xmat,
             ],
             device=self.model.device,
         )
@@ -6423,6 +6450,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 shape_to_geom_idx[shape] = geom_idx
                 geom_to_shape_idx[geom_idx] = shape
 
+        site_to_shape_idx = {}
+        for shape, site_name in site_mapping.items():
+            site_idx = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_SITE, site_name)
+            if site_idx >= 0:
+                site_to_shape_idx[site_idx] = shape
+
         with wp.ScopedDevice(model.device):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
@@ -6479,6 +6512,32 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     outputs=[
                         self.mjc_geom_to_newton_shape,
                     ],
+                    device=model.device,
+                )
+
+            site_to_shape_idx_np = np.full((self.mj_model.nsite,), -1, dtype=np.int32)
+            site_is_static_np = np.zeros((self.mj_model.nsite,), dtype=bool)
+            for site_idx, abs_shape_idx in site_to_shape_idx.items():
+                if shape_world[abs_shape_idx] < 0:
+                    site_to_shape_idx_np[site_idx] = abs_shape_idx
+                    site_is_static_np[site_idx] = True
+                else:
+                    site_to_shape_idx_np[site_idx] = abs_shape_idx - first_env_shape_base
+
+            self.mjc_site_to_newton_shape = wp.full((nworld, self.mj_model.nsite), -1, dtype=wp.int32)
+            if self.mjw_model.site_pos.size:
+                site_to_shape_idx_wp = wp.array(site_to_shape_idx_np, dtype=wp.int32)
+                site_is_static_wp = wp.array(site_is_static_np, dtype=bool)
+                wp.launch(
+                    update_shape_mappings_kernel,
+                    dim=(nworld, self.mj_model.nsite),
+                    inputs=[
+                        site_to_shape_idx_wp,
+                        site_is_static_wp,
+                        self._shapes_per_world,
+                        first_env_shape_base,
+                    ],
+                    outputs=[self.mjc_site_to_newton_shape],
                     device=model.device,
                 )
 
@@ -6796,8 +6855,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "geom_margin",
             "geom_gap",
             # "geom_rgba",
-            # "site_pos",
-            # "site_quat",
+            "site_pos",
+            "site_quat",
             # "cam_pos",
             # "cam_quat",
             # "cam_poscom0",
@@ -7698,6 +7757,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_solmix,
                 self.mjw_model.geom_gap,
                 self.mjw_model.geom_margin,
+            ],
+            device=self.model.device,
+        )
+
+    def _update_site_properties(self) -> None:
+        """Update MuJoCo site poses from Newton shape transforms."""
+        if self.mj_model.nsite == 0:
+            return
+
+        wp.launch(
+            update_site_properties_kernel,
+            dim=(self.mjc_site_to_newton_shape.shape[0], self.mj_model.nsite),
+            inputs=[
+                self.model.shape_transform,
+                self.mjc_site_to_newton_shape,
+            ],
+            outputs=[
+                self.mjw_model.site_pos,
+                self.mjw_model.site_quat,
             ],
             device=self.model.device,
         )

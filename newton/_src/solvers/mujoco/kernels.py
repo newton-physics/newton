@@ -2491,6 +2491,24 @@ def update_geom_properties_kernel(
 
 
 @wp.kernel
+def update_site_properties_kernel(
+    shape_transform: wp.array[wp.transform],
+    mjc_site_to_newton_shape: wp.array2d[wp.int32],
+    site_pos: wp.array2d[wp.vec3],
+    site_quat: wp.array2d[wp.quat],
+):
+    """Update MuJoCo site poses from Newton shape transforms."""
+    world, site = wp.tid()
+    shape = mjc_site_to_newton_shape[world, site]
+    if shape < 0:
+        return
+
+    tf = shape_transform[shape]
+    site_pos[world, site] = tf.p
+    site_quat[world, site] = quat_xyzw_to_wxyz(tf.q)
+
+
+@wp.kernel
 def sync_worldbody_geom_xposes_kernel(
     geom_bodyid: wp.array[int],
     geom_pos: wp.array2d[wp.vec3],
@@ -2506,6 +2524,25 @@ def sync_worldbody_geom_xposes_kernel(
     geom_q = quat_wxyz_to_xyzw(geom_quat[world, geom])
     geom_xpos[world, geom] = geom_pos[world, geom]
     geom_xmat[world, geom] = wp.quat_to_matrix(geom_q)
+
+
+@wp.kernel
+def sync_site_xposes_kernel(
+    site_bodyid: wp.array[int],
+    site_pos: wp.array2d[wp.vec3],
+    site_quat: wp.array2d[wp.quat],
+    body_xpos: wp.array2d[wp.vec3],
+    body_xquat: wp.array2d[wp.quat],
+    site_xpos: wp.array2d[wp.vec3],
+    site_xmat: wp.array2d[wp.mat33],
+):
+    """Refresh derived site poses after per-world model updates."""
+    world, site = wp.tid()
+    body = site_bodyid[site]
+    body_q = quat_wxyz_to_xyzw(body_xquat[world, body])
+    site_q = quat_wxyz_to_xyzw(site_quat[world, site])
+    site_xpos[world, site] = body_xpos[world, body] + wp.quat_rotate(body_q, site_pos[world, site])
+    site_xmat[world, site] = wp.quat_to_matrix(body_q * site_q)
 
 
 @wp.kernel
