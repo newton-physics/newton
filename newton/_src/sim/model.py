@@ -2332,7 +2332,8 @@ class Model:
         if self._collision_pipeline is None:
             self._init_collision_pipeline(enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact)
         elif (
-            enable_rigid_soft_full_surface_contact and not self._collision_pipeline.enable_rigid_soft_full_surface_contact
+            enable_rigid_soft_full_surface_contact
+            and not self._collision_pipeline.enable_rigid_soft_full_surface_contact
         ):
             raise ValueError(
                 "enable_rigid_soft_full_surface_contact=True requires a collision pipeline initialized with "

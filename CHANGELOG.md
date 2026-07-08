@@ -42,6 +42,7 @@
 - Add `newton.usd.get_mesh()` support for USD stages, file paths, and URLs.
 - Add opt-in water-tight rigid-soft contact generation via `enable_water_tight_rigid_soft_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs built by `ModelBuilder.enable_rigid_mesh_sdfs()` before `finalize()`. When enabled, soft-triangle edges and faces that cross a rigid shape's signed-distance field are detected by local SDF optimization and written into new edge/face ranges of `Contacts.soft_contact_*` (`soft_contact_primitive`, `soft_contact_kind`, `soft_contact_barycentric`), catching soft edge/face contacts the per-particle path misses. Default off reproduces the per-particle behavior.
 - Add opt-in water-tight rigid-soft contact generation via `enable_water_tight_rigid_soft_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs built by `ModelBuilder.enable_rigid_mesh_sdfs()` before `finalize()`. When enabled, soft-triangle edges and faces that cross a rigid shape's signed-distance field are detected by local SDF optimization and written into new edge/face ranges of `Contacts.soft_contact_*` (`soft_contact_primitive`, `soft_contact_barycentric`), catching soft edge/face contacts the per-particle path misses. Default off reproduces the per-particle behavior.
+- Add opt-in full-surface rigid-soft contact generation via `enable_rigid_soft_full_surface_contact` on `Model.collide` and `CollisionPipeline`, with the required rigid-mesh volume SDFs built by `ModelBuilder.enable_rigid_mesh_sdfs()` before `finalize()`. When enabled, soft-triangle edges and faces (not just vertices) that cross a rigid shape's signed-distance field are detected by local SDF optimization and written as unified, self-describing records — `Contacts.soft_contact_indices` (a `vec3i` of soft particle ids, `-1` padded: `(p, -1, -1)` particle, `(v0, v1, -1)` edge, `(v0, v1, v2)` face) plus `soft_contact_barycentric` — catching soft edge/face contacts the per-particle path misses. Consumed by `SolverVBD`; other solvers raise on such contacts. Default off reproduces the per-particle behavior.
 
 ### Changed
 
@@ -81,7 +82,6 @@
 - Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
 - Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
 - `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
-- Deprecate `Contacts.soft_contact_particle` in favor of `Contacts.soft_contact_primitive`, which generalizes it to the soft feature id (a particle id in the particle range, a soft-triangle id in the edge/face ranges); the old name remains as a read-only alias
 
 ### Fixed
 
