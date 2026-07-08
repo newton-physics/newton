@@ -1066,13 +1066,15 @@ def parse_usd(
 
         submeshes = []
         for subset_path, material_props in subset_props:
-            # `resolve_material_properties_for_prim` does not fall back from a subset to its parent mesh
-            # (see `newton/_src/usd/utils.py` resolve_material_properties_for_prim). If a subset binds no
-            # visible material, let the uncovered-faces fallback below apply the parent mesh material
-            # instead of producing a materialless submesh and hiding the parent material on those faces.
-            if not any(value is not None for value in material_props.values()):
-                continue
+            # Split on authored binding structure, not on whether the bound material's properties
+            # resolve: a subset that binds a material Newton does not recognize still becomes its
+            # own (unshaded) submesh, so import topology never depends on material vocabulary.
+            # Only subsets that bind no material at all fall through to the uncovered-faces
+            # fallback below, which applies the parent mesh material.
             subset = UsdGeom.Subset(stage.GetPrimAtPath(subset_path))
+            binding_rel = subset.GetPrim().GetRelationship("material:binding")
+            if not (binding_rel and binding_rel.GetTargets()):
+                continue
             subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
             valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
             if not np.all(valid):

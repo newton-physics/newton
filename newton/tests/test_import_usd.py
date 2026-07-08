@@ -6878,6 +6878,75 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_subset_splitting_is_independent_of_material_vocabulary(self):
+        """Subsets binding unrecognized materials split identically to recognized ones.
+
+        Import topology must depend only on the authored binding structure: a mesh whose
+        subsets bind materials Newton cannot resolve (e.g. an unknown MDL shader) must import
+        with the same shape count as an identical mesh bound to UsdPreviewSurface materials —
+        the unrecognized submeshes are simply unshaded. Otherwise rebinding one articulation
+        variant to such a material changes its shape count and breaks multi-world validation.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        def define_unknown_material(path: str) -> UsdShade.Material:
+            """An MDL-style material whose shader inputs Newton does not recognize."""
+            material = UsdShade.Material.Define(stage, path)
+            shader = UsdShade.Shader.Define(stage, f"{path}/Shader")
+            shader.CreateInput("mystery_tint", Sdf.ValueTypeNames.Color3f).Set((0.2, 0.6, 0.9))
+            shader.CreateInput("mystery_response", Sdf.ValueTypeNames.Float).Set(0.35)
+            return material
+
+        def define_known_material(path: str, color) -> UsdShade.Material:
+            material = UsdShade.Material.Define(stage, path)
+            shader = UsdShade.Shader.Define(stage, f"{path}/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set(color)
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            return material
+
+        def define_body(name: str, materials) -> None:
+            body = UsdGeom.Xform.Define(stage, f"/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mesh = UsdGeom.Mesh.Define(stage, f"/{name}/VisualMesh")
+            mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+            mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+            mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+            for i, material in enumerate(materials):
+                subset = UsdGeom.Subset.Define(stage, f"/{name}/VisualMesh/part_{i}")
+                subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+                subset.CreateFamilyNameAttr().Set("materialBind")
+                subset.CreateIndicesAttr().Set(Vt.IntArray([i]))
+                UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(material)
+
+        define_body(
+            "Known",
+            [
+                define_known_material("/Materials/Red", (1.0, 0.0, 0.0)),
+                define_known_material("/Materials/Blue", (0.0, 0.0, 1.0)),
+            ],
+        )
+        define_body(
+            "Unknown",
+            [define_unknown_material("/Materials/MysteryA"), define_unknown_material("/Materials/MysteryB")],
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        known_shapes = [label for label in builder.shape_label if label.startswith("/Known/")]
+        unknown_shapes = [label for label in builder.shape_label if label.startswith("/Unknown/")]
+        self.assertEqual(len(known_shapes), 2)
+        self.assertEqual(len(unknown_shapes), 2, "unrecognized materials must not change import topology")
+        self.assertIn("/Unknown/VisualMesh/part_0", result["path_shape_map"])
+        self.assertIn("/Unknown/VisualMesh/part_1", result["path_shape_map"])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uv_length_mismatch_uses_info_logging(self):
         """Dropped-UV/texture diagnostics are render-only and surface via `logger.info`, not `warnings.warn`."""
         import logging as _logging  # noqa: PLC0415
