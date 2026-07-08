@@ -74,6 +74,7 @@ from .kernels import (
     reset_joint_state_kernel,
     reset_world_buffers_kernel,
     sync_qpos0_kernel,
+    sync_worldbody_geom_xposes_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
@@ -4072,6 +4073,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         update_connect_constraint_anchors,
                     )
 
+            if flags & ModelFlags.SHAPE_PROPERTIES:
+                self._sync_worldbody_geom_xposes()
+
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
         """Mirror equality properties from MJWarp buffers to MuJoCo-C CPU buffers."""
         if self.mj_model.neq == 0:
@@ -4081,6 +4085,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mj_model.eq_solref[:] = self.mjw_model.eq_solref.numpy()[0]
         self.mj_model.eq_solimp[:] = self.mjw_model.eq_solimp.numpy()[0]
         self.mj_data.eq_active[:] = self.mjw_data.eq_active.numpy()[0]
+
+    def _sync_worldbody_geom_xposes(self) -> None:
+        """Refresh derived poses that MJWarp leaves fixed after data creation.
+
+        MJWarp initializes direct worldbody geoms from the single CPU template
+        and skips them during forward kinematics. Newton's batched model can
+        carry distinct per-world geometry transforms, so copy them to the
+        corresponding derived data after shape properties change.
+        """
+        if self.mj_model.ngeom == 0:
+            return
+        wp.launch(
+            sync_worldbody_geom_xposes_kernel,
+            dim=(self.mjw_data.nworld, self.mj_model.ngeom),
+            inputs=[
+                self.mjw_model.geom_bodyid,
+                self.mjw_model.geom_pos,
+                self.mjw_model.geom_quat,
+            ],
+            outputs=[
+                self.mjw_data.geom_xpos,
+                self.mjw_data.geom_xmat,
+            ],
+            device=self.model.device,
+        )
 
     def _create_inverse_shape_mapping(self):
         """
