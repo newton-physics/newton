@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import warp as wp
 
 from ..sim import Model, State
@@ -14,6 +16,16 @@ from .warp_raytrace import (
     RenderLightType,
     RenderOrder,
     Utils,
+)
+
+_RENDER_CONFIG_DEPRECATION_MSG = (
+    "SensorTiledCamera.render_config is deprecated as of Newton 1.4; "
+    "use SensorTiledCamera.default_render_config instead. "
+    "The alias will be removed in a future release."
+)
+_CONFIG_DEPRECATION_MSG = (
+    "SensorTiledCamera(..., config=...) is deprecated as of Newton 1.4; use default_config=... instead. "
+    "The alias will be removed in a future release."
 )
 
 
@@ -67,7 +79,14 @@ class SensorTiledCamera:
     DEFAULT_CLEAR_DATA = ClearData()
     GRAY_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
-    def __init__(self, model: Model, *, config: RenderConfig | None = None, load_textures: bool = True):
+    def __init__(
+        self,
+        model: Model,
+        *,
+        default_config: RenderConfig | None = None,
+        config: RenderConfig | None = None,
+        load_textures: bool = True,
+    ):
         """Initialize the tiled camera sensor from a simulation model.
 
         Builds the internal :class:`RenderContext`, loads shape geometry (and
@@ -76,17 +95,24 @@ class SensorTiledCamera:
 
         Args:
             model: Simulation model whose shapes will be rendered.
-            config: Rendering configuration. Pass a :class:`RenderConfig` to
+            default_config: Rendering configuration. Pass a :class:`RenderConfig` to
                 control raytrace settings directly, or ``None`` to use
                 defaults. Use ``RenderConfig.output_color_space`` to control
                 whether packed ``color`` and ``albedo`` outputs are
                 display-encoded or left linear.
+            config: Deprecated as of Newton 1.4; use ``default_config`` instead.
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
         self.model = model
 
-        self.default_render_config = config if config is not None else RenderConfig()
+        if config is not None:
+            warnings.warn(_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if default_config is not None:
+                raise TypeError("Specify only one of `default_config` and deprecated `config`.")
+            default_config = config
+
+        self.default_render_config = default_config if default_config is not None else RenderConfig()
         self.default_clear_data = ClearData()
 
         self.__render_context = RenderContext(
@@ -149,7 +175,7 @@ class SensorTiledCamera:
                 ``(camera_count, height, width, 2)``.
             color_image: Output for packed RGBA color. The bytes are
                 display/sRGB by default, or linear when
-                ``self.render_config.output_color_space`` is
+                ``self.default_render_config.output_color_space`` is
                 ``newton.utils.ColorSpace.LINEAR``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
@@ -162,7 +188,7 @@ class SensorTiledCamera:
                 :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
             hdr_color_image: Output for linear HDR color. None to skip.
             render_config: Render settings for this update. If ``None``, uses
-                :attr:`render_config`.
+                :attr:`default_render_config`.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
@@ -187,14 +213,15 @@ class SensorTiledCamera:
 
     @property
     def render_config(self) -> RenderConfig:
-        """Default low-level raytrace settings for :meth:`update`.
+        """Deprecated alias for :attr:`default_render_config`.
 
-        Attributes may be modified to change behavior for subsequent
-        :meth:`update` calls that do not pass an explicit ``render_config``.
+        .. deprecated:: 1.4
+            Use :attr:`default_render_config` instead.
 
         Returns:
             The live default :class:`RenderConfig` instance.
         """
+        warnings.warn(_RENDER_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         return self.default_render_config
 
     @property

@@ -124,26 +124,55 @@ class TestSensorTiledCamera(unittest.TestCase):
         linear = newton.utils.color_srgb_to_linear((0.5, 0.25, 0.1))
         np.testing.assert_allclose(newton.utils.color_linear_to_srgb(linear), (0.5, 0.25, 0.1), atol=1e-6)
 
+    def test_render_config_alias_deprecated(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+
+        with self.assertWarnsRegex(DeprecationWarning, "SensorTiledCamera.render_config.*default_render_config"):
+            render_config = sensor.render_config
+
+        self.assertIs(render_config, sensor.default_render_config)
+
+    def test_constructor_config_alias_deprecated(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        config = SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
+
+        with self.assertWarnsRegex(DeprecationWarning, r"config=.*default_config"):
+            sensor = SensorTiledCamera(model=model, config=config)
+
+        self.assertIs(sensor.default_render_config, config)
+
+    def test_constructor_rejects_default_config_and_config(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+
+        with self.assertWarnsRegex(DeprecationWarning, r"config=.*default_config"):
+            with self.assertRaisesRegex(TypeError, "default_config.*config"):
+                SensorTiledCamera(
+                    model=model,
+                    default_config=SensorTiledCamera.RenderConfig(),
+                    config=SensorTiledCamera.RenderConfig(),
+                )
+
     def test_utils_implicit_default_render_config_update_warns(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
         sensor = SensorTiledCamera(model=model)
 
-        self.assertFalse(sensor.render_config.enable_shadows)
-        self.assertFalse(sensor.render_config.enable_textures)
+        self.assertFalse(sensor.default_render_config.enable_shadows)
+        self.assertFalse(sensor.default_render_config.enable_textures)
 
-        with self.assertWarnsRegex(DeprecationWarning, "create_default_light.*render_config"):
+        with self.assertWarnsRegex(DeprecationWarning, "create_default_light.*default_render_config"):
             sensor.utils.create_default_light(enable_shadows=True)
-        with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material.*render_config"):
+        with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material.*default_render_config"):
             sensor.utils.assign_checkerboard_material(shape_indices=[0])
 
-        self.assertTrue(sensor.render_config.enable_shadows)
-        self.assertTrue(sensor.render_config.enable_textures)
+        self.assertTrue(sensor.default_render_config.enable_shadows)
+        self.assertTrue(sensor.default_render_config.enable_textures)
 
     def test_utils_explicit_render_config_field_update_does_not_warn(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
         sensor = SensorTiledCamera(model=model)
-        sensor.render_config.enable_shadows = True
-        sensor.render_config.enable_textures = True
+        sensor.default_render_config.enable_shadows = True
+        sensor.default_render_config.enable_textures = True
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -151,8 +180,8 @@ class TestSensorTiledCamera(unittest.TestCase):
             sensor.utils.assign_checkerboard_material(shape_indices=[0])
 
         self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
-        self.assertTrue(sensor.render_config.enable_shadows)
-        self.assertTrue(sensor.render_config.enable_textures)
+        self.assertTrue(sensor.default_render_config.enable_shadows)
+        self.assertTrue(sensor.default_render_config.enable_textures)
 
     def test_albedo_output_follows_output_color_space(self) -> None:
         color = (0.25, 0.5, 0.75)
@@ -167,7 +196,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
             sensor = SensorTiledCamera(
                 model=model,
-                config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+                default_config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
             )
             camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
             albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
@@ -255,8 +284,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
-        tiled_camera_sensor.render_config.enable_shadows = True
-        tiled_camera_sensor.render_config.enable_textures = True
+        tiled_camera_sensor.default_render_config.enable_shadows = True
+        tiled_camera_sensor.default_render_config.enable_textures = True
         tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
         tiled_camera_sensor.utils.assign_checkerboard_material(
             shape_indices=np.arange(model.shape_count, dtype=np.int32)

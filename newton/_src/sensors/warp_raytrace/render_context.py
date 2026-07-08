@@ -14,7 +14,6 @@ from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
 from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
-from .utils import Utils
 
 
 class RenderContext:

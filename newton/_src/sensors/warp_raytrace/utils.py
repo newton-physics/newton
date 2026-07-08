@@ -284,9 +284,9 @@ class Utils:
 
     def __warn_implicit_render_config_update(self, method_name: str, config_field: str, value: bool) -> None:
         warnings.warn(
-            f"SensorTiledCamera.utils.{method_name}() changed SensorTiledCamera.render_config.{config_field}. "
-            "This side effect is deprecated and will be removed in a future release. "
-            f"Set sensor.render_config.{config_field} = {value!r} explicitly.",
+            f"SensorTiledCamera.utils.{method_name}() changed SensorTiledCamera.default_render_config.{config_field}. "
+            "This side effect is deprecated as of Newton 1.4 and will be removed in a future release. "
+            f"Set sensor.default_render_config.{config_field} = {value!r} explicitly.",
             category=DeprecationWarning,
             stacklevel=3,
         )
