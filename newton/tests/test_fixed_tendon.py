@@ -7,6 +7,7 @@ from enum import IntEnum
 import warp as wp
 
 import newton
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
 
 
@@ -89,7 +90,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
         state_in.joint_q.assign(joint_start_positions)
 
         device = model.device
-        use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
+        use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps for full ping-pong cycle)
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)

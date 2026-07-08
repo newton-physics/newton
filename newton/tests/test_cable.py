@@ -8,6 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 devices = get_test_devices()
@@ -264,7 +265,7 @@ def _run_sim_loop(simulate_fn, num_steps, device):
     the same orientation it received them, e.g. by performing an even number of
     ``state0, state1 = state1, state0`` swaps.
     """
-    use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
+    use_graph = is_graph_capture_allocation_enabled(device)
     graph = None
     if use_graph:
         with wp.ScopedCapture(device) as capture:

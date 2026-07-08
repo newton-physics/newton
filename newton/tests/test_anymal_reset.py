@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.utils
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -90,7 +90,7 @@ class TestAnymalReset(unittest.TestCase):
         self.simulate()
         self.save_initial_mjw_data()
 
-        self.use_graph = newton.utils.is_graph_capture_allocation_enabled(self.device)
+        self.use_graph = is_graph_capture_allocation_enabled(self.device)
         if self.use_graph:
             with wp.ScopedCapture() as capture:
                 self.simulate()

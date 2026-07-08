@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton import ParticleFlags
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 # fmt: off
@@ -287,7 +288,7 @@ class ClothSim:
         self.num_test_frames = 50
         self.iterations = 5
         self.device = device
-        self.use_graph = use_graph and newton.utils.is_graph_capture_allocation_enabled(self.device)
+        self.use_graph = use_graph and is_graph_capture_allocation_enabled(self.device)
         self.builder = newton.ModelBuilder(up_axis="Y")
         self.builder.default_shape_cfg.ke = 1.0e5
         self.builder.default_shape_cfg.kd = 1.0e8 if solver == "vbd" else 1.0e3

@@ -324,7 +324,7 @@ class Example:
     def capture(self):
         self.graph = None
         self.use_graph = False
-        if newton.utils.is_graph_capture_allocation_enabled(self.device):
+        if self.device.is_cpu or self.device.is_mempool_enabled:
             print("[INFO] Using graph capture")
             self.use_graph = True
             self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)

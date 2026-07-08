@@ -24,6 +24,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.types import GeoType
+from newton._src.utils import is_graph_capture_allocation_enabled
 
 _cuda_available = wp.is_cuda_available()
 
@@ -221,7 +222,7 @@ class _SimLoop:
     def run(self, steps):
         """Run *steps* frames, returning the final state pair."""
         device = self.model.device
-        use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
+        use_graph = is_graph_capture_allocation_enabled(device)
 
         if use_graph:
             # Warmup (allocates internal buffers so graph capture sees a stable set).

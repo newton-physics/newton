@@ -35,7 +35,6 @@ newton.utils
    create_straight_cable_points_and_quaternions
    download_asset
    event_scope
-   is_graph_capture_allocation_enabled
    load_texture
    normalize_texture
    plot_graph

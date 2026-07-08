@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton import Heightfield
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -287,7 +288,7 @@ class TestHeightfield(unittest.TestCase):
         sim_dt = 1.0 / 240.0
 
         device = model.device
-        use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
+        use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps for full ping-pong cycle)
             solver.step(state_in, state_out, control, None, sim_dt)

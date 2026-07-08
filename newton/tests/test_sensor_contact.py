@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.geometry import ContactAggregation
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.sensors import SensorContact
 from newton.solvers import SolverKamino, SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
@@ -747,7 +748,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         num_steps = 240 * 2
 
         device = model.device
-        use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
+        use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps to allocate both buffers)
             solver.step(state_in, state_out, control, None, sim_dt)
@@ -891,7 +892,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         num_steps = 240 * 2
 
         device = model.device
-        use_graph = newton.utils.is_graph_capture_allocation_enabled(device)
+        use_graph = is_graph_capture_allocation_enabled(device)
         if use_graph:
             # warmup (2 steps to allocate both buffers)
             solver.step(state_in, state_out, control, None, sim_dt)
