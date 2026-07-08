@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
@@ -1433,13 +1434,21 @@ class Mesh:
         self._cached_hash = None
 
     # construct simulation ready buffers from points
-    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
+    @deprecate_nonkeyword_arguments
+    def finalize(
+        self,
+        device: Devicelike = None,
+        *,
+        requires_grad: bool = False,
+        bvh_constructor: str | None = None,
+    ) -> wp.uint64:
         """
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
         Args:
             device: Device on which to allocate mesh buffers.
             requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
+            bvh_constructor: Optional Warp mesh BVH constructor backend. If ``None``, Warp's default is used.
 
         Returns:
             The ID of the simulation-ready Warp Mesh.
@@ -1449,7 +1458,7 @@ class Mesh:
             vel = wp.zeros_like(pos)
             indices = wp.array(self.indices, dtype=wp.int32)
 
-            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices)
+            self.mesh = wp.Mesh(points=pos, velocities=vel, indices=indices, bvh_constructor=bvh_constructor)
             return self.mesh.id
 
     def compute_convex_hull(self, replace: bool = False) -> "Mesh":
@@ -1604,7 +1613,7 @@ class TetMesh:
                 per-element array of shape (tet_count,).
             k_lambda: Second elastic Lame parameter [Pa]. Scalar (uniform) or
                 per-element array of shape (tet_count,).
-            k_damp: Rayleigh damping coefficient [-] (dimensionless). Scalar
+            k_damp: Viscous damping coefficient [Pa·s]. Scalar
                 (uniform) or per-element array of shape (tet_count,).
             density: Uniform density [kg/m^3] for mass computation.
             custom_attributes: Dictionary of named custom arrays with their
@@ -1801,7 +1810,7 @@ class TetMesh:
 
     @property
     def k_damp(self) -> np.ndarray | None:
-        """Per-element Rayleigh damping coefficient [-], shape (tet_count,) or None."""
+        """Per-element viscous damping coefficient [Pa·s], shape (tet_count,) or None."""
         return self._k_damp
 
     @property
@@ -1812,17 +1821,30 @@ class TetMesh:
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim) -> "TetMesh":
+    def create_from_usd(prim, *, compat_namespaces: Sequence[str] | None = None) -> "TetMesh":
         """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
         Reads vertex positions from the ``points`` attribute and tetrahedral
         connectivity from ``tetVertexIndices``. If a physics material is bound
         to the prim (via ``material:binding:physics``) and contains
-        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
-        (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
+        ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
         those values are read and converted to Lame parameters (``k_mu``,
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
+
+        Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
+        (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
+        are read off any bound material, matching the pre-canonical behavior. That default is
+        deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
+        authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
+        without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
+        materials do not warn); a future
+        release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
+        the canonical-only behavior now -- moduli are then read only from a material that applies
+        ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
+        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
+        warning.
 
         Example:
 
@@ -1840,13 +1862,17 @@ class TetMesh:
 
         Args:
             prim: The USD prim to load the tetrahedral mesh from.
+            compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
+                ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
+                gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
+                canonical-only.
 
         Returns:
             TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 
-        return get_tetmesh(prim)
+        return get_tetmesh(prim, compat_namespaces=compat_namespaces)
 
     @staticmethod
     def create_from_file(filename: str) -> "TetMesh":
@@ -2379,11 +2405,12 @@ class Gaussian:
 
     # ---- Finalize (GPU upload) -----------------------------------------------
 
-    def finalize(self, device: Devicelike = None) -> Data:
+    def finalize(self, device: Devicelike = None, *, bvh_constructor: str | None = None) -> Data:
         """Upload Gaussian data to the GPU as Warp arrays.
 
         Args:
             device: Device on which to allocate buffers.
+            bvh_constructor: Optional Warp BVH constructor backend. If ``None``, Warp's default is used.
 
         Returns:
             Gaussian.Data struct containing the Warp arrays.
@@ -2412,7 +2439,7 @@ class Gaussian:
                 inputs=[self.warp_data, lowers, uppers],
             )
 
-            self.warp_bvh = wp.Bvh(lowers, uppers)
+            self.warp_bvh = wp.Bvh(lowers, uppers, constructor=bvh_constructor)
             self.warp_data.bvh_id = self.warp_bvh.id
         return self.warp_data
 

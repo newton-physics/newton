@@ -159,21 +159,51 @@ def solver_submodule_pages() -> list[str]:
 
         public_name = f"newton.solvers.{info.name}"
         modules.append(public_name)
+
+    def add_public_module_tree(mod_name: str, module: ModuleType) -> None:
+        if mod_name not in modules:
+            modules.append(mod_name)
+        for child_name in public_symbols(module):
+            child = getattr(module, child_name)
+            if not inspect.ismodule(child):
+                continue
+            add_public_module_tree(f"{mod_name}.{child_name}", child)
+
+    for name in public_symbols(public_solvers):
+        attr = getattr(public_solvers, name)
+        if not inspect.ismodule(attr):
+            continue
+        add_public_module_tree(f"newton.solvers.{name}", attr)
+
     return modules
 
 
-def write_module_page(mod_name: str) -> None:
+def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None) -> None:
     """Create an .rst file for *mod_name* under *OUTPUT_DIR*."""
 
+    if api_toctree_modules is None:
+        api_toctree_modules = set(api_modules())
+
     is_solver_submodule = mod_name.startswith("newton.solvers.") and mod_name != "newton.solvers"
+    uses_internal_solver_module = False
     if is_solver_submodule:
         sub_name = mod_name.split(".", 2)[2]
-        module = importlib.import_module(f"newton._src.solvers.{sub_name}")
+        try:
+            module = importlib.import_module(mod_name)
+        except ModuleNotFoundError as exc:
+            if exc.name != mod_name:
+                raise
+            # Some public solver helpers are exposed as attributes on
+            # ``newton.solvers`` even though it is a module, not a package.
+            # Document those from their implementation module while keeping the
+            # public page name stable.
+            module = importlib.import_module(f"newton._src.solvers.{sub_name}")
+            uses_internal_solver_module = True
     else:
         module = importlib.import_module(mod_name)
 
     symbols = public_symbols(module)
-    if is_solver_submodule:
+    if uses_internal_solver_module:
         # Keep solver classes centralized in newton.solvers.
         symbols = [name for name in symbols if not name.startswith("Solver")]
 
@@ -193,9 +223,9 @@ def write_module_page(mod_name: str) -> None:
             continue
 
         # ------------------------------------------------------------------
-        # Constants / simple values
+        # Constants / simple values (incl. collection constants such as tuples)
         # ------------------------------------------------------------------
-        if wp.types.type_is_value(type(attr)) or isinstance(attr, str):
+        if wp.types.type_is_value(type(attr)) or isinstance(attr, (str, bytes, tuple, list, frozenset)):
             constants.append(name)
             continue
 
@@ -230,7 +260,7 @@ def write_module_page(mod_name: str) -> None:
     if doc:
         lines.extend([doc, ""])
 
-    if is_solver_submodule:
+    if uses_internal_solver_module:
         lines.extend(
             [
                 ".. note::",
@@ -246,25 +276,26 @@ def write_module_page(mod_name: str) -> None:
     else:
         lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
-    # Render a simple bullet list of submodules (no autosummary/toctree) to
-    # avoid generating stub pages that can cause duplicate descriptions.
-    if modules and not is_solver_submodule:
+    # Render submodules as direct document links instead of autosummary stubs.
+    # Child module pages still need hidden toctree edges to satisfy Sphinx.
+    if modules:
         modules.sort()
-        lines.extend(
-            [
-                ".. toctree::",
-                "   :hidden:",
-                "",
-            ]
-        )
-        for sub in modules:
-            modname = f"{mod_name}.{sub}"
-            docname = modname.replace(".", "_")
-            lines.append(f"   {docname}")
-        lines.append("")
+        nested_modules = [sub for sub in modules if f"{mod_name}.{sub}" not in api_toctree_modules]
+        if nested_modules:
+            lines.extend(
+                [
+                    ".. toctree::",
+                    "   :hidden:",
+                    "",
+                ]
+            )
+            for sub in nested_modules:
+                modname = f"{mod_name}.{sub}"
+                docname = modname.replace(".", "_")
+                lines.append(f"   {docname}")
+            lines.append("")
 
         lines.extend([".. rubric:: Submodules", ""])
-        # Link to sibling generated module pages without creating autosummary stubs.
         for sub in modules:
             modname = f"{mod_name}.{sub}"
             docname = modname.replace(".", "_")
@@ -274,7 +305,7 @@ def write_module_page(mod_name: str) -> None:
     if classes:
         classes.sort()
         lines.extend([".. rubric:: Classes", ""])
-        if is_solver_submodule:
+        if uses_internal_solver_module or is_solver_submodule:
             for cls in classes:
                 lines.extend([f".. autoclass:: {cls}", ""])
         else:
@@ -292,7 +323,7 @@ def write_module_page(mod_name: str) -> None:
     if functions:
         functions.sort()
         lines.extend([".. rubric:: Functions", ""])
-        if is_solver_submodule:
+        if uses_internal_solver_module or is_solver_submodule:
             for fn in functions:
                 lines.extend([f".. autofunction:: {fn}", ""])
         else:
@@ -385,7 +416,7 @@ def generate_all() -> None:
     all_modules = modules + [mod for mod in extra_solver_modules if mod not in modules]
 
     for mod in all_modules:
-        write_module_page(mod)
+        write_module_page(mod, set(modules))
 
     write_api_toctree(modules)
 

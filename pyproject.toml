@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.3.0.dev0"
+version = "1.4.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -28,7 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.14.0rc2",
+    "warp-lang>=1.15.0.dev20260626",
 ]
 
 [project.optional-dependencies]
@@ -36,16 +36,13 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=3.8.0.3,~=3.8.0",  # MuJoCo, warp-accelerated (3.8.0 was broken)
-    "mujoco~=3.8.0",        # MuJoCo physics engine
-    "newton-actuators>=0.1.0",  # deprecated — kept for backward compat, will be removed
+    "mujoco-warp~=3.10.0,>=3.10.0.1",  # MuJoCo, warp-accelerated
+    "mujoco~=3.10.0",       # MuJoCo physics engine
 ]
 
-# Optional: ONNX policy inference (used by ControllerNeuralMLP / ControllerNeuralLSTM
-# and the RL policy examples).  Only the pure protobuf parser is needed; inference
-# runs on Warp kernels, no `onnxruntime` is pulled in.
+# Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
-    "onnx>=1.16.0",
+    "warp-nn[onnx]==0.3.0",
 ]
 
 # Asset import and mesh processing dependencies
@@ -69,7 +66,7 @@ importers = [
     "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.3.0",
+    "newton-usd-schemas>=0.4.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
@@ -98,16 +95,15 @@ rtx = [
     "ovrtx>=0.3",           # NVIDIA OVRTX renderer
 ]
 
-# PyTorch is no longer required to run RL policies (examples and actuators
-# load ONNX files via Newton's Warp-backed runtime).  These extras remain only
-# for the Kamino solver's RL training scripts.
+# PyTorch is not required for ONNX policy inference. These extras cover
+# workflows that still need PyTorch explicitly, including .pt/.pth policies.
 torch-cu12 = [
     "newton[examples]", # include example dependencies
-    "torch>=2.7.0",     # CUDA 12 PyTorch (Kamino RL only)
+    "torch>=2.7.0",     # CUDA 12 PyTorch
 ]
 torch-cu13 = [
     "newton[examples]", # include example dependencies
-    "torch>=2.10.0",    # CUDA 13 PyTorch (Kamino RL only)
+    "torch>=2.10.0",    # CUDA 13 PyTorch
 ]
 
 # Development and Testing
@@ -240,7 +236,6 @@ banned-module-level-imports = [
     "mujoco",
     "mujoco_warp",
     "networkx",
-    "onnx",
     "open3d",
     "openmesh",
     "ovrtx",
@@ -306,6 +301,7 @@ files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf
 
 [tool.typos.default.extend-words]
 arange = "arange"
+precess = "precess"
 ba = "ba"
 ix = "ix"
 iy = "iy"

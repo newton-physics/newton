@@ -13,6 +13,7 @@ from collections.abc import Iterable
 import numpy as np
 import warp as wp
 
+from .....core.types import Axis
 from .....geometry import ShapeFlags
 from .bodies import RigidBodiesModel, RigidBodyDescriptor
 from .geometry import GeometriesModel, GeometryDescriptor
@@ -29,7 +30,7 @@ from .model import ModelKamino, ModelKaminoInfo
 from .shapes import ShapeDescriptorType, max_contacts_for_shape_pair
 from .size import SizeKamino
 from .time import TimeModel
-from .types import Axis, float32, mat33f, to_warp_int32_array, transformf, vec2i, vec3f, vec4f, vec6f
+from .types import to_warp_int32_array
 from .world import WorldDescriptor
 
 ###
@@ -63,7 +64,7 @@ class ModelBuilderKamino:
         Initializes a new empty model builder.
 
         Args:
-            default_world (bool): Whether to create a default world upon initialization.
+            default_world: Whether to create a default world upon initialization.
                 If True, a default world will be created. Defaults to False.
         """
         # Meta-data
@@ -265,16 +266,16 @@ class ModelBuilderKamino:
         Add a new world to the model.
 
         Args:
-            name (str): The name of the world.
-            uid (str | None): The unique identifier of the world.\n
+            name: The name of the world.
+            uid: The unique identifier of the world.
                 If None, a UUID will be generated.
-            up_axis (Axis | None): The up axis of the world.\n
+            up_axis: The up axis of the world.
                 If None, Axis.Z will be used.
-            gravity (GravityDescriptor | None): The gravity descriptor of the world.\n
+            gravity: The gravity descriptor of the world.
                 If None, a default gravity descriptor will be used.
 
         Returns:
-            int: The index of the newly added world.
+            The index of the newly added world.
         """
         # Create a new world descriptor
         self._worlds.append(WorldDescriptor(name=name, uid=uid, wid=self._num_worlds))
@@ -306,9 +307,9 @@ class ModelBuilderKamino:
     def add_rigid_body(
         self,
         m_i: float,
-        i_I_i: mat33f,
-        q_i_0: transformf,
-        u_i_0: vec6f | None = None,
+        i_I_i: wp.mat33f,
+        q_i_0: wp.transformf,
+        u_i_0: wp.spatial_vectorf | None = None,
         name: str | None = None,
         uid: str | None = None,
         world_index: int = 0,
@@ -317,17 +318,17 @@ class ModelBuilderKamino:
         Add a rigid body entity to the model using explicit specifications.
 
         Args:
-            m_i (float): The mass of the body.
-            i_I_i (mat33f): The inertia tensor of the body.
-            q_i_0 (transformf): The initial pose of the body.
-            u_i_0 (vec6f): The initial velocity of the body.
-            name (str | None): The name of the body.
-            uid (str | None): The unique identifier of the body.
-            world_index (int): The index of the world to which the body will be added.\n
+            m_i: The mass of the body.
+            i_I_i: The inertia tensor of the body.
+            q_i_0: The initial pose of the body.
+            u_i_0: The initial velocity of the body.
+            name: The name of the body.
+            uid: The unique identifier of the body.
+            world_index: The index of the world to which the body will be added.
                 Defaults to the first world with index `0`.
 
         Returns:
-            int: The index of the newly added body.
+            The index of the newly added body.
         """
         # Create a rigid body descriptor from the provided specifications
         # NOTE: Specifying a name is required by the base descriptor class,
@@ -339,7 +340,7 @@ class ModelBuilderKamino:
             m_i=m_i,
             i_I_i=i_I_i,
             q_i_0=q_i_0,
-            u_i_0=u_i_0 if u_i_0 is not None else vec6f(0.0),
+            u_i_0=u_i_0 if u_i_0 is not None else wp.spatial_vectorf(0.0),
         )
 
         # Add the body descriptor to the model
@@ -350,12 +351,12 @@ class ModelBuilderKamino:
         Add a rigid body entity to the model using a descriptor object.
 
         Args:
-            body (RigidBodyDescriptor): The body descriptor to be added.
-            world_index (int): The index of the world to which the body will be added.\n
+            body: The body descriptor to be added.
+            world_index: The index of the world to which the body will be added.
                 Defaults to the first world with index `0`.
 
         Returns:
-            int: The body index of the newly added body w.r.t its world.
+            The body index of the newly added body w.r.t its world.
         """
         # Check if the descriptor is valid
         if not isinstance(body, RigidBodyDescriptor):
@@ -385,9 +386,10 @@ class ModelBuilderKamino:
         dof_type: JointDoFType,
         bid_B: int,
         bid_F: int,
-        B_r_Bj: vec3f,
-        F_r_Fj: vec3f,
-        X_j: mat33f,
+        B_r_Bj: wp.vec3f,
+        F_r_Fj: wp.vec3f,
+        X_Bj: wp.mat33f,
+        X_Fj: wp.mat33f | None = None,
         q_j_min: list[float] | float | None = None,
         q_j_max: list[float] | float | None = None,
         dq_j_max: list[float] | float | None = None,
@@ -404,28 +406,29 @@ class ModelBuilderKamino:
         Add a joint entity to the model using explicit specifications.
 
         Args:
-            act_type (JointActuationType): The actuation type of the joint.
-            dof_type (JointDoFType): The degree of freedom type of the joint.
-            bid_B (int): The index of the body on the "base" side of the joint.
-            bid_F (int): The index of the body on the "follower" side of the joint.
-            B_r_Bj (vec3f): The position of the joint in the base body frame.
-            F_r_Fj (vec3f): The position of the joint in the follower body frame.
-            X_j (mat33f): The orientation of the joint frame relative to the base body frame.
-            q_j_min (list[float] | float | None): The minimum joint coordinate limits.
-            q_j_max (list[float] | float | None): The maximum joint coordinate limits.
-            dq_j_max (list[float] | float | None): The maximum joint velocity limits.
-            tau_j_max (list[float] | float | None): The maximum joint effort limits.
-            a_j (list[float] | float | None): The joint armature along each DoF.
-            b_j (list[float] | float | None): The joint damping along each DoF.
-            k_p_j (list[float] | float | None): The joint proportional gain along each DoF.
-            k_d_j (list[float] | float | None): The joint derivative gain along each DoF.
-            name (str | None): The name of the joint.
-            uid (str | None): The unique identifier of the joint.
-            world_index (int): The index of the world to which the joint will be added.\n
+            act_type: The actuation type of the joint.
+            dof_type: The degree of freedom type of the joint.
+            bid_B: The index of the body on the "base" side of the joint.
+            bid_F: The index of the body on the "follower" side of the joint.
+            B_r_Bj: The position of the joint in the base body frame.
+            F_r_Fj: The position of the joint in the follower body frame.
+            X_Bj: The orientation of the joint frame relative to the base body frame.
+            X_Fj: The orientation of the joint frame relative to the follower body frame.
+            q_j_min: The minimum joint coordinate limits.
+            q_j_max: The maximum joint coordinate limits.
+            dq_j_max: The maximum joint velocity limits.
+            tau_j_max: The maximum joint effort limits.
+            a_j: The joint armature along each DoF.
+            b_j: The joint damping along each DoF.
+            k_p_j: The joint proportional gain along each DoF.
+            k_d_j: The joint derivative gain along each DoF.
+            name: The name of the joint.
+            uid: The unique identifier of the joint.
+            world_index: The index of the world to which the joint will be added.
                 Defaults to the first world with index `0`.
 
         Returns:
-            int: The index of the newly added joint.
+            The index of the newly added joint.
         """
         # Check if the actuation type is valid
         if not isinstance(act_type, JointActuationType):
@@ -448,7 +451,8 @@ class ModelBuilderKamino:
             bid_F=bid_F,
             B_r_Bj=B_r_Bj,
             F_r_Fj=F_r_Fj,
-            X_j=X_j,
+            X_Bj=X_Bj,
+            X_Fj=X_Fj,
             q_j_min=q_j_min,
             q_j_max=q_j_max,
             dq_j_max=dq_j_max,
@@ -467,14 +471,14 @@ class ModelBuilderKamino:
         Add a joint entity to the model by descriptor.
 
         Args:
-            joint (JointDescriptor):
+            joint:
                 The joint descriptor to be added.
-            world_index (int):
-                The index of the world to which the joint will be added.\n
+            world_index:
+                The index of the world to which the joint will be added.
                 Defaults to the first world with index `0`.
 
         Returns:
-            int: The joint index of the newly added joint w.r.t its world.
+            The joint index of the newly added joint w.r.t its world.
         """
         # Check if the descriptor is valid
         if not isinstance(joint, JointDescriptor):
@@ -506,7 +510,7 @@ class ModelBuilderKamino:
         self,
         body: int = -1,
         shape: ShapeDescriptorType | None = None,
-        offset: transformf | None = None,
+        offset: wp.transformf | None = None,
         material: str | int | None = None,
         group: int = 1,
         collides: int = 1,
@@ -521,42 +525,30 @@ class ModelBuilderKamino:
         Add a geometry entity to the model using explicit specifications.
 
         Args:
-            body (int):
-                The index of the body to which the geometry will be attached.\n
+            body: The index of the body to which the geometry will be attached.
                 Defaults to -1 (world).
-            shape (ShapeDescriptorType | None):
-                The shape descriptor of the geometry.
-            offset (transformf | None):
-                The local offset of the geometry relative to the body frame.
-            material (str | int | None):
-                The name or index of the material assigned to the geometry.
-            max_contacts (int):
-                The maximum number of contact points for the geometry.\n
+            shape: The shape descriptor of the geometry.
+            offset: The local offset of the geometry relative to the body frame.
+            material: The name or index of the material assigned to the geometry.
+            max_contacts: The maximum number of contact points for the geometry.
                 Defaults to 0 (unlimited).
-            group (int):
-                The collision group of the geometry.\n
+            group: The collision group of the geometry.
                 Defaults to 1.
-            collides (int):
-                The collision mask of the geometry.\n
+            collides: The collision mask of the geometry.
                 Defaults to 1.
-            gap (float):
-                The collision detection gap of the geometry.\n
+            gap: The collision detection gap of the geometry.
                 Defaults to 0.0.
-            margin (float):
-                The artificial surface margin of the geometry.\n
+            margin: The artificial surface margin of the geometry.
                 Defaults to 0.0.
-            name (str | None):
-                The name of the geometry.\n
+            name: The name of the geometry.
                 If `None`, a default name will be generated based on the current number of geometries in the model.
-            uid (str | None):
-                The unique identifier of the geometry.\n
+            uid: The unique identifier of the geometry.
                 If `None`, a UUID will be generated.
-            world_index (int):
-                The index of the world to which the geometry will be added.\n
+            world_index: The index of the world to which the geometry will be added.
                 Defaults to the first world with index `0`.
 
         Returns:
-            int: The index of the newly added collision geometry.
+            The index of the newly added collision geometry.
         """
         # Set the default material if not provided
         if material is None:
@@ -585,7 +577,7 @@ class ModelBuilderKamino:
             name=name if name is not None else f"cgeom_{self._num_geoms}",
             uid=uid,
             body=body,
-            offset=offset if offset is not None else transformf(),
+            offset=offset if offset is not None else wp.transformf(),
             shape=shape,
             material=self._materials[material],
             mid=self._materials.index(material),
@@ -604,14 +596,12 @@ class ModelBuilderKamino:
         Add a geometry to the model by descriptor.
 
         Args:
-            geom (GeometryDescriptor):
-                The geometry descriptor to be added.
-            world_index (int):
-                The index of the world to which the geometry will be added.\n
+            geom: The geometry descriptor to be added.
+            world_index: The index of the world to which the geometry will be added.
                 Defaults to the first world with index `0`.
 
         Returns:
-            int: The geometry index of the newly added geometry w.r.t its world.
+            The geometry index of the newly added geometry w.r.t its world.
         """
         # Check if the descriptor is valid
         if not isinstance(geom, GeometryDescriptor):
@@ -646,8 +636,8 @@ class ModelBuilderKamino:
         Add a material to the model.
 
         Args:
-            material (MaterialDescriptor): The material descriptor to be added.
-            world_index (int): The index of the world to which the material will be added.\n
+            material: The material descriptor to be added.
+            world_index: The index of the world to which the material will be added.
                 Defaults to the first world with index `0`.
         """
         # Check if the world index is valid
@@ -674,8 +664,8 @@ class ModelBuilderKamino:
         indices of the elements in the other builder are adjusted to account for the
         existing elements in the current builder, preventing any index conflicts.
 
-        Arguments:
-            other (ModelBuilderKamino): The other ModelBuilderKamino whose contents are to be added to the current.
+        Args:
+            other: The other ModelBuilderKamino whose contents are to be added to the current.
 
         Raises:
             ValueError: If the provided builder is not of type `ModelBuilderKamino`.
@@ -744,8 +734,8 @@ class ModelBuilderKamino:
         Set the up axis for a specific world.
 
         Args:
-            axis (Axis): The new up axis to be set.
-            world_index (int): The index of the world for which to set the up axis.\n
+            axis: The new up axis to be set.
+            world_index: The index of the world for which to set the up axis.
                 Defaults to the first world with index `0`.
 
         Raises:
@@ -766,8 +756,8 @@ class ModelBuilderKamino:
         Set the gravity descriptor for a specific world.
 
         Args:
-            gravity (GravityDescriptor): The new gravity descriptor to be set.
-            world_index (int): The index of the world for which to set the gravity descriptor.\n
+            gravity: The new gravity descriptor to be set.
+            world_index: The index of the world for which to set the gravity descriptor.
                 Defaults to the first world with index `0`.
 
         Raises:
@@ -812,10 +802,10 @@ class ModelBuilderKamino:
         Sets the material pair properties for two materials.
 
         Args:
-            first (int | str | MaterialDescriptor): The first material (by index, name, or descriptor).
-            second (int | str | MaterialDescriptor): The second material (by index, name, or descriptor).
-            material_pair (MaterialPairProperties): The material pair properties to be set.
-            world_index (int): The index of the world for which to set the material pair properties.\n
+            first: The first material (by index, name, or descriptor).
+            second: The second material (by index, name, or descriptor).
+            material_pair: The material pair properties to be set.
+            world_index: The index of the world for which to set the material pair properties.
                 Defaults to the first world with index `0`.
         """
         # Check if the world index is valid
@@ -833,9 +823,9 @@ class ModelBuilderKamino:
         Set the base body for a specific world specified either by name or by index.
 
         Args:
-            body_key (int | str): Identifier of the body to be set as the base body.
+            body_key: Identifier of the body to be set as the base body.
                 Can be either the body's index (within the world) or its name.
-            world_index (int): The index of the world for which to set the base body.\n
+            world_index: The index of the world for which to set the base body.
                 Defaults to the first world with index `0`.
         """
         # Check if the world index is valid
@@ -857,9 +847,9 @@ class ModelBuilderKamino:
         Set the base joint for a specific world specified either by name or by index.
 
         Args:
-            joint_key (int | str): Identifier of the joint to be set as the base joint.
+            joint_key: Identifier of the joint to be set as the base joint.
                 Can be either the joint's index (within the world) or its name.
-            world_index (int): The index of the world for which to set the base joint.\n
+            world_index: The index of the world for which to set the base joint.
                 Defaults to the first world with index `0`.
         """
         # Check if the world index is valid
@@ -890,15 +880,15 @@ class ModelBuilderKamino:
         object, allocating the necessary data structures on the target device.
 
         Args:
-            device (wp.DeviceLike): The target device for the model data.\n
+            device: The target device for the model data.
                 If None, the default/preferred device will determined by Warp.
-            requires_grad (bool): Whether the model data should support gradients.\n
+            requires_grad: Whether the model data should support gradients.
                 Defaults to False.
-            base_auto (bool): Whether to automatically select a base body,
+            base_auto: Whether to automatically select a base body,
                 and if possible, a base joint, if neither was set.
 
         Returns:
-            ModelKamino: The constructed ModelKamino object containing the time-invariant simulation data.
+            The constructed ModelKamino object containing the time-invariant simulation data.
         """
         # Number of model worlds
         num_worlds = len(self._worlds)
@@ -932,12 +922,17 @@ class ModelBuilderKamino:
                 else:  # Set base body to be the follower of the base joint
                     world.set_base_body(follower_idx)
             elif not world.has_base_body and base_auto:
-                world.set_base_body(0)  # Set the base body as the first body
+                # Look for a non-universal unary joint connecting the world to a follower body
                 for jt_idx, joint in enumerate(self._joints[w]):
-                    if joint.wid == w and joint.is_unary and joint.is_connected_to_body(world.base_body_idx):
-                        # If we find a unary joint connecting the base body to the world, we set this as the base joint
+                    if joint.bid_B == -1 and joint.dof_type != JointDoFType.UNIVERSAL:
                         world.set_base_joint(jt_idx)
+                        world.set_base_body(joint.bid_F)
                         break
+                # As a last fallback, set body 0 in that world as base body (no base joint)
+                if not world.has_base_body:
+                    if world.num_bodies == 0:
+                        raise RuntimeError(f"Zero bodies in world {w}, cannot set base body.")
+                    world.set_base_body(0)
 
         ###
         # ModelKamino data collection
@@ -1008,7 +1003,8 @@ class ModelBuilderKamino:
         joints_bid_F = []
         joints_B_r_Bj = []
         joints_F_r_Fj = []
-        joints_X_j = []
+        joints_X_Bj = []
+        joints_X_Fj = []
         joints_q_j_min = []
         joints_q_j_max = []
         joints_qd_j_max = []
@@ -1134,7 +1130,8 @@ class ModelBuilderKamino:
                 joints_actid.append(joint.act_type.value)
                 joints_B_r_Bj.append(joint.B_r_Bj)
                 joints_F_r_Fj.append(joint.F_r_Fj)
-                joints_X_j.append(joint.X_j)
+                joints_X_Bj.append(joint.X_Bj)
+                joints_X_Fj.append(joint.X_Fj)
                 joints_q_j_0.extend(joint.dof_type.reference_coords)
                 joints_dq_j_0.extend(joint.dof_type.num_dofs * [0.0])
                 joints_q_j_min.extend(joint.q_j_min)
@@ -1339,19 +1336,21 @@ class ModelBuilderKamino:
                 joint_kinematic_cts_offset=to_warp_int32_array(info_jkcio),
                 base_body_index=to_warp_int32_array(info_base_bid),
                 base_joint_index=to_warp_int32_array(info_base_jid),
-                mass_min=wp.array(info_mass_min, dtype=float32),
-                mass_max=wp.array(info_mass_max, dtype=float32),
-                mass_total=wp.array(info_mass_total, dtype=float32),
-                inertia_total=wp.array(info_inertia_total, dtype=float32),
+                mass_min=wp.array(info_mass_min, dtype=wp.float32),
+                mass_max=wp.array(info_mass_max, dtype=wp.float32),
+                mass_total=wp.array(info_mass_total, dtype=wp.float32),
+                inertia_total=wp.array(info_inertia_total, dtype=wp.float32),
             )
 
             # Create the model time data
-            model_time = TimeModel(dt=wp.zeros(num_worlds, dtype=float32), inv_dt=wp.zeros(num_worlds, dtype=float32))
+            model_time = TimeModel(
+                dt=wp.zeros(num_worlds, dtype=wp.float32), inv_dt=wp.zeros(num_worlds, dtype=wp.float32)
+            )
 
             # Construct model gravity data
             model_gravity = GravityModel(
-                g_dir_acc=wp.array(gravity_g_dir_acc, dtype=vec4f),
-                vector=wp.array(gravity_vector, dtype=vec4f, requires_grad=requires_grad),
+                g_dir_acc=wp.array(gravity_g_dir_acc, dtype=wp.vec4f),
+                vector=wp.array(gravity_vector, dtype=wp.vec4f, requires_grad=requires_grad),
             )
 
             # Create the bodies model
@@ -1360,13 +1359,13 @@ class ModelBuilderKamino:
                 label=bodies_label,
                 wid=to_warp_int32_array(bodies_wid),
                 bid=to_warp_int32_array(bodies_bid),
-                i_r_com_i=wp.array(bodies_i_r_com_i, dtype=vec3f, requires_grad=requires_grad),
-                m_i=wp.array(bodies_m_i, dtype=float32, requires_grad=requires_grad),
-                inv_m_i=wp.array(bodies_inv_m_i, dtype=float32, requires_grad=requires_grad),
-                i_I_i=wp.array(bodies_i_I_i, dtype=mat33f, requires_grad=requires_grad),
-                inv_i_I_i=wp.array(bodies_inv_i_I_i, dtype=mat33f, requires_grad=requires_grad),
-                q_i_0=wp.array(bodies_q_i_0, dtype=transformf, requires_grad=requires_grad),
-                u_i_0=wp.array(bodies_u_i_0, dtype=vec6f, requires_grad=requires_grad),
+                i_r_com_i=wp.array(bodies_i_r_com_i, dtype=wp.vec3f, requires_grad=requires_grad),
+                m_i=wp.array(bodies_m_i, dtype=wp.float32, requires_grad=requires_grad),
+                inv_m_i=wp.array(bodies_inv_m_i, dtype=wp.float32, requires_grad=requires_grad),
+                i_I_i=wp.array(bodies_i_I_i, dtype=wp.mat33f, requires_grad=requires_grad),
+                inv_i_I_i=wp.array(bodies_inv_i_I_i, dtype=wp.mat33f, requires_grad=requires_grad),
+                q_i_0=wp.array(bodies_q_i_0, dtype=wp.transformf, requires_grad=requires_grad),
+                u_i_0=wp.array(bodies_u_i_0, dtype=wp.spatial_vectorf, requires_grad=requires_grad),
             )
 
             # Create the joints model
@@ -1379,19 +1378,20 @@ class ModelBuilderKamino:
                 act_type=to_warp_int32_array(joints_actid),
                 bid_B=to_warp_int32_array(joints_bid_B),
                 bid_F=to_warp_int32_array(joints_bid_F),
-                B_r_Bj=wp.array(joints_B_r_Bj, dtype=vec3f, requires_grad=requires_grad),
-                F_r_Fj=wp.array(joints_F_r_Fj, dtype=vec3f, requires_grad=requires_grad),
-                X_j=wp.array(joints_X_j, dtype=mat33f, requires_grad=requires_grad),
-                q_j_min=wp.array(joints_q_j_min, dtype=float32, requires_grad=requires_grad),
-                q_j_max=wp.array(joints_q_j_max, dtype=float32, requires_grad=requires_grad),
-                dq_j_max=wp.array(joints_qd_j_max, dtype=float32, requires_grad=requires_grad),
-                tau_j_max=wp.array(joints_tau_j_max, dtype=float32, requires_grad=requires_grad),
-                a_j=wp.array(joints_a_j, dtype=float32, requires_grad=requires_grad),
-                b_j=wp.array(joints_b_j, dtype=float32, requires_grad=requires_grad),
-                k_p_j=wp.array(joints_k_p_j, dtype=float32, requires_grad=requires_grad),
-                k_d_j=wp.array(joints_k_d_j, dtype=float32, requires_grad=requires_grad),
-                q_j_0=wp.array(joints_q_j_0, dtype=float32, requires_grad=requires_grad),
-                dq_j_0=wp.array(joints_dq_j_0, dtype=float32, requires_grad=requires_grad),
+                B_r_Bj=wp.array(joints_B_r_Bj, dtype=wp.vec3f, requires_grad=requires_grad),
+                F_r_Fj=wp.array(joints_F_r_Fj, dtype=wp.vec3f, requires_grad=requires_grad),
+                X_Bj=wp.array(joints_X_Bj, dtype=wp.mat33f, requires_grad=requires_grad),
+                X_Fj=wp.array(joints_X_Fj, dtype=wp.mat33f, requires_grad=requires_grad),
+                q_j_min=wp.array(joints_q_j_min, dtype=wp.float32, requires_grad=requires_grad),
+                q_j_max=wp.array(joints_q_j_max, dtype=wp.float32, requires_grad=requires_grad),
+                dq_j_max=wp.array(joints_qd_j_max, dtype=wp.float32, requires_grad=requires_grad),
+                tau_j_max=wp.array(joints_tau_j_max, dtype=wp.float32, requires_grad=requires_grad),
+                a_j=wp.array(joints_a_j, dtype=wp.float32, requires_grad=requires_grad),
+                b_j=wp.array(joints_b_j, dtype=wp.float32, requires_grad=requires_grad),
+                k_p_j=wp.array(joints_k_p_j, dtype=wp.float32, requires_grad=requires_grad),
+                k_d_j=wp.array(joints_k_d_j, dtype=wp.float32, requires_grad=requires_grad),
+                q_j_0=wp.array(joints_q_j_0, dtype=wp.float32, requires_grad=requires_grad),
+                dq_j_0=wp.array(joints_dq_j_0, dtype=wp.float32, requires_grad=requires_grad),
                 num_coords=to_warp_int32_array(joints_ncoords_j),
                 num_dofs=to_warp_int32_array(joints_ndofs_j),
                 num_cts=to_warp_int32_array(joints_ncts_j),
@@ -1423,30 +1423,30 @@ class ModelBuilderKamino:
                 type=to_warp_int32_array(geoms_type),
                 flags=to_warp_int32_array(geoms_flags),
                 ptr=wp.array(geoms_ptr, dtype=wp.uint64),
-                params=wp.array(geoms_params, dtype=vec3f),
-                offset=wp.array(geoms_offset, dtype=transformf),
+                params=wp.array(geoms_params, dtype=wp.vec3f),
+                offset=wp.array(geoms_offset, dtype=wp.transformf),
                 material=to_warp_int32_array(geoms_material),
                 group=to_warp_int32_array(geoms_group),
-                gap=wp.array(geoms_gap, dtype=float32),
-                margin=wp.array(geoms_margin, dtype=float32),
-                collidable_pairs=wp.array(np.array(model_collidable_pairs), dtype=vec2i),
-                excluded_pairs=wp.array(np.array(model_excluded_pairs), dtype=vec2i),
+                gap=wp.array(geoms_gap, dtype=wp.float32),
+                margin=wp.array(geoms_margin, dtype=wp.float32),
+                collidable_pairs=wp.array(np.array(model_collidable_pairs), dtype=wp.vec2i),
+                excluded_pairs=wp.array(np.array(model_excluded_pairs), dtype=wp.vec2i),
             )
 
             # Create the material pairs model
             model_materials = MaterialsModel(
                 num_materials=model_size.sum_of_num_materials,
-                restitution=wp.array(materials_rest[0], dtype=float32),
-                static_friction=wp.array(materials_static_fric[0], dtype=float32),
-                dynamic_friction=wp.array(materials_dynamic_fric[0], dtype=float32),
+                restitution=wp.array(materials_rest[0], dtype=wp.float32),
+                static_friction=wp.array(materials_static_fric[0], dtype=wp.float32),
+                dynamic_friction=wp.array(materials_dynamic_fric[0], dtype=wp.float32),
             )
 
             # Create the material pairs model
             model_material_pairs = MaterialPairsModel(
                 num_material_pairs=model_size.sum_of_num_material_pairs,
-                restitution=wp.array(mpairs_rest[0], dtype=float32),
-                static_friction=wp.array(mpairs_static_fric[0], dtype=float32),
-                dynamic_friction=wp.array(mpairs_dynamic_fric[0], dtype=float32),
+                restitution=wp.array(mpairs_rest[0], dtype=wp.float32),
+                static_friction=wp.array(mpairs_static_fric[0], dtype=wp.float32),
+                dynamic_friction=wp.array(mpairs_dynamic_fric[0], dtype=wp.float32),
             )
 
         # Construct and return the complete model container
@@ -1481,8 +1481,7 @@ class ModelBuilderKamino:
             6. (optional) filter out neighbor collisions for joints w/ DoFs
 
         Args:
-            allow_neighbors (bool, optional):
-                If True, includes geom-pairs with corresponding
+            allow_neighbors: If True, includes geom-pairs with corresponding
                 bodies that are neighbors via joints with DoF.
 
         Returns:
@@ -1583,8 +1582,7 @@ class ModelBuilderKamino:
         pairs that should **not** collide.
 
         Args:
-            allow_neighbors (bool, optional):
-                If True, does not exclude geom-pairs with corresponding
+            allow_neighbors: If True, does not exclude geom-pairs with corresponding
                 bodies that are neighbors via joints with DoF.
 
         Returns:
@@ -1667,12 +1665,10 @@ class ModelBuilderKamino:
         Computes the number of unique collidable geometries from the provided list of collidable geometry pairs.
 
         Args:
-            collidable_geom_pairs (list[tuple[int, int]], optional):
-                A list of geom-pair indices `(gid1, gid2)` (absolute w.r.t the model).\n
+            collidable_geom_pairs: A list of geom-pair indices `(gid1, gid2)` (absolute w.r.t the model).
                 If `None`, the number of collidable geometries will
                 be extracted by exhaustively checking all geometries.
-            collidable_pairs_offset: (list[int], optional):
-                A list of per-world offsets into collidable_geom_pairs (with one
+            collidable_pairs_offset: A list of per-world offsets into collidable_geom_pairs (with one
                 extra entry giving the total length of collidable_geom_pairs).
                 Cannot be `None` if collidable_geom_pairs is provided.
 
@@ -1768,7 +1764,7 @@ class ModelBuilderKamino:
         Checks if the provided world index is valid.
 
         Args:
-            world_index (int): The index of the world to be checked.
+            world_index: The index of the world to be checked.
 
         Raises:
             ValueError: If the world index is out of range.
@@ -1847,12 +1843,12 @@ class ModelBuilderKamino:
     """A type alias for model entity descriptors."""
 
     @staticmethod
-    def _check_body_inertia(m_i: float, i_I_i: mat33f):
+    def _check_body_inertia(m_i: float, i_I_i: wp.mat33f):
         """
         Checks if the body inertia is valid.
 
         Args:
-            i_I_i (mat33f): The inertia matrix to be checked.
+            i_I_i: The inertia matrix to be checked.
 
         Raises:
             ValueError: If the inertia matrix is not symmetric of positive definite.
@@ -1869,18 +1865,18 @@ class ModelBuilderKamino:
             raise ValueError(f"Invalid body inertia matrix:\n{i_I_i}\nMust be positive definite.")
 
     @staticmethod
-    def _check_body_pose(q_i: transformf):
+    def _check_body_pose(q_i: wp.transformf):
         """
         Checks if the body pose is valid.
 
         Args:
-            q_i_0 (transformf): The pose of the body to be checked.
+            q_i_0: The pose of the body to be checked.
 
         Raises:
             ValueError: If the body pose is not a valid transformation.
         """
-        if not isinstance(q_i, transformf):
-            raise TypeError(f"Invalid body pose type: {type(q_i)}. Must be `transformf`.")
+        if not isinstance(q_i, wp.transformf):
+            raise TypeError(f"Invalid body pose type: {type(q_i)}. Must be `wp.transformf`.")
 
         # Extract the orientation quaternion
         if not np.isclose(wp.length(q_i.q), 1.0, atol=float(FLOAT32_EPS)):

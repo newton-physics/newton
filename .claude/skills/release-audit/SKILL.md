@@ -3,7 +3,7 @@ name: release-audit
 description: "Use when auditing a Newton release for keep/defer decisions before a cut, reviewing an RC for readiness, or calibrating the skill against an already-shipped release."
 disable-model-invocation: true
 argument-hint: "[target-version]"
-allowed-tools: Bash(git log *) Bash(git show *) Bash(git tag *) Bash(git rev-parse *) Bash(git cherry *) Bash(git diff *) Bash(git diff-tree *) Bash(git worktree *) Bash(git stash *) Bash(git checkout *) Bash(python3 *list_commits.py*) Bash(python3 /tmp/*) Bash(rm /tmp/newton-*) Bash(uv run python3 *) Bash(uv run -m *) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
+allowed-tools: Bash(git log *) Bash(git show *) Bash(git grep *) Bash(git tag *) Bash(git rev-parse *) Bash(git diff *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/list_commits.py *) Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py *) Bash(rm /tmp/newton-*-prerelease-report.md) Bash(rm /tmp/newton-*-rc-report.md) Bash(rm /tmp/newton-*-retrospective-report.md) Bash(gh --version) Bash(gh auth status) Bash(gh gist create *) Bash(gh gist list *) Bash(gh gist view *) Bash(gh gist edit *) Bash(gh issue view *) Bash(gh issue list *) Read Write Grep Glob
 ---
 
 # Release Audit
@@ -134,11 +134,40 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
    ```
    from the repo root (`$(git rev-parse --show-toplevel)`). Capture stdout as the `commit_list_json`.
 
-2. Read `CHANGELOG.md` using the Read tool. Choose the section by mode:
+2. Run the dependency and license audit helper:
+   ```bash
+   python3 ${CLAUDE_SKILL_DIR}/scripts/license_audit.py \
+     --base <base-ref> \
+     --head <head-ref>
+   ```
+   from the repo root. The helper requires Python 3.11+ for stdlib TOML parsing and exits with a clear preflight error on older Python versions. Capture stdout as `dependency_license_audit_md`. The helper compares:
+   - Direct requirements in `pyproject.toml`, grouped by runtime and optional extra.
+   - Resolved package names, duplicate variants, and version sets in `uv.lock` when present.
+   - `project.license` and `project.license-files` metadata in `pyproject.toml`.
+   - In-tree notice files matched by the `project.license-files` pathspecs declared at the base or head ref.
+   - Version-specific PyPI license metadata for newly introduced package names and changed locked package versions when network access is available. If metadata lookup fails, keep the helper's "not checked" text and surface that uncertainty rather than filling in a guessed license. If the helper was run with `--skip-pypi`, treat package-index metadata as deliberately deferred, not as per-package review failures.
+
+   Use one helper invocation as the source of the entire dependency/license section. Do not splice prose from a live metadata check onto tables produced by `--skip-pypi`. If a sandboxed or deferred run used `--skip-pypi` and a later host-side run can reach package indexes, replace the complete section with the default host-side output. Use `--skip-pypi` only as a fallback when a live metadata pass cannot be completed.
+
+   In Existing Resolved Package Version-Set Changes, the helper keeps standard license expressions and review statuses inline. Legacy or verbose nonstandard license text is rendered as a compact package-metadata link rather than copied into the report. The helper wraps this potentially long table in a closed `<details>` block; keep it collapsed by default so it does not dominate report scrolling.
+
+   The helper is intentionally stdlib-only. Do not replace it with a dependency inventory tool during the audit run: Newton avoids new release-only dependencies, and this script needs deterministic comparisons across arbitrary git refs without installing the target environment. External tools such as `pip-licenses`, `cyclonedx-py`, `pip-audit`, or `syft` can supplement a deeper investigation, but they do not replace this git-ref diff over `pyproject.toml`, `uv.lock`, declared license files, and version-specific PyPI metadata.
+
+   Interpretation rules for `dependency_license_audit_md`:
+   - A newly introduced external direct dependency or new resolved package name is license-relevant even when it lives behind an optional extra. Do not dismiss optional dependencies; state the extra or install path that pulls them in.
+   - A package that first appears in the lockfile only beneath a direct dependency already declared at the base is resolved-set churn, not a new dependency. The helper renders it in Existing Resolved Package Version-Set Changes with `(not resolved)` as the base and attributes the existing direct root. Reserve New Resolved Packages for packages introduced by a new direct dependency root or packages whose root cannot be established.
+   - A new optional extra whose dependencies are all already present is a support/install-surface change, but not a new package-license change.
+   - Existing package version bumps are not new licenses by themselves. The helper separates direct requirement moves from transitive-only churn; only elevate version bumps to release highlights or Behavioral & Support Changes when the package pin or compatibility constraint is user-visible.
+   - In-tree notice-file additions, removals, or modifications under the declared `project.license-files` pathspecs always appear in the dependency/license section. If a notice file is missing for a new bundled asset or vendored component, flag it in CHANGELOG Review Notes.
+   - If the helper reports license metadata as "not checked" due to lookup failure or "not declared" for a new package, keep that wording and mark it as needing release-manager review. Do not infer a license from package authorship or project name.
+   - If the helper reports "not evaluated (--skip-pypi)", say that package-index metadata was deferred and should be checked before final release sign-off. Do not turn that into a per-package review list.
+   - If a new package is proprietary, copyleft, commercial, unknown, not declared, or not checked due to lookup failure, mention that in the release highlights only when users can install it through a published extra or documented workflow.
+
+3. Read `CHANGELOG.md` using the Read tool. Choose the section by mode:
    - **Pre-release / RC**: read `CHANGELOG.md` at HEAD. Locate the `## [Unreleased]` header. Collect all content from that header up to (but not including) the next `## [X.Y.Z]` header.
    - **Retrospective**: read `CHANGELOG.md` at HEAD (the current working tree — CHANGELOG is append-only, so the section for a prior release is still present). Locate the `## [<target-version>]` header (e.g., `## [1.1.0] - 2026-04-13`; match the prefix `## [<target-version>]` and tolerate optional date text after it). Collect content from that header up to (but not including) the next `## [X.Y.Z]` header (the previous release's section). If the header cannot be found at HEAD, fall back to `git show v<target>:CHANGELOG.md` and parse that file the same way (in case the section was renamed or removed in a later refactor).
 
-3. Parse subsections. Each starts with `### Added`, `### Removed`, `### Deprecated`, `### Changed`, `### Fixed`, or `### Documentation`. For every bullet under each subsection, extract:
+4. Parse subsections. Each starts with `### Added`, `### Removed`, `### Deprecated`, `### Changed`, `### Fixed`, or `### Documentation`. For every bullet under each subsection, extract:
    - **Raw text (FULL — never truncate)**: the full bullet content (may span multiple lines).
    - **Section**: one of the six names above.
    - **GH refs**: regex `GH-(\d+)` over the bullet text. Dedup. (Newton commits and CHANGELOG entries sometimes also reference `#NNNN` as a bare PR number; capture these too.)
@@ -165,7 +194,7 @@ Generates a markdown audit of a Newton release for keep/defer decisions (or, in 
 
 For each CHANGELOG `Added` entry, extract the named symbol(s) — text in backticks matching `newton.*`, bare `ClassName`, bare `snake_case_name()`, or `ClassName.method()` patterns.
 
-For EACH named symbol, check if it existed at base. Newton exposes user-facing symbols through multiple public re-export modules (not a single `__init__.py`). See `references/classification-rules.md` → "Public API surface" for the authoritative list. The source of truth is `MODULES` in `docs/generate_api.py`, which may have grown or shrunk between releases — load it at HEAD for pre-release / RC mode, or at `v<target>` (via `git show v<target>:docs/generate_api.py`) for retrospective mode.
+For EACH named symbol, check if it existed at base. Newton exposes user-facing symbols through multiple public re-export modules (not a single `__init__.py`). See `references/classification-rules.md` → "Public API surface" for the discovery rules. `docs/generate_api.py::api_modules()` discovers top-level public modules from module-valued names in `newton.__all__`; `solver_submodule_pages()` adds public solver module trees. There is no fixed `MODULES` constant. Inspect this discovery code plus `newton/__init__.py` and `newton/solvers.py` at both refs because the exported module set may grow or shrink between releases.
 
 To check presence at base, run `git show <base>:<path>` for each relevant public module and grep its imported names. For method additions on an existing class (e.g., `SolverXPBD.update_contacts()`), inspect the class body at base in its real source (resolved via `_src/`). For retrospective mode, "HEAD" in the symbol-resolution text below means the `v<target>` tag, not the working tree. Use `git show v<target>:<path>` everywhere the pre-release / RC flow uses the working tree.
 
@@ -205,19 +234,37 @@ For each CHANGELOG entry in Changed / Removed / Deprecated (plus any "capability
 - For semantic-only changes (no signature shift) where the prose describes a rename / reorder / behavioral flip: skip the diff block; include the backing commit's URL and the full CHANGELOG text.
 - For Removed entries: show the old signature on a `-` line; omit `+`.
 
-**Deprecation-window lookup for Removed entries.** Newton's policy (per AGENTS.md) is: *breaking changes require a deprecation first*. Every Removed entry should correspond to a prior Deprecated entry. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
+**Deprecation-window lookup for Removed entries.** Newton's policy (per AGENTS.md) is: *breaking changes require a deprecation first*. Every Removed entry needs evidence of a deprecation in a prior release. Start with the released CHANGELOG, then fall back to code-level runtime-warning evidence at the base ref. For every Removed entry (and every Changed entry whose prose describes a removal), search CHANGELOG.md for the matching prior Deprecated entry:
 
 1. Extract distinctive tokens from the Removed entry: the named symbol(s) in backticks and, if the entry carries a GH ref, that ref number.
 2. Scan the appropriate released-version sections of CHANGELOG.md for a `### Deprecated` bullet that names the same symbol(s) OR the same GH ref. The search scope depends on mode:
    - **Pre-release / RC** (current target is `Unreleased`): scan everything below `## [Unreleased]` (i.e., all historical released sections), top-down.
    - **Retrospective** (current target is `X.Y.Z`): scan ONLY the sections strictly below `## [X.Y.Z]` in CHANGELOG.md — the prior-release sections. Do NOT consider `## [Unreleased]` or later-version sections; they were written after `X.Y.Z` shipped and cannot have preceded it. Top-down within the allowed range.
    The FIRST such entry (highest version, since CHANGELOG is reverse-chronological) is the deprecation introduction.
-3. Record: (a) the release version heading that contains the Deprecated entry (e.g., `1.0.0`), (b) the full Deprecated entry text.
-4. In the rendered Removed entry, include a one-line deprecation window: `Deprecated in X.Y.Z; removed here.` If the deprecation entry cannot be found, write `No prior **Deprecated** entry found in CHANGELOG — Newton's policy requires deprecation before removal; please verify this was announced earlier.` Do NOT fabricate a version.
+3. If a matching CHANGELOG entry is found, record: (a) the release version heading that contains the Deprecated entry (e.g., `1.0.0`), (b) the full Deprecated entry text.
+4. If no matching prior CHANGELOG entry is found, check for a code-level runtime deprecation at the base ref. Resolve candidate source paths using the removed symbol, legacy parameter, or literal value, then grep those paths for deprecation warnings and inspect the surrounding source:
+   ```bash
+   git grep -n -F '<distinctive-symbol-or-legacy-value>' <base-ref> -- newton
+   git grep -n -E 'DeprecationWarning|deprecated' <base-ref> -- <candidate-paths>
+   git show <base-ref>:<candidate-path>
+   ```
+   If the candidate uses a shared deprecation helper or decorator, resolve the imported name and inspect its definition at the base ref too:
+   ```bash
+   git grep -n -F '<helper-or-decorator-name>' <base-ref> -- newton
+   git show <base-ref>:<helper-definition-path>
+   ```
+   Count this as prior-deprecation evidence when a runtime `DeprecationWarning` at the base ref clearly applies to the exact removed symbol or behavior, either through a direct `warnings.warn(...)` call or through a shared helper / decorator. For helper-mediated evidence, verify both sides of the connection: the candidate path applies or calls the helper for the removed API, and the helper definition emits `DeprecationWarning` for the calling mode or behavior being removed. For example, `@deprecate_nonkeyword_arguments` is evidence for removing positional-argument support only when it decorates that callable at the base ref; it is not evidence that the callable itself was deprecated. A generic helper that merely exists or is imported, a warning elsewhere in the same file, a docstring without a runtime warning, or a warning added only after the base release does not count. Record the warning text, the helper application path, and the warning-emission path. The base ref proves the deprecation shipped by that release; only claim an earlier introduction version if the same connected evidence is verified at that earlier tag.
+5. In the rendered Removed entry, include one of these deprecation-window lines:
+   - CHANGELOG evidence: `Deprecated in X.Y.Z; removed here.`
+   - Runtime-only evidence: `Runtime deprecation present in <base-ref>; removed here. No matching prior CHANGELOG Deprecated entry was found.`
+   - No evidence: `No prior deprecation found in released CHANGELOG sections or in code at <base-ref> — Newton's policy requires deprecation before removal.`
+   Do NOT fabricate a version.
 
 The deprecation window belongs in BOTH the Breaking Changes entry for the removal AND the Changes-to-Existing-API row (in the Description cell or as an appended sentence in the detail block). A reader should never have to ask "was this deprecated first, and for how long?"
 
-**Missing-deprecation flag.** If a Removed entry has no prior Deprecated entry in a previously-released section of CHANGELOG.md, surface this prominently in the Breaking Changes section as `🚨 Policy: removed without prior deprecation` rather than a quiet "verify please" line. This fires whether or not the current release's own `### Deprecated` section ALSO names the symbol — Newton's policy is *prior* deprecation, and a deprecate-and-remove in the same release is itself a violation. The release manager needs this to block the release or add migration tooling.
+**Missing-deprecation flag.** Surface `🚨 Policy: removed without prior deprecation` only when BOTH checks fail: no prior Deprecated entry exists in a previously-released CHANGELOG section, and no matching direct or helper-mediated runtime `DeprecationWarning` exists at the base ref. This fires whether or not the current release's own `### Deprecated` section also names the symbol because a warning added only in the removal release did not ship in a prior release. The release manager needs this to block the release or add migration tooling.
+
+If a matching runtime warning exists at the base ref but the released CHANGELOG has no corresponding Deprecated entry, the deprecation window is real. Do not emit a policy violation. Instead, add a non-blocking `🧾 Deprecation omitted from CHANGELOG` review note with the base ref, warning text, and the direct source path or connected helper application / emission paths so the release-note gap remains visible.
 
 **Exception: `1.0.0` pre-stable cleanup.** Removed entries in the `1.0.0` release (and `1.0.0rcN`) are exempt from the deprecation-first policy — PRs labeled `1.0-release` are the pre-stable API cleanup and were not required to go through a prior deprecation window. When the target version is `1.0.0` or `1.0.0rcN`, do not emit the `🚨 Policy` flag or the "No prior **Deprecated** entry found" line for its Removed entries. Still render the deprecation-window line if a matching Deprecated entry happens to exist; otherwise note `1.0 pre-stable cleanup; no prior deprecation required.`
 
@@ -264,11 +311,11 @@ For each entry in Breaking Changes, Changes to Existing API, and Removed (as col
 Tag every matched entry internally as `experimental=True`. Do not alter the CHANGELOG text itself.
 
 **How the tag changes rendering:**
-- Breaking Changes heading for the entry: prefix with `⚠️ Experimental:` rather than the implicit "Breaking" framing. Include a short sentence reminding readers this symbol is opt-in and documented as experimental, with the release where the experimental marker was introduced.
+- Breaking Changes heading for the entry: prefix with `Experimental:` and do not use a warning emoji. Include a short sentence reminding readers that the symbol is opt-in and has a looser stability contract, with the release where the experimental marker was introduced.
 - Changes-to-Existing-API table: the Breaking column shows `Experimental` rather than `Yes`.
-- Release Highlights bullet (Phase 7a): use `⚠️ Experimental:` as the risk prefix, not `⚠️ Breaking:`.
+- Release Highlights bullet (Phase 7a): if the item independently clears the significance bar, use a neutral `Experimental:` label without a warning emoji. Experimental status alone does not make an item a highlight.
 
-**Never drop the entry.** Experimental softening is about alarm level, not suppression. A removed or signature-changed experimental symbol still appears in Changes to Existing API.
+**Never drop the entry from the detailed audit.** Experimental status changes the stability interpretation, not the underlying API diff. A removed or signature-changed experimental symbol still appears in Breaking Changes and Changes to Existing API, but it is not presented as a release-manager warning.
 
 ## Phase 5 — Review CHANGELOG language and bake
 
@@ -291,6 +338,10 @@ Record flagged entries. Keep the FULL entry text in the audit table — do not t
 From `commit_list_json`:
 - Bucket each commit's `days_in_main` into **🟢 (>14 days)**, **🟡 (7–14 days)**, **🟠 (<7 days)**. Commits whose `days_in_main` is `null` (no main equivalent) skip bucketing — do NOT coerce `null` to `0` or compare it to a numeric threshold; those commits are accounted for in the next bullet instead.
 - Count anomalies: commits with `main_equivalent_sha == null`. If non-zero, prepare the ⚠️ banner for the report header.
+
+### 5c — Dependency and license audit
+
+Use `dependency_license_audit_md` from Phase 2 as the report's `{{DEPENDENCY_LICENSE_AUDIT}}` section. Apply the interpretation rules listed with the helper invocation in Phase 2.
 
 ## Phase 6 — Calibration Notes (retrospective mode only)
 
@@ -333,9 +384,10 @@ For each flag class, run the check below and record one of three outcomes per fl
 
 The calibration section groups results by flag class and, within each, by outcome. Never drop a flag from the original report body because of calibration — the calibration is a separate layer of commentary.
 
-**🚨 Missing-deprecation (Removed without prior Deprecated):**
-- Validated if: (a) no post-target release adds a retroactive Deprecated entry for the symbol, (b) the symbol stays removed. Users actually lost the API without a deprecation window.
+**🚨 Missing-deprecation (Removed without prior evidence):**
+- Validated if: (a) no prior released CHANGELOG section names the deprecation, (b) no matching direct or helper-mediated runtime `DeprecationWarning` exists at the retrospective base ref, and (c) the symbol stays removed. Users actually lost the API without a deprecation window.
 - Invalidated if: a prior Deprecated entry existed that Claude missed. Re-scan CHANGELOG scope with fuzzier matching (different casing, plural / singular, alternate backtick placement). Report the missed entry with its version.
+- Invalidated if: the base ref contains a matching direct or helper-mediated runtime `DeprecationWarning`. Report the warning text and the direct source path or connected helper application / emission paths, and classify the missing CHANGELOG bullet as a documentation gap rather than a deprecation-policy violation.
 - Invalidated if: a later patch (`vX.Y.<Z+1>`) added the symbol *back* (revert). Name the revert commit and note "removal reverted in vX.Y.<Z+1>".
 
 **🕵️ Private-only (new public API with `_src`-only reachability):**
@@ -383,11 +435,11 @@ Before filling the template, synthesize the `{{HEADLINE_SUMMARY}}` section. This
 - IS NOT: the actual release notes. Do not write copy the marketing team would ship.
 - IS NOT: a restatement of the headline counts. The counts block right above it already carries the quantitative summary; the highlights carry the qualitative one.
 
-**How to pick items.** Select 4 to 8 bullets from the material already analyzed (New API, Breaking Changes, Changes to Existing API, Behavioral & Support, Removed). Use LLM judgment. An item belongs in the highlights if at least one of these is true:
+**How to pick items.** Select 3 to 6 bullets from the material already analyzed (New API, Breaking Changes, Changes to Existing API, Behavioral & Support, Removed). Use LLM judgment. Apply a significance gate first: each item must describe a release-defining capability, workflow, behavioral shift, or compatibility decision that a broad or strategically important user group should know before reading the detailed sections. An item belongs in the highlights if at least one of these is true:
 - It changes a user's mental model of Newton (a new solver, a new simulation concept, a platform dropped, a new geometry type).
-- It is a migration-required change that needs a note in the release post.
-- It is user-facing and is explicitly experimental (readers need to know the stability bar).
+- It is a stable, migration-required change with broad enough impact that the release manager needs to decide explicitly whether it is acceptable for this release.
 - It unlocks a workflow that was previously impossible or awkward (e.g., Gaussian splat support, deterministic contact ordering, differentiable contacts).
+- It introduces a dependency or optional extra whose licensing or support impact creates a material release decision, not merely a metadata follow-up.
 - Multiple smaller entries form a coherent theme worth a single combined bullet (e.g., "new MPM examples: beam twist, snow ball, viscous coiling").
 
 An item does NOT belong in the highlights if any of these is true (drop even if the CHANGELOG entry is present):
@@ -395,18 +447,27 @@ An item does NOT belong in the highlights if any of these is true (drop even if 
 - It is a build-system, CI, or infrastructure change with no runtime user effect.
 - It is an internal refactor already scoped away from user-visible surface.
 - It is a capability extension to an existing parameter that a typical user would not notice (e.g., a defaults tidy-up).
+- It is breaking only in a narrow API corner, or is a planned removal after a valid deprecation window. Breaking status alone does not make an item a highlight.
+- It is experimental but otherwise minor. Experimental status is context, not highlight eligibility.
+- It is a routine dependency-license metadata follow-up already covered by the dependency audit.
 
-Aim for 4-8 bullets total. Fewer than 4 almost always means you missed a theme; more than 8 means you listed changes instead of highlights.
+Aim for 3-6 bullets total. Prefer a shorter list of genuinely significant changes; a release can legitimately have only three highlights.
 
-**How to write each bullet.** Each bullet leads with a bold 2-6 word headline, then a colon, then one sentence of rationale that explains what it is and why it matters. Attach risk flags inline when they apply: prepend `⚠️ Breaking:` or `⚠️ Experimental:` to the headline where relevant, and append a bake hint (`🟠 N days bake.`) when the headline item's minimum bake is under 7 days. Example:
+**How to write each bullet.** Each bullet leads with a bold 2-6 word headline, then a colon, then one sentence of rationale that explains what it is and why it matters. Append a bake hint (`🟠 N days bake.`) when the headline item's minimum bake is under 7 days. Use status and risk prefixes deliberately:
 
-> - **⚠️ Breaking: `ModelBuilder.add_shape_ellipsoid` parameters renamed** ([GH-NNN](...)): `a`, `b`, `c` → `rx`, `ry`, `rz`; release post needs a migration snippet. Old names still accept keyword form with a DeprecationWarning.
+- Prefix `⚠️ Stable change:` when a non-experimental API or behavior change needs a deeper release-manager acceptability review. Do not add the warning solely because an entry is mechanically breaking.
+- Prefix `Experimental:` without an emoji when an independently significant item is experimental. Experimental APIs have a looser compatibility contract, so the label is context rather than an alarm.
+- Keep planned stable removals with a valid shipped deprecation window out of highlights unless their breadth is itself release-defining. A missing deprecation window remains a `🚨 Policy` concern.
+
+Example:
+
+> - **⚠️ Stable change: particle contacts enabled by default** ([GH-NNN](...)): existing scenes can change trajectories, so the release manager should confirm the new default and preservation path are acceptable.
 
 **Lead with the unlock, not the mechanism.** The rationale sentence should answer "what is newly possible, and why would a user care?" — not "what API names were added." API names are a detail; novel capability is the story. If a feature introduces a new artifact or format (a new solver, a new geometry type, a new import path), NAME that artifact and state what it unlocks.
 
 **GH refs MUST be hyperlinks, always.** Every `GH-NNNN` in a highlight bullet is a markdown link to `https://github.com/newton-physics/newton/issues/NNNN`. This applies even when a single bullet combines multiple GH refs. Do NOT use shortcuts like `(multiple GHs)`, `(GH-1287, GH-1298, ...)` in plain text, or `(see CHANGELOG)`. If the bullet covers six issues, render all six as individual links, either inline (`([GH-1287](...), [GH-1298](...), [GH-1335](...))`) or in a trailing parenthesis at the end of the headline. There is no upper limit on link count; a reader can scan links but cannot resolve plain numbers.
 
-**Experimental softening.** If Phase 4g tagged an entry as experimental, the highlight bullet uses `⚠️ Experimental:` as its risk prefix rather than `⚠️ Breaking:`, even if the change is technically source-breaking. The rationale sentence should lead with what changed and its stability bar, not with migration urgency.
+**Experimental context.** If Phase 4g tagged an entry as experimental, never attach a warning emoji merely because it changed or was removed. If the feature is significant enough to highlight, use the neutral `Experimental:` label and lead with the capability or behavior; keep migration detail in the audit body.
 
 Open the summary with a 2-3 sentence intro paragraph that names the shape of the release in plain language. This sets the tone for everything below it. Do not stuff the intro with numbers or repeat the bake distribution.
 
@@ -414,7 +475,17 @@ Open the summary with a 2-3 sentence intro paragraph that names the shape of the
 
 ### 7b — Fill template
 
-Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including the `{{HEADLINE_SUMMARY}}` produced in 7a. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
+Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including `{{DOCUMENT_VERSION_CONTROL}}`, the `{{HEADLINE_SUMMARY}}` produced in 7a, and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
+
+For either gist destination, compose and validate the report as a normal markdown file at `/tmp/<gist-filename>`; do not stream the full report through chat or repeated command output. When revising an existing gist, first materialize its current file as the editable baseline:
+
+```bash
+gh gist view <id> --filename <gist-filename> --raw > /tmp/<gist-filename>
+```
+
+Re-audit all findings against the current refs rather than assuming unchanged baseline text is still correct. Apply report edits to the local file, run all final checks there, and upload that same validated file in Phase 7c.
+
+Use the existing gist baseline to fill Document Version Control. For a revision, name the previous and current audited heads and commit counts, then give a compact list of materially changed report sections so prior reviewers know where to focus. Revalidate everything else, replace outdated body text with the current conclusion, and state that unchanged findings were revalidated. For a first publication, identify it as the initial report instead of inventing a prior revision.
 
 **Rendering conventions live in `references/render-rules.md`.** Read that file when starting 7b. It covers:
 
@@ -446,7 +517,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    - Headline counts (N new APIs, K breaking, M changed, L behavioral, F fixes).
 
 **If destination is `new-gist`:**
-1. Write to `/tmp/<gist-filename>` (stable name, no date) using the Write tool.
+1. Use the validated `/tmp/<gist-filename>` composed in Phase 7b (stable name, no date).
 2. Create the gist:
    ```bash
    gh gist create --desc "<stable-desc>" /tmp/<gist-filename>
@@ -458,7 +529,7 @@ Newton <version-string> <Pre-Release|Release Candidate|Retrospective> Report
    - Headline counts.
 
 **If destination is `revise-gist:<id>`:**
-1. Write to `/tmp/<gist-filename>` (same stable name the existing gist already uses) using the Write tool.
+1. Use the validated `/tmp/<gist-filename>` composed from the existing gist baseline in Phase 7b.
 2. Revise the gist:
    ```bash
    gh gist edit <id> /tmp/<gist-filename>

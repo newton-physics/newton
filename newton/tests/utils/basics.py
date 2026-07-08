@@ -89,24 +89,27 @@ def _add_ground_box(builder: ModelBuilder) -> None:
 ###
 
 
-def build_box_on_plane(
+def build_sphere_on_plane(
     builder: ModelBuilder | None = None,
     z_offset: float = 0.0,
+    friction: float | None = None,
+    restitution: float | None = None,
     ground: bool = True,
     new_world: bool = True,
+    use_custom_shape_cfg: bool = False,
 ) -> ModelBuilder:
     """
     Constructs a basic model of a free-floating 'box' body and a ground box geom.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -130,29 +133,142 @@ def build_box_on_plane(
         _builder.begin_world(label="box_on_plane")
 
     # Add first body
-    i_I = inertia.compute_inertia_box_from_mass(mass=1.0, hx=0.2, hy=0.2, hz=0.2)
-    xform = wp.transformf(0.0, 0.0, 0.1 + z_offset, 0.0, 0.0, 0.0, 1.0)
+    r_i: float = 0.1
+    m_i: float = 1.0
+    i_I_i = inertia.compute_inertia_sphere_from_mass(mass=m_i, radius=r_i)
+    xform = wp.transformf(0.0, 0.0, r_i + z_offset, 0.0, 0.0, 0.0, 1.0)
     bid0 = _builder.add_body(
-        label="box",
-        mass=1.0,
-        inertia=i_I,
+        label="sphere",
+        mass=m_i,
+        inertia=i_I_i,
         xform=xform,
         lock_inertia=True,
+    )
+
+    # Use custom shape config if requested
+    custom_shape_cfg = (
+        ModelBuilder.ShapeConfig(
+            gap=0.01,
+            margin=1e-6,
+            mu=friction if friction is not None else _builder.default_shape_cfg.mu,
+            restitution=restitution if restitution is not None else _builder.default_shape_cfg.restitution,
+        )
+        if use_custom_shape_cfg
+        else _shape_cfg_basic()
+    )
+
+    # Add collision geometries
+    _builder.add_shape_sphere(
+        label="sphere_geom",
+        body=bid0,
+        radius=r_i,
+        cfg=custom_shape_cfg,
+    )
+
+    # Add a static collision geometry for the plane
+    if ground:
+        _builder.add_ground_plane(
+            cfg=custom_shape_cfg,
+            label="ground",
+            height=0.0,
+        )
+
+    # Close the world context if we opened one
+    if new_world or builder is None:
+        _builder.end_world()
+
+    # Return the populated model builder
+    return _builder
+
+
+def build_box_on_plane(
+    builder: ModelBuilder | None = None,
+    z_offset: float = 0.0,
+    friction: float | None = None,
+    restitution: float | None = None,
+    ground: bool = True,
+    new_world: bool = True,
+    use_custom_shape_cfg: bool = False,
+) -> ModelBuilder:
+    """
+    Constructs a basic model of a free-floating 'box' body and a ground box geom.
+
+    Args:
+        builder:
+            An optional existing model builder to populate.\n
+            If `None`, a new builder is created.
+        z_offset:
+            A vertical offset to apply to the initial position of the box.
+        ground:
+            Whether to add a static ground plane to the model.
+        new_world:
+            Whether to begin a new world in the builder for this model.\n
+            If `True` (or `builder` is `None`), the model is wrapped in a new world context
+            opened via :meth:`ModelBuilder.begin_world` and closed via
+            :meth:`ModelBuilder.end_world`.\n
+            If `False`, the caller must already be inside an active world; the model is then
+            added to that currently active world.
+
+    Returns:
+        ModelBuilder: The populated model builder.
+    """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
+    # Create a new builder if none is provided
+    if builder is None:
+        _builder = ModelBuilder()
+    else:
+        _builder = builder
+
+    # Begin a new world in the builder if requested or if a new builder was created
+    if new_world or builder is None:
+        _builder.begin_world(label="box_on_plane")
+
+    # Model constants
+    m_i = 1.0
+    hx = 0.1
+    hy = 0.1
+    hz = 0.1
+
+    # Add first body
+    i_I_i = inertia.compute_inertia_box_from_mass(mass=m_i, hx=hx, hy=hy, hz=hz)
+    xform = wp.transformf(0.0, 0.0, hz + z_offset, 0.0, 0.0, 0.0, 1.0)
+    bid0 = _builder.add_body(
+        label="box",
+        mass=m_i,
+        inertia=i_I_i,
+        xform=xform,
+        lock_inertia=True,
+    )
+
+    # Use custom shape config if requested
+    custom_shape_cfg = (
+        ModelBuilder.ShapeConfig(
+            gap=0.01,
+            margin=1e-6,
+            mu=friction if friction is not None else _builder.default_shape_cfg.mu,
+            restitution=restitution if restitution is not None else _builder.default_shape_cfg.restitution,
+        )
+        if use_custom_shape_cfg
+        else _shape_cfg_basic()
     )
 
     # Add collision geometries
     _builder.add_shape_box(
         label="box_geom",
         body=bid0,
-        hx=0.1,
-        hy=0.1,
-        hz=0.1,
-        cfg=_shape_cfg_basic(),
+        hx=hx,
+        hy=hy,
+        hz=hz,
+        cfg=custom_shape_cfg,
     )
 
     # Add a static collision geometry for the plane
     if ground:
-        _add_ground_box(_builder)
+        _builder.add_ground_plane(
+            cfg=custom_shape_cfg,
+            label="ground",
+        )
 
     # Close the world context if we opened one
     if new_world or builder is None:
@@ -176,24 +292,24 @@ def build_box_pendulum(
     This version initializes the pendulum in a horizontal configuration.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
             :meth:`ModelBuilder.end_world`.\n
             If `False`, the caller must already be inside an active world; the model is then
             added to that currently active world.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to attach non-zero armature and friction terms to the revolute joint
             so that its dynamics are better conditioned for stiff integrators.
-        implicit_pd (bool):
+        implicit_pd:
             Whether to configure the revolute joint with a position/velocity target mode
             (implicit PD) instead of the default effort-based actuation.
 
@@ -293,14 +409,14 @@ def build_box_pendulum_vertical(
     This version initializes the pendulum in a vertical configuration.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -389,21 +505,21 @@ def build_cartpole(
     Constructs a basic model of a cartpole mounted onto a rail.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
             :meth:`ModelBuilder.end_world`.\n
             If `False`, the caller must already be inside an active world; the model is then
             added to that currently active world.
-        limits (bool):
+        limits:
             Whether to apply finite position limits on the prismatic rail joint.\n
             If `True`, the cart is restricted to the range `[-4, 4]` along the rail.\n
             If `False`, the joint limits are set to the largest representable float32 range.
@@ -550,13 +666,141 @@ def build_cartpole(
     return _builder
 
 
+def build_boxes_stacked_on_plane(
+    builder: ModelBuilder | None = None,
+    z_offset: float = 0.0,
+    dz_offset: float = 0.0,
+    friction: float | None = None,
+    restitution: float | None = None,
+    mass_top: float | None = None,
+    mass_bottom: float | None = None,
+    ground: bool = True,
+    new_world: bool = True,
+    use_custom_shape_cfg: bool = False,
+) -> ModelBuilder:
+    """
+    Constructs a basic model of a free-floating 'box' body and a ground box geom.
+
+    Args:
+        builder:
+            An optional existing model builder to populate.\n
+            If `None`, a new builder is created.
+        z_offset:
+            A vertical offset to apply to the initial position of the box.
+        ground:
+            Whether to add a static ground plane to the model.
+        new_world:
+            Whether to begin a new world in the builder for this model.\n
+            If `True` (or `builder` is `None`), the model is wrapped in a new world context
+            opened via :meth:`ModelBuilder.begin_world` and closed via
+            :meth:`ModelBuilder.end_world`.\n
+            If `False`, the caller must already be inside an active world; the model is then
+            added to that currently active world.
+
+    Returns:
+        ModelBuilder: The populated model builder.
+    """
+    from newton._src.geometry import inertia  # noqa: PLC0415
+
+    # Create a new builder if none is provided
+    if builder is None:
+        _builder = ModelBuilder()
+    else:
+        _builder = builder
+
+    # Begin a new world in the builder if requested or if a new builder was created
+    if new_world or builder is None:
+        _builder.begin_world(label="box_on_plane")
+
+    # Model constants
+    m_t = mass_top if mass_top is not None else 1.0
+    m_b = mass_bottom if mass_bottom is not None else 1.0
+    hx_t = 0.1
+    hy_t = 0.1
+    hz_t = 0.1
+    hx_b = 0.1
+    hy_b = 0.1
+    hz_b = 0.1
+
+    # Body inertias
+    I_t = inertia.compute_inertia_box_from_mass(mass=m_t, hx=hx_t, hy=hy_t, hz=hz_t)
+    I_b = inertia.compute_inertia_box_from_mass(mass=m_b, hx=hx_b, hy=hy_b, hz=hz_b)
+
+    # Body poses
+    xform_b = wp.transformf(0.0, 0.0, hz_b + z_offset, 0.0, 0.0, 0.0, 1.0)
+    xform_t = wp.transformf(0.0, 0.0, 2 * hz_b + hz_t + dz_offset + z_offset, 0.0, 0.0, 0.0, 1.0)
+
+    # Use custom shape config if requested
+    custom_shape_cfg = (
+        ModelBuilder.ShapeConfig(
+            gap=0.01,
+            margin=1e-6,
+            mu=friction if friction is not None else _builder.default_shape_cfg.mu,
+            restitution=restitution if restitution is not None else _builder.default_shape_cfg.restitution,
+        )
+        if use_custom_shape_cfg
+        else _shape_cfg_basic()
+    )
+
+    # Add bottom body
+    bid_b = _builder.add_body(
+        label="bottom_box",
+        mass=m_b,
+        inertia=I_b,
+        xform=xform_b,
+        lock_inertia=True,
+    )
+    _builder.add_shape_box(
+        label="geom/bottom_box",
+        body=bid_b,
+        hx=hx_b,
+        hy=hy_b,
+        hz=hz_b,
+        cfg=custom_shape_cfg,
+    )
+
+    # Add top body
+    bid_t = _builder.add_body(
+        label="top_box",
+        mass=m_t,
+        inertia=I_t,
+        xform=xform_t,
+        lock_inertia=True,
+    )
+    _builder.add_shape_box(
+        label="geom/top_box",
+        body=bid_t,
+        hx=hx_t,
+        hy=hy_t,
+        hz=hz_t,
+        cfg=custom_shape_cfg,
+    )
+
+    # Add a static collision geometry for the plane
+    if ground:
+        _builder.add_ground_plane(
+            cfg=custom_shape_cfg,
+            label="ground",
+        )
+
+    # Close the world context if we opened one
+    if new_world or builder is None:
+        _builder.end_world()
+
+    # Return the populated model builder
+    return _builder
+
+
 def build_boxes_hinged(
     builder: ModelBuilder | None = None,
     z_offset: float = 0.0,
-    ground: bool = True,
+    friction: float | None = None,
+    restitution: float | None = None,
     dynamic_joints: bool = False,
     implicit_pd: bool = False,
+    ground: bool = True,
     new_world: bool = True,
+    use_custom_shape_cfg: bool = False,
 ) -> ModelBuilder:
     """
     Constructs a basic model of a two floating boxes connected via revolute joint.
@@ -567,20 +811,20 @@ def build_boxes_hinged(
         between the world and the ``base`` body to form a valid articulation tree.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to attach non-zero armature and friction terms to the hinge joint
             so that its dynamics are better conditioned for stiff integrators.
-        implicit_pd (bool):
+        implicit_pd:
             Whether to configure the hinge joint with a position/velocity target mode
             (implicit PD) instead of the default effort-based actuation.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -668,6 +912,18 @@ def build_boxes_hinged(
     )
     _builder.add_articulation([jf, jh])
 
+    # Use custom shape config if requested
+    custom_shape_cfg = (
+        ModelBuilder.ShapeConfig(
+            gap=0.01,
+            margin=1e-6,
+            mu=friction if friction is not None else _builder.default_shape_cfg.mu,
+            restitution=restitution if restitution is not None else _builder.default_shape_cfg.restitution,
+        )
+        if use_custom_shape_cfg
+        else _shape_cfg_basic()
+    )
+
     # Add collision geometries
     _builder.add_shape_box(
         label="base/box",
@@ -675,7 +931,7 @@ def build_boxes_hinged(
         hx=0.5 * d,
         hy=0.5 * w,
         hz=0.5 * h,
-        cfg=_shape_cfg_basic(),
+        cfg=custom_shape_cfg,
     )
     _builder.add_shape_box(
         label="follower/box",
@@ -683,12 +939,15 @@ def build_boxes_hinged(
         hx=0.5 * d,
         hy=0.5 * w,
         hz=0.5 * h,
-        cfg=_shape_cfg_basic(),
+        cfg=custom_shape_cfg,
     )
 
     # Add a static collision geometry for the plane
     if ground:
-        _add_ground_box(_builder)
+        _builder.add_ground_plane(
+            cfg=custom_shape_cfg,
+            label="ground",
+        )
 
     # Close the world context if we opened one
     if new_world or builder is None:
@@ -716,14 +975,14 @@ def build_boxes_nunchaku(
         ``box_bottom`` body so the chain is a valid Newton articulation tree.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -872,14 +1131,14 @@ def build_boxes_nunchaku_vertical(
         ``box_bottom`` body so the chain is a valid Newton articulation tree.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
@@ -1022,45 +1281,48 @@ def build_boxes_fourbar(
     verbose: bool = False,
     new_world: bool = True,
     actuator_ids: list[int] | None = None,
+    friction: float | None = None,
+    restitution: float | None = None,
+    use_custom_shape_cfg: bool = False,
 ) -> ModelBuilder:
     """
     Constructs a basic model of a four-bar linkage.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        z_offset (float):
+        z_offset:
             A vertical offset to apply to the initial position of the box.
-        fixedbase (bool):
+        fixedbase:
             Whether to attach ``link_1`` to the world with a fixed joint.
-        floatingbase (bool):
+        floatingbase:
             Whether to attach ``link_1`` to the world with a free (6-DoF) joint.
-        limits (bool):
+        limits:
             Whether to apply finite position limits on every revolute joint.\n
             If `True`, each hinge is restricted to `[-pi/4, pi/4]`.\n
             If `False`, the joint limits are set to the largest representable float32 range.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to the model.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to attach non-zero armature and friction terms to the first
             actuated revolute joint so that its dynamics are better conditioned
             for stiff integrators.
-        implicit_pd (bool):
+        implicit_pd:
             Whether to configure the first actuated revolute joint with a
             position/velocity target mode (implicit PD) instead of the default
             effort-based actuation.
-        verbose (bool):
+        verbose:
             If `True`, prints the computed body inertias and the initial body and
             joint positions during construction.
-        new_world (bool):
+        new_world:
             Whether to begin a new world in the builder for this model.\n
             If `True` (or `builder` is `None`), the model is wrapped in a new world context
             opened via :meth:`ModelBuilder.begin_world` and closed via
             :meth:`ModelBuilder.end_world`.\n
             If `False`, the caller must already be inside an active world; the model is then
             added to that currently active world.
-        actuator_ids (list[int] | None):
+        actuator_ids:
             1-based indices of the revolute joints (``1`` through ``4``) that should be
             driven by an actuator. Any joint whose index is not listed is treated as a
             passive revolute joint.\n
@@ -1212,6 +1474,18 @@ def build_boxes_fourbar(
     # Geometries
     ###
 
+    # Use custom shape config if requested
+    custom_shape_cfg = (
+        ModelBuilder.ShapeConfig(
+            gap=0.01,
+            margin=1e-6,
+            mu=friction if friction is not None else _builder.default_shape_cfg.mu,
+            restitution=restitution if restitution is not None else _builder.default_shape_cfg.restitution,
+        )
+        if use_custom_shape_cfg
+        else _shape_cfg_basic()
+    )
+
     # Add collision geometries
     _builder.add_shape_box(
         label="box_1",
@@ -1219,7 +1493,7 @@ def build_boxes_fourbar(
         hx=0.5 * d_1,
         hy=0.5 * w_1,
         hz=0.5 * h_1,
-        cfg=_shape_cfg_basic(),
+        cfg=custom_shape_cfg,
     )
     _builder.add_shape_box(
         label="box_2",
@@ -1227,7 +1501,7 @@ def build_boxes_fourbar(
         hx=0.5 * d_2,
         hy=0.5 * w_2,
         hz=0.5 * h_2,
-        cfg=_shape_cfg_basic(),
+        cfg=custom_shape_cfg,
     )
     _builder.add_shape_box(
         label="box_3",
@@ -1235,7 +1509,7 @@ def build_boxes_fourbar(
         hx=0.5 * d_3,
         hy=0.5 * w_3,
         hz=0.5 * h_3,
-        cfg=_shape_cfg_basic(),
+        cfg=custom_shape_cfg,
     )
     _builder.add_shape_box(
         label="box_4",
@@ -1243,12 +1517,15 @@ def build_boxes_fourbar(
         hx=0.5 * d_4,
         hy=0.5 * w_4,
         hz=0.5 * h_4,
-        cfg=_shape_cfg_basic(),
+        cfg=custom_shape_cfg,
     )
 
     # Add a static collision geometry for the plane
     if ground:
-        _add_ground_box(_builder)
+        _builder.add_ground_plane(
+            cfg=custom_shape_cfg,
+            label="ground",
+        )
 
     ###
     # Joints
@@ -1262,6 +1539,9 @@ def build_boxes_fourbar(
         qmin = float(-MAXVAL)
         qmax = float(MAXVAL)
 
+    # List of articulation joints
+    articulation_joints = []
+
     # Optional fixed base: attach link_1 rigidly to the world
     if fixedbase:
         _builder.add_joint_fixed(
@@ -1274,13 +1554,14 @@ def build_boxes_fourbar(
 
     # Optional floating base: attach link_1 to the world with a 6-DoF free joint
     if floatingbase:
-        _builder.add_joint_free(
+        jf = _builder.add_joint_free(
             label="world_to_link1",
             parent=-1,
             child=bid1,
             parent_xform=wp.transform_identity(dtype=wp.float32),
             child_xform=wp.transform_identity(dtype=wp.float32),
         )
+        articulation_joints.append(jf)
 
     # Per-DoF configurations reused across the revolute joints
     passive_joint_dof_config = ModelBuilder.JointDofConfig(
@@ -1322,7 +1603,7 @@ def build_boxes_fourbar(
         if 1 in actuator_ids
         else passive_joint_dof_config
     )
-    _builder.add_joint_revolute(
+    j1 = _builder.add_joint_revolute(
         label="link1_to_link2",
         parent=bid1,
         child=bid2,
@@ -1332,7 +1613,7 @@ def build_boxes_fourbar(
     )
 
     # Add a revolute joint between link 2 and link 3
-    _builder.add_joint_revolute(
+    j2 = _builder.add_joint_revolute(
         label="link2_to_link3",
         parent=bid2,
         child=bid3,
@@ -1342,7 +1623,7 @@ def build_boxes_fourbar(
     )
 
     # Add a revolute joint between link 3 and link 4
-    _builder.add_joint_revolute(
+    j3 = _builder.add_joint_revolute(
         label="link3_to_link4",
         parent=bid3,
         child=bid4,
@@ -1360,6 +1641,10 @@ def build_boxes_fourbar(
         parent_xform=wp.transformf(r_j4 - r_b4, wp.quat_identity(dtype=wp.float32)),
         child_xform=wp.transformf(r_j4 - r_b1, wp.quat_identity(dtype=wp.float32)),
     )
+
+    # Add the joints to the articulation
+    articulation_joints.extend([j1, j2, j3])
+    _builder.add_articulation(articulation_joints)
 
     # Close the world context if we opened one
     if new_world or builder is None:
@@ -1384,15 +1669,15 @@ def make_basics_heterogeneous_builder(
     original ``make_basics_heterogeneous_builder``.
 
     Args:
-        builder (ModelBuilder | None):
+        builder:
             An optional existing model builder to populate.\n
             If `None`, a new builder is created.
-        ground (bool):
+        ground:
             Whether to add a static ground plane to each sub-model.
-        dynamic_joints (bool):
+        dynamic_joints:
             Whether to enable dynamic (armature/friction) joint terms in the sub-models
             that expose the option (box pendulum, hinged boxes, four-bar).
-        implicit_pd (bool):
+        implicit_pd:
             Whether to drive the actuated joints of those sub-models with a
             position/velocity target (implicit PD) instead of effort-based actuation.
 

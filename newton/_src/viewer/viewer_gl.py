@@ -22,7 +22,7 @@ from .camera import Camera
 from .gl.image_logger import ImageLogger
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
-from .viewer import ViewerBase
+from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 from .viewer_gui import ViewerGui
 from .wind import Wind
 
@@ -114,6 +114,7 @@ def _compute_shape_vbo_xforms(
     shape_type: wp.array[int],
     shape_world: wp.array[int],
     world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     write_indices: wp.array[int],
     out_world_xforms: wp.array[wp.transformf],
     out_vbo_xforms: wp.array[wp.mat44],
@@ -138,6 +139,7 @@ def _compute_shape_vbo_xforms(
             p = wp.transform_get_translation(xform)
             xform = wp.transform(p + world_offsets[wi], wp.transform_get_rotation(xform))
 
+    xform = wp.transform_multiply(layer_xform, xform)
     out_world_xforms[out_idx] = xform
 
     p = wp.transform_get_translation(xform)
@@ -279,6 +281,8 @@ class ViewerGL(ViewerBase):
             self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
             # Draw image-logger floating windows outside the sidebar window.
             self.gui.register_ui_callback(lambda _imgui: self._image_logger.draw(), position="free")
+            # Top-level Layers panel (visible only when multiple layers exist).
+            self.gui.register_ui_callback(self._ui_populate_layers_panel, position="panel")
 
         # a low resolution sphere mesh for point rendering
         self._point_mesh = None
@@ -295,6 +299,19 @@ class ViewerGL(ViewerBase):
         # Initialize PBO (Pixel Buffer Object) resources used in the `get_frame` method.
         self._pbo = None
         self._wp_pbo = None
+        self._pbo_host_buffer = None
+
+    @override
+    def _init_extra_layer_state(self, layer):
+        super()._init_extra_layer_state(layer)
+        layer._packed_groups = []
+        layer._capsule_keys = set()
+        layer._packed_write_indices = None
+        layer._packed_world_xforms = None
+        layer._packed_vbo_xforms = None
+        layer._packed_vbo_xforms_host = None
+        layer.picking = None
+        layer.wind = None
 
     @property
     def ui(self):
@@ -315,6 +332,7 @@ class ViewerGL(ViewerBase):
         """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
         if self._wp_pbo is not None:
             self._wp_pbo = None  # Let Python garbage collect the RegisteredGLBuffer
+        self._pbo_host_buffer = None
         if self._pbo is not None:
             gl = RendererGL.gl
             pbo_id = (gl.GLuint * 1)(self._pbo)
@@ -344,6 +362,11 @@ class ViewerGL(ViewerBase):
             gl_ids = (gl.GLuint * len(texture_ids))(*texture_ids)
             gl.glDeleteTextures(len(texture_ids), gl_ids)
         self._array_textures.clear()
+
+    def _clear_owned_array_textures(self, owns):
+        for name in list(self._array_textures.keys()):
+            if owns(name):
+                self._delete_array_texture(name)
 
     def register_ui_callback(
         self,
@@ -467,22 +490,56 @@ class ViewerGL(ViewerBase):
         """Reset GL-specific model-dependent state to defaults.
 
         Called from ``__init__`` (via ``super().__init__`` → ``clear_model``)
-        and whenever the current model is discarded.
+        and whenever the current model is discarded. Only resources owned by
+        the currently active layer are destroyed so other layers' models
+        keep rendering.
         """
-        # Render object and line caches (path -> GL object)
-        for obj in getattr(self, "objects", {}).values():
-            if hasattr(obj, "destroy"):
-                obj.destroy()
-        self.objects = {}
-        for obj in getattr(self, "lines", {}).values():
-            obj.destroy()
-        self.lines = {}
-        for obj in getattr(self, "arrows", {}).values():
-            obj.destroy()
-        self.arrows = {}
-        self._destroy_all_wireframes()
-        self.wireframe_shapes = {}
-        self._wireframe_vbo_owners: dict[int, WireframeShapeGL] = {}
+        # Only destroy backend objects owned by the active layer so other
+        # live layers retain their meshes / instancers / lines / wireframes.
+        owns = self._is_layer_owned_path
+
+        def _filter_destroy(d: dict) -> dict:
+            kept: dict = {}
+            for k, v in d.items():
+                if owns(k):
+                    if hasattr(v, "destroy"):
+                        v.destroy()
+                else:
+                    kept[k] = v
+            return kept
+
+        self.objects = _filter_destroy(getattr(self, "objects", {}))
+        self.lines = _filter_destroy(getattr(self, "lines", {}))
+        self.arrows = _filter_destroy(getattr(self, "arrows", {}))
+
+        # Wireframe shapes are keyed on layer-qualified names; filter by ownership.
+        # VBO owners are shared across layers by ``id(vertex_data)``; after
+        # destroying this layer's shared shapes, drop any owners with no
+        # surviving references so their GL buffers are freed immediately
+        # instead of leaking until viewer close().
+        wireframe_shapes = getattr(self, "wireframe_shapes", {})
+        kept_wf: dict = {}
+        for k, v in wireframe_shapes.items():
+            if owns(k):
+                v.destroy()
+            else:
+                kept_wf[k] = v
+        self.wireframe_shapes = kept_wf
+        if not hasattr(self, "_wireframe_vbo_owners"):
+            self._wireframe_vbo_owners = {}
+        else:
+            # An owner is still live iff at least one remaining wireframe
+            # shape shares its VAO handle (``create_shared`` aliases the
+            # GLuint object, so identity is sufficient).
+            live_vao_ids = {id(s.vao) for s in kept_wf.values() if hasattr(s, "vao")}
+            orphan_keys = [
+                key
+                for key, owner in self._wireframe_vbo_owners.items()
+                if hasattr(owner, "vao") and id(owner.vao) not in live_vao_ids
+            ]
+            for key in orphan_keys:
+                owner = self._wireframe_vbo_owners.pop(key)
+                owner.destroy()
 
         # Interactive picking and wind force helpers
         self.picking = None
@@ -500,21 +557,25 @@ class ViewerGL(ViewerBase):
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
 
-        # Clear scalar plot buffers
-        self._scalar_buffers.clear()
-        self._scalar_arrays.clear()
-        self._scalar_accumulators.clear()
-        self._scalar_smoothing.clear()
-        self._array_buffers.clear()
-        self._array_dirty.clear()
-        self._clear_array_textures()
+        # Scalar, array, and image names are layer-qualified just like
+        # geometry names; clear only the active layer's entries.
+        for name in list(self._scalar_buffers.keys()):
+            if owns(name):
+                self._scalar_buffers.pop(name, None)
+                self._scalar_arrays.pop(name, None)
+                self._scalar_accumulators.pop(name, None)
+                self._scalar_smoothing.pop(name, None)
+        for name in list(self._scalar_arrays.keys()):
+            if owns(name):
+                self._scalar_arrays.pop(name, None)
+        for name in list(self._array_buffers.keys()):
+            if owns(name):
+                self._array_buffers.pop(name, None)
+                self._array_dirty.discard(name)
+        self._clear_owned_array_textures(owns)
 
-        # Drop image-logger entries so example-switch removes any image
-        # windows the previous example opened, and a re-entry into the same
-        # example creates a fresh entry (re-triggering the auto-select that
-        # opens the window after the user manually closed it).
         if getattr(self, "_image_logger", None) is not None:
-            self._image_logger.clear()
+            self._image_logger.clear_matching(owns)
 
         # Drop example-registered side/free UI callbacks (panel/stats/rendering persist).
         if getattr(self, "gui", None) is not None:
@@ -523,15 +584,26 @@ class ViewerGL(ViewerBase):
         super().clear_model()
 
     @override
-    def set_model(self, model: nt.Model | None, max_worlds: int | None = None):
+    def set_model(self, model: nt.Model | None):
         """
         Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
-            max_worlds: Maximum number of worlds to render (None = all).
+
+        Note:
+            Switching between models with the same up-axis preserves the
+            existing camera state. Wind settings are preserved across
+            non-``None`` model switches because they are independent of the
+            model up-axis.
         """
-        super().set_model(model, max_worlds=max_worlds)
+        prev_camera = self.camera
+        prev_wind = self.wind
+
+        if model is not None and model.device != self.device:
+            self._invalidate_pbo()
+
+        super().set_model(model)
 
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the
         # model's device. Rebind the image logger so its GPU path tests against
@@ -600,6 +672,19 @@ class ViewerGL(ViewerBase):
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
 
+        if prev_camera is not None and model is not None and prev_camera.up_axis == self.camera.up_axis:
+            # Reuse the compatible camera so future Camera fields survive model switches too.
+            prev_camera.update_screen_size(fb_w, fb_h)
+            self.camera = prev_camera
+
+        if prev_wind is not None and model is not None:
+            # Wind parameters are model-agnostic, so keep them across model swaps.
+            self.wind.time = prev_wind.time
+            self.wind.period = prev_wind.period
+            self.wind.amplitude = prev_wind.amplitude
+            self.wind.frequency = prev_wind.frequency
+            self.wind.direction = prev_wind.direction
+
     def _build_packed_vbo_arrays(self):
         """Build write-index + output arrays for batched shape transform computation.
 
@@ -649,7 +734,12 @@ class ViewerGL(ViewerBase):
             if _key not in capsule_keys:
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        self.objects[shapes.name] = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        instancer = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+                        # Planes (e.g. the ground) opt out of the wireframe edge
+                        # overlay. Keyed on geometry type, not the checker material
+                        # bit, so checker-shaded non-planes still get edges (#2808).
+                        instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
+                        self.objects[shapes.name] = instancer
 
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
@@ -671,7 +761,10 @@ class ViewerGL(ViewerBase):
         from .gl.opengl import MeshInstancerGL  # noqa: PLC0415
 
         current_names = {s.name for s in self._shape_instances.values()}
-        stale = [k for k, v in self.objects.items() if isinstance(v, MeshInstancerGL) and k not in current_names]
+        owns = self._is_layer_owned_path
+        stale = [
+            k for k, v in self.objects.items() if isinstance(v, MeshInstancerGL) and owns(k) and k not in current_names
+        ]
         for k in stale:
             obj = self.objects.pop(k)
             del obj
@@ -781,6 +874,9 @@ class ViewerGL(ViewerBase):
         assert normals is None or isinstance(normals, wp.array)
         assert uvs is None or isinstance(uvs, wp.array)
 
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
+
         if name not in self.objects:
             self.objects[name] = MeshGL(
                 len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
@@ -824,6 +920,13 @@ class ViewerGL(ViewerBase):
             materials: Array of materials.
             hidden: Whether the instances are hidden.
         """
+        # Route user-supplied names through the active layer (idempotent).
+        # ``mesh`` is the path of a previously registered mesh; qualify it
+        # the same way so a caller using the bare path produced by
+        # ``log_mesh`` finds the prototype the active layer registered.
+        name = self._qualify(name)
+        mesh = self._qualify(mesh)
+
         if mesh not in self.objects:
             raise RuntimeError(f"Path {mesh} not found")
 
@@ -880,9 +983,17 @@ class ViewerGL(ViewerBase):
             materials: Capsule instance materials (wp.vec4), length N or None (no update).
             hidden: Whether the instances are hidden.
         """
+        # Route the user-supplied capsule batch name through the active
+        # layer so two layers calling ``log_capsules`` with the same path
+        # don't overwrite each other (idempotent on already-qualified names).
+        name = self._qualify(name)
+
         # Render capsules via instanced cylinder body + instanced sphere caps.
-        sphere_mesh = "/geometry/_capsule_instancer/sphere"
-        cylinder_mesh = "/geometry/_capsule_instancer/cylinder"
+        # Prototype mesh keys are qualified with the active layer so a
+        # ``clear_model()`` on one layer does not destroy prototypes shared
+        # by capsule instancers in other live layers.
+        sphere_mesh = self._qualify("/geometry/_capsule_instancer/sphere")
+        cylinder_mesh = self._qualify("/geometry/_capsule_instancer/cylinder")
 
         if sphere_mesh not in self.objects:
             self.log_geo(sphere_mesh, nt.GeoType.SPHERE, (1.0,), 0.0, True, hidden=True)
@@ -972,6 +1083,9 @@ class ViewerGL(ViewerBase):
                 ``RendererGL.line_width``.
             hidden: Whether the lines are initially hidden.
         """
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
+
         # Handle empty logs by resetting the LinesGL object
         if starts is None or ends is None or colors is None:
             if name in self.lines:
@@ -1037,6 +1151,8 @@ class ViewerGL(ViewerBase):
                 ``RendererGL.arrow_scale``.
             hidden: Whether the arrows are initially hidden.
         """
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
         if starts is None or ends is None or colors is None:
             if name in self.arrows:
                 self.arrows[name].update(None, None, None)
@@ -1088,6 +1204,8 @@ class ViewerGL(ViewerBase):
             world_matrix: 4x4 float32 world matrix, or ``None`` to keep current.
             hidden: Whether the shape is hidden.
         """
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
         existing = self.wireframe_shapes.get(name)
 
         if vertex_data is not None:
@@ -1145,6 +1263,9 @@ class ViewerGL(ViewerBase):
             colors: Array of point colors.
             hidden: Whether the points are hidden.
         """
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
+
         if points is None:
             if name in self.objects:
                 self.objects[name].hidden = True
@@ -1208,6 +1329,9 @@ class ViewerGL(ViewerBase):
             xform: Optional world-space transform applied to all splat centers.
             hidden: Whether the point cloud should be hidden.
         """
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
+
         if hidden:
             if name in self.objects:
                 self.objects[name].hidden = True
@@ -1337,6 +1461,9 @@ class ViewerGL(ViewerBase):
             array: Array data to visualize, or ``None`` to remove a previously
                 logged array.
         """
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
+
         if array is None:
             self._array_buffers.pop(name, None)
             self._array_dirty.discard(name)
@@ -1359,6 +1486,9 @@ class ViewerGL(ViewerBase):
     @override
     def log_image(self, name: str, image: wp.array[Any] | np.ndarray) -> None:
         """See :meth:`~newton.viewer.ViewerBase.log_image`."""
+        # Route user-supplied names through the active layer (idempotent)
+        # so two layers logging the same image name don't stomp each other.
+        name = self._qualify(name)
         self._image_logger.log(name, image)
 
     @override
@@ -1387,6 +1517,8 @@ class ViewerGL(ViewerBase):
         """
         if smoothing < 1:
             raise ValueError("smoothing must be >= 1")
+        # Route user-supplied names through the active layer (idempotent).
+        name = self._qualify(name)
         val = float(value.item() if hasattr(value, "item") else value)
         buf = self._scalar_buffers.get(name)
         if buf is None:
@@ -1443,6 +1575,7 @@ class ViewerGL(ViewerBase):
                     self.model.shape_type,
                     self.model.shape_world,
                     self.world_offsets,
+                    self.layer.xform,
                     self._packed_write_indices,
                 ],
                 outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
@@ -1455,8 +1588,9 @@ class ViewerGL(ViewerBase):
             # ---- Upload pinned host slices to GL per instancer ----
             host_np = self._packed_vbo_xforms_host.numpy()
 
+            layer_hidden = self._layer_force_hidden()
             for key, shapes, offset, count in self._packed_groups:
-                visible = self._should_show_shape(shapes.flags, shapes.static)
+                visible = self._should_show_shape(shapes.flags, shapes.static) and not layer_hidden
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
                 materials = shapes.materials if self.model_changed else None
 
@@ -1606,8 +1740,9 @@ class ViewerGL(ViewerBase):
         """
         Retrieve the last rendered frame.
 
-        This method uses OpenGL Pixel Buffer Objects (PBO) and CUDA interoperability
-        to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers.
+        This method uses OpenGL Pixel Buffer Objects (PBO). CUDA viewers use
+        CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
+        memory.
 
         Args:
             target_image:
@@ -1616,8 +1751,9 @@ class ViewerGL(ViewerBase):
             render_ui: Whether to render the UI.
 
         Returns:
-            wp.array: GPU array containing RGB image data with shape `(height, width, 3)`
-                and dtype `wp.uint8`. Origin is top-left (OpenGL's bottom-left is flipped).
+            wp.array: RGB image data on the viewer device with shape
+                `(height, width, 3)` and dtype `wp.uint8`. Origin is top-left
+                (OpenGL's bottom-left is flipped).
         """
 
         gl = RendererGL.gl
@@ -1634,12 +1770,12 @@ class ViewerGL(ViewerBase):
             gl.glBufferData(gl.GL_PIXEL_PACK_BUFFER, gl.GLsizeiptr(w * h * 3), None, gl.GL_STREAM_READ)
             gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
 
-            # Register with CUDA.
-            self._wp_pbo = wp.RegisteredGLBuffer(
-                gl_buffer_id=int(self._pbo),
-                device=self.device,
-                flags=wp.RegisteredGLBuffer.READ_ONLY,
-            )
+            if self.device.is_cuda:
+                self._wp_pbo = wp.RegisteredGLBuffer(
+                    gl_buffer_id=int(self._pbo),
+                    device=self.device,
+                    flags=wp.RegisteredGLBuffer.READ_ONLY,
+                )
 
             # Set alignment once.
             gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
@@ -1653,12 +1789,27 @@ class ViewerGL(ViewerBase):
             self.gui.render_frame(update_fps=False)
 
         gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
+
+        if not self.device.is_cuda:
+            shape = (w * h * 3,)
+            if self._pbo_host_buffer is None or self._pbo_host_buffer.shape != shape:
+                self._pbo_host_buffer = wp.empty(shape=shape, dtype=wp.uint8, device=self.device)
+            gl.glGetBufferSubData(
+                gl.GL_PIXEL_PACK_BUFFER,
+                0,
+                w * h * 3,
+                self._pbo_host_buffer.ptr,
+            )
+
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
-        # Map PBO buffer and copy using RGB kernel.
-        assert self._wp_pbo is not None
-        buf = self._wp_pbo.map(dtype=wp.uint8, shape=(w * h * 3,))
+        if self.device.is_cuda:
+            assert self._wp_pbo is not None
+            buf = self._wp_pbo.map(dtype=wp.uint8, shape=(w * h * 3,))
+        else:
+            assert self._pbo_host_buffer is not None
+            buf = self._pbo_host_buffer
 
         if target_image is None:
             target_image = wp.empty(
@@ -1679,8 +1830,9 @@ class ViewerGL(ViewerBase):
             device=self.device,
         )
 
-        # Unmap the PBO buffer.
-        self._wp_pbo.unmap()
+        if self.device.is_cuda:
+            assert self._wp_pbo is not None
+            self._wp_pbo.unmap()
 
         return target_image
 
@@ -2062,6 +2214,23 @@ class ViewerGL(ViewerBase):
         _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
 
         self._image_logger.draw_controls()
+
+    def _ui_populate_layers_panel(self, imgui):
+        """Top-level Layers panel — toggle visibility of overlaid solvers/models.
+
+        Only shown when more than just the default layer has been
+        registered (i.e., the user opted in via viewer.activate()).
+        """
+        user_layers = [lyr for lid, lyr in self._layers.items() if lid != _DEFAULT_LAYER_ID]
+        if not user_layers:
+            return
+        imgui.set_next_item_open(True, imgui.Cond_.appearing)
+        if imgui.collapsing_header("Layers"):
+            imgui.separator()
+            for lyr in user_layers:
+                changed, new_visible = imgui.checkbox(f"Show '{lyr.layer_id}'", lyr.visible)
+                if changed:
+                    self.set_layer_visible(lyr.layer_id, new_visible)
 
     @staticmethod
     def _build_heatmap_color_lut() -> np.ndarray:
