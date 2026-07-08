@@ -109,6 +109,28 @@ class TestDeformableView(unittest.TestCase):
         self.assertEqual(view.group_ids, [0, 1, 2, 3])
         self.assertEqual(view.ranges("triangle"), [(0, 2), (2, 4), (4, 6), (6, 8)])
 
+    def test_varying_group_counts_across_worlds_remain_selectable(self):
+        """Worlds may contribute different group counts while retaining stable order."""
+        stage_a = _deformable_stage()
+        _add_cloth_mesh(stage_a, "/World/ClothA")
+        stage_b = _deformable_stage()
+        _add_cloth_mesh(stage_b, "/World/ClothA")
+        _add_cloth_mesh(stage_b, "/World/ClothB")
+        first = newton.ModelBuilder()
+        first.add_usd(stage_a)
+        second = newton.ModelBuilder()
+        second.add_usd(stage_b)
+        scene = newton.ModelBuilder()
+        scene.add_world(first)
+        scene.add_world(second)
+
+        view = DeformableView(scene.finalize(), "/World/Cloth*", family="surface")
+
+        self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 2, None))
+        self.assertEqual(view.worlds, [0, 1, 1])
+        self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothA", "/World/ClothB"])
+        self.assertEqual(view.get_particle_positions(view.model.state()).shape, (3, 4))
+
     def test_compiled_regex_pattern_selects_by_fullmatch(self):
         """A compiled regular expression selects groups by fullmatch: alternation picks
         two labels per replicated world, and a partial match selects nothing."""

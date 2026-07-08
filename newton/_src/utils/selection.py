@@ -2157,15 +2157,12 @@ class DeformableView:
         if group_count == 0:
             raise KeyError(f"No {family} groups matching pattern '{pattern}'")
 
-        if not all_equal(counts_per_world):
-            raise ValueError(f"Varying {family} group counts per world are not supported")
-
         self.count = group_count
         """Number of selected groups across all worlds."""
         self.world_count = world_count
         """Number of worlds spanned by the selection."""
-        self.count_per_world = counts_per_world[0]
-        """Number of selected groups in each world."""
+        self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
+        """Number of selected groups per world, or None when the counts vary."""
         flat_ids = [i for ids in group_ids for i in ids]
         selected = [groups[i] for i in flat_ids]
         self.labels = [g.label for g in selected]
