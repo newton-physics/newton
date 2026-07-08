@@ -4,6 +4,7 @@
 import math
 import os
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -123,6 +124,36 @@ class TestSensorTiledCamera(unittest.TestCase):
         linear = newton.utils.color_srgb_to_linear((0.5, 0.25, 0.1))
         np.testing.assert_allclose(newton.utils.color_linear_to_srgb(linear), (0.5, 0.25, 0.1), atol=1e-6)
 
+    def test_utils_implicit_default_render_config_update_warns(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+
+        self.assertFalse(sensor.render_config.enable_shadows)
+        self.assertFalse(sensor.render_config.enable_textures)
+
+        with self.assertWarnsRegex(DeprecationWarning, "create_default_light.*render_config"):
+            sensor.utils.create_default_light(enable_shadows=True)
+        with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material.*render_config"):
+            sensor.utils.assign_checkerboard_material(shape_indices=[0])
+
+        self.assertTrue(sensor.render_config.enable_shadows)
+        self.assertTrue(sensor.render_config.enable_textures)
+
+    def test_utils_explicit_render_config_field_update_does_not_warn(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+        sensor.render_config.enable_shadows = True
+        sensor.render_config.enable_textures = True
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sensor.utils.create_default_light(enable_shadows=True)
+            sensor.utils.assign_checkerboard_material(shape_indices=[0])
+
+        self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
+        self.assertTrue(sensor.render_config.enable_shadows)
+        self.assertTrue(sensor.render_config.enable_textures)
+
     def test_albedo_output_follows_output_color_space(self) -> None:
         color = (0.25, 0.5, 0.75)
         model = self._build_single_sphere_scene(color)
@@ -224,6 +255,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
+        tiled_camera_sensor.render_config.enable_shadows = True
+        tiled_camera_sensor.render_config.enable_textures = True
         tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
         tiled_camera_sensor.utils.assign_checkerboard_material(
             shape_indices=np.arange(model.shape_count, dtype=np.int32)

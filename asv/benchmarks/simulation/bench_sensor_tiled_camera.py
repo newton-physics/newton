@@ -10,6 +10,8 @@ wp.config.log_level = wp.LOG_WARNING
 import math
 import os
 
+import numpy as np
+
 import newton
 from newton import ShapeFlags
 from newton.sensors import SensorTiledCamera
@@ -90,8 +92,11 @@ class FastSensorTiledCamera:
         )
 
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
-        self.tiled_camera_sensor.utils.create_default_light(enable_shadows=False)
-        self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
+        self.tiled_camera_sensor.render_config.enable_textures = True
+        self.tiled_camera_sensor.utils.create_default_light()
+        self.tiled_camera_sensor.utils.assign_checkerboard_material(
+            shape_indices=np.arange(self.model.shape_count, dtype=np.int32)
+        )
 
         self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
             resolution, resolution, camera_fovs=math.radians(45.0)

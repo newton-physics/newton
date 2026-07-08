@@ -13,7 +13,7 @@ import warp as wp
 
 from ...core import MAXVAL
 from . import camera_utils
-from .types import RenderLightType, TextureData
+from .types import RenderConfig, RenderLightType, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -278,8 +278,18 @@ def _validate_rgba_out_buffer(
 class Utils:
     """Utility functions for the RenderContext."""
 
-    def __init__(self, render_context: RenderContext):
+    def __init__(self, render_context: RenderContext, render_config: RenderConfig | None = None):
         self.__render_context = render_context
+        self.__render_config = render_config
+
+    def __warn_implicit_render_config_update(self, method_name: str, config_field: str, value: bool) -> None:
+        warnings.warn(
+            f"SensorTiledCamera.utils.{method_name}() changed SensorTiledCamera.render_config.{config_field}. "
+            "This side effect is deprecated and will be removed in a future release. "
+            f"Set sensor.render_config.{config_field} = {value!r} explicitly.",
+            category=DeprecationWarning,
+            stacklevel=3,
+        )
 
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a color output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
@@ -1320,7 +1330,11 @@ class Utils:
         )
         return out_buffer
 
-    def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
+    def create_default_light(
+        self,
+        enable_shadows: bool = True,
+        direction: wp.vec3f | None = None,
+    ):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
 
         Args:
@@ -1328,7 +1342,10 @@ class Utils:
             direction: Normalized light direction. If ``None``, defaults to
                 (normalized ``(-1, 1, -1)``).
         """
-        self.__render_context.config.enable_shadows = enable_shadows
+        if self.__render_config is not None:
+            if self.__render_config.enable_shadows != enable_shadows:
+                self.__warn_implicit_render_config_update("create_default_light", "enable_shadows", enable_shadows)
+            self.__render_config.enable_shadows = enable_shadows
         self.__render_context.lights_active = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
         self.__render_context.lights_type = wp.array(
             [RenderLightType.DIRECTIONAL], dtype=wp.int32, device=self.__render_context.device
@@ -1384,7 +1401,10 @@ class Utils:
 
         self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
-        self.__render_context.config.enable_textures = True
+        if self.__render_config is not None:
+            if not self.__render_config.enable_textures:
+                self.__warn_implicit_render_config_update("assign_checkerboard_material", "enable_textures", True)
+            self.__render_config.enable_textures = True
         self.__render_context.texture_data = wp.array(
             [self.__checkerboard_data], dtype=TextureData, device=self.__render_context.device
         )

@@ -27,6 +27,7 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
 
         res = 16
         sensor = SensorTiledCamera(model=model)
+        sensor.render_config.enable_textures = True
         sensor.utils.create_default_light(enable_shadows=False)
         sensor.utils.assign_checkerboard_material(shape_indices=[0])
         # 30-deg fov: footprint half-extent at depth 4 is 4*tan(15)=1.07 < 2,

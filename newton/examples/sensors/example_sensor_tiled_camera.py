@@ -199,6 +199,8 @@ class Example:
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.render_config.enable_shadows = True
+        self.tiled_camera_sensor.render_config.enable_textures = True
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
         self.tiled_camera_sensor.utils.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
 

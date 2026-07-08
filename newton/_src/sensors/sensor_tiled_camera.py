@@ -86,13 +86,14 @@ class SensorTiledCamera:
         """
         self.model = model
 
-        render_config = config if config is not None else RenderConfig()
+        self.default_render_config = config if config is not None else RenderConfig()
+        self.default_clear_data = ClearData()
 
         self.__render_context = RenderContext(
             world_count=self.model.world_count,
-            config=render_config,
             device=self.model.device,
         )
+        self.__utils = Utils(self.__render_context, self.default_render_config)
 
         self.__render_context.init_from_model(self.model, load_textures)
 
@@ -120,12 +121,13 @@ class SensorTiledCamera:
         camera_rays: wp.array4d[wp.vec3f] | None = None,
         *,
         color_image: wp.array4d[wp.uint32] | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         depth_image: wp.array4d[wp.float32] | None = None,
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
-        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
-        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
+        clear_data: ClearData | None = None,
+        render_config: RenderConfig | None = None,
         kernel_block_dim: int = 64,
     ):
         """Render output images for all worlds and cameras.
@@ -159,6 +161,8 @@ class SensorTiledCamera:
                 converted to linear when linear output is requested. See
                 :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
             hdr_color_image: Output for linear HDR color. None to skip.
+            render_config: Render settings for this update. If ``None``, uses
+                :attr:`render_config`.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
@@ -168,33 +172,32 @@ class SensorTiledCamera:
         self.__render_context.render(
             self.model,
             state,
-            camera_transforms,
-            camera_rays,
-            color_image,
-            depth_image,
-            shape_index_image,
-            normal_image,
-            albedo_image,
-            clear_data=clear_data,
+            camera_transforms=camera_transforms,
+            camera_rays=camera_rays,
+            color_image=color_image,
             hdr_color_image=hdr_color_image,
+            depth_image=depth_image,
+            shape_index_image=shape_index_image,
+            normal_image=normal_image,
+            albedo_image=albedo_image,
+            clear_data=clear_data if clear_data is not None else self.default_clear_data,
+            config=render_config if render_config is not None else self.default_render_config,
             kernel_block_dim=kernel_block_dim,
         )
 
     @property
     def render_config(self) -> RenderConfig:
-        """Low-level raytrace settings on the internal :class:`RenderContext`.
+        """Default low-level raytrace settings for :meth:`update`.
 
-        Populated at construction from fixed defaults (for example global
-        world and shadow flags on the context). Attributes may be modified to
-        change behavior for subsequent :meth:`update` calls.
+        Attributes may be modified to change behavior for subsequent
+        :meth:`update` calls that do not pass an explicit ``render_config``.
 
         Returns:
-            The live :class:`RenderConfig` instance (same object as
-            ``render_context.config`` without triggering deprecation warnings).
+            The live default :class:`RenderConfig` instance.
         """
-        return self.__render_context.config
+        return self.default_render_config
 
     @property
     def utils(self) -> Utils:
         """Utility helpers for creating output buffers, computing rays, and assigning materials/lights."""
-        return self.__render_context.utils
+        return self.__utils
