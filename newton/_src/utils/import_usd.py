@@ -1069,11 +1069,19 @@ def parse_usd(
             # Split on authored binding structure, not on whether the bound material's properties
             # resolve: a subset that binds a material Newton does not recognize still becomes its
             # own (unshaded) submesh, so import topology never depends on material vocabulary.
-            # Only subsets that bind no material at all fall through to the uncovered-faces
-            # fallback below, which applies the parent mesh material.
+            # The gate is "a binding authored on the subset itself" — direct or collection-based,
+            # with or without MaterialBindingAPI applied. ComputeBoundMaterial is deliberately not
+            # used here: every subset inherits the parent mesh's binding through it, so full
+            # resolution would split unbound subsets, and an ancestor rebind with
+            # strongerThanDescendants would make topology depend on rebinding again. Subsets with
+            # no authored binding fall through to the uncovered-faces fallback below, which
+            # applies the parent mesh material.
             subset = UsdGeom.Subset(stage.GetPrimAtPath(subset_path))
-            binding_rel = subset.GetPrim().GetRelationship("material:binding")
-            if not (binding_rel and binding_rel.GetTargets()):
+            has_authored_binding = any(
+                rel.GetName().startswith("material:binding") and rel.GetTargets()
+                for rel in subset.GetPrim().GetRelationships()
+            )
+            if not has_authored_binding:
                 continue
             subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
             valid = (subset_indices >= 0) & (subset_indices < len(face_counts))

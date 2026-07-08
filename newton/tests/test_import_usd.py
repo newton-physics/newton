@@ -6894,12 +6894,22 @@ def Xform "Articulation" (
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        def define_unknown_material(path: str) -> UsdShade.Material:
-            """An MDL-style material whose shader inputs Newton does not recognize."""
+        def define_unknown_material(path: str, connect_surface: bool) -> UsdShade.Material:
+            """An MDL-style material whose shader inputs Newton does not recognize.
+
+            With ``connect_surface`` the shader is wired to an ``mdl:surface`` output like a
+            real MDL material (resolved through the surface-output branch); without it the
+            shader is found through the material child-scan fallback. Both branches must
+            yield the same topology.
+            """
             material = UsdShade.Material.Define(stage, path)
             shader = UsdShade.Shader.Define(stage, f"{path}/Shader")
             shader.CreateInput("mystery_tint", Sdf.ValueTypeNames.Color3f).Set((0.2, 0.6, 0.9))
             shader.CreateInput("mystery_response", Sdf.ValueTypeNames.Float).Set(0.35)
+            if connect_surface:
+                material.CreateOutput("mdl:surface", Sdf.ValueTypeNames.Token).ConnectToSource(
+                    shader.CreateOutput("out", Sdf.ValueTypeNames.Token)
+                )
             return material
 
         def define_known_material(path: str, color) -> UsdShade.Material:
@@ -6933,18 +6943,36 @@ def Xform "Articulation" (
         )
         define_body(
             "Unknown",
-            [define_unknown_material("/Materials/MysteryA"), define_unknown_material("/Materials/MysteryB")],
+            [
+                define_unknown_material("/Materials/MysteryA", connect_surface=False),
+                define_unknown_material("/Materials/MysteryB", connect_surface=False),
+            ],
+        )
+        define_body(
+            "UnknownMdl",
+            [
+                define_unknown_material("/Materials/MysteryMdlA", connect_surface=True),
+                define_unknown_material("/Materials/MysteryMdlB", connect_surface=True),
+            ],
         )
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
 
-        known_shapes = [label for label in builder.shape_label if label.startswith("/Known/")]
-        unknown_shapes = [label for label in builder.shape_label if label.startswith("/Unknown/")]
-        self.assertEqual(len(known_shapes), 2)
-        self.assertEqual(len(unknown_shapes), 2, "unrecognized materials must not change import topology")
-        self.assertIn("/Unknown/VisualMesh/part_0", result["path_shape_map"])
-        self.assertIn("/Unknown/VisualMesh/part_1", result["path_shape_map"])
+        for name in ("Known", "Unknown", "UnknownMdl"):
+            labels = sorted(label for label in builder.shape_label if label.startswith(f"/{name}/"))
+            # exactly the two authored subsets, one submesh each — no parent-mesh fallback entry,
+            # so no faces were dropped out of the subsets into the fallback path
+            self.assertEqual(
+                labels,
+                [f"/{name}/VisualMesh/part_0", f"/{name}/VisualMesh/part_1"],
+                f"{name}: unrecognized materials must not change import topology",
+            )
+            self.assertIn(f"/{name}/VisualMesh/part_0", result["path_shape_map"])
+            # full coverage: each subset owns one of the mesh's two triangles
+            for label in labels:
+                submesh = builder.shape_source[result["path_shape_map"][label]]
+                self.assertEqual(len(submesh.indices), 3)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uv_length_mismatch_uses_info_logging(self):
