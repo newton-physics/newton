@@ -63,7 +63,7 @@ from .graph_coloring import (
     combine_independent_particle_coloring,
     construct_particle_graph,
 )
-from .model import Model
+from .model import Model, _pack_shape_pair_codes
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -75,6 +75,87 @@ if TYPE_CHECKING:
     UsdStage = Usd.Stage
 else:
     UsdStage = Any
+
+
+@dataclass(frozen=True)
+class _ShapeCollisionFilterBlock:
+    """Compact replicated collision-filter block."""
+
+    shape_start: int
+    local_pairs: tuple[tuple[int, int], ...]
+    world: int | None = None
+    shape_count: int = 0
+
+
+class _BuilderShapeCollisionFilterPairs:
+    """Private compact storage for builder collision filters."""
+
+    def __init__(self):
+        self._entries: list[tuple[int, int] | _ShapeCollisionFilterBlock] = []
+        self._pair_count = 0
+        self._template_cache: tuple[tuple[int, int], ...] | None = None
+
+    def __len__(self) -> int:
+        return self._pair_count
+
+    @property
+    def explicit_pairs(self) -> tuple[tuple[int, int], ...]:
+        """Pairs stored outside compact replicated blocks."""
+        return tuple(entry for entry in self._entries if not isinstance(entry, _ShapeCollisionFilterBlock))
+
+    @property
+    def blocks(self) -> tuple[_ShapeCollisionFilterBlock, ...]:
+        """All compact replicated blocks, regardless of world assignment."""
+        return tuple(entry for entry in self._entries if isinstance(entry, _ShapeCollisionFilterBlock))
+
+    def template_pairs(self) -> tuple[tuple[int, int], ...]:
+        """Materialized filter template used when copying a source builder."""
+        if self._template_cache is None:
+            self._template_cache = tuple(self)
+        return self._template_cache
+
+    def __bool__(self) -> bool:
+        return self._pair_count != 0
+
+    def __iter__(self):
+        for entry in self._entries:
+            if isinstance(entry, _ShapeCollisionFilterBlock):
+                yield from (
+                    (entry.shape_start + shape_a, entry.shape_start + shape_b) for shape_a, shape_b in entry.local_pairs
+                )
+            else:
+                yield entry
+
+    def append(self, pair: tuple[int, int]) -> None:
+        self._entries.append(pair)
+        self._pair_count += 1
+        self._template_cache = None
+
+    def extend_offset(
+        self,
+        local_pairs: Iterable[tuple[int, int]],
+        shape_offset: int,
+        *,
+        world: int | None = None,
+        shape_count: int = 0,
+    ) -> None:
+        local_pairs = tuple(local_pairs)
+        if not local_pairs:
+            return
+
+        # Replication repeatedly appends the same source-builder local filter
+        # pairs with a different shape offset. Store that as one block instead
+        # of expanding every pair immediately.
+        self._entries.append(
+            _ShapeCollisionFilterBlock(
+                shape_start=shape_offset,
+                local_pairs=local_pairs,
+                world=world,
+                shape_count=shape_count,
+            )
+        )
+        self._pair_count += len(local_pairs)
+        self._template_cache = None
 
 
 class ModelBuilder:
@@ -741,6 +822,28 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
+        def _build_default_array(
+            self, count: int, device: Devicelike | None = None, requires_grad: bool = False
+        ) -> wp.array[Any] | list:
+            """Build an attribute array when every entry is the default value."""
+            if self.dtype is str:
+                return [self.default] * count
+
+            if isinstance(self.default, (list, tuple, np.ndarray)):
+                arr = [self.default] * count
+                return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
+
+            # Empty numeric custom attributes are common for registered solver
+            # defaults. Let Warp fill the array directly instead of first
+            # allocating a large Python list of repeated default values.
+            return wp.full(
+                count,
+                self.default,
+                dtype=self.dtype,
+                requires_grad=requires_grad,
+                device=device,
+            )
+
         def build_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
         ) -> wp.array[Any] | list:
@@ -749,8 +852,7 @@ class ModelBuilder:
             For string dtype, returns a Python list[str] instead of a Warp array.
             """
             if self.values is None or len(self.values) == 0:
-                # No values provided, use default for all
-                arr = [self.default] * count
+                return self._build_default_array(count, device=device, requires_grad=requires_grad)
             elif self.is_custom_frequency:
                 # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
                 arr = [val if val is not None else self.default for val in self.values]
@@ -1041,8 +1143,9 @@ class ModelBuilder:
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
-        self.shape_collision_filter_pairs: list[tuple[int, int]] = []
-        """Shape collision filter pairs accumulated for :attr:`Model.shape_collision_filter_pairs`."""
+        self._shape_collision_filter_pairs: _BuilderShapeCollisionFilterPairs | list[tuple[int, int]] = (
+            _BuilderShapeCollisionFilterPairs()
+        )
 
         self._requested_contact_attributes: set[str] = set()
         """Optional contact attributes requested via :meth:`request_contact_attributes`."""
@@ -1387,6 +1490,17 @@ class ModelBuilder:
         """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
 
+    @property
+    def shape_collision_filter_pairs(self) -> list[tuple[int, int]]:
+        """Shape collision filter pairs accumulated for :attr:`Model.shape_collision_filter_pairs`."""
+        if isinstance(self._shape_collision_filter_pairs, _BuilderShapeCollisionFilterPairs):
+            self._shape_collision_filter_pairs = list(self._shape_collision_filter_pairs)
+        return self._shape_collision_filter_pairs
+
+    @shape_collision_filter_pairs.setter
+    def shape_collision_filter_pairs(self, pairs: list[tuple[int, int]]) -> None:
+        self._shape_collision_filter_pairs = pairs
+
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
 
@@ -1394,7 +1508,7 @@ class ModelBuilder:
             shape_a: First shape index
             shape_b: Second shape index
         """
-        self.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+        self._shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
 
     @staticmethod
     def _default_filter_parent(joint_type: JointType, parent: int) -> bool:
@@ -3488,9 +3602,24 @@ class ModelBuilder:
         self.shape_collision_group.extend(builder.shape_collision_group)
 
         # Copy collision filter pairs with offset
-        self.shape_collision_filter_pairs.extend(
-            [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
-        )
+        source_filter_pairs = builder._shape_collision_filter_pairs
+        if source_filter_pairs:
+            if isinstance(source_filter_pairs, _BuilderShapeCollisionFilterPairs):
+                template_pairs = source_filter_pairs.template_pairs()
+            else:
+                template_pairs = tuple(source_filter_pairs)
+
+            if isinstance(self._shape_collision_filter_pairs, _BuilderShapeCollisionFilterPairs):
+                self._shape_collision_filter_pairs.extend_offset(
+                    template_pairs,
+                    start_shape_idx,
+                    world=self.current_world if self.current_world >= 0 else None,
+                    shape_count=builder.shape_count,
+                )
+            else:
+                self._shape_collision_filter_pairs.extend(
+                    (shape_a + start_shape_idx, shape_b + start_shape_idx) for shape_a, shape_b in template_pairs
+                )
 
         # Handle world assignments
         # For particles
@@ -10426,11 +10555,14 @@ class ModelBuilder:
         # static particles (with zero mass) have zero inverse mass
         particle_inv_mass = np.divide(1.0, ms, out=np.zeros_like(ms), where=ms != 0.0)
 
+        shape_collision_filter_packed = self._build_shape_collision_filter_packed()
+
         with wp.ScopedDevice(device):
             # -------------------------------------
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
@@ -10519,47 +10651,58 @@ class ModelBuilder:
 
             # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
-            finalized_geos = {}  # do not duplicate geometry
+            finalized_geos = {}  # content hash -> finalized geometry
+            finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             heightfield_meshes = []
             for geo in generated_shape_sources:
-                geo_hash = hash(geo)  # avoid repeated hash computations
-                if isinstance(geo, Heightfield):
-                    if geo_hash not in finalized_geos:
-                        # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
-                        # while Heightfield stores row-major data (row=Y, col=X).
-                        actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
-                        hf_geo = Mesh.create_heightfield(
-                            heightfield=actual_heights.T,
-                            extent_x=geo.hx * 2.0,
-                            extent_y=geo.hy * 2.0,
-                            ground_z=geo.min_z,
-                            compute_inertia=False,
-                        )
-                        finalized_geos[geo_hash] = hf_geo.finalize(
+                if not geo:
+                    geo_sources.append(0)
+                    continue
+
+                # Replicated builders reuse geometry objects across worlds. Use
+                # identity for that fast path, but retain content hashes so distinct
+                # equivalent geometry objects share one finalized representation.
+                geo_identity = id(geo)
+                if geo_identity in finalized_geos_by_identity:
+                    geo_sources.append(finalized_geos_by_identity[geo_identity])
+                    continue
+
+                geo_hash = hash(geo)
+                if geo_hash not in finalized_geos and isinstance(geo, Heightfield):
+                    # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
+                    # while Heightfield stores row-major data (row=Y, col=X).
+                    actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                    hf_geo = Mesh.create_heightfield(
+                        heightfield=actual_heights.T,
+                        extent_x=geo.hx * 2.0,
+                        extent_y=geo.hy * 2.0,
+                        ground_z=geo.min_z,
+                        compute_inertia=False,
+                    )
+                    finalized_geos[geo_hash] = hf_geo.finalize(
+                        device=device,
+                        bvh_constructor=self.default_bvh_cfg.mesh_constructor,
+                    )
+                    # keep mesh alive for the model's lifetime
+                    heightfield_meshes.append(hf_geo.mesh)
+                elif geo_hash not in finalized_geos:
+                    if isinstance(geo, Mesh):
+                        finalized_geos[geo_hash] = geo.finalize(
                             device=device,
                             bvh_constructor=self.default_bvh_cfg.mesh_constructor,
                         )
-                        # keep mesh alive for the model's lifetime
-                        heightfield_meshes.append(hf_geo.mesh)
-                    geo_sources.append(finalized_geos[geo_hash])
-                elif geo:
-                    if geo_hash not in finalized_geos:
-                        if isinstance(geo, Mesh):
-                            finalized_geos[geo_hash] = geo.finalize(
-                                device=device,
-                                bvh_constructor=self.default_bvh_cfg.mesh_constructor,
-                            )
-                        elif isinstance(geo, Gaussian):
-                            finalized_geos[geo_hash] = len(gaussians)
-                            gaussians.append(
-                                geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
-                            )
-                        else:
-                            finalized_geos[geo_hash] = geo.finalize()
-                    geo_sources.append(finalized_geos[geo_hash])
-                else:
-                    geo_sources.append(0)
+                    elif isinstance(geo, Gaussian):
+                        finalized_geos[geo_hash] = len(gaussians)
+                        gaussians.append(
+                            geo.finalize(device=device, bvh_constructor=self.default_bvh_cfg.gaussian_constructor)
+                        )
+                    else:
+                        finalized_geos[geo_hash] = geo.finalize()
+
+                finalized_geo = finalized_geos[geo_hash]
+                finalized_geos_by_identity[geo_identity] = finalized_geo
+                geo_sources.append(finalized_geo)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
@@ -10595,9 +10738,6 @@ class ModelBuilder:
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.shape_collision_filter_pairs = {
-                (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
-            }
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
@@ -11396,7 +11536,9 @@ class ModelBuilder:
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
-            self.find_shape_contact_pairs(m)
+            # The packed array was just installed on the model, so builder and
+            # model filters are known to match without rebuilding it.
+            self._find_shape_contact_pairs(m, allow_filter_blocks=True)
 
             # enable ground plane
             m.up_axis = self.up_axis
@@ -11625,8 +11767,91 @@ class ModelBuilder:
         # If same world or at least one is global (-1), check collision groups
         return self._test_group_pair(collision_group_a, collision_group_b)
 
-    def find_shape_contact_pairs(self, model: Model):
+    def _iter_validated_shape_collision_filter_pairs(self, pairs):
+        shape_count = len(self.shape_type)
+        for shape_a, shape_b in pairs:
+            if shape_a < 0 or shape_a >= shape_count or shape_b < 0 or shape_b >= shape_count:
+                raise ValueError(
+                    f"shape_collision_filter_pairs contains invalid pair ({shape_a}, {shape_b}); "
+                    f"shape indices must be in [0, {shape_count})."
+                )
+            yield (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
+
+    def _build_shape_collision_filter_packed(self) -> np.ndarray:
+        """Build the canonical filter store handed to :class:`Model`.
+
+        Returns:
+            Sorted unique packed pair codes ``(shape_a << 32) | shape_b`` with
+            ``shape_a <= shape_b``, shape [pair_count].
         """
+        filter_pairs = self._shape_collision_filter_pairs
+        chunks: list[np.ndarray] = []
+        if isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs):
+            explicit_pairs = tuple(self._iter_validated_shape_collision_filter_pairs(filter_pairs.explicit_pairs))
+            if explicit_pairs:
+                chunks.append(np.asarray(explicit_pairs, dtype=np.int64).reshape((-1, 2)))
+            blocks = filter_pairs.blocks
+            self._validate_compact_shape_collision_filter_blocks(blocks)
+            # Replicated blocks share one local-pair template; replay each
+            # group of blocks as a single broadcast offset add.
+            starts_by_template: dict[int, tuple[np.ndarray, list[int]]] = {}
+            for block in blocks:
+                entry = starts_by_template.get(id(block.local_pairs))
+                if entry is None:
+                    template = np.asarray(block.local_pairs, dtype=np.int64).reshape((-1, 2))
+                    starts_by_template[id(block.local_pairs)] = (template, [block.shape_start])
+                else:
+                    entry[1].append(block.shape_start)
+            for template, starts in starts_by_template.values():
+                offsets = np.asarray(starts, dtype=np.int64)
+                chunks.append((template[None, :, :] + offsets[:, None, None]).reshape((-1, 2)))
+        else:
+            pairs = tuple(self._iter_validated_shape_collision_filter_pairs(filter_pairs))
+            if pairs:
+                chunks.append(np.asarray(pairs, dtype=np.int64).reshape((-1, 2)))
+        if not chunks:
+            return np.empty(0, dtype=np.int64)
+        all_pairs = np.concatenate(chunks, axis=0)
+        codes = _pack_shape_pair_codes(all_pairs[:, 0], all_pairs[:, 1])
+        # Sort + mask instead of np.unique: NumPy's hash-based unique for 1-D
+        # integers degrades badly on packed pair codes, and searchsorted needs
+        # the sorted order anyway.
+        codes.sort()
+        if codes.shape[0] > 1:
+            codes = codes[np.concatenate(([True], codes[1:] != codes[:-1]))]
+        return codes
+
+    def _validate_compact_shape_collision_filter_blocks(self, compact_filter_blocks) -> None:
+        shape_count = len(self.shape_type)
+        validated_templates = set()
+        for block in compact_filter_blocks:
+            if block.shape_start < 0 or block.shape_count < 0 or block.shape_start + block.shape_count > shape_count:
+                raise ValueError(
+                    "shape_collision_filter_pairs contains an invalid compact block "
+                    f"starting at {block.shape_start} with {block.shape_count} shapes; "
+                    f"shape indices must be in [0, {shape_count})."
+                )
+
+            template_key = (id(block.local_pairs), block.shape_count)
+            if template_key in validated_templates:
+                continue
+
+            for shape_a, shape_b in block.local_pairs:
+                if shape_a < 0 or shape_a >= block.shape_count or shape_b < 0 or shape_b >= block.shape_count:
+                    raise ValueError(
+                        f"shape_collision_filter_pairs contains invalid compact pair ({shape_a}, {shape_b}); "
+                        f"local shape indices must be in [0, {block.shape_count})."
+                    )
+            validated_templates.add(template_key)
+
+    def find_shape_contact_pairs(self, model: Model):
+        """Deprecated method for rebuilding explicit shape contact pairs.
+
+        .. deprecated:: 1.4
+            Shape contact pairs are generated automatically by :meth:`finalize`.
+            Configure collision filters before finalization instead of rebuilding
+            contact pairs manually.
+
         Identifies and stores all potential shape contact pairs for collision detection.
 
         This method examines the collision groups and collision masks of all shapes in the model
@@ -11645,7 +11870,229 @@ class ModelBuilder:
             - Sets `model.shape_contact_pairs` to a wp.array of shape pairs (wp.vec2i).
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
-        filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
+        warnings.warn(
+            "ModelBuilder.find_shape_contact_pairs() is deprecated; shape contact pairs are generated "
+            + "automatically by ModelBuilder.finalize(). Configure collision filters before finalization instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Deprecated calls may supply an unrelated model or a builder that has
+        # changed since finalization, so always query filters from the model.
+        self._find_shape_contact_pairs(model, allow_filter_blocks=False)
+
+    def _find_shape_contact_pairs(self, model: Model, *, allow_filter_blocks: bool) -> None:
+        filter_pairs = self._shape_collision_filter_pairs
+        world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
+        explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
+        if isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs):
+            blocks = filter_pairs.blocks
+            self._validate_compact_shape_collision_filter_blocks(blocks)
+            # Compact blocks come from replicated builders; keep this path in
+            # world-local coordinates so identical worlds can share one template.
+            world_filter_blocks = tuple(block for block in blocks if block.world is not None)
+            # Blocks without a world assignment (add_builder outside a world
+            # context) are folded into the explicit residual pairs so they do
+            # not disable the fast path for the replicated worlds.
+            floating_block_pairs = (
+                (block.shape_start + shape_a, block.shape_start + shape_b)
+                for block in blocks
+                if block.world is None
+                for shape_a, shape_b in block.local_pairs
+            )
+            explicit_filter_pairs = tuple(
+                self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
+            )
+
+        # Builder-side compact blocks are valid only while they describe the
+        # model's filters exactly; otherwise the general path queries the model.
+        use_filter_blocks = bool(world_filter_blocks) and allow_filter_blocks
+        if use_filter_blocks:
+            shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
+            starts = self.shape_world_start
+            if len(starts) != self.world_count + 2:
+                use_filter_blocks = False
+            else:
+                segment_worlds = np.full(self.shape_count, -1, dtype=np.int32)
+                for world in range(self.world_count):
+                    segment_worlds[starts[world] : starts[world + 1]] = world
+                use_filter_blocks = np.array_equal(segment_worlds, shape_world_np)
+
+        if use_filter_blocks:
+            blocks_by_world = {}
+            global_filter_pairs = set()
+            explicit_filters_by_world = {}
+            for block in world_filter_blocks:
+                world = block.world
+                if world < 0 or world >= self.world_count:
+                    use_filter_blocks = False
+                    break
+
+                world_start = self.shape_world_start[world]
+                world_end = self.shape_world_start[world + 1]
+                if block.shape_start < world_start or block.shape_start + block.shape_count > world_end:
+                    use_filter_blocks = False
+                    break
+
+                # Store block starts as world-local offsets for the template cache
+                # instead of keying homogeneous worlds by absolute shape ids.
+                blocks_by_world.setdefault(world, []).append(
+                    (block.shape_start - world_start, block.shape_count, block.local_pairs)
+                )
+
+            if use_filter_blocks:
+                # Residual explicit filters may involve global shapes, so split
+                # them into globally keyed filters and per-world local filters.
+                for shape_a, shape_b in explicit_filter_pairs:
+                    world_a = self.shape_world[shape_a]
+                    world_b = self.shape_world[shape_b]
+
+                    if world_a == -1 and world_b == -1:
+                        global_filter_pairs.add((shape_a, shape_b))
+                    elif world_a == -1 and world_b >= 0:
+                        explicit_filters_by_world.setdefault(world_b, []).append(
+                            ("global_local", shape_a, shape_b - self.shape_world_start[world_b])
+                        )
+                    elif world_b == -1 and world_a >= 0:
+                        explicit_filters_by_world.setdefault(world_a, []).append(
+                            ("global_local", shape_b, shape_a - self.shape_world_start[world_a])
+                        )
+                    elif world_a == world_b and world_a >= 0:
+                        world_start = self.shape_world_start[world_a]
+                        explicit_filters_by_world.setdefault(world_a, []).append(
+                            ("local", shape_a - world_start, shape_b - world_start)
+                        )
+                    # Cross-world pairs never collide, so filtering them is a no-op.
+
+            if use_filter_blocks:
+                contact_pairs = []
+                shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
+                colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
+                colliding_globals = [
+                    (int(shape_idx), self.shape_collision_group[shape_idx])
+                    for shape_idx in np.flatnonzero((shape_world_np == -1) & colliding_np)
+                ]
+
+                for i1, (shape_a, group_a) in enumerate(colliding_globals):
+                    for shape_b, group_b in colliding_globals[i1 + 1 :]:
+                        if not self._test_group_pair(group_a, group_b):
+                            continue
+                        pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
+                        if pair not in global_filter_pairs:
+                            contact_pairs.append(pair)
+
+                shape_group_np = np.asarray(self.shape_collision_group, dtype=np.int64)
+                template_cache = {}
+                template_runs: list[tuple[list[int], tuple[np.ndarray, np.ndarray]]] = []
+                for world in range(self.world_count):
+                    world_start = self.shape_world_start[world]
+                    world_end = self.shape_world_start[world + 1]
+                    if world_start == world_end:
+                        continue
+
+                    block_specs = tuple(blocks_by_world.get(world, ()))
+                    explicit_filter_specs = tuple(explicit_filters_by_world.get(world, ()))
+                    block_key = tuple(
+                        (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
+                    )
+                    # Key homogeneous worlds by raw bytes instead of Python
+                    # tuples; re-hashing per-shape tuples per world dominates
+                    # this loop at high world counts.
+                    cache_key = (
+                        shape_flags_np[world_start:world_end].tobytes(),
+                        shape_group_np[world_start:world_end].tobytes(),
+                        block_key,
+                        explicit_filter_specs,
+                    )
+                    cached_pairs = template_cache.get(cache_key)
+
+                    if cached_pairs is None:
+                        collision_groups = self.shape_collision_group[world_start:world_end]
+                        local_colliding_indices = np.flatnonzero(colliding_np[world_start:world_end]).tolist()
+
+                        # Replicated-block filters are local to the source block;
+                        # shift them into this world's local shape coordinates.
+                        local_filters = set()
+                        for block_offset, _shape_count, local_filter_pairs in block_specs:
+                            for shape_a, shape_b in local_filter_pairs:
+                                offset_shape_a = block_offset + shape_a
+                                offset_shape_b = block_offset + shape_b
+                                local_filters.add(
+                                    (offset_shape_a, offset_shape_b)
+                                    if offset_shape_a <= offset_shape_b
+                                    else (offset_shape_b, offset_shape_a)
+                                )
+
+                        global_local_filters = set()
+                        for kind, shape_a, shape_b in explicit_filter_specs:
+                            if kind == "local":
+                                local_filters.add((shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a))
+                            else:
+                                global_local_filters.add((shape_a, shape_b))
+
+                        # Cache global/local pairs separately: the global id is
+                        # absolute, while the local id is shifted during replay.
+                        global_local_pairs = []
+                        for global_shape, global_group in colliding_globals:
+                            for local_shape in local_colliding_indices:
+                                if self._test_group_pair(global_group, collision_groups[local_shape]):
+                                    pair = (global_shape, local_shape)
+                                    if pair not in global_local_filters:
+                                        global_local_pairs.append(pair)
+
+                        local_pairs = []
+                        for i1, shape_a in enumerate(local_colliding_indices):
+                            group_a = collision_groups[shape_a]
+                            for shape_b in local_colliding_indices[i1 + 1 :]:
+                                if not self._test_group_pair(group_a, collision_groups[shape_b]):
+                                    continue
+
+                                pair = (shape_a, shape_b)
+                                if pair not in local_filters:
+                                    local_pairs.append(pair)
+
+                        cached_pairs = (
+                            np.asarray(global_local_pairs, dtype=np.int32).reshape((-1, 2)),
+                            np.asarray(local_pairs, dtype=np.int32).reshape((-1, 2)),
+                        )
+                        template_cache[cache_key] = cached_pairs
+
+                    # Group runs of consecutive worlds sharing one template so
+                    # the replay below is a broadcast add per run, not a Python
+                    # loop over millions of per-world tuples.
+                    if template_runs and template_runs[-1][1] is cached_pairs:
+                        template_runs[-1][0].append(world_start)
+                    else:
+                        template_runs.append(([world_start], cached_pairs))
+
+                chunks = []
+                if contact_pairs:
+                    chunks.append(np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2)))
+                for starts, (global_local_pairs, local_pairs) in template_runs:
+                    offsets = np.asarray(starts, dtype=np.int32)
+                    global_count = global_local_pairs.shape[0]
+                    pairs_per_world = global_count + local_pairs.shape[0]
+                    if pairs_per_world == 0:
+                        continue
+                    replay = np.empty((offsets.shape[0], pairs_per_world, 2), dtype=np.int32)
+                    if global_count:
+                        global_replay = replay[:, :global_count, :]
+                        global_replay[:, :, 0] = global_local_pairs[:, 0]
+                        # Cached global/local pairs hold an absolute global id
+                        # and a world-local id shifted per world during replay.
+                        global_replay[:, :, 1] = global_local_pairs[:, 1] + offsets[:, None]
+                        global_replay.sort(axis=2)
+                    if pairs_per_world > global_count:
+                        replay[:, global_count:, :] = local_pairs[None, :, :] + offsets[:, None, None]
+                    chunks.append(replay.reshape((-1, 2)))
+
+                if chunks:
+                    pair_array = np.concatenate(chunks, axis=0)
+                else:
+                    pair_array = np.empty((0, 2), dtype=np.int32)
+                model.shape_contact_pairs = wp.array(pair_array, dtype=wp.vec2i, device=model.device)
+                model.shape_contact_pair_count = len(pair_array)
+                return
+
         contact_pairs: list[tuple[int, int]] = []
         shape_world = self.shape_world
         shape_collision_group = self.shape_collision_group
@@ -11679,14 +12126,17 @@ class ModelBuilder:
                 else:
                     shape_a, shape_b = s1, s2
 
-                # Skip if explicitly filtered
-                if (shape_a, shape_b) not in filters:
-                    contact_pairs.append((shape_a, shape_b))
+                contact_pairs.append((shape_a, shape_b))
 
-        model.shape_contact_pairs = wp.array(
-            np.array(contact_pairs, dtype=np.int32).reshape((-1, 2)), dtype=wp.vec2i, device=model.device
-        )
-        model.shape_contact_pair_count = len(contact_pairs)
+        # Drop explicitly filtered pairs with one bulk query instead of a
+        # per-pair membership test inside the candidate loop.
+        candidate_pairs = np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2))
+        if candidate_pairs.shape[0] > 0:
+            filtered = model.shape_collision_filter_mask(candidate_pairs)
+            candidate_pairs = candidate_pairs[~filtered]
+
+        model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)
+        model.shape_contact_pair_count = len(candidate_pairs)
 
 
 ModelBuilder.ShapeConfig.__init__ = deprecate_nonkeyword_arguments(ModelBuilder.ShapeConfig.__init__)

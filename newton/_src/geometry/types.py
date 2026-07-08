@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
+import hashlib
 import math
 import os
 import warnings
@@ -1502,16 +1503,26 @@ class Mesh:
             The hash value for the mesh.
         """
         if self._cached_hash is None:
-            self._cached_hash = hash(
-                (
-                    tuple(np.array(self.vertices).flatten()),
-                    tuple(np.array(self.indices).flatten()),
-                    self.is_solid,
-                    self._compute_texture_hash(),
-                    self._roughness,
-                    self._metallic,
-                )
+            digest = hashlib.sha256()
+            material = np.array(
+                [
+                    np.nan if self._roughness is None else float(self._roughness),
+                    np.nan if self._metallic is None else float(self._metallic),
+                ],
+                dtype=np.float64,
             )
+            for name, values in ((b"vertices", self._vertices), (b"indices", self._indices), (b"material", material)):
+                dtype = values.dtype.str.encode("ascii")
+                digest.update(len(name).to_bytes(1, "big"))
+                digest.update(name)
+                digest.update(len(dtype).to_bytes(1, "big"))
+                digest.update(dtype)
+                digest.update(values.ndim.to_bytes(1, "big"))
+                for dimension in values.shape:
+                    digest.update(int(dimension).to_bytes(8, "big"))
+                digest.update(values.tobytes())
+            digest.update(bytes([bool(self.is_solid)]))
+            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
         return self._cached_hash
 
     # ---- Factory methods ---------------------------------------------------
