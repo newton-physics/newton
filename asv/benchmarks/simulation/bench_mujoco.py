@@ -14,35 +14,9 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_mujoco import TARGET_SLEW_PER_FRAME, TARGET_WAYPOINT_FRAMES, Example, _target_bounds, _target_q
+from benchmark_mujoco import Example
 
 from newton.utils import EventTracer
-
-
-@wp.kernel
-def apply_waypoint_control(
-    seed: int,
-    frame: wp.array[int],
-    lo: wp.array[float],
-    hi: wp.array[float],
-    slew_per_frame: float,
-    waypoint_frames: int,
-    joint_target: wp.array[float],
-):
-    # Device-side twin of Example.step()'s waypoint tracking: the waypoint is a
-    # pure function of (seed, leg, tid), so no extra state survives the graph.
-    tid = wp.tid()
-    leg = frame[0] // waypoint_frames
-    state = wp.rand_init(seed, leg * joint_target.shape[0] + tid)
-    span = hi[tid] - lo[tid]
-    waypoint = lo[tid] + wp.randf(state) * span
-    slew = slew_per_frame * span
-    joint_target[tid] = joint_target[tid] + wp.clamp(waypoint - joint_target[tid], -slew, slew)
-
-
-@wp.kernel
-def _advance_frame(frame: wp.array[int]):
-    frame[0] = frame[0] + 1
 
 
 class _FastBenchmark:
@@ -81,26 +55,9 @@ class _FastBenchmark:
         if not cuda_graph_comp:
             raise SkipNotImplemented
         else:
-            target_q = _target_q(self.example.control)
-            _, lo, hi = _target_bounds(self.example.model)
-            self._target_lo = wp.array(lo, dtype=wp.float32)
-            self._target_hi = wp.array(hi, dtype=wp.float32)
-            self._target_frame = wp.zeros(1, dtype=int)
+            self.example.init_waypoint_control()
             with wp.ScopedCapture() as capture:
-                wp.launch(
-                    apply_waypoint_control,
-                    dim=(target_q.shape[0],),
-                    inputs=[
-                        self.example.seed,
-                        self._target_frame,
-                        self._target_lo,
-                        self._target_hi,
-                        TARGET_SLEW_PER_FRAME,
-                        TARGET_WAYPOINT_FRAMES,
-                    ],
-                    outputs=[target_q],
-                )
-                wp.launch(_advance_frame, dim=1, inputs=[self._target_frame])
+                self.example.apply_waypoint_control()
                 self.example.simulate()
             self.graph = capture.graph
 
