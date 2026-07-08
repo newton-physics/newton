@@ -1821,17 +1821,30 @@ class TetMesh:
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim) -> "TetMesh":
+    def create_from_usd(prim, *, compat_namespaces: Sequence[str] | None = None) -> "TetMesh":
         """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
         Reads vertex positions from the ``points`` attribute and tetrahedral
         connectivity from ``tetVertexIndices``. If a physics material is bound
         to the prim (via ``material:binding:physics``) and contains
-        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
-        (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
+        ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
         those values are read and converted to Lame parameters (``k_mu``,
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
+
+        Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
+        (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
+        are read off any bound material, matching the pre-canonical behavior. That default is
+        deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
+        authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
+        without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
+        materials do not warn); a future
+        release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
+        the canonical-only behavior now -- moduli are then read only from a material that applies
+        ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
+        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
+        warning.
 
         Example:
 
@@ -1849,13 +1862,17 @@ class TetMesh:
 
         Args:
             prim: The USD prim to load the tetrahedral mesh from.
+            compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
+                ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
+                gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
+                canonical-only.
 
         Returns:
             TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 
-        return get_tetmesh(prim)
+        return get_tetmesh(prim, compat_namespaces=compat_namespaces)
 
     @staticmethod
     def create_from_file(filename: str) -> "TetMesh":

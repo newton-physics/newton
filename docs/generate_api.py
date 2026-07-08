@@ -223,9 +223,9 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
             continue
 
         # ------------------------------------------------------------------
-        # Constants / simple values
+        # Constants / simple values (incl. collection constants such as tuples)
         # ------------------------------------------------------------------
-        if wp.types.type_is_value(type(attr)) or isinstance(attr, str):
+        if wp.types.type_is_value(type(attr)) or isinstance(attr, (str, bytes, tuple, list, frozenset)):
             constants.append(name)
             continue
 
