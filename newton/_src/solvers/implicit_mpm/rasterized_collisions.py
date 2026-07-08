@@ -166,6 +166,8 @@ def collision_sdf(
     body_qd: wp.array[wp.spatial_vector],
     body_q_prev: wp.array[wp.transform],
     dt: float,
+    collider_world: wp.array[int],
+    query_world: int,
 ):
     min_sdf = float(_INFINITY)
     sdf_grad = wp.vec3(0.0)
@@ -189,6 +191,10 @@ def collision_sdf(
             x_local = x
 
         max_dist = collider.query_max_dist + thickness
+        if collider_world and query_world >= 0:
+            world = collider_world[m]
+            if world >= 0 and world != query_world:
+                max_dist = -1.0
 
         if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
             query = wp.mesh_query_point_no_sign(mesh, x_local, max_dist)
@@ -341,7 +347,7 @@ def project_outside_collider(
 
     # project outside of collider
     sdf, sdf_gradient, sdf_vel, _collider_id, material_id = collision_sdf(
-        pos_adv, collider, body_q, body_qd, body_q_prev, dt
+        pos_adv, collider, body_q, body_qd, body_q_prev, dt, collider.collider_body_index, -1
     )
 
     sdf_end = sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider.material_projection_threshold[material_id]
@@ -415,7 +421,7 @@ def rasterize_collider_kernel(
         sdf = _INFINITY
     else:
         sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(
-            x, collider, body_q, body_qd, body_q_prev, dt
+            x, collider, body_q, body_qd, body_q_prev, dt, collider.collider_body_index, -1
         )
         bc_active = sdf < activation_distance * voxel_size
 
