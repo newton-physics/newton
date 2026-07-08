@@ -417,6 +417,16 @@ def parse_usd(
     # Create a cache for world transforms to avoid recomputing them for each prim.
     xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     traverse_instance_proxies = Usd.TraverseInstanceProxies()
+    _visual_geom_types = {
+        "cube",
+        "sphere",
+        "plane",
+        "capsule",
+        "cylinder",
+        "cone",
+        "mesh",
+        "particlefield3dgaussiansplat",
+    }
 
     def _is_enabled_collider(prim: Usd.Prim) -> bool:
         if collider := UsdPhysics.CollisionAPI(prim):
@@ -916,6 +926,17 @@ def parse_usd(
         if not is_site and not allow_visual_shapes:
             _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes)
             return
+        if type_name not in _visual_geom_types:
+            # Skip the transform/material work below for prims that cannot produce a shape.
+            if (
+                len(type_name) > 0
+                and type_name not in {"geomsubset", "material", "scope", "shader", "xform", "tetmesh"}
+                and path_name not in path_shape_map
+                and verbose
+            ):
+                print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
+            _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes)
+            return
 
         prim_world_mat = _get_prim_world_mat(
             prim,
@@ -1075,13 +1096,6 @@ def parse_usd(
                     color=shape_color,
                     label=path_name,
                 )
-            elif (
-                len(type_name) > 0
-                and type_name not in {"geomsubset", "material", "scope", "shader", "xform", "tetmesh"}
-                and verbose
-            ):
-                print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
-
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
                 path_shape_scale[path_name] = scale
