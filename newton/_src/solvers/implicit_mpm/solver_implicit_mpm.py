@@ -1466,9 +1466,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Args:
             voxel_size: Voxel size for the density grid [m].
                 Defaults to ``0.45 * solver_voxel_size``.
-            max_grid_cells: Maximum logical grid cell count. When set,
-                extraction uses graph-capturable preallocated buffers. When
-                ``None``, it uses tight allocations.
+            max_grid_cells: Maximum total logical grid cell count across all
+                worlds. When set, extraction uses graph-capturable preallocated
+                buffers. When ``None``, it uses tight allocations.
             **kwargs: Forwarded to :class:`newton.geometry.ParticleSurface`.
 
         Returns:
@@ -1477,6 +1477,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
         if voxel_size is None:
             voxel_size = self._mpm_model.voxel_size * 0.45
+        world_count = max(self.model.world_count, 1)
+        if "world_count" in kwargs and kwargs["world_count"] != world_count:
+            raise ValueError(f"world_count must match the model world count ({world_count})")
+        kwargs["world_count"] = world_count
         return ParticleSurface(
             voxel_size=voxel_size,
             max_grid_cells=max_grid_cells,
@@ -1524,6 +1528,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             radii=self._mpm_model.particle_radius,
             compute_normals=compute_normals and not extrapolate_into_colliders,
             particle_flags=particle_flags,
+            particle_world=self.model.particle_world if surface.world_count > 1 else None,
             compute_mesh=not extrapolate_into_colliders,
         )
         if not extrapolate_into_colliders:
@@ -1532,6 +1537,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         return extrapolate_surface_sdf_into_colliders(
             surface,
             self._mpm_model.collider,
+            self._mpm_model.collider_world,
             state.body_q,
             max_depth=collider_extrapolation_depth,
             onset=collider_extrapolation_onset,

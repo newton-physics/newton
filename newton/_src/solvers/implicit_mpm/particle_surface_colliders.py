@@ -21,6 +21,7 @@ def _capacity_node_index(i: int, j: int, k: int, dims: wp.vec3i) -> int:
 @wp.func
 def _sample_capacity_field_trilinear(
     field: wp.array[float],
+    node_start: int,
     dims: wp.vec3i,
     grid_origin: wp.vec3,
     inv_voxel_size: float,
@@ -38,14 +39,14 @@ def _sample_capacity_field_trilinear(
     fy = py - float(j0)
     fz = pz - float(k0)
 
-    c000 = field[_capacity_node_index(i0, j0, k0, dims)]
-    c100 = field[_capacity_node_index(i0 + 1, j0, k0, dims)]
-    c010 = field[_capacity_node_index(i0, j0 + 1, k0, dims)]
-    c110 = field[_capacity_node_index(i0 + 1, j0 + 1, k0, dims)]
-    c001 = field[_capacity_node_index(i0, j0, k0 + 1, dims)]
-    c101 = field[_capacity_node_index(i0 + 1, j0, k0 + 1, dims)]
-    c011 = field[_capacity_node_index(i0, j0 + 1, k0 + 1, dims)]
-    c111 = field[_capacity_node_index(i0 + 1, j0 + 1, k0 + 1, dims)]
+    c000 = field[node_start + _capacity_node_index(i0, j0, k0, dims)]
+    c100 = field[node_start + _capacity_node_index(i0 + 1, j0, k0, dims)]
+    c010 = field[node_start + _capacity_node_index(i0, j0 + 1, k0, dims)]
+    c110 = field[node_start + _capacity_node_index(i0 + 1, j0 + 1, k0, dims)]
+    c001 = field[node_start + _capacity_node_index(i0, j0, k0 + 1, dims)]
+    c101 = field[node_start + _capacity_node_index(i0 + 1, j0, k0 + 1, dims)]
+    c011 = field[node_start + _capacity_node_index(i0, j0 + 1, k0 + 1, dims)]
+    c111 = field[node_start + _capacity_node_index(i0 + 1, j0 + 1, k0 + 1, dims)]
 
     c00 = c000 * (1.0 - fx) + c100 * fx
     c10 = c010 * (1.0 - fx) + c110 * fx
@@ -63,22 +64,26 @@ def _mirror_capacity_sdf_into_colliders(
     grid_origin: wp.array[wp.vec3],
     grid_dims: wp.array[wp.vec3i],
     grid_counts: wp.array[wp.int32],
+    grid_node_world_start: wp.array[wp.int32],
     voxel_size: float,
     onset: float,
     max_depth: float,
     collider: Collider,
+    collider_world: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_q_prev: wp.array[wp.transform],
     stride: int,
 ):
-    index = wp.tid()
-    node_count = grid_counts[0]
-    if grid_counts[3] != 0:
+    world, index = wp.tid()
+    counts_base = 7 * world
+    node_count = grid_counts[counts_base]
+    if grid_counts[counts_base + 3] != 0:
         node_count = 0
-    dims = grid_dims[0]
+    dims = grid_dims[world]
     yz = dims[1] * dims[2]
-    origin = grid_origin[0]
+    origin = grid_origin[world]
+    node_start = grid_node_world_start[world]
     while index < node_count:
         i = index // yz
         remainder = index - i * yz
@@ -87,13 +92,14 @@ def _mirror_capacity_sdf_into_colliders(
         position = origin + voxel_size * wp.vec3(float(i), float(j), float(k))
 
         distance, normal, _velocity, _collider_id, _material_id = collision_sdf(
-            position, collider, body_q, body_qd, body_q_prev, 1.0
+            position, collider, body_q, body_qd, body_q_prev, 1.0, collider_world, world
         )
         depth = onset - distance
         if depth >= 0.0 and depth <= max_depth:
             mirror_position = position + 2.0 * depth * normal
             mirror_value = _sample_capacity_field_trilinear(
                 field_orig,
+                node_start,
                 dims,
                 origin,
                 1.0 / voxel_size,
@@ -101,17 +107,18 @@ def _mirror_capacity_sdf_into_colliders(
             )
             blend_start = 0.5 * max_depth
             if depth <= blend_start:
-                field[index] = mirror_value
+                field[node_start + index] = mirror_value
             else:
                 t = (depth - blend_start) / wp.max(max_depth - blend_start, 1.0e-10)
                 blend = t * t * (3.0 - 2.0 * t)
-                field[index] = (1.0 - blend) * mirror_value + blend * field_orig[index]
+                field[node_start + index] = (1.0 - blend) * mirror_value + blend * field_orig[node_start + index]
         index += stride
 
 
 def extrapolate_surface_sdf_into_colliders(
     surface: ParticleSurface,
     collider: Collider,
+    collider_world: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     *,
     max_depth: float | None = None,
@@ -124,6 +131,7 @@ def extrapolate_surface_sdf_into_colliders(
     Args:
         surface: Particle surface containing the SDF field.
         collider: MPM collider representation to extrapolate into.
+        collider_world: World index for each collider, or ``-1`` for global.
         body_q: Current rigid body transforms, shape ``(body_count,)``.
         max_depth: Maximum extrapolation depth inside colliders [m]. Defaults to
             ``4 * surface.voxel_size``.
@@ -152,17 +160,19 @@ def extrapolate_surface_sdf_into_colliders(
     try:
         wp.launch(
             _mirror_capacity_sdf_into_colliders,
-            dim=capacity.launch_threads,
+            dim=(capacity.world_count, capacity.launch_threads),
             inputs=[
                 capacity.field,
                 capacity.field_orig,
                 capacity.grid_origin,
                 capacity.grid_dims,
                 capacity.grid_counts,
+                capacity.grid_node_world_start,
                 surface.voxel_size,
                 onset,
                 max_depth,
                 collider,
+                collider_world,
                 body_q,
                 None,
                 None,
