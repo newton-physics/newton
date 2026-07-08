@@ -958,6 +958,11 @@ class Model:
         """
         self.articulation_end: wp.array[wp.int32] | None = None
         """Exclusive end index of regular tree joints per articulation, shape [articulation_count], int."""
+        self._fk_articulation_level_start: wp.array[wp.int32] | None = None
+        self._fk_level_joint_start: wp.array[wp.int32] | None = None
+        self._fk_level_joints: wp.array[wp.int32] | None = None
+        self._fk_joint_parent: wp.array[wp.int32] | None = None
+        self._fk_has_cable: bool = False
         self.articulation_label: list[str] = []
         """Articulation labels, shape [articulation_count], str."""
         self.articulation_world: wp.array[wp.int32] | None = None

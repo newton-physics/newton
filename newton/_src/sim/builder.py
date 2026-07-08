@@ -77,6 +77,86 @@ else:
     UsdStage = Any
 
 
+def _build_joint_ancestor(joint_parent: Sequence[int], joint_child: Sequence[int]) -> np.ndarray:
+    joint_parents = np.asarray(joint_parent, dtype=np.int64)
+    joint_children = np.asarray(joint_child, dtype=np.int64)
+    joint_indices = np.arange(len(joint_parents), dtype=np.int32)
+    max_child = int(np.max(joint_children, initial=-1))
+
+    body_joint = np.full(max_child + 1, -1, dtype=np.int32)
+    valid_child = joint_children >= 0
+    body_joint[joint_children[valid_child]] = joint_indices[valid_child]
+
+    parent_joint = np.full(len(joint_parents), -1, dtype=np.int32)
+    has_parent = (joint_parents >= 0) & (joint_parents <= max_child)
+    parent_joint[has_parent] = body_joint[joint_parents[has_parent]]
+    return parent_joint
+
+
+def _build_fk_level_topology(
+    articulation_count: int,
+    joint_articulation: Sequence[int],
+    joint_parent: Sequence[int],
+    joint_child: Sequence[int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if articulation_count == 0:
+        return (
+            np.zeros(1, dtype=np.int32),
+            np.zeros(1, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
+            np.full(len(joint_articulation), -1, dtype=np.int32),
+        )
+
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int64)
+    joint_parents = np.asarray(joint_parent, dtype=np.int64)
+    joint_children = np.asarray(joint_child, dtype=np.int64)
+    articulation_joints = np.flatnonzero(joint_articulations >= 0).astype(np.int32)
+    articulation_ids = joint_articulations[articulation_joints]
+    if np.any(articulation_ids >= articulation_count):
+        raise ValueError("Joint references an invalid articulation")
+
+    max_child = int(np.max(joint_children[articulation_joints], initial=-1))
+    body_joint = np.full(max_child + 1, -1, dtype=np.int32)
+    body_joint[joint_children[articulation_joints]] = articulation_joints
+
+    parent_joint = np.full(len(joint_articulations), -1, dtype=np.int32)
+    has_parent_body = (joint_parents[articulation_joints] >= 0) & (joint_parents[articulation_joints] <= max_child)
+    parent_joint[articulation_joints[has_parent_body]] = body_joint[joint_parents[articulation_joints[has_parent_body]]]
+    has_parent_joint = parent_joint[articulation_joints] >= 0
+    parent_articulation = np.full(len(articulation_joints), -1, dtype=np.int64)
+    parent_articulation[has_parent_joint] = joint_articulations[parent_joint[articulation_joints[has_parent_joint]]]
+    parent_joint[articulation_joints[parent_articulation != articulation_ids]] = -1
+
+    depth = np.full(len(joint_articulations), -1, dtype=np.int32)
+    roots = articulation_joints[parent_joint[articulation_joints] < 0]
+    depth[roots] = 0
+    unresolved = articulation_joints[depth[articulation_joints] < 0]
+    while len(unresolved):
+        parents = parent_joint[unresolved]
+        ready = depth[parents] >= 0
+        if not np.any(ready):
+            raise ValueError("Articulation joint graph contains a cycle")
+        ready_joints = unresolved[ready]
+        depth[ready_joints] = depth[parents[ready]] + 1
+        unresolved = unresolved[~ready]
+
+    joint_depths = depth[articulation_joints]
+    depth_stride = int(np.max(joint_depths, initial=0)) + 1
+    level_key = articulation_ids * depth_stride + joint_depths
+    order = np.argsort(level_key, kind="stable")
+    level_joints = articulation_joints[order]
+    sorted_articulations = articulation_ids[order]
+    sorted_depths = joint_depths[order]
+
+    new_level = np.ones(len(level_joints), dtype=bool)
+    new_level[1:] = (sorted_articulations[1:] != sorted_articulations[:-1]) | (sorted_depths[1:] != sorted_depths[:-1])
+    level_joint_start = np.append(np.flatnonzero(new_level), len(level_joints)).astype(np.int32)
+    articulation_level_count = np.bincount(sorted_articulations[new_level], minlength=articulation_count)
+    articulation_level_start = np.concatenate(([0], np.cumsum(articulation_level_count))).astype(np.int32)
+
+    return articulation_level_start, level_joint_start, level_joints, parent_joint
+
+
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -2349,7 +2429,7 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
 
         Raises:
-            ValueError: If joints are not contiguous, not monotonic, or belong to different worlds.
+            ValueError: If joints are not contiguous, not monotonic, belong to different worlds, or share a child body.
 
         Example:
             .. code-block:: python
@@ -2407,16 +2487,15 @@ class ModelBuilder:
                     f"{self.current_world}. All joints in an articulation must belong to the same world."
                 )
 
-        # Basic tree structure validation (check for cycles, single parent)
-        # Build a simple tree structure check - each child should have only one parent in this articulation
+        # Level-parallel FK requires one producer per body.
         child_to_parent = {}
         for joint_idx in joints:
             child = self.joint_child[joint_idx]
             parent = self.joint_parent[joint_idx]
-            if child in child_to_parent and child_to_parent[child] != parent:
+            if child in child_to_parent:
                 raise ValueError(
-                    f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
-                    f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
+                    f"Body {child} is the child of multiple joints in this articulation. "
+                    "Loop-closing joints must not be part of an articulation."
                 )
             child_to_parent[child] = parent
 
@@ -11027,12 +11106,7 @@ class ModelBuilder:
             m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
-            child_to_joint = {}
-            for i, child in enumerate(self.joint_child):
-                child_to_joint[child] = i
-            parent_joint = []
-            for parent in self.joint_parent:
-                parent_joint.append(child_to_joint.get(parent, -1))
+            parent_joint = _build_joint_ancestor(self.joint_parent, self.joint_child)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
             m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
 
@@ -11089,6 +11163,22 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
+            (
+                fk_articulation_level_start,
+                fk_level_joint_start,
+                fk_level_joints,
+                fk_joint_parent,
+            ) = _build_fk_level_topology(
+                self.articulation_count,
+                self.joint_articulation,
+                self.joint_parent,
+                self.joint_child,
+            )
+            m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
+            m._fk_level_joint_start = wp.array(fk_level_joint_start, dtype=wp.int32)
+            m._fk_level_joints = wp.array(fk_level_joints, dtype=wp.int32)
+            m._fk_joint_parent = wp.array(fk_joint_parent, dtype=wp.int32)
+            m._fk_has_cable = JointType.CABLE in self.joint_type
             m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation

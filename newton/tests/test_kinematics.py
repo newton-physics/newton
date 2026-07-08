@@ -358,9 +358,8 @@ def test_ik_prismatic_descendant_recovers_joint_state(test, device):
 def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_difference(test, device, joint_type):
     """FK finite-difference regression for a FREE/DISTANCE-rooted chain with an offset-COM descendant.
 
-    This pins the public ``newton.eval_fk`` (and the duplicated MuJoCo
-    ``eval_articulation_fk`` kernel) against a forward finite difference for
-    a FREE/DISTANCE-rooted articulation whose root carries a non-zero
+    This pins the public ``newton.eval_fk`` against a forward finite difference
+    for a FREE/DISTANCE-rooted articulation whose root carries a non-zero
     ``body_com`` and whose descendant body has a non-zero ``body_com`` and a
     non-trivial child joint anchor -- the exact boundary the PR reworked.
 
@@ -369,8 +368,6 @@ def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_differe
     ``(v_com_world, omega_world)`` convention) shows up as a mismatch
     between the origin velocity recovered from ``body_qd`` and the
     forward-difference of ``body_q`` for either the root or the descendant.
-    Looping over both FK entry points guards both code paths against
-    divergence on the FREE/DISTANCE root.
     """
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
 
