@@ -1980,7 +1980,7 @@ def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
     return None
 
 
-def _get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray | None:
+def _get_deformable_bind_pose(prim: Usd.Prim, *, strict: bool = False) -> np.ndarray | None:
     """Read a geometry's proposal bind pose from ``PhysicsDeformablePoseAPI``.
 
     Enumerates the prim's applied multi-apply ``PhysicsDeformablePoseAPI:<instance>``
@@ -1988,7 +1988,8 @@ def _get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray | None:
     of the first instance whose ``purposes`` contains ``bindPose``, in authored
     order. Returns ``None`` when no bind pose is authored (the caller falls back to
     the geometry's default ``points``, per the proposal). A bind pose whose length
-    does not match the geometry's ``points`` warns and is ignored.
+    does not match the geometry's ``points`` warns and is ignored unless ``strict``
+    is true, in which case malformed data raises with a stable reason name.
     """
     geometry_points = prim.GetAttribute("points").Get() if prim.GetAttribute("points") else None
     # Raw apiSchemas metadata: the proposal schema is unregistered, so
@@ -2004,13 +2005,21 @@ def _get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray | None:
         if points is None:
             continue
         if geometry_points is not None and len(points) != len(geometry_points):
-            warnings.warn(
+            message = (
                 f"{prim.GetPath()}: PhysicsDeformablePoseAPI:{instance} bind pose has "
-                f"{len(points)} points but the geometry has {len(geometry_points)}; ignoring it.",
+                f"{len(points)} points but the geometry has {len(geometry_points)}"
+            )
+            if strict:
+                raise ValueError(f"invalid_bind_pose_count: {message}")
+            warnings.warn(
+                f"{message}; ignoring it.",
                 stacklevel=2,
             )
             continue
-        return np.asarray(points, dtype=np.float64)
+        points = np.asarray(points, dtype=np.float64)
+        if strict and not np.all(np.isfinite(points)):
+            raise ValueError(f"non_finite_bind_point: {prim.GetPath()} bind pose contains non-finite points")
+        return points
     return None
 
 

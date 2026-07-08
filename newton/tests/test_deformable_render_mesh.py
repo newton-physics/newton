@@ -648,6 +648,50 @@ class TestDeformableRenderMeshUSDImport(unittest.TestCase):
         # The bind-pose vertices (inside the tet) are the rest vertices.
         self.assertLess(float(rm.rest_vertices.numpy().max()), 1.0)
 
+    def test_invalid_simulation_bind_pose_skips_visual_binding(self):
+        """An authored simulation bind pose with the wrong count is not replaced silently."""
+        from pxr import Sdf
+
+        stage = self._stage()
+        _, sim = self._add_volume_body(stage, "/World/Tire")
+        self._add_graphics_mesh(stage, "/World/Tire/Skin")
+        sim.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+            ["bindPose"]
+        )
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        )
+
+        with self.assertWarnsRegex(UserWarning, "invalid_bind_pose_count"):
+            builder = self._import(stage)
+
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 0)
+
+    def test_non_finite_visual_bind_pose_skips_only_that_visual(self):
+        """A malformed visual is diagnosed without discarding a valid sibling visual."""
+        from pxr import Sdf
+
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        bad = self._add_graphics_mesh(stage, "/World/Tire/BadSkin")
+        self._add_graphics_mesh(stage, "/World/Tire/GoodSkin")
+        bad.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        bad.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+            ["bindPose"]
+        )
+        bad.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(float("nan"), 0.2, 0.2), (0.4, 0.2, 0.2), (0.2, 0.4, 0.2)]
+        )
+
+        with self.assertWarnsRegex(UserWarning, "non_finite_bind_point"):
+            builder = self._import(stage)
+
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 1)
+        self.assertEqual(model.deformable_render_meshes[0].graphics_path, "/World/Tire/GoodSkin")
+
     def test_transforms_embed_in_common_frame(self):
         """Sim and graphics prims with different local transforms meet in the
         world frame: a graphics mesh authored in a shifted local frame lands on

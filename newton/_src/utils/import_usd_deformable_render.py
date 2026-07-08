@@ -48,7 +48,7 @@ def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_r
     sim_prim = ctx.stage.GetPrimAtPath(sim_path)
     if not sim_prim or not sim_prim.IsValid():
         return None
-    bind = usd._get_deformable_bind_pose(sim_prim)
+    bind = usd._get_deformable_bind_pose(sim_prim, strict=True)
     if bind is None:
         return None
     p0, p1 = particle_range
@@ -96,7 +96,11 @@ def _deformable_import_render(ctx: _DeformableImportContext) -> None:
 
             # Proposal bind pose (or the mesh points), in the common world frame the
             # simulation geometry was imported in.
-            bind = usd._get_deformable_bind_pose(prim)
+            try:
+                bind = usd._get_deformable_bind_pose(prim, strict=True)
+            except ValueError as exc:
+                warnings.warn(f"{path}: invalid render bind pose; skipping ({exc})", stacklevel=2)
+                continue
             points = bind if bind is not None else np.asarray(mesh.vertices, dtype=np.float64)
             if len(points) != len(mesh.vertices):
                 warnings.warn(
