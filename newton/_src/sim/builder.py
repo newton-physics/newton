@@ -9511,6 +9511,8 @@ class ModelBuilder:
         edge_mats = np.stack([v1 - v0, v2 - v0, v3 - v0], axis=2)
         det = np.linalg.det(edge_mats)
         nonsingular = np.abs(det) > 1.0e-20
+        if not np.any(nonsingular):
+            raise ValueError("degenerate_parent: owning tet range contains no non-degenerate tetrahedron")
         inv_mats = np.zeros_like(edge_mats)
         inv_mats[nonsingular] = np.linalg.inv(edge_mats[nonsingular])
         centroids = 0.25 * (v0 + v1 + v2 + v3)
@@ -9527,7 +9529,9 @@ class ModelBuilder:
                 cand = np.nonzero(inside)[0]
                 best = cand[np.argmax(bary[cand].min(axis=1))]
             else:
-                best = int(np.argmin(np.linalg.norm(centroids - p, axis=1)))
+                distances = np.linalg.norm(centroids - p, axis=1)
+                distances[~nonsingular] = np.inf
+                best = int(np.argmin(distances))
                 clamped += 1
             w = np.clip(bary[best], 0.0, None)
             total = w.sum()
@@ -9571,7 +9575,10 @@ class ModelBuilder:
             d20 = np.einsum("ij,ij->i", ap, ab)
             d21 = np.einsum("ij,ij->i", ap, ac)
             denom = d00 * d11 - d01 * d01
-            denom = np.where(np.abs(denom) > 1.0e-20, denom, 1.0)
+            nonsingular = np.abs(denom) > 1.0e-20
+            if not np.any(nonsingular):
+                raise ValueError("degenerate_parent: owning triangle range contains no non-degenerate triangle")
+            denom = np.where(nonsingular, denom, 1.0)
             v = np.clip((d11 * d20 - d01 * d21) / denom, 0.0, 1.0)
             w = np.clip((d00 * d21 - d01 * d20) / denom, 0.0, 1.0)
             scale = v + w
@@ -9581,7 +9588,9 @@ class ModelBuilder:
             v = np.where(over, v / safe_scale, v)
             w = np.where(over, w / safe_scale, w)
             closest = a + v[:, None] * ab + w[:, None] * ac
-            best = int(np.argmin(np.linalg.norm(closest - p, axis=1)))
+            distances = np.linalg.norm(closest - p, axis=1)
+            distances[~nonsingular] = np.inf
+            best = int(np.argmin(distances))
             weights[i] = (1.0 - v[best] - w[best], v[best], w[best])
             parent[i] = lo + best
         return parent, weights

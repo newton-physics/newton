@@ -669,6 +669,48 @@ class TestDeformableRenderMeshUSDImport(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.deformable_render_mesh_count, 0)
 
+    def test_degenerate_simulation_bind_tet_skips_visual_binding(self):
+        """A visual cannot bind to a tetrahedron collapsed in the simulation bind pose."""
+        from pxr import Sdf
+
+        stage = self._stage()
+        _, sim = self._add_volume_body(stage, "/World/Tire")
+        self._add_graphics_mesh(stage, "/World/Tire/Skin")
+        sim.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+            ["bindPose"]
+        )
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
+        )
+
+        with self.assertWarnsRegex(UserWarning, "degenerate_parent"):
+            builder = self._import(stage)
+
+        self.assertEqual(builder.finalize().deformable_render_mesh_count, 0)
+
+    def test_degenerate_simulation_bind_triangle_skips_visual_binding(self):
+        """A visual cannot bind to triangles collapsed in the simulation bind pose."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
+        body.AddAppliedSchema("PhysicsDeformableBodyAPI")
+        sim = _add_cloth_mesh(stage, "/World/Body/Sim")
+        self._add_graphics_mesh(stage, "/World/Body/Skin")
+        sim.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+            ["bindPose"]
+        )
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (2.0, 0.0, 1.0), (3.0, 0.0, 1.0)]
+        )
+
+        with self.assertWarnsRegex(UserWarning, "degenerate_parent"):
+            builder = self._import(stage)
+
+        self.assertEqual(builder.finalize().deformable_render_mesh_count, 0)
+
     def test_non_finite_visual_bind_pose_skips_only_that_visual(self):
         """A malformed visual is diagnosed without discarding a valid sibling visual."""
         from pxr import Sdf
