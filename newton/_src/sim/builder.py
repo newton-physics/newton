@@ -78,8 +78,8 @@ else:
 
 
 def _build_joint_ancestor(joint_parent: Sequence[int], joint_child: Sequence[int]) -> np.ndarray:
-    joint_parents = np.asarray(joint_parent, dtype=np.int64)
-    joint_children = np.asarray(joint_child, dtype=np.int64)
+    joint_parents = np.asarray(joint_parent, dtype=np.int32)
+    joint_children = np.asarray(joint_child, dtype=np.int32)
     joint_indices = np.arange(len(joint_parents), dtype=np.int32)
     max_child = int(np.max(joint_children, initial=-1))
 
@@ -107,9 +107,9 @@ def _build_fk_level_topology(
             np.full(len(joint_articulation), -1, dtype=np.int32),
         )
 
-    joint_articulations = np.asarray(joint_articulation, dtype=np.int64)
-    joint_parents = np.asarray(joint_parent, dtype=np.int64)
-    joint_children = np.asarray(joint_child, dtype=np.int64)
+    joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
+    joint_parents = np.asarray(joint_parent, dtype=np.int32)
+    joint_children = np.asarray(joint_child, dtype=np.int32)
     articulation_joints = np.flatnonzero(joint_articulations >= 0).astype(np.int32)
     articulation_ids = joint_articulations[articulation_joints]
     if np.any(articulation_ids >= articulation_count):
@@ -129,7 +129,7 @@ def _build_fk_level_topology(
     has_parent_body = (joint_parents[articulation_joints] >= 0) & (joint_parents[articulation_joints] <= max_child)
     parent_joint[articulation_joints[has_parent_body]] = body_joint[joint_parents[articulation_joints[has_parent_body]]]
     has_parent_joint = parent_joint[articulation_joints] >= 0
-    parent_articulation = np.full(len(articulation_joints), -1, dtype=np.int64)
+    parent_articulation = np.full(len(articulation_joints), -1, dtype=np.int32)
     parent_articulation[has_parent_joint] = joint_articulations[parent_joint[articulation_joints[has_parent_joint]]]
     parent_joint[articulation_joints[parent_articulation != articulation_ids]] = -1
 
@@ -148,7 +148,7 @@ def _build_fk_level_topology(
 
     joint_depths = depth[articulation_joints]
     depth_stride = int(np.max(joint_depths, initial=0)) + 1
-    level_key = articulation_ids * depth_stride + joint_depths
+    level_key = articulation_ids.astype(np.int64) * depth_stride + joint_depths
     order = np.argsort(level_key, kind="stable")
     level_joints = articulation_joints[order]
     sorted_articulations = articulation_ids[order]
@@ -11101,9 +11101,13 @@ class ModelBuilder:
                 m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
+            joint_parent_np = np.asarray(self.joint_parent, dtype=np.int32)
+            joint_child_np = np.asarray(self.joint_child, dtype=np.int32)
+            joint_articulation_np = np.asarray(self.joint_articulation, dtype=np.int32)
+
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
-            m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
-            m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
+            m.joint_parent = wp.array(joint_parent_np, dtype=wp.int32)
+            m.joint_child = wp.array(joint_child_np, dtype=wp.int32)
             m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
@@ -11113,9 +11117,9 @@ class ModelBuilder:
             m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
-            parent_joint = _build_joint_ancestor(self.joint_parent, self.joint_child)
+            parent_joint = _build_joint_ancestor(joint_parent_np, joint_child_np)
             m.joint_ancestor = wp.array(parent_joint, dtype=wp.int32)
-            m.joint_articulation = wp.array(self.joint_articulation, dtype=wp.int32)
+            m.joint_articulation = wp.array(joint_articulation_np, dtype=wp.int32)
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
@@ -11172,9 +11176,9 @@ class ModelBuilder:
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
             fk_topology = _build_fk_level_topology(
                 self.articulation_count,
-                self.joint_articulation,
-                self.joint_parent,
-                self.joint_child,
+                joint_articulation_np,
+                joint_parent_np,
+                joint_child_np,
             )
             # Non-tree articulations retain the serial FK path.
             if fk_topology is not None:

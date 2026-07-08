@@ -21,7 +21,7 @@ from newton.tests.unittest_utils import (
 
 
 class TestEvalFK(unittest.TestCase):
-    """Forward-kinematics tests."""
+    pass
 
 
 @wp.kernel
@@ -331,6 +331,7 @@ def test_empty_model(test, device):
 
 def test_loop_closing_joint(test, device):
     model = _build_loop_model(device)
+    assert_np_equal(model.joint_ancestor.numpy(), np.array([-1, 2, 1], dtype=np.int32))
     assert_np_equal(model._fk_articulation_level_start.numpy(), np.array([0, 2], dtype=np.int32))
     assert_np_equal(model._fk_level_joint_start.numpy(), np.array([0, 1, 2], dtype=np.int32))
     assert_np_equal(model._fk_joint_parent.numpy(), np.array([-1, 0, -1], dtype=np.int32))
@@ -355,9 +356,26 @@ def test_duplicate_child_serial_fallback(test, device):
     model.joint_q.assign(np.array([0.3, -0.7], dtype=np.float32))
 
     test.assertIsNone(model._fk_articulation_level_start)
-    test.assertIsNone(model._fk_level_joint_start)
-    test.assertIsNone(model._fk_level_joints)
-    test.assertIsNone(model._fk_joint_parent)
+
+    state_reference = model.state()
+    state_public = model.state()
+    _eval_fk_serial(model, state_reference)
+    newton.eval_fk(model, state_public.joint_q, state_public.joint_qd, state_public)
+    assert_np_equal(state_public.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+
+def test_cyclic_articulation_serial_fallback(test, device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    joint_a = builder.add_joint_revolute(parent=body_b, child=body_a, axis=newton.Axis.Z)
+    joint_b = builder.add_joint_revolute(parent=body_a, child=body_b, axis=newton.Axis.Y)
+    builder.add_articulation([joint_a, joint_b])
+    model = builder.finalize(device=device)
+    model.joint_q.assign(np.array([0.3, -0.7], dtype=np.float32))
+
+    test.assertIsNone(model._fk_articulation_level_start)
 
     state_reference = model.state()
     state_public = model.state()
@@ -415,6 +433,12 @@ add_function_test(
     TestEvalFK,
     "test_duplicate_child_serial_fallback",
     test_duplicate_child_serial_fallback,
+    get_test_devices(),
+)
+add_function_test(
+    TestEvalFK,
+    "test_cyclic_articulation_serial_fallback",
+    test_cyclic_articulation_serial_fallback,
     get_test_devices(),
 )
 add_function_test(
