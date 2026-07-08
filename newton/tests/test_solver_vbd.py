@@ -1016,6 +1016,59 @@ def _rigid_contact_history_soft_restores_penalty_only(test, device):
         np.testing.assert_allclose(offset1.numpy(), offset1_in)
 
 
+def _rigid_contact_history_capture_requires_preallocation(test, device):
+    """Contact history must be allocated before CUDA graph recording."""
+
+    def make_scene(pipeline_first, rigid_contact_max=4):
+        builder = newton.ModelBuilder(gravity=-10.0)
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.2), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
+        builder.color()
+        model = builder.finalize(device=device)
+
+        pipeline = contacts = None
+        if pipeline_first:
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
+            contacts = model.contacts(collision_pipeline=pipeline)
+
+        solver = newton.solvers.SolverVBD(model, iterations=1, rigid_contact_history=True)
+
+        if not pipeline_first:
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
+            contacts = model.contacts(collision_pipeline=pipeline)
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        if rigid_contact_max > 0:
+            model.collide(state_in, contacts)
+        return model, solver, contacts, state_in, state_out, control
+
+    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before CUDA graph capture"):
+        with wp.ScopedCapture(device=device):
+            solver.step(state_in, state_out, control, contacts, 1.0e-3)
+
+    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True)
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state_in, state_out, control, contacts, 1.0e-3)
+    test.assertIsNotNone(capture.graph)
+
+    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True, rigid_contact_max=0)
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state_in, state_out, control, contacts, 1.0e-3)
+    test.assertIsNotNone(capture.graph)
+    test.assertIsNone(solver._prev_contact_lambda)
+
+    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    solver.step(state_in, state_out, control, contacts, 1.0e-3)
+    model.collide(state_out, contacts)
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state_out, state_in, control, contacts, 1.0e-3)
+    test.assertIsNotNone(capture.graph)
+
+
 def _rigid_contact_reset_ownership(test, device):
     """Contact invalidation covers both endpoints and survives nonidentity slots."""
     with wp.ScopedDevice(device):
@@ -2679,6 +2732,12 @@ add_function_test(
     "test_rigid_contact_history_soft_restores_penalty_only",
     _rigid_contact_history_soft_restores_penalty_only,
     devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_rigid_contact_history_capture_requires_preallocation",
+    _rigid_contact_history_capture_requires_preallocation,
+    devices=cuda_devices,
 )
 add_function_test(
     TestSolverVBD,
