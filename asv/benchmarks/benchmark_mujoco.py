@@ -95,12 +95,14 @@ def _target_bounds(model):
         d1 = int(qd_starts[j + 1]) if j + 1 < len(qd_starts) else dof_total
         for d in range(d0, d1):
             i = int(q_starts[j]) + (d - d0) if coord_layout else d
-            l = max(float(limit_lo[d]), -1.0) if limit_lo[d] > -1.0e6 else -1.0
-            h = min(float(limit_hi[d]), 1.0) if limit_hi[d] < 1.0e6 else 1.0
-            if l >= h:  # limit range lies outside [-1, 1]
-                l, h = float(limit_lo[d]), float(limit_hi[d])
-            if l < h:
-                lo[i], hi[i] = l, h
+            lower_raw = float(limit_lo[d])
+            upper_raw = float(limit_hi[d])
+            lower = max(lower_raw, -1.0) if lower_raw > -1.0e6 else -1.0
+            upper = min(upper_raw, 1.0) if upper_raw < 1.0e6 else 1.0
+            if lower >= upper and -1.0e6 < lower_raw < upper_raw < 1.0e6:
+                lower, upper = lower_raw, upper_raw  # bounded range outside [-1, 1]
+            if lower < upper:
+                lo[i], hi[i] = lower, upper
     return lo, hi
 
 
