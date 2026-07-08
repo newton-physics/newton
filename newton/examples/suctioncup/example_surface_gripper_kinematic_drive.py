@@ -17,8 +17,9 @@
 # Example Surface Gripper Kinematic Drive
 #
 # A single-pad surface gripper (box A) is sealed onto the top of a larger box (B). Box A is a
-# kinematic gripper whose full 6-DOF motion is prescribed by a velocity time series (see
-# velocity_profile()), and box B is a free body pulled up by the suction seal -- exercising the
+# kinematic gripper whose full 6-DOF motion is prescribed by a velocity time series (one of the
+# named VelocityProfile options, selected with --profile), and box B is a free body pulled up by
+# the suction seal -- exercising the
 # surface-gripper hold wrench in tension. Seal detection is still trivial (the pad is always
 # engaged); the force model lives in surface_gripper.py.
 #
@@ -27,6 +28,7 @@
 
 import argparse
 import math
+from enum import Enum
 
 import warp as wp
 
@@ -37,20 +39,67 @@ from newton.examples.suctioncup.surface_gripper import (
     SurfaceGripper,
     SurfaceGripperBuilder,
     evaluate_gripper_force,
+    evaluate_seal,
     latch_engagement,
 )
 
-FPS = 60  # fixed render frame rate; the run length (num_frames) is derived from --sim-time
-DEFAULT_SIM_TIME = 10.0  # default total simulation time [s]
+FPS = 60  # fixed render frame rate; the run length (num_frames) is derived from the profile
 DEFAULT_SIM_DT = 1.0 / 240.0  # default physics timestep [s]
 
 
-class _SetNumFramesFromSimTime(argparse.Action):
-    """argparse action: setting ``--sim-time`` also derives ``num_frames = round(sim_time * FPS)``."""
+class VelocityProfile(Enum):
+    """Named velocity time series for the kinematic gripper (box A).
+
+    Select one with ``--profile`` (or pass it via ``args`` in a test). The profile's end time
+    sets the total simulation length. See :func:`make_velocity_profile` for the keyframes.
+    """
+
+    CONSTANT_UP = 1
+    LIFT_AND_LOWER = 2
+    UP_AND_HOLD = 3
+    CONSTANT_UP_AND_DROP = 4
+
+
+DEFAULT_PROFILE = VelocityProfile.CONSTANT_UP
+
+
+def make_profile(profile: VelocityProfile):
+    """Return ``(vel_times, vel_twists, seal_times, seal_values)`` keyframes for ``profile``.
+
+    ``vel_*`` is a 6-DOF velocity time series (world-frame ``(linear, angular)`` twists, sampled
+    by piecewise-linear interpolation). ``seal_*`` is a boolean engaged/disengaged time series
+    (sampled as a step function). ``vel_times[-1]`` is the profile's end time and sets the sim
+    length (``num_frames = round(end_time * FPS)``). For now every seal profile is engaged for
+    the whole run; per-profile seal series come later.
+    """
+    up = wp.spatial_vector(0.0, 0.0, 0.4, 0.0, 0.0, 0.0)
+    down = wp.spatial_vector(0.0, 0.0, -0.4, 0.0, 0.0, 0.0)
+    rest = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    seal_times = [0.0]
+    seal_values = [True]  # engaged for the whole run
+    if profile == VelocityProfile.CONSTANT_UP:
+        # rise at 0.4 m/s for 10 s
+        return [0.0, 10.0], [up, up], seal_times, seal_values
+    if profile == VelocityProfile.LIFT_AND_LOWER:
+        # up, hold at the top, then back down to the start over 10 s (net-zero displacement)
+        return [0.0, 1.0, 4.0, 5.0, 6.0, 9.0, 10.0], [rest, up, up, rest, down, down, rest], seal_times, seal_values
+    if profile == VelocityProfile.UP_AND_HOLD:
+        # rise for 3 s, then hold in place for the rest of the 5 s run
+        return [0.0, 3.0, 5.0], [up, up, rest], seal_times, seal_values
+    if profile == VelocityProfile.CONSTANT_UP_AND_DROP:
+        # same upward motion as CONSTANT_UP, but the seal releases at t = 4 s (box B drops)
+        return [0.0, 10.0], [up, up], [0.0, 4.0], [True, False]
+    raise ValueError(f"unknown velocity profile: {profile}")
+
+
+class _SelectProfile(argparse.Action):
+    """argparse action: selecting ``--profile`` also derives ``num_frames`` from its end time."""
 
     def __call__(self, parser, namespace, values, option_string=None):
-        setattr(namespace, self.dest, values)
-        namespace.num_frames = round(values * FPS)
+        profile = VelocityProfile[values]  # member name -> enum
+        setattr(namespace, self.dest, profile)
+        vel_times = make_profile(profile)[0]
+        namespace.num_frames = round(vel_times[-1] * FPS)
 
 
 @wp.func
@@ -66,6 +115,37 @@ def eval_twist_at_current_time(times: wp.array[float], twists: wp.array[wp.spati
             frac = (t - times[i]) / (times[i + 1] - times[i])
             v = twists[i] * (1.0 - frac) + twists[i + 1] * frac
     return v
+
+
+@wp.func
+def eval_seal_at_current_time(times: wp.array[float], values: wp.array[int], n: int, t: float):
+    """Step (piecewise-constant) lookup of a seal on/off series: the value of the latest
+    keyframe at or before ``t``. The first value is held before the series starts, and the last
+    value is held for any ``t`` past the final keyframe (so a short series still covers a longer
+    run)."""
+    if t <= times[0]:
+        return values[0]
+    if t >= times[n - 1]:
+        return values[n - 1]
+    v = values[0]
+    for i in range(n):
+        if times[i] <= t:
+            v = values[i]
+    return v
+
+
+@wp.kernel
+def update_seal(
+    times: wp.array[float],
+    values: wp.array[int],
+    n: int,
+    sim_time: wp.array[float],
+    # out
+    seal_engaged: wp.array[wp.bool],
+):
+    """Set each pad's engaged flag from the seal time series at the current time."""
+    pad = wp.tid()
+    seal_engaged[pad] = eval_seal_at_current_time(times, values, n, sim_time[0]) != 0
 
 
 @wp.kernel
@@ -129,10 +209,10 @@ class Example:
                 for opt in action.option_strings:
                     parser._option_string_actions.pop(opt, None)
         parser.add_argument(
-            "--sim-time",
-            type=float,
-            action=_SetNumFramesFromSimTime,
-            help="Total simulation time in seconds (num_frames = sim_time * 60).",
+            "--profile",
+            choices=[p.name for p in VelocityProfile],
+            action=_SelectProfile,
+            help="Velocity profile driving the gripper; its end time sets the sim length.",
         )
         parser.add_argument(
             "--sim-dt",
@@ -140,7 +220,8 @@ class Example:
             default=DEFAULT_SIM_DT,
             help="Physics timestep in seconds; sim_substeps = round((1 / 60) / sim_dt).",
         )
-        parser.set_defaults(sim_time=DEFAULT_SIM_TIME, num_frames=round(DEFAULT_SIM_TIME * FPS))
+        default_vel_times = make_profile(DEFAULT_PROFILE)[0]
+        parser.set_defaults(profile=DEFAULT_PROFILE, num_frames=round(default_vel_times[-1] * FPS))
         return parser
 
     def __init__(self, viewer, args):
@@ -151,12 +232,13 @@ class Example:
         self.viewer = viewer
         self.args = args
 
-        # run length and physics timestep come from the CLI (--sim-time, --sim-dt); fall back to
-        # sensible defaults when args is not provided (e.g. instantiated directly in a test).
-        # num_frames = sim_time * fps. sim_substeps is chosen so an integer number of substeps
-        # fills each frame, and sim_dt is snapped to match exactly. The velocity profile spans
-        # the whole run (total_time = num_frames / fps).
-        self.num_frames = getattr(args, "num_frames", round(DEFAULT_SIM_TIME * self.fps))
+        # the velocity profile (--profile, or args.profile in a test) sets the run length: its
+        # end time gives num_frames = round(end_time * fps). the physics timestep comes from
+        # --sim-dt; sim_substeps is chosen so an integer number of substeps fills each frame and
+        # sim_dt is snapped to match exactly. Fall back to defaults when args is not provided.
+        self.velocity_profile = getattr(args, "profile", DEFAULT_PROFILE)
+        vel_times, vel_twists, seal_times, seal_values = make_profile(self.velocity_profile)
+        self.num_frames = getattr(args, "num_frames", round(vel_times[-1] * self.fps))
         requested_sim_dt = getattr(args, "sim_dt", DEFAULT_SIM_DT)
         self.sim_substeps = max(1, round(self.frame_dt / requested_sim_dt))
         self.sim_dt = self.frame_dt / self.sim_substeps
@@ -198,9 +280,7 @@ class Example:
         builder.add_articulation([self.gripper_joint], label="gripper_articulation")
 
         # box B is the gripped object: a free body pulled up by the suction seal (no joint drive).
-        self.box_b = builder.add_body(
-            xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), label="gripped_box_B"
-        )
+        self.box_b = builder.add_body(xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), label="gripped_box_B")
         builder.add_shape_box(self.box_b, hx=LB, hy=LB, hz=LB, cfg=box_cfg)
 
         builder.add_ground_plane()
@@ -245,40 +325,31 @@ class Example:
         self.gripper_control = self.gripper_model.control()
         self.gripper_control.pad_grip_control.fill_(1.0)  # full grip command
 
-        # trivial Phase-1 seal decision for now: the single pad is always engaged to box B
+        # Phase-1 seal decision: which body each pad seals against (fixed to box B here).
         self.seal_engaged = wp.full(1, True, dtype=wp.bool, device=self.model.device)
         self.seal_body_b = wp.full(1, self.box_b, dtype=wp.int32, device=self.model.device)
 
-        # velocity time series driving the gripper (box A). Override velocity_profile() in a
-        # subclass to run a different series per test.
-        profile_times, profile_twists = self.velocity_profile()
-        self.vel_times = wp.array(profile_times, dtype=wp.float32, device=self.model.device)
-        self.vel_twists = wp.array(profile_twists, dtype=wp.spatial_vector, device=self.model.device)
-        self.num_vel = len(profile_times)
+        # velocity time series driving the gripper (box A), from the selected profile.
+        self.vel_times = wp.array(vel_times, dtype=wp.float32, device=self.model.device)
+        self.vel_twists = wp.array(vel_twists, dtype=wp.spatial_vector, device=self.model.device)
+        self.num_vel = len(vel_times)
+
+        # seal on/off time series (engaged True/False), sampled per substep into seal_engaged.
+        # an empty series means "no scripted seal": the physics decides via evaluate_seal instead.
+        self.num_seal = len(seal_times)
+        if self.num_seal > 0:
+            self.seal_times = wp.array(seal_times, dtype=wp.float32, device=self.model.device)
+            self.seal_values = wp.array([int(v) for v in seal_values], dtype=wp.int32, device=self.model.device)
+        else:
+            self.seal_times = None
+            self.seal_values = None
+
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
         self.gripper_q_start = int(self.model.joint_q_start.numpy()[self.gripper_joint])
         self.gripper_qd_start = int(self.model.joint_qd_start.numpy()[self.gripper_joint])
 
         self.viewer.set_model(self.model)
         self.capture()
-
-    def velocity_profile(self):
-        """Return the gripper's velocity time series as ``(times [s], twists)``.
-
-        Each twist is a world-frame 6-DOF spatial velocity ``(linear, angular)``, sampled by
-        piecewise-linear interpolation. Override this in a subclass to drive box A with a
-        different series per test. The default is a constant upward motion: 0.4 m/s along +z for
-        the whole run (``total_time = num_frames / fps``).
-        """
-        total_time = self.num_frames / self.fps
-        up = wp.spatial_vector(0.0, 0.0, 0.4, 0.0, 0.0, 0.0)
-        num_entries = 11  # keyframes evenly spaced over the run, all the same 0.4 m/s upward
-        times = []
-        twists = []
-        for i in range(num_entries):
-            times.append(i * total_time / (num_entries - 1))
-            twists.append(up)
-        return times, twists
 
     def capture(self):
         if wp.get_device().is_cuda:
@@ -290,6 +361,22 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
+
+            if self.num_seal > 0:
+                # We have a pre-arranged seal temporal profile.
+                # Evaluate the seal state from the pre-arranged temporal profile.
+                wp.launch(
+                    update_seal,
+                    dim=self.seal_engaged.shape[0],
+                    inputs=[self.seal_times, self.seal_values, self.num_seal, self.sim_time_wp],
+                    outputs=[self.seal_engaged],
+                )
+            else:
+                # We do not have a pre-arranged seal temporal profile.
+                # Evaluate the current seal if we have one or evaluate
+                # the current geometric state to determine if a seal can be formed.
+                evaluate_seal(self.gripper_model, self.gripper_state, self.seal_engaged)
+
             # kinematically drive the gripper (box A) at its prescribed 6-DOF velocity, then
             # propagate the new joint state to the kinematic body's maximal coordinates.
             wp.launch(
@@ -313,9 +400,9 @@ class Example:
                 body_flag_filter=newton.BodyFlags.KINEMATIC,
             )
 
-            self.model.collide(self.state_0, self.contacts)
+            #self.model.collide(self.state_0, self.contacts)
 
-            # surface gripper -- Phase 1 (trivial: always engaged) then Phase 2 (apply wrench).
+            # surface gripper -- Phase 1 (seal series -> engaged flag, above) then Phase 2 (wrench).
             # clear body_f right before writing the seal wrench, since eval_pad_force accumulates.
             self.state_0.clear_forces()
             latch_engagement(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
@@ -354,5 +441,6 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = Example.create_parser()
+    viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

@@ -103,8 +103,12 @@ def _pad_geometry_factors(shape: int, a: float, b: float):
     capacity_y = a / 3.0
     # twist factor tw = U / (4 a b), with the closed-form integrals U_x, U_y (Appendix 5).
     diagonal = math.sqrt(a * a + b * b)
-    u_x = (2.0 * a * b * diagonal) / 3.0 + (4.0 * b**3 / 3.0) * math.asinh(a / b) - (2.0 * a**3 / 3.0) * math.asinh(b / a)
-    u_y = (2.0 * a * b * diagonal) / 3.0 + (4.0 * a**3 / 3.0) * math.asinh(b / a) - (2.0 * b**3 / 3.0) * math.asinh(a / b)
+    u_x = (
+        (2.0 * a * b * diagonal) / 3.0 + (4.0 * b**3 / 3.0) * math.asinh(a / b) - (2.0 * a**3 / 3.0) * math.asinh(b / a)
+    )
+    u_y = (
+        (2.0 * a * b * diagonal) / 3.0 + (4.0 * a**3 / 3.0) * math.asinh(b / a) - (2.0 * b**3 / 3.0) * math.asinh(a / b)
+    )
     area = 4.0 * a * b
     tw_x = u_x / area
     tw_y = u_y / area
@@ -197,10 +201,16 @@ class SurfaceGripperBuilder:
         # geometry-derived force factors (see gripper.pdf), precomputed per gripper
         factors = [_pad_geometry_factors(x.shape, x.dim_a, x.dim_b) for x in g]
         # peel stiffness and torsional stiffness are constant per gripper (k * I/A), precompute
-        m.gripper_k_peel_x = wp.array([x.k_normal * f[0] for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device)
-        m.gripper_k_peel_y = wp.array([x.k_normal * f[1] for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device)
+        m.gripper_k_peel_x = wp.array(
+            [x.k_normal * f[0] for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
+        )
+        m.gripper_k_peel_y = wp.array(
+            [x.k_normal * f[1] for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
+        )
         m.gripper_k_torsion = wp.array(
-            [x.k_shear_x * f[0] + x.k_shear_y * f[1] for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
+            [x.k_shear_x * f[0] + x.k_shear_y * f[1] for x, f in zip(g, factors, strict=True)],
+            dtype=wp.float32,
+            device=device,
         )
         m.gripper_peel_capacity_x = wp.array([f[2] for f in factors], dtype=wp.float32, device=device)
         m.gripper_peel_capacity_y = wp.array([f[3] for f in factors], dtype=wp.float32, device=device)
@@ -262,9 +272,58 @@ class SurfaceGripperControl:
     pad_grip_control: wp.array  # per-pad grip command [0, 1]; f_min = pad_grip_control * f_grip_max
 
 
-def evaluate_seal() -> bool:
-    """Return whether the suction cup has formed a seal."""
+@wp.func
+def evaluate_current_seal(pad: int, pad_break_metric: wp.array[float]):
+    """Decide whether an already-engaged pad keeps its seal; returns the new engaged flag.
+
+    Physics-based break: the seal survives while the brittle break metric (from the most recent
+    force evaluation) is within capacity, and breaks once it exceeds 1.
+    """
+    return pad_break_metric[pad] <= 1.0
+
+
+@wp.func
+def evaluate_potential_seal():
+    """Decide whether a disengaged pad forms a new seal; returns the new engaged flag.
+
+    Placeholder: a real implementation would run the geometric seal test (does the pad lip seal
+    against a nearby surface). For now no new seal forms once broken.
+    """
     return False
+
+
+@wp.kernel
+def evaluate_seal_kernel(
+    pad_break_metric: wp.array[float],
+    # in/out
+    seal_engaged: wp.array[wp.bool],
+):
+    """Per-pad seal decision used when no seal series is scripted: keep or break an engaged seal
+    (:func:`evaluate_current_seal`), otherwise try to form a new one (:func:`evaluate_potential_seal`).
+    """
+    pad = wp.tid()
+    if seal_engaged[pad]:
+        seal_engaged[pad] = evaluate_current_seal(pad, pad_break_metric)
+    else:
+        seal_engaged[pad] = evaluate_potential_seal()
+
+
+def evaluate_seal(gripper_model: "SurfaceGripperModel", gripper_state: "SurfaceGripperState", seal_engaged) -> None:
+    """Update the per-pad seal decision from the physics (used when no seal series is scripted).
+
+    For each pad: if currently engaged, evaluate whether the seal survives; otherwise evaluate
+    whether a new seal forms. Writes the decision into ``seal_engaged``, which then feeds
+    :func:`latch_engagement`.
+    """
+    n_pads = gripper_model.pad_xform.shape[0]
+    if n_pads == 0:
+        return
+    wp.launch(
+        evaluate_seal_kernel,
+        dim=n_pads,
+        inputs=[gripper_state.pad_break_metric],
+        outputs=[seal_engaged],
+    )
 
 
 @wp.kernel
