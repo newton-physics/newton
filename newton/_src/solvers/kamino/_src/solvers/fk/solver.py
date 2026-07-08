@@ -17,7 +17,7 @@ import warp as wp
 from ....config import ForwardKinematicsSolverConfig
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.model import ModelKamino
-from ...core.types import assign_to_warp_int32_array, to_warp_int32_array
+from ...core.types import assign_to_warp_int32_array, to_warp_int32_array, vec7f
 from ...linalg.blas import (
     block_sparse_ATA_blockwise_3_4_inv_diagonal_2d,
     block_sparse_ATA_inv_diagonal_2d,
@@ -760,8 +760,10 @@ class ForwardKinematicsSolver:
 
         # Compute sparsity pattern and initialize linear solver for sparse case
         if self.config.use_sparsity:
-            self.sparse_jacobian = BlockSparseMatrices(
-                device=self.device, nzb_dtype=BlockDType(dtype=wp.float32, shape=(7,)), num_matrices=self.num_worlds
+            self.sparse_jacobian: BlockSparseMatrices[wp.float32, wp.int32, vec7f] = BlockSparseMatrices(
+                device=self.device,
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(7,)),
+                num_matrices=self.num_worlds,
             )
             jacobian_dims = list(zip(num_constraints.tolist(), (7 * num_bodies).tolist(), strict=True))
 
@@ -831,7 +833,7 @@ class ForwardKinematicsSolver:
             )
 
             # Initialize Jacobian linear operator
-            self.sparse_jacobian_op = BlockSparseLinearOperators(self.sparse_jacobian)
+            self.sparse_jacobian_op = BlockSparseLinearOperators[wp.float32, wp.int32](self.sparse_jacobian)
 
             # Compute flat-array offsets for the CG solver (uniform world dimensions)
             cg_vio = wp.from_numpy(np.arange(self.num_worlds, dtype=np.int32) * self.num_states_max, device=self.device)
