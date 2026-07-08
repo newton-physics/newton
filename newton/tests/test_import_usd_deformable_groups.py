@@ -39,22 +39,22 @@ class TestUSDDeformableGroups(unittest.TestCase):
         builder.add_usd(_MIXED_ASSET)
         model = builder.finalize()
 
-        cable = DeformableView(model, "/World/CableA/sim", family="cable")
+        cable = DeformableView(model, "/World/CableA/sim", family="curve")
         self.assertEqual(cable.count, 1)
         self.assertEqual(cable.bodies_per_group, 3)
         self.assertEqual(cable.elements_per_group("joint"), 2)  # open 3-segment chain
-        cloth = DeformableView(model, "/World/Cloth/sim", family="cloth")
+        cloth = DeformableView(model, "/World/Cloth/sim", family="surface")
         self.assertEqual(cloth.particles_per_group, 4)
-        self.assertEqual(cloth.ranges("tri"), [(0, 2)])
-        soft = DeformableView(model, "/World/Soft*/sim", family="soft")
+        self.assertEqual(cloth.ranges("triangle"), [(0, 2)])
+        soft = DeformableView(model, "/World/Soft*/sim", family="volume")
         self.assertEqual(soft.count, 2)
         soft_ranges = soft.ranges("particle")
         self.assertNotEqual(soft_ranges[0], soft_ranges[1])
-        self.assertEqual(soft.elements_per_group("tet"), 1)
+        self.assertEqual(soft.elements_per_group("tetrahedron"), 1)
         # No begin_world -> global groups.
         self.assertEqual(cable.worlds, [-1])
         with self.assertRaises(KeyError):
-            DeformableView(model, "/World/DoesNotExist", family="cable")
+            DeformableView(model, "/World/DoesNotExist", family="curve")
 
     def test_replicated_groups_select_per_world(self):
         """replicate() duplicates labels across worlds: one group per world, ranges
@@ -67,7 +67,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.replicate(sub, 3)
         model = scene.finalize()
 
-        view = DeformableView(model, "/World/Cloth", family="cloth")
+        view = DeformableView(model, "/World/Cloth", family="surface")
         self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
         self.assertEqual(view.labels, ["/World/Cloth"] * 3)
         self.assertEqual(view.worlds, [0, 1, 2])
@@ -90,8 +90,8 @@ class TestUSDDeformableGroups(unittest.TestCase):
         scene.add_world(cable_sub)  # world 1: cable only
         model = scene.finalize()
 
-        self.assertEqual(DeformableView(model, "/World/Cloth", family="cloth").worlds, [0])
-        self.assertEqual(DeformableView(model, "/World/Cable", family="cable").worlds, [1])
+        self.assertEqual(DeformableView(model, "/World/Cloth", family="surface").worlds, [0])
+        self.assertEqual(DeformableView(model, "/World/Cable", family="curve").worlds, [1])
 
     def test_cable_group_survives_fixed_joint_collapse(self):
         """Cable body ranges ride the reindexing of collapse_fixed_joints onto the Model."""
@@ -112,7 +112,7 @@ class TestUSDDeformableGroups(unittest.TestCase):
         builder.add_usd(stage, collapse_fixed_joints=True)
         model = builder.finalize()
 
-        view = DeformableView(model, "/World/Cable", family="cable")
+        view = DeformableView(model, "/World/Cable", family="curve")
         ((b0, b1),) = view.ranges("body")
         self.assertEqual(b1 - b0, 3)
         self.assertTrue(all("/World/Cable" in model.body_label[b] for b in range(b0, b1)))

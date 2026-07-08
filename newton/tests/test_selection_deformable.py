@@ -38,7 +38,7 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(3)
         state = model.state()
 
-        view = DeformableView(model, "/World/Cloth", family="cloth")
+        view = DeformableView(model, "/World/Cloth", family="surface")
         self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
         self.assertEqual(view.worlds, [0, 1, 2])
         self.assertEqual(view.particles_per_group, 4)
@@ -63,7 +63,7 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(2)
         state = model.state()
 
-        view = DeformableView(model, "/World/Cable", family="cable")
+        view = DeformableView(model, "/World/Cable", family="curve")
         self.assertEqual((view.count, view.bodies_per_group), (2, 3))
 
         transforms = view.get_body_transforms(state)
@@ -88,7 +88,7 @@ class TestDeformableView(unittest.TestCase):
         builder.add_usd(stage)
         model = builder.finalize()
 
-        view = DeformableView(model, "/World/Soft", family="soft")
+        view = DeformableView(model, "/World/Soft", family="volume")
         self.assertEqual((view.count, view.world_count), (1, 1))
         self.assertEqual(view.get_particle_positions(model.state()).shape, (1, 4))
 
@@ -103,9 +103,11 @@ class TestDeformableView(unittest.TestCase):
         scene.replicate(sub, 2)
         model = scene.finalize()
 
-        view = DeformableView(model, "/World/Cloth*", family="cloth")
+        view = DeformableView(model, "/World/Cloth*", family="surface")
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
+        self.assertEqual(view.group_ids, [0, 1, 2, 3])
+        self.assertEqual(view.ranges("triangle"), [(0, 2), (2, 4), (4, 6), (6, 8)])
 
     def test_compiled_regex_pattern_selects_by_fullmatch(self):
         """A compiled regular expression selects groups by fullmatch: alternation picks
@@ -119,13 +121,13 @@ class TestDeformableView(unittest.TestCase):
         scene.replicate(sub, 2)
         model = scene.finalize()
 
-        view = DeformableView(model, re.compile(r"/World/Cloth(A|B)"), family="cloth")
+        view = DeformableView(model, re.compile(r"/World/Cloth(A|B)"), family="surface")
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
 
         # fullmatch: a prefix of the label is not a match.
         with self.assertRaises(KeyError):
-            DeformableView(model, re.compile(r"/World/Cloth"), family="cloth")
+            DeformableView(model, re.compile(r"/World/Cloth"), family="surface")
 
     def test_view_round_trip_on_cpu(self):
         """The gather/scatter path works on a CPU-finalized model, not just CUDA."""
@@ -138,7 +140,7 @@ class TestDeformableView(unittest.TestCase):
         model = scene.finalize(device="cpu")
         state = model.state()
 
-        view = DeformableView(model, "/World/Cloth", family="cloth")
+        view = DeformableView(model, "/World/Cloth", family="surface")
         positions = view.get_particle_positions(state)
         self.assertTrue(positions.device.is_cpu)
         lifted = positions.numpy()
@@ -163,12 +165,12 @@ class TestDeformableView(unittest.TestCase):
         model = builder.finalize()
 
         with self.assertRaises(KeyError):
-            DeformableView(model, "/World/DoesNotExist", family="cloth")
+            DeformableView(model, "/World/DoesNotExist", family="surface")
         with self.assertRaisesRegex(ValueError, "Varying particle counts"):
-            DeformableView(model, "/World/Cloth*", family="cloth")
+            DeformableView(model, "/World/Cloth*", family="surface")
         with self.assertRaisesRegex(ValueError, "Unknown deformable family"):
             DeformableView(model, "/World/ClothA", family="ropes")
-        view = DeformableView(model, "/World/ClothA", family="cloth")
+        view = DeformableView(model, "/World/ClothA", family="surface")
         with self.assertRaisesRegex(AttributeError, "no body elements"):
             view.get_body_transforms(model.state())
         with self.assertRaises(ValueError):
@@ -180,7 +182,7 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(3)
         state = model.state()
 
-        cloth = DeformableView(model, "/World/Cloth", family="cloth")
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
         before = cloth.get_particle_positions(state).numpy()
         moved = before[[1]].copy()
         moved[..., 2] += 5.0
@@ -189,7 +191,7 @@ class TestDeformableView(unittest.TestCase):
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_allclose(after[1], moved[0], atol=1e-6)
 
-        cable = DeformableView(model, "/World/Cable", family="cable")
+        cable = DeformableView(model, "/World/Cable", family="curve")
         velocities = np.zeros((1, cable.bodies_per_group, 6), dtype=np.float32)
         velocities[..., 3] = 2.0
         device_indices = wp.array([2], dtype=wp.int32, device=model.device)
@@ -237,13 +239,13 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         model = scene.finalize()
         state = model.state()
 
-        soft = DeformableView(model, "soft_proto", family="soft")
+        soft = DeformableView(model, "soft_proto", family="volume")
         self.assertEqual((soft.count, soft.worlds, soft.particles_per_group), (2, [0, 1], 4))
         (r0, r1) = soft.ranges("particle")
         self.assertEqual(r1[0] - r0[0], 4)
         self.assertNotEqual(r0, r1)
 
-        cable = DeformableView(model, "cable_proto", family="cable")
+        cable = DeformableView(model, "cable_proto", family="curve")
         self.assertEqual((cable.count, cable.worlds, cable.bodies_per_group), (2, [0, 1], 2))
         self.assertEqual(cable.elements_per_group("joint"), 1)
 
@@ -268,7 +270,7 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         )
         model = builder.finalize()
         with self.assertRaises(KeyError):
-            DeformableView(model, "*", family="cloth")
+            DeformableView(model, "*", family="surface")
 
 
 if __name__ == "__main__":

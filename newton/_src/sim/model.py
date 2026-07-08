@@ -302,14 +302,14 @@ class _ShapeCollisionFilterPairsAttribute:
 
 @dataclass(frozen=True)
 class _DeformableGroup:
-    """One deformable group recorded by the builder (a cable, cloth, or soft body).
+    """One finalized curve, surface, or volume deformable group.
 
     Private backing data for :class:`newton.selection.DeformableView`; the view is the
     public way to address deformables, so this representation can change freely.
-    ``ranges`` maps an element kind (``body``/``joint`` for cables, ``particle``/``tri``/
-    ``edge`` for cloth, ``particle``/``tet`` for soft) to its ``[start, end)`` index range.
+    ``ranges`` maps an element kind to its ``[start, end)`` index range.
     """
 
+    id: int
     family: str
     label: str
     world: int

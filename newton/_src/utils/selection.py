@@ -2103,9 +2103,9 @@ class DeformableView:
     """
 
     _FAMILY_KINDS: ClassVar[dict[str, tuple[str, ...]]] = {
-        "cable": ("body", "joint"),
-        "cloth": ("particle", "tri", "edge"),
-        "soft": ("particle", "tet"),
+        "curve": ("body", "joint"),
+        "surface": ("particle", "triangle", "edge"),
+        "volume": ("particle", "tetrahedron"),
     }
 
     @deprecate_nonkeyword_arguments
@@ -2172,6 +2172,8 @@ class DeformableView:
         """Label of each selected group, ordered world by world."""
         self.worlds = [g.world for g in selected]
         """World index of each selected group."""
+        self.group_ids = [g.id for g in selected]
+        """Stable finalized identity of each selected group."""
 
         # Element ranges per kind; the selection must be homogeneous per kind.
         self._all_groups: wp.array | None = None  # lazy identity indices for full-selection writes

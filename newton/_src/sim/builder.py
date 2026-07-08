@@ -11629,31 +11629,42 @@ class ModelBuilder:
 
             # Deformable groups (cable/cloth/volume): snapshot the builder's per-group registries
             # as private records; newton.selection.DeformableView is the public way to address
-            # them after finalization.
-            def _deformable_group_records(family: str, kinds: tuple[str, ...]) -> list[_DeformableGroup]:
-                labels = getattr(self, f"_{family}_label")
-                worlds = getattr(self, f"_{family}_world")
-                return [
-                    _DeformableGroup(
-                        family=family,
-                        label=labels[i],
-                        world=worlds[i],
-                        ranges={
-                            kind: (
-                                getattr(self, f"_{family}_{kind}_start")[i],
-                                getattr(self, f"_{family}_{kind}_end")[i],
-                            )
-                            for kind in kinds
-                        },
-                    )
-                    for i in range(len(labels))
-                ]
+            # them after finalization. Translate legacy private registry names only here so
+            # the public API consistently uses the proposal's generic terminology.
+            deformable_groups: list[_DeformableGroup] = []
 
-            m._deformable_groups = tuple(
-                _deformable_group_records("cable", ("body", "joint"))
-                + _deformable_group_records("cloth", ("particle", "tri", "edge"))
-                + _deformable_group_records("soft", ("particle", "tet"))
+            def _append_deformable_group_records(
+                private_family: str,
+                public_family: str,
+                kinds: tuple[tuple[str, str], ...],
+            ) -> None:
+                labels = getattr(self, f"_{private_family}_label")
+                worlds = getattr(self, f"_{private_family}_world")
+                for i, label in enumerate(labels):
+                    deformable_groups.append(
+                        _DeformableGroup(
+                            id=len(deformable_groups),
+                            family=public_family,
+                            label=label,
+                            world=worlds[i],
+                            ranges={
+                                public_kind: (
+                                    getattr(self, f"_{private_family}_{private_kind}_start")[i],
+                                    getattr(self, f"_{private_family}_{private_kind}_end")[i],
+                                )
+                                for private_kind, public_kind in kinds
+                            },
+                        )
+                    )
+
+            _append_deformable_group_records("cable", "curve", (("body", "body"), ("joint", "joint")))
+            _append_deformable_group_records(
+                "cloth", "surface", (("particle", "particle"), ("tri", "triangle"), ("edge", "edge"))
             )
+            _append_deformable_group_records(
+                "soft", "volume", (("particle", "particle"), ("tet", "tetrahedron"))
+            )
+            m._deformable_groups = tuple(deformable_groups)
 
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
