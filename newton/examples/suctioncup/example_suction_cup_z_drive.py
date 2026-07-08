@@ -14,14 +14,14 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Suction Cup
+# Example Suction Cup Z Drive
 #
 # A single-pad surface gripper (box A) is sealed onto the top of a larger box (B). Box B rides
 # a prismatic (z) joint to the world that the solver position-drives from 0 up to 3 m, and box
 # A rides along held by the seal, exercising the surface-gripper hold wrench. Seal detection is
 # still trivial (the pad is always engaged); the force model lives in surface_gripper.py.
 #
-# Command: python -m newton.examples suction_cup
+# Command: python -m newton.examples suction_cup_z_drive
 ###########################################################################
 
 import math
