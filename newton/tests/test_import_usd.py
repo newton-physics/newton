@@ -10011,6 +10011,18 @@ def Xform "Body" (
         double radius = 0.3
     }
 
+    def Sphere "RenderSphere"
+    {
+        uniform token purpose = "render"
+        double radius = 0.3
+    }
+
+    def Sphere "GuideVisualSphere"
+    {
+        uniform token purpose = "guide"
+        double radius = 0.3
+    }
+
     def Cube "GuideCollisionBox" (
         prepend apiSchemas = ["PhysicsCollisionAPI"]
     )
@@ -10044,6 +10056,16 @@ def Xform "Body" (
         flags_proxy = builder.shape_flags[path_shape_map["/Body/ProxySphere"]]
         self.assertTrue(flags_proxy & ShapeFlags.VISIBLE)
 
+        # Render-purpose prims are offline-renderer content: viewports (which Newton's
+        # viewer is) draw default + proxy and hide guide + render.
+        flags_render = builder.shape_flags[path_shape_map["/Body/RenderSphere"]]
+        self.assertFalse(flags_render & ShapeFlags.VISIBLE)
+
+        # The most direct case: a pure visual guide mesh, no collision API involved.
+        flags_guide_visual = builder.shape_flags[path_shape_map["/Body/GuideVisualSphere"]]
+        self.assertFalse(flags_guide_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_guide_visual & ShapeFlags.VISIBLE)
+
         # A disabled guide-purpose collider is loaded as a visual-only shape but must not be drawn.
         flags_guide = builder.shape_flags[path_shape_map["/Body/GuideCollisionBox"]]
         self.assertFalse(flags_guide & ShapeFlags.COLLIDE_SHAPES)
@@ -10055,11 +10077,16 @@ def Xform "Body" (
         self.assertTrue(flags_enabled_guide & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags_enabled_guide & ShapeFlags.VISIBLE)
 
-        # force_show_colliders still reveals guide-purpose colliders for debugging.
+        # force_show_colliders still reveals guide-purpose colliders for debugging. A
+        # *disabled* guide collider is no collider at all (it imported as guide visual
+        # content), so the collider policy does not apply and it stays hidden — like any
+        # USD viewport would hide it; reveal it by changing purpose/visibility on the stage.
         builder2 = newton.ModelBuilder()
         result2 = builder2.add_usd(stage, force_show_colliders=True)
         flags_forced = builder2.shape_flags[result2["path_shape_map"]["/Body/EnabledGuideCollisionBox"]]
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
+        flags_disabled_forced = builder2.shape_flags[result2["path_shape_map"]["/Body/GuideCollisionBox"]]
+        self.assertFalse(flags_disabled_forced & ShapeFlags.VISIBLE)
 
     @staticmethod
     def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):

@@ -1038,6 +1038,21 @@ def parse_usd(
             return False
         return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
+    def _is_viewport_drawn(prim: Usd.Prim) -> bool:
+        """Return whether a prim is drawn under viewport semantics.
+
+        USD viewports draw the ``default`` and ``proxy`` purposes and hide ``guide`` and
+        ``render``; the allowlist also keeps any future purpose hidden until explicitly
+        handled. Colliders deliberately do not use this check: ``guide`` is the conventional
+        purpose for authored collision geometry (e.g. the MuJoCo USD exporter), and the
+        collider display policy (``force_show_colliders`` / ``hide_collision_shapes``) is the
+        explicit mechanism for revealing colliders — gating them on purpose would make
+        ``force_show_colliders`` a no-op on such assets.
+        """
+        if not _is_effectively_visible(prim):
+            return False
+        return UsdGeom.Imageable(prim).ComputePurpose() in (UsdGeom.Tokens.default_, UsdGeom.Tokens.proxy)
+
     bodies_with_visual_shapes: set[int] = set()
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
@@ -1114,11 +1129,7 @@ def parse_usd(
             return
 
         visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
-        # Guide-purpose prims are viewport helpers that USD renderers do not draw by
-        # default (e.g. MuJoCo-converted assets author collision geometry as guides).
-        imageable = UsdGeom.Imageable(prim)
-        is_guide = bool(imageable) and imageable.ComputePurpose() == UsdGeom.Tokens.guide
-        visual_shape_cfg_for_prim.is_visible = is_site or (_is_effectively_visible(prim) and not is_guide)
+        visual_shape_cfg_for_prim.is_visible = is_site or _is_viewport_drawn(prim)
         material_props = _get_material_props_cached(prim)
         shape_color = material_props.get("color")
 
@@ -3270,6 +3281,7 @@ def parse_usd(
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material
                 ) and not hide_collider_for_body
+                # visibility only — see _is_viewport_drawn for why purpose does not gate colliders
                 collider_is_visible = collider_is_visible and _is_effectively_visible(prim)
 
                 # Contact response precedence:
@@ -3758,7 +3770,7 @@ def parse_usd(
             g_pos, g_rot, g_scale = wp.transform_decompose(prim_world_mat)
             gaussian = usd.get_gaussian(gaussian_prim)
             splat_cfg = copy.copy(visual_shape_cfg)
-            splat_cfg.is_visible = _is_effectively_visible(gaussian_prim)
+            splat_cfg.is_visible = _is_viewport_drawn(gaussian_prim)
             splat_material_props = _get_material_props_cached(gaussian_prim)
             shape_id = builder.add_shape_gaussian(
                 body_id,
