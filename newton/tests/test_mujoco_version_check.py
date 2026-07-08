@@ -112,6 +112,34 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
 
 
 class TestMuJoCoDeterminismConfig(unittest.TestCase):
+    def test_loaded_modules_keep_codegen_record_bound(self):
+        solver = object.__new__(solver_mujoco.SolverMuJoCo)
+        solver._deterministic = solver_mujoco.wp.DeterministicMode.RUN_TO_RUN
+        solver._deterministic_max_records = 17
+        loaded_module = object()
+
+        with (
+            mock.patch.object(
+                solver_mujoco,
+                "_mujoco_warp_deterministic_modules",
+                return_value=[loaded_module],
+            ),
+            mock.patch.object(solver, "_set_module_options") as set_module_options,
+        ):
+            solver._set_mujoco_warp_module_options()
+
+        options = {
+            "deterministic": solver_mujoco.wp.DeterministicMode.RUN_TO_RUN,
+            "deterministic_max_records": 0,
+        }
+        self.assertEqual(
+            set_module_options.call_args_list,
+            [
+                mock.call(options, module=loaded_module),
+                mock.call(options, module=solver_mujoco.kernels),
+            ],
+        )
+
     def test_scoped_config_uses_solver_mode_and_restores_globals(self):
         solver = object.__new__(solver_mujoco.SolverMuJoCo)
         solver._deterministic = solver_mujoco.wp.DeterministicMode.NOT_GUARANTEED
@@ -131,6 +159,46 @@ class TestMuJoCoDeterminismConfig(unittest.TestCase):
 
             self.assertEqual(solver_mujoco.wp.config.deterministic, solver_mujoco.wp.DeterministicMode.RUN_TO_RUN)
             self.assertEqual(solver_mujoco.wp.config.deterministic_max_records, 17)
+        finally:
+            solver_mujoco.wp.config.deterministic = original_mode
+            solver_mujoco.wp.config.deterministic_max_records = original_max_records
+
+    def test_notify_model_changed_uses_solver_config_for_mjwarp(self):
+        solver = object.__new__(solver_mujoco.SolverMuJoCo)
+        solver.use_mujoco_cpu = False
+        solver._deterministic = solver_mujoco.wp.DeterministicMode.RUN_TO_RUN
+        solver._deterministic_max_records = 17
+        solver.has_connect_constraints = False
+        solver.has_jnt_connect_constraints = False
+        observed_options = []
+
+        def observe_options():
+            observed_options.append(
+                (
+                    solver_mujoco.wp.config.deterministic,
+                    solver_mujoco.wp.config.deterministic_max_records,
+                )
+            )
+
+        original_mode = solver_mujoco.wp.config.deterministic
+        original_max_records = solver_mujoco.wp.config.deterministic_max_records
+        try:
+            solver_mujoco.wp.config.deterministic = solver_mujoco.wp.DeterministicMode.NOT_GUARANTEED
+            solver_mujoco.wp.config.deterministic_max_records = 0
+            with (
+                mock.patch.object(solver, "_apply_module_options") as apply_module_options,
+                mock.patch.object(solver, "_prepare_generated_kernels") as prepare_generated_kernels,
+                mock.patch.object(solver, "_update_model_properties", side_effect=observe_options),
+                mock.patch.object(solver, "_invalidate_contact_fast_path"),
+            ):
+                solver.notify_model_changed(solver_mujoco.ModelFlags.MODEL_PROPERTIES)
+
+            apply_module_options.assert_called_once_with()
+            prepare_generated_kernels.assert_called_once_with()
+            self.assertEqual(
+                observed_options,
+                [(solver_mujoco.wp.DeterministicMode.RUN_TO_RUN, 17)],
+            )
         finally:
             solver_mujoco.wp.config.deterministic = original_mode
             solver_mujoco.wp.config.deterministic_max_records = original_max_records

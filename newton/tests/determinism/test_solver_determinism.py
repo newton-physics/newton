@@ -12,7 +12,7 @@ import warp as wp
 import newton
 from newton._src.solvers.semi_implicit import kernels_particle as semi_implicit_particle_kernels
 from newton._src.solvers.solver import _set_module_options_if_changed
-from newton._src.solvers.vbd import particle_vbd_kernels
+from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -191,7 +191,12 @@ class TestSolverDeterminism(unittest.TestCase):
 
 class TestSolverDeterminismOptions(unittest.TestCase):
     def setUp(self):
-        self._modules = (xpbd_kernels, particle_vbd_kernels, semi_implicit_particle_kernels)
+        self._modules = (
+            xpbd_kernels,
+            particle_vbd_kernels,
+            semi_implicit_particle_kernels,
+            vbd_coupling_kernels,
+        )
         self._saved_config = wp.config.deterministic
         self._saved_options = {
             module: {
@@ -327,6 +332,36 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             options = wp.get_module_options(module=particle_vbd_kernels)
             self.assertEqual(options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
             self.assertEqual(options["deterministic_max_records"], 0)
+
+    def test_vbd_coupling_hook_reapplies_deterministic_options(self):
+        with wp.ScopedDevice("cpu"):
+            model = _build_soft_body("cpu")
+            deterministic_solver = newton.solvers.SolverVBD(
+                model,
+                particle_enable_self_contact=True,
+                particle_enable_tile_solve=False,
+                particle_vertex_contact_buffer_size=64,
+                particle_edge_contact_buffer_size=64,
+                deterministic=DETERMINISTIC_MODE,
+            )
+            newton.solvers.SolverVBD(
+                model,
+                particle_enable_self_contact=False,
+                particle_enable_tile_solve=False,
+                deterministic=wp.DeterministicMode.NOT_GUARANTEED,
+            )
+
+            deterministic_solver.coupling_notify_input_state_update(
+                model.state(),
+                newton.StateFlags.BODY_Q,
+            )
+
+            options = wp.get_module_options(module=vbd_coupling_kernels)
+            records_per_buffer = (64 + particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE - 1) // (
+                particle_vbd_kernels.NUM_THREADS_PER_COLLISION_PRIMITIVE
+            )
+            self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
+            self.assertEqual(options["deterministic_max_records"], 5 * records_per_buffer)
 
 
 devices = get_cuda_test_devices(mode="basic")

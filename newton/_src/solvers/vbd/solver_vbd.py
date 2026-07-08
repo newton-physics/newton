@@ -27,7 +27,7 @@ from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
-from . import particle_vbd_kernels, rigid_vbd_kernels
+from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -379,6 +379,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         particle_deterministic_max_records = 0
+        coupling_deterministic_max_records = 0
         if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
             edge_iterations = (
                 particle_edge_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
@@ -391,6 +392,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             if model.shape_count > 0:
                 force_records += 1
             particle_deterministic_max_records = max(truncation_records, force_records)
+            coupling_deterministic_max_records = 2 * edge_iterations + 3 * vertex_iterations
         if model.particle_count > 0:
             self._set_module_options(
                 {
@@ -399,6 +401,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                 },
                 module=particle_vbd_kernels,
             )
+        self._set_module_options(
+            {
+                "deterministic": effective_deterministic,
+                "deterministic_max_records": coupling_deterministic_max_records,
+            },
+            module=vbd_coupling_kernels,
+        )
 
         options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
         if model.body_count > 0 and not integrate_with_external_rigid_solver:
@@ -817,6 +826,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
+        self._apply_module_options()
         flags = int(flags)
 
         if (
@@ -886,6 +896,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling interface, so VBD harvests explicit contact forces instead of
         inferring feedback from total proxy momentum change.
         """
+        self._apply_module_options()
         if not self._coupling_has_rigid_avbd_state:
             super().coupling_harvest_proxy_wrenches(
                 body_local_to_proxy_global,
@@ -981,6 +992,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling, but those proxy-only interactions should not appear as
         feedback forces on the source side.
         """
+        self._apply_module_options()
         del particle_qd_before
         out_particle_f.zero_()
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0:
