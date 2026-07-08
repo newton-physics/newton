@@ -909,9 +909,8 @@ def _eval_body_particle_contact(
 @wp.func
 def _eval_soft_ef_contact(
     contact_index: int,
-    tri: int,
+    corners: wp.vec3i,
     bary: wp.vec3,
-    tri_indices: wp.array2d[wp.int32],
     pos: wp.array[wp.vec3],
     pos_prev: wp.array[wp.vec3],
     particle_radius: wp.array[float],
@@ -931,23 +930,31 @@ def _eval_soft_ef_contact(
     shape_margin: wp.array[float],
     dt: float,
 ):
-    """Edge/face soft-contact force/Hessian at a barycentric contact point on a soft triangle.
+    """Soft-contact force/Hessian at a barycentric contact point over a record's soft particles.
 
-    The contact point is ``x = sum_i bary[i] * pos[v_i]`` over the triangle's three corners
-    (for an edge contact one weight is zero). Geometry and body kinematics are resolved
-    exactly as in :func:`_eval_body_particle_contact`, then the shared force law
-    :func:`_compute_body_particle_contact_force` is applied. Returns the contact force and
-    Hessian *at the contact point* (the caller distributes them by barycentric weight) and
-    the world-space rigid contact point ``bx`` for the body-side reaction. Force/Hessian are
-    zero when there is no penetration.
+    The contact point is ``x = sum_i bary[i] * pos[corners[i]]`` over the -1-padded ``corners``:
+    a particle record ``(p, -1, -1)`` with ``bary = (1, 0, 0)`` reduces to the single-vertex
+    particle-vs-surface case, an edge ``(v0, v1, -1)`` uses two corners, a face all three. Geometry
+    and body kinematics are resolved as in :func:`_eval_body_particle_contact`, then the shared force
+    law :func:`_compute_body_particle_contact_force` is applied. Returns the contact force and Hessian
+    *at the contact point* (the caller distributes them by barycentric weight) and the world-space
+    rigid contact point ``bx`` for the body-side reaction. Force/Hessian are zero without penetration.
     """
-    v0 = tri_indices[tri, 0]
-    v1 = tri_indices[tri, 1]
-    v2 = tri_indices[tri, 2]
+    v0 = corners[0]  # corner 0 is always valid; corners 1/2 are -1 for edge/particle records
+    c1 = corners[1]
+    c2 = corners[2]
 
-    x = bary[0] * pos[v0] + bary[1] * pos[v1] + bary[2] * pos[v2]
-    x_prev = bary[0] * pos_prev[v0] + bary[1] * pos_prev[v1] + bary[2] * pos_prev[v2]
-    radius = wp.max(particle_radius[v0], wp.max(particle_radius[v1], particle_radius[v2]))
+    x = bary[0] * pos[v0]
+    x_prev = bary[0] * pos_prev[v0]
+    radius = particle_radius[v0]
+    if c1 >= 0:
+        x += bary[1] * pos[c1]
+        x_prev += bary[1] * pos_prev[c1]
+        radius = wp.max(radius, particle_radius[c1])
+    if c2 >= 0:
+        x += bary[2] * pos[c2]
+        x_prev += bary[2] * pos_prev[c2]
+        radius = wp.max(radius, particle_radius[c2])
 
     shape_index = contact_shape[contact_index]
     body_index = shape_body[shape_index]
@@ -2222,9 +2229,9 @@ def build_body_particle_contact_lists(
     Overflow is tracked in body_particle_contact_overflow_max for diagnostics.
     """
     tid = wp.tid()
-    # Bucket every soft contact -- the particle range [0, c0) plus the water-tight edge/face
-    # ranges -- so the per-body kernel drives both reactions from one adjacency list.
-    if tid >= body_particle_contact_count[0] + body_particle_contact_count[1] + body_particle_contact_count[2]:
+    # Bucket every soft contact (particle + edge + face; single total count) by its rigid body, so
+    # the per-body kernel drives all reactions from one adjacency list.
+    if tid >= body_particle_contact_count[0]:
         return
 
     shape = body_particle_contact_shape[tid]
@@ -2630,9 +2637,9 @@ def init_body_particle_contacts(
     ramping (k_start >= 0) or at ``avg_ke`` when fixed-k (k_start < 0).
     """
     i = wp.tid()
-    # Process every soft contact -- particle range [0, c0) plus the water-tight edge/face ranges --
-    # so edge/face records get the same pre-mixed material and seeded penalty as particle contacts.
-    if i >= body_particle_contact_count[0] + body_particle_contact_count[1] + body_particle_contact_count[2]:
+    # Process every soft contact (single total count) so edge/face records get the same pre-mixed
+    # material and seeded penalty as particle contacts.
+    if i >= body_particle_contact_count[0]:
         return
 
     shape_idx = body_particle_contact_shape[i]
@@ -3131,8 +3138,6 @@ def accumulate_body_particle_contacts_per_body(
     particle_q: wp.array[wp.vec3],
     particle_q_prev: wp.array[wp.vec3],
     particle_radius: wp.array[float],
-    # Edge/face contacts index a soft triangle's three corners; particle contacts leave this unused.
-    tri_indices: wp.array2d[wp.int32],
     # Rigid body state
     body_q_prev: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
@@ -3148,12 +3153,12 @@ def accumulate_body_particle_contacts_per_body(
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
-    body_particle_contact_particle: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_body_vel: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
-    # Edge/face barycentric weights on the soft triangle; particle contacts leave this unused.
+    # Barycentric weights on each record's soft particles; (1, 0, 0) for a particle contact.
     soft_contact_barycentric: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     # Per-body soft-contact adjacency (body-particle)
@@ -3170,12 +3175,12 @@ def accumulate_body_particle_contacts_per_body(
     """
     Per-body accumulation of body-particle soft contact forces and Hessians on rigid bodies.
 
-    Handles both contact kinds from one per-body adjacency list, dispatching by each slot's
-    packed buffer range: the particle range ``[0, c0)`` resolves single-particle geometry
-    inline; the water-tight edge/face ranges ``[c0, c0 + n_edge + n_face)`` evaluate the
-    barycentric contact point on a soft triangle via ``_eval_soft_ef_contact``. Both apply the
-    shared force law ``_compute_body_particle_contact_force`` and the equal-and-opposite body
-    reaction. Body surface velocity uses the displacement-based path (body_q_prev).
+    Handles both contact kinds from one per-body adjacency list, dispatching on each record's
+    -1-padded ``soft_contact_indices``: a particle record ``(p, -1, -1)`` resolves single-particle
+    geometry inline; an edge/face record evaluates the barycentric contact point over its 2-3 soft
+    particles via ``_eval_soft_ef_contact``. Both apply the shared force law
+    ``_compute_body_particle_contact_force`` and the equal-and-opposite body reaction. Body surface
+    velocity uses the displacement-based path (body_q_prev).
 
     Notes:
       - Only dynamic bodies (inv_mass > 0) are updated.
@@ -3197,8 +3202,7 @@ def accumulate_body_particle_contacts_per_body(
     if num_contacts > body_particle_contact_buffer_pre_alloc:
         num_contacts = body_particle_contact_buffer_pre_alloc
 
-    c0 = body_particle_contact_count[0]
-    max_contacts = body_particle_contact_count[0] + body_particle_contact_count[1] + body_particle_contact_count[2]
+    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
 
     X_wb = body_q[body_id]
     X_wb_prev = body_q_prev[body_id]
@@ -3221,9 +3225,11 @@ def accumulate_body_particle_contacts_per_body(
         h_soft = wp.mat33(0.0)
         cp_world = wp.vec3(0.0)
 
-        if contact_idx < c0:
-            # Particle-vs-surface: single-particle geometry, resolved inline.
-            particle_idx = body_particle_contact_particle[contact_idx]
+        corners = soft_contact_indices[contact_idx]
+
+        if corners[1] < 0:
+            # Particle-vs-surface (p, -1, -1): single-particle geometry, resolved inline.
+            particle_idx = corners[0]
             if particle_idx < 0:
                 continue
 
@@ -3254,15 +3260,13 @@ def accumulate_body_particle_contacts_per_body(
                 dt,
             )
         else:
-            # Water-tight edge/face: barycentric contact point on a soft triangle. Uses the shared
-            # force law via _eval_soft_ef_contact -- the same evaluation as particle-side section 2.
-            tri = body_particle_contact_particle[contact_idx]
+            # Edge/face: barycentric contact point over the record's 2-3 soft particles. Uses the
+            # shared force law via _eval_soft_ef_contact -- the same evaluation as the particle side.
             bary = soft_contact_barycentric[contact_idx]
             f_soft, h_soft, cp_world = _eval_soft_ef_contact(
                 contact_idx,
-                tri,
+                corners,
                 bary,
-                tri_indices,
                 particle_q,
                 particle_q_prev,
                 particle_radius,
@@ -4107,11 +4111,10 @@ def update_duals_body_body_contacts(
 @wp.kernel
 def update_duals_body_particle_contacts(
     body_particle_contact_count: wp.array[int],
-    body_particle_contact_particle: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
-    tri_indices: wp.array2d[wp.int32],
     soft_contact_barycentric: wp.array[wp.vec3],
     particle_q: wp.array[wp.vec3],
     particle_radius: wp.array[float],
@@ -4126,15 +4129,15 @@ def update_duals_body_particle_contacts(
     Update AVBD penalty parameters for body-particle soft contacts (per-iteration).
 
     Ramps each contact's penalty by beta * penetration, clamped to the per-contact material
-    stiffness ceiling. Covers all soft contacts: the particle range [0, c0) uses the particle
-    position; the water-tight edge/face ranges use the barycentric point on the soft triangle.
+    stiffness ceiling. Covers all soft contacts via the record's -1-padded corners: a particle
+    record uses the particle position; an edge/face record uses the barycentric point over its
+    2-3 soft particles -- matching _eval_soft_ef_contact.
     """
     idx = wp.tid()
-    c0 = body_particle_contact_count[0]
-    if idx >= c0 + body_particle_contact_count[1] + body_particle_contact_count[2]:
+    if idx >= body_particle_contact_count[0]:
         return
 
-    prim = body_particle_contact_particle[idx]  # particle id in [0, c0); soft-triangle id in edge/face
+    corners = soft_contact_indices[idx]
     shape_idx = body_particle_contact_shape[idx]
     body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
 
@@ -4148,18 +4151,25 @@ def update_duals_body_particle_contacts(
     margin = shape_margin[shape_idx] if shape_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
     n = body_particle_contact_normal[idx]
 
-    # Contact point + radius: the particle for the [0, c0) range; the barycentric point on the soft
-    # triangle (max corner radius) for the edge/face ranges -- matching _eval_soft_ef_contact.
-    if idx < c0:
-        contact_pos = particle_q[prim]
-        radius = particle_radius[prim]
+    if corners[1] < 0:
+        # Particle contact (p, -1, -1).
+        p = corners[0]
+        contact_pos = particle_q[p]
+        radius = particle_radius[p]
     else:
+        # Edge/face: barycentric point + max radius over the record's valid corners.
         bary = soft_contact_barycentric[idx]
-        v0 = tri_indices[prim, 0]
-        v1 = tri_indices[prim, 1]
-        v2 = tri_indices[prim, 2]
-        contact_pos = bary[0] * particle_q[v0] + bary[1] * particle_q[v1] + bary[2] * particle_q[v2]
-        radius = wp.max(particle_radius[v0], wp.max(particle_radius[v1], particle_radius[v2]))
+        v0 = corners[0]
+        c1 = corners[1]
+        c2 = corners[2]
+        contact_pos = bary[0] * particle_q[v0]
+        radius = particle_radius[v0]
+        if c1 >= 0:
+            contact_pos += bary[1] * particle_q[c1]
+            radius = wp.max(radius, particle_radius[c1])
+        if c2 >= 0:
+            contact_pos += bary[2] * particle_q[c2]
+            radius = wp.max(radius, particle_radius[c2])
 
     penetration = -(wp.dot(n, contact_pos - cp_world) - radius - margin)
     penetration = wp.max(0.0, penetration)

@@ -553,14 +553,12 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
 
 
 def _build_soft_face_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
-    """World-compatible ``(soft triangle, shape)`` candidate pairs for the water-tight FACE pass,
+    """World-compatible ``(soft triangle, shape)`` candidate pairs for the full-surface FACE pass,
     mirroring :func:`_build_soft_particle_rigid_contact_pairs`. A triangle's world is the world of
-    its first vertex (all three share it). Empty when there is no soft mesh, no triangles, or no shapes.
+    its first vertex (all three share it). Empty when there are no triangles or no shapes.
     """
     device = model.device
     empty = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=device)
-    if getattr(model, "soft_mesh_adjacency", None) is None:
-        return empty
     shape_count = int(getattr(model, "shape_count", 0) or 0)
     n_tris = int(getattr(model, "tri_count", 0) or 0)
     if shape_count == 0 or n_tris == 0:
@@ -571,22 +569,20 @@ def _build_soft_face_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
 
 
 def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
-    """World-compatible ``(soft edge, shape)`` candidate pairs for the water-tight EDGE pass,
+    """World-compatible ``(soft edge, shape)`` candidate pairs for the full-surface EDGE pass,
     mirroring :func:`_build_soft_particle_rigid_contact_pairs`. An edge's world is that of one of its
-    endpoints. Empty when there is no soft mesh, no edges, or no shapes.
+    endpoints. Endpoints come straight from ``model.edge_indices`` (no mesh adjacency needed). Empty
+    when there are no edges or no shapes.
     """
     device = model.device
     empty = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=device)
-    adj = getattr(model, "soft_mesh_adjacency", None)
-    if adj is None:
-        return empty
     shape_count = int(getattr(model, "shape_count", 0) or 0)
-    n_edges = int(adj.edge_indices.shape[0])
+    n_edges = int(getattr(model, "edge_count", 0) or 0)
     if shape_count == 0 or n_edges == 0:
         return empty
     world_count = int(getattr(model, "world_count", 0) or 0)
     # edge_indices rows are [o0, o1, v0, v1]; col 2 (v0) is an endpoint, so its world is the edge's.
-    edge_world = model.particle_world.numpy()[np.asarray(adj.edge_indices)[:, 2]]
+    edge_world = model.particle_world.numpy()[model.edge_indices.numpy()[:, 2]]
     return _world_compatible_pairs(edge_world, model.shape_world.numpy(), world_count, device)
 
 
@@ -622,7 +618,7 @@ class CollisionPipeline:
         include_static_kinematic_pairs: bool = True,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
-        enable_water_tight_rigid_soft_contact: bool = False,
+        enable_rigid_soft_full_surface_contact: bool = False,
         requires_grad: bool | None = None,
         broad_phase: Literal["nxn", "sap", "explicit"]
         | BroadPhaseAllPairs
@@ -665,6 +661,15 @@ class CollisionPipeline:
                 of precomputed soft-rigid (particle-shape) pairs launched for soft
                 contact generation.
             soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
+            enable_rigid_soft_full_surface_contact: Generate soft contacts over the full soft-mesh
+                surface -- the edges and triangle interiors -- against rigid SDFs, in addition to the
+                per-vertex (particle) contacts. Catches rigid features that pass between soft vertices
+                (e.g. a thin box edge through a coarse cloth cell), which the per-particle path misses.
+                Requires an SDF on every participating rigid mesh/convex shape
+                (:meth:`ModelBuilder.enable_rigid_mesh_sdfs`), and is consumed only by
+                :class:`~newton.solvers.SolverVBD`; other solvers raise on such contacts. Records are
+                emitted into :attr:`Contacts.soft_contact_indices`. Defaults to False. Fixed at
+                construction because it sizes the soft-contact buffer headroom.
             requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
             broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
@@ -982,17 +987,12 @@ class CollisionPipeline:
         # Host-side, so not graph-capture-safe -- construct the pipeline before any capture.
         self.soft_rigid_contact_pairs = _build_soft_particle_rigid_contact_pairs(model)
         self._soft_rigid_contact_pair_count = len(self.soft_rigid_contact_pairs)
-        self.enable_water_tight_rigid_soft_contact = enable_water_tight_rigid_soft_contact
-        # Water-tight edge/face candidate pairs (world-compatible, like the particle pairs above);
+        self.enable_rigid_soft_full_surface_contact = enable_rigid_soft_full_surface_contact
+        # Full-surface edge/face candidate pairs (world-compatible, like the particle pairs above);
         # empty when the flag is off so the flag-off default stays bit-for-bit.
-        self._soft_ef_edge_tri_indices = None
-        if enable_water_tight_rigid_soft_contact:
+        if enable_rigid_soft_full_surface_contact:
             self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model)
             self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model)
-            # The edge pass's owner-triangle map comes from the model's shared device adjacency
-            # (built once at finalize) -- no separate upload here.
-            if model.soft_mesh_adjacency_device is not None:
-                self._soft_ef_edge_tri_indices = model.soft_mesh_adjacency_device.edge_tri_indices
         else:
             _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
@@ -1003,10 +1003,10 @@ class CollisionPipeline:
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
 
-        # The water-tight edge/face passes need a provisioned SDF for every participating mesh/convex
+        # The full-surface edge/face passes need a provisioned SDF for every participating mesh/convex
         # shape. Validate host-side at construction (never inside a captured collide()) and fail loudly
         # so a missing enable_rigid_mesh_sdfs() call cannot silently degrade to the per-particle path.
-        if enable_water_tight_rigid_soft_contact and model.shape_count > 0 and model._shape_sdf_index is not None:
+        if enable_rigid_soft_full_surface_contact and model.shape_count > 0 and model._shape_sdf_index is not None:
             _stype = model.shape_type.numpy()
             _sflags = model.shape_flags.numpy()
             _sidx = model._shape_sdf_index.numpy()
@@ -1014,8 +1014,8 @@ class CollisionPipeline:
             _collide_particles = (_sflags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
             if bool(np.any(_is_mesh & _collide_particles & (_sidx < 0))):
                 raise ValueError(
-                    "enable_water_tight_rigid_soft_contact=True but one or more participating mesh/convex "
-                    "shapes have no SDF for the water-tight edge/face passes. Call "
+                    "enable_rigid_soft_full_surface_contact=True but one or more participating mesh/convex "
+                    "shapes have no SDF for the edge/face passes. Call "
                     "ModelBuilder.enable_rigid_mesh_sdfs() before ModelBuilder.finalize() to build them."
                 )
 
@@ -1093,6 +1093,9 @@ class CollisionPipeline:
             contact_matching=self._matching_enabled,
             contact_report=self.contact_report,
         )
+        # Flag the buffer so solvers that only consume particle contacts can refuse it (see
+        # Contacts.has_full_surface_contacts); edge/face records appear only when this is set.
+        contacts.has_full_surface_contacts = self.enable_rigid_soft_full_surface_contact
 
         # attach custom attributes with assignment==CONTACT
         self.model._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
@@ -1448,7 +1451,9 @@ class CollisionPipeline:
                 ],
                 outputs=[
                     contacts.soft_contact_count,
-                    contacts.soft_contact_primitive,
+                    contacts.soft_contact_particle,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_barycentric,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_body_vel,
@@ -1458,11 +1463,11 @@ class CollisionPipeline:
                 device=self.device,
             )
 
-        # Water-tight EDGE/FACE passes (opt-in, set at construction): add the soft edge/face contacts
-        # the per-particle path cannot detect. Run after the legacy launch on the same stream so the
-        # passes read the final particle (then edge) counts as their packing offsets. The flag is
-        # fixed at construction because soft_contact_max headroom for these records is sized there.
-        if self.enable_water_tight_rigid_soft_contact and state.particle_q and model.soft_mesh_adjacency is not None:
+        # Full-surface EDGE/FACE passes (opt-in, set at construction): add the soft edge/face contacts
+        # the per-particle path cannot detect. Run after the legacy particle launch on the same stream;
+        # the particle records therefore occupy [0, particle_count) and the edge/face records append.
+        # The flag is fixed at construction because soft_contact_max headroom is sized there.
+        if self.enable_rigid_soft_full_surface_contact and state.particle_q:
             launch_soft_ef_contacts(
                 model=model,
                 state=state,
@@ -1471,5 +1476,5 @@ class CollisionPipeline:
                 device=self.device,
                 edge_pairs=self.soft_edge_rigid_pairs,
                 face_pairs=self.soft_face_rigid_pairs,
-                edge_tri_indices=self._soft_ef_edge_tri_indices,
+                n_particle_pairs=self.soft_rigid_contact_pair_count,
             )

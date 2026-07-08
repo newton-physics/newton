@@ -658,6 +658,7 @@ def eval_particle_body_contact_forces(
     body_qd: wp.array | None = None,
 ):
     if contacts is not None and contacts.soft_contact_max:
+        contacts.assert_particle_only_soft_contacts("SolverSemiImplicit")
         if body_q is None:
             body_q = state.body_q
         if body_qd is None:
@@ -685,7 +686,7 @@ def eval_particle_body_contact_forces(
                 model.soft_contact_mu,
                 model.particle_adhesion,
                 contacts.soft_contact_count,
-                contacts.soft_contact_primitive,
+                contacts.soft_contact_particle,
                 contacts.soft_contact_shape,
                 contacts.soft_contact_body_pos,
                 contacts.soft_contact_body_vel,
