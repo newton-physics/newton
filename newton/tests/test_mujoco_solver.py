@@ -7658,13 +7658,15 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # Revolute loop joint BEFORE the free body — creates q_start offset.
         # Asymmetric anchors: (0, 0, -0.5) on b1 at (0,0,1) → world (0, 0, 0.5)
         #                     (0, 0,  0.5) on b0 at origin   → world (0, 0, 0.5)
-        loop_j = builder.add_joint_revolute(
-            b1,
-            b0,
-            parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
-            axis=(0, 0, 1),
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
+            loop_j = builder.add_joint_revolute(
+                b1,
+                b0,
+                parent_xform=wp.transform(wp.vec3(0, 0, -0.5), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0, 0, 0.5), wp.quat_identity()),
+                axis=(0, 0, 1),
+            )
         builder.joint_articulation[loop_j] = -1
 
         # Free body added AFTER loop joint — its Newton q_start will be offset
