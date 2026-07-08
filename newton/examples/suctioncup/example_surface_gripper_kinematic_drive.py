@@ -243,83 +243,55 @@ class Example:
         self.sim_substeps = max(1, round(self.frame_dt / requested_sim_dt))
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        # box half-extents: A is the small gripper body, B is the larger gripped box
+        # --- scene constants ---
+        # geometry: box half-extents (A is the small gripper body, B the larger gripped box)
         LA = 0.1
         LB = 0.2
-
-        def box_inertia(mass, half):
-            s = (1.0 / 6.0) * mass * (2.0 * half) ** 2  # solid cube about its centre
-            return wp.diag(wp.vec3(s, s, s))
-
+        # masses and gravity
         m_a, m_b = 0.5, 1.0
         gravity = 10.0
+        # surface-gripper stiffness, damping and force limits. Shear stiffness (which also sets the
+        # derived torsion stiffness) and peel damping are non-zero so all 6 DOF of the seal are
+        # active: normal, shear (x, y), peel (x, y) and twist.
+        k_normal = 5000.0
+        d_normal = 100.0
+        f_normal_max = 200.0
+        f_grip_max = 1000.0
+        k_shear_x = 2000.0
+        k_shear_y = 2000.0
+        mu_x = 1.0
+        mu_y = 1.0
+        d_peel_x = 10.0
+        d_peel_y = 10.0
+        pad_shape = PadShape.RECTANGLE
 
-        # box B (free, dynamic) rests on the ground; box A (the kinematic gripper) sits on top
-        # with its pad sealing B's top face (A_center = B_center + LA + LB).
-        pose_b = wp.transform(wp.vec3(0.0, 0.0, LB), wp.quat_identity())
-        pose_a = wp.transform(wp.vec3(0.0, 0.0, LB + LA + LB), wp.quat_identity())
-
-        builder = newton.ModelBuilder(gravity=-gravity)
-
-        # zero-density box shapes so the builder honours the explicit mass/inertia passed to
-        # add_link/add_body; a nonzero-density shape would add its own computed mass on top.
-        box_cfg = builder.default_shape_cfg.copy()
-        box_cfg.density = 0.0
-
-        # box A is the gripper: kinematic (does not respond to forces) and driven entirely by a
-        # prescribed 6-DOF velocity through a free joint to the world -- every DOF is prescribed.
-        self.box_a = builder.add_link(
-            xform=pose_a,
-            mass=m_a,
-            inertia=box_inertia(m_a, LA),
-            is_kinematic=True,
-            label="gripper_box_A",
-        )
-        builder.add_shape_box(self.box_a, hx=LA, hy=LA, hz=LA, cfg=box_cfg)
-        self.gripper_joint = builder.add_joint_free(child=self.box_a, label="gripper_free")
-        builder.add_articulation([self.gripper_joint], label="gripper_articulation")
-
-        # box B is the gripped object: a free body pulled up by the suction seal (no joint drive).
-        self.box_b = builder.add_body(xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), label="gripped_box_B")
-        builder.add_shape_box(self.box_b, hx=LB, hy=LB, hz=LB, cfg=box_cfg)
-
-        builder.add_ground_plane()
-
+        # Create a scene with two bodies A and B.
+        # A is kinematically controlled and has an attached surface gripper.
+        # B is gripped by the surface gripper on A.
+        builder = self._create_builder(LA, LB, m_a, m_b, gravity)
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(self.model, use_mujoco_contacts=False)
-
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
-
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # surface gripper on box A: one pad covering A's bottom (-z) face
-        gripper = SurfaceGripper(
-            body_id=self.box_a,
-            xform=wp.transform_identity(),  # gripper frame == box A body frame
-            k_normal=5000.0,
-            d_normal=100.0,
-            f_normal_max=200.0,
-            f_grip_max=1000.0,
-            # initial run: normal forces only. Zero shear stiffness (also zeros the derived
-            # torsion stiffness) and zero peel damping so only the normal DOF is active.
-            k_shear_x=0.0,
-            k_shear_y=0.0,
-            mu_x=1.0,
-            mu_y=1.0,
-            d_peel_x=0.0,
-            d_peel_y=0.0,
-            shape=int(PadShape.RECTANGLE),
-            dim_a=LA,
-            dim_b=LA,
+        # Now create the gripper model
+        gbuilder = self._create_gripper_builder(
+            LA,
+            k_normal,
+            d_normal,
+            f_normal_max,
+            f_grip_max,
+            k_shear_x,
+            k_shear_y,
+            mu_x,
+            mu_y,
+            d_peel_x,
+            d_peel_y,
+            pad_shape,
         )
-        # pad at the bottom face: origin (0,0,-LA), +z (suction dir) rotated to point down (-z of A)
-        gripper.add_pad(wp.transform(wp.vec3(0.0, 0.0, -LA), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi)))
-
-        gbuilder = SurfaceGripperBuilder()
-        gbuilder.add_gripper(gripper)
         self.gripper_model = gbuilder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
         self.gripper_control = self.gripper_model.control()
@@ -350,6 +322,87 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.capture()
+
+    def _create_builder(self, LA, LB, m_a, m_b, gravity):
+        """Build the two-box scene: kinematic gripper A stacked on free box B, plus a ground plane.
+
+        Sets ``self.box_a``, ``self.box_b`` and ``self.gripper_joint``, and returns the builder.
+        """
+        builder = newton.ModelBuilder(gravity=-gravity)
+
+        # zero-density box shapes so the builder honours the explicit mass/inertia passed to
+        # add_link/add_body; a nonzero-density shape would add its own computed mass on top.
+        box_cfg = builder.default_shape_cfg.copy()
+        box_cfg.density = 0.0
+
+        def box_inertia(mass, half):
+            s = (1.0 / 6.0) * mass * (2.0 * half) ** 2  # solid cube about its centre
+            return wp.diag(wp.vec3(s, s, s))
+
+        # box B (free, dynamic) rests on the ground; box A (the kinematic gripper) sits on top
+        # with its pad sealing B's top face (A_center = B_center + LA + LB).
+        pose_b = wp.transform(wp.vec3(0.0, 0.0, LB), wp.quat_identity())
+        pose_a = wp.transform(wp.vec3(0.0, 0.0, LB + LA + LB), wp.quat_identity())
+
+        # box A is the gripper: kinematic (does not respond to forces) and driven entirely by a
+        # prescribed 6-DOF velocity through a free joint to the world -- every DOF is prescribed.
+        self.box_a = builder.add_link(
+            xform=pose_a,
+            mass=m_a,
+            inertia=box_inertia(m_a, LA),
+            is_kinematic=True,
+            label="gripper_box_A",
+        )
+        builder.add_shape_box(self.box_a, hx=LA, hy=LA, hz=LA, cfg=box_cfg)
+        self.gripper_joint = builder.add_joint_free(child=self.box_a, label="gripper_free")
+        builder.add_articulation([self.gripper_joint], label="gripper_articulation")
+
+        # box B is the gripped object: a free body pulled up by the suction seal (no joint drive).
+        self.box_b = builder.add_body(xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), label="gripped_box_B")
+        builder.add_shape_box(self.box_b, hx=LB, hy=LB, hz=LB, cfg=box_cfg)
+
+        builder.add_ground_plane()
+        return builder
+
+    def _create_gripper_builder(
+        self,
+        LA,
+        k_normal,
+        d_normal,
+        f_normal_max,
+        f_grip_max,
+        k_shear_x,
+        k_shear_y,
+        mu_x,
+        mu_y,
+        d_peel_x,
+        d_peel_y,
+        pad_shape,
+    ):
+        """Build the single-pad surface gripper on box A's bottom (-z) face; return its builder."""
+        gripper = SurfaceGripper(
+            body_id=self.box_a,
+            xform=wp.transform_identity(),  # gripper frame == box A body frame
+            k_normal=k_normal,
+            d_normal=d_normal,
+            f_normal_max=f_normal_max,
+            f_grip_max=f_grip_max,
+            k_shear_x=k_shear_x,
+            k_shear_y=k_shear_y,
+            mu_x=mu_x,
+            mu_y=mu_y,
+            d_peel_x=d_peel_x,
+            d_peel_y=d_peel_y,
+            shape=int(pad_shape),
+            dim_a=LA,
+            dim_b=LA,
+        )
+        # pad at the bottom face: origin (0,0,-LA), +z (suction dir) rotated to point down (-z of A)
+        gripper.add_pad(wp.transform(wp.vec3(0.0, 0.0, -LA), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi)))
+
+        gbuilder = SurfaceGripperBuilder()
+        gbuilder.add_gripper(gripper)
+        return gbuilder
 
     def capture(self):
         if wp.get_device().is_cuda:
