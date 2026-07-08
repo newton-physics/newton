@@ -1038,6 +1038,17 @@ def parse_usd(
             return False
         return imageable.ComputeVisibility() != UsdGeom.Tokens.invisible
 
+    def _is_guide_purpose(prim: Usd.Prim) -> bool:
+        """Return whether ``prim``'s computed purpose is ``guide``.
+
+        Guide prims are viewport helpers that USD renderers do not draw by
+        default; e.g. MuJoCo-converted assets author collision geometry with
+        purpose ``guide``. They are excluded from visual shape loading but
+        remain eligible as collision shapes.
+        """
+        imageable = UsdGeom.Imageable(prim)
+        return bool(imageable) and imageable.ComputePurpose() == UsdGeom.Tokens.guide
+
     bodies_with_visual_shapes: set[int] = set()
 
     def _get_prim_world_mat(prim, articulation_root_xform, incoming_world_xform):
@@ -1114,7 +1125,9 @@ def parse_usd(
             return
 
         visual_shape_cfg_for_prim = copy.copy(visual_shape_cfg)
-        visual_shape_cfg_for_prim.is_visible = is_site or _is_effectively_visible(prim)
+        visual_shape_cfg_for_prim.is_visible = is_site or (
+            _is_effectively_visible(prim) and not _is_guide_purpose(prim)
+        )
         material_props = _get_material_props_cached(prim)
         shape_color = material_props.get("color")
 
