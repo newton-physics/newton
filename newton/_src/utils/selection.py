@@ -2048,36 +2048,28 @@ def _find_matching_group_ids(pattern: str | re.Pattern[str], labels, world_ids, 
 
 
 class DeformableView:
-    """Batched access to deformable groups selected by label pattern.
+    """Select finalized deformable groups and read or update their existing state.
 
-    Selects the cable, cloth, or soft-body groups whose label matches ``pattern`` and
-    exposes their state as batched arrays of shape ``(count, elements_per_group)``, one
-    row per selected group ordered world by world. This mirrors
-    :class:`~newton.selection.ArticulationView` for deformables.
+    .. experimental::
 
-    Only groups recorded during building are selectable. The USD importer
-    (:meth:`~newton.ModelBuilder.add_usd`) records every imported deformable
-    under its prim-path label, and the deformable builder helpers
-    (:meth:`~newton.ModelBuilder.add_cloth_mesh`, :meth:`~newton.ModelBuilder.add_soft_mesh`,
-    :meth:`~newton.ModelBuilder.add_rod`, :meth:`~newton.ModelBuilder.add_rod_graph`) record
-    a group when given a ``label``. Deformables built without a label are not discoverable.
+       This API may change while deformable selection is developed.
 
-    The selection must be homogeneous: the same number of matching groups in every world
-    that has a match, and the same element count in every group (which
-    :meth:`~newton.ModelBuilder.replicate` produces). Worlds without a match are skipped,
-    so a family present in only some worlds of a heterogeneous scene is still selectable;
-    ragged selections raise ``ValueError``. Global groups (world ``-1``) cannot be mixed
-    with per-world groups in one selection.
+    A string ``pattern`` uses label glob matching. A compiled :class:`re.Pattern`
+    uses ``fullmatch()``. Results keep model order: world order followed by builder
+    order. The public families are ``"curve"``, ``"surface"``, and ``"volume"``.
 
-    An imported cable is also an articulation of segment bodies, so it is visible to
-    :class:`~newton.selection.ArticulationView` under its ``<path>_articulation`` label.
-    Use this view for cables: it batches state per cable in segment order, which is the
-    shape cable consumers want.
+    Labeled native deformables and deformables loaded by
+    :meth:`~newton.ModelBuilder.add_usd` use the same finalized group records. Native
+    deformables without a label remain valid but cannot be selected by label.
 
-    Setters accept a Warp array of the documented shape and dtype, or NumPy arrays and
-    nested lists (converted on the fly). Pass torch tensors through
-    :func:`warp.from_torch`; getters return Warp arrays that :func:`warp.to_torch` wraps
-    without a copy.
+    :meth:`ranges` and :meth:`starts` work even when selected groups have different
+    element counts. Batched getters and setters require equal counts for the element
+    kind they use and otherwise direct callers to the raw ranges. Global groups
+    (world ``-1``) cannot be mixed with per-world groups in one view.
+
+    Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
+    changes its initial arrays; writing a state changes only that state. Host group
+    indices are bounds-checked. Device ``int32`` indices stay on the device.
 
     Example:
 
@@ -2087,19 +2079,21 @@ class DeformableView:
 
         import newton
 
-        view = newton.selection.DeformableView(model, "/World/Cloth", family="cloth")
-        positions = view.get_particle_positions(state)  # (count, particles_per_cloth) vec3
+        surface = newton.selection.DeformableView(
+            model,
+            "/World/Cloth",
+            family="surface",
+        )
+        positions = surface.get_particle_positions(state)
         lifted = positions.numpy()
         lifted[:, :, 2] += 1.0
-        view.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
+        surface.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
 
     Args:
-        model: The model containing the deformable groups.
-        pattern: Pattern to match group labels (prim paths). A ``str`` is glob-matched
-            (see :ref:`label-matching`); a compiled :class:`re.Pattern` is matched with
-            ``fullmatch()`` against the complete label.
-        family: Deformable family to select: ``"cable"``, ``"cloth"``, or ``"soft"``.
-        verbose: If True, prints a selection summary.
+        model: Model containing the finalized deformable groups.
+        pattern: String label glob or compiled regular expression.
+        family: Family to select: ``"curve"``, ``"surface"``, or ``"volume"``.
+        verbose: If True, print a short selection summary.
     """
 
     _FAMILY_KINDS: ClassVar[dict[str, tuple[str, ...]]] = {
@@ -2134,8 +2128,8 @@ class DeformableView:
 
         group_ids, global_group_ids = _find_matching_group_ids(pattern, labels, group_worlds, model.world_count)
 
-        # A heterogeneous scene may hold a family in only some worlds; worlds with no match
-        # are skipped, and homogeneity is required across the worlds that do match.
+        # A heterogeneous scene may hold a family in only some worlds. Skip worlds
+        # without a match while preserving each remaining world in model order.
         group_ids = [ids for ids in group_ids if ids]
         world_count = len(group_ids)
         counts_per_world = [len(ids) for ids in group_ids]
@@ -2196,8 +2190,8 @@ class DeformableView:
     def elements_per_group(self, kind: str) -> int:
         """Elements of ``kind`` in each selected group (homogeneous across the selection).
 
-        ``kind`` is ``body``/``joint`` for cables, ``particle``/``tri``/``edge`` for cloth,
-        and ``particle``/``tet`` for soft bodies.
+        ``kind`` is ``body``/``joint`` for curves, ``particle``/``triangle``/``edge`` for
+        surfaces, and ``particle``/``tetrahedron`` for volumes.
         """
         return self._element_count(kind)
 
@@ -2277,11 +2271,11 @@ class DeformableView:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
         wp.launch(kernel, dim=(rows, count), inputs=[values, self._starts[kind], groups, dst], device=self.device)
 
-    # particle state (cloth / soft) -------------------------------------------
+    # particle state (surface / volume) --------------------------------------
 
     @property
     def particles_per_group(self) -> int:
-        """Particles in each selected cloth/soft group."""
+        """Particles in each selected surface or volume group."""
         return self._element_count("particle")
 
     def get_particle_positions(self, source: Model | State) -> wp.array2d[wp.vec3]:
@@ -2310,15 +2304,15 @@ class DeformableView:
         """
         self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_qd, wp.vec3, indices)
 
-    # body state (cable) -------------------------------------------------------
+    # body state (curve) --------------------------------------------------
 
     @property
     def bodies_per_group(self) -> int:
-        """Segment bodies in each selected cable group."""
+        """Segment bodies in each selected curve group."""
         return self._element_count("body")
 
     def get_body_transforms(self, source: Model | State) -> wp.array2d[wp.transform]:
-        """Segment body transforms of each cable, shape ``(count, bodies_per_group)`` of transform."""
+        """Segment body transforms of each curve, shape ``(count, bodies_per_group)`` of transform."""
         return self._gather("body", source.body_q, _gather_group_transform_kernel, wp.transform)
 
     def set_body_transforms(self, source: Model | State, values, indices=None):
@@ -2331,7 +2325,7 @@ class DeformableView:
         self._scatter("body", values, _scatter_group_transform_kernel, source.body_q, wp.transform, indices)
 
     def get_body_velocities(self, source: Model | State) -> wp.array2d[wp.spatial_vector]:
-        """Segment body spatial velocities of each cable, shape ``(count, bodies_per_group)``."""
+        """Segment body spatial velocities of each curve, shape ``(count, bodies_per_group)``."""
         return self._gather("body", source.body_qd, _gather_group_spatial_kernel, wp.spatial_vector)
 
     def set_body_velocities(self, source: Model | State, values, indices=None):

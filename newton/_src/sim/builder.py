@@ -11661,9 +11661,7 @@ class ModelBuilder:
             _append_deformable_group_records(
                 "cloth", "surface", (("particle", "particle"), ("tri", "triangle"), ("edge", "edge"))
             )
-            _append_deformable_group_records(
-                "soft", "volume", (("particle", "particle"), ("tet", "tetrahedron"))
-            )
+            _append_deformable_group_records("soft", "volume", (("particle", "particle"), ("tet", "tetrahedron")))
             m._deformable_groups = tuple(deformable_groups)
 
             # ---------------------

@@ -234,7 +234,7 @@ close a loop, so they stay outside the articulation.
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
     # Post-finalize selection by label pattern:
-    cable = newton.selection.DeformableView(model, "/World/Cable", family="cable")
+    cable = newton.selection.DeformableView(model, "/World/Cable", family="curve")
     ((body_start, body_end),) = cable.ranges("body")
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
