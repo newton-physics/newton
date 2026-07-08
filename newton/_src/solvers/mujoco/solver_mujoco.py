@@ -571,6 +571,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         warp_util._KERNEL_CACHE.clear()
         SolverMuJoCo._generated_kernel_deterministic_options = options
 
+    def _set_mujoco_warp_module_options(self) -> None:
+        """Configure loaded shared modules without overriding code-generated bounds."""
+        options = {
+            "deterministic": self._deterministic,
+            "deterministic_max_records": 0,
+        }
+        for module in [*_mujoco_warp_deterministic_modules(), kernels]:
+            self._set_module_options(options, module=module)
+
     @staticmethod
     def _parse_integrator(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
@@ -3343,12 +3352,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # path and compacts contacts with atomics. Keep the resolved mode
             # as the single source of truth instead of relying on global Warp
             # determinism during module import.
-            options = {
-                "deterministic": self._deterministic,
-                "deterministic_max_records": self._deterministic_max_records,
-            }
-            for module in [*_mujoco_warp_deterministic_modules(), kernels]:
-                self._set_module_options(options, module=module)
+            self._set_mujoco_warp_module_options()
 
         # Deferred from module scope: wp.static() in this kernel imports mujoco_warp.
         if SolverMuJoCo._convert_mjw_contacts_to_newton_kernel is None:
@@ -3604,6 +3608,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wp.config.deterministic = original_mode
             wp.config.deterministic_max_records = original_max_records
 
+    @contextmanager
+    def _scoped_mujoco_warp_execution(self):
+        """Prepare and apply all solver-local MJWarp compilation options."""
+        self._apply_module_options()
+        self._prepare_generated_kernels()
+        with self._scoped_deterministic_config():
+            yield
+
     @event_scope
     def _mujoco_warp_step(self):
         self._mujoco_warp.step(self.mjw_model, self.mjw_data)
@@ -3611,9 +3623,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
-        self._apply_module_options()
-        if not self.use_mujoco_cpu:
-            self._prepare_generated_kernels()
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -3623,17 +3632,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._mujoco.mj_step(self.mj_model, self.mj_data)
             self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in)
         else:
-            self._enable_rne_postconstraint(state_out)
-            self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
-            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
-                self._update_mjc_data(self.mjw_data, self.model, state_in)
-            self.mjw_model.opt.timestep.fill_(dt)
-            with wp.ScopedDevice(self.model.device), self._scoped_deterministic_config():
+            with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
+                self._enable_rne_postconstraint(state_out)
+                self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
+                if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+                    self._update_mjc_data(self.mjw_data, self.model, state_in)
+                self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
                 self._mujoco_warp_step()
-
-            self._update_newton_state(self.model, state_out, self.mjw_data, state_prev=state_in)
+                self._update_newton_state(self.model, state_out, self.mjw_data, state_prev=state_in)
         self._step += 1
 
     @override
@@ -4061,7 +4069,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        self._apply_module_options()
+        if self.use_mujoco_cpu:
+            self._notify_model_changed(flags)
+        else:
+            with self._scoped_mujoco_warp_execution():
+                self._notify_model_changed(flags)
+
+    def _notify_model_changed(self, flags: ModelFlags | int) -> None:
         need_const_fixed = False
         need_const_0 = False
         need_length_range = False
@@ -6793,12 +6807,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self._deterministic_max_records = _mujoco_warp_deterministic_max_records(
                         self.mj_model, self.mjw_data
                     )
-                options = {
-                    "deterministic": self._deterministic,
-                    "deterministic_max_records": self._deterministic_max_records,
-                }
-                for module in [*_mujoco_warp_deterministic_modules(), kernels]:
-                    self._set_module_options(options, module=module)
+                self._set_mujoco_warp_module_options()
                 self._prepare_generated_kernels()
 
             # expand model fields that can be expanded:

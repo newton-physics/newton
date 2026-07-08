@@ -114,6 +114,14 @@ class SolverXPBD(SolverBase, CouplingInterface):
         enable_restitution: bool = False,
         deterministic: wp.DeterministicMode | None = None,
     ):
+        """Initialize the solver.
+
+        Args:
+            deterministic: Opt-in determinism for this solver's atomic-emitting
+                kernel module. Pass a :class:`warp.DeterministicMode`, or
+                ``None`` (default) to inherit the current
+                ``wp.config.deterministic`` mode.
+        """
         super().__init__(model=model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._set_module_options(
