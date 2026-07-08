@@ -2175,22 +2175,23 @@ class DeformableView:
         self.group_ids = [g.id for g in selected]
         """Stable finalized identity of each selected group."""
 
-        # Element ranges per kind; the selection must be homogeneous per kind.
+        # Element ranges are always available; only rectangular operations require homogeneity.
         self._all_groups: wp.array | None = None  # lazy identity indices for full-selection writes
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array] = {}
-        self._counts: dict[str, int] = {}
+        self._counts: dict[str, int | None] = {}
         for kind in self._FAMILY_KINDS[family]:
             kind_ranges = [g.ranges[kind] for g in selected]
             sizes = {end - start for start, end in kind_ranges}
-            if len(sizes) != 1:
-                raise ValueError(f"Varying {kind} counts per {family} group are not supported (got {sorted(sizes)})")
-            self._counts[kind] = sizes.pop()
+            self._counts[kind] = sizes.pop() if len(sizes) == 1 else None
             self._ranges[kind] = kind_ranges
             self._starts[kind] = wp.array([start for start, _end in kind_ranges], dtype=wp.int32, device=self.device)
 
         if verbose:
-            elements = ", ".join(f"{self._counts[k]} {k}(s)" for k in self._FAMILY_KINDS[family])
+            elements = ", ".join(
+                f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)"
+                for k in self._FAMILY_KINDS[family]
+            )
             print(f"DeformableView '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
 
     # raw ranges -------------------------------------------------------------
@@ -2210,7 +2211,7 @@ class DeformableView:
         hand per-instance offsets to a renderer sync or to custom kernels. See
         :meth:`elements_per_group` for the valid ``kind`` values.
         """
-        self._element_count(kind)
+        self._validate_kind(kind)
         return list(self._ranges[kind])
 
     def starts(self, kind: str) -> wp.array[wp.int32]:
@@ -2220,15 +2221,24 @@ class DeformableView:
         selection without a host round-trip; the view's own gather/scatter kernels use
         the same array.
         """
-        self._element_count(kind)
+        self._validate_kind(kind)
         return self._starts[kind]
 
     # generic gather/scatter -------------------------------------------------
 
-    def _element_count(self, kind: str) -> int:
-        count = self._counts.get(kind)
-        if count is None:
+    def _validate_kind(self, kind: str) -> None:
+        if kind not in self._FAMILY_KINDS[self.family]:
             raise AttributeError(f"{self.family} groups have no {kind} elements")
+
+    def _element_count(self, kind: str) -> int:
+        self._validate_kind(kind)
+        count = self._counts[kind]
+        if count is None:
+            sizes = sorted({end - start for start, end in self._ranges[kind]})
+            raise ValueError(
+                f"Varying {kind} counts per {self.family} group cannot form a batched array "
+                f"(got {sizes}); use ranges({kind!r}) and direct slices instead"
+            )
         return count
 
     def _gather(self, kind: str, src: wp.array, kernel, dtype) -> wp.array[Any]:

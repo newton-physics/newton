@@ -166,8 +166,15 @@ class TestDeformableView(unittest.TestCase):
 
         with self.assertRaises(KeyError):
             DeformableView(model, "/World/DoesNotExist", family="surface")
-        with self.assertRaisesRegex(ValueError, "Varying particle counts"):
-            DeformableView(model, "/World/Cloth*", family="surface")
+        view = DeformableView(model, "/World/Cloth*", family="surface")
+        self.assertEqual([end - start for start, end in view.ranges("particle")], [4, 5])
+        np.testing.assert_array_equal(view.starts("particle").numpy(), [0, 4])
+        with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
+            view.elements_per_group("particle")
+        with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
+            view.get_particle_positions(model.state())
+        with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
+            view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
         with self.assertRaisesRegex(ValueError, "Unknown deformable family"):
             DeformableView(model, "/World/ClothA", family="ropes")
         view = DeformableView(model, "/World/ClothA", family="surface")
