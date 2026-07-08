@@ -2049,7 +2049,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     )
 
                     # Restore AVBD body-body contact state from history and pre-compute material properties
-                    if self.rigid_contact_history:
+                    if self.rigid_contact_history and contact_launch_dim > 0:
                         if contacts.rigid_contact_match_index is None:
                             raise RuntimeError(
                                 "SolverVBD(rigid_contact_history=True) requires Contacts with "
@@ -2058,7 +2058,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                                 "or set rigid_contact_history=False."
                             )
 
-                        history_required = max(1, contact_launch_dim)
+                        history_required = contact_launch_dim
                         if self._prev_contact_lambda is None or self._prev_contact_lambda.shape[0] < history_required:
                             history_cap = 0 if self._prev_contact_lambda is None else self._prev_contact_lambda.shape[0]
                             self._raise_if_capturing_resize("rigid contact history", history_cap, history_required)
@@ -2108,7 +2108,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                             ],
                             device=self.device,
                         )
-                    else:
+                    elif not self.rigid_contact_history:
                         wp.launch(
                             kernel=init_body_body_contact_materials,
                             inputs=[
