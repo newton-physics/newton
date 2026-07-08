@@ -286,7 +286,7 @@ class Example:
         builder.add_ground_plane()
 
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.solver = newton.solvers.SolverMuJoCo(self.model, use_mujoco_contacts=False)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -400,7 +400,7 @@ class Example:
                 body_flag_filter=newton.BodyFlags.KINEMATIC,
             )
 
-            #self.model.collide(self.state_0, self.contacts)
+            self.model.collide(self.state_0, self.contacts)
 
             # surface gripper -- Phase 1 (seal series -> engaged flag, above) then Phase 2 (wrench).
             # clear body_f right before writing the seal wrench, since eval_pad_force accumulates.
