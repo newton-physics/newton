@@ -100,12 +100,7 @@ def _build_fk_level_topology(
     joint_child: Sequence[int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
     if articulation_count == 0:
-        return (
-            np.zeros(1, dtype=np.int32),
-            np.zeros(1, dtype=np.int32),
-            np.empty(0, dtype=np.int32),
-            np.full(len(joint_articulation), -1, dtype=np.int32),
-        )
+        return None
 
     joint_articulations = np.asarray(joint_articulation, dtype=np.int32)
     joint_parents = np.asarray(joint_parent, dtype=np.int32)
@@ -117,13 +112,10 @@ def _build_fk_level_topology(
 
     articulation_children = joint_children[articulation_joints]
     max_child = int(np.max(articulation_children, initial=-1))
-    child_seen = np.zeros(max_child + 1, dtype=bool)
-    child_seen[articulation_children] = True
-    if np.count_nonzero(child_seen) != len(articulation_children):
-        return None
-
     body_joint = np.full(max_child + 1, -1, dtype=np.int32)
-    body_joint[joint_children[articulation_joints]] = articulation_joints
+    body_joint[articulation_children] = articulation_joints
+    if np.count_nonzero(body_joint >= 0) != len(articulation_children):
+        return None
 
     parent_joint = np.full(len(joint_articulations), -1, dtype=np.int32)
     has_parent_body = (joint_parents[articulation_joints] >= 0) & (joint_parents[articulation_joints] <= max_child)

@@ -325,6 +325,7 @@ def test_cable_pose_preserved(test, device):
 
 def test_empty_model(test, device):
     model = newton.ModelBuilder().finalize(device=device)
+    test.assertIsNone(model._fk_articulation_level_start)
     state = model.state()
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
