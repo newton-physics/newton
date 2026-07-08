@@ -26,12 +26,15 @@ from .kernels import MeshSignMethod, mesh_query_point_sign, resolve_mesh_sign_me
 # ``_SDF_QUERY_RADIUS_SLACK * threshold`` bounds, and these queries only run at
 # points the narrow phase already placed near the surface, so the bound is
 # never binding. The queries operate in mesh-local coordinates (per-shape scale
-# is divided out), so there is no global unit to tie it to; 1e16 is effectively
-# unbounded for any asset under any unit convention. It must stay well below
-# sqrt(FLT_MAX) ~ 1.8e19 — Warp's mesh queries square ``max_dist`` internally —
-# and finite (rather than ``wp.inf``) so the no-hit branches return a
-# well-behaved sentinel distance instead of propagating infinity into contacts.
-_MESH_QUERY_MAX_DIST = 1.0e16
+# is divided out), so there is no global unit to tie it to; 1e11 is effectively
+# unbounded for any asset under any unit convention (~8x Earth's diameter in
+# millimeters). Going much larger is unsafe: Warp's mesh queries square
+# ``max_dist`` internally, and the no-hit branches return it as a sentinel that
+# contact math multiplies by per-shape scale (budgeted up to 1e6 for extreme
+# unit conversions): (1e11 * 1e6)^2 = 1e34 clears float32 max (~3.4e38) by
+# four orders of magnitude, where values near sqrt(FLT_MAX) ~ 1.8e19 would
+# overflow. Kept finite (rather than ``wp.inf``) for the same reason.
+_MESH_QUERY_MAX_DIST = 1.0e11
 
 # Search-radius slack over the narrow-band culling threshold for midpoint SDF
 # queries. Slightly exceeding the threshold guarantees points right at the
