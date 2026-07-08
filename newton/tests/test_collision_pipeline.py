@@ -1623,7 +1623,7 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
 
         # Verify contact data is valid
         if soft_count > 0:
-            contact_particles = contacts.soft_contact_primitive.numpy()[:soft_count]
+            contact_particles = contacts.soft_contact_particle.numpy()[:soft_count]
             contact_shapes = contacts.soft_contact_shape.numpy()[:soft_count]
             contact_normals = contacts.soft_contact_normal.numpy()[:soft_count]
 
@@ -2406,33 +2406,34 @@ def _build_cloth_over_plane(device, particle_z: float = 0.05):
 
 
 def test_soft_contact_schema(test, device):
-    """soft_contact_count is a standalone int32[3]; primitive renamed; barycentric added."""
+    """soft_contact_count is a 1-element total; unified soft_contact_indices + barycentric added."""
     model = _build_cloth_over_plane(device)
     pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.1)
     contacts = pipeline.contacts()
 
-    # Standalone length-3 soft counter: [particle, edge, face].
-    test.assertEqual(tuple(contacts.soft_contact_count.shape), (3,))
+    # Single total soft counter (bit-identical in shape to a build without the feature).
+    test.assertEqual(tuple(contacts.soft_contact_count.shape), (1,))
+    test.assertFalse(contacts.has_full_surface_contacts)  # flag off by default
 
-    # New / renamed fields sized to soft_contact_max.
-    test.assertEqual(contacts.soft_contact_primitive.shape[0], contacts.soft_contact_max)
+    # Unified record fields + the particle-only view, all sized to soft_contact_max.
+    test.assertEqual(contacts.soft_contact_indices.shape[0], contacts.soft_contact_max)
+    test.assertEqual(contacts.soft_contact_indices.dtype, wp.vec3i)
+    test.assertEqual(contacts.soft_contact_particle.shape[0], contacts.soft_contact_max)
     test.assertEqual(contacts.soft_contact_barycentric.shape[0], contacts.soft_contact_max)
-
-    # soft_contact_particle is a deprecated alias for soft_contact_primitive.
-    with test.assertWarns(DeprecationWarning):
-        aliased = contacts.soft_contact_particle
-    test.assertIs(aliased, contacts.soft_contact_primitive)
 
     # Rigid counter untouched and independent of the soft counter.
     test.assertEqual(tuple(contacts.rigid_contact_count.shape), (1,))
 
-    # Flag-off collide: the legacy particle pass fills slot 0; edge/face slots stay zero.
+    # Flag-off collide: only the particle pass runs, so every record is a particle: (p, -1, -1).
     state = model.state()
     pipeline.collide(state, contacts)
-    counts = contacts.soft_contact_count.numpy()
-    test.assertGreater(int(counts[0]), 0)
-    test.assertEqual(int(counts[1]), 0)
-    test.assertEqual(int(counts[2]), 0)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(total, 0)
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    test.assertTrue(np.all(idx[:, 1] < 0))  # no edge/face records
+    test.assertTrue(np.all(idx[:, 0] >= 0))
+    # soft_contact_particle mirrors index slot 0 for particle contacts.
+    test.assertTrue(np.array_equal(contacts.soft_contact_particle.numpy()[:total], idx[:, 0]))
 
 
 soft_devices = get_test_devices()
@@ -2674,7 +2675,7 @@ def test_edge_face_passes_box(test, device):
     contacts.soft_contact_count.zero_()
     edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
     face_pairs = _build_soft_face_rigid_contact_pairs(model)
-    edge_tri = model.soft_mesh_adjacency_device.edge_tri_indices
+    # Isolated launch (no particle pass), so this pass's tids start at 0.
     launch_soft_ef_contacts(
         model=model,
         state=state,
@@ -2683,36 +2684,36 @@ def test_edge_face_passes_box(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
-        edge_tri_indices=edge_tri,
+        n_particle_pairs=0,
     )
 
-    counts = contacts.soft_contact_count.numpy()
-    c0, n_edge, n_face = int(counts[0]), int(counts[1]), int(counts[2])
-    n_edges = model.soft_mesh_adjacency.edge_indices.shape[0]
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    # Records self-describe by -1 padding: edge (v0, v1, -1), face (v0, v1, v2).
+    n_edge = int(np.sum((idx[:, 1] >= 0) & (idx[:, 2] < 0)))
+    n_face = int(np.sum(idx[:, 2] >= 0))
+    n_edges = model.edge_count
     # Structural dedup: the sheet is entirely inside the box, so every unique edge / triangle
     # emits exactly once (one thread per unique edge / triangle).
     test.assertEqual(n_edge, n_edges)
     test.assertEqual(n_face, model.tri_count)
+    test.assertEqual(n_edge + n_face, total)  # no particle records in this isolated launch
 
-    prims = contacts.soft_contact_primitive.numpy()
-    barys = contacts.soft_contact_barycentric.numpy()
-    normals = contacts.soft_contact_normal.numpy()
-    body_pos = contacts.soft_contact_body_pos.numpy()
+    barys = contacts.soft_contact_barycentric.numpy()[:total]
+    normals = contacts.soft_contact_normal.numpy()[:total]
+    body_pos = contacts.soft_contact_body_pos.numpy()[:total]
     half = np.array([0.5, 0.5, 0.5])
+    n_particles = model.particle_count
 
-    # Records pack contiguously and the range IS the kind (no per-record flag): edge range
-    # [c0, c0+n_edge), face range [c0+n_edge, c0+n_edge+n_face). n_edge/n_face (asserted above)
-    # confirm each range holds exactly the expected feature count.
-    for i in range(c0, c0 + n_edge):
-        test.assertTrue(0 <= int(prims[i]) < model.tri_count)
+    for i in range(total):
+        c = idx[i]
+        n_valid = int(np.sum(c >= 0))
+        test.assertIn(n_valid, (2, 3))  # edge or face
+        for k in range(n_valid):
+            test.assertTrue(0 <= int(c[k]) < n_particles)  # corners are soft particle ids
         test.assertAlmostEqual(float(barys[i].sum()), 1.0, places=4)
         test.assertGreater(float(normals[i][2]), 0.99)  # +z face of the box
         test.assertLess(abs(_box_sdf_np(body_pos[i], half)), 1.0e-2)  # closest point on the box surface
-    for i in range(c0 + n_edge, c0 + n_edge + n_face):
-        test.assertTrue(0 <= int(prims[i]) < model.tri_count)
-        test.assertAlmostEqual(float(barys[i].sum()), 1.0, places=4)
-        test.assertGreater(float(normals[i][2]), 0.99)
-        test.assertLess(abs(_box_sdf_np(body_pos[i], half)), 1.0e-2)
 
 
 def test_edge_face_respect_shape_margin(test, device):
@@ -2758,7 +2759,7 @@ def test_edge_face_respect_shape_margin(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
-        edge_tri_indices=model.soft_mesh_adjacency_device.edge_tri_indices,
+        n_particle_pairs=0,
     )
 
     # Sanity: the gap really is beyond the threshold without the shape margin, so any record
@@ -2766,10 +2767,12 @@ def test_edge_face_respect_shape_margin(test, device):
     max_radius = float(model.particle_radius.numpy().max())
     test.assertGreater(0.15, margin + max_radius)
 
-    counts = contacts.soft_contact_count.numpy()
-    n_edges = model.soft_mesh_adjacency.edge_indices.shape[0]
-    test.assertEqual(int(counts[1]), n_edges)
-    test.assertEqual(int(counts[2]), model.tri_count)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    n_edge = int(np.sum((idx[:, 1] >= 0) & (idx[:, 2] < 0)))
+    n_face = int(np.sum(idx[:, 2] >= 0))
+    test.assertEqual(n_edge, model.edge_count)
+    test.assertEqual(n_face, model.tri_count)
 
 
 # ---------------------------------------------------------------------------
@@ -2778,8 +2781,11 @@ def test_edge_face_respect_shape_margin(test, device):
 
 
 def _sorted_particle_records(contacts, c0):
-    """Particle-range records sorted by particle id (emission order is non-deterministic on GPU)."""
-    prim = contacts.soft_contact_primitive.numpy()[:c0]
+    """Particle-range records sorted by particle id (emission order is non-deterministic on GPU).
+
+    The particle pass runs first, so the first ``c0`` records are the particle contacts.
+    """
+    prim = contacts.soft_contact_particle.numpy()[:c0]
     order = np.argsort(prim, kind="stable")
     return (
         prim[order],
@@ -2810,33 +2816,34 @@ def test_backward_compat_bit_for_bit(test, device):
 
     # The flag is fixed at construction, so off vs on are two separately-sized pipelines.
     pipeline_off = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=False
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
     )
     contacts_off = pipeline_off.contacts()
     pipeline_off.collide(state, contacts_off)
-    counts_off = contacts_off.soft_contact_count.numpy().copy()
-    c0 = int(counts_off[0])
+    c0 = int(contacts_off.soft_contact_count.numpy()[0])
     test.assertGreater(c0, 0)
-    test.assertEqual(int(counts_off[1]), 0)
-    test.assertEqual(int(counts_off[2]), 0)
+    # Flag off: every record is a particle contact (p, -1, -1).
+    test.assertTrue(np.all(contacts_off.soft_contact_indices.numpy()[:c0][:, 1] < 0))
     prim_off, shape_off, pos_off, nrm_off = _sorted_particle_records(contacts_off, c0)
 
     pipeline_on = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts_on = pipeline_on.contacts()
     pipeline_on.collide(state, contacts_on)
-    counts_on = contacts_on.soft_contact_count.numpy()
-    test.assertEqual(int(counts_on[0]), c0)  # legacy particle count unchanged
+    total_on = int(contacts_on.soft_contact_count.numpy()[0])
+    idx_on = contacts_on.soft_contact_indices.numpy()[:total_on]
+    n_particle_on = int(np.sum(idx_on[:, 1] < 0))
+    test.assertEqual(n_particle_on, c0)  # particle-contact count unchanged; E/F only added
     prim_on, shape_on, pos_on, nrm_on = _sorted_particle_records(contacts_on, c0)
 
-    # Bit-identical particle range (same legacy kernel, same inputs).
+    # Bit-identical particle range (same legacy kernel, same inputs; particle records come first).
     test.assertTrue(np.array_equal(prim_on, prim_off))
     test.assertTrue(np.array_equal(shape_on, shape_off))
     test.assertTrue(np.array_equal(pos_on, pos_off))
     test.assertTrue(np.array_equal(nrm_on, nrm_off))
-    # Flag on only ADDS E/F records.
-    test.assertGreater(int(counts_on[1]) + int(counts_on[2]), 0)
+    # Flag on only ADDS edge/face records.
+    test.assertGreater(total_on - n_particle_on, 0)
 
 
 def test_water_tight_catches_what_particles_miss(test, device):
@@ -2862,7 +2869,7 @@ def test_water_tight_catches_what_particles_miss(test, device):
 
     # Per-particle path alone (flag off at construction): every corner is outside margin -> no contact.
     pipeline_off = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=False
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
     )
     contacts_off = pipeline_off.contacts()
     pipeline_off.collide(state, contacts_off)
@@ -2870,13 +2877,14 @@ def test_water_tight_catches_what_particles_miss(test, device):
 
     # Water-tight path (flag on): the edge/face passes detect the crossing the particles miss.
     pipeline_on = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts_on = pipeline_on.contacts()
     pipeline_on.collide(state, contacts_on)
-    counts = contacts_on.soft_contact_count.numpy()
-    test.assertEqual(int(counts[0]), 0)  # still no per-particle contact
-    test.assertGreater(int(counts[1]) + int(counts[2]), 0)  # caught by edge/face
+    total = int(contacts_on.soft_contact_count.numpy()[0])
+    idx = contacts_on.soft_contact_indices.numpy()[:total]
+    test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0)  # still no per-particle contact
+    test.assertGreater(total, 0)  # caught by edge/face
 
 
 for _name, _fn in (
@@ -2918,14 +2926,15 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[mesh_shape]), 0)
 
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state = model.state()
     pipeline.collide(state, contacts)
-    counts = contacts.soft_contact_count.numpy()
-    # The mesh's volume SDF feeds the edge/face passes -> records emitted.
-    test.assertGreater(int(counts[1]) + int(counts[2]), 0)
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    # The mesh's volume SDF feeds the edge/face passes -> edge/face records emitted.
+    test.assertGreater(int(np.sum(idx[:, 1] >= 0)), 0)
 
 
 def test_optimize_against_mesh_texture_sdf(test, device):
@@ -3024,7 +3033,7 @@ def test_unprovisioned_mesh_raises(test, device):
     model = builder.finalize(device=device)
     with test.assertRaises(ValueError):
         newton.CollisionPipeline(
-            model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+            model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
         )
 
 
@@ -3236,14 +3245,13 @@ def test_end_to_end_no_false_pos_neg(test, device):
         broad_phase="nxn",
         soft_contact_margin=margin,
         soft_contact_max=n_shapes * (n_tris + n_edges) + 16,
-        enable_water_tight_rigid_soft_contact=True,
+        enable_rigid_soft_full_surface_contact=True,
     )
     contacts = pipeline.contacts()
     state = model.state()
     contacts.soft_contact_count.zero_()
     edge_pairs = _build_soft_edge_rigid_contact_pairs(model)
     face_pairs = _build_soft_face_rigid_contact_pairs(model)
-    edge_tri = model.soft_mesh_adjacency_device.edge_tri_indices
     launch_soft_ef_contacts(
         model=model,
         state=state,
@@ -3252,11 +3260,13 @@ def test_end_to_end_no_false_pos_neg(test, device):
         device=device,
         edge_pairs=edge_pairs,
         face_pairs=face_pairs,
-        edge_tri_indices=edge_tri,
+        n_particle_pairs=0,
     )
 
-    counts = contacts.soft_contact_count.numpy()
-    n_edge_rec, n_face_rec = int(counts[1]), int(counts[2])
+    total = int(contacts.soft_contact_count.numpy()[0])
+    rec_idx = contacts.soft_contact_indices.numpy()[:total]
+    n_edge_rec = int(np.sum((rec_idx[:, 1] >= 0) & (rec_idx[:, 2] < 0)))
+    n_face_rec = int(np.sum(rec_idx[:, 2] >= 0))
     test.assertGreater(n_edge_rec + n_face_rec, 0)  # the scene actually generates contacts
 
     # Brute-force ground truth: min phi per (shape, feature) using the same eval_shape_sdf.
@@ -3293,13 +3303,27 @@ def test_end_to_end_no_false_pos_neg(test, device):
     face_min = face_min.numpy().reshape(n_shapes, n_tris)
     edge_min = edge_min.numpy().reshape(n_shapes, n_edges)
 
-    # Emitted records (counter zeroed -> edge range [0, n_edge), face [n_edge, n_edge+n_face)).
-    rec_shape = contacts.soft_contact_shape.numpy()
-    rec_prim = contacts.soft_contact_primitive.numpy()
+    # Emitted records self-describe via -1 padding; map each back to its (shape, feature) by matching
+    # its corner set to the mesh's triangles / edges (records store particle ids, not a feature id).
+    rec_shape = contacts.soft_contact_shape.numpy()[:total]
+    tri_np = model.tri_indices.numpy()
+    tri_by_corners = {frozenset(int(x) for x in tri_np[t]): t for t in range(n_tris)}
+    adj_edges = np.asarray(model.soft_mesh_adjacency.edge_indices)  # matches edge_min's indexing
+    edge_by_endpoints = {frozenset((int(adj_edges[e, 2]), int(adj_edges[e, 3]))): e for e in range(n_edges)}
     edge_owner = np.asarray(model.soft_mesh_adjacency.edge_tri_indices)[:, 0]
 
-    emitted_faces = {(int(rec_shape[i]), int(rec_prim[i])) for i in range(n_edge_rec, n_edge_rec + n_face_rec)}
-    emitted_edge_owner = Counter((int(rec_shape[i]), int(rec_prim[i])) for i in range(n_edge_rec))
+    emitted_faces = set()
+    emitted_edge_owner = Counter()
+    for i in range(total):
+        c = rec_idx[i]
+        if int(c[2]) >= 0:  # face record (v0, v1, v2)
+            t = tri_by_corners.get(frozenset(int(x) for x in c))
+            if t is not None:
+                emitted_faces.add((int(rec_shape[i]), t))
+        elif int(c[1]) >= 0:  # edge record (v0, v1, -1)
+            e = edge_by_endpoints.get(frozenset((int(c[0]), int(c[1]))))
+            if e is not None:
+                emitted_edge_owner[(int(rec_shape[i]), int(edge_owner[e]))] += 1
 
     delta = 0.03  # margin band: optimizer tail + brute grid step; borderline cases are not asserted
 
@@ -3352,7 +3376,7 @@ def test_graph_capture_stable(test, device):
     )
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state = model.state()
@@ -3360,7 +3384,8 @@ def test_graph_capture_stable(test, device):
     # Warm up so all kernels are compiled before capture.
     pipeline.collide(state, contacts)
     counts0 = contacts.soft_contact_count.numpy().copy()
-    test.assertGreater(int(counts0[1]) + int(counts0[2]), 0)
+    total0 = int(counts0[0])
+    test.assertGreater(int(np.sum(contacts.soft_contact_indices.numpy()[:total0][:, 1] >= 0)), 0)
 
     # Capture the flag-on collide and replay it; counts must be stable across replays.
     with wp.ScopedCapture(device) as capture:
@@ -3401,16 +3426,17 @@ def test_face_cull_uses_max_vertex_reach(test, device):
     builder.enable_rigid_mesh_sdfs()
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.01, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=0.01, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state = model.state()
 
     pipeline.collide(state, contacts)
-    counts = contacts.soft_contact_count.numpy()
-    # counts = [particle, edge, face]. The FACE pass must emit the contact circumradius used to drop.
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    n_face = int(np.sum(idx[:, 2] >= 0))  # face records are (v0, v1, v2)
     test.assertGreater(
-        int(counts[2]), 0, "FACE contact wrongly culled: the cull reach must be the max centroid-to-vertex distance"
+        n_face, 0, "FACE contact wrongly culled: the cull reach must be the max centroid-to-vertex distance"
     )
 
 

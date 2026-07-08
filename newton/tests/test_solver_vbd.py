@@ -2939,7 +2939,7 @@ def test_edge_face_pushes_vertices_out(test, device):
 
     margin = 0.1
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=margin, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=margin, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in = model.state()
@@ -2947,10 +2947,11 @@ def test_edge_face_pushes_vertices_out(test, device):
 
     pipeline.collide(state_in, contacts)
 
-    counts = contacts.soft_contact_count.numpy()
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
     # Precondition: legacy particle pass found nothing; the edge/face passes did.
-    test.assertEqual(int(counts[0]), 0, "vertices should be outside the legacy particle margin")
-    test.assertGreater(int(counts[1]) + int(counts[2]), 0, "edge/face contacts must be detected")
+    test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0, "vertices should be outside the legacy particle margin")
+    test.assertGreater(total, 0, "edge/face contacts must be detected")
 
     solver = newton.solvers.SolverVBD(model)
 
@@ -3007,16 +3008,17 @@ def test_edge_face_reacts_on_rigid_body(test, device):
 
     margin = 0.1
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=margin, enable_water_tight_rigid_soft_contact=True
+        model, broad_phase="nxn", soft_contact_margin=margin, enable_rigid_soft_full_surface_contact=True
     )
     contacts = pipeline.contacts()
     state_in = model.state()
     state_out = model.state()
 
     pipeline.collide(state_in, contacts)
-    counts = contacts.soft_contact_count.numpy()
-    test.assertEqual(int(counts[0]), 0, "triangle vertices should be outside the legacy particle margin")
-    test.assertGreater(int(counts[1]) + int(counts[2]), 0, "a soft edge/face contact must be detected")
+    total = int(contacts.soft_contact_count.numpy()[0])
+    idx = contacts.soft_contact_indices.numpy()[:total]
+    test.assertEqual(int(np.sum(idx[:, 1] < 0)), 0, "triangle vertices should be outside the legacy particle margin")
+    test.assertGreater(total, 0, "a soft edge/face contact must be detected")
 
     solver = newton.solvers.SolverVBD(model)
     dt = 1.0 / 60.0
@@ -3060,8 +3062,8 @@ def _run_face_section2(device, shape_margin):
     # One FACE record. Contact point x = 0.6 v0 + 0.3 v1 + 0.1 v2 = (0.3, 0.1, 0); put the
     # rigid point 0.05 above it along +z so penetration = -(dot(n, x - bx)) = 0.05 > 0.
     bary = [0.6, 0.3, 0.1]
-    contacts.soft_contact_count.assign([0, 0, 1])
-    _set_slot(contacts.soft_contact_primitive, 0, 0)  # soft triangle 0
+    contacts.soft_contact_count.assign([1])  # single total soft-contact count
+    _set_slot(contacts.soft_contact_indices, 0, [p0, p1, p2])  # unified face record (v0, v1, v2)
     _set_slot(contacts.soft_contact_barycentric, 0, bary)
     _set_slot(contacts.soft_contact_shape, 0, 0)
     _set_slot(contacts.soft_contact_body_pos, 0, [0.3, 0.1, 0.05])
@@ -3114,7 +3116,7 @@ def _run_face_section2(device, shape_margin):
             model.particle_colors,
             1.0,  # friction_epsilon
             model.particle_radius,
-            contacts.soft_contact_primitive,
+            contacts.soft_contact_indices,
             contacts.soft_contact_count,
             smax,
             penalty_k,
@@ -3131,7 +3133,6 @@ def _run_face_section2(device, shape_margin):
             contacts.soft_contact_body_vel,
             contacts.soft_contact_normal,
             shape_margin,
-            model.tri_indices,
             contacts.soft_contact_barycentric,
         ],
         outputs=[forces, hessians],
@@ -3210,15 +3211,14 @@ def test_flag_off_is_inert(test, device):
     model, _verts = _build_edge_over_post(device)
     # Flag OFF at construction: the buffer has no edge/face headroom and the passes never run.
     pipeline = newton.CollisionPipeline(
-        model, broad_phase="nxn", soft_contact_margin=0.1, enable_water_tight_rigid_soft_contact=False
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=False
     )
     contacts = pipeline.contacts()
     state_in = model.state()
     state_out = model.state()
 
     pipeline.collide(state_in, contacts)
-    counts = contacts.soft_contact_count.numpy()
-    test.assertEqual(int(counts[0]) + int(counts[1]) + int(counts[2]), 0, "flag off => no soft contacts")
+    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 0, "flag off => no soft contacts")
 
     q_before = state_in.particle_q.numpy().copy()
     solver = newton.solvers.SolverVBD(model)
