@@ -9783,7 +9783,7 @@ class ModelBuilder:
         edge/face contact passes.
 
         Call before :meth:`finalize <ModelBuilder.finalize>` when constructing a
-        :class:`~newton.CollisionPipeline` with ``enable_water_tight_rigid_soft_contact=True``;
+        :class:`~newton.CollisionPipeline` with ``enable_rigid_soft_full_surface_contact=True``;
         :meth:`finalize <ModelBuilder.finalize>` does not build these implicitly (mirroring
         :meth:`color`). Texture SDFs are CUDA-only, so on CPU (or on any per-mesh build failure)
         the SDF is not provisioned; constructing a water-tight :class:`~newton.CollisionPipeline`

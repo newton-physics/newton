@@ -145,7 +145,7 @@ class Collision:
             particle_q_prev: Previous positions for velocity-based damping.
             particle_stiff: Optional stiffness array for particles.
         """
-        contacts.assert_particle_only_soft_contacts("SolverStyle3D")
+        contacts._assert_particle_only_soft_contacts("SolverStyle3D")
         thickness = 2.0 * self.radius
         self.contact_hessian_diags.zero_()
 

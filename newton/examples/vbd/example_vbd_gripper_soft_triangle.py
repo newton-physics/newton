@@ -11,7 +11,7 @@
 # legacy per-particle contact path finds nothing between the jaws. Only the
 # water-tight soft-FACE pass detects the triangle face crossing the pinch, so
 # the grip (and the lift that follows) works only with
-# ``enable_water_tight_rigid_soft_contact=True``. With the flag off the
+# ``enable_rigid_soft_full_surface_contact=True``. With the flag off the
 # triangle slips out and falls.
 #
 # Command: python -m newton.examples vbd_gripper_soft_triangle
@@ -159,7 +159,7 @@ class Example:
             self.model,
             broad_phase=self.params["collision_broad_phase"],
             soft_contact_margin=self.params["soft_contact_margin"],
-            enable_water_tight_rigid_soft_contact=self.params["enable_water_tight"],
+            enable_rigid_soft_full_surface_contact=self.params["enable_water_tight"],
         )
 
         self.state_0 = self.model.state()

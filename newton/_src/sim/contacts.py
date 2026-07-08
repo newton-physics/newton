@@ -360,12 +360,12 @@ class Contacts:
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
 
-            # Set by the collision pipeline when full-surface (edge/face) soft contacts are enabled.
-            # Solvers that only consume particle contacts (everything but VBD) raise on this rather
-            # than silently misreading edge/face records -- the pipeline is solver-agnostic, so the
-            # capability check lives at the consuming solver.
-            self.has_full_surface_contacts = False
-            """Whether soft contacts may include edge/face records (see :attr:`soft_contact_indices`)."""
+            # Private capability flag: set by the collision pipeline when full-surface (edge/face)
+            # soft contacts are enabled, so soft_contact_indices may hold edge/face records. Solvers
+            # that only consume particle contacts (everything but VBD) raise on this rather than
+            # silently misreading edge/face records -- the pipeline is solver-agnostic, so the check
+            # lives at the consuming solver. Kept private to avoid a public API/deprecation surface.
+            self._enable_rigid_soft_full_surface_contact = False
 
             # Extended contact attributes (optional, allocated on demand)
             self.force: wp.array | None = None
@@ -453,18 +453,17 @@ class Contacts:
         """
         return self.rigid_contact_count.device
 
-    def assert_particle_only_soft_contacts(self, solver_name: str):
+    def _assert_particle_only_soft_contacts(self, solver_name: str):
         """Raise if these contacts include full-surface (edge/face) soft records.
 
         Solvers that only consume particle soft contacts call this before reading the soft-contact
         buffer, so enabling ``enable_rigid_soft_full_surface_contact`` with an unsupported solver
-        fails loudly instead of silently misreading edge/face records as particle contacts. See
-        :attr:`has_full_surface_contacts`.
+        fails loudly instead of silently misreading edge/face records as particle contacts.
 
         Args:
             solver_name: Name of the calling solver, used in the error message.
         """
-        if self.has_full_surface_contacts:
+        if self._enable_rigid_soft_full_surface_contact:
             raise NotImplementedError(
                 f"{solver_name} does not support full-surface soft contacts "
                 "(CollisionPipeline was built with enable_rigid_soft_full_surface_contact=True); "

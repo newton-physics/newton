@@ -11,7 +11,7 @@
 # The grid's four corner vertices sit far out in x (outside the jaws), so the
 # only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
 # The legacy per-particle path finds no vertex between the jaws, so the grid is
-# gripped (and lifted) only with ``enable_water_tight_rigid_soft_contact=True``
+# gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
 # via the water-tight soft-EDGE pass. With the flag off the grid slips out and
 # falls.
 #
@@ -154,7 +154,7 @@ class Example:
             self.model,
             broad_phase=self.params["collision_broad_phase"],
             soft_contact_margin=self.params["soft_contact_margin"],
-            enable_water_tight_rigid_soft_contact=self.params["enable_water_tight"],
+            enable_rigid_soft_full_surface_contact=self.params["enable_water_tight"],
         )
 
         self.state_0 = self.model.state()

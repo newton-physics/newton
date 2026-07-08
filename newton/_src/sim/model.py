@@ -2255,7 +2255,7 @@ class Model:
                 raise ValueError(f"Expected {self.world_count} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
 
-    def _init_collision_pipeline(self, enable_water_tight_rigid_soft_contact: bool = False):
+    def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
         """
         Initialize a :class:`CollisionPipeline` for this model.
 
@@ -2263,7 +2263,7 @@ class Model:
         the model for subsequent use by :meth:`collide`.
 
         Args:
-            enable_water_tight_rigid_soft_contact: Size the soft-contact buffer for the water-tight
+            enable_rigid_soft_full_surface_contact: Size the soft-contact buffer for the water-tight
                 EDGE/FACE passes (see :meth:`collide`).
         """
         from .collide import CollisionPipeline  # noqa: PLC0415
@@ -2271,7 +2271,7 @@ class Model:
         self._collision_pipeline = CollisionPipeline(
             self,
             broad_phase="explicit",
-            enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact,
+            enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact,
         )
 
     def contacts(
@@ -2306,7 +2306,7 @@ class Model:
         contacts: Contacts | None = None,
         *,
         collision_pipeline: CollisionPipeline | None = None,
-        enable_water_tight_rigid_soft_contact: bool = False,
+        enable_rigid_soft_full_surface_contact: bool = False,
     ) -> Contacts:
         """
         Generate contact points for the particles and rigid bodies in the model using the default collision
@@ -2317,7 +2317,7 @@ class Model:
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
             collision_pipeline: Optional collision pipeline override.
-            enable_water_tight_rigid_soft_contact: When ``True``, additionally run the triangle-driven
+            enable_rigid_soft_full_surface_contact: When ``True``, additionally run the triangle-driven
                 soft EDGE/FACE passes that detect soft edge / face vs rigid contacts the per-particle
                 SDF path misses, written into the E/F ranges of ``Contacts.soft_contact_*``. Default
                 ``False`` reproduces the per-particle behaviour bit-for-bit. This flag is applied when
@@ -2330,12 +2330,12 @@ class Model:
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
-            self._init_collision_pipeline(enable_water_tight_rigid_soft_contact=enable_water_tight_rigid_soft_contact)
+            self._init_collision_pipeline(enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact)
         elif (
-            enable_water_tight_rigid_soft_contact and not self._collision_pipeline.enable_water_tight_rigid_soft_contact
+            enable_rigid_soft_full_surface_contact and not self._collision_pipeline.enable_rigid_soft_full_surface_contact
         ):
             raise ValueError(
-                "enable_water_tight_rigid_soft_contact=True requires a collision pipeline initialized with "
+                "enable_rigid_soft_full_surface_contact=True requires a collision pipeline initialized with "
                 "the flag so its soft-contact buffer is sized for the edge/face passes, but the cached "
                 "pipeline was built with it disabled. Pass a fresh collision_pipeline=, or enable the flag "
                 "on the first collide()/contacts() call that allocates the pipeline."

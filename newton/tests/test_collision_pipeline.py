@@ -2413,7 +2413,7 @@ def test_soft_contact_schema(test, device):
 
     # Single total soft counter (bit-identical in shape to a build without the feature).
     test.assertEqual(tuple(contacts.soft_contact_count.shape), (1,))
-    test.assertFalse(contacts.has_full_surface_contacts)  # flag off by default
+    test.assertFalse(contacts._enable_rigid_soft_full_surface_contact)  # flag off by default
 
     # Unified record fields + the particle-only view, all sized to soft_contact_max.
     test.assertEqual(contacts.soft_contact_indices.shape[0], contacts.soft_contact_max)

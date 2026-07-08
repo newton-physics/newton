@@ -1094,8 +1094,8 @@ class CollisionPipeline:
             contact_report=self.contact_report,
         )
         # Flag the buffer so solvers that only consume particle contacts can refuse it (see
-        # Contacts.has_full_surface_contacts); edge/face records appear only when this is set.
-        contacts.has_full_surface_contacts = self.enable_rigid_soft_full_surface_contact
+        # Contacts._enable_rigid_soft_full_surface_contact); edge/face records appear only when this is set.
+        contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
 
         # attach custom attributes with assignment==CONTACT
         self.model._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
