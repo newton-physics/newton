@@ -317,6 +317,9 @@
 - Fix `ViewerGL.get_frame()` crashing when a CPU model is rendered while a CUDA context is active.
 - Fix `ViewerUSD` leaving stale particle geometry visible when the active particle count drops to zero. (#2992)
 - Fix `eval_inverse_dynamics_passive()` and `SolverFeatherstone` intermittently dropping descendant wrench contributions during the articulated-body backward pass on CUDA. (#3443)
+- Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
+- Reject articulation definitions with multiple joints targeting the same child body.
+- Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Fix XPBD particle-particle contacts to avoid non-finite particle state for exact-overlap contacts. (#1562)
 - Refer to `kf` consistently as contact friction gain in public documentation. (#2988)
 - Fix `SolverMuJoCo` dropping the authored `actuator_ctrlrange`/`actuator_ctrllimited`/`actuator_forcerange`/`actuator_forcelimited` when rebuilding USD/MJCF position/velocity actuators imported as `JOINT_TARGET`, so the compiled `mj_model` now clamps control targets and actuator forces like native MuJoCo.
