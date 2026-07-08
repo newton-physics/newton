@@ -697,6 +697,8 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
 
     soft_contact_count = wp.zeros(1, dtype=wp.int32, device=device)
     soft_contact_particle = wp.empty(1, dtype=wp.int32, device=device)
+    soft_contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
+    soft_contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_shape = wp.empty(1, dtype=wp.int32, device=device)
     soft_contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
     soft_contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
@@ -731,6 +733,8 @@ def test_mixed_winding_convex_pile_contact_normal(test, device):
         outputs=[
             soft_contact_count,
             soft_contact_particle,
+            soft_contact_indices,
+            soft_contact_barycentric,
             soft_contact_shape,
             soft_contact_body_pos,
             soft_contact_body_vel,
