@@ -98,7 +98,7 @@ def _build_fk_level_topology(
     joint_articulation: Sequence[int],
     joint_parent: Sequence[int],
     joint_child: Sequence[int],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
     if articulation_count == 0:
         return (
             np.zeros(1, dtype=np.int32),
@@ -115,7 +115,13 @@ def _build_fk_level_topology(
     if np.any(articulation_ids >= articulation_count):
         raise ValueError("Joint references an invalid articulation")
 
-    max_child = int(np.max(joint_children[articulation_joints], initial=-1))
+    articulation_children = joint_children[articulation_joints]
+    max_child = int(np.max(articulation_children, initial=-1))
+    child_seen = np.zeros(max_child + 1, dtype=bool)
+    child_seen[articulation_children] = True
+    if np.count_nonzero(child_seen) != len(articulation_children):
+        return None
+
     body_joint = np.full(max_child + 1, -1, dtype=np.int32)
     body_joint[joint_children[articulation_joints]] = articulation_joints
 
@@ -135,7 +141,7 @@ def _build_fk_level_topology(
         parents = parent_joint[unresolved]
         ready = depth[parents] >= 0
         if not np.any(ready):
-            raise ValueError("Articulation joint graph contains a cycle")
+            return None
         ready_joints = unresolved[ready]
         depth[ready_joints] = depth[parents[ready]] + 1
         unresolved = unresolved[~ready]
@@ -2429,7 +2435,7 @@ class ModelBuilder:
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
 
         Raises:
-            ValueError: If joints are not contiguous, not monotonic, belong to different worlds, or share a child body.
+            ValueError: If joints are not contiguous, not monotonic, or belong to different worlds.
 
         Example:
             .. code-block:: python
@@ -2487,15 +2493,16 @@ class ModelBuilder:
                     f"{self.current_world}. All joints in an articulation must belong to the same world."
                 )
 
-        # Level-parallel FK requires one producer per body.
+        # Basic tree structure validation (check for cycles, single parent)
+        # Build a simple tree structure check - each child should have only one parent in this articulation
         child_to_parent = {}
         for joint_idx in joints:
             child = self.joint_child[joint_idx]
             parent = self.joint_parent[joint_idx]
-            if child in child_to_parent:
+            if child in child_to_parent and child_to_parent[child] != parent:
                 raise ValueError(
-                    f"Body {child} is the child of multiple joints in this articulation. "
-                    "Loop-closing joints must not be part of an articulation."
+                    f"Body {child} has multiple parents in this articulation: {child_to_parent[child]} and {parent}. "
+                    f"This creates an invalid tree structure. Loop-closing joints must not be part of an articulation."
                 )
             child_to_parent[child] = parent
 
@@ -11163,21 +11170,24 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
-            (
-                fk_articulation_level_start,
-                fk_level_joint_start,
-                fk_level_joints,
-                fk_joint_parent,
-            ) = _build_fk_level_topology(
+            fk_topology = _build_fk_level_topology(
                 self.articulation_count,
                 self.joint_articulation,
                 self.joint_parent,
                 self.joint_child,
             )
-            m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
-            m._fk_level_joint_start = wp.array(fk_level_joint_start, dtype=wp.int32)
-            m._fk_level_joints = wp.array(fk_level_joints, dtype=wp.int32)
-            m._fk_joint_parent = wp.array(fk_joint_parent, dtype=wp.int32)
+            # Non-tree articulations retain the serial FK path.
+            if fk_topology is not None:
+                (
+                    fk_articulation_level_start,
+                    fk_level_joint_start,
+                    fk_level_joints,
+                    fk_joint_parent,
+                ) = fk_topology
+                m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
+                m._fk_level_joint_start = wp.array(fk_level_joint_start, dtype=wp.int32)
+                m._fk_level_joints = wp.array(fk_level_joints, dtype=wp.int32)
+                m._fk_joint_parent = wp.array(fk_joint_parent, dtype=wp.int32)
             m._fk_has_cable = JointType.CABLE in self.joint_type
             m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
