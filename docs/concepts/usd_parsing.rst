@@ -89,6 +89,11 @@ The first release deliberately supports a narrow, predictable set of inputs:
   an empty counts array selects all elements). Cloth and volume element sources warn and are
   skipped, as are filters targeting a dedicated deformable collider (that collider is not
   represented in the model).
+* Standard ``physics:filteredPairs`` relationships are honored for shape-backed participants:
+  a rigid collider or body, a cable (every segment shape), or a deformable body prim owning a
+  cable. The relationship can be authored on either endpoint. Pairs naming a cloth or volume
+  deformable warn and are not lowered (they are particles, not shapes), as do pairs whose
+  target is missing or produced no collision participant.
 * Every imported deformable can be found by prim path in the import results (see below).
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned

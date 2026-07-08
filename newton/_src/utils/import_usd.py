@@ -2947,7 +2947,22 @@ def parse_usd(
         return mass_info
 
     # parse shapes attached to the rigid bodies
-    path_collision_filters = set()
+    # Canonicalized (sorted) USD path pairs from physics:filteredPairs. Collected from native
+    # colliders and deformable participants, applied only after deformable lowering so every
+    # endpoint's Newton shapes exist (a cable maps to several capsule shapes created late).
+    authored_filtered_path_pairs: set[tuple[str, str]] = set()
+
+    def _collect_filtered_pairs(prim):
+        if not prim.HasRelationship("physics:filteredPairs"):
+            return
+        src = str(prim.GetPath())
+        for target in prim.GetRelationship("physics:filteredPairs").GetTargets():
+            dst = str(target)
+            # The relationship may be authored on either or both endpoints and Newton's
+            # filter pair is symmetric; canonicalizing dedups both. A self-pair is invalid.
+            if src != dst:
+                authored_filtered_path_pairs.add((src, dst) if src < dst else (dst, src))
+
     no_collision_shapes = set()
     collision_group_ids = {}
     rigid_body_mass_info_map = {}
@@ -3499,10 +3514,7 @@ def parse_usd(
                         if mass_info is not None:
                             rigid_body_mass_info_map[path] = mass_info
 
-                if prim.HasRelationship("physics:filteredPairs"):
-                    other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
-                    for other_path in other_paths:
-                        path_collision_filters.add((path, str(other_path)))
+                _collect_filtered_pairs(prim)
 
                 if not _is_enabled_collider(prim):
                     no_collision_shapes.add(shape_id)
@@ -3512,11 +3524,8 @@ def parse_usd(
     for remeshing_method, shape_ids in remeshing_queue.items():
         builder.approximate_meshes(method=remeshing_method, shape_indices=shape_ids)
 
-    # apply collision filters now that we have added all shapes
-    for path1, path2 in path_collision_filters:
-        shape1 = path_shape_map[path1]
-        shape2 = path_shape_map[path2]
-        builder.add_shape_collision_filter_pair(shape1, shape2)
+    # Filtered pairs are applied after the deformable passes below, once every endpoint's
+    # Newton shapes exist.
 
     # apply collision filters to all shapes that have no collision
     for shape_id in no_collision_shapes:
@@ -3918,6 +3927,80 @@ def parse_usd(
         # groups (cable segments / collider shapes); runs after the cables and colliders exist.
         if _deformable_prims.element_filters:
             _deformable_import_element_collision_filters(_deformable_ctx)
+
+        # physics:filteredPairs may be authored on the deformable side: simulation geometry,
+        # a deformable body prim, or a deformable-owned collider. Those prims are excluded
+        # from the native collider loop, so collect their relationships here (the set
+        # deduplicates prims reachable through more than one route).
+        for _filter_prim in (*_deformable_prims.cables, *_deformable_prims.cloth, *_deformable_prims.tetmeshes):
+            _collect_filtered_pairs(_filter_prim)
+        for _filter_path in (*_deformable_prims.body_owner, *_deformable_prims.native_physics_exclude_paths):
+            _filter_prim = stage.GetPrimAtPath(_filter_path)
+            if _filter_prim and _filter_prim.IsValid():
+                _collect_filtered_pairs(_filter_prim)
+
+    def _resolve_collision_shape_ids(path: str) -> tuple[list[int], str | None]:
+        """Resolve a filtered-pair endpoint to Newton shape indices, or an unsupported reason.
+
+        Endpoint ownership comes only from the import maps (never path-prefix matching): a
+        native collider is one shape, a rigid body or cable is all of its shapes, and a
+        deformable body prim resolves through its simulation geometry. Cloth and volume
+        deformables are particles, which Newton's shape filter pairs cannot express.
+        """
+        if path in path_shape_map:
+            return [path_shape_map[path]], None
+        if path in path_body_map:
+            return sorted(set(builder.body_shapes.get(path_body_map[path], []))), None
+        if path in path_cable_map:
+            shape_ids: set[int] = set()
+            for cable_body in path_cable_map[path][0]:
+                shape_ids.update(builder.body_shapes.get(cable_body, []))
+            return sorted(shape_ids), None
+        owner_path = _deformable_prims.body_owner.get(path)
+        if owner_path is not None and owner_path != path:
+            return _resolve_collision_shape_ids(owner_path)
+        if path in path_cloth_map:
+            return [], "it is a cloth particle deformable, and standard particle collision filters are not supported"
+        if path in path_soft_map:
+            return [], "it is a volume particle deformable, and standard particle collision filters are not supported"
+        target_prim = stage.GetPrimAtPath(path)
+        if not target_prim or not target_prim.IsValid():
+            return [], "the target path does not exist"
+        return [], "it produced no collision participant (it may be disabled, ignored, malformed, or non-colliding)"
+
+    # physics:filteredPairs may also be authored on a rigid-body prim (UsdPhysics allows
+    # collider, body, or articulation endpoints); the collider loop never visits body prims.
+    # path_body_map covers every imported body regardless of which creation path added it.
+    for body_prim_path in path_body_map:
+        body_prim = stage.GetPrimAtPath(body_prim_path)
+        if body_prim and body_prim.IsValid():
+            _collect_filtered_pairs(body_prim)
+
+    # Apply the authored filtered pairs: every native shape and cable capsule exists now, and
+    # the deformable maps allow precise unsupported diagnostics. Shape indices are stable from
+    # here on (collapse_fixed_joints only remaps bodies). Seed the dedup set from the builder
+    # so pairs the element-filter pass already added are not appended again.
+    if authored_filtered_path_pairs:
+        existing_filter_pairs = set(builder.shape_collision_filter_pairs)
+        for filter_path1, filter_path2 in sorted(authored_filtered_path_pairs):
+            shapes1, reason1 = _resolve_collision_shape_ids(filter_path1)
+            shapes2, reason2 = _resolve_collision_shape_ids(filter_path2)
+            if not shapes1 or not shapes2:
+                bad_path, reason = (filter_path1, reason1) if not shapes1 else (filter_path2, reason2)
+                warnings.warn(
+                    f"{filter_path1} <-> {filter_path2}: physics:filteredPairs was not imported "
+                    f"because {bad_path}: {reason}.",
+                    stacklevel=2,
+                )
+                continue
+            for shape1 in shapes1:
+                for shape2 in shapes2:
+                    if shape1 == shape2:
+                        continue
+                    pair = (shape1, shape2) if shape1 < shape2 else (shape2, shape1)
+                    if pair not in existing_filter_pairs:
+                        existing_filter_pairs.add(pair)
+                        builder.add_shape_collision_filter_pair(*pair)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
