@@ -219,10 +219,26 @@ class Example:
             self.control.joint_target_q = wp.zeros(
                 self._num_prefix_zeros + self._num_dofs, dtype=wp.float32, device=self.device
             )
+            self._warmup_graph_capture()
             with wp.ScopedCapture() as capture:
                 self._policy_step()
                 self.simulate()
             self.graph = capture.graph
+
+    def _warmup_graph_capture(self):
+        state_0 = self.model.state()
+        state_1 = self.model.state()
+        state_0.assign(self.state_0)
+        state_1.assign(self.state_1)
+        prev_act = wp.clone(self._prev_act_wp)
+
+        # Initialize ONNX and solver lazy buffers before recording the graph.
+        self._policy_step()
+        self.simulate()
+
+        self.state_0.assign(state_0)
+        self.state_1.assign(state_1)
+        wp.copy(self._prev_act_wp, prev_act)
 
     def simulate(self):
         need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
