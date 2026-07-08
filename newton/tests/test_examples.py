@@ -181,6 +181,10 @@ def add_example_test(
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
 
+        # Forward any --warp-config overrides from the test runner
+        for entry in newton.tests.unittest_utils.warp_config_overrides:
+            command.extend(["--warp-config", entry])
+
         if not use_viewer:
             stage_path = (
                 options.pop(
