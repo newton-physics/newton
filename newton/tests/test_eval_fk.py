@@ -21,14 +21,7 @@ from newton.tests.unittest_utils import (
 
 
 class TestEvalFK(unittest.TestCase):
-    def test_duplicate_child_rejected(self):
-        builder = newton.ModelBuilder()
-        child = builder.add_link()
-        joint_0 = builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.X)
-        joint_1 = builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Y)
-
-        with self.assertRaisesRegex(ValueError, "child of multiple joints"):
-            builder.add_articulation([joint_0, joint_1])
+    """Forward-kinematics tests."""
 
 
 @wp.kernel
@@ -350,6 +343,30 @@ def test_loop_closing_joint(test, device):
     assert_np_equal(state_parallel.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
 
 
+def test_duplicate_child_serial_fallback(test, device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    root_joint = builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)
+    child_joint = builder.add_joint_revolute(parent=root, child=child, axis=newton.Axis.Y)
+    duplicate_joint = builder.add_joint_fixed(parent=root, child=child)
+    builder.add_articulation([root_joint, child_joint, duplicate_joint])
+    model = builder.finalize(device=device)
+    model.joint_q.assign(np.array([0.3, -0.7], dtype=np.float32))
+
+    test.assertIsNone(model._fk_articulation_level_start)
+    test.assertIsNone(model._fk_level_joint_start)
+    test.assertIsNone(model._fk_level_joints)
+    test.assertIsNone(model._fk_joint_parent)
+
+    state_reference = model.state()
+    state_public = model.state()
+    _eval_fk_serial(model, state_reference)
+    newton.eval_fk(model, state_public.joint_q, state_public.joint_qd, state_public)
+    assert_np_equal(state_public.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+
 def _eval_fk_gradients(device, use_public):
     model, body = _build_gradient_model(device)
     state = model.state(requires_grad=True)
@@ -394,6 +411,12 @@ add_function_test(
 add_function_test(TestEvalFK, "test_body_flag_filter", test_body_flag_filter, get_test_devices())
 add_function_test(TestEvalFK, "test_cable_pose_preserved", test_cable_pose_preserved, get_test_devices())
 add_function_test(TestEvalFK, "test_loop_closing_joint", test_loop_closing_joint, get_test_devices())
+add_function_test(
+    TestEvalFK,
+    "test_duplicate_child_serial_fallback",
+    test_duplicate_child_serial_fallback,
+    get_test_devices(),
+)
 add_function_test(
     TestEvalFK,
     "test_public_gradients",
