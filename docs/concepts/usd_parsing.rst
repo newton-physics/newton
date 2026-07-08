@@ -47,6 +47,10 @@ Deformable Bodies
    the schema, its attribute names, and the import behavior may change without notice as
    the proposal evolves.
 
+   It is an initial implementation of a **subset** of the proposal -- see the supported
+   subset and limitations below -- and is not fully proposal-compliant. It also does not
+   import native OmniPhysics/PhysX deformable assets (see the vendor-namespace note below).
+
 :meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
 Deformables proposal
 <https://github.com/aousd/OpenUSD-proposals/blob/5d89c0ed46a26de92f4d3fefef3bfad6500c07ce/proposals/physics_deformables/wp_deformable_physics.md>`_,
@@ -65,11 +69,17 @@ across three families:
   import.
 
 Material attributes are read from the standard ``physics:`` namespace, as the proposal defines.
-Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback. A schema
-resolver (e.g. ``SchemaResolverPhysx``) declares them, and they are consulted only for
-deformable attributes. One temporary exception: a TetMesh material that authors its values only
-under the vendor namespaces is still read without a resolver, with a ``DeprecationWarning``,
-so existing assets keep their stiffness and density during the deprecation window.
+Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback for the
+same proposal-shaped attributes on bound materials: a schema resolver (e.g.
+``SchemaResolverPhysx``) declares them, and they are consulted only for deformable attributes.
+That is the full extent of the vendor support -- the resolver does not translate
+OmniPhysics/PhysX applied schemas (such as ``PhysxDeformableSurfaceAPI``), renamed attributes,
+concrete attachment prims, pose purposes, or hierarchy conventions. A native Omni/PhysX
+deformable asset that does not apply the AOUSD simulation APIs is not recognized as a
+deformable and imports as ordinary (static) geometry. One temporary exception: a TetMesh
+material that authors its values only under the vendor namespaces is still read without a
+resolver, with a ``DeprecationWarning``, so existing assets keep their stiffness and density
+during the deprecation window.
 
 Supported subset
 ~~~~~~~~~~~~~~~~
@@ -94,6 +104,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
   cable. The relationship can be authored on either endpoint. Pairs naming a cloth or volume
   deformable warn and are not lowered (they are particles, not shapes), as do pairs whose
   target is missing or produced no collision participant.
+* ``UsdPhysicsCollisionGroup`` membership is **not** applied to deformables; deformable
+  collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
+  ``PhysicsElementCollisionFilter`` support above).
 * Every imported deformable can be found by prim path in the import results (see below).
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
