@@ -816,6 +816,9 @@ class _DeformablePrimBuckets:
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
     body_owner: dict[str, str] = field(default_factory=dict)
+    # Supported visual Mesh prims keyed by their owning deformable body path.
+    # Each list preserves stage traversal order within that body's hierarchy.
+    visual_meshes: dict[str, list[Usd.Prim]] = field(default_factory=dict)
     # Prim paths the native rigid-physics loader must not parse: deformable simulation
     # geometry (any family) and collider prims governed by an imported deformable body.
     # Excluding them avoids duplicate rigid shapes for dedicated deformable colliders and
@@ -981,7 +984,9 @@ def _scout_deformable_prims(root_prim: Usd.Prim, ignore_paths: Sequence[str] = (
                     # (excluding them here keeps the native loader from importing a second,
                     # static copy); other PointBased graphics cannot be embedded yet.
                     buckets.native_physics_exclude_paths.append(path)
-                    if not prim.IsA(UsdGeom.Mesh):
+                    if prim.IsA(UsdGeom.Mesh):
+                        buckets.visual_meshes.setdefault(body_path, []).append(prim)
+                    else:
                         warnings.warn(
                             f"{path}: PointBased geometry under deformable body {body_path} cannot "
                             f"deform with the simulation geometry (embedding is not implemented); "

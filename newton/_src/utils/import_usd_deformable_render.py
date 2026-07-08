@@ -27,49 +27,13 @@ import warnings
 
 import numpy as np
 
-from .import_usd_deformable_utils import (
-    _DeformableImportContext,
-    _is_ignored_path,
-)
+from .import_usd_deformable_utils import _DeformableImportContext
 
 
 def _transform_points_np(world_mat, points: np.ndarray) -> np.ndarray:
     """Apply a warp 4x4 world matrix to an [N, 3] point array (full affine)."""
     m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
     return points @ m[:3, :3].T + m[:3, 3]
-
-
-def _collect_graphics_meshes(ctx: _DeformableImportContext, body_prim, sim_path: str) -> list:
-    """Collect a deformable body's untagged graphics ``UsdGeom.Mesh`` prims.
-
-    Walks the body subtree in stage traversal order, pruning nested
-    ``PhysicsDeformableBodyAPI`` roots (their graphics belong to them), and
-    skipping the simulation geometry, other simulation candidates, geometry
-    marked for collision, ignored paths, and invisible prims.
-    """
-    from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-    from ..usd import utils as usd  # noqa: PLC0415
-
-    out = []
-    it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
-    for prim in it:
-        path = str(prim.GetPath())
-        if prim != body_prim and usd.has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
-            it.PruneChildren()
-            continue
-        if not prim.IsA(UsdGeom.Mesh):
-            continue
-        if path == sim_path or _is_ignored_path(path, ctx.ignore_paths):
-            continue
-        if usd.has_applied_api_schema(prim, "PhysicsSurfaceDeformableSimAPI"):
-            continue  # extra simulation candidates already warned in the family pass
-        if prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI"):
-            continue  # collision geometry is not visual geometry (proposal)
-        if UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible:
-            continue
-        out.append(prim)
-    return out
 
 
 def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_range) -> np.ndarray | None:
@@ -103,6 +67,8 @@ def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_r
 
 def _deformable_import_render(ctx: _DeformableImportContext) -> None:
     """Import graphics meshes for every imported deformable body and embed them."""
+    from pxr import UsdGeom
+
     from ..usd import utils as usd  # noqa: PLC0415
 
     builder = ctx.builder
@@ -111,9 +77,7 @@ def _deformable_import_render(ctx: _DeformableImportContext) -> None:
             family = "soft"
         elif sim_path in ctx.path_cloth_map:
             family = "cloth"
-        elif sim_path in ctx.path_cable_map or any(
-            key.startswith(f"{sim_path}_curve") for key in ctx.path_cable_map
-        ):
+        elif sim_path in ctx.path_cable_map or any(key.startswith(f"{sim_path}_curve") for key in ctx.path_cable_map):
             family = "cable"
         else:
             continue  # the governing simulation geometry did not import
@@ -121,7 +85,9 @@ def _deformable_import_render(ctx: _DeformableImportContext) -> None:
         if not body_prim or not body_prim.IsValid():
             continue
 
-        for prim in _collect_graphics_meshes(ctx, body_prim, sim_path):
+        for prim in ctx.prims.visual_meshes.get(body_path, ()):
+            if UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible:
+                continue
             path = str(prim.GetPath())
             mesh = ctx.get_mesh_cached(prim, load_uvs=True)
             if mesh is None or len(mesh.vertices) == 0 or len(mesh.indices) == 0:
@@ -154,8 +120,15 @@ def _deformable_import_render(ctx: _DeformableImportContext) -> None:
                         world_verts, tet_range, positions=positions
                     )
                     index = builder.add_deformable_render_mesh(
-                        world_verts, indices, kind="tet", tet_range=tet_range,
-                        parent=parent, weights=weights, uvs=uvs, texture=texture, label=path,
+                        world_verts,
+                        indices,
+                        kind="tet",
+                        tet_range=tet_range,
+                        parent=parent,
+                        weights=weights,
+                        uvs=uvs,
+                        texture=texture,
+                        label=path,
                     )
                 elif family == "cloth":
                     ranges = ctx.path_cloth_map[sim_path]
@@ -165,8 +138,15 @@ def _deformable_import_render(ctx: _DeformableImportContext) -> None:
                         world_verts, tri_range, positions=positions
                     )
                     index = builder.add_deformable_render_mesh(
-                        world_verts, indices, kind="triangle", tri_range=tri_range,
-                        parent=parent, weights=weights, uvs=uvs, texture=texture, label=path,
+                        world_verts,
+                        indices,
+                        kind="triangle",
+                        tri_range=tri_range,
+                        parent=parent,
+                        weights=weights,
+                        uvs=uvs,
+                        texture=texture,
+                        label=path,
                     )
                 else:
                     # A multi-curve prim records per-curve entries; a welded graph curve
@@ -176,8 +156,13 @@ def _deformable_import_render(ctx: _DeformableImportContext) -> None:
                         if key == sim_path or key.startswith(f"{sim_path}_curve"):
                             bodies.extend(int(b) for b in curve_bodies)
                     index = builder.add_deformable_render_mesh(
-                        world_verts, indices, kind="body", bodies=bodies,
-                        uvs=uvs, texture=texture, label=path,
+                        world_verts,
+                        indices,
+                        kind="body",
+                        bodies=bodies,
+                        uvs=uvs,
+                        texture=texture,
+                        label=path,
                     )
             except ValueError as exc:
                 warnings.warn(f"{path}: could not embed render mesh; skipping ({exc})", stacklevel=2)

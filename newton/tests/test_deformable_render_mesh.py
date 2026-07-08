@@ -594,6 +594,20 @@ class TestDeformableRenderMeshUSDImport(unittest.TestCase):
             by_path["/World/Outer/SkinA"].parent.numpy()[0], by_path["/World/Outer/Inner/Skin"].parent.numpy()[0]
         )
 
+    def test_nested_rigid_body_mesh_is_not_deformable_visual(self):
+        """A mesh owned by a nested rigid body is not claimed by the outer deformable."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Soft")
+        rigid = UsdGeom.Xform.Define(stage, "/World/Soft/Rigid")
+        UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
+        self._add_graphics_mesh(stage, "/World/Soft/Rigid/Skin")
+
+        builder = self._import(stage)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_render_mesh_count, 0)
+
     def test_collision_marked_geometry_is_not_visual(self):
         """A Mesh marked with a collision API under the body is not a render mesh."""
         stage = self._stage()
