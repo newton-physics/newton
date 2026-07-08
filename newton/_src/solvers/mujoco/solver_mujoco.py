@@ -3267,8 +3267,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
-        self.mjc_site_to_newton_shape: wp.array2d[wp.int32] | None = None
-        """Mapping from MuJoCo [world, site] to Newton shape index. Shape [nworld, nsite], dtype int32."""
+        # Template-relative for per-world sites and absolute for global sites.
+        self._mjc_site_shape_index: wp.array[wp.int32] | None = None
+        self._mjc_site_is_global: wp.array[bool] | None = None
         self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
         self.mjc_jnt_to_newton_dof: wp.array2d[wp.int32] | None = None
@@ -6516,30 +6517,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
 
             site_to_shape_idx_np = np.full((self.mj_model.nsite,), -1, dtype=np.int32)
-            site_is_static_np = np.zeros((self.mj_model.nsite,), dtype=bool)
+            site_is_global_np = np.zeros((self.mj_model.nsite,), dtype=bool)
             for site_idx, abs_shape_idx in site_to_shape_idx.items():
                 if shape_world[abs_shape_idx] < 0:
                     site_to_shape_idx_np[site_idx] = abs_shape_idx
-                    site_is_static_np[site_idx] = True
+                    site_is_global_np[site_idx] = True
                 else:
                     site_to_shape_idx_np[site_idx] = abs_shape_idx - first_env_shape_base
 
-            self.mjc_site_to_newton_shape = wp.full((nworld, self.mj_model.nsite), -1, dtype=wp.int32)
-            if self.mjw_model.site_pos.size:
-                site_to_shape_idx_wp = wp.array(site_to_shape_idx_np, dtype=wp.int32)
-                site_is_static_wp = wp.array(site_is_static_np, dtype=bool)
-                wp.launch(
-                    update_shape_mappings_kernel,
-                    dim=(nworld, self.mj_model.nsite),
-                    inputs=[
-                        site_to_shape_idx_wp,
-                        site_is_static_wp,
-                        self._shapes_per_world,
-                        first_env_shape_base,
-                    ],
-                    outputs=[self.mjc_site_to_newton_shape],
-                    device=model.device,
-                )
+            self._mjc_site_shape_index = wp.array(site_to_shape_idx_np, dtype=wp.int32)
+            self._mjc_site_is_global = wp.array(site_is_global_np, dtype=bool)
 
             # Create mjc_body_to_newton: MuJoCo[world, body] -> Newton body
             # body_mapping is {newton_body_id: mjc_body_id}, we need to invert it
@@ -7768,10 +7755,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         wp.launch(
             update_site_properties_kernel,
-            dim=(self.mjc_site_to_newton_shape.shape[0], self.mj_model.nsite),
+            dim=(self.mjw_data.nworld, self.mj_model.nsite),
             inputs=[
                 self.model.shape_transform,
-                self.mjc_site_to_newton_shape,
+                self._mjc_site_shape_index,
+                self._mjc_site_is_global,
+                self._shapes_per_world,
+                self._first_env_shape_base,
             ],
             outputs=[
                 self.mjw_model.site_pos,

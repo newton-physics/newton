@@ -42,7 +42,7 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
         def assert_site_poses_match_model() -> None:
-            site_shapes = solver.mjc_site_to_newton_shape.numpy()[:, 0]
+            site_shapes = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
             shape_transforms = model.shape_transform.numpy()[site_shapes]
             np.testing.assert_allclose(solver.mjw_model.site_pos.numpy()[:, 0], shape_transforms[:, :3], atol=1.0e-6)
             np.testing.assert_allclose(solver.mjw_data.site_xpos.numpy()[:, 0], shape_transforms[:, :3], atol=1.0e-6)

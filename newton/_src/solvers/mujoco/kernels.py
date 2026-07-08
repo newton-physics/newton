@@ -2493,15 +2493,22 @@ def update_geom_properties_kernel(
 @wp.kernel
 def update_site_properties_kernel(
     shape_transform: wp.array[wp.transform],
-    mjc_site_to_newton_shape: wp.array2d[wp.int32],
+    site_shape_index: wp.array[wp.int32],
+    site_is_global: wp.array[bool],
+    shapes_per_world: int,
+    first_env_shape_base: int,
     site_pos: wp.array2d[wp.vec3],
     site_quat: wp.array2d[wp.quat],
 ):
     """Update MuJoCo site poses from Newton shape transforms."""
     world, site = wp.tid()
-    shape = mjc_site_to_newton_shape[world, site]
-    if shape < 0:
+    template_or_global_shape = site_shape_index[site]
+    if template_or_global_shape < 0:
         return
+
+    shape = template_or_global_shape
+    if not site_is_global[site]:
+        shape = first_env_shape_base + template_or_global_shape + world * shapes_per_world
 
     tf = shape_transform[shape]
     site_pos[world, site] = tf.p
