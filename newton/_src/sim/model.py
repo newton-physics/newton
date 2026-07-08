@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
+    from .inverse_dynamics import InverseDynamics
 
 
 _HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
@@ -493,7 +494,7 @@ class Model:
         self.particle_kd: float = 1.0e2
         """Particle normal contact damping [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kf: float = 1.0e2
-        """Particle friction force stiffness [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle contact friction gain [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_mu: float = 0.5
         """Particle friction coefficient [dimensionless]."""
         self.particle_cohesion: float = 0.0
@@ -543,7 +544,7 @@ class Model:
         self.shape_material_kd: wp.array[wp.float32] | None = None
         """Shape contact damping [N·s/m], shape [shape_count], float."""
         self.shape_material_kf: wp.array[wp.float32] | None = None
-        """Shape tangential friction response gain [N·s/m], shape [shape_count], float."""
+        """Shape contact friction gain [N·s/m], shape [shape_count], float."""
         self.shape_material_ka: wp.array[wp.float32] | None = None
         """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu: wp.array[wp.float32] | None = None
@@ -989,7 +990,7 @@ class Model:
         self.soft_contact_kd: float = 10.0
         """Damping of soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kf: float = 1.0e3
-        """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Soft contact friction gain [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_mu: float = 0.5
         """Friction coefficient of soft contacts [dimensionless]."""
         self.soft_contact_restitution: float = 0.0
@@ -1818,6 +1819,46 @@ class Model:
             c, Model.AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
         return c
+
+    def inverse_dynamics(self) -> InverseDynamics:
+        """Create an inverse-dynamics container sized for this model's topology.
+
+        The container holds the public output buffers (mass matrix,
+        compensation forces, and :attr:`~newton.InverseDynamics.tau`) and owns
+        the internal RNEA/Jacobian scratch privately, so callers only manage the
+        one object.
+
+        Returns:
+            An :class:`~newton.InverseDynamics` to pass to
+            :func:`~newton.eval_inverse_dynamics`.
+
+        Raises:
+            ValueError: If the model contains a ``JointType.CABLE`` joint.
+                Inverse dynamics has no motion-subspace implementation for
+                CABLE (``jcalc_motion`` / ``jcalc_motion_subspace``) and
+                ``eval_fk`` does not reconstruct it, so its results would be
+                undefined. The check runs here, at container-creation time,
+                rather than in the graph-capturable
+                :func:`~newton.eval_inverse_dynamics`.
+        """
+        from .enums import JointType  # noqa: PLC0415
+        from .inverse_dynamics import InverseDynamics  # noqa: PLC0415
+
+        if self.joint_count > 0 and np.any(self.joint_type.numpy() == int(JointType.CABLE)):
+            raise ValueError(
+                "Inverse dynamics does not support JointType.CABLE joints. Remove "
+                "them from the model before calling Model.inverse_dynamics()."
+            )
+
+        return InverseDynamics(
+            articulation_count=self.articulation_count,
+            joint_dof_count=self.joint_dof_count,
+            max_dofs_per_articulation=self.max_dofs_per_articulation,
+            body_count=self.body_count,
+            max_joints_per_articulation=self.max_joints_per_articulation,
+            world_count=self.world_count,
+            device=self.device,
+        )
 
     def set_gravity(
         self,

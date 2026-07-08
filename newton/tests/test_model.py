@@ -1021,6 +1021,106 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_add_builder_xform_updates_root_free_joint_coordinates(self):
+        parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
+        child_xform = wp.transform(wp.vec3(-0.1, 0.3, 0.2), wp.quat_rpy(-0.2, 0.1, 0.4))
+        body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.1, 0.2, -0.3))
+        offset = wp.transform(wp.vec3(-0.5, 0.7, 1.2), wp.quat_rpy(-0.3, 0.2, 0.1))
+
+        source = ModelBuilder()
+        body = source.add_link(xform=body_xform)
+        joint = source.add_joint_free(
+            child=body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        source.add_articulation([joint])
+
+        builder = ModelBuilder()
+        builder.add_builder(source, xform=offset)
+
+        expected_body_xform = offset * body_xform
+        expected_joint_q = wp.transform_inverse(parent_xform) * expected_body_xform * child_xform
+        q_start = builder.joint_q_start[joint]
+        assert_np_equal(np.array(builder.joint_X_p[joint]), np.array(parent_xform), tol=1.0e-6)
+        assert_np_equal(
+            np.array(builder.joint_q[q_start : q_start + 7]),
+            np.array(expected_joint_q),
+            tol=1.0e-6,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[body], np.array(expected_body_xform), tol=1.0e-5)
+
+    def test_add_builder_xform_preserves_parented_free_joint_coordinates(self):
+        parent_body_xform = wp.transform(wp.vec3(0.5, -0.4, 0.2), wp.quat_rpy(0.2, -0.1, 0.3))
+        child_body_xform = wp.transform(wp.vec3(-0.6, 0.8, 1.1), wp.quat_rpy(-0.3, 0.4, -0.2))
+        root_parent_xform = wp.transform(wp.vec3(0.1, 0.2, -0.3), wp.quat_rpy(0.1, 0.3, -0.2))
+        parent_xform = wp.transform(wp.vec3(-0.2, 0.5, 0.1), wp.quat_rpy(-0.2, 0.1, 0.4))
+        child_xform = wp.transform(wp.vec3(0.3, -0.1, 0.2), wp.quat_rpy(0.3, -0.4, 0.1))
+        offset = wp.transform(wp.vec3(1.0, -0.5, 0.7), wp.quat_rpy(0.4, 0.2, -0.3))
+
+        source = ModelBuilder()
+        parent = source.add_link(xform=parent_body_xform)
+        child = source.add_link(xform=child_body_xform)
+        root_joint = source.add_joint_free(child=parent, parent_xform=root_parent_xform)
+        child_joint = source.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        source.add_articulation([root_joint, child_joint])
+
+        q_start = source.joint_q_start[child_joint]
+        expected_joint_q = np.array(source.joint_q[q_start : q_start + 7])
+
+        builder = ModelBuilder()
+        builder.add_builder(source, xform=offset)
+
+        q_start = builder.joint_q_start[child_joint]
+        assert_np_equal(np.array(builder.joint_X_p[child_joint]), np.array(parent_xform), tol=1.0e-6)
+        assert_np_equal(np.array(builder.joint_q[q_start : q_start + 7]), expected_joint_q, tol=1.0e-6)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[parent], np.array(offset * parent_body_xform), tol=1.0e-5)
+        assert_np_equal(state.body_q.numpy()[child], np.array(offset * child_body_xform), tol=1.0e-5)
+
+    def test_add_joint_free_initializes_relative_transform(self):
+        parent_body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.2, -0.3, 0.4))
+        child_body_xform = wp.transform(wp.vec3(-0.5, 1.5, 2.0), wp.quat_rpy(-0.4, 0.1, 0.3))
+        parent_xform = wp.transform(wp.vec3(0.3, -0.2, 0.1), wp.quat_rpy(0.1, 0.2, -0.1))
+        child_xform = wp.transform(wp.vec3(-0.1, 0.4, 0.2), wp.quat_rpy(-0.2, 0.3, 0.1))
+
+        builder = ModelBuilder()
+        parent = builder.add_link(xform=parent_body_xform)
+        child = builder.add_link(xform=child_body_xform)
+        joint = builder.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        builder.add_articulation([joint])
+
+        parent_anchor_world = parent_body_xform * parent_xform
+        expected_joint_q = wp.transform_inverse(parent_anchor_world) * child_body_xform * child_xform
+        q_start = builder.joint_q_start[joint]
+        assert_np_equal(
+            np.array(builder.joint_q[q_start : q_start + 7]),
+            np.array(expected_joint_q),
+            tol=1.0e-6,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
+
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
         """``joint_target_q`` follows ``joint_q`` (coord) under
         ``use_coord_layout_targets``; ``joint_target_qd`` always follows
@@ -1152,6 +1252,97 @@ class TestModelJoints(unittest.TestCase):
             finally:
                 newton.use_coord_layout_targets = prev
 
+    def test_collapse_keeps_attachment_anchored_rod_joints(self):
+        """collapse_fixed_joints must not delete non-fixed joints: a rod anchored
+        mid-chain by a ball joint (the USD attachment pattern) keeps every cable
+        joint even though the anchor makes the chain a loop."""
+        builder = newton.ModelBuilder()
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, _joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
+        labels_before = sorted(builder.joint_label)
+        builder.collapse_fixed_joints()
+        self.assertEqual(sorted(builder.joint_label), labels_before)
+        # Topological joint ordering survives: every joint's parent index is below its child.
+        for j in range(builder.joint_count):
+            parent, child = builder.joint_parent[j], builder.joint_child[j]
+            if parent >= 0:
+                self.assertLess(parent, child, builder.joint_label[j])
+
+    def test_collapse_keeps_parallel_joints(self):
+        """Two joints between the same body pair (e.g. an attachment with two point
+        sites) both survive collapse."""
+        builder = newton.ModelBuilder()
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, _joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
+        count_before = builder.joint_count
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.joint_count, count_before)
+
+    def test_collapse_parallel_joints_with_fixed_ordering(self):
+        """Parallel joints between one body pair survive collapse regardless of which
+        joint comes first; a fixed joint among them still merges the pair, and the
+        surviving non-fixed joint is remapped onto the merged body."""
+        for order in ("fixed_first", "fixed_second", "fixed_kept_first"):
+            with self.subTest(order=order):
+                builder = newton.ModelBuilder()
+                p = builder.add_body(label="parent")
+                c = builder.add_body(label="child")
+                builder.add_shape_sphere(p, radius=0.1)
+                builder.add_shape_sphere(c, radius=0.1)
+                if order == "fixed_second":
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                else:
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                keep = ["fix"] if order == "fixed_kept_first" else []
+                builder.collapse_fixed_joints(joints_to_keep=keep)
+                labels = list(builder.joint_label)
+                # add_body() gives each body a free joint; only assert on ours.
+                if order == "fixed_kept_first":
+                    # Nothing merged: both parallel joints survive.
+                    self.assertIn("fix", labels)
+                    self.assertIn("ball", labels)
+                    self.assertEqual(builder.body_count, 2)
+                else:
+                    # The fixed pair merged (or the redundant fixed loop joint dropped);
+                    # the ball joint survives with valid endpoints.
+                    self.assertIn("ball", labels)
+                for j in range(builder.joint_count):
+                    self.assertLess(builder.joint_child[j], builder.body_count)
+
+    def test_collapse_reindexes_bodies_in_original_order(self):
+        """Retained bodies keep their original relative order after collapse, so an
+        anchor joint reaching a rod mid-chain cannot scramble recorded body ranges."""
+        builder = newton.ModelBuilder()
+        # A rigid pair joined by a fixed joint: something real to collapse.
+        b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
+        b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
+        builder.add_shape_sphere(b0, radius=0.1)
+        builder.add_shape_sphere(b1, radius=0.1)
+        builder.add_joint_free(b0)
+        builder.add_joint_fixed(b0, b1)
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        # Record the group the way the USD importer does, so the range remap is exercised.
+        builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
+        builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
+        cable_labels_before = [builder.body_label[b] for b in bodies]
+        builder.collapse_fixed_joints()
+        # The fixed pair merged into one body; the cable bodies stay contiguous and ordered.
+        start, end = builder._cable_body_start[0], builder._cable_body_end[0]
+        self.assertEqual(end - start, len(bodies))
+        self.assertEqual([builder.body_label[b] for b in range(start, end)], cable_labels_before)
+
     def test_collapse_fixed_joints(self):
         shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
 
@@ -1196,11 +1387,13 @@ class TestModelJoints(unittest.TestCase):
 
         # a non-fixed joint followed by fixed joints
         free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
+        free_parent_xform = wp.transform(wp.vec3(0.0, -1.0, 0.0))
         b4 = builder.add_link(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
-        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=free_parent_xform)
         assert_np_equal(builder.body_q[b4], np.array(free_xform))
-        assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
+        expected_joint_q = wp.transform_inverse(free_parent_xform) * free_xform
+        assert_np_equal(builder.joint_q[-7:], np.array(expected_joint_q))
         assert builder.joint_count == 8
         assert builder.body_count == 8
         _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)

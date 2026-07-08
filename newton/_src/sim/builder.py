@@ -287,7 +287,7 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The tangential friction response gain [N·s/m]."""
+        """The contact friction gain [N·s/m]."""
         ka: float = 0.0
         """The contact adhesion distance [m]."""
         mu: float = 1.0
@@ -1004,7 +1004,7 @@ class ModelBuilder:
         self.shape_material_kd: list[float] = []
         """Contact damping values accumulated for :attr:`Model.shape_material_kd`."""
         self.shape_material_kf: list[float] = []
-        """Tangential friction response gains accumulated for :attr:`Model.shape_material_kf`."""
+        """Contact friction gains [N·s/m] accumulated for :attr:`Model.shape_material_kf`."""
         self.shape_material_ka: list[float] = []
         """Adhesion distances [m] accumulated for :attr:`Model.shape_material_ka`."""
         self.shape_material_mu: list[float] = []
@@ -1224,6 +1224,53 @@ class ModelBuilder:
         """Articulation labels accumulated for :attr:`Model.articulation_label`."""
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
+
+        # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
+        # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
+        # [start, end) into the corresponding builder arrays, and replicate()/add_builder() carry
+        # them per world so each group stays indexable by path.
+        self._cable_label: list[str] = []
+        """Prim-path labels of imported cable groups."""
+        self._cable_world: list[int] = []
+        """World index of each cable group."""
+        self._cable_body_start: list[int] = []
+        """Inclusive body-range start of each cable group."""
+        self._cable_body_end: list[int] = []
+        """Exclusive body-range end of each cable group."""
+        self._cable_joint_start: list[int] = []
+        """Inclusive joint-range start of each cable group."""
+        self._cable_joint_end: list[int] = []
+        """Exclusive joint-range end of each cable group."""
+
+        self._cloth_label: list[str] = []
+        """Prim-path labels of imported cloth groups."""
+        self._cloth_world: list[int] = []
+        """World index of each cloth group."""
+        self._cloth_particle_start: list[int] = []
+        """Inclusive particle-range start of each cloth group."""
+        self._cloth_particle_end: list[int] = []
+        """Exclusive particle-range end of each cloth group."""
+        self._cloth_tri_start: list[int] = []
+        """Inclusive triangle-range start of each cloth group."""
+        self._cloth_tri_end: list[int] = []
+        """Exclusive triangle-range end of each cloth group."""
+        self._cloth_edge_start: list[int] = []
+        """Inclusive edge-range start of each cloth group."""
+        self._cloth_edge_end: list[int] = []
+        """Exclusive edge-range end of each cloth group."""
+
+        self._soft_label: list[str] = []
+        """Prim-path labels of imported soft (volume) groups."""
+        self._soft_world: list[int] = []
+        """World index of each soft group."""
+        self._soft_particle_start: list[int] = []
+        """Inclusive particle-range start of each soft group."""
+        self._soft_particle_end: list[int] = []
+        """Exclusive particle-range end of each soft group."""
+        self._soft_tet_start: list[int] = []
+        """Inclusive tetrahedron-range start of each soft group."""
+        self._soft_tet_end: list[int] = []
+        """Exclusive tetrahedron-range end of each soft group."""
 
         self.joint_dof_count: int = 0
         """Total joint DoF count propagated to :attr:`Model.joint_dof_count`."""
@@ -2442,6 +2489,51 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
+    def _record_cable_group(
+        self,
+        label: str,
+        body_range: tuple[int, int],
+        joint_range: tuple[int, int],
+    ) -> None:
+        """Register an imported cable as an addressable, world-tagged group."""
+        self._cable_label.append(label)
+        self._cable_world.append(self.current_world)
+        self._cable_body_start.append(body_range[0])
+        self._cable_body_end.append(body_range[1])
+        self._cable_joint_start.append(joint_range[0])
+        self._cable_joint_end.append(joint_range[1])
+
+    def _record_cloth_group(
+        self,
+        label: str,
+        particle_range: tuple[int, int],
+        tri_range: tuple[int, int],
+        edge_range: tuple[int, int],
+    ) -> None:
+        """Register an imported cloth as an addressable, world-tagged group."""
+        self._cloth_label.append(label)
+        self._cloth_world.append(self.current_world)
+        self._cloth_particle_start.append(particle_range[0])
+        self._cloth_particle_end.append(particle_range[1])
+        self._cloth_tri_start.append(tri_range[0])
+        self._cloth_tri_end.append(tri_range[1])
+        self._cloth_edge_start.append(edge_range[0])
+        self._cloth_edge_end.append(edge_range[1])
+
+    def _record_soft_group(
+        self,
+        label: str,
+        particle_range: tuple[int, int],
+        tet_range: tuple[int, int],
+    ) -> None:
+        """Register an imported soft volume as an addressable, world-tagged group."""
+        self._soft_label.append(label)
+        self._soft_world.append(self.current_world)
+        self._soft_particle_start.append(particle_range[0])
+        self._soft_particle_end.append(particle_range[1])
+        self._soft_tet_start.append(tet_range[0])
+        self._soft_tet_end.append(tet_range[1])
+
     # region importers
     def add_urdf(
         self,
@@ -2619,6 +2711,8 @@ class ModelBuilder:
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
+        return_deformable_results: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -2747,8 +2841,35 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+                where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
+                Use for USD files authored against MuJoCo <= 3.8. Defaults to
+                False (identity translation matching MuJoCo 3.9 semantics).
+
+            return_deformable_results: If True, include the experimental deformable entries in the
+                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+                ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
+                default return shape carries no deformable additions.
 
         Returns:
+            .. experimental::
+
+               ``return_deformable_results`` and its conditional result entries are experimental and
+               may change or be removed without prior notice.
+
+            When ``return_deformable_results=True``, imported deformable (cable/cloth/volume) element
+            ranges are returned by prim path in the ``path_cable_map`` / ``path_cloth_map`` /
+            ``path_soft_map`` entries below, and the material attributes as authored in the
+            matching ``path_*_attrs`` entries. The map entries are build-time snapshots of the
+            builder immediately after this call (already remapped when this call collapses fixed
+            joints); they are not live selections, and a later ``replicate()``, ``add_builder()``,
+            or other structural mutation is outside their contract. The ``path_*_attrs`` entries
+            hold authored or resolved source values (``material`` as authored,
+            ``resolved_density`` as used), while the map entries and ``joint_indices`` inside
+            ``path_attachment_attrs`` are realized builder indices; ``unsupported_reason`` is
+            diagnostic text, not a stable code, and a prim absent from a realized map may still
+            appear in the authored metadata.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -2768,6 +2889,22 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_cable_map"``
+                  - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
+                * - ``"path_cloth_map"``
+                  - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
+                * - ``"path_soft_map"``
+                  - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+                * - ``"path_cable_attrs"``
+                  - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``return_deformable_results=True``.
+                * - ``"path_cloth_attrs"``
+                  - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``return_deformable_results=True``.
+                * - ``"path_soft_attrs"``
+                  - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``return_deformable_results=True``.
+                * - ``"path_attachment_map"``
+                  - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
+                * - ``"path_attachment_attrs"``
+                  - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
                 * - ``"mass_unit"``
                   - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
                 * - ``"linear_unit"``
@@ -2820,6 +2957,8 @@ class ModelBuilder:
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
+            return_deformable_results=return_deformable_results,
         )
 
     def add_mjcf(
@@ -2857,6 +2996,7 @@ class ModelBuilder:
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
         override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -2970,6 +3110,10 @@ class ModelBuilder:
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+            legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+                where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
+                Use for MJCF files authored against MuJoCo <= 3.8. Defaults
+                to False (identity translation matching MuJoCo 3.9 semantics).
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -3009,6 +3153,7 @@ class ModelBuilder:
             ctrl_direct=ctrl_direct,
             path_resolver=path_resolver,
             override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
         )
 
     # endregion
@@ -3295,11 +3440,14 @@ class ModelBuilder:
             if xform is not None:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
-                        qi = builder.joint_q_start[i]
-                        xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
-                        tf = transform_mul(xform, xform_prev)
-                        qi += start_q
-                        self.joint_q[qi : qi + 7] = tf
+                        if builder.joint_parent[i] == -1:
+                            qi = builder.joint_q_start[i]
+                            xform_prev = wp.transform(*builder.joint_q[qi : qi + 7])
+                            X_pj = builder.joint_X_p[i]
+                            xform_local = transform_mul(transform_mul(wp.transform_inverse(X_pj), xform), X_pj)
+                            tf = transform_mul(xform_local, xform_prev)
+                            qi += start_q
+                            self.joint_q[qi : qi + 7] = tf
                     elif builder.joint_parent[i] == -1:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
@@ -3375,6 +3523,33 @@ class ModelBuilder:
             articulation_groups = [self.current_world] * builder.articulation_count
             self.articulation_world.extend(articulation_groups)
 
+        # Deformable groups: shift each group's ranges by this builder's start offsets and tag each
+        # copy with the current world (labels ride the label_attrs handling below). Mirrors the
+        # articulation_start/end offset + articulation_world tagging above. Guarded per family so
+        # deformable-free builders (e.g. every replicate() copy of a rigid robot) skip the merges.
+        if builder._cable_label:
+            self._cable_body_start.extend([s + start_body_idx for s in builder._cable_body_start])
+            self._cable_body_end.extend([e + start_body_idx for e in builder._cable_body_end])
+            self._cable_joint_start.extend([s + start_joint_idx for s in builder._cable_joint_start])
+            self._cable_joint_end.extend([e + start_joint_idx for e in builder._cable_joint_end])
+            self._cable_world.extend([self.current_world] * len(builder._cable_label))
+
+        if builder._cloth_label:
+            self._cloth_particle_start.extend([s + start_particle_idx for s in builder._cloth_particle_start])
+            self._cloth_particle_end.extend([e + start_particle_idx for e in builder._cloth_particle_end])
+            self._cloth_tri_start.extend([s + start_triangle_idx for s in builder._cloth_tri_start])
+            self._cloth_tri_end.extend([e + start_triangle_idx for e in builder._cloth_tri_end])
+            self._cloth_edge_start.extend([s + start_edge_idx for s in builder._cloth_edge_start])
+            self._cloth_edge_end.extend([e + start_edge_idx for e in builder._cloth_edge_end])
+            self._cloth_world.extend([self.current_world] * len(builder._cloth_label))
+
+        if builder._soft_label:
+            self._soft_particle_start.extend([s + start_particle_idx for s in builder._soft_particle_start])
+            self._soft_particle_end.extend([e + start_particle_idx for e in builder._soft_particle_end])
+            self._soft_tet_start.extend([s + start_tetrahedron_idx for s in builder._soft_tet_start])
+            self._soft_tet_end.extend([e + start_tetrahedron_idx for e in builder._soft_tet_end])
+            self._soft_world.extend([self.current_world] * len(builder._soft_label))
+
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
             constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
@@ -3398,7 +3573,15 @@ class ModelBuilder:
                 self.constraint_mimic_label.extend(builder.constraint_mimic_label)
 
         # Handle label attributes specially to support label_prefix
-        label_attrs = ["articulation_label", "body_label", "joint_label", "shape_label"]
+        label_attrs = [
+            "articulation_label",
+            "body_label",
+            "joint_label",
+            "shape_label",
+            "_cable_label",
+            "_cloth_label",
+            "_soft_label",
+        ]
         for attr in label_attrs:
             src = getattr(builder, attr)
             dst = getattr(self, attr)
@@ -4477,7 +4660,7 @@ class ModelBuilder:
     ) -> int:
         """Adds a free joint to the model.
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
-        The positional dofs are initialized by the child body's transform (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
+        The positional dofs are initialized so that forward kinematics reproduces the child body's transform, accounting for the parent body and both joint anchor transforms (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
 
         Args:
             child: The index of the child body.
@@ -4516,8 +4699,11 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
         )
         q_start = self.joint_q_start[joint_id]
-        # set the positional dofs to the child body's transform
-        self.joint_q[q_start : q_start + 7] = list(self.body_q[child])
+        # Initialize the coordinates so FK preserves the authored child pose.
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
+        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(joint_q)
         return joint_id
 
     @deprecate_nonkeyword_arguments
@@ -5015,7 +5201,7 @@ class ModelBuilder:
                     }
                 )
 
-            joint_data[(parent, child)] = data
+            joint_data.setdefault((parent, child), []).append(data)
 
         # sort body children so we traverse the tree in the same order as the bodies are listed
         for children in body_children.values():
@@ -5039,6 +5225,26 @@ class ModelBuilder:
         body_merged_parent = {}
         body_merged_transform = {}
 
+        # Joints already retained as loop-closing edges (by original id), so a joint
+        # reachable through several traversal paths is kept exactly once.
+        retained_loop_joint_ids = set()
+
+        def retain_loop_joints(joints_for_pair, child, incoming_xform, last_dynamic_body):
+            # Loop-closing joints: the child was already visited via another path (or the
+            # pair has parallel joints). Retain them without re-processing the child body.
+            for loop_joint in joints_for_pair:
+                if loop_joint["type"] == JointType.FIXED or loop_joint["original_id"] in retained_loop_joint_ids:
+                    continue
+                retained_loop_joint_ids.add(loop_joint["original_id"])
+                loop_joint["parent_xform"] = incoming_xform * loop_joint["parent_xform"]
+                loop_joint["parent"] = last_dynamic_body
+                if child in body_merged_parent:
+                    # Child was merged into another body -- remap child and adjust child_xform
+                    merge_xform = body_merged_transform[child]
+                    loop_joint["child_xform"] = merge_xform * loop_joint["child_xform"]
+                    loop_joint["child"] = body_merged_parent[child]
+                retained_joints.append(loop_joint)
+
         # depth first search over the joint graph
         def dfs(parent_body: int, child_body: int, incoming_xform: wp.transform, last_dynamic_body: int):
             nonlocal visited
@@ -5046,7 +5252,13 @@ class ModelBuilder:
             nonlocal retained_bodies
             nonlocal body_data
 
-            joint = joint_data[(parent_body, child_body)]
+            # The first joint of the pair is the tree edge; parallel joints between the
+            # same pair (e.g. an attachment with several point sites) close loops. They are
+            # retained via retain_loop_joints() after the tree edge is processed, so a fixed
+            # tree joint's merge is already recorded when their child endpoint is remapped.
+            entry_xform = incoming_xform
+            entry_last_dynamic_body = last_dynamic_body
+            joint = joint_data[(parent_body, child_body)][0]
             # Don't merge fixed joints if the child body is referenced in an equality constraint
             # and would be merged into world (last_dynamic_body == -1)
             should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
@@ -5138,11 +5350,16 @@ class ModelBuilder:
                 last_dynamic_body = child_body
                 incoming_xform = wp.transform()
                 retained_joints.append(joint)
+                retained_loop_joint_ids.add(joint["original_id"])
                 new_id = len(retained_bodies)
                 body_data[child_body]["id"] = new_id
                 retained_bodies.append(child_body)
                 for shape in body_data[child_body]["shapes"]:
                     self.shape_body[shape] = new_id
+
+            retain_loop_joints(
+                joint_data[(parent_body, child_body)][1:], child_body, entry_xform, entry_last_dynamic_body
+            )
 
             visited[parent_body] = True
             if visited[child_body] or child_body not in body_children:
@@ -5152,22 +5369,15 @@ class ModelBuilder:
                 if not visited[child]:
                     dfs(child_body, child, incoming_xform, last_dynamic_body)
                 elif (child_body, child) in joint_data:
-                    # Loop-closing joint: child was already visited via another path.
-                    # Retain the joint but don't re-process the child body.
-                    loop_joint = joint_data[(child_body, child)]
-                    if loop_joint["type"] != JointType.FIXED:
-                        loop_joint["parent_xform"] = incoming_xform * loop_joint["parent_xform"]
-                        loop_joint["parent"] = last_dynamic_body
-                        if child in body_merged_parent:
-                            # Child was merged into another body — remap child and adjust child_xform
-                            merge_xform = body_merged_transform[child]
-                            loop_joint["child_xform"] = merge_xform * loop_joint["child_xform"]
-                            loop_joint["child"] = body_merged_parent[child]
-                        retained_joints.append(loop_joint)
+                    retain_loop_joints(joint_data[(child_body, child)], child, incoming_xform, last_dynamic_body)
 
         for body in body_children[-1]:
             if not visited[body]:
                 dfs(-1, body, wp.transform(), -1)
+            else:
+                # A world joint to an already-visited body (e.g. an attachment anchor)
+                # closes a loop; it must not be dropped.
+                retain_loop_joints(joint_data[(-1, body)], body, wp.transform(), -1)
 
         # Handle disconnected subtrees: bodies not reachable from world.
         # This happens when joints only connect bodies to each other (no joint
@@ -5191,6 +5401,20 @@ class ModelBuilder:
             for child in body_children[body_id]:
                 if not visited[child]:
                     dfs(body_id, child, wp.transform(), body_id)
+                else:
+                    # The child was reached earlier through a loop-closing path (e.g. an
+                    # attachment anchor); this root's joint to it must not be dropped.
+                    retain_loop_joints(joint_data[(body_id, child)], child, wp.transform(), body_id)
+
+        # Reindex retained bodies in their original relative order: DFS discovery order
+        # would reorder bodies whenever a loop-closing joint (e.g. an attachment anchor)
+        # reaches a body before its chain root, breaking parent < child joint ordering
+        # and the contiguity of recorded group ranges.
+        retained_bodies.sort()
+        for new_id, original_id in enumerate(retained_bodies):
+            body_data[original_id]["id"] = new_id
+            for shape in body_data[original_id]["shapes"]:
+                self.shape_body[shape] = new_id
 
         # repopulate the model
         # save original body groups before clearing
@@ -5293,6 +5517,37 @@ class ModelBuilder:
         self.articulation_end = new_articulation_end
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
+
+        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by cable
+        # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
+        # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
+        # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
+        def _remap_body_id(body_id: int) -> int:
+            # Cable bodies are linked only by non-fixed cable joints, so collapse must never
+            # merge or drop them; a violation would silently corrupt every recorded range.
+            assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
+            return body_remap[body_id]
+
+        for i in range(len(self._cable_label)):
+            if self._cable_body_end[i] > self._cable_body_start[i]:
+                new_start = _remap_body_id(self._cable_body_start[i])
+                self._cable_body_start[i] = new_start
+                self._cable_body_end[i] = _remap_body_id(self._cable_body_end[i] - 1) + 1
+            if self._cable_joint_end[i] > self._cable_joint_start[i]:
+                first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
+                assert first in joint_remap and last in joint_remap, (
+                    f"cable joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
+                )
+                self._cable_joint_start[i] = joint_remap[first]
+                self._cable_joint_end[i] = joint_remap[last] + 1
+            else:
+                # A welded-graph curve owns no tree joints, but its empty [b, b) boundary must
+                # still shift with the retained joints, else it can point past the collapsed
+                # joint array. Map b to the number of retained joints below it.
+                boundary = self._cable_joint_start[i]
+                new_boundary = sum(1 for old_joint in joint_remap if old_joint < boundary)
+                self._cable_joint_start[i] = new_boundary
+                self._cable_joint_end[i] = new_boundary
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):
