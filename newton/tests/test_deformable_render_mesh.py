@@ -5,12 +5,14 @@
 
 import unittest
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton._src.sim.deformable_render import compute_render_mesh_normals, skin_render_mesh
+from newton._src.utils.import_usd_deformable_render import _sim_bind_positions
 from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 from newton.viewer import ViewerNull
@@ -668,6 +670,31 @@ class TestDeformableRenderMeshUSDImport(unittest.TestCase):
 
         model = builder.finalize()
         self.assertEqual(model.deformable_render_mesh_count, 0)
+
+    def test_sim_bind_pose_count_must_match_imported_particle_range(self):
+        """A valid USD pose cannot silently fall back when lowering realizes fewer particles."""
+        from pxr import Sdf
+
+        stage = self._stage()
+        _, sim = self._add_volume_body(stage, "/World/Tire")
+        sim.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+            ["bindPose"]
+        )
+        sim.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
+        )
+        ctx = SimpleNamespace(
+            stage=stage,
+            builder=newton.ModelBuilder(),
+            get_prim_world_mat=lambda *_args: wp.mat44_identity(),
+            incoming_world_xform=wp.transform_identity(),
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with self.assertRaisesRegex(ValueError, "invalid_bind_pose_count.*4 points.*3 particles"):
+                _sim_bind_positions(ctx, "/World/Tire/Sim", (0, 3))
 
     def test_degenerate_simulation_bind_tet_skips_visual_binding(self):
         """A visual cannot bind to a tetrahedron collapsed in the simulation bind pose."""

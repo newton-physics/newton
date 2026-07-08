@@ -53,12 +53,9 @@ def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_r
         return None
     p0, p1 = particle_range
     if len(bind) != p1 - p0:
-        warnings.warn(
-            f"{sim_path}: bind pose has {len(bind)} points but the imported geometry has "
-            f"{p1 - p0} particles; using the imported points as the bind pose.",
-            stacklevel=2,
+        raise ValueError(
+            f"invalid_bind_pose_count: {sim_path} bind pose has {len(bind)} points but the imported geometry has {p1 - p0} particles"
         )
-        return None
     world_mat = ctx.get_prim_world_mat(sim_prim, None, ctx.incoming_world_xform)
     positions = np.array(ctx.builder.particle_q, dtype=np.float64)
     positions[p0:p1] = _transform_points_np(world_mat, bind)
