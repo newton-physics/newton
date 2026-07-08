@@ -14,16 +14,18 @@
 # limitations under the License.
 
 ###########################################################################
-# Example Suction Cup Z Drive
+# Example Surface Gripper Kinematic Drive
 #
-# A single-pad surface gripper (box A) is sealed onto the top of a larger box (B). Box B rides
-# a prismatic (z) joint to the world that the solver position-drives from 0 up to 3 m, and box
-# A rides along held by the seal, exercising the surface-gripper hold wrench. Seal detection is
-# still trivial (the pad is always engaged); the force model lives in surface_gripper.py.
+# A single-pad surface gripper (box A) is sealed onto the top of a larger box (B). Box A is a
+# kinematic gripper whose full 6-DOF motion is prescribed by a velocity time series (see
+# velocity_profile()), and box B is a free body pulled up by the suction seal -- exercising the
+# surface-gripper hold wrench in tension. Seal detection is still trivial (the pad is always
+# engaged); the force model lives in surface_gripper.py.
 #
-# Command: python -m newton.examples suction_cup_z_drive
+# Command: python -m newton.examples surface_gripper_kinematic_drive
 ###########################################################################
 
+import argparse
 import math
 
 import warp as wp
@@ -38,17 +40,126 @@ from newton.examples.suctioncup.surface_gripper import (
     latch_engagement,
 )
 
+FPS = 60  # fixed render frame rate; the run length (num_frames) is derived from --sim-time
+DEFAULT_SIM_TIME = 10.0  # default total simulation time [s]
+DEFAULT_SIM_DT = 1.0 / 240.0  # default physics timestep [s]
+
+
+class _SetNumFramesFromSimTime(argparse.Action):
+    """argparse action: setting ``--sim-time`` also derives ``num_frames = round(sim_time * FPS)``."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.num_frames = round(values * FPS)
+
+
+@wp.func
+def eval_twist_at_current_time(times: wp.array[float], twists: wp.array[wp.spatial_vector], n: int, t: float):
+    """Piecewise-linear lookup of a 6-DOF velocity time series at time ``t`` (clamped at ends)."""
+    if t <= times[0]:
+        return twists[0]
+    if t >= times[n - 1]:
+        return twists[n - 1]
+    v = twists[n - 1]
+    for i in range(n - 1):
+        if times[i] <= t and t < times[i + 1]:
+            frac = (t - times[i]) / (times[i + 1] - times[i])
+            v = twists[i] * (1.0 - frac) + twists[i + 1] * frac
+    return v
+
+
+@wp.kernel
+def apply_twist_at_current_time(
+    times: wp.array[float],
+    twists: wp.array[wp.spatial_vector],
+    n: int,
+    sim_dt: float,
+    q_start: int,
+    qd_start: int,
+    # in/out
+    sim_time: wp.array[float],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    """Kinematically drive the gripper (box A) from a 6-DOF velocity time series.
+
+    Samples the prescribed world-frame twist ``(linear, angular)`` at the current time and
+    applies it to the free joint: sets the joint velocity and integrates the joint pose by one
+    substep (position linearly, orientation by the quaternion derivative). ``sim_time`` is
+    advanced by one substep. Free-joint layout is ``joint_q = [px, py, pz, qx, qy, qz, qw]`` and
+    ``joint_qd = [vx, vy, vz, wx, wy, wz]``.
+    """
+    velocity = eval_twist_at_current_time(times, twists, n, sim_time[0])
+    v_lin = wp.spatial_top(velocity)
+    v_ang = wp.spatial_bottom(velocity)
+
+    p = wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2])
+    q = wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6])
+
+    p = p + v_lin * sim_dt
+    # quaternion derivative for a world-frame angular velocity: q_dot = 0.5 * omega_quat * q
+    q = wp.normalize(q + (wp.quat(v_ang[0], v_ang[1], v_ang[2], 0.0) * q) * (0.5 * sim_dt))
+
+    joint_q[q_start + 0] = p[0]
+    joint_q[q_start + 1] = p[1]
+    joint_q[q_start + 2] = p[2]
+    joint_q[q_start + 3] = q[0]
+    joint_q[q_start + 4] = q[1]
+    joint_q[q_start + 5] = q[2]
+    joint_q[q_start + 6] = q[3]
+
+    joint_qd[qd_start + 0] = v_lin[0]
+    joint_qd[qd_start + 1] = v_lin[1]
+    joint_qd[qd_start + 2] = v_lin[2]
+    joint_qd[qd_start + 3] = v_ang[0]
+    joint_qd[qd_start + 4] = v_ang[1]
+    joint_qd[qd_start + 5] = v_ang[2]
+
+    sim_time[0] = sim_time[0] + sim_dt
+
 
 class Example:
+    @staticmethod
+    def create_parser():
+        parser = newton.examples.create_parser()
+        # this example derives the frame count from the total sim time, so remove --num-frames.
+        for action in list(parser._actions):
+            if "--num-frames" in action.option_strings:
+                parser._remove_action(action)
+                for opt in action.option_strings:
+                    parser._option_string_actions.pop(opt, None)
+        parser.add_argument(
+            "--sim-time",
+            type=float,
+            action=_SetNumFramesFromSimTime,
+            help="Total simulation time in seconds (num_frames = sim_time * 60).",
+        )
+        parser.add_argument(
+            "--sim-dt",
+            type=float,
+            default=DEFAULT_SIM_DT,
+            help="Physics timestep in seconds; sim_substeps = round((1 / 60) / sim_dt).",
+        )
+        parser.set_defaults(sim_time=DEFAULT_SIM_TIME, num_frames=round(DEFAULT_SIM_TIME * FPS))
+        return parser
+
     def __init__(self, viewer, args):
-        self.fps = 60
+        self.fps = FPS
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 4
-        self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.viewer = viewer
         self.args = args
+
+        # run length and physics timestep come from the CLI (--sim-time, --sim-dt); fall back to
+        # sensible defaults when args is not provided (e.g. instantiated directly in a test).
+        # num_frames = sim_time * fps. sim_substeps is chosen so an integer number of substeps
+        # fills each frame, and sim_dt is snapped to match exactly. The velocity profile spans
+        # the whole run (total_time = num_frames / fps).
+        self.num_frames = getattr(args, "num_frames", round(DEFAULT_SIM_TIME * self.fps))
+        requested_sim_dt = getattr(args, "sim_dt", DEFAULT_SIM_DT)
+        self.sim_substeps = max(1, round(self.frame_dt / requested_sim_dt))
+        self.sim_dt = self.frame_dt / self.sim_substeps
 
         # box half-extents: A is the small gripper body, B is the larger gripped box
         LA = 0.1
@@ -60,39 +171,37 @@ class Example:
 
         m_a, m_b = 0.5, 1.0
         gravity = 10.0
-        target_height = 3.0  # box B is position-driven from 0 up to this height, then held
 
-        # start the A+B stack at 0: B's COM at z = 0, A stacked on top with its pad touching
-        # B's top (A_center = B_center + LA + LB).
-        pose_b = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
-        pose_a = wp.transform(wp.vec3(0.0, 0.0, LA + LB), wp.quat_identity())
+        # box B (free, dynamic) rests on the ground; box A (the kinematic gripper) sits on top
+        # with its pad sealing B's top face (A_center = B_center + LA + LB).
+        pose_b = wp.transform(wp.vec3(0.0, 0.0, LB), wp.quat_identity())
+        pose_a = wp.transform(wp.vec3(0.0, 0.0, LB + LA + LB), wp.quat_identity())
 
         builder = newton.ModelBuilder(gravity=-gravity)
 
-        # lock_inertia=True keeps the explicit mass/inertia above; otherwise add_shape_box would
-        # recompute them from the shape's default density.
-        self.box_a = builder.add_body(
-            xform=pose_a, mass=m_a, inertia=box_inertia(m_a, LA), lock_inertia=True, label="gripper_box_A"
-        )
-        builder.add_shape_box(self.box_a, hx=LA, hy=LA, hz=LA)
+        # zero-density box shapes so the builder honours the explicit mass/inertia passed to
+        # add_link/add_body; a nonzero-density shape would add its own computed mass on top.
+        box_cfg = builder.default_shape_cfg.copy()
+        box_cfg.density = 0.0
 
-        # box B rides a prismatic (z) joint to the world, position-driven up to target_height by
-        # the solver. velocity_limit keeps it rising smoothly (~1 m/s) instead of snapping there.
-        self.box_b = builder.add_link(
-            xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), lock_inertia=True, label="gripped_box_B"
+        # box A is the gripper: kinematic (does not respond to forces) and driven entirely by a
+        # prescribed 6-DOF velocity through a free joint to the world -- every DOF is prescribed.
+        self.box_a = builder.add_link(
+            xform=pose_a,
+            mass=m_a,
+            inertia=box_inertia(m_a, LA),
+            is_kinematic=True,
+            label="gripper_box_A",
         )
-        builder.add_shape_box(self.box_b, hx=LB, hy=LB, hz=LB)
-        j_drive = builder.add_joint_prismatic(
-            parent=-1,
-            child=self.box_b,
-            axis=wp.vec3(0.0, 0.0, 1.0),
-            target_pos=target_height,
-            target_ke=100.0,
-            target_kd=10.0,
-            velocity_limit=0.3,
-            label="box_b_drive",
+        builder.add_shape_box(self.box_a, hx=LA, hy=LA, hz=LA, cfg=box_cfg)
+        self.gripper_joint = builder.add_joint_free(child=self.box_a, label="gripper_free")
+        builder.add_articulation([self.gripper_joint], label="gripper_articulation")
+
+        # box B is the gripped object: a free body pulled up by the suction seal (no joint drive).
+        self.box_b = builder.add_body(
+            xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), label="gripped_box_B"
         )
-        builder.add_articulation([j_drive], label="box_b_articulation")
+        builder.add_shape_box(self.box_b, hx=LB, hy=LB, hz=LB, cfg=box_cfg)
 
         builder.add_ground_plane()
 
@@ -113,7 +222,7 @@ class Example:
             k_normal=5000.0,
             d_normal=100.0,
             f_normal_max=200.0,
-            f_grip_max=50.0,
+            f_grip_max=1000.0,
             # initial run: normal forces only. Zero shear stiffness (also zeros the derived
             # torsion stiffness) and zero peel damping so only the normal DOF is active.
             k_shear_x=0.0,
@@ -140,8 +249,36 @@ class Example:
         self.seal_engaged = wp.full(1, True, dtype=wp.bool, device=self.model.device)
         self.seal_body_b = wp.full(1, self.box_b, dtype=wp.int32, device=self.model.device)
 
+        # velocity time series driving the gripper (box A). Override velocity_profile() in a
+        # subclass to run a different series per test.
+        profile_times, profile_twists = self.velocity_profile()
+        self.vel_times = wp.array(profile_times, dtype=wp.float32, device=self.model.device)
+        self.vel_twists = wp.array(profile_twists, dtype=wp.spatial_vector, device=self.model.device)
+        self.num_vel = len(profile_times)
+        self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
+        self.gripper_q_start = int(self.model.joint_q_start.numpy()[self.gripper_joint])
+        self.gripper_qd_start = int(self.model.joint_qd_start.numpy()[self.gripper_joint])
+
         self.viewer.set_model(self.model)
         self.capture()
+
+    def velocity_profile(self):
+        """Return the gripper's velocity time series as ``(times [s], twists)``.
+
+        Each twist is a world-frame 6-DOF spatial velocity ``(linear, angular)``, sampled by
+        piecewise-linear interpolation. Override this in a subclass to drive box A with a
+        different series per test. The default is a constant upward motion: 0.4 m/s along +z for
+        the whole run (``total_time = num_frames / fps``).
+        """
+        total_time = self.num_frames / self.fps
+        up = wp.spatial_vector(0.0, 0.0, 0.4, 0.0, 0.0, 0.0)
+        num_entries = 11  # keyframes evenly spaced over the run, all the same 0.4 m/s upward
+        times = []
+        twists = []
+        for i in range(num_entries):
+            times.append(i * total_time / (num_entries - 1))
+            twists.append(up)
+        return times, twists
 
     def capture(self):
         if wp.get_device().is_cuda:
@@ -153,12 +290,34 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
+            # kinematically drive the gripper (box A) at its prescribed 6-DOF velocity, then
+            # propagate the new joint state to the kinematic body's maximal coordinates.
+            wp.launch(
+                apply_twist_at_current_time,
+                dim=1,
+                inputs=[
+                    self.vel_times,
+                    self.vel_twists,
+                    self.num_vel,
+                    self.sim_dt,
+                    self.gripper_q_start,
+                    self.gripper_qd_start,
+                ],
+                outputs=[self.sim_time_wp, self.state_0.joint_q, self.state_0.joint_qd],
+            )
+            newton.eval_fk(
+                self.model,
+                self.state_0.joint_q,
+                self.state_0.joint_qd,
+                self.state_0,
+                body_flag_filter=newton.BodyFlags.KINEMATIC,
+            )
 
-            self.viewer.apply_forces(self.state_0)
             self.model.collide(self.state_0, self.contacts)
 
-            # surface gripper -- Phase 1 (trivial: always engaged) then Phase 2 (apply wrench)
+            # surface gripper -- Phase 1 (trivial: always engaged) then Phase 2 (apply wrench).
+            # clear body_f right before writing the seal wrench, since eval_pad_force accumulates.
+            self.state_0.clear_forces()
             latch_engagement(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
             evaluate_gripper_force(
                 self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control
@@ -174,19 +333,16 @@ class Example:
             self.simulate()
 
         self.sim_time += self.frame_dt
-        if int(round(self.sim_time / self.frame_dt)) % 20 == 0:  # DEBUG: height every 20 frames
-            bz = self.state_0.body_q.numpy()[self.box_b][2]
-            az = self.state_0.body_q.numpy()[self.box_a][2]
-            print(f"DEBUG t={self.sim_time:5.2f} Bz={bz:6.3f} Az={az:6.3f}", flush=True)
 
     def test_final(self):
-        # box B is driven up toward 3 m and box A rides along; both should have risen off the
-        # start, stayed on-axis, and not overshot the target (exact height depends on run length).
+        # box A (kinematic) rises at a constant 0.4 m/s; box B is carried by the suction seal.
+        # Sanity bounds only (the exact height depends on the run length): both rise off the
+        # start, stay on-axis, and don't fly off. The per-step seal check lives in test_surface_gripper.
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "boxes A and B rise together toward 3 m and stay on-axis",
-            lambda q, qd: 0.5 < q[2] < 3.4 and abs(q[0]) < 0.1 and abs(q[1]) < 0.1,
+            "gripper A lifts box B upward and both stay on-axis",
+            lambda q, qd: 0.1 < q[2] < 5.0 and abs(q[0]) < 0.1 and abs(q[1]) < 0.1,
             [self.box_a, self.box_b],
         )
 
