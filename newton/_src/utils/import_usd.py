@@ -902,15 +902,8 @@ def parse_usd(
         path_name = str(prim.GetPath())
         if any(re.match(path, path_name) for path in ignore_paths):
             return
-        is_collider = _is_enabled_collider(prim)
-        if is_collider or prim.IsInstance():
-            _load_visual_shape_children(
-                parent_body_id,
-                prim,
-                body_xform,
-                articulation_root_xform,
-                allow_visual_shapes and not is_collider,
-            )
+        if _is_enabled_collider(prim):
+            _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, False)
             return
 
         type_name = str(prim.GetTypeName()).lower()
