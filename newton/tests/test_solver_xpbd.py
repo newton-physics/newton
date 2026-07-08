@@ -146,6 +146,26 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
     )
 
 
+def test_optional_control_and_contacts(test, device):
+    """Test that XPBD accepts omitted control and contact data.
+
+    The ground-plane shape catches attempts to access a missing contact buffer,
+    while the falling particle verifies that non-contact integration still runs.
+    """
+    builder = newton.ModelBuilder(up_axis="Y")
+    builder.add_particle(pos=(0.0, 1.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.1)
+    builder.add_ground_plane()
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model)
+    state_in = model.state()
+    state_out = model.state()
+
+    solver.step(state_in, state_out, control=None, contacts=None, dt=1.0 / 60.0)
+
+    test.assertLess(float(state_out.particle_q.numpy()[0, 1]), 1.0)
+
+
 def test_particle_particle_friction_with_relative_motion(test, device):
     """
     Test that friction DOES affect particles with different tangential velocities.
@@ -1491,6 +1511,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_particle_friction_uses_relative_velocity",
     test_particle_particle_friction_uses_relative_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_optional_control_and_contacts",
+    test_optional_control_and_contacts,
     devices=devices,
     check_output=False,
 )
