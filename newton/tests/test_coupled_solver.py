@@ -432,6 +432,15 @@ class TestModelView(unittest.TestCase):
         # Parent unchanged
         self.assertIsNot(self.model.body_inv_mass, new_mass)
 
+    def test_override_accepts_set_subclass_parent(self):
+        """Set overrides should accept a native set when the parent uses a set subclass."""
+        view = ModelView(self.model, "test")
+        filters = set(self.model.shape_collision_filter_pairs)
+
+        view.shape_collision_filter_pairs = filters
+
+        self.assertIs(view.shape_collision_filter_pairs, filters)
+
     def test_count_override_slices_frequency_arrays(self):
         """Frequency-matched arrays should follow view-local counts."""
         view = ModelView(self.model, "test")

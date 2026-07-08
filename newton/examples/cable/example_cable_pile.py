@@ -159,6 +159,9 @@ class Example:
         builder.color()
 
         self.model = builder.finalize()
+        # Size persistent contact history before CUDA graph capture.
+        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -170,8 +173,6 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.viewer.set_model(self.model)
         self.viewer.set_picking_torque_scale(0.0)
