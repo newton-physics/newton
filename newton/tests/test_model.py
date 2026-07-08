@@ -1224,6 +1224,97 @@ class TestModelJoints(unittest.TestCase):
             finally:
                 newton.use_coord_layout_targets = prev
 
+    def test_collapse_keeps_attachment_anchored_rod_joints(self):
+        """collapse_fixed_joints must not delete non-fixed joints: a rod anchored
+        mid-chain by a ball joint (the USD attachment pattern) keeps every cable
+        joint even though the anchor makes the chain a loop."""
+        builder = newton.ModelBuilder()
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, _joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
+        labels_before = sorted(builder.joint_label)
+        builder.collapse_fixed_joints()
+        self.assertEqual(sorted(builder.joint_label), labels_before)
+        # Topological joint ordering survives: every joint's parent index is below its child.
+        for j in range(builder.joint_count):
+            parent, child = builder.joint_parent[j], builder.joint_child[j]
+            if parent >= 0:
+                self.assertLess(parent, child, builder.joint_label[j])
+
+    def test_collapse_keeps_parallel_joints(self):
+        """Two joints between the same body pair (e.g. an attachment with two point
+        sites) both survive collapse."""
+        builder = newton.ModelBuilder()
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, _joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
+        count_before = builder.joint_count
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.joint_count, count_before)
+
+    def test_collapse_parallel_joints_with_fixed_ordering(self):
+        """Parallel joints between one body pair survive collapse regardless of which
+        joint comes first; a fixed joint among them still merges the pair, and the
+        surviving non-fixed joint is remapped onto the merged body."""
+        for order in ("fixed_first", "fixed_second", "fixed_kept_first"):
+            with self.subTest(order=order):
+                builder = newton.ModelBuilder()
+                p = builder.add_body(label="parent")
+                c = builder.add_body(label="child")
+                builder.add_shape_sphere(p, radius=0.1)
+                builder.add_shape_sphere(c, radius=0.1)
+                if order == "fixed_second":
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                else:
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                keep = ["fix"] if order == "fixed_kept_first" else []
+                builder.collapse_fixed_joints(joints_to_keep=keep)
+                labels = list(builder.joint_label)
+                # add_body() gives each body a free joint; only assert on ours.
+                if order == "fixed_kept_first":
+                    # Nothing merged: both parallel joints survive.
+                    self.assertIn("fix", labels)
+                    self.assertIn("ball", labels)
+                    self.assertEqual(builder.body_count, 2)
+                else:
+                    # The fixed pair merged (or the redundant fixed loop joint dropped);
+                    # the ball joint survives with valid endpoints.
+                    self.assertIn("ball", labels)
+                for j in range(builder.joint_count):
+                    self.assertLess(builder.joint_child[j], builder.body_count)
+
+    def test_collapse_reindexes_bodies_in_original_order(self):
+        """Retained bodies keep their original relative order after collapse, so an
+        anchor joint reaching a rod mid-chain cannot scramble recorded body ranges."""
+        builder = newton.ModelBuilder()
+        # A rigid pair joined by a fixed joint: something real to collapse.
+        b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
+        b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
+        builder.add_shape_sphere(b0, radius=0.1)
+        builder.add_shape_sphere(b1, radius=0.1)
+        builder.add_joint_free(b0)
+        builder.add_joint_fixed(b0, b1)
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        # Record the group the way the USD importer does, so the range remap is exercised.
+        builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
+        builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
+        cable_labels_before = [builder.body_label[b] for b in bodies]
+        builder.collapse_fixed_joints()
+        # The fixed pair merged into one body; the cable bodies stay contiguous and ordered.
+        start, end = builder._cable_body_start[0], builder._cable_body_end[0]
+        self.assertEqual(end - start, len(bodies))
+        self.assertEqual([builder.body_label[b] for b in range(start, end)], cable_labels_before)
+
     def test_collapse_fixed_joints(self):
         shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
 

@@ -299,9 +299,20 @@ class SchemaResolverNewton(SchemaResolver):
 
 
 class SchemaResolverPhysx(SchemaResolver):
-    """Schema resolver for PhysX USD attributes."""
+    """Schema resolver for PhysX USD attributes.
+
+    For deformables this resolver only enables reading the proposal-shaped material
+    attributes under the ``omniphysics:`` / ``physxDeformableBody:`` namespaces off bound
+    materials. It does not translate PhysX/OmniPhysics applied schemas or asset structure,
+    so native OmniPhysics deformable assets are not imported as deformables.
+    """
 
     name: ClassVar[str] = "physx"
+    # Deformable material/geometry vendor namespaces (AOUSD proposal). The public
+    # schema authors under ``physics:``; these carry the same parameters in existing
+    # content. Kept separate from extra_attr_namespaces so they are only consulted
+    # for deformable attributes, not generic rigid-body parsing.
+    deformable_attr_namespaces: ClassVar[list[str]] = ["omniphysics", "physxDeformableBody"]
     extra_attr_namespaces: ClassVar[list[str]] = [
         # Scene and rigid body
         "physxScene",
