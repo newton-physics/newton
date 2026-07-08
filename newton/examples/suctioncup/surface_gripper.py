@@ -37,42 +37,78 @@ class PadShape(IntEnum):
 def _pad_geometry_factors(shape: int, a: float, b: float):
     """Geometry-derived force factors for one pad (see gripper.pdf tables/appendices).
 
-    Returns ``(ix_a, iy_a, capacity_x, capacity_y, tw_x, tw_y)`` such that::
+    Returns ``(peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y)`` such that::
 
-        k_peel_x = k_normal * ix_a
-        k_peel_y = k_normal * iy_a
-        k_torsion = k_shear_x * ix_a + k_shear_y * iy_a
+        k_peel_x = k_normal * peel_ratio_x
+        k_peel_y = k_normal * peel_ratio_y
+        k_torsion = k_shear_x * peel_ratio_x + k_shear_y * peel_ratio_y
         F_peel_x_max = N_f * capacity_x
         F_peel_y_max = N_f * capacity_y
         M_twist_max = F_sucker * (mu_x * tw_x + mu_y * tw_y)
+
+    Here ``peel_ratio = I / A`` (second area moment over area; sets peel/torsion stiffness),
+    ``capacity = (I / A) / c`` where ``c`` is the pad half-extent perpendicular to the tilt
+    axis -- the pull-off pressure vanishes at that trailing edge (Appendix 3) -- and ``tw`` is
+    the torsional-capacity factor derived from the first moment ``int r dA`` (Appendices 4-5).
     """
     if shape == int(PadShape.CIRCLE):
-        r = a
-        ix = r * r / 4.0
-        return ix, ix, r / 4.0, r / 4.0, r / 3.0, r / 3.0
+        # circle of radius R = a; fully symmetric, so the x and y factors are identical.
+        radius = a
+        # peel/torsion stiffness factor I / A, with I = pi R^4 / 4 and A = pi R^2.
+        peel_ratio_x = radius * radius / 4.0
+        peel_ratio_y = radius * radius / 4.0
+        # peel capacity factor (I/A)/c with c = R (edge where the pull-off pressure vanishes,
+        # Appendix 3): (R^2/4) / R = R/4.
+        capacity_x = radius / 4.0
+        capacity_y = radius / 4.0
+        # twist factor: int r dA / A = 2R/3, split per axis by the mu_x/mu_y cos^2/sin^2
+        # integration, giving M_twist_max = (mu_x + mu_y)/3 * N_f * R -> R/3 per axis (Appendix 5).
+        tw_x = radius / 3.0
+        tw_y = radius / 3.0
+        return peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y
+
     if shape == int(PadShape.ELLIPSE):
-        ix, iy = b * b / 4.0, a * a / 4.0
-        # twist geometry factors tw = J / (3*pi*a*b); J via numeric quadrature
-        n = 256
-        jx = 0.0
-        jy = 0.0
-        for i in range(n):
-            phi = 2.0 * math.pi * (i + 0.5) / n
-            c = math.cos(phi)
-            s = math.sin(phi)
-            r_phi = a * b / math.sqrt(b * b * c * c + a * a * s * s)
-            jx += r_phi**3 * s * s
-            jy += r_phi**3 * c * c
-        denom = 3.0 * math.pi * a * b
-        dphi = 2.0 * math.pi / n
-        return ix, iy, b / 4.0, a / 4.0, jx * dphi / denom, jy * dphi / denom
-    # RECTANGLE
-    ix, iy = b * b / 3.0, a * a / 3.0
-    d = math.sqrt(a * a + b * b)
-    ux = (2.0 * a * b * d) / 3.0 + (4.0 * b**3 / 3.0) * math.asinh(a / b) - (2.0 * a**3 / 3.0) * math.asinh(b / a)
-    uy = (2.0 * a * b * d) / 3.0 + (4.0 * a**3 / 3.0) * math.asinh(b / a) - (2.0 * b**3 / 3.0) * math.asinh(a / b)
-    denom = 4.0 * a * b
-    return ix, iy, b / 3.0, a / 3.0, ux / denom, uy / denom
+        # ellipse with semi-axis a along x and b along y.
+        # stiffness factor I / A: I_x = pi a b^3 / 4 over A = pi a b gives b^2 / 4 (and a^2 / 4).
+        peel_ratio_x = b * b / 4.0
+        peel_ratio_y = a * a / 4.0
+        # peel capacity factor: b/4 about x, a/4 about y (Appendix 3).
+        capacity_x = b / 4.0
+        capacity_y = a / 4.0
+        # twist factor tw = J / (3 pi a b) with J_x = int R(phi)^3 sin^2(phi) dphi (Appendix 5).
+        # No closed form, so integrate numerically over phi in [0, 2 pi) with the midpoint rule.
+        num_samples = 256
+        d_phi = 2.0 * math.pi / float(num_samples)
+        j_x = 0.0
+        j_y = 0.0
+        for i in range(num_samples):
+            phi = (float(i) + 0.5) * d_phi  # sample the middle of each interval
+            cos_phi = math.cos(phi)
+            sin_phi = math.sin(phi)
+            # distance from the centre to the ellipse edge at angle phi
+            r_edge = a * b / math.sqrt(b * b * cos_phi * cos_phi + a * a * sin_phi * sin_phi)
+            j_x += r_edge**3 * sin_phi * sin_phi * d_phi
+            j_y += r_edge**3 * cos_phi * cos_phi * d_phi
+        twist_denom = 3.0 * math.pi * a * b
+        tw_x = j_x / twist_denom
+        tw_y = j_y / twist_denom
+        return peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y
+
+    # RECTANGLE with half-length a along x and b along y.
+    # stiffness factor I / A: I_x = 4 a b^3 / 3 over A = 4 a b gives b^2 / 3 (and a^2 / 3).
+    peel_ratio_x = b * b / 3.0
+    peel_ratio_y = a * a / 3.0
+    # peel capacity factor: b/3 about x, a/3 about y (Appendix 3).
+    capacity_x = b / 3.0
+    capacity_y = a / 3.0
+    # twist factor tw = U / (4 a b), with the closed-form integrals U_x, U_y (Appendix 5).
+    diagonal = math.sqrt(a * a + b * b)
+    u_x = (2.0 * a * b * diagonal) / 3.0 + (4.0 * b**3 / 3.0) * math.asinh(a / b) - (2.0 * a**3 / 3.0) * math.asinh(b / a)
+    u_y = (2.0 * a * b * diagonal) / 3.0 + (4.0 * a**3 / 3.0) * math.asinh(b / a) - (2.0 * b**3 / 3.0) * math.asinh(a / b)
+    area = 4.0 * a * b
+    tw_x = u_x / area
+    tw_y = u_y / area
+    return peel_ratio_x, peel_ratio_y, capacity_x, capacity_y, tw_x, tw_y
 
 
 class SurfaceGripper:
@@ -348,8 +384,8 @@ def eval_pad_relative_velocity(
     vSealB = vLinB + wp.cross(vAngB, r_b_world)
 
     # relative velocity of B's seal point w.r.t. A's, taken into the seal frame
-    v = wp.quat_rotate_inverse(q_seal, vSealB - vSealA)
-    w = wp.quat_rotate_inverse(q_seal, vAngB - vAngA)
+    v = wp.quat_rotate_inv(q_seal, vSealB - vSealA)
+    w = wp.quat_rotate_inv(q_seal, vAngB - vAngA)
     return v[0], v[1], v[2], w[0], w[1], w[2]
 
 
