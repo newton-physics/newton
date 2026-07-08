@@ -781,18 +781,14 @@ def convert_mj_coords_to_warp_kernel(
         return
 
     if type == JointType.FREE:
-        # MuJoCo's FREE joint qpos/qvel are in world frame. Newton's public
-        # joint_q[0:7] for FREE is kept in world frame here as well (separate
-        # from the parent-frame contract documented elsewhere; see #2704).
+        # MuJoCo qpos[0:7] holds the body's world pose. Recover Newton's
+        # relative transform between the parent and child joint anchors.
         # joint_qd[0:6] follows the parent-frame contract from State.joint_qd:
         # linear is child-COM velocity, angular is angular velocity, both
         # expressed in the joint parent frame. MuJoCo only allows FREE joints
         # at the worldbody root, so X_wpj == joint_X_p.
-        for i in range(3):
-            joint_q[wq_i + i] = qpos[worldid, q_i + i]
-
-        # change quaternion order from wxyz to xyzw
-        rot = quat_wxyz_to_xyzw(
+        world_pos = wp.vec3(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2])
+        world_rot = quat_wxyz_to_xyzw(
             wp.quat(
                 qpos[worldid, q_i + 3],
                 qpos[worldid, q_i + 4],
@@ -800,10 +796,17 @@ def convert_mj_coords_to_warp_kernel(
                 qpos[worldid, q_i + 6],
             )
         )
-        joint_q[wq_i + 3] = rot[0]
-        joint_q[wq_i + 4] = rot[1]
-        joint_q[wq_i + 5] = rot[2]
-        joint_q[wq_i + 6] = rot[3]
+        world_xform = wp.transform(world_pos, world_rot)
+        joint_xform = wp.transform_inverse(joint_X_p[joint_id]) * world_xform * joint_X_c[joint_id]
+        joint_pos = wp.transform_get_translation(joint_xform)
+        joint_rot = wp.transform_get_rotation(joint_xform)
+        joint_q[wq_i + 0] = joint_pos[0]
+        joint_q[wq_i + 1] = joint_pos[1]
+        joint_q[wq_i + 2] = joint_pos[2]
+        joint_q[wq_i + 3] = joint_rot[0]
+        joint_q[wq_i + 4] = joint_rot[1]
+        joint_q[wq_i + 5] = joint_rot[2]
+        joint_q[wq_i + 6] = joint_rot[3]
 
         # MuJoCo qvel for FREE: linear is body-origin velocity in world,
         # angular is in body frame. Convert origin→COM in world, then rotate
@@ -811,9 +814,9 @@ def convert_mj_coords_to_warp_kernel(
         q_p = wp.transform_get_rotation(joint_X_p[joint_id])
 
         w_body = wp.vec3(qvel[worldid, qd_i + 3], qvel[worldid, qd_i + 4], qvel[worldid, qd_i + 5])
-        w_world = wp.quat_rotate(rot, w_body)
+        w_world = wp.quat_rotate(world_rot, w_body)
 
-        com_world = wp.quat_rotate(rot, body_com[child])
+        com_world = wp.quat_rotate(world_rot, body_com[child])
         v_origin_world = wp.vec3(qvel[worldid, qd_i + 0], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
         v_com_world = v_origin_world + wp.cross(w_world, com_world)
 
@@ -893,22 +896,25 @@ def convert_warp_coords_to_mj_kernel(
     wqd_i = joint_qd_start[joint_id]
 
     if jtype == JointType.FREE:
-        # Newton's public joint_q[0:7] for FREE is kept in world frame at the
-        # MuJoCo bridge boundary (separate from the parent-frame contract
-        # documented elsewhere; see #2704). joint_qd[0:6] follows the parent-
-        # frame contract from State.joint_qd. MuJoCo only allows FREE joints at
-        # the worldbody root, so X_wpj == joint_X_p.
-        for i in range(3):
-            qpos[worldid, q_i + i] = joint_q[wq_i + i]
-
-        rot = wp.quat(
-            joint_q[wq_i + 3],
-            joint_q[wq_i + 4],
-            joint_q[wq_i + 5],
-            joint_q[wq_i + 6],
+        # MuJoCo qpos[0:7] holds the body's world pose. Compose it from
+        # Newton's relative transform between the joint anchors.
+        # joint_qd[0:6] follows the parent-frame contract from State.joint_qd.
+        # MuJoCo only allows FREE joints at the worldbody root, so the parent
+        # anchor's world transform is joint_X_p.
+        joint_xform = wp.transform(
+            wp.vec3(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2]),
+            wp.quat(joint_q[wq_i + 3], joint_q[wq_i + 4], joint_q[wq_i + 5], joint_q[wq_i + 6]),
         )
+        world_xform = joint_X_p[joint_id] * joint_xform * wp.transform_inverse(joint_X_c[joint_id])
+        world_pos = wp.transform_get_translation(world_xform)
+        world_rot = wp.transform_get_rotation(world_xform)
+
+        qpos[worldid, q_i + 0] = world_pos[0]
+        qpos[worldid, q_i + 1] = world_pos[1]
+        qpos[worldid, q_i + 2] = world_pos[2]
+
         # change quaternion order from xyzw to wxyz
-        rot_wxyz = quat_xyzw_to_wxyz(rot)
+        rot_wxyz = quat_xyzw_to_wxyz(world_rot)
         qpos[worldid, q_i + 3] = rot_wxyz[0]
         qpos[worldid, q_i + 4] = rot_wxyz[1]
         qpos[worldid, q_i + 5] = rot_wxyz[2]
@@ -924,13 +930,13 @@ def convert_warp_coords_to_mj_kernel(
         w_world = wp.quat_rotate(q_p, w_parent)
 
         child = joint_child[joint_id]
-        com_world = wp.quat_rotate(rot, body_com[child])
+        com_world = wp.quat_rotate(world_rot, body_com[child])
         v_origin_world = v_com_world - wp.cross(w_world, com_world)
         qvel[worldid, qd_i + 0] = v_origin_world[0]
         qvel[worldid, qd_i + 1] = v_origin_world[1]
         qvel[worldid, qd_i + 2] = v_origin_world[2]
 
-        w_body = wp.quat_rotate_inv(rot, w_world)
+        w_body = wp.quat_rotate_inv(world_rot, w_world)
         qvel[worldid, qd_i + 3] = w_body[0]
         qvel[worldid, qd_i + 4] = w_body[1]
         qvel[worldid, qd_i + 5] = w_body[2]
@@ -1039,11 +1045,10 @@ def sync_qpos0_kernel(
 @wp.kernel
 def build_ref_q_kernel(
     joint_type: wp.array[wp.int32],
+    joint_q: wp.array[wp.float32],
     joint_q_start: wp.array[wp.int32],
     joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
-    joint_child: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
     dof_ref: wp.array[wp.float32],
     # output
     ref_q: wp.array[wp.float32],
@@ -1054,8 +1059,8 @@ def build_ref_q_kernel(
     convention (xyzw quaternions) suitable for ``eval_articulation_fk``.
     Per joint type:
 
-    - **FREE / DISTANCE**: position and quaternion [xyzw] from ``body_q``
-      of the child body.
+    - **FREE / DISTANCE**: copies position and quaternion [xyzw] from
+      ``joint_q``.
     - **BALL**: identity quaternion [xyzw].
     - **PRISMATIC / REVOLUTE / D6**: copies ``dof_ref`` values [m or rad]
       (or zero when ``dof_ref`` is ``None``).
@@ -1063,15 +1068,14 @@ def build_ref_q_kernel(
 
     Args:
         joint_type: Joint type enum per joint, shape ``[joint_count]``.
+        joint_q: Joint coordinates [m or rad], shape
+            ``[joint_coord_count]``.
         joint_q_start: Start index into ``ref_q`` for each joint,
             shape ``[joint_count]``.
         joint_qd_start: Start index into ``dof_ref`` for each joint,
             shape ``[joint_count]``.
         joint_dof_dim: Positional and rotational DOF counts per joint,
             shape ``[joint_count, 2]``.
-        joint_child: Child body index per joint, shape ``[joint_count]``.
-        body_q: Body transforms [m], shape ``[body_count]``,
-            dtype ``wp.transform``.
         dof_ref: Reference DOF values [m or rad], shape ``[joint_dof_count]``.
             May be ``None``, in which case zeros are used.
         ref_q: *(output)* Reference joint coordinates [m or rad],
@@ -1083,17 +1087,8 @@ def build_ref_q_kernel(
     qd_start = joint_qd_start[j]
 
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
-        child = joint_child[j]
-        bq = body_q[child]
-        pos = wp.transform_get_translation(bq)
-        rot = wp.transform_get_rotation(bq)
-        ref_q[q_start + 0] = pos[0]
-        ref_q[q_start + 1] = pos[1]
-        ref_q[q_start + 2] = pos[2]
-        ref_q[q_start + 3] = rot[0]
-        ref_q[q_start + 4] = rot[1]
-        ref_q[q_start + 5] = rot[2]
-        ref_q[q_start + 6] = rot[3]
+        for i in range(7):
+            ref_q[q_start + i] = joint_q[q_start + i]
     elif jtype == JointType.BALL:
         ref_q[q_start + 0] = 0.0
         ref_q[q_start + 1] = 0.0
@@ -2493,6 +2488,24 @@ def update_geom_properties_kernel(
     # store position and orientation
     geom_pos[world, geom_idx] = tf.p
     geom_quat[world, geom_idx] = quat_xyzw_to_wxyz(tf.q)
+
+
+@wp.kernel
+def sync_worldbody_geom_xposes_kernel(
+    geom_bodyid: wp.array[int],
+    geom_pos: wp.array2d[wp.vec3],
+    geom_quat: wp.array2d[wp.quat],
+    geom_xpos: wp.array2d[wp.vec3],
+    geom_xmat: wp.array2d[wp.mat33],
+):
+    """Refresh per-world poses for geoms attached directly to the world body."""
+    world, geom = wp.tid()
+    if geom_bodyid[geom] != 0:
+        return
+
+    geom_q = quat_wxyz_to_xyzw(geom_quat[world, geom])
+    geom_xpos[world, geom] = geom_pos[world, geom]
+    geom_xmat[world, geom] = wp.quat_to_matrix(geom_q)
 
 
 @wp.kernel
