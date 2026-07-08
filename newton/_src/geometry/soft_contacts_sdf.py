@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""SDF local-optimization primitives for water-tight rigid-soft contact.
+"""SDF local-optimization primitives for full-surface rigid-soft contact.
 
 Implements the Macklin et al. (2020) "Local Optimization for Robust Signed Distance Field
 Collision" face (barycentric simplex) and edge (1-D golden-section) optimizers over a rigid
@@ -36,7 +36,7 @@ from .types import Axis, GeoType
 
 # Fixed iteration counts -> data-independent loops -> CUDA-graph-capturable. Passed as kernel args
 # (uniform across threads/launches). Tuned against a brute-force grid reference
-# (newton/tests/test_collision_pipeline.py, TestWaterTightSoftContact): edge golden-section is
+# (newton/tests/test_collision_pipeline.py, TestFullSurfaceSoftContact): edge golden-section is
 # accurate (~1e-4); the face
 # Frank-Wolfe tail is ~O(1/iters) (~3e-3 at 24 iters), sufficient for contact within margin.
 SDF_EDGE_ITERS = 24

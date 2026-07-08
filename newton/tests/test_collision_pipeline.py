@@ -2443,12 +2443,12 @@ def test_soft_contact_schema(test, device):
 soft_devices = get_test_devices()
 
 
-class TestWaterTightSoftContact(unittest.TestCase):
+class TestFullSurfaceSoftContact(unittest.TestCase):
     pass
 
 
 add_function_test(
-    TestWaterTightSoftContact,
+    TestFullSurfaceSoftContact,
     "test_soft_contact_schema",
     test_soft_contact_schema,
     devices=soft_devices,
@@ -2780,7 +2780,7 @@ def test_edge_face_respect_shape_margin(test, device):
 
 
 # ---------------------------------------------------------------------------
-# Dispatch flag — backward-compat (bit-for-bit) and water-tight regression.
+# Dispatch flag — backward-compat (bit-for-bit) and full-surface regression.
 # ---------------------------------------------------------------------------
 
 
@@ -2850,7 +2850,7 @@ def test_backward_compat_bit_for_bit(test, device):
     test.assertGreater(total_on - n_particle_on, 0)
 
 
-def test_water_tight_catches_what_particles_miss(test, device):
+def test_full_surface_catches_what_particles_miss(test, device):
     """A soft quad spanning a box with all corners outside margin: per-particle misses, E/F catches."""
     builder = newton.ModelBuilder()
     builder.add_shape_box(
@@ -2879,7 +2879,7 @@ def test_water_tight_catches_what_particles_miss(test, device):
     pipeline_off.collide(state, contacts_off)
     test.assertEqual(int(contacts_off.soft_contact_count.numpy()[0]), 0)
 
-    # Water-tight path (flag on): the edge/face passes detect the crossing the particles miss.
+    # Full-surface path (flag on): the edge/face passes detect the crossing the particles miss.
     pipeline_on = newton.CollisionPipeline(
         model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
     )
@@ -2899,9 +2899,9 @@ for _name, _fn in (
     ("test_edge_face_passes_box", test_edge_face_passes_box),
     ("test_edge_face_respect_shape_margin", test_edge_face_respect_shape_margin),
     ("test_backward_compat_bit_for_bit", test_backward_compat_bit_for_bit),
-    ("test_water_tight_catches_what_particles_miss", test_water_tight_catches_what_particles_miss),
+    ("test_full_surface_catches_what_particles_miss", test_full_surface_catches_what_particles_miss),
 ):
-    add_function_test(TestWaterTightSoftContact, _name, _fn, devices=soft_devices)
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
 
 
 # ---------------------------------------------------------------------------
@@ -3011,7 +3011,7 @@ for _name, _fn in (
     ("test_mesh_sdf_provisioned_and_emits", test_mesh_sdf_provisioned_and_emits),
     ("test_optimize_against_mesh_texture_sdf", test_optimize_against_mesh_texture_sdf),
 ):
-    add_function_test(TestWaterTightSoftContact, _name, _fn, devices=get_cuda_test_devices())
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
 
 
 def test_unprovisioned_mesh_raises(test, device):
@@ -3042,7 +3042,7 @@ def test_unprovisioned_mesh_raises(test, device):
 
 
 add_function_test(
-    TestWaterTightSoftContact,
+    TestFullSurfaceSoftContact,
     "test_unprovisioned_mesh_raises",
     test_unprovisioned_mesh_raises,
     devices=soft_devices,
@@ -3050,7 +3050,7 @@ add_function_test(
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: all shape types + random soft triangles, water-tight on, no
+# End-to-end: all shape types + random soft triangles, full-surface on, no
 # false positives / false negatives vs a brute-force grid min of the same
 # eval_shape_sdf. (For analytic shapes the optimizer evaluates phi on the
 # feature, so phi* >= true min => false positives are structurally impossible;
@@ -3237,7 +3237,7 @@ def _build_all_shapes_scene(device, rng):
 
 
 def test_end_to_end_no_false_pos_neg(test, device):
-    """All shapes + random triangles: water-tight emissions match a brute-force grid min (no FP/FN)."""
+    """All shapes + random triangles: full-surface emissions match a brute-force grid min (no FP/FN)."""
     margin = 0.1
     model = _build_all_shapes_scene(device, np.random.default_rng(0))
     n_tris = model.tri_count
@@ -3354,7 +3354,7 @@ def test_end_to_end_no_false_pos_neg(test, device):
 
 
 add_function_test(
-    TestWaterTightSoftContact,
+    TestFullSurfaceSoftContact,
     "test_end_to_end_no_false_pos_neg",
     test_end_to_end_no_false_pos_neg,
     devices=soft_devices,
@@ -3400,7 +3400,7 @@ def test_graph_capture_stable(test, device):
 
 
 add_function_test(
-    TestWaterTightSoftContact,
+    TestFullSurfaceSoftContact,
     "test_graph_capture_stable",
     test_graph_capture_stable,
     devices=get_cuda_test_devices(),
@@ -3445,7 +3445,7 @@ def test_face_cull_uses_max_vertex_reach(test, device):
 
 
 add_function_test(
-    TestWaterTightSoftContact,
+    TestFullSurfaceSoftContact,
     "test_face_cull_uses_max_vertex_reach",
     test_face_cull_uses_max_vertex_reach,
     devices=soft_devices,
@@ -3453,7 +3453,7 @@ add_function_test(
 
 
 def test_edge_face_pairs_respect_worlds(test, device):
-    """Multi-world: the water-tight edge/face candidate pairs never cross worlds.
+    """Multi-world: the full-surface edge/face candidate pairs never cross worlds.
 
     Two worlds, each a box + a triangle. The edge/face pair builders must emit exactly the
     world-compatible (feature, shape) pairs (same world, or either global -1) -- matching a
@@ -3512,7 +3512,7 @@ def test_edge_face_pairs_respect_worlds(test, device):
 
 
 add_function_test(
-    TestWaterTightSoftContact,
+    TestFullSurfaceSoftContact,
     "test_edge_face_pairs_respect_worlds",
     test_edge_face_pairs_respect_worlds,
     devices=soft_devices,

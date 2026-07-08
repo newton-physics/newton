@@ -2263,7 +2263,7 @@ class Model:
         the model for subsequent use by :meth:`collide`.
 
         Args:
-            enable_rigid_soft_full_surface_contact: Size the soft-contact buffer for the water-tight
+            enable_rigid_soft_full_surface_contact: Size the soft-contact buffer for the full-surface
                 EDGE/FACE passes (see :meth:`collide`).
         """
         from .collide import CollisionPipeline  # noqa: PLC0415

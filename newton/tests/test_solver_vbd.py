@@ -2902,7 +2902,7 @@ def _build_edge_over_post(device):
     All three vertices sit well outside the box's contact margin (so the legacy
     particle-vs-shape pass emits *nothing*: ``soft_contact_count[0] == 0``), while the
     edge interior and the face centroid dip ~0.03 below the box's top (+y) face. Only the
-    water-tight EDGE/FACE passes can detect this, and only the new VBD section 2 can act
+    full-surface EDGE/FACE passes can detect this, and only the new VBD section 2 can act
     on it. Gravity is disabled so the contact push-out is the only force.
     """
     builder = newton.ModelBuilder()
@@ -3226,42 +3226,42 @@ def test_flag_off_is_inert(test, device):
     np.testing.assert_allclose(q_after, q_before, atol=1.0e-6, err_msg="flag off must not move the soft body")
 
 
-class TestVBDWaterTightContact(unittest.TestCase):
+class TestVBDFullSurfaceContact(unittest.TestCase):
     pass
 
 
 add_function_test(
-    TestVBDWaterTightContact,
+    TestVBDFullSurfaceContact,
     "test_edge_face_pushes_vertices_out",
     test_edge_face_pushes_vertices_out,
     devices=devices,
 )
 add_function_test(
-    TestVBDWaterTightContact,
+    TestVBDFullSurfaceContact,
     "test_edge_face_reacts_on_rigid_body",
     test_edge_face_reacts_on_rigid_body,
     devices=devices,
 )
 add_function_test(
-    TestVBDWaterTightContact,
+    TestVBDFullSurfaceContact,
     "test_barycentric_force_distribution",
     test_barycentric_force_distribution,
     devices=devices,
 )
 add_function_test(
-    TestVBDWaterTightContact,
+    TestVBDFullSurfaceContact,
     "test_edge_face_uses_shape_margin",
     test_edge_face_uses_shape_margin,
     devices=devices,
 )
 add_function_test(
-    TestVBDWaterTightContact,
+    TestVBDFullSurfaceContact,
     "test_edge_face_mixes_shape_material",
     test_edge_face_mixes_shape_material,
     devices=devices,
 )
 add_function_test(
-    TestVBDWaterTightContact,
+    TestVBDFullSurfaceContact,
     "test_flag_off_is_inert",
     test_flag_off_is_inert,
     devices=devices,

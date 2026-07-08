@@ -9779,14 +9779,14 @@ class ModelBuilder:
         with particles and lack an SDF. The SDFs are built by :meth:`finalize <ModelBuilder.finalize>`
         (they need the finalize device) in unscaled mesh space, so scale is applied at query time and
         one SDF serves all scales of a shared :class:`~newton.Mesh`. They are general-purpose distance
-        fields — any SDF query can use them — but their primary consumer is the water-tight rigid-soft
+        fields — any SDF query can use them — but their primary consumer is the full-surface rigid-soft
         edge/face contact passes.
 
         Call before :meth:`finalize <ModelBuilder.finalize>` when constructing a
         :class:`~newton.CollisionPipeline` with ``enable_rigid_soft_full_surface_contact=True``;
         :meth:`finalize <ModelBuilder.finalize>` does not build these implicitly (mirroring
         :meth:`color`). Texture SDFs are CUDA-only, so on CPU (or on any per-mesh build failure)
-        the SDF is not provisioned; constructing a water-tight :class:`~newton.CollisionPipeline`
+        the SDF is not provisioned; constructing a full-surface :class:`~newton.CollisionPipeline`
         for such a shape then raises rather than silently degrading to the per-particle path.
         """
         self._enable_rigid_mesh_sdfs = True
@@ -11134,7 +11134,7 @@ class ModelBuilder:
             # requested via ModelBuilder.enable_rigid_mesh_sdfs(). Built in unscaled mesh space
             # (scale_baked=False) and cached per source mesh; eval_shape_sdf applies the shape scale
             # at query time. Texture SDFs are CUDA-only, so on CPU (or on any build failure) the SDF
-            # is left unprovisioned; a water-tight CollisionPipeline then raises for that shape rather
+            # is left unprovisioned; a full-surface CollisionPipeline then raises for that shape rather
             # than silently degrading to the per-particle path.
             if self._enable_rigid_mesh_sdfs:
                 wt_sdf_cache = {}
@@ -11185,7 +11185,7 @@ class ModelBuilder:
                         )
                     except Exception as e:
                         warnings.warn(
-                            f"Water-tight SDF construction failed for mesh shape {i} ({e}); it falls "
+                            f"Full-surface SDF construction failed for mesh shape {i} ({e}); it falls "
                             "back to the legacy per-particle soft-contact path.",
                             stacklevel=2,
                         )
