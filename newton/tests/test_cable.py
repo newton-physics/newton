@@ -18,6 +18,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     compute_cable_dahl_parameters,
     compute_geometric_cable_kappa_cached_z,
     evaluate_cable_bend_twist_force_hessian_z,
+    update_cable_dahl_state,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
@@ -4282,6 +4283,62 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
 
 
 @wp.kernel
+def _eval_split_cable_twist_damping_branch_cut_kernel(torques: wp.array[wp.vec3]):
+    tid = wp.tid()
+    sign = float(1.0)
+    if tid == 1:
+        sign = -1.0
+
+    q_id = wp.quat_identity()
+    twist_axis = wp.vec3(0.0, 0.0, 1.0)
+    zero = wp.vec3(0.0)
+    twist_damping = wp.vec3(0.0, 0.0, 1.0)
+
+    q_cross_prev = wp.quat_from_axis_angle(twist_axis, sign * (wp.pi - 0.01))
+    q_cross_now = wp.quat_from_axis_angle(twist_axis, sign * (wp.pi + 0.01))
+    q_control_prev = wp.quat_from_axis_angle(twist_axis, sign * 0.10)
+    q_control_now = wp.quat_from_axis_angle(twist_axis, sign * 0.12)
+
+    tau_cross, _H_cross, _kappa_cross, _J_cross = evaluate_cable_bend_twist_force_hessian_z(
+        q_id,
+        q_cross_now,
+        zero,
+        0.0,
+        q_id,
+        q_cross_prev,
+        False,
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        twist_damping,
+        True,
+        1.0,
+    )
+    tau_control, _H_control, _kappa_control, _J_control = evaluate_cable_bend_twist_force_hessian_z(
+        q_id,
+        q_control_now,
+        zero,
+        0.0,
+        q_id,
+        q_control_prev,
+        False,
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        twist_damping,
+        True,
+        1.0,
+    )
+
+    torques[2 * tid] = tau_cross
+    torques[2 * tid + 1] = tau_control
+
+
+@wp.kernel
 def _eval_split_cable_material_force_law_kernel(
     bend_stiffness: float,
     twist_stiffness: float,
@@ -4991,6 +5048,20 @@ def _cable_stiffness_helper_returns_physical_twist(test, device):
         newton.utils.create_cable_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.5)
 
 
+def _split_cable_twist_damping_is_continuous_across_branch_cut(test, device):
+    """Twist damping should use shortest signed increments across the branch cut."""
+    torques = wp.zeros(4, dtype=wp.vec3, device=device)
+    wp.launch(_eval_split_cable_twist_damping_branch_cut_kernel, dim=2, outputs=[torques], device=device)
+
+    torques_np = torques.numpy()
+    test.assertTrue(np.isfinite(torques_np).all(), f"non-finite damping torque: {torques_np}")
+    np.testing.assert_allclose(torques_np[0::2], torques_np[1::2], rtol=1.0e-5, atol=1.0e-6)
+    test.assertTrue(
+        np.all(np.linalg.norm(torques_np[1::2], axis=1) > 1.0e-3),
+        f"damping controls are vacuous: {torques_np}",
+    )
+
+
 def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
     """Shared Dahl eps/tau is split across bend and twist with slot-specific stiffness."""
     with wp.ScopedDevice(device):
@@ -5077,6 +5148,155 @@ def _split_cable_dahl_uses_bend_and_twist_envelopes(test, device):
         np.testing.assert_allclose(sigma[0, 1:], [0.0, 0.0], atol=1.0e-6)
         np.testing.assert_allclose(sigma[1, :2], [0.0, 0.0], atol=1.0e-6)
         test.assertGreater(sigma[0, 0], sigma[1, 2])
+
+
+def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
+    """Dahl pre-solve and persisted twist state should cross the branch cut continuously."""
+    with wp.ScopedDevice(device):
+        joint_type = wp.array(
+            [int(newton.JointType.CABLE), int(newton.JointType.CABLE)],
+            dtype=wp.int32,
+            device=device,
+        )
+        joint_enabled = wp.array([True, True], dtype=bool, device=device)
+        joint_world = wp.zeros(2, dtype=wp.int32, device=device)
+        rebaseline_mask = wp.zeros(1, dtype=wp.bool, device=device)
+        joint_parent = wp.array([-1, -1], dtype=wp.int32, device=device)
+        joint_child = wp.array([0, 1], dtype=wp.int32, device=device)
+        joint_x = wp.array(
+            [wp.transform_identity(), wp.transform_identity()],
+            dtype=wp.transform,
+            device=device,
+        )
+        joint_constraint_start = wp.array([0, 4], dtype=wp.int32, device=device)
+        joint_penalty_k = wp.array(
+            [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0],
+            dtype=float,
+            device=device,
+        )
+        joint_is_hard = wp.zeros(8, dtype=wp.int32, device=device)
+        joint_cable_rest_kb_local = wp.zeros(2, dtype=wp.vec3, device=device)
+        joint_cable_rest_twist = wp.zeros(2, dtype=float, device=device)
+
+        half_step = 0.01
+        step = 2.0 * half_step
+        pi = float(np.pi)
+        twist_axis = wp.vec3(0.0, 0.0, 1.0)
+        body_q = wp.array(
+            [
+                wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(twist_axis, pi + half_step)),
+                wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(twist_axis, -pi - half_step)),
+            ],
+            dtype=wp.transform,
+            device=device,
+        )
+        joint_sigma_prev = wp.zeros(2, dtype=wp.vec3, device=device)
+        kappa_prev_values = [
+            wp.vec3(0.0, 0.0, pi - half_step),
+            wp.vec3(0.0, 0.0, -pi + half_step),
+        ]
+        joint_kappa_prev = wp.array(kappa_prev_values, dtype=wp.vec3, device=device)
+        joint_dkappa_prev = wp.zeros(2, dtype=wp.vec3, device=device)
+        eps_max = wp.array([0.2, 0.2], dtype=float, device=device)
+        tau = wp.array([0.2, 0.2], dtype=float, device=device)
+        sigma_start = wp.zeros(2, dtype=wp.vec3, device=device)
+        c_fric = wp.zeros(2, dtype=wp.vec3, device=device)
+        update_inputs = [
+            joint_type,
+            joint_enabled,
+            joint_parent,
+            joint_child,
+            joint_x,
+            joint_x,
+            joint_constraint_start,
+            joint_penalty_k,
+            joint_is_hard,
+            joint_cable_rest_kb_local,
+            joint_cable_rest_twist,
+            body_q,
+        ]
+
+        wp.launch(
+            compute_cable_dahl_parameters,
+            dim=2,
+            inputs=[
+                joint_type,
+                joint_enabled,
+                joint_world,
+                rebaseline_mask,
+                joint_parent,
+                joint_child,
+                joint_x,
+                joint_x,
+                joint_constraint_start,
+                joint_penalty_k,
+                joint_is_hard,
+                joint_cable_rest_kb_local,
+                joint_cable_rest_twist,
+                body_q,
+                joint_sigma_prev,
+                joint_kappa_prev,
+                joint_dkappa_prev,
+                eps_max,
+                tau,
+            ],
+            outputs=[sigma_start, c_fric],
+            device=device,
+        )
+
+        expected_sigma_magnitude = 2.0 * 0.2 * (1.0 - np.exp(-step / 0.2))
+        expected_sigma = expected_sigma_magnitude * np.array([1.0, -1.0])
+        np.testing.assert_allclose(sigma_start.numpy()[:, 2], expected_sigma, rtol=1.0e-5, atol=1.0e-6)
+        test.assertTrue(np.all(c_fric.numpy()[:, 2] > 0.0), "Dahl twist tangent should remain positive")
+
+        wp.launch(
+            update_cable_dahl_state,
+            dim=2,
+            inputs=[
+                *update_inputs,
+                eps_max,
+                tau,
+                joint_sigma_prev,
+                joint_kappa_prev,
+                joint_dkappa_prev,
+            ],
+            device=device,
+        )
+
+        np.testing.assert_allclose(joint_sigma_prev.numpy()[:, 2], expected_sigma, rtol=1.0e-5, atol=1.0e-6)
+        np.testing.assert_allclose(
+            joint_dkappa_prev.numpy()[:, 2],
+            [step, -step],
+            rtol=1.0e-5,
+            atol=1.0e-6,
+        )
+
+        # A temporarily gated Dahl model must persist the same branch-safe
+        # increment so re-enabling it cannot inherit the opposite direction.
+        gated_eps_max = wp.zeros(2, dtype=float, device=device)
+        gated_sigma_prev = wp.zeros(2, dtype=wp.vec3, device=device)
+        gated_kappa_prev = wp.array(kappa_prev_values, dtype=wp.vec3, device=device)
+        gated_dkappa_prev = wp.zeros(2, dtype=wp.vec3, device=device)
+        wp.launch(
+            update_cable_dahl_state,
+            dim=2,
+            inputs=[
+                *update_inputs,
+                gated_eps_max,
+                tau,
+                gated_sigma_prev,
+                gated_kappa_prev,
+                gated_dkappa_prev,
+            ],
+            device=device,
+        )
+
+        np.testing.assert_allclose(
+            gated_dkappa_prev.numpy()[:, 2],
+            [step, -step],
+            rtol=1.0e-5,
+            atol=1.0e-6,
+        )
 
 
 def _split_cable_routes_explicit_shear_to_second_slot(test, device):
@@ -5741,8 +5961,20 @@ add_function_test(
 )
 add_function_test(
     TestCable,
+    "test_split_cable_twist_damping_is_continuous_across_branch_cut",
+    _split_cable_twist_damping_is_continuous_across_branch_cut,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
     "test_split_cable_dahl_uses_bend_and_twist_envelopes",
     _split_cable_dahl_uses_bend_and_twist_envelopes,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_split_cable_dahl_twist_is_continuous_across_branch_cut",
+    _split_cable_dahl_twist_is_continuous_across_branch_cut,
     devices=devices,
 )
 add_function_test(

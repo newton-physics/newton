@@ -608,6 +608,24 @@ def _cable_bend_twist_jacobian_z_from_measure(
 
 
 @wp.func
+def _wrap_principal_angle(angle: float) -> float:
+    """Wrap a bounded angular difference into ``[-pi, pi]``.
+
+    Args:
+        angle: Difference of two principal angles. The caller guarantees a
+            value in ``[-2*pi, 2*pi]``.
+
+    Returns:
+        Equivalent principal angular difference.
+    """
+    if angle > wp.pi:
+        angle -= 2.0 * wp.pi
+    elif angle < -wp.pi:
+        angle += 2.0 * wp.pi
+    return angle
+
+
+@wp.func
 def _assemble_geometric_cable_kappa_z(
     q_wp: wp.quat,
     kb_now_world: wp.vec3,
@@ -621,12 +639,27 @@ def _assemble_geometric_cable_kappa_z(
     # In the local +Z convention, parent-frame x/y are bend and z is twist.
     # Wrap the twist delta of two atan2 angles into [-pi, pi] to avoid a ~2*pi
     # jump when rest/current straddle the branch cut (one revolution per joint).
-    twist_residual = twist_now - twist_rest
-    if twist_residual > wp.pi:
-        twist_residual -= 2.0 * wp.pi
-    elif twist_residual < -wp.pi:
-        twist_residual += 2.0 * wp.pi
+    twist_residual = _wrap_principal_angle(twist_now - twist_rest)
     return wp.vec3(bend_residual_local[0], bend_residual_local[1], twist_residual)
+
+
+@wp.func
+def _cable_bend_twist_delta(kappa: wp.vec3, kappa_prev: wp.vec3) -> wp.vec3:
+    """Return a temporal cable bend/twist strain increment.
+
+    Args:
+        kappa: Current ``[bend_x, bend_y, twist_z]`` strain.
+        kappa_prev: Previous strain in the same representation.
+
+    Returns:
+        Bend increments from ordinary subtraction and the shortest signed
+        principal-angle increment for twist.
+    """
+    return wp.vec3(
+        kappa[0] - kappa_prev[0],
+        kappa[1] - kappa_prev[1],
+        _wrap_principal_angle(kappa[2] - kappa_prev[2]),
+    )
 
 
 @wp.func
@@ -938,7 +971,7 @@ def evaluate_cable_bend_twist_force_hessian_z(
         kappa_prev_vec = _assemble_geometric_cable_kappa_z(
             q_wp_prev, prev_measure.kb_world, prev_measure.twist, kb_rest_local, twist_rest
         )
-        dkappa_dt = (kappa_now_vec - kappa_prev_vec) * inv_dt
+        dkappa_dt = _cable_bend_twist_delta(kappa_now_vec, kappa_prev_vec) * inv_dt
         f_local = f_local + wp.cw_mul(K_damp_diag, dkappa_dt)
         H_local_diag = H_local_diag + inv_dt * K_damp_diag
 
@@ -3258,19 +3291,28 @@ def _dahl_axis_direction(d_kappa: float, d_kappa_prev: float) -> float:
 
 @wp.func
 def _advance_dahl_axis(
-    kappa: float,
-    kappa_prev: float,
+    d_kappa: float,
     d_kappa_prev: float,
     sigma_prev: float,
     sigma_max: float,
     tau: float,
 ):
-    """Advance one scalar Dahl component and return (sigma, delta_kappa, direction)."""
-    d_kappa = kappa - kappa_prev
+    """Advance one scalar Dahl component from a supplied strain increment.
+
+    Args:
+        d_kappa: Current strain increment.
+        d_kappa_prev: Previous increment used inside the direction deadband.
+        sigma_prev: Previous Dahl stress.
+        sigma_max: Magnitude of the Dahl stress envelope.
+        tau: Dahl transition length in strain units.
+
+    Returns:
+        Updated Dahl stress and loading direction.
+    """
     direction = _dahl_axis_direction(d_kappa, d_kappa_prev)
     exp_term = wp.exp(-direction * d_kappa / tau)
     sigma = direction * sigma_max * (1.0 - exp_term) + sigma_prev * exp_term
-    return sigma, d_kappa, direction
+    return sigma, direction
 
 
 @wp.kernel
@@ -3380,6 +3422,7 @@ def compute_cable_dahl_parameters(
     if not dahl_active:
         return
 
+    d_kappa = _cable_bend_twist_delta(kappa_now, kappa_prev)
     sigma_out = zero
     C_fric_out = zero
     for axis in range(3):
@@ -3387,9 +3430,8 @@ def compute_cable_dahl_parameters(
         if sigma_max <= 0.0:
             continue
 
-        sigma0_i, d_kappa_i, direction = _advance_dahl_axis(
-            kappa_now[axis],
-            kappa_prev[axis],
+        sigma0_i, direction = _advance_dahl_axis(
+            d_kappa[axis],
             d_kappa_prev[axis],
             sigma_prev[axis],
             sigma_max,
@@ -3399,7 +3441,7 @@ def compute_cable_dahl_parameters(
 
         # Tangent stiffness K = (sigma_max - dir*sigma0) / (tau + |d_kappa|).
         numerator = sigma_max - direction * sigma0_i
-        denominator = tau + wp.abs(d_kappa_i)
+        denominator = tau + wp.abs(d_kappa[axis])
         sigma_out[axis] = sigma0_i
         C_fric_out[axis] = wp.max(numerator / denominator, 0.0)
 
@@ -4963,6 +5005,7 @@ def update_cable_dahl_state(
     kappa_old = joint_kappa_prev[j]
     d_kappa_old = joint_dkappa_prev[j]
     sigma_old = joint_sigma_prev[j]
+    d_kappa = _cable_bend_twist_delta(kappa_final, kappa_old)
 
     eps_max = joint_eps_max[j]  # Maximum persistent strain [rad]
     tau = joint_tau[j]  # Memory decay length [rad]
@@ -4970,7 +5013,7 @@ def update_cable_dahl_state(
     if eps_max <= 0.0 or tau <= 0.0:
         joint_sigma_prev[j] = zero
         joint_kappa_prev[j] = kappa_final
-        joint_dkappa_prev[j] = kappa_final - kappa_old  # store Delta kappa
+        joint_dkappa_prev[j] = d_kappa
         return
 
     sigma_final_out = zero
@@ -4981,16 +5024,15 @@ def update_cable_dahl_state(
         if sigma_max <= 0.0:
             continue
 
-        sigma_i_next, d_kappa_i, _direction = _advance_dahl_axis(
-            kappa_final[axis],
-            kappa_old[axis],
+        sigma_i_next, _direction = _advance_dahl_axis(
+            d_kappa[axis],
             d_kappa_old[axis],
             sigma_old[axis],
             sigma_max,
             tau,
         )
         sigma_final_out[axis] = sigma_i_next
-        d_kappa_out[axis] = d_kappa_i
+        d_kappa_out[axis] = d_kappa[axis]
 
     # Store final vector state for next timestep: [bend_x, bend_y, twist_z].
     joint_sigma_prev[j] = sigma_final_out
