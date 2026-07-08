@@ -81,6 +81,132 @@ def test_reusable_context(test, device):
     test.assertIsNotNone(verts2)
 
 
+def test_multi_world_mesh(test, device):
+    positions, radii = _make_sphere_particles(n=500, device=device)
+    positions_np = positions.numpy()
+    offset = np.array([4.0, 0.0, 0.0], dtype=np.float32)
+    combined_positions = wp.array(
+        np.concatenate((positions_np, positions_np + offset)),
+        dtype=wp.vec3,
+        device=device,
+    )
+    combined_radii = wp.array(
+        np.concatenate((radii.numpy(), radii.numpy())),
+        dtype=wp.float32,
+        device=device,
+    )
+    particle_world = wp.array(
+        np.concatenate((np.zeros(500, dtype=np.int32), np.ones(500, dtype=np.int32))),
+        dtype=wp.int32,
+        device=device,
+    )
+
+    surface = ParticleSurface(
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        world_count=3,
+        device=device,
+    )
+    mesh = surface.extract(combined_positions, combined_radii, particle_world=particle_world)
+    vertices, indices, normals = mesh.to_arrays()
+
+    vertex_world_start = mesh.vertex_world_start.numpy()
+    index_world_start = mesh.index_world_start.numpy()
+    test.assertEqual(int(vertex_world_start[-1]), vertices.shape[0])
+    test.assertEqual(int(index_world_start[-1]), indices.shape[0])
+    test.assertEqual(int(vertex_world_start[1]), int(vertex_world_start[2] - vertex_world_start[1]))
+    test.assertEqual(int(index_world_start[1]), int(index_world_start[2] - index_world_start[1]))
+    test.assertEqual(int(vertex_world_start[2]), int(vertex_world_start[3]))
+    test.assertEqual(int(index_world_start[2]), int(index_world_start[3]))
+
+    indices_np = indices.numpy()
+    for world in range(2):
+        world_indices = indices_np[index_world_start[world] : index_world_start[world + 1]]
+        test.assertGreaterEqual(int(np.min(world_indices)), int(vertex_world_start[world]))
+        test.assertLess(int(np.max(world_indices)), int(vertex_world_start[world + 1]))
+
+    test.assertEqual(normals.shape[0], vertices.shape[0])
+    test.assertEqual(surface.grid_dims_for_world(0), surface.grid_dims_for_world(1))
+    test.assertEqual(surface.grid_dims_for_world(2), (0, 0, 0))
+    test.assertIsNone(surface.field_for_world(2))
+    np.testing.assert_allclose(
+        np.array(surface.grid_origin_for_world(1)) - np.array(surface.grid_origin_for_world(0)),
+        offset,
+        atol=1.0e-6,
+    )
+
+
+def test_multi_world_capacity(test, device):
+    positions, radii = _make_sphere_particles(n=200, device=device)
+    positions_np = positions.numpy()
+    combined_positions = wp.array(
+        np.concatenate((positions_np, positions_np)),
+        dtype=wp.vec3,
+        device=device,
+    )
+    combined_radii = wp.array(
+        np.concatenate((radii.numpy(), radii.numpy())),
+        dtype=wp.float32,
+        device=device,
+    )
+    particle_world = wp.array(
+        np.concatenate((np.zeros(200, dtype=np.int32), np.ones(200, dtype=np.int32))),
+        dtype=wp.int32,
+        device=device,
+    )
+    exact_surface = ParticleSurface(
+        voxel_size=0.1,
+        kernel_radius=0.3,
+        world_count=2,
+        device=device,
+    )
+    exact_surface.extract(
+        combined_positions,
+        combined_radii,
+        particle_world=particle_world,
+        compute_mesh=False,
+    )
+    cell_world_start = exact_surface.grid_cell_world_start.numpy()
+    world_cell_counts = np.diff(cell_world_start)
+    total_cell_count = int(cell_world_start[-1])
+
+    surface = ParticleSurface(
+        voxel_size=0.1,
+        kernel_radius=0.3,
+        max_grid_cells=total_cell_count,
+        world_count=2,
+        device=device,
+    )
+
+    mesh = surface.extract(combined_positions, combined_radii, particle_world=particle_world)
+    vertices, indices, _normals = mesh.to_arrays()
+    vertex_world_start = mesh.vertex_world_start.numpy()
+    index_world_start = mesh.index_world_start.numpy()
+    test.assertEqual(int(vertex_world_start[-1]), vertices.shape[0])
+    test.assertEqual(int(index_world_start[-1]), indices.shape[0])
+    test.assertEqual(int(vertex_world_start[1]), int(vertex_world_start[2] - vertex_world_start[1]))
+
+    overflow_surface = ParticleSurface(
+        voxel_size=0.1,
+        kernel_radius=0.3,
+        max_grid_cells=int(np.max(world_cell_counts)),
+        world_count=2,
+        device=device,
+    )
+    overflow_mesh = overflow_surface.extract(
+        combined_positions,
+        combined_radii,
+        particle_world=particle_world,
+    )
+    with test.assertRaisesRegex(ValueError, "exceeds configured max_grid_cells"):
+        overflow_mesh.to_arrays()
+
+    if wp.get_device(device).is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            surface.extract(combined_positions, combined_radii, particle_world=particle_world)
+        wp.capture_launch(capture.graph)
+
+
 def test_field_only_extraction(test, device):
     positions, radii = _make_sphere_particles(device=device)
     ctx = ParticleSurface(voxel_size=0.05, kernel_radius=0.15, device=device)
@@ -195,6 +321,8 @@ def test_array_layout_validation(test, device):
         ctx.extract(positions, radii=wp.full(4, value=0.05, dtype=wp.float64, device=device))
     with test.assertRaisesRegex(TypeError, "particle_flags must have dtype wp.int32"):
         ctx.extract(positions, radii=radii, particle_flags=wp.ones(4, dtype=wp.float32, device=device))
+    with test.assertRaisesRegex(TypeError, "particle_world must have dtype wp.int32"):
+        ctx.extract(positions, radii=radii, particle_world=wp.zeros(4, dtype=wp.float32, device=device))
 
 
 def test_fem_field(test, device):
@@ -733,6 +861,72 @@ def test_solver_extract_particle_surface(test, device):
         wp.capture_launch(capture.graph)
 
 
+def test_solver_extract_particle_surface_multi_world(test, device):
+    blueprint = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(blueprint)
+    blueprint.add_particle_grid(
+        pos=wp.vec3(-0.15, -0.15, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=4,
+        dim_y=4,
+        dim_z=4,
+        cell_x=0.1,
+        cell_y=0.1,
+        cell_z=0.1,
+        mass=1.0,
+        jitter=0.0,
+        radius_mean=0.05,
+    )
+    blueprint.add_ground_plane()
+
+    builder = newton.ModelBuilder()
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_world(blueprint)
+    builder.add_world(blueprint, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    options = SolverImplicitMPM.Config()
+    options.grid_type = "dense"
+    options.voxel_size = 0.1
+    solver = SolverImplicitMPM(model, options)
+    surface = solver.create_particle_surface(
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        field_smooth_iterations=0,
+    )
+
+    mesh = solver.extract_particle_surface(state, surface, compute_normals=False)
+    vertices, indices, normals = mesh.to_arrays()
+    vertex_world_start = mesh.vertex_world_start.numpy()
+    index_world_start = mesh.index_world_start.numpy()
+
+    test.assertEqual(surface.world_count, 2)
+    test.assertEqual(int(vertex_world_start[-1]), vertices.shape[0])
+    test.assertEqual(int(index_world_start[-1]), indices.shape[0])
+    test.assertEqual(int(vertex_world_start[1]), int(vertex_world_start[2] - vertex_world_start[1]))
+    test.assertIsNone(normals)
+
+    surface_sdf = solver.create_particle_surface(
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        field_smooth_iterations=0,
+        field_mode="sdf",
+        redistance_iterations=1,
+    )
+    collider_mesh = solver.extract_particle_surface(
+        state,
+        surface_sdf,
+        compute_normals=False,
+        extrapolate_into_colliders=True,
+        collider_extrapolation_depth=0.08,
+    )
+    collider_vertices, collider_indices, _collider_normals = collider_mesh.to_arrays()
+    test.assertEqual(int(collider_mesh.vertex_world_start.numpy()[-1]), collider_vertices.shape[0])
+    test.assertEqual(int(collider_mesh.index_world_start.numpy()[-1]), collider_indices.shape[0])
+
+
 class TestParticleSurface(unittest.TestCase):
     def test_fem_field_requires_populated_field(self):
         ctx = ParticleSurface(voxel_size=0.1, device="cpu")
@@ -750,6 +944,7 @@ class TestParticleSurface(unittest.TestCase):
             ({"voxel_size": 0.1, "kernel_scale": 0.0}, "kernel_scale"),
             ({"voxel_size": 0.1, "anisotropy_scale": 0.0}, "anisotropy_scale"),
             ({"voxel_size": 0.1, "anisotropy_strength": 1.5}, "anisotropy_strength"),
+            ({"voxel_size": 0.1, "world_count": 0}, "world_count"),
             ({"voxel_size": 0.1, "field_smooth_iterations": -1}, "field_smooth_iterations"),
             ({"voxel_size": 0.1, "mesh_smooth_lambda": 1.5}, "mesh_smooth_lambda"),
             ({"voxel_size": 0.1, "surface_method": "invalid"}, "surface_method"),
@@ -799,6 +994,8 @@ devices = get_test_devices(mode="basic")
 
 add_function_test(TestParticleSurface, "test_one_shot", test_one_shot, devices=devices)
 add_function_test(TestParticleSurface, "test_reusable_context", test_reusable_context, devices=devices)
+add_function_test(TestParticleSurface, "test_multi_world_mesh", test_multi_world_mesh, devices=devices)
+add_function_test(TestParticleSurface, "test_multi_world_capacity", test_multi_world_capacity, devices=devices)
 add_function_test(TestParticleSurface, "test_field_only_extraction", test_field_only_extraction, devices=devices)
 add_function_test(
     TestParticleSurface,
@@ -856,6 +1053,12 @@ add_function_test(
 )
 add_function_test(
     TestParticleSurface, "test_solver_extract_particle_surface", test_solver_extract_particle_surface, devices=devices
+)
+add_function_test(
+    TestParticleSurface,
+    "test_solver_extract_particle_surface_multi_world",
+    test_solver_extract_particle_surface_multi_world,
+    devices=devices,
 )
 
 
