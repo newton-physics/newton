@@ -335,7 +335,7 @@ class Example:
             default="default",
             help="Scene configuration to run.",
         )
-        parser.add_argument("--substeps", type=int, default=4, help="Simulation substeps per rendered frame.")
+        parser.add_argument("--substeps", type=int, default=5, help="Simulation substeps per rendered frame.")
         newton.examples.add_coupled_view_args(parser)
         parser.add_argument("--vbd-iterations", type=int, default=8, help="VBD iterations per substep.")
         parser.add_argument("--mujoco-iterations", type=int, default=60, help="MuJoCo solver iterations.")

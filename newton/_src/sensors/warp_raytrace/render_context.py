@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+from ...core import Axis
 from ...geometry import Gaussian, GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
@@ -52,6 +53,7 @@ class RenderContext:
         self.kernel_cache: dict[int, wp.Kernel] = {}
 
         self.world_count: int = world_count
+        self.up_axis: Axis = Axis.Z
 
         self.triangle_mesh: wp.Mesh | None = None
 
@@ -96,6 +98,7 @@ class RenderContext:
         """
 
         self.world_count = model.world_count
+        self.up_axis = Axis.from_any(model.up_axis)
         self.triangle_mesh = None
         self.__triangle_points = None
         self.__triangle_indices = None
