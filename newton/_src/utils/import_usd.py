@@ -4639,6 +4639,9 @@ def parse_usd(
     # Use TraverseInstanceProxies to include prims under instanceable prims
     if frequencies_with_filters:
         for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
+            prim_path = str(prim.GetPath())
+            if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+                continue
             for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
                 # Build per-frequency callback context and pass the same object to
                 # usd_prim_filter and usd_entry_expander.
