@@ -58,7 +58,7 @@ def create_eval_articulation_fk_tile(joint_capacity: int, write_all: bool, has_c
         body_q_work = wp.tile_zeros(shape=joint_capacity, dtype=wp.transform, storage="shared")
 
         if wp.static(preserve_body_q):
-            chunk_count = (joint_capacity + wp.block_dim() - 1) // wp.block_dim()
+            chunk_count = (joint_count + wp.block_dim() - 1) // wp.block_dim()
             for chunk in range(chunk_count):
                 child_slot = chunk * wp.block_dim() + thread
                 active = child_slot < joint_count
