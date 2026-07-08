@@ -1090,6 +1090,715 @@ class TestImportUsdJoints(unittest.TestCase):
                     self.assertNotIn(shape_pair, builder.shape_collision_filter_pairs)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_joint_api_parsing(self):
+        """NewtonJointAPI broadcast attributes parse onto a revolute joint, including sentinels."""
+        from pxr import Usd
+
+        from newton._src.utils.import_usd import _HARD_LIMIT_KE  # noqa: PLC0415
+
+        deg2rad = math.pi / 180.0
+
+        # Joint1: concrete NewtonJointAPI values. Joint2: hard limit (limitStiffness=inf).
+        # Joint3: engine defaults (limitStiffness/limitDamping = -inf, nothing else authored).
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+        float newton:armature = 0.5
+        float newton:friction = 0.1
+        float newton:damping = 2.0
+        float newton:velocityLimit = 100.0
+        float newton:limitStiffness = 200.0
+        float newton:limitDamping = 5.0
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint2"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -30
+        float physics:upperLimit = 30
+        float newton:limitStiffness = inf
+        float newton:limitDamping = -inf
+    }
+
+    def Xform "Body3" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision3" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint3"
+    {
+        rel physics:body0 = </Articulation/Body2>
+        rel physics:body1 = </Articulation/Body3>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -60
+        float physics:upperLimit = 60
+        float newton:limitStiffness = -inf
+        float newton:limitDamping = -inf
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        default_ke = builder.default_joint_cfg.limit_ke
+        default_kd = builder.default_joint_cfg.limit_kd
+
+        qd_start = model.joint_qd_start.numpy()
+        limit_ke = model.joint_limit_ke.numpy()
+        limit_kd = model.joint_limit_kd.numpy()
+        damping = model.joint_damping.numpy()
+        armature = model.joint_armature.numpy()
+        friction = model.joint_friction.numpy()
+        velocity_limit = model.joint_velocity_limit.numpy()
+
+        def dof(label):
+            return int(qd_start[model.joint_label.index(label)])
+
+        # Joint1: concrete values. Angular gains are authored per-degree and stored per-radian.
+        d1 = dof("/Articulation/Joint1")
+        self.assertAlmostEqual(float(limit_ke[d1]), 200.0 / deg2rad, places=2)
+        self.assertAlmostEqual(float(limit_kd[d1]), 5.0 / deg2rad, places=3)
+        self.assertAlmostEqual(float(damping[d1]), 2.0 / deg2rad, places=3)
+        self.assertAlmostEqual(float(armature[d1]), 0.5, places=5)
+        self.assertAlmostEqual(float(friction[d1]), 0.1, places=5)
+        self.assertAlmostEqual(float(velocity_limit[d1]), 100.0 * deg2rad, places=5)
+
+        # Joint2: limitStiffness=inf -> hard limit, limitDamping forced to 0.
+        d2 = dof("/Articulation/Joint2")
+        self.assertAlmostEqual(float(limit_ke[d2]), _HARD_LIMIT_KE / deg2rad, delta=100.0)
+        self.assertEqual(float(limit_kd[d2]), 0.0)
+
+        # Joint3: -inf sentinels -> builder defaults.
+        d3 = dof("/Articulation/Joint3")
+        self.assertAlmostEqual(float(limit_ke[d3]), default_ke, places=2)
+        self.assertAlmostEqual(float(limit_kd[d3]), default_kd, places=2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_joint_api_prismatic(self):
+        """NewtonJointAPI attributes parse onto a prismatic joint without per-degree conversion."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsPrismaticJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+        float newton:armature = 0.5
+        float newton:friction = 0.1
+        float newton:damping = 2.0
+        float newton:velocityLimit = 100.0
+        float newton:limitStiffness = 200.0
+        float newton:limitDamping = 5.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        d = int(qd_start[model.joint_label.index("/Articulation/Joint1")])
+
+        # Linear DOFs carry the authored values directly (no per-degree conversion).
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[d]), 200.0, places=2)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[d]), 5.0, places=3)
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[d]), 2.0, places=3)
+        self.assertAlmostEqual(float(model.joint_armature.numpy()[d]), 0.5, places=5)
+        self.assertAlmostEqual(float(model.joint_friction.numpy()[d]), 0.1, places=5)
+        self.assertAlmostEqual(float(model.joint_velocity_limit.numpy()[d]), 100.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_joint_api_revolute_default_damping(self):
+        """builder.default_joint_cfg.damping is used as-is when newton:damping is not authored.
+
+        Regression: the importer previously divided the builder default by DegreesToRadian,
+        producing an incorrect value (e.g. 3.0 → ~171.9) for revolute joints.
+        """
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+        # newton:damping intentionally omitted — builder default must be used without conversion
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 3.0
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        damping = model.joint_damping.numpy()
+        d = int(qd_start[model.joint_label.index("/Articulation/Joint1")])
+        self.assertAlmostEqual(float(damping[d]), 3.0, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_merged_joint_revolute_default_damping(self):
+        """Merged-joint (D6 consolidation) path uses builder default damping as-is.
+
+        Regression: when two single-DOF joints between the same body pair are
+        merged into one D6 joint, the revolute (angular) DOF ran an unconditional
+        j_damping /= DegreesToRadian on the builder default (already per-radian),
+        producing e.g. 3.0 -> ~171.9. With no newton:damping authored, the builder
+        default must flow through unchanged for both the linear and angular DOFs.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Cube.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        # Two single-DOF joints on the same body pair -> merged into one D6 joint,
+        # exercising parse_merged_joints. A revolute DOF is required to reach the
+        # angular unit-conversion block.
+        slide = UsdPhysics.PrismaticJoint.Define(stage, "/World/Body/slide")
+        slide.CreateBody1Rel().SetTargets([body.GetPath()])
+        slide.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        slide.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        slide.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        slide.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        slide.CreateAxisAttr().Set("X")
+
+        hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/Body/hinge")
+        hinge.CreateBody1Rel().SetTargets([body.GetPath()])
+        hinge.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        hinge.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        hinge.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        hinge.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        hinge.CreateAxisAttr().Set("Z")
+        # newton:damping intentionally omitted on both joints.
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 3.0
+        result = builder.add_usd(stage, load_visual_shapes=False)
+        model = builder.finalize()
+
+        # Both joints must have merged into a single D6 joint (1 linear + 1 angular DOF).
+        self.assertEqual(builder.joint_type, [newton.JointType.D6])
+        self.assertEqual(builder.joint_dof_dim, [(1, 1)])
+        merged_joint = result["path_joint_map"][hinge.GetPath().pathString]
+        self.assertEqual(result["path_joint_map"][slide.GetPath().pathString], merged_joint)
+
+        # Both DOFs (linear DOF first, angular DOF second) must carry the builder
+        # default unchanged; the revolute DOF in particular must NOT be scaled by
+        # 1 / DegreesToRadian.
+        qd_start = int(model.joint_qd_start.numpy()[merged_joint])
+        damping = model.joint_damping.numpy()
+        self.assertAlmostEqual(float(damping[qd_start]), 3.0, places=6)  # linear DOF
+        self.assertAlmostEqual(float(damping[qd_start + 1]), 3.0, places=6)  # angular DOF
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_joint_api_d6(self):
+        """NewtonJointAPI attributes broadcast uniformly across a D6 joint's linear and angular DOFs."""
+        from pxr import Usd
+
+        deg2rad = math.pi / 180.0
+
+        # PhysicsJoint with one free translation DOF (transX) and one free rotation DOF (rotX).
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsJoint "Joint1" (
+        prepend apiSchemas = ["PhysicsLimitAPI:transX", "PhysicsLimitAPI:rotX"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        float limit:transX:physics:low = -1
+        float limit:transX:physics:high = 1
+        float limit:rotX:physics:low = -45
+        float limit:rotX:physics:high = 45
+        float newton:armature = 0.5
+        float newton:friction = 0.1
+        float newton:damping = 2.0
+        float newton:velocityLimit = 100.0
+        float newton:limitStiffness = 200.0
+        float newton:limitDamping = 5.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        joint_idx = model.joint_label.index("/Articulation/Joint1")
+        dof_start = int(model.joint_qd_start.numpy()[joint_idx])
+
+        # The linear transX DOF is created before the angular rotX DOF.
+        d_lin = dof_start
+        d_ang = dof_start + 1
+
+        limit_ke = model.joint_limit_ke.numpy()
+        limit_kd = model.joint_limit_kd.numpy()
+        damping = model.joint_damping.numpy()
+        armature = model.joint_armature.numpy()
+        friction = model.joint_friction.numpy()
+        velocity_limit = model.joint_velocity_limit.numpy()
+
+        # Linear DOF: authored values applied directly.
+        self.assertAlmostEqual(float(limit_ke[d_lin]), 200.0, places=2)
+        self.assertAlmostEqual(float(limit_kd[d_lin]), 5.0, places=3)
+        self.assertAlmostEqual(float(damping[d_lin]), 2.0, places=3)
+        self.assertAlmostEqual(float(velocity_limit[d_lin]), 100.0, places=5)
+
+        # Angular DOF: gains stored per-radian (converted from per-degree).
+        self.assertAlmostEqual(float(limit_ke[d_ang]), 200.0 / deg2rad, places=2)
+        self.assertAlmostEqual(float(limit_kd[d_ang]), 5.0 / deg2rad, places=3)
+        self.assertAlmostEqual(float(damping[d_ang]), 2.0 / deg2rad, places=3)
+        self.assertAlmostEqual(float(velocity_limit[d_ang]), 100.0 * deg2rad, places=5)
+
+        # Armature and friction broadcast uniformly to both DOFs.
+        for d in (d_lin, d_ang):
+            self.assertAlmostEqual(float(armature[d]), 0.5, places=5)
+            self.assertAlmostEqual(float(friction[d]), 0.1, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_joint_api_velocity_limit_unlimited(self):
+        """newton:velocityLimit=inf falls back to the builder default rather than storing inf."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsRevoluteJoint "Joint1"
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "Z"
+        float physics:lowerLimit = -45
+        float physics:upperLimit = 45
+        float newton:velocityLimit = inf
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        d = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint1")])
+        velocity_limit = float(model.joint_velocity_limit.numpy()[d])
+
+        self.assertNotEqual(velocity_limit, float("inf"))
+        self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_limit_sentinel_precedence_over_mjc(self):
+        """Authored newton:limitStiffness=-inf must select the builder default,
+        not fall through to a lower-priority MuJoCo per-DOF gain."""
+        from pxr import Sdf, Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
+        # Prismatic joint with MjcJointAPI authoring mjc:solreflimit = [0.04, 2]
+        # AND Newton authoring limitStiffness = -inf, limitDamping = -inf.
+        # Expected: builder defaults win (Newton sentinel overrides MuJoCo).
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsPrismaticJoint "Joint" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+        uniform double[] mjc:solreflimit = [0.04, 2]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+        # Author Newton sentinels on the joint prim.
+        joint_prim = stage.GetPrimAtPath("/Articulation/Joint")
+        joint_prim.CreateAttribute("newton:limitStiffness", Sdf.ValueTypeNames.Float, custom=True).Set(float("-inf"))
+        joint_prim.CreateAttribute("newton:limitDamping", Sdf.ValueTypeNames.Float, custom=True).Set(float("-inf"))
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_joint_cfg.limit_ke = 999.0
+        builder.default_joint_cfg.limit_kd = 88.0
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        model = builder.finalize()
+
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint")])
+        # Authored -inf must select builder defaults (999.0 / 88.0), NOT the MuJoCo
+        # solreflimit-derived values.
+        self.assertAlmostEqual(float(model.joint_limit_ke.numpy()[dof]), 999.0, places=2)
+        self.assertAlmostEqual(float(model.joint_limit_kd.numpy()[dof]), 88.0, places=2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_newton_limit_unset_falls_through_to_mjc(self):
+        """When newton:limitStiffness is NOT authored, MuJoCo per-DOF gains
+        from mjc:solreflimit must flow through as the fallback."""
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton  # noqa: PLC0415
+
+        # Prismatic joint with MjcJointAPI authoring solreflimit but NO Newton
+        # limitStiffness / limitDamping authored.
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Articulation" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Sphere "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double radius = 0.1
+        }
+    }
+
+    def PhysicsPrismaticJoint "Joint" (
+        prepend apiSchemas = ["MjcJointAPI"]
+    )
+    {
+        rel physics:body0 = </Articulation/Body1>
+        rel physics:body1 = </Articulation/Body2>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+        uniform double[] mjc:solreflimit = [0.04, 2]
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_joint_cfg.limit_ke = 999.0
+        builder.default_joint_cfg.limit_kd = 88.0
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        model = builder.finalize()
+
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/Articulation/Joint")])
+        # No Newton limitStiffness authored -> MuJoCo solreflimit-derived gains must flow.
+        # solreflimit = [0.04, 2] -> ke = 1/(d*d) = 1/0.0016 = 625, kd = 2/(d) = 50
+        # (exact values depend on the MuJoCo gain conversion; just verify NOT builder default)
+        limit_ke = float(model.joint_limit_ke.numpy()[dof])
+        limit_kd = float(model.joint_limit_kd.numpy()[dof])
+        self.assertNotAlmostEqual(limit_ke, 999.0, places=0)
+        self.assertNotAlmostEqual(limit_kd, 88.0, places=0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering(self):
         builder_dfs = newton.ModelBuilder()
         builder_dfs.add_usd(
@@ -2522,8 +3231,8 @@ def Xform "Articulation" (
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
         joint_prim = stage.GetPrimAtPath("/Articulation/Joint")
-        joint_prim.CreateAttribute("newton:linear:limitStiffness", Sdf.ValueTypeNames.Float, custom=True).Set(2500.0)
-        joint_prim.CreateAttribute("newton:linear:limitDamping", Sdf.ValueTypeNames.Float, custom=True).Set(100.0)
+        joint_prim.CreateAttribute("newton:limitStiffness", Sdf.ValueTypeNames.Float, custom=True).Set(2500.0)
+        joint_prim.CreateAttribute("newton:limitDamping", Sdf.ValueTypeNames.Float, custom=True).Set(100.0)
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)

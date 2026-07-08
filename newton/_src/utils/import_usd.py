@@ -56,6 +56,72 @@ AttributeFrequency = Model.AttributeFrequency
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
+# Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
+_HARD_LIMIT_KE = 1.0e8
+
+
+def _resolve_newton_limit_ke(
+    limit_ke: float | None,
+    fallback: float,
+    fallback_source: str,
+    builder_default: float,
+) -> tuple[float, str]:
+    """Resolve a NewtonJointAPI ``newton:limitStiffness`` value.
+
+    ``limit_ke`` is ``None`` when the attribute is not authored, ``-inf`` when
+    authored as the engine-default sentinel, ``+inf`` for a hard limit, or a
+    finite stiffness value.
+
+    ``fallback`` is the per-DOF stiffness resolved from lower-priority schemas
+    (PhysX/MuJoCo).  ``builder_default`` is the ModelBuilder engine default.
+
+    An explicit ``-inf`` takes precedence over the per-DOF fallback and selects
+    the builder default so that a lower-priority schema cannot override an
+    authored Newton sentinel.
+
+    Returns (resolved_value, source) where source is ``"force"`` when Newton
+    broadcast values are used, or the original ``fallback_source`` otherwise.
+    """
+    if limit_ke is None:
+        return fallback, fallback_source
+    if limit_ke == float("-inf"):
+        return builder_default, "force"
+    if limit_ke == float("inf"):
+        return _HARD_LIMIT_KE, "force"
+    return limit_ke, "force"
+
+
+def _resolve_newton_limit_kd(
+    limit_ke: float | None,
+    limit_kd: float | None,
+    fallback: float,
+    fallback_source: str,
+    builder_default: float,
+) -> tuple[float, str]:
+    """Resolve a NewtonJointAPI ``newton:limitDamping`` value.
+
+    Hard limits (``limit_ke`` or ``limit_kd`` == ``+inf``) have no damping.
+    An authored ``-inf`` selects the builder default (engine default), taking
+    precedence over per-DOF fallbacks from lower-priority schemas.
+    When neither Newton attribute is authored (``None``), the per-DOF ``fallback``
+    from other resolvers is used.
+
+    Returns (resolved_value, source) where source is ``"force"`` when Newton
+    broadcast values are used, or the original ``fallback_source`` otherwise.
+    """
+    # Hard (rigid) limit: infinite ke or kd means no dissipation is needed.
+    if limit_ke is not None and limit_ke == float("inf"):
+        return 0.0, "force"
+    if limit_kd is not None and limit_kd == float("inf"):
+        return 0.0, "force"
+    # Not authored → lower-priority per-DOF fallback.
+    if limit_kd is None:
+        return fallback, fallback_source
+    # Authored -inf → builder default.
+    if limit_kd == float("-inf"):
+        return builder_default, "force"
+    return limit_kd, "force"
+
 
 def _external_stacklevel() -> int:
     """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
@@ -312,6 +378,7 @@ def parse_usd(
 
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
+    default_joint_damping = builder.default_joint_cfg.damping
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
@@ -1211,6 +1278,11 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
+        _joint_damping_usd = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
+        )
+        joint_damping_authored = _joint_damping_usd is not None
+        joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
         joint_velocity_limit = R.get_value(
             joint_prim,
             prim_type=PrimType.JOINT,
@@ -1218,6 +1290,11 @@ def parse_usd(
             default=None,
             verbose=verbose,
         )
+        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
+        if joint_velocity_limit == float("inf"):
+            joint_velocity_limit = None
+        limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
+        limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -1245,15 +1322,21 @@ def parse_usd(
                 limit_gains_scaling = 1.0
 
             limit_key = "limit_angular" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear"
-            current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+            fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 joint_prim,
                 f"{limit_key}_ke",
                 default_joint_limit_ke * limit_gains_scaling,
             )
-            current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+            fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 joint_prim,
                 f"{limit_key}_kd",
                 default_joint_limit_kd * limit_gains_scaling,
+            )
+            current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke * limit_gains_scaling
+            )
+            current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, default_joint_limit_kd * limit_gains_scaling
             )
             if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
@@ -1264,6 +1347,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
+            joint_params["damping"] = joint_damping
             joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
@@ -1317,6 +1401,8 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
+                if joint_damping_authored:
+                    joint_params["damping"] /= DegreesToRadian
                 if joint_params["velocity_limit"] is not None:
                     joint_params["velocity_limit"] *= DegreesToRadian
 
@@ -1419,15 +1505,21 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{trans_name}_ke",
                         default_joint_limit_ke,
                     )
-                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{trans_name}_kd",
                         default_joint_limit_kd,
+                    )
+                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                        limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke
+                    )
+                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, default_joint_limit_kd
                     )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -1440,6 +1532,7 @@ def parse_usd(
                             target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
+                            damping=joint_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit
@@ -1470,14 +1563,27 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{rot_name}_ke",
                         default_joint_limit_ke * DegreesToRadian,
                     )
-                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{rot_name}_kd",
+                        default_joint_limit_kd * DegreesToRadian,
+                    )
+                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                        limit_ke,
+                        fallback_limit_ke,
+                        limit_ke_source,
+                        default_joint_limit_ke * DegreesToRadian,
+                    )
+                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                        limit_ke,
+                        limit_kd,
+                        fallback_limit_kd,
+                        limit_kd_source,
                         default_joint_limit_kd * DegreesToRadian,
                     )
 
@@ -1492,6 +1598,7 @@ def parse_usd(
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
+                            damping=joint_damping / DegreesToRadian if joint_damping_authored else joint_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -1707,19 +1814,45 @@ def parse_usd(
             j_friction = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
             )
+            _j_damping_usd = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
+            )
+            j_damping_authored = _j_damping_usd is not None
+            j_damping = _j_damping_usd if j_damping_authored else default_joint_damping
             j_velocity_limit = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
+            if j_velocity_limit == float("inf"):
+                j_velocity_limit = None
 
             limit_key = "limit_angular" if is_revolute else "limit_linear"
-            limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+            j_newton_limit_ke = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose
+            )
+            j_newton_limit_kd = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose
+            )
+            fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 jp_prim,
                 f"{limit_key}_ke",
                 default_joint_limit_ke * limit_gains_scaling,
             )
-            limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+            fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 jp_prim,
                 f"{limit_key}_kd",
+                default_joint_limit_kd * limit_gains_scaling,
+            )
+            limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                j_newton_limit_ke,
+                fallback_limit_ke,
+                limit_ke_source,
+                default_joint_limit_ke * limit_gains_scaling,
+            )
+            limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                j_newton_limit_ke,
+                j_newton_limit_kd,
+                fallback_limit_kd,
+                limit_kd_source,
                 default_joint_limit_kd * limit_gains_scaling,
             )
 
@@ -1767,6 +1900,8 @@ def parse_usd(
                 limit_upper *= DegreesToRadian
                 limit_ke /= DegreesToRadian
                 limit_kd /= DegreesToRadian
+                if j_damping_authored:
+                    j_damping /= DegreesToRadian
                 if jd.drive.enabled:
                     target_pos *= DegreesToRadian
                     target_vel *= DegreesToRadian
@@ -1810,6 +1945,7 @@ def parse_usd(
                 target_vel=target_vel,
                 target_ke=target_ke,
                 target_kd=target_kd,
+                damping=j_damping,
                 armature=j_armature,
                 friction=j_friction,
                 effort_limit=effort_limit,
