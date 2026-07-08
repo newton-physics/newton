@@ -14,44 +14,35 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_mujoco import Example, _target_q
+from benchmark_mujoco import TARGET_SLEW_PER_FRAME, TARGET_WAYPOINT_FRAMES, Example, _target_bounds, _target_q
 
-import newton
 from newton.utils import EventTracer
 
 
 @wp.kernel
-def apply_random_control(state: wp.uint32, joint_target: wp.array[float]):
+def apply_waypoint_control(
+    seed: int,
+    frame: wp.array[int],
+    lo: wp.array[float],
+    hi: wp.array[float],
+    slew_per_frame: float,
+    waypoint_frames: int,
+    joint_target: wp.array[float],
+):
+    # Device-side twin of Example.step()'s waypoint tracking: the waypoint is a
+    # pure function of (seed, leg, tid), so no extra state survives the graph.
     tid = wp.tid()
-
-    joint_target[tid] = wp.randf(state) * 2.0 - 1.0
+    leg = frame[0] // waypoint_frames
+    state = wp.rand_init(seed, leg * joint_target.shape[0] + tid)
+    span = hi[tid] - lo[tid]
+    waypoint = lo[tid] + wp.randf(state) * span
+    slew = slew_per_frame * span
+    joint_target[tid] = joint_target[tid] + wp.clamp(waypoint - joint_target[tid], -slew, slew)
 
 
 @wp.kernel
-def restore_target_quat_identity(joint_target: wp.array[float], quat_offsets: wp.array[int]):
-    i = wp.tid()
-    o = quat_offsets[i]
-    joint_target[o + 0] = 0.0
-    joint_target[o + 1] = 0.0
-    joint_target[o + 2] = 0.0
-    joint_target[o + 3] = 1.0
-
-
-def _free_ball_quat_offsets(model) -> list[int]:
-    """Coord-space indices of the quaternion slot of every FREE/BALL/DISTANCE
-    joint in ``model.joint_target_q`` (empty under the legacy DOF layout)."""
-    offsets: list[int] = []
-    target_q = _target_q(model)
-    if target_q is None or target_q.shape[0] != model.joint_coord_count:
-        return offsets
-    joint_types = model.joint_type.numpy()
-    q_starts = model.joint_q_start.numpy()
-    for j, jt in enumerate(joint_types):
-        if jt == int(newton.JointType.BALL):
-            offsets.append(int(q_starts[j]))
-        elif jt in (int(newton.JointType.FREE), int(newton.JointType.DISTANCE)):
-            offsets.append(int(q_starts[j]) + 3)
-    return offsets
+def _advance_frame(frame: wp.array[int]):
+    frame[0] = frame[0] + 1
 
 
 class _FastBenchmark:
@@ -90,26 +81,28 @@ class _FastBenchmark:
         if not cuda_graph_comp:
             raise SkipNotImplemented
         else:
-            state = wp.rand_init(self.example.seed)
             target_q = _target_q(self.example.control)
-            quat_offsets = _free_ball_quat_offsets(self.example.model)
-            quat_offsets_wp = wp.array(quat_offsets, dtype=int, device=target_q.device) if quat_offsets else None
+            _, lo, hi = _target_bounds(self.example.model)
+            self._target_lo = wp.array(lo, dtype=wp.float32)
+            self._target_hi = wp.array(hi, dtype=wp.float32)
+            self._target_frame = wp.zeros(1, dtype=int)
             with wp.ScopedCapture() as capture:
                 wp.launch(
-                    apply_random_control,
+                    apply_waypoint_control,
                     dim=(target_q.shape[0],),
-                    inputs=[state],
+                    inputs=[
+                        self.example.seed,
+                        self._target_frame,
+                        self._target_lo,
+                        self._target_hi,
+                        TARGET_SLEW_PER_FRAME,
+                        TARGET_WAYPOINT_FRAMES,
+                    ],
                     outputs=[target_q],
                 )
-                if quat_offsets_wp is not None:
-                    wp.launch(
-                        restore_target_quat_identity,
-                        dim=(quat_offsets_wp.shape[0],),
-                        inputs=[target_q, quat_offsets_wp],
-                    )
+                wp.launch(_advance_frame, dim=1, inputs=[self._target_frame])
                 self.example.simulate()
             self.graph = capture.graph
-            self._quat_offsets_wp = quat_offsets_wp
 
         wp.synchronize_device()
 

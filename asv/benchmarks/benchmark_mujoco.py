@@ -38,6 +38,43 @@ def _target_q(owner):
     return target
 
 
+# Randomized actuation slews targets toward per-joint random waypoints at a
+# bounded rate instead of teleporting them each frame: unbounded setpoint jumps
+# push a rotating tail of worlds into solves the MuJoCo Newton solver cannot
+# finish within any iteration budget (exposed by mujoco_warp#1374), so the
+# benchmark measured the iteration cap instead of converged stepping.
+TARGET_SLEW_PER_FRAME = 0.01  # fraction of each target's range per frame
+TARGET_WAYPOINT_FRAMES = 50  # frames between waypoint draws
+
+
+def _target_bounds(model):
+    """Bounds for randomized position targets, in the ``_target_q`` layout.
+
+    Single-dof joints use their limits intersected with the historical [-1, 1]
+    command range; other entries keep the initial target so free/ball
+    coordinates stay inert.
+    """
+    init = _target_q(model).numpy().astype(np.float32)
+    lo, hi = init.copy(), init.copy()
+    joint_types = model.joint_type.numpy()
+    q_starts = model.joint_q_start.numpy()
+    qd_starts = model.joint_qd_start.numpy()
+    limit_lo = model.joint_limit_lower.numpy()
+    limit_hi = model.joint_limit_upper.numpy()
+    coord_layout = init.shape[0] == model.joint_coord_count
+    for j, jt in enumerate(joint_types):
+        if jt not in (int(newton.JointType.REVOLUTE), int(newton.JointType.PRISMATIC)):
+            continue
+        d = int(qd_starts[j])
+        i = int(q_starts[j]) if coord_layout else d
+        low = max(float(limit_lo[d]), -1.0)
+        high = min(float(limit_hi[d]), 1.0)
+        if low >= high:  # limit range lies outside [-1, 1]
+            low, high = float(limit_lo[d]), float(limit_hi[d])
+        lo[i], hi[i] = low, high
+    return init, lo, hi
+
+
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
@@ -353,16 +390,10 @@ class Example:
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self._quat_target_q_offsets: list[int] = []
-        target_q = _target_q(self.model)
-        if target_q is not None and target_q.shape[0] == self.model.joint_coord_count:
-            joint_types = self.model.joint_type.numpy()
-            q_starts = self.model.joint_q_start.numpy()
-            for j, jt in enumerate(joint_types):
-                if jt == int(newton.JointType.BALL):
-                    self._quat_target_q_offsets.append(int(q_starts[j]))
-                elif jt in (int(newton.JointType.FREE), int(newton.JointType.DISTANCE)):
-                    self._quat_target_q_offsets.append(int(q_starts[j]) + 3)
+        self._target_frame = 0
+        if self.actuation == "random":
+            _, self._target_lo, self._target_hi = _target_bounds(self.model)
+            self._target_cur = _target_q(self.control).numpy().astype(np.float32)
 
         self.sensor_contact = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
@@ -398,12 +429,12 @@ class Example:
     def step(self):
         if self.actuation == "random":
             target_q = _target_q(self.control)
-            target_size = target_q.shape[0]
-            samples = self.rng.uniform(-1.0, 1.0, size=target_size).astype(np.float32)
-            for offset in self._quat_target_q_offsets:
-                samples[offset : offset + 4] = (0.0, 0.0, 0.0, 1.0)
-            joint_target = wp.array(samples, dtype=wp.float32)
-            wp.copy(target_q, joint_target)
+            leg_rng = np.random.default_rng(self.seed + self._target_frame // TARGET_WAYPOINT_FRAMES)
+            waypoint = leg_rng.uniform(self._target_lo, self._target_hi).astype(np.float32)
+            slew = TARGET_SLEW_PER_FRAME * (self._target_hi - self._target_lo)
+            self._target_cur = self._target_cur + np.clip(waypoint - self._target_cur, -slew, slew)
+            self._target_frame += 1
+            wp.copy(target_q, wp.array(self._target_cur, dtype=wp.float32))
 
         wp.synchronize_device()
         start_time = time.time()
