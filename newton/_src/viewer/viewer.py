@@ -6,6 +6,7 @@ from __future__ import annotations
 import enum
 import math
 import os
+import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -34,6 +35,14 @@ _DEFAULT_LAYER_ID = "__default__"
 
 #: Fields that configure a layer itself rather than model/runtime state.
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
+
+_VIEWER_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def _viewer_path_component(value: object) -> str:
+    """Return a stable viewer path component that is also valid in USD."""
+    component = _VIEWER_PATH_COMPONENT_RE.sub("_", str(value)).strip("_")
+    return component or "unnamed"
 
 
 class Layer:
@@ -2741,8 +2750,10 @@ class ViewerBase(ABC):
         show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
         for rm in meshes:
             # The invariant index keeps replicated worlds' duplicate labels distinct.
-            suffix = f"_{rm.label}" if rm.label else ""
-            name = self._qualify(f"/model/deformable_visual_meshes/{rm.index}{suffix}")
+            # Prefix the component with "mesh" so USD-backed viewers do not
+            # receive prim names that start with a digit.
+            suffix = f"_{_viewer_path_component(rm.label)}" if rm.label else ""
+            name = self._qualify(f"/model/deformable_visual_meshes/mesh_{rm.index}{suffix}")
             if not (show and self._should_render_world(rm.world)):
                 # Keep valid geometry registered so visibility can toggle back on.
                 self.log_mesh(name, rm.rest_vertices, rm.indices, uvs=rm.uvs, hidden=True, backface_culling=False)
