@@ -208,7 +208,7 @@ class Example:
                 b = i * segments + (j + 1) % segments
                 c = (i + 1) * segments + j
                 d = (i + 1) * segments + (j + 1) % segments
-                faces += [a, c, b, b, c, d]
+                faces += [a, b, c, b, d, c]
 
         return (
             np.asarray(verts, dtype=np.float32),
