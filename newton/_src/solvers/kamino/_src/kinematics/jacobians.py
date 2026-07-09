@@ -24,6 +24,7 @@ from ..core.math import (
 from ..core.model import ModelKamino
 from ..core.types import (
     assign_to_warp_int32_array,
+    mat61f,
     mat66f,
     to_warp_int32_array,
     vec6f,
@@ -205,11 +206,6 @@ def store_joint_cts_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.cts_axes))(
-            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
-        )
-
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.cts_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
@@ -262,11 +258,6 @@ def store_joint_dofs_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_dense_func(JointDoFType.GIMBAL.dofs_axes))(
-            J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
-        )
-
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.CARTESIAN.dofs_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
@@ -316,11 +307,6 @@ def store_joint_cts_jacobian_sparse(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.cts_axes))(
-            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
-        )
-
     elif dof_type == JointDoFType.CARTESIAN:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.CARTESIAN.cts_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
@@ -367,11 +353,6 @@ def store_joint_dofs_jacobian_sparse(
 
     elif dof_type == JointDoFType.SPHERICAL:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.SPHERICAL.dofs_axes))(
-            is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
-        )
-
-    elif dof_type == JointDoFType.GIMBAL:
-        wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.GIMBAL.dofs_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
@@ -1505,8 +1486,8 @@ class SparseSystemJacobians:
                 compute the non-zero block coordinates of the contact constraint Jacobian.
         """
         # Declare and initialize the Jacobian data containers
-        self._J_cts: BlockSparseLinearOperators | None = None
-        self._J_dofs: BlockSparseLinearOperators | None = None
+        self._J_cts: BlockSparseLinearOperators[wp.float32, wp.int32] | None = None
+        self._J_dofs: BlockSparseLinearOperators[wp.float32, wp.int32] | None = None
 
         # Local (in-world) offsets for the non-zero blocks of the constraint and dofs Jacobian for
         # each (global) joint, limit, and contact
@@ -1672,22 +1653,22 @@ class SparseSystemJacobians:
         # Allocate the block-sparse linear-operator data to represent each system Jacobian
         with wp.ScopedDevice(device):
             # First allocate the geometric constraint Jacobian
-            bsm_cts = BlockSparseMatrices(
+            bsm_cts: BlockSparseMatrices[wp.float32, wp.int32, vec6f] = BlockSparseMatrices(
                 num_matrices=num_worlds,
-                nzb_dtype=BlockDType(dtype=wp.float32, shape=(6,)),
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6,)),
                 device=device,
             )
             bsm_cts.finalize(max_dims=J_cts_dims_max, capacities=J_cts_nnzb_max)
-            self._J_cts = BlockSparseLinearOperators(bsm=bsm_cts)
+            self._J_cts = BlockSparseLinearOperators[wp.float32, wp.int32](bsm=bsm_cts)
 
             # Then allocate the geometric DoFs Jacobian
-            bsm_dofs = BlockSparseMatrices(
+            bsm_dofs: BlockSparseMatrices[wp.float32, wp.int32, vec6f] = BlockSparseMatrices(
                 num_matrices=num_worlds,
-                nzb_dtype=BlockDType(dtype=wp.float32, shape=(6,)),
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6,)),
                 device=device,
             )
             bsm_dofs.finalize(max_dims=J_dofs_dims, capacities=J_dofs_nnzb)
-            self._J_dofs = BlockSparseLinearOperators(bsm=bsm_dofs)
+            self._J_dofs = BlockSparseLinearOperators[wp.float32, wp.int32](bsm=bsm_dofs)
 
             # Set all constant values into BSMs (corresponding to joint dofs/cts)
             if bsm_cts.max_of_max_dims[0] * bsm_cts.max_of_max_dims[1] > 0:
@@ -1861,7 +1842,7 @@ class SparseSystemJacobians:
             )
 
 
-class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
+class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators[wp.float32, wp.int32]):
     """
     Container to hold a column-major version of the constraint Jacobian
     that uses 6x1 blocks instead of the regular 1x6 blocks.
@@ -2023,10 +2004,10 @@ class ColMajorSparseConstraintJacobians(BlockSparseLinearOperators):
 
         # Allocate the block-sparse linear-operator data to represent each system Jacobian
         with wp.ScopedDevice(device):
-            # Allocate the column-major constraint Jacobian
-            self.bsm = BlockSparseMatrices(
+            # Allocate the column-major constraint Jacobian.
+            self.bsm: BlockSparseMatrices[wp.float32, wp.int32, mat61f] = BlockSparseMatrices(
                 num_matrices=num_worlds,
-                nzb_dtype=BlockDType(dtype=wp.float32, shape=(6, 1)),
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6, 1)),
                 device=device,
             )
             self.bsm.finalize(max_dims=J_cts_cm_dims_max, capacities=J_cts_cm_nnzb_max)

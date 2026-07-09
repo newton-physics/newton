@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
@@ -45,6 +46,26 @@ except ImportError:
 _HAS_ONNX = importlib.util.find_spec("onnx") is not None
 _HAS_TORCH = importlib.util.find_spec("torch") is not None
 _HAS_WARP_NN = importlib.util.find_spec("warp_nn") is not None
+
+
+if _HAS_TORCH:
+    import torch as _torch
+
+    class _LSTMNet(_torch.nn.Module):
+        """Minimal LSTM network for exercising the Torch checkpoint path."""
+
+        def __init__(self, hidden: int = 8, layers: int = 1, bidirectional: bool = False):
+            super().__init__()
+            self.lstm = _torch.nn.LSTM(2, hidden, layers, batch_first=True, bidirectional=bidirectional)
+            self.dec = _torch.nn.Linear(hidden, 1)
+
+        def forward(
+            self,
+            x: _torch.Tensor,
+            hc: tuple[_torch.Tensor, _torch.Tensor],
+        ) -> tuple[_torch.Tensor, tuple[_torch.Tensor, _torch.Tensor]]:
+            out, (h, c) = self.lstm(x, hc)
+            return self.dec(out[:, -1, :]), (h, c)
 
 
 def _onnx_modules():
@@ -183,6 +204,11 @@ def _ignore_torchscript_deprecation(test_case):
     warnings.filterwarnings(
         "ignore",
         message=r".*torch\.jit\..* is deprecated",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Loading (TorchScript|dict) checkpoints .* is deprecated",
         category=DeprecationWarning,
     )
 
@@ -348,6 +374,48 @@ class TestControllerNeuralMLP(unittest.TestCase):
             1.0,
             places=4,
             msg="history should contain pos error from current step",
+        )
+
+    def test_velocity_input_is_raw_joint_velocity(self):
+        """Network receives raw joint velocity, not velocity error (target_vel must not affect it)."""
+        weights = np.array([[0.0, 1.0]], dtype=np.float32)  # output = velocity feature
+        bias = np.zeros((1,), dtype=np.float32)
+        path = self._save_mlp(weights, bias)
+        n = 1
+        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+        state_b = ctrl.state(n, self.device)
+
+        q, qd = 0.5, 2.0
+        target_q, target_qd = q, 5.0  # zero pos error; target_qd must not enter the network input
+        expected = weights[0, 0] * (target_q - q) + weights[0, 1] * qd + bias[0]
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        ctrl.compute(
+            wp.array([q], dtype=wp.float32, device=self.device),
+            wp.array([qd], dtype=wp.float32, device=self.device),
+            wp.array([target_q], dtype=wp.float32, device=self.device),
+            wp.array([target_qd], dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(forces.numpy()[0], expected, places=3, msg="input must be joint velocity, not vel error")
+
+        ctrl.update_state(state_a, state_b)
+        self.assertAlmostEqual(
+            float(state_b.vel_history.numpy()[0, 0]),
+            qd,
+            places=4,
+            msg="history should contain raw joint velocity from current step",
         )
 
     def test_metadata_scales(self):
@@ -525,6 +593,234 @@ class TestControllerNeuralLSTM(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "vel_scale.*invalid_lstm.onnx"):
             ControllerNeuralLSTM(model_path=path)
+
+
+class _TorchCheckpointTestMixin:
+    """Shared helpers for saving pt2 / TorchScript / dict torch checkpoints."""
+
+    def setUp(self):
+        import torch
+
+        self.device = wp.get_device()
+        if self.device.is_cuda and not torch.cuda.is_available():
+            self.skipTest("Torch not compiled with CUDA support")
+        self.torch = torch
+        _ignore_torchscript_deprecation(self)
+        self._torch_dev = torch.device(f"cuda:{self.device.ordinal}" if self.device.is_cuda else "cpu")
+        self._tmp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _save_torchscript(self, net, filename="model.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        scripted = self.torch.jit.script(net)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else {}
+        self.torch.jit.save(scripted, path, _extra_files=extra)
+        return path
+
+    def _save_dict(self, net, filename="model_dict.pt", metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        self.torch.save({"model": net, "metadata": metadata or {}}, path)
+        return path
+
+    def _export_pt2(self, net, example_inputs, dynamic_shapes, filename, metadata=None):
+        path = os.path.join(self._tmp_dir, filename)
+        net.eval()
+        exported = self.torch.export.export(net, example_inputs, dynamic_shapes=dynamic_shapes)
+        extra = {"metadata.json": json.dumps(metadata)} if metadata else None
+        self.torch.export.save(exported, path, extra_files=extra)
+        return path
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
+    """ControllerNeuralMLP loading from pt2, TorchScript, and dict checkpoints."""
+
+    def _make_mlp(self, bias=0.0):
+        net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
+        with self.torch.no_grad():
+            net[0].weight.fill_(0.0)
+            net[0].bias.fill_(bias)
+        return net
+
+    def _save_pt2(self, net, filename="mlp.pt2", metadata=None):
+        example = (self.torch.randn(2, 2, device=self._torch_dev),)
+        batch = self.torch.export.Dim("batch", min=1)
+        return self._export_pt2(net, example, ({0: batch},), filename, metadata=metadata)
+
+    def test_dict_checkpoint(self):
+        """Load MLP from a dict checkpoint with metadata."""
+        path = self._save_dict(self._make_mlp(bias=5.0), metadata={"effort_scale": 4.0})
+        ctrl = ControllerNeuralMLP(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 4.0)
+
+    def test_pt2_checkpoint(self):
+        """Load MLP from a pt2 archive with metadata and run compute."""
+        path = self._save_pt2(self._make_mlp(bias=7.0), metadata={"effort_scale": 2.0})
+        n = 1
+        ctrl = ControllerNeuralMLP(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 2.0)
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        ctrl.compute(
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            wp.array([1.0], dtype=wp.float32, device=self.device),
+            wp.zeros(n, dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(forces.numpy()[0], 14.0, places=3, msg="bias=7 * effort_scale=2 -> 14")
+
+    def test_legacy_formats_warn(self):
+        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
+        ts_path = self._save_torchscript(self._make_mlp())
+        dict_path = self._save_dict(self._make_mlp())
+
+        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
+            ControllerNeuralMLP(model_path=ts_path)
+        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
+            ControllerNeuralMLP(model_path=dict_path)
+
+    def test_deprecation_warning_points_at_caller(self):
+        """The legacy-format warning is attributed to the calling code, not newton internals."""
+        path = self._save_torchscript(self._make_mlp())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            ControllerNeuralMLP(model_path=path)
+        hits = [w for w in caught if "TorchScript checkpoints" in str(w.message)]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].filename, __file__)
+
+    def test_load_metadata_reads_zip_entry_without_warning(self):
+        """Metadata-only reads do not deserialize the network or warn about legacy formats."""
+        path = self._save_torchscript(self._make_mlp(), metadata={"effort_scale": 3.0})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            metadata = load_metadata(path)
+        self.assertEqual(metadata, {"effort_scale": 3.0})
+        self.assertFalse([w for w in caught if "checkpoints" in str(w.message)])
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch not installed")
+class TestControllerNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCase):
+    """ControllerNeuralLSTM loading from pt2, TorchScript, and dict checkpoints."""
+
+    def _make_lstm(self, hidden=8, layers=1, bidirectional=False):
+        return _LSTMNet(hidden=hidden, layers=layers, bidirectional=bidirectional).to(self._torch_dev)
+
+    def _save_pt2(self, net, filename="lstm.pt2", metadata=None):
+        layers, hidden = net.lstm.num_layers, net.lstm.hidden_size
+        n = 2
+        x = self.torch.randn(n, 1, 2, device=self._torch_dev)
+        h = self.torch.zeros(layers, n, hidden, device=self._torch_dev)
+        c = self.torch.zeros(layers, n, hidden, device=self._torch_dev)
+        batch = self.torch.export.Dim("batch", min=1)
+        dynamic_shapes = ({0: batch}, ({1: batch}, {1: batch}))
+        return self._export_pt2(net, (x, (h, c)), dynamic_shapes, filename, metadata=metadata)
+
+    def _run_lstm_compute(self, ctrl):
+        n = 1
+        ctrl.finalize(self.device, n)
+
+        state_a = ctrl.state(n, self.device)
+        state_b = ctrl.state(n, self.device)
+        self.assertTrue(self.torch.all(state_a.hidden == 0.0).item())
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        positions = wp.zeros(n, dtype=wp.float32, device=self.device)
+        velocities = wp.array([1.0], dtype=wp.float32, device=self.device)
+        target_pos = wp.array([1.0], dtype=wp.float32, device=self.device)
+        target_vel = wp.zeros(n, dtype=wp.float32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+
+        ctrl.compute(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        ctrl.update_state(state_a, state_b)
+
+        self.assertNotAlmostEqual(forces.numpy()[0], 0.0, places=5, msg="LSTM should produce non-zero force")
+        self.assertFalse(self.torch.all(state_b.hidden == 0.0).item(), "hidden state should evolve")
+        return forces.numpy()[0]
+
+    def test_dict_checkpoint(self):
+        """Load LSTM from a dict checkpoint with metadata."""
+        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"effort_scale": 5.0})
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 5.0)
+        self._run_lstm_compute(ctrl)
+
+    def test_pt2_checkpoint(self):
+        """Load LSTM from a pt2 archive; layer config comes from metadata."""
+        metadata = {"effort_scale": 5.0, "num_layers": 2, "hidden_size": 8}
+        path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        self.assertAlmostEqual(ctrl.effort_scale, 5.0)
+        self.assertEqual(ctrl._num_layers, 2)
+        self.assertEqual(ctrl._hidden_size, 8)
+        self._run_lstm_compute(ctrl)
+
+    def test_pt2_without_config_metadata_raises(self):
+        """A pt2 checkpoint lacking num_layers/hidden_size fails with clear guidance."""
+        path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata={"effort_scale": 5.0})
+        with self.assertRaisesRegex(ValueError, "num_layers.*hidden_size"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_pt2_metadata_config_coerced_to_int(self):
+        """JSON floats for num_layers/hidden_size are coerced to int."""
+        metadata = {"num_layers": 2.0, "hidden_size": 8.0}
+        path = self._save_pt2(self._make_lstm(hidden=8, layers=2), metadata=metadata)
+        ctrl = ControllerNeuralLSTM(model_path=path)
+        self.assertIsInstance(ctrl._num_layers, int)
+        self.assertIsInstance(ctrl._hidden_size, int)
+        self.assertEqual(ctrl._num_layers, 2)
+        self.assertEqual(ctrl._hidden_size, 8)
+
+    def test_metadata_config_mismatch_raises(self):
+        """Metadata that contradicts the network's actual LSTM fails at load."""
+        path = self._save_dict(self._make_lstm(hidden=8, layers=1), metadata={"num_layers": 2, "hidden_size": 8})
+        with self.assertRaisesRegex(ValueError, "num_layers"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_invalid_lstm_not_masked_by_config_metadata(self):
+        """Structural validation still runs when metadata provides the LSTM config."""
+        net = self._make_lstm(hidden=8, layers=1, bidirectional=True)
+        path = self._save_dict(net, metadata={"num_layers": 1, "hidden_size": 8})
+        with self.assertRaisesRegex(ValueError, "bidirectional"):
+            ControllerNeuralLSTM(model_path=path)
+
+    def test_legacy_formats_warn(self):
+        """TorchScript and dict checkpoints emit a DeprecationWarning on load."""
+        ts_path = self._save_torchscript(self._make_lstm(hidden=8, layers=1))
+        dict_path = self._save_dict(self._make_lstm(hidden=8, layers=1))
+
+        with self.assertWarnsRegex(DeprecationWarning, "TorchScript checkpoints"):
+            ControllerNeuralLSTM(model_path=ts_path)
+        with self.assertWarnsRegex(DeprecationWarning, "dict checkpoints"):
+            ControllerNeuralLSTM(model_path=dict_path)
 
 
 @unittest.skipUnless(_HAS_TORCH, "torch not installed")
