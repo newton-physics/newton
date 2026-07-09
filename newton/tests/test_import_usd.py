@@ -7071,6 +7071,86 @@ def Xform "Articulation" (
                 )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_non_finite_mass_and_density_are_ignored(self):
+        """Non-finite authored mass/density values fall back like the 0.0 sentinel."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        invalid_authors = {
+            "BodyMass": lambda body_api, _collider_api: body_api.CreateMassAttr().Set(math.inf),
+            "BodyDensity": lambda body_api, _collider_api: body_api.CreateDensityAttr().Set(math.inf),
+            "ColliderMass": lambda _body_api, collider_api: collider_api.CreateMassAttr().Set(math.inf),
+            "ColliderDensity": lambda _body_api, collider_api: collider_api.CreateDensityAttr().Set(math.inf),
+        }
+
+        body_pairs = []
+        for name, author_invalid in invalid_authors.items():
+            pair = []
+            for suffix in ("Unauthored", "Authored"):
+                body_path = f"/World/{name}{suffix}"
+                body = UsdGeom.Xform.Define(stage, body_path)
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                body_mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+
+                collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                collider.CreateSizeAttr().Set(0.2)
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+                if suffix == "Authored":
+                    author_invalid(body_mass_api, collider_mass_api)
+                pair.append(body_path)
+            body_pairs.append((name, pair))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        for name, (unauthored_path, authored_path) in body_pairs:
+            with self.subTest(attribute=name):
+                unauthored = result["path_body_map"][unauthored_path]
+                authored = result["path_body_map"][authored_path]
+                self.assertTrue(math.isfinite(builder.body_mass[authored]))
+                self.assertAlmostEqual(builder.body_mass[authored], builder.body_mass[unauthored], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[authored], builder.body_inertia[unauthored], atol=1e-9, rtol=1e-5
+                )
+                np.testing.assert_allclose(
+                    builder.body_com[authored], builder.body_com[unauthored], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_finite_material_density_uses_default(self):
+        """A non-finite physics material density falls back to the importer default."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)  # side length = 2.0 -> volume = 8.0
+        collider_prim = collider.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+
+        material = UsdShade.Material.Define(stage, "/World/Materials/Invalid")
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDensityAttr().Set(math.inf)
+        UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        body_idx = result["path_body_map"]["/World/Body"]
+        expected_mass = builder.default_shape_cfg.density * 8.0
+        self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_zero_inertia_is_derived(self):
         """A zero diagonal-inertia sentinel does not suppress derived inertia."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

@@ -2347,9 +2347,9 @@ def parse_usd(
                 default=builder.default_shape_cfg.mu_rolling,
                 verbose=verbose,
             ),
-            # Treat non-positive material density as "use importer default".
+            # Treat non-positive or non-finite material density as "use importer default".
             # Collider/body MassAPI precedence is handled later.
-            density=desc.density if desc.density > 0.0 else default_shape_density,
+            density=desc.density if math.isfinite(desc.density) and desc.density > 0.0 else default_shape_density,
             ke=_resolve_contact_attr("ke"),
             kd=_resolve_contact_attr("kd"),
             kf=_resolve_contact_attr("kf"),
@@ -2365,9 +2365,9 @@ def parse_usd(
         mass_api = UsdPhysics.MassAPI(prim)
 
         mass_value = float(mass_api.GetMassAttr().Get())
-        mass = mass_value if mass_value > 0.0 else None
+        mass = mass_value if math.isfinite(mass_value) and mass_value > 0.0 else None
         density_value = float(mass_api.GetDensityAttr().Get())
-        density = density_value if density_value > 0.0 else None
+        density = density_value if math.isfinite(density_value) and density_value > 0.0 else None
 
         inertia_value = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
         inertia = inertia_value if np.any(inertia_value != 0.0) else None
@@ -3061,6 +3061,11 @@ def parse_usd(
         mass_api = UsdPhysics.MassAPI(prim)
         mass = float(mass_api.GetMassAttr().Get())
         density = float(mass_api.GetDensityAttr().Get())
+        # Non-finite authored values are invalid; treat them as the 0.0 sentinel.
+        if not math.isfinite(mass):
+            mass = 0.0
+        if not math.isfinite(density):
+            density = 0.0
         inertia = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
         com = np.array(mass_api.GetCenterOfMassAttr().Get(), dtype=np.float32)
         has_effective_values = mass > 0.0 or density > 0.0 or np.any(inertia != 0.0) or np.all(np.isfinite(com))
@@ -3083,7 +3088,7 @@ def parse_usd(
                 material_prim = stage.GetPrimAtPath(material_paths[0])
                 if material_prim.HasAPI(UsdPhysics.MaterialAPI):
                     inertia_scale = float(UsdPhysics.MaterialAPI(material_prim).GetDensityAttr().Get())
-            if inertia_scale <= 0.0:
+            if not math.isfinite(inertia_scale) or inertia_scale <= 0.0:
                 meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
                 kilograms_per_unit = float(UsdPhysics.GetStageKilogramsPerUnit(stage))
                 inertia_scale = 1000.0 * meters_per_unit**3 / kilograms_per_unit
@@ -3755,8 +3760,9 @@ def parse_usd(
                 cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
                     _get_collision_mass_information
                 )
-                mass = float(cmp_mass) if cmp_mass >= 0.0 else shape_accumulated_mass
-                if cmp_mass < 0.0 and body_values.density is not None and default_shape_density > 0.0:
+                cmp_mass_valid = math.isfinite(cmp_mass) and cmp_mass >= 0.0
+                mass = float(cmp_mass) if cmp_mass_valid else shape_accumulated_mass
+                if not cmp_mass_valid and body_values.density is not None and default_shape_density > 0.0:
                     mass *= body_values.density / default_shape_density
                 com = np.array(cmp_com, dtype=np.float32)
                 if not np.all(np.isfinite(com)):
@@ -3764,7 +3770,7 @@ def parse_usd(
 
                 inertia_diag_candidate = np.array(cmp_i_diag, dtype=np.float32)
                 if (
-                    cmp_mass >= 0.0
+                    cmp_mass_valid
                     and np.all(np.isfinite(inertia_diag_candidate))
                     and np.all(inertia_diag_candidate >= 0.0)
                     and np.any(inertia_diag_candidate > 0.0)
