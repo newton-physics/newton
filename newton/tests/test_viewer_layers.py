@@ -274,6 +274,22 @@ class TestViewerLayers(unittest.TestCase):
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
 
+    def test_rtx_runtime_log_mesh_queues_visibility_updates(self):
+        """Runtime mesh logs must apply hidden=True to existing RTX mesh prims."""
+        viewer = _MinimalRTXViewer()
+        viewer._phase = viewer._PHASE_RENDER
+        viewer._mesh_prim_paths = {"/mesh": "/root/mesh"}
+        viewer._pending_mesh_points = {}
+        viewer._pending_mesh_normals = {}
+        viewer._pending_mesh_visibility = {}
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.log_mesh("/mesh", points, indices, hidden=True)
+
+        self.assertFalse(getattr(viewer, "_pending_mesh_visibility", {}).get("/mesh", True))
+
     def test_activate_rejects_default_layer_id(self):
         """The internal default-layer id is reserved for legacy unprefixed output."""
         viewer = _RecordingViewer()

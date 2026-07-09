@@ -1355,6 +1355,7 @@ void main() {
             super().begin_frame(time)
             self._pending_xforms.clear()
             self._pending_instance_visibility.clear()
+            self._pending_mesh_visibility.clear()
             self._pending_mesh_points.clear()
             self._pending_mesh_normals.clear()
             self._pending_line_batches.clear()
@@ -1397,6 +1398,7 @@ void main() {
             self._update_ovrtx_camera()
             self._update_ovrtx_transforms()
             self._update_ovrtx_instance_visibility()
+            self._update_ovrtx_mesh_visibility()
             self._update_ovrtx_line_batches()
             self._update_ovrtx_point_batches()
             self._update_ovrtx_mesh_points()
@@ -1453,6 +1455,7 @@ void main() {
             )
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:
+            self._pending_mesh_visibility[name] = not hidden
             pts = (
                 points.numpy().astype(np.float32)
                 if isinstance(points, wp.array)
@@ -1676,6 +1679,20 @@ void main() {
                 prim_paths=paths,
                 attribute_name="visibility",
                 tensor=["inherited" if visible else "invisible"] * len(paths),
+            )
+
+    def _update_ovrtx_mesh_visibility(self):
+        if self._rtx is None or not self._pending_mesh_visibility:
+            return
+
+        for name, visible in self._pending_mesh_visibility.items():
+            prim_path = self._mesh_prim_paths.get(name)
+            if prim_path is None:
+                continue
+            self._rtx.write_attribute(
+                prim_paths=[prim_path],
+                attribute_name="visibility",
+                tensor=["inherited" if visible else "invisible"],
             )
 
     @staticmethod
@@ -2039,6 +2056,7 @@ void main() {
 
         self._pending_xforms = {}
         self._pending_instance_visibility = {}
+        self._pending_mesh_visibility = {}
         self._pending_mesh_points = {}
         self._pending_mesh_normals = {}
         self._pending_line_batches = {}
