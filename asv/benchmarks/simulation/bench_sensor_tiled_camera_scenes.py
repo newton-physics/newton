@@ -207,11 +207,21 @@ class ScenePreset:
     camera_target: tuple[float, float, float]
     """Point the camera looks at [m]."""
 
+    light_direction: tuple[float, float, float] | None = None
+    """Directional-light travel direction; ``None`` uses the sensor default."""
+
 
 SCENES: dict[str, ScenePreset] = {
     "franka": ScenePreset(_build_franka, camera_eye=(2.4, 0.0, 0.8), camera_target=(0.0, 0.0, 0.4)),
     "quadruped": ScenePreset(_build_quadruped, camera_eye=(2.2, 2.2, 1.1), camera_target=(0.0, 0.0, 0.45)),
-    "franka_cabinet": ScenePreset(_build_franka_cabinet, camera_eye=(2.4, 1.8, 1.3), camera_target=(0.4, 0.0, 0.5)),
+    # Light comes from the camera-facing upper-front octant so it lands on the
+    # cabinet drawers (which face +x) and top, both visible to the camera.
+    "franka_cabinet": ScenePreset(
+        _build_franka_cabinet,
+        camera_eye=(2.4, 1.8, 1.3),
+        camera_target=(0.4, 0.0, 0.5),
+        light_direction=(-1.0, -0.4, -0.45),
+    ),
     "shapes_256": ScenePreset(_build_shapes_256, camera_eye=(9.0, 9.0, 6.0), camera_target=(0.0, 0.0, 0.0)),
 }
 
@@ -241,14 +251,15 @@ class _TiledCameraSceneRig:
 
         scene = newton.ModelBuilder()
         scene.replicate(world, world_count)
-        scene.add_ground_plane()
+        scene.add_ground_plane(color=(0.6, 0.6, 0.6))
 
         self.model = scene.finalize()
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
+        light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
         self.sensor = SensorTiledCamera(model=self.model)
-        self.sensor.utils.create_default_light(enable_shadows=False)
+        self.sensor.utils.create_default_light(enable_shadows=True, direction=light_direction)
         self.sensor.utils.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count))
 
         camera = _look_at_transform(preset.camera_eye, preset.camera_target)
@@ -321,10 +332,8 @@ class TiledCameraFrankaCabinet(_SceneBenchmark):
 
 
 class TiledCameraShapes256(_SceneBenchmark):
-    # 256 shapes per world; fewer worlds keep total shape instances comparable
-    # to the other scenes and model build time manageable.
     scene = "shapes_256"
-    params = ([64], [1024], [50])
+    params = ([64], [4096], [50])
 
 
 BENCHMARKS = {
