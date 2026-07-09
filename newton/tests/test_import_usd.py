@@ -7121,6 +7121,110 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.diag(inertia), [1.0e-6, 2.0e-6, 3.0e-6], atol=1e-10, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collider_massapi_mass_with_small_inertia_is_preserved(self):
+        """Collider mass with inertia below OpenUSD's tolerance remains effective."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim())
+
+        collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+        collider.CreateSizeAttr(0.1)
+        collider.AddScaleOp().Set(Gf.Vec3f(2.0, 3.0, 4.0))
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+        mass_api.CreateMassAttr().Set(0.02)
+        mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0e-6, 2.0e-6, 3.0e-6))
+        mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.01, -0.02, 0.03))
+        mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(np.sqrt(0.5), Gf.Vec3f(0.0, 0.0, np.sqrt(0.5))))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/Body"]
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], 0.02, places=6)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(inertia, np.diag([2.0e-6, 1.0e-6, 3.0e-6]), atol=1e-10, rtol=1e-6)
+        np.testing.assert_allclose(builder.body_com[body_idx], [0.02, -0.06, 0.12], atol=1e-7, rtol=0.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collider_massapi_small_inertia_uses_density_precedence(self):
+        """Small collider inertia remains effective for every density source."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+        for source, density in (("collider", 20.0), ("body", 30.0), ("material", 40.0), ("default", 1000.0)):
+            with self.subTest(source=source):
+                expected_density = density
+                stage = Usd.Stage.CreateInMemory()
+                body = UsdGeom.Xform.Define(stage, "/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                body_mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+
+                collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+                collider.CreateSizeAttr(0.1)
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+                collider_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0e-6, 2.0e-6, 3.0e-6))
+
+                if source == "collider":
+                    collider_mass_api.CreateDensityAttr().Set(density)
+                elif source == "body":
+                    body_mass_api.CreateDensityAttr().Set(density)
+                elif source == "material":
+                    material = UsdShade.Material.Define(stage, "/Material")
+                    UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDensityAttr().Set(density)
+                    UsdShade.MaterialBindingAPI.Apply(collider.GetPrim()).Bind(material, "physics")
+                else:
+                    expected_density = (
+                        1000.0
+                        * float(UsdGeom.GetStageMetersPerUnit(stage)) ** 3
+                        / float(UsdPhysics.GetStageKilogramsPerUnit(stage))
+                    )
+
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage)
+                body_idx = result["path_body_map"]["/Body"]
+
+                self.assertAlmostEqual(builder.body_mass[body_idx], expected_density * 0.1**3, places=6)
+                inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+                np.testing.assert_allclose(np.diag(inertia), [1.0e-6, 2.0e-6, 3.0e-6], atol=1e-10, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mixed_non_native_colliders_warn_for_ignored_massapi(self):
+        """Descriptor fallback must disclose collider MassAPI values it cannot aggregate."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim())
+
+        native = UsdGeom.Cube.Define(stage, "/Body/Native")
+        UsdPhysics.CollisionAPI.Apply(native.GetPrim())
+        native_mass_api = UsdPhysics.MassAPI.Apply(native.GetPrim())
+        native_mass_api.CreateMassAttr().Set(2.0)
+        native_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.1))
+
+        synthetic = UsdGeom.Sphere.Define(stage, "/Body/Synthetic")
+        UsdPhysics.CollisionAPI.Apply(synthetic.GetPrim())
+
+        load_physics = UsdPhysics.LoadUsdPhysicsFromRange
+
+        def _load_then_hide_synthetic_api(*args, **kwargs):
+            result = load_physics(*args, **kwargs)
+            synthetic.GetPrim().RemoveAPI(UsdPhysics.CollisionAPI)
+            return result
+
+        with (
+            mock.patch.object(UsdPhysics, "LoadUsdPhysicsFromRange", side_effect=_load_then_hide_synthetic_api),
+            self.assertWarnsRegex(UserWarning, "without those collider overrides"),
+        ):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage, load_visual_shapes=False)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
         """Authored mass without inertia should produce inertia consistent with a uniform-density body.
 

@@ -81,7 +81,7 @@
 
 ### Fixed
 
-- Fix `ModelBuilder.add_usd()` treating explicitly authored `PhysicsMassAPI` fallback values as overrides. Fallback values are now ignored according to the USD Physics schema, and `UsdPhysicsRigidBodyAPI.ComputeMassProperties()` derives missing native body properties.
+- Fix `ModelBuilder.add_usd()` treating explicitly authored `PhysicsMassAPI` fallback values as overrides. Fallback values are now ignored according to the USD Physics schema, `UsdPhysicsRigidBodyAPI.ComputeMassProperties()` derives missing native body properties, and valid small body inertia remains effective without regressing collider-level mass and inertia overrides.
 - Fix `ModelBuilder.add_usd()` to honor `ignore_paths` in the custom-frequency traversal, so prims under ignored subtrees no longer register spurious custom-frequency rows in two-pass import workflows. (#3406)
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)

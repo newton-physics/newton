@@ -440,6 +440,23 @@ def parse_usd(
         kf: float | None = None
         ka: float | None = None
 
+    @dataclass
+    class BodyMassAPIValues:
+        mass: float | None
+        density: float | None
+        inertia: np.ndarray | None
+        com: np.ndarray | None
+        principal_axes: Any
+        inertia_tensor: wp.mat33 | None
+
+        @property
+        def is_complete(self) -> bool:
+            return (
+                self.mass is not None
+                and (self.inertia is not None or self.inertia_tensor is not None)
+                and self.com is not None
+            )
+
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
     default_joint_damping = builder.default_joint_cfg.damping
@@ -2339,8 +2356,76 @@ def parse_usd(
             ka=_resolve_contact_attr("ka"),
         )
 
-    mass_api_body_paths: set[str] = set()
-    complete_mass_api_body_paths: set[str] = set()
+    def _valid_principal_axes(value):
+        imaginary = value.GetImaginary()
+        components = np.array([imaginary[0], imaginary[1], imaginary[2], value.GetReal()], dtype=np.float32)
+        return np.all(np.isfinite(components)) and np.any(components != 0.0)
+
+    def _read_body_mass_api_values(prim, body_path: str) -> BodyMassAPIValues:
+        mass_api = UsdPhysics.MassAPI(prim)
+
+        mass_value = float(mass_api.GetMassAttr().Get())
+        mass = mass_value if mass_value > 0.0 else None
+        density_value = float(mass_api.GetDensityAttr().Get())
+        density = density_value if density_value > 0.0 else None
+
+        inertia_value = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
+        inertia = inertia_value if np.any(inertia_value != 0.0) else None
+        if inertia is not None and not np.all(np.isfinite(inertia)):
+            warnings.warn(
+                f"Body {body_path}: authored diagonal inertia contains non-finite values. Ignoring.",
+                stacklevel=3,
+            )
+            inertia = None
+        elif inertia is not None and np.any(inertia < 0.0):
+            warnings.warn(
+                f"Body {body_path}: authored diagonal inertia contains negative values. Ignoring.",
+                stacklevel=3,
+            )
+            inertia = None
+
+        com_value = np.array(mass_api.GetCenterOfMassAttr().Get(), dtype=np.float32)
+        com = com_value if np.all(np.isfinite(com_value)) else None
+
+        principal_axes_value = mass_api.GetPrincipalAxesAttr().Get()
+        principal_axes = (
+            principal_axes_value.GetNormalized() if _valid_principal_axes(principal_axes_value) else Gf.Quatf(1.0)
+        )
+
+        inertia_tensor = None
+        inertia_tensor_value = (
+            usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
+        )
+        if inertia_tensor_value is not None:
+            if len(inertia_tensor_value) != 6:
+                warnings.warn(
+                    f"Body {body_path}: newton:inertia has {len(inertia_tensor_value)} elements, expected 6. Ignoring.",
+                    stacklevel=3,
+                )
+            elif not all(math.isfinite(value) for value in inertia_tensor_value):
+                warnings.warn(
+                    f"Body {body_path}: newton:inertia contains non-finite values. Ignoring.",
+                    stacklevel=3,
+                )
+            elif any(value < 0.0 for value in inertia_tensor_value[:3]):
+                warnings.warn(
+                    f"Body {body_path}: newton:inertia has negative diagonal elements. Ignoring.",
+                    stacklevel=3,
+                )
+            else:
+                ixx, iyy, izz, ixy, ixz, iyz = inertia_tensor_value
+                inertia_np = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
+                if np.any(np.linalg.eigvalsh(inertia_np) < 0.0):
+                    warnings.warn(
+                        f"Body {body_path}: newton:inertia is not positive semidefinite. Ignoring.",
+                        stacklevel=3,
+                    )
+                else:
+                    inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
+
+        return BodyMassAPIValues(mass, density, inertia, com, principal_axes, inertia_tensor)
+
+    body_mass_api_values: dict[str, BodyMassAPIValues] = {}
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for prim_path, rigid_body_desc in zip(prim_paths, rigid_body_descs, strict=False):
@@ -2353,18 +2438,7 @@ def parse_usd(
             body_specs[body_path] = rigid_body_desc
             prim = stage.GetPrimAtPath(prim_path)
             if prim.HasAPI(UsdPhysics.MassAPI):
-                mass_api_body_paths.add(body_path)
-                mass_api = UsdPhysics.MassAPI(prim)
-                inertia = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
-                com = np.array(mass_api.GetCenterOfMassAttr().Get(), dtype=np.float32)
-                if (
-                    float(mass_api.GetMassAttr().Get()) > 0.0
-                    and np.all(np.isfinite(inertia))
-                    and np.all(inertia >= 0.0)
-                    and np.any(inertia != 0.0)
-                    and np.all(np.isfinite(com))
-                ):
-                    complete_mass_api_body_paths.add(body_path)
+                body_mass_api_values[body_path] = _read_body_mass_api_values(prim, body_path)
 
     # Collect joint descriptions regardless of whether articulations are authored.
     for key, value in ret_dict.items():
@@ -2951,38 +3025,11 @@ def parse_usd(
             if verbose:
                 print(f"Skipping joint group {joint_group}: {exc}")
 
-    def _resolve_mass_info_local_rotation(local_rot, shape_geo_type: int, shape_axis):
-        """Match collider mass frame rotation with shape axis correction used by shape insertion."""
-        if shape_geo_type not in {GeoType.CAPSULE, GeoType.CYLINDER, GeoType.CONE} or shape_axis is None:
-            return local_rot
-
-        axis = usd_axis_to_axis.get(shape_axis)
-        if axis is None:
-            axis_int_map = {
-                int(UsdPhysics.Axis.X): Axis.X,
-                int(UsdPhysics.Axis.Y): Axis.Y,
-                int(UsdPhysics.Axis.Z): Axis.Z,
-            }
-            axis = axis_int_map.get(int(shape_axis))
-        if axis is None or axis == Axis.Z:
-            return local_rot
-
-        local_rot_wp = usd.value_to_warp(local_rot)
-        corrected_rot = wp.mul(local_rot_wp, quat_between_axes(Axis.Z, axis))
-        return Gf.Quatf(
-            float(corrected_rot[3]),
-            float(corrected_rot[0]),
-            float(corrected_rot[1]),
-            float(corrected_rot[2]),
-        )
-
     def _build_mass_info_from_shape_geometry(
-        local_pos,
-        local_rot,
+        shape_xform,
         shape_geo_type: int,
         shape_scale: wp.vec3,
         shape_src: Mesh | None,
-        shape_axis=None,
         is_solid: bool = True,
         thickness: float = 0.0,
     ):
@@ -2997,10 +3044,61 @@ def parse_usd(
         mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
         mass_info.volume = float(shape_mass)
         mass_info.centerOfMass = Gf.Vec3f(*shape_com)
-        mass_info.localPos = Gf.Vec3f(*local_pos)
-        mass_info.localRot = _resolve_mass_info_local_rotation(local_rot, shape_geo_type, shape_axis)
+        mass_info.localPos = Gf.Vec3f(*shape_xform.p)
+        mass_info.localRot = Gf.Quatf(
+            float(shape_xform.q[3]),
+            float(shape_xform.q[0]),
+            float(shape_xform.q[1]),
+            float(shape_xform.q[2]),
+        )
         mass_info.inertia = Gf.Matrix3f(*shape_inertia_np.flatten().tolist())
         return mass_info
+
+    def _prepare_collider_mass_info(prim, mass_info, body_values, material_paths):
+        if not prim.HasAPI(UsdPhysics.MassAPI):
+            return mass_info, False
+
+        mass_api = UsdPhysics.MassAPI(prim)
+        mass = float(mass_api.GetMassAttr().Get())
+        density = float(mass_api.GetDensityAttr().Get())
+        inertia = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
+        com = np.array(mass_api.GetCenterOfMassAttr().Get(), dtype=np.float32)
+        has_effective_values = mass > 0.0 or density > 0.0 or np.any(inertia != 0.0) or np.all(np.isfinite(com))
+        if (
+            mass_info is None
+            or mass_info.volume <= 0.0
+            or not np.all(np.isfinite(inertia))
+            or np.any(inertia < 0.0)
+            or not np.any(inertia)
+        ):
+            return mass_info, has_effective_values
+
+        if mass > 0.0:
+            inertia_scale = mass / mass_info.volume
+        else:
+            inertia_scale = density
+            if inertia_scale <= 0.0 and body_values.density is not None:
+                inertia_scale = body_values.density
+            if inertia_scale <= 0.0 and material_paths:
+                material_prim = stage.GetPrimAtPath(material_paths[0])
+                if material_prim.HasAPI(UsdPhysics.MaterialAPI):
+                    inertia_scale = float(UsdPhysics.MaterialAPI(material_prim).GetDensityAttr().Get())
+            if inertia_scale <= 0.0:
+                meters_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+                kilograms_per_unit = float(UsdPhysics.GetStageKilogramsPerUnit(stage))
+                inertia_scale = 1000.0 * meters_per_unit**3 / kilograms_per_unit
+
+        # OpenUSD treats small nonzero inertia as its zero sentinel.
+        inertia /= inertia_scale
+        mass_info.inertia = Gf.Matrix3f(*np.diag(inertia).flatten().tolist())
+
+        if np.all(np.isfinite(com)):
+            scale = usd.get_scale(prim, local=False)
+            mass_info.centerOfMass = Gf.CompMult(
+                Gf.Vec3f(*(float(value) for value in com)),
+                Gf.Vec3f(*(float(value) for value in scale)),
+            )
+        return mass_info, has_effective_values
 
     # parse shapes attached to the rigid bodies
     # Canonicalized (sorted) USD path pairs from physics:filteredPairs. Collected from native
@@ -3024,6 +3122,7 @@ def parse_usd(
     rigid_body_mass_info_map = {}
     expected_fallback_collider_paths: set[str] = set()
     bodies_with_non_native_colliders: set[str] = set()
+    collider_mass_api_paths_by_body: dict[str, list[str]] = collections.defaultdict(list)
     for key, value in ret_dict.items():
         if key in {
             UsdPhysics.ObjectType.CubeShape,
@@ -3517,48 +3616,28 @@ def parse_usd(
                 if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
                     builder.shape_margin[shape_id] = margin_val
 
-                if body_path in mass_api_body_paths and body_path not in complete_mass_api_body_paths:
-                    # OpenUSD applies collider MassAPI; the callback supplies geometry.
+                body_values = body_mass_api_values.get(body_path)
+                if body_values is not None and not body_values.is_complete:
                     if not prim.HasAPI(UsdPhysics.CollisionAPI):
                         bodies_with_non_native_colliders.add(body_path)
-                    shape_geo_type = None
-                    shape_scale = wp.vec3(1.0, 1.0, 1.0)
-                    shape_src = None
-                    if key == UsdPhysics.ObjectType.CubeShape:
-                        shape_geo_type = GeoType.BOX
-                        hx, hy, hz = shape_spec.halfExtents
-                        shape_scale = wp.vec3(hx, hy, hz)
-                    elif key == UsdPhysics.ObjectType.SphereShape:
-                        shape_geo_type = GeoType.SPHERE
-                        shape_scale = wp.vec3(shape_spec.radius, 0.0, 0.0)
-                    elif key == UsdPhysics.ObjectType.CapsuleShape:
-                        shape_geo_type = GeoType.CAPSULE
-                        shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
-                    elif key == UsdPhysics.ObjectType.CylinderShape:
-                        shape_geo_type = GeoType.CYLINDER
-                        shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
-                    elif key == UsdPhysics.ObjectType.ConeShape:
-                        shape_geo_type = GeoType.CONE
-                        shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
-                    elif key == UsdPhysics.ObjectType.MeshShape:
-                        shape_geo_type = GeoType.MESH
-                        shape_scale = wp.vec3(*shape_spec.meshScale)
-                        shape_src = _get_mesh_cached(prim)
-                    if shape_geo_type is not None:
+                    mass_info = None
+                    if shape_id >= 0 and builder.shape_type[shape_id] != GeoType.PLANE:
                         expected_fallback_collider_paths.add(path)
-                        shape_axis = getattr(shape_spec, "axis", None)
                         mass_info = _build_mass_info_from_shape_geometry(
-                            shape_spec.localPos,
-                            shape_spec.localRot,
-                            shape_geo_type,
-                            shape_scale,
-                            shape_src,
-                            shape_axis,
+                            builder.shape_transform[shape_id],
+                            builder.shape_type[shape_id],
+                            wp.vec3(*builder.shape_scale[shape_id]),
+                            builder.shape_source[shape_id],
                             is_solid=shape_is_solid,
                             thickness=inertia_margin,
                         )
-                        if mass_info is not None:
-                            rigid_body_mass_info_map[path] = mass_info
+                    mass_info, has_collider_mass_api_values = _prepare_collider_mass_info(
+                        prim, mass_info, body_values, shape_spec.materials
+                    )
+                    if has_collider_mass_api_values:
+                        collider_mass_api_paths_by_body[body_path].append(path)
+                    if mass_info is not None:
+                        rigid_body_mass_info_map[path] = mass_info
 
                 _collect_filtered_pairs(prim)
 
@@ -3630,17 +3709,12 @@ def parse_usd(
             if verbose:
                 print(f"Added Gaussian splat shape {gaussian_path} with id {shape_id}.")
 
-    def _zero_mass_information():
-        """Create a reusable zero-contribution collider mass payload for callback fallback."""
-        mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
-        mass_info.volume = 0.0
-        mass_info.centerOfMass = Gf.Vec3f(0.0)
-        mass_info.localPos = Gf.Vec3f(0.0)
-        mass_info.localRot = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
-        mass_info.inertia = Gf.Matrix3f(0.0)
-        return mass_info
-
-    zero_mass_information = _zero_mass_information()
+    zero_mass_information = UsdPhysics.RigidBodyAPI.MassInformation()
+    zero_mass_information.volume = 0.0
+    zero_mass_information.centerOfMass = Gf.Vec3f(0.0)
+    zero_mass_information.localPos = Gf.Vec3f(0.0)
+    zero_mass_information.localRot = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+    zero_mass_information.inertia = Gf.Matrix3f(0.0)
     warned_missing_collider_mass_info: set[str] = set()
 
     def _get_collision_mass_information(collider_prim: Usd.Prim):
@@ -3657,79 +3731,17 @@ def parse_usd(
             warned_missing_collider_mass_info.add(collider_path)
         return rigid_body_mass_info_map.get(collider_path, zero_mass_information)
 
-    def _valid_principal_axes(value):
-        imaginary = value.GetImaginary()
-        components = np.array([imaginary[0], imaginary[1], imaginary[2], value.GetReal()], dtype=np.float32)
-        return np.all(np.isfinite(components)) and np.linalg.norm(components) > 1.0e-6
-
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for path, rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
-            prim = stage.GetPrimAtPath(path)
-            if not prim.HasAPI(UsdPhysics.MassAPI):
-                continue
             body_path = str(path)
+            body_values = body_mass_api_values.get(body_path)
+            if body_values is None:
+                continue
             body_id = path_body_map.get(body_path, -1)
             if body_id == -1:
                 continue
-            mass_api = UsdPhysics.MassAPI(prim)
-
-            # newton:inertia (compact 6-element tensor) overrides physics:diagonalInertia + physics:principalAxes.
-            inertia_tensor_val = (
-                usd.get_attribute(prim, "newton:inertia") if usd.has_applied_api_schema(prim, "NewtonMassAPI") else None
-            )
-            has_inertia_tensor = inertia_tensor_val is not None
-            if has_inertia_tensor:
-                if len(inertia_tensor_val) != 6:
-                    warnings.warn(
-                        f"Body {body_path}: newton:inertia has {len(inertia_tensor_val)} elements, expected 6. Ignoring.",
-                        stacklevel=2,
-                    )
-                    has_inertia_tensor = False
-                elif not all(math.isfinite(v) for v in inertia_tensor_val):
-                    warnings.warn(
-                        f"Body {body_path}: newton:inertia contains non-finite values. Ignoring.",
-                        stacklevel=2,
-                    )
-                    has_inertia_tensor = False
-                elif any(v < 0.0 for v in inertia_tensor_val[:3]):
-                    warnings.warn(
-                        f"Body {body_path}: newton:inertia has negative diagonal elements. Ignoring.",
-                        stacklevel=2,
-                    )
-                    has_inertia_tensor = False
-                else:
-                    ixx, iyy, izz, ixy, ixz, iyz = inertia_tensor_val
-                    inertia_np = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]], dtype=np.float64)
-                    if np.any(np.linalg.eigvalsh(inertia_np) < 0.0):
-                        warnings.warn(
-                            f"Body {body_path}: newton:inertia is not positive semidefinite. Ignoring.",
-                            stacklevel=2,
-                        )
-                        has_inertia_tensor = False
-                    else:
-                        inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
-
-            mass_value = float(mass_api.GetMassAttr().Get())
-            inertia_value = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
-            com_value = np.array(mass_api.GetCenterOfMassAttr().Get(), dtype=np.float32)
-            principal_axes_value = mass_api.GetPrincipalAxesAttr().Get()
-            has_mass = mass_value > 0.0
-            has_inertia = np.any(inertia_value != 0.0)
-            has_com = np.all(np.isfinite(com_value))
-            if has_inertia and not np.all(np.isfinite(inertia_value)):
-                warnings.warn(
-                    f"Body {body_path}: authored diagonal inertia contains non-finite values. Ignoring.",
-                    stacklevel=2,
-                )
-                has_inertia = False
-            elif has_inertia and np.any(inertia_value < 0.0):
-                warnings.warn(
-                    f"Body {body_path}: authored diagonal inertia contains negative values. Ignoring.",
-                    stacklevel=2,
-                )
-                has_inertia = False
 
             shape_accumulated_mass = builder.body_mass[body_id]
             mass = shape_accumulated_mass
@@ -3737,17 +3749,15 @@ def parse_usd(
             inertia_diag = None
             principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
-            has_complete_properties = has_mass and (has_inertia or has_inertia_tensor) and has_com
-            if body_path not in bodies_with_non_native_colliders and not has_complete_properties:
+            if body_path not in bodies_with_non_native_colliders and not body_values.is_complete:
+                prim = stage.GetPrimAtPath(path)
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
                 cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
                     _get_collision_mass_information
                 )
                 mass = float(cmp_mass) if cmp_mass >= 0.0 else shape_accumulated_mass
-                if cmp_mass < 0.0:
-                    density = float(mass_api.GetDensityAttr().Get())
-                    if density > 0.0 and default_shape_density > 0.0:
-                        mass *= density / default_shape_density
+                if cmp_mass < 0.0 and body_values.density is not None and default_shape_density > 0.0:
+                    mass *= body_values.density / default_shape_density
                 com = np.array(cmp_com, dtype=np.float32)
                 if not np.all(np.isfinite(com)):
                     com = np.array(builder.body_com[body_id], dtype=np.float32)
@@ -3763,38 +3773,55 @@ def parse_usd(
                     if _valid_principal_axes(cmp_principal_axes):
                         principal_axes = cmp_principal_axes
 
-                if inertia_diag is None and not has_inertia_tensor and mass > 0.0 and shape_accumulated_mass > 0.0:
-                    inertia_mass = mass_value if has_mass else mass
+                if (
+                    inertia_diag is None
+                    and body_values.inertia_tensor is None
+                    and mass > 0.0
+                    and shape_accumulated_mass > 0.0
+                ):
+                    inertia_mass = body_values.mass if body_values.mass is not None else mass
                     inertia_scale = inertia_mass / shape_accumulated_mass
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * inertia_scale)
             elif body_path in bodies_with_non_native_colliders:
-                density = float(mass_api.GetDensityAttr().Get())
-                if density > 0.0 and default_shape_density > 0.0:
-                    density_scale = density / default_shape_density
+                ignored_collider_values = collider_mass_api_paths_by_body.get(body_path)
+                if ignored_collider_values:
+                    warnings.warn(
+                        f"Body {body_path} contains colliders that OpenUSD cannot discover and collider-level "
+                        f"MassAPI values on {ignored_collider_values}; using descriptor geometry and material "
+                        "density without those collider overrides. Author complete body MassAPI properties or "
+                        "apply PhysicsCollisionAPI to every collider.",
+                        stacklevel=2,
+                    )
+                if body_values.density is not None and default_shape_density > 0.0:
+                    density_scale = body_values.density / default_shape_density
                     mass *= density_scale
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * density_scale)
 
-                if has_mass:
-                    if not has_inertia and not has_inertia_tensor and mass > 0.0:
-                        inertia_scale = mass_value / mass
-                        builder.body_inertia[body_id] = wp.mat33(
-                            np.array(builder.body_inertia[body_id]) * inertia_scale
-                        )
+                if (
+                    body_values.mass is not None
+                    and body_values.inertia is None
+                    and body_values.inertia_tensor is None
+                    and mass > 0.0
+                ):
+                    inertia_scale = body_values.mass / mass
+                    builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * inertia_scale)
 
-            if has_mass:
-                mass = mass_value
-            if has_com:
+            if body_values.mass is not None:
+                mass = body_values.mass
+            if body_values.com is not None:
                 com = np.array(
-                    Gf.CompMult(Gf.Vec3f(*(float(value) for value in com_value)), rigid_body_desc.scale),
+                    Gf.CompMult(
+                        Gf.Vec3f(*(float(value) for value in body_values.com)),
+                        rigid_body_desc.scale,
+                    ),
                     dtype=np.float32,
                 )
-            if has_inertia:
-                inertia_diag = inertia_value
-                if _valid_principal_axes(principal_axes_value):
-                    principal_axes = principal_axes_value
+            if body_values.inertia is not None:
+                inertia_diag = body_values.inertia
+                principal_axes = body_values.principal_axes
 
-            if has_inertia_tensor:
-                builder.body_inertia[body_id] = inertia_tensor
+            if body_values.inertia_tensor is not None:
+                builder.body_inertia[body_id] = body_values.inertia_tensor
             elif inertia_diag is not None:
                 i_rot = usd.value_to_warp(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
@@ -3810,15 +3837,10 @@ def parse_usd(
             builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0
             builder.body_com[body_id] = wp.vec3(*com)
 
-            # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated.
             I_m = np.array(builder.body_inertia[body_id])
             mass = builder.body_mass[body_id]
             if I_m.max() == 0.0:
                 if mass > 0.0:
-                    # Heuristic: assume a uniform density sphere with the given mass
-                    # For a sphere: I = (2/5) * m * r^2
-                    # Estimate radius from mass assuming reasonable density (e.g., water density ~1000 kg/m³)
-                    # This gives r = (3*m/(4*π*p))^(1/3)
                     density = default_shape_density  # kg/m^3
                     volume = mass / density
                     radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0 / 3.0)
