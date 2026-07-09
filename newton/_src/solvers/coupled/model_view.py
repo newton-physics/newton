@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 def _types_compatible(current, value) -> bool:
     """Return True iff *value* is type-compatible with *current* for an override."""
+    if isinstance(current, set):
+        return isinstance(value, set)
     if isinstance(current, wp.array):
         return (
             isinstance(value, wp.array)

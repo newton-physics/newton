@@ -22,7 +22,7 @@ from ......core.types import Axis
 from ...core import ModelBuilderKamino, inertia
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.math import FLOAT32_MAX, FLOAT32_MIN, I_3, axis_to_mat33
-from ...core.shapes import BoxShape, SphereShape
+from ...core.shapes import BoxShape, PlaneShape, SphereShape
 
 ###
 # Module interface
@@ -859,6 +859,7 @@ def build_boxes_fourbar(
     new_world: bool = True,
     world_index: int = 0,
     actuator_ids: list[int] | None = None,
+    use_plane_shape: bool = False,
 ) -> ModelBuilderKamino:
     """
     Constructs a basic model of a four-bar linkage.
@@ -866,20 +867,33 @@ def build_boxes_fourbar(
     Args:
         builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset: A vertical offset to apply to the initial position of the box.
+        z_offset: A vertical offset to apply to the initial position of the first box.
+        fixedbase: Whether to add a fixed joint between the first box and the world.
+        floatingbase: Whether to add a free joint between the first box and the world.
+        limits: Whether to set finite position limits to revolute joints.
         ground: Whether to add a static ground plane to the model.
+        dynamic_joints: Whether to set non-trivial armature and damping to the first revolute joint.
+        implicit_pd: Whether to set non-trivial implicit PD gains to the first revolute joint.
+        verbose: Whether to print debug information such as body/joint positions.
         new_world: Whether to create a new world in the builder for this model.
             If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
         world_index: The index of the world to which the model should be added if `new_world` is False.
-            If `new_world` is True, this argument is ignored.
+            If `new_world` is `True`, this argument is ignored.
             If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
+        actuator_ids: List of revolute joint indices in [1, 2, 3, 4] to make into actuators.
+            If not provided, defaults to [1, 3]
+        use_plane_shape: If `True`, and `ground` is `True`, will use a plane shape for the ground instead
+            of a wide and thin box. Note that planes are not supported in the primitive collision pipeline.
 
     Returns:
         A model builder containing the four-bar linkage.
     """
+    if fixedbase and floatingbase:
+        raise ValueError("At most one of fixedbase or floatingbase can be enabled.")
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilderKamino(default_world=False)
@@ -1040,7 +1054,7 @@ def build_boxes_fourbar(
             bid_B=-1,
             bid_F=bid1,
             B_r_Bj=wp.vec3f(0.0),
-            F_r_Fj=-r_b1,
+            F_r_Fj=wp.vec3f(0.0),
             X_Bj=I_3,
             world_index=world_index,
         )
@@ -1053,7 +1067,7 @@ def build_boxes_fourbar(
             bid_B=-1,
             bid_F=bid1,
             B_r_Bj=wp.vec3f(0.0),
-            F_r_Fj=-r_b1,
+            F_r_Fj=wp.vec3f(0.0),
             X_Bj=I_3,
             world_index=world_index,
         )
@@ -1143,8 +1157,8 @@ def build_boxes_fourbar(
         _builder.add_geometry(
             name="ground",
             body=-1,
-            shape=BoxShape(10.0, 10.0, 0.5),
-            offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            shape=PlaneShape() if use_plane_shape else BoxShape(10.0, 10.0, 0.5),
+            offset=None if use_plane_shape else wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 

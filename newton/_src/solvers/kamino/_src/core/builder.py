@@ -1132,7 +1132,22 @@ class ModelBuilderKamino:
                 joints_F_r_Fj.append(joint.F_r_Fj)
                 joints_X_Bj.append(joint.X_Bj)
                 joints_X_Fj.append(joint.X_Fj)
-                joints_q_j_0.extend(joint.dof_type.reference_coords)
+                if joint.dof_type == JointDoFType.FREE:
+                    # For free joints, the frame of the joint on the base and follower body might not
+                    # coincide on the initial pose (this allows e.g. joint_q to directly represent the
+                    # follower body pose for a unary free joint with the base frame at the origin).
+                    # We therefore deduce here the initial joint_q
+                    q_B = wp.transform_identity() if joint.bid_B < 0 else self.bodies[joint.wid][joint.bid_B].q_i_0
+                    q_F = self.bodies[joint.wid][joint.bid_F].q_i_0
+                    quat_X_B = wp.quat_from_matrix(joint.X_Bj)
+                    quat_X_F = wp.quat_from_matrix(joint.X_Fj) if joint.X_Fj is not None else quat_X_B
+                    T_B = wp.transformf(joint.B_r_Bj, quat_X_B)
+                    T_F = wp.transformf(joint.F_r_Fj, quat_X_F)
+                    q_j_0 = wp.transform_inverse(q_B * T_B) * q_F * T_F
+                    wp.transform_set_rotation(q_j_0, wp.normalize(wp.transform_get_rotation(q_j_0)))
+                    joints_q_j_0.extend(list(q_j_0))
+                else:
+                    joints_q_j_0.extend(joint.dof_type.reference_coords)
                 joints_dq_j_0.extend(joint.dof_type.num_dofs * [0.0])
                 joints_q_j_min.extend(joint.q_j_min)
                 joints_q_j_max.extend(joint.q_j_max)

@@ -181,6 +181,10 @@ def add_example_test(
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
 
+        # Forward any --warp-config overrides from the test runner
+        for entry in newton.tests.unittest_utils.warp_config_overrides:
+            command.extend(["--warp-config", entry])
+
         if not use_viewer:
             stage_path = (
                 options.pop(
@@ -959,7 +963,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_vbd_admm_solver",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 30},
     use_viewer=True,
 )
@@ -974,7 +978,7 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_kamino_mujoco_admm_solver",
     devices=["cpu"],
-    test_options={"num-frames": 30, "world-count": 4, "graph-capture": False},
+    test_options={"num-frames": 30, "world-count": 4},
     use_viewer=True,
 )
 add_example_test(
