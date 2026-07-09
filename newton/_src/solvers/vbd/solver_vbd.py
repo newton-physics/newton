@@ -1086,10 +1086,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
-        if self.device.is_capturing and not wp.is_mempool_enabled(self.device):
+        from ...utils import is_graph_capture_allocation_enabled  # noqa: PLC0415
+
+        if self.device.is_capturing and not is_graph_capture_allocation_enabled(self.device):
             raise RuntimeError(
                 f"SolverVBD {name} buffer needs to grow from {current} to {required} "
-                "during CUDA graph capture, but Warp mempool is disabled. "
+                "during graph capture, but allocation during capture is not enabled on this device. "
                 "Pre-size before capture by constructing CollisionPipeline before SolverVBD, "
                 "passing explicit rigid_contact_max/soft_contact_max to CollisionPipeline, or running one "
                 "uncaptured step/force-collection pass."

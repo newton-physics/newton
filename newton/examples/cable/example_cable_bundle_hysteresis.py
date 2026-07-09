@@ -315,17 +315,14 @@ class Example:
         # Time tracking for obstacle motion (stored in device array for graph capture)
         self.sim_time_array = wp.zeros(1, dtype=float, device=self.solver.device)
 
-        # Initialize CUDA graph
+        # Initialize graph capture
         self.capture()
 
     def capture(self):
-        """Capture simulation loop into a CUDA graph for optimal GPU performance."""
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        """Capture the simulation loop into a graph for optimal performance."""
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         """Execute all simulation substeps for one frame."""
