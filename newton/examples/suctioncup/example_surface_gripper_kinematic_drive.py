@@ -60,6 +60,7 @@ class VelocityProfile(Enum):
     CONSTANT_UP_AND_DROP = 4
     UP_LEFT_DOWN = 5
     UP_LEFT_ROLL_DOWN = 6
+    SEAL_YANK_BREAK = 7
 
 
 DEFAULT_PROFILE = VelocityProfile.UP_LEFT_ROLL_DOWN
@@ -87,6 +88,7 @@ def make_profile(profile: VelocityProfile):
     up_twist = wp.spatial_vector(0.0, 0.0, speed, 0.0, 0.0, spin)  # up + twist (z)
     left_swing_y = wp.spatial_vector(0.0, -speed, 0.0, 0.0, spin, 0.0)  # left + swing Y
     down_swing_x_twist = wp.spatial_vector(0.0, 0.0, -speed, spin, 0.0, spin)  # down + swing X + twist
+    yank_up = wp.spatial_vector(0.0, 0.0, 25.0, 0.0, 0.0, 0.0)  # hard upward yank (high accel -> break)
     seal_times = [0.0]
     seal_values = [True]  # engaged for the whole run
     if profile == VelocityProfile.CONSTANT_UP:
@@ -123,6 +125,19 @@ def make_profile(profile: VelocityProfile):
             [up_twist, up_twist, left_swing_y, left_swing_y, down_swing_x_twist, down_swing_x_twist, rest],
             seal_times,
             seal_values,
+        )
+    if profile == VelocityProfile.SEAL_YANK_BREAK:
+        # lift to establish the grip, then a brief hard yank straight up and back to rest. The seal
+        # series is EMPTY, so the physics owns engagement: the yank's high acceleration drives box B's
+        # normal tension past the break threshold, the break metric exceeds 1 and the seal releases on
+        # its own. B is flung up, detaches, and falls to the ground while the gripper holds still.
+        # (Example.__init__ commands a low preload for empty-seal profiles so the seal reads intact at
+        # rest; the full-strength break threshold is what the yank has to overcome.)
+        return (
+            [0.0, 0.3, 1.3, 1.4, 1.5, 4.0],
+            [rest, up, up, yank_up, rest, rest],
+            [],
+            [],
         )
     raise ValueError(f"unknown velocity profile: {profile}")
 
@@ -359,7 +374,14 @@ class Example:
         self.gripper_model = gbuilder.finalize(device=self.model.device)
         self.gripper_state = self.gripper_model.state()
         self.gripper_control = self.gripper_model.control()
-        self.gripper_control.pad_grip_control.fill_(1.0)  # full grip command
+        # An empty seal series hands engagement to the physics (evaluate_seal), which disengages the
+        # seal once the break metric exceeds 1. Command a low preload for such a profile so the seal
+        # reads as intact at rest -- full grip would put f_min above f_normal_max (already broken) --
+        # then the profile's hard yank drives the tension past the break threshold. Scripted-seal
+        # profiles use full grip and ignore the metric anyway.
+        physics_seal = len(seal_times) == 0
+        grip_command = 0.05 if physics_seal else 1.0
+        self.gripper_control.pad_grip_control.fill_(grip_command)
 
         # Phase-1 seal decision: which body each pad seals against (fixed to box B here).
         self.seal_engaged = wp.full(1, True, dtype=wp.bool, device=self.model.device)
