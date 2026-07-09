@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
+import hashlib
 import math
 import os
 import warnings
@@ -1502,38 +1503,55 @@ class Mesh:
             The hash value for the mesh.
         """
         if self._cached_hash is None:
-            self._cached_hash = hash(
-                (
-                    tuple(np.array(self.vertices).flatten()),
-                    tuple(np.array(self.indices).flatten()),
-                    self.is_solid,
-                    self._compute_texture_hash(),
-                    self._roughness,
-                    self._metallic,
-                )
+            digest = hashlib.sha256()
+            material = np.array(
+                [
+                    np.nan if self._roughness is None else float(self._roughness),
+                    np.nan if self._metallic is None else float(self._metallic),
+                ],
+                dtype=np.float64,
             )
+            for name, values in ((b"vertices", self._vertices), (b"indices", self._indices), (b"material", material)):
+                dtype = values.dtype.str.encode("ascii")
+                digest.update(len(name).to_bytes(1, "big"))
+                digest.update(name)
+                digest.update(len(dtype).to_bytes(1, "big"))
+                digest.update(dtype)
+                digest.update(values.ndim.to_bytes(1, "big"))
+                for dimension in values.shape:
+                    digest.update(int(dimension).to_bytes(8, "big"))
+                digest.update(values.tobytes())
+            digest.update(bytes([bool(self.is_solid)]))
+            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
         return self._cached_hash
 
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim, **kwargs) -> "Mesh":
-        """Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.
+    def create_from_usd(source=None, *, prim=None, **kwargs) -> "Mesh":
+        """Load a Mesh from a USD mesh prim, stage, file path, or URL.
 
         This is a convenience wrapper around :func:`newton.usd.get_mesh`.
         See that function for full documentation.
 
         Args:
-            prim: The USD prim to load the mesh from.
+            source: USD mesh prim, stage, file path, or URL to load the mesh
+                from.
+            prim: Legacy keyword alias for ``source`` when loading a USD prim.
             **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
-                (e.g. ``load_normals``, ``load_uvs``).
+                (e.g. ``root_path``, ``load_normals``, ``load_uvs``).
 
         Returns:
             Mesh: A new Mesh instance.
         """
         from ..usd.utils import get_mesh  # noqa: PLC0415
 
-        result = get_mesh(prim, **kwargs)
+        if prim is not None:
+            if source is not None:
+                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
+            source = prim
+
+        result = get_mesh(source, **kwargs)
         if isinstance(result, tuple):
             return result[0]
         return result

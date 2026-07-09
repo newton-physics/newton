@@ -17,7 +17,7 @@ import warp as wp
 from ....config import ForwardKinematicsSolverConfig
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.model import ModelKamino
-from ...core.types import assign_to_warp_int32_array, to_warp_int32_array
+from ...core.types import assign_to_warp_int32_array, to_warp_int32_array, vec7f
 from ...linalg.blas import (
     block_sparse_ATA_blockwise_3_4_inv_diagonal_2d,
     block_sparse_ATA_inv_diagonal_2d,
@@ -33,6 +33,7 @@ from .kernels import (
     _add_regularizer_to_diagonal,
     _apply_line_search_step,
     _correct_actuator_coords,
+    _correct_universal_constraint_velocities,
     _eval_actuator_coords,
     _eval_body_velocities,
     _eval_fk_actuated_dofs_or_coords,
@@ -407,7 +408,8 @@ class ForwardKinematicsSolver:
 
         # Retrieve / compute dimensions - Constraints
         num_constraints = num_bodies.copy()  # Number of kinematic constraints per world (unit quat. + joints)
-        has_universal_joints = False  # Whether the model has a least one passive universal joint
+        has_universal_joints = False  # Whether the model has at least one passive universal joint
+        self.has_universal_actuators = False  # Whether the model has at least one actuated universal joint
         constraint_full_to_red_map = np.full(6 * self.num_joints_tot, -1, dtype=np.int32)
         for eq_class in classes:
             # Count constraints for first world in equivalence class
@@ -415,12 +417,14 @@ class ForwardKinematicsSolver:
             ct_count = num_constraints[wd_id]
             for jt_id in range(first_joint_id[wd_id], first_joint_id[wd_id + 1]):
                 act_type = joints_act_type[jt_id]
+                dof_type = joints_dof_type[jt_id]
                 if act_type != JointActuationType.PASSIVE:  # Actuator: select all six constraints
                     for i in range(6):
                         constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                     ct_count += 6
+                    if dof_type == FKJointDoFType.UNIVERSAL:
+                        self.has_universal_actuators = True
                 else:
-                    dof_type = joints_dof_type[jt_id]
                     if dof_type == FKJointDoFType.AXIS:
                         constraint_full_to_red_map[6 * jt_id + 3] = ct_count
                         ct_count += 1
@@ -760,8 +764,10 @@ class ForwardKinematicsSolver:
 
         # Compute sparsity pattern and initialize linear solver for sparse case
         if self.config.use_sparsity:
-            self.sparse_jacobian = BlockSparseMatrices(
-                device=self.device, nzb_dtype=BlockDType(dtype=wp.float32, shape=(7,)), num_matrices=self.num_worlds
+            self.sparse_jacobian: BlockSparseMatrices[wp.float32, wp.int32, vec7f] = BlockSparseMatrices(
+                device=self.device,
+                nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(7,)),
+                num_matrices=self.num_worlds,
             )
             jacobian_dims = list(zip(num_constraints.tolist(), (7 * num_bodies).tolist(), strict=True))
 
@@ -831,7 +837,7 @@ class ForwardKinematicsSolver:
             )
 
             # Initialize Jacobian linear operator
-            self.sparse_jacobian_op = BlockSparseLinearOperators(self.sparse_jacobian)
+            self.sparse_jacobian_op = BlockSparseLinearOperators[wp.float32, wp.int32](self.sparse_jacobian)
 
             # Compute flat-array offsets for the CG solver (uniform world dimensions)
             cg_vio = wp.from_numpy(np.arange(self.num_worlds, dtype=np.int32) * self.num_states_max, device=self.device)
@@ -1735,6 +1741,29 @@ class ForwardKinematicsSolver:
             ],
             device=self.device,
         )
+        if self.has_universal_actuators:
+            wp.launch(
+                _correct_universal_constraint_velocities,
+                dim=(
+                    self.num_worlds,
+                    self.num_joints_max,
+                ),
+                inputs=[
+                    self.num_joints,
+                    self.first_joint_id,
+                    self.joints_dof_type,
+                    self.joints_act_type,
+                    self.joints_bid_B,
+                    self.joints_bid_F,
+                    self.joints_X_Bj,
+                    self.joints_X_Fj,
+                    self.constraint_full_to_red_map,
+                    bodies_q,
+                    world_mask,
+                    self.target_cts_u,
+                ],
+                device=self.device,
+            )
 
         # Update constraints Jacobian
         self._update_jacobian(bodies_q, target_rel_transforms, world_mask)
