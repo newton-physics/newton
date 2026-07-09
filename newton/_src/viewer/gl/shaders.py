@@ -107,6 +107,7 @@ uniform sampler2D shadow_map;
 uniform sampler2D env_map;
 uniform float env_intensity;
 uniform sampler2D albedo_map;
+uniform sampler2DArray texture_pool;
 
 uniform vec3 fogColor;
 uniform int up_axis;
@@ -273,7 +274,14 @@ void main()
 
     // convert to linear space
     vec3 albedo = pow(ObjectColor, vec3(2.2));
-    if (texture_enable > 0.5)
+    if (texture_enable > 1.5)
+    {
+        // texture_enable >= 2 selects a layer of the shared texture pool (layer = value - 2),
+        // written per instance for runtime texture swapping.
+        vec3 tex_color = texture(texture_pool, vec3(TexCoord, texture_enable - 2.0)).rgb;
+        albedo *= pow(tex_color, vec3(2.2));
+    }
+    else if (texture_enable > 0.5)
     {
         vec3 tex_color = texture(albedo_map, TexCoord).rgb;
         albedo *= pow(tex_color, vec3(2.2));
@@ -527,6 +535,7 @@ class ShaderShape(ShaderGL):
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
             self.loc_albedo_map = self._get_uniform_location("albedo_map")
+            self.loc_texture_pool = self._get_uniform_location("texture_pool")
             self.loc_env_map = self._get_uniform_location("env_map")
             self.loc_env_intensity = self._get_uniform_location("env_intensity")
             self.loc_fog_color = self._get_uniform_location("fogColor")
@@ -597,6 +606,16 @@ class ShaderShape(ShaderGL):
                 self.loc_light_space_matrix, 1, self._gl.GL_FALSE, arr_pointer(light_space_matrix)
             )
             self._gl.glUniform1i(self.loc_albedo_map, 1)
+            from .opengl import RendererGL  # noqa: PLC0415
+
+            self._gl.glActiveTexture(self._gl.GL_TEXTURE3)
+            self._gl.glBindTexture(
+                self._gl.GL_TEXTURE_2D_ARRAY,
+                RendererGL.texture_pool_array_id
+                if RendererGL.texture_pool_array_id is not None
+                else RendererGL.get_fallback_texture_array(),
+            )
+            self._gl.glUniform1i(self.loc_texture_pool, 3)
             self._gl.glActiveTexture(self._gl.GL_TEXTURE2)
             if env_texture is not None:
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, env_texture)

@@ -517,6 +517,8 @@ class ViewerBase(ABC):
 
         # Geometry mesh cache (geometry hash -> mesh path)
         layer._geometry_cache: dict[int, str] = {}
+        # Model shape index -> logged mesh name (for runtime mesh-level updates)
+        layer._shape_mesh_names: dict[int, str] = {}
 
         # Contact line vertices
         layer._contact_points0 = None
@@ -690,6 +692,7 @@ class ViewerBase(ABC):
 
         # Clear shape instance batches but preserve geometry cache
         self._shape_instances = {}
+        self._shape_mesh_names = {}
         self._gaussian_instances = []
         self._sdf_isomesh_instances = {}
         self._sdf_isomesh_populated = False
@@ -950,7 +953,7 @@ class ViewerBase(ABC):
                 shapes.update(state, world_offsets=self.world_offsets, layer_xform=self.layer.xform)
 
             colors = shapes.colors if self.model_changed or shapes.colors_changed else None
-            materials = shapes.materials if self.model_changed else None
+            materials = shapes.materials if self.model_changed or shapes.materials_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
             # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
@@ -977,6 +980,7 @@ class ViewerBase(ABC):
                 )
 
             shapes.colors_changed = False
+            shapes.materials_changed = False
 
         self._log_gaussian_shapes(state)
         self._log_non_shape_state(state)
@@ -1820,6 +1824,8 @@ class ViewerBase(ABC):
             should be included in
             :meth:`~newton.viewer.ViewerBase.log_instances`.
             """
+            self.materials_changed: bool = False
+            """Like :attr:`colors_changed`, for per-instance materials (e.g. texture-layer swaps)."""
 
         def add(
             self,
@@ -1932,6 +1938,52 @@ class ViewerBase(ABC):
 
         # Hide if shape has no enabled flags
         return False
+
+    def update_mesh_texture(self, name: str, texture) -> None:
+        """Replace the texture of an already-logged mesh. No-op in viewers without texture support.
+
+        Args:
+            name: Logged mesh name.
+            texture: Texture path/URL or image array (H, W, C).
+        """
+        del name, texture
+
+    def _texture_pool_layer(self, key: str) -> int | None:
+        """Return the pool layer for a registered texture source (viewer-specific), if any."""
+        del key
+        return None
+
+    def update_shape_textures(self, shape_indices, texture) -> None:
+        """Replace the rendered texture of the given model shapes.
+
+        Pool-registered sources (see the concrete viewer's ``register_textures``) are applied
+        per instance by writing the pool layer into each shape's instance material, so shapes
+        that share deduplicated geometry (content-identical meshes are logged once) can still
+        show different textures. Unregistered sources fall back to a per-logged-mesh upload,
+        which is shared by every shape using that geometry.
+
+        Args:
+            shape_indices: Model shape indices to update.
+            texture: Texture path/URL (pool key) or image array (fallback only).
+        """
+        layer = self._texture_pool_layer(str(texture)) if isinstance(texture, (str, bytes)) else None
+        if layer is None:
+            names = {self._shape_mesh_names.get(int(s)) for s in shape_indices}
+            names.discard(None)
+            for name in sorted(names):
+                self.update_mesh_texture(name, texture)
+            return
+
+        wanted = {int(s) for s in shape_indices}
+        for shapes in self._shape_instances.values():
+            slots = [slot for slot, shape in enumerate(shapes.model_shapes) if int(shape) in wanted]
+            if not slots:
+                continue
+            materials = shapes.materials.numpy()
+            for slot in slots:
+                materials[slot, 3] = float(layer + 2)  # shader: >= 2 samples pool layer (value - 2)
+            shapes.materials = wp.array(materials, dtype=wp.vec4, device=shapes.device)
+            shapes.materials_changed = True
 
     def _populate_geometry(
         self,
@@ -2129,6 +2181,7 @@ class ViewerBase(ABC):
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
+            self._shape_mesh_names[s] = mesh_name
 
             # shape options
             flags = shape_flags[s]

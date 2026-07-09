@@ -328,25 +328,24 @@ class MeshGL:
             texture_image = load_texture(texture)
 
         if texture_image is None:
-            if self.texture_id is not None:
-                try:
-                    gl.glDeleteTextures(1, self.texture_id)
-                except Exception:
-                    pass
-                self.texture_id = None
+            self._release_texture(gl)
             return
 
+        self._release_texture(gl)
+
+        texture_id = _upload_texture_from_file(gl, texture_image)
+        if not texture_id:
+            return
+        self.texture_id = texture_id
+
+    def _release_texture(self, gl) -> None:
+        """Delete and drop the current texture, if any."""
         if self.texture_id is not None:
             try:
                 gl.glDeleteTextures(1, self.texture_id)
             except Exception:
                 pass
             self.texture_id = None
-
-        texture_id = _upload_texture_from_file(gl, texture_image)
-        if not texture_id:
-            return
-        self.texture_id = texture_id
 
     def render(self):
         if not self.hidden:
@@ -953,6 +952,37 @@ class RendererGL:
             from pyglet import gl
 
             cls.gl = gl
+
+    texture_pool_array_id = None
+    """GL texture id of the shared GL_TEXTURE_2D_ARRAY texture pool (see ViewerGL.register_textures)."""
+
+    _fallback_texture_array_id = None
+
+    @classmethod
+    def get_fallback_texture_array(cls):
+        """Return a 1x1x1 white texture array so the pool sampler is always valid."""
+        if cls._fallback_texture_array_id is None:
+            gl = cls.gl
+            texture_id = gl.GLuint()
+            gl.glGenTextures(1, texture_id)
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, texture_id)
+            pixels = np.full((1, 1, 1, 4), 255, dtype=np.uint8)
+            gl.glTexImage3D(
+                gl.GL_TEXTURE_2D_ARRAY,
+                0,
+                gl.GL_RGBA8,
+                1,
+                1,
+                1,
+                0,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                pixels.ctypes.data,
+            )
+            gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            cls._fallback_texture_array_id = texture_id
+        return cls._fallback_texture_array_id
 
     @classmethod
     def get_fallback_texture(cls):
