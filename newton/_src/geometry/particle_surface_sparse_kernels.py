@@ -24,6 +24,10 @@ _MESH_VERTEX_COUNT = wp.constant(0)
 _MESH_INDEX_COUNT = wp.constant(1)
 _MESH_COUNT_STRIDE = wp.constant(3)
 _SUPPORT_VOXEL_COUNT = 27
+_DENSITY_SPLAT_LANES_ANISOTROPIC = 16
+_DENSITY_SPLAT_LANES_ISOTROPIC = 2
+_DENSITY_SPLAT_BLOCK_DIM_ANISOTROPIC = 64
+_DENSITY_SPLAT_BLOCK_DIM_ISOTROPIC = 256
 
 
 @wp.func
@@ -347,9 +351,10 @@ def evaluate_density(
     density_reach: wp.array[wp.vec3],
     env_offsets: wp.array[wp.vec3i],
     inv_voxel_size: float,
+    lane_count: int,
     field: wp.array[float],
 ):
-    particle = wp.tid()
+    particle, lane = wp.tid()
     world = _particle_world(particle_world, use_worlds, world_count, particle)
     if world < 0 or not _is_active(flags, use_flags, particle):
         return
@@ -369,20 +374,23 @@ def evaluate_density(
     step_x = voxel_size * wp.vec3(G[0, 0], G[1, 0], G[2, 0])
     step_y = voxel_size * wp.vec3(G[0, 1], G[1, 1], G[2, 1])
     step_z = voxel_size * wp.vec3(G[0, 2], G[1, 2], G[2, 2])
+    lane_step_z = float(lane_count) * step_z
     weight = 8.0 * radius * radius * radius * wp.static(1.0 / math.pi) * det_G[particle]
     offset = env_offsets[world]
     for i in range(lower[0], upper[0] + 1):
         transformed_j = transformed_i
         for j in range(lower[1], upper[1] + 1):
-            transformed = transformed_j
-            for k in range(lower[2], upper[2] + 1):
+            transformed = transformed_j + float(lane) * step_z
+            k = lower[2] + lane
+            while k <= upper[2]:
                 q_sq = wp.dot(transformed, transformed)
                 if q_sq < 4.0:
                     coordinate = wp.vec3i(i, j, k) + offset
                     node = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
                     if node >= 0:
                         wp.atomic_add(field, node, weight * _cubic_bspline(wp.sqrt(q_sq)))
-                transformed += step_z
+                transformed += lane_step_z
+                k += lane_count
             transformed_j += step_y
         transformed_i += step_x
 

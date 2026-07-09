@@ -469,7 +469,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         density_reach: wp.array[wp.vec3],
         *,
         surface_method: str,
-        anisotropic_sdf: bool,
+        anisotropic: bool,
         particle_sdf_radius_scale: float,
         particle_sdf_band: float,
         kernel_radius: float,
@@ -500,7 +500,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                 use_worlds,
                 self.world_count,
             ]
-            if particle_sdf and anisotropic_sdf:
+            if particle_sdf and anisotropic:
                 wp.launch(
                     sparse_kernels.evaluate_particle_sdf_anisotropic,
                     dim=smoothed.shape[0],
@@ -532,9 +532,19 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                     device=self.device,
                 )
             else:
+                if self.device.is_cuda:
+                    if anisotropic:
+                        lane_count = sparse_kernels._DENSITY_SPLAT_LANES_ANISOTROPIC
+                        block_dim = sparse_kernels._DENSITY_SPLAT_BLOCK_DIM_ANISOTROPIC
+                    else:
+                        lane_count = sparse_kernels._DENSITY_SPLAT_LANES_ISOTROPIC
+                        block_dim = sparse_kernels._DENSITY_SPLAT_BLOCK_DIM_ISOTROPIC
+                else:
+                    lane_count = 1
+                    block_dim = 256
                 wp.launch(
                     sparse_kernels.evaluate_density,
-                    dim=smoothed.shape[0],
+                    dim=(smoothed.shape[0], lane_count),
                     inputs=[
                         *common,
                         G,
@@ -542,9 +552,11 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                         density_reach,
                         self.env_offsets,
                         1.0 / self.voxel_size,
+                        lane_count,
                         self.field,
                     ],
                     device=self.device,
+                    block_dim=block_dim,
                 )
 
         if blur_iterations > 0 and blur_radius > 0 and blur_weights is not None:
@@ -1479,7 +1491,7 @@ class ParticleSurface:
             self._det_G[:particle_count],
             self._density_reach[:particle_count],
             surface_method=self.surface_method,
-            anisotropic_sdf=not isotropic_sdf,
+            anisotropic=not isotropic_sdf,
             particle_sdf_radius_scale=self.particle_sdf_radius_scale,
             particle_sdf_band=self.particle_sdf_band,
             kernel_radius=self.kernel_radius,
