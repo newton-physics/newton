@@ -420,21 +420,29 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         self._allocate_field_and_mesh(node_count, cell_count, allocate_mesh=False)
 
     def _classify_topology(self) -> None:
-        wp.launch(
-            sparse_kernels.classify_sparse_topology,
-            dim=self.launch_threads,
-            inputs=[
-                self.volume.id,
-                self.voxel_ijk,
-                self.packed_lower,
-                self.packed_upper,
-                self.cell_world,
-                self.grid_counts,
-                self.world_count,
-                self.launch_threads,
-            ],
-            device=self.device,
-        )
+        if self.world_count == 1:
+            wp.launch(
+                sparse_kernels.classify_sparse_topology_single_world,
+                dim=self.launch_threads,
+                inputs=[self.volume.id, self.cell_world, self.grid_counts, self.launch_threads],
+                device=self.device,
+            )
+        else:
+            wp.launch(
+                sparse_kernels.classify_sparse_topology,
+                dim=self.launch_threads,
+                inputs=[
+                    self.volume.id,
+                    self.voxel_ijk,
+                    self.packed_lower,
+                    self.packed_upper,
+                    self.cell_world,
+                    self.grid_counts,
+                    self.world_count,
+                    self.launch_threads,
+                ],
+                device=self.device,
+            )
         wp.launch(
             sparse_kernels.finalize_sparse_topology,
             dim=1,

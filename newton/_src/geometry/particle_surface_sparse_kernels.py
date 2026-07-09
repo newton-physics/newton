@@ -245,6 +245,23 @@ def emit_particle_support_voxels(
 
 
 @wp.kernel
+def classify_sparse_topology_single_world(
+    grid: wp.uint64,
+    voxel_world: wp.array[wp.int32],
+    grid_counts: wp.array[wp.int32],
+    stride: int,
+):
+    voxel = wp.tid()
+    voxel_count = wp.volume_voxel_count(grid)
+    while voxel < voxel_count:
+        voxel_world[voxel] = wp.int32(0)
+        voxel += stride
+    if wp.tid() == 0:
+        grid_counts[_grid_count_index(0, _GRID_CELL_COUNT)] = voxel_count
+        grid_counts[_grid_count_index(0, _GRID_NODE_COUNT)] = voxel_count
+
+
+@wp.kernel
 def classify_sparse_topology(
     grid: wp.uint64,
     voxel_ijk: wp.array[wp.vec3i],

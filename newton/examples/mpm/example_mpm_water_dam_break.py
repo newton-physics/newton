@@ -442,7 +442,7 @@ class Example:
         parser.add_argument(
             "--surface-max-grid-cells",
             type=int,
-            default=12_000_000,
+            default=4_000_000,
             help="Maximum logical surface-grid cell count",
         )
         parser.add_argument(
