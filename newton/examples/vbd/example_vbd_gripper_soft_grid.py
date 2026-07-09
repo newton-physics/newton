@@ -135,7 +135,7 @@ class Example:
 
         builder.color()
         if self.params["enable_water_tight"]:
-            builder.enable_rigid_mesh_sdfs()
+            builder.configure_sdf_for_collision_shapes()
         self.model = builder.finalize()
 
         self.model.soft_contact_ke = self.params["soft_contact_ke"]

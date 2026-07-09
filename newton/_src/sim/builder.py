@@ -415,6 +415,10 @@ class ModelBuilder:
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
         If provided (and sdf_target_voxel_size is None), enables primitive SDF
         generation. Requires GPU since wp.Volume only supports CUDA."""
+        force_sdf: bool = False
+        """If True, :meth:`ModelBuilder.finalize` builds a volume SDF for this mesh/convex shape even
+        when neither ``sdf_max_resolution`` nor ``sdf_target_voxel_size`` is set (built at the default
+        resolution). Use to provision SDFs for full-surface rigid-soft contact; see :meth:`configure_sdf`."""
         sdf_texture_format: str = "uint16"
         """Subgrid texture storage format for the SDF. ``"uint16"``
         (default) stores subgrid voxels as 16-bit normalized textures (half
@@ -458,6 +462,7 @@ class ModelBuilder:
             is_hydroelastic: bool = False,
             kh: float = 1.0e10,
             texture_format: str | None = None,
+            force_sdf: bool = False,
         ) -> None:
             """Enable SDF-based collision for this shape.
 
@@ -476,12 +481,16 @@ class ModelBuilder:
                 texture_format: Subgrid texture storage format. ``"uint16"``
                     (default) uses 16-bit normalized textures. ``"float32"``
                     uses full-precision. ``"uint8"`` uses 8-bit textures.
+                force_sdf: Build the SDF even when neither ``max_resolution`` nor
+                    ``target_voxel_size`` is given (uses the default resolution). Provisions the SDF
+                    needed for full-surface rigid-soft contact without picking a resolution.
 
             Raises:
                 ValueError: If both max_resolution and target_voxel_size are provided.
             """
             if max_resolution is not None and target_voxel_size is not None:
                 raise ValueError("configure_sdf accepts either max_resolution or target_voxel_size, not both.")
+            self.force_sdf = force_sdf
             if max_resolution is not None:
                 self.sdf_max_resolution = max_resolution
                 self.sdf_target_voxel_size = None
@@ -1134,15 +1143,13 @@ class ModelBuilder:
         """Per-shape target SDF voxel sizes retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_max_resolution: list[int | None] = []
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_force_sdf: list[bool] = []
+        """Per-shape :attr:`ShapeConfig.force_sdf` flags retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_texture_format: list[str] = []
         """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
-        self._enable_rigid_mesh_sdfs: bool = False
-        """Set by :meth:`enable_rigid_mesh_sdfs`; when True, :meth:`finalize` builds volume SDFs for
-        participating rigid ``MESH``/``CONVEX_MESH`` shapes that lack one."""
-
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
@@ -6186,6 +6193,7 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
+        self.shape_force_sdf.append(cfg.force_sdf)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
         self.shape_sdf_padding.append(cfg.sdf_padding)
 
@@ -9772,24 +9780,61 @@ class ModelBuilder:
             target_max_min_color_ratio=target_max_min_color_ratio,
         )
 
-    def enable_rigid_mesh_sdfs(self) -> None:
-        """Enable volume (texture) SDF construction for the builder's rigid mesh shapes.
+    def configure_sdf_for_collision_shapes(
+        self,
+        *,
+        max_resolution: int | None = None,
+        target_voxel_size: float | None = None,
+        texture_format: str | None = None,
+    ) -> list[int]:
+        """Provision volume SDFs for every mesh/convex shape that collides with particles.
 
-        Requests volume-SDF construction for rigid ``MESH`` / ``CONVEX_MESH`` shapes that collide
-        with particles and lack an SDF. The SDFs are built by :meth:`finalize <ModelBuilder.finalize>`
-        (they need the finalize device) in unscaled mesh space, so scale is applied at query time and
-        one SDF serves all scales of a shared :class:`~newton.Mesh`. They are general-purpose distance
-        fields — any SDF query can use them — but their primary consumer is the full-surface rigid-soft
-        edge/face contact passes.
+        Batch form of :meth:`ShapeConfig.configure_sdf` over the shapes already added to the builder:
+        marks each ``MESH`` / ``CONVEX_MESH`` shape carrying ``ShapeFlags.COLLIDE_PARTICLES`` for SDF
+        construction at :meth:`finalize <ModelBuilder.finalize>` (built unscaled, so one SDF serves all
+        scales of a shared :class:`~newton.Mesh`). Analytic primitives use closed-form SDFs and are
+        skipped. Works regardless of whether each shape used the default or an explicit
+        :class:`ShapeConfig`, so it is the convenient way to provision the SDFs full-surface rigid-soft
+        contact needs. Call after all shapes are added and before :meth:`finalize <ModelBuilder.finalize>`;
+        shapes added afterward are unaffected (the SDF requirement is still validated at
+        :class:`~newton.CollisionPipeline` construction, which raises for any participating mesh left
+        unprovisioned).
 
-        Call before :meth:`finalize <ModelBuilder.finalize>` when constructing a
-        :class:`~newton.CollisionPipeline` with ``enable_rigid_soft_full_surface_contact=True``;
-        :meth:`finalize <ModelBuilder.finalize>` does not build these implicitly (mirroring
-        :meth:`color`). Texture SDFs are CUDA-only, so on CPU (or on any per-mesh build failure)
-        the SDF is not provisioned; constructing a full-surface :class:`~newton.CollisionPipeline`
-        for such a shape then raises rather than silently degrading to the per-particle path.
+        Args:
+            max_resolution: SDF grid resolution to set on each shape (divisible by 8); mutually
+                exclusive with ``target_voxel_size``. When both are ``None``, each shape builds at the
+                default resolution.
+            target_voxel_size: SDF voxel size [m] to set on each shape; mutually exclusive with
+                ``max_resolution``.
+            texture_format: Subgrid texture storage format to set on each shape.
+
+        Returns:
+            The indices of the shapes marked for SDF construction.
+
+        Raises:
+            ValueError: If both ``max_resolution`` and ``target_voxel_size`` are provided.
         """
-        self._enable_rigid_mesh_sdfs = True
+        if max_resolution is not None and target_voxel_size is not None:
+            raise ValueError(
+                "configure_sdf_for_collision_shapes accepts either max_resolution or target_voxel_size, not both."
+            )
+        configured: list[int] = []
+        for i in range(len(self.shape_type)):
+            if self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH):
+                continue
+            if not (self.shape_flags[i] & ShapeFlags.COLLIDE_PARTICLES):
+                continue
+            self.shape_force_sdf[i] = True
+            if max_resolution is not None:
+                self.shape_sdf_max_resolution[i] = max_resolution
+                self.shape_sdf_target_voxel_size[i] = None
+            if target_voxel_size is not None:
+                self.shape_sdf_target_voxel_size[i] = target_voxel_size
+                self.shape_sdf_max_resolution[i] = None
+            if texture_format is not None:
+                self.shape_sdf_texture_format[i] = texture_format
+            configured.append(i)
+        return configured
 
     def _validate_world_ordering(self):
         """Validate that world indices are monotonic, contiguous, and properly ordered.
@@ -11130,13 +11175,18 @@ class ModelBuilder:
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
-            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when
-            # requested via ModelBuilder.enable_rigid_mesh_sdfs(). Built in unscaled mesh space
-            # (scale_baked=False) and cached per source mesh; eval_shape_sdf applies the shape scale
-            # at query time. Texture SDFs are CUDA-only, so on CPU (or on any build failure) the SDF
-            # is left unprovisioned; a full-surface CollisionPipeline then raises for that shape rather
-            # than silently degrading to the per-particle path.
-            if self._enable_rigid_mesh_sdfs:
+            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when a
+            # per-shape SDF is requested -- ShapeConfig.configure_sdf(force_sdf=True), or an sdf
+            # resolution/voxel-size set on the shape. Built in unscaled mesh space (scale_baked=False)
+            # and cached per source mesh; eval_shape_sdf applies the shape scale at query time. Texture
+            # SDFs are CUDA-only, so on CPU (or on any build failure) the SDF is left unprovisioned; a
+            # full-surface CollisionPipeline then raises for that shape rather than silently degrading.
+            if any(
+                self.shape_force_sdf[i]
+                or self.shape_sdf_max_resolution[i] is not None
+                or self.shape_sdf_target_voxel_size[i] is not None
+                for i in range(len(self.shape_type))
+            ):
                 wt_sdf_cache = {}
                 for i in range(len(self.shape_type)):
                     if (
@@ -11144,6 +11194,11 @@ class ModelBuilder:
                         or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
                         or not (self.shape_flags[i] & ShapeFlags.COLLIDE_PARTICLES)
                         or self.shape_source[i] is None
+                        or not (
+                            self.shape_force_sdf[i]
+                            or self.shape_sdf_max_resolution[i] is not None
+                            or self.shape_sdf_target_voxel_size[i] is not None
+                        )
                     ):
                         continue
                     src = self.shape_source[i]

@@ -665,8 +665,9 @@ class CollisionPipeline:
                 surface -- the edges and triangle interiors -- against rigid SDFs, in addition to the
                 per-vertex (particle) contacts. Catches rigid features that pass between soft vertices
                 (e.g. a thin box edge through a coarse cloth cell), which the per-particle path misses.
-                Requires an SDF on every participating rigid mesh/convex shape
-                (:meth:`ModelBuilder.enable_rigid_mesh_sdfs`), and is consumed only by
+                Requires an SDF on every participating rigid mesh/convex shape (provision via
+                :meth:`ModelBuilder.ShapeConfig.configure_sdf`, e.g. ``configure_sdf(force_sdf=True)`` on
+                the builder's ``default_shape_cfg``), and is consumed only by
                 :class:`~newton.solvers.SolverVBD`; other solvers raise on such contacts. Records are
                 emitted into :attr:`Contacts.soft_contact_indices`. Defaults to False. Fixed at
                 construction because it sizes the soft-contact buffer headroom.
@@ -1005,18 +1006,33 @@ class CollisionPipeline:
 
         # The full-surface edge/face passes need a provisioned SDF for every participating mesh/convex
         # shape. Validate host-side at construction (never inside a captured collide()) and fail loudly
-        # so a missing enable_rigid_mesh_sdfs() call cannot silently degrade to the per-particle path.
+        # so a missing SDF cannot silently degrade to the per-particle path.
         if enable_rigid_soft_full_surface_contact and model.shape_count > 0 and model._shape_sdf_index is not None:
             _stype = model.shape_type.numpy()
             _sflags = model.shape_flags.numpy()
             _sidx = model._shape_sdf_index.numpy()
             _is_mesh = np.isin(_stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
             _collide_particles = (_sflags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
-            if bool(np.any(_is_mesh & _collide_particles & (_sidx < 0))):
+            _unprovisioned = np.where(_is_mesh & _collide_particles & (_sidx < 0))[0]
+            if _unprovisioned.size > 0:
+                _labels = getattr(model, "shape_key", None)
+                missing = [
+                    (_labels[i] if _labels is not None and i < len(_labels) else f"shape {int(i)}")
+                    for i in _unprovisioned
+                ]
                 raise ValueError(
-                    "enable_rigid_soft_full_surface_contact=True but one or more participating mesh/convex "
-                    "shapes have no SDF for the edge/face passes. Call "
-                    "ModelBuilder.enable_rigid_mesh_sdfs() before ModelBuilder.finalize() to build them."
+                    f"enable_rigid_soft_full_surface_contact=True, but these participating rigid shapes have no "
+                    f"signed-distance field: {missing}. The edge and face contact passes sample each rigid "
+                    f"mesh/convex shape's SDF, so a shape without one is skipped and a soft body can pass straight "
+                    f"through it. Provision an SDF before ModelBuilder.finalize(), any one of these ways:\n"
+                    f"  - For every collision mesh at once: set "
+                    f"builder.default_shape_cfg.configure_sdf(force_sdf=True) before you add or import the shapes "
+                    f"(covers every shape that uses the default config).\n"
+                    f"  - Per shape: call configure_sdf() on that shape's ModelBuilder.ShapeConfig, e.g. "
+                    f"cfg.configure_sdf(max_resolution=128) (or target_voxel_size=...) -- use this for shapes you "
+                    f"gave an explicit config.\n"
+                    f"  - Manually: build one with mesh.build_sdf() and attach it to the shape.\n"
+                    f"Or set enable_rigid_soft_full_surface_contact=False to use per-vertex (particle) contacts only."
                 )
 
         self.requires_grad = requires_grad

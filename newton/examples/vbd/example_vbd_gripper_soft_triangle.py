@@ -139,7 +139,7 @@ class Example:
 
         builder.color()
         if self.params["enable_water_tight"]:
-            builder.enable_rigid_mesh_sdfs()
+            builder.configure_sdf_for_collision_shapes()
         self.model = builder.finalize()
 
         # soft-rigid contact material used by the VBD water-tight contact path
