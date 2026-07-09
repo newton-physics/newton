@@ -2798,9 +2798,11 @@ class ModelBuilder:
 
     @classmethod
     def _builder_merge_attribute_specs(cls, builder: ModelBuilder) -> dict[str, Model.AttributeSpec]:
-        list_attributes = {name for name, value in vars(builder).items() if isinstance(value, list)}
+        builder_attributes = vars(builder)
+        list_attributes = {name for name, value in builder_attributes.items() if isinstance(value, list)}
         specs = {name: spec for name, spec in Model._CORE_ATTRIBUTE_SPECS.items() if name in list_attributes}
         specs.update(cls._BUILDER_ATTRIBUTE_SPECS)
+        declared_builder_attributes = set(cls._BUILDER_ATTRIBUTE_SPECS)
 
         import newton  # noqa: PLC0415
 
@@ -2814,12 +2816,27 @@ class ModelBuilder:
         for group, references in cls._BUILDER_GROUP_REFERENCES.items():
             specs[f"_{group}_label"] = Model.AttributeSpec(group)
             specs[f"_{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
+            declared_builder_attributes.update((f"_{group}_label", f"_{group}_world"))
             for suffix, reference in references.items():
-                specs[f"_{group}_{suffix}"] = Model.AttributeSpec(
+                name = f"_{group}_{suffix}"
+                specs[name] = Model.AttributeSpec(
                     group,
                     references=reference,
                     compaction_policy="start" if suffix.endswith("_start") else "end",
                 )
+                declared_builder_attributes.add(name)
+
+        stale = declared_builder_attributes.difference(builder_attributes)
+        if stale:
+            raise RuntimeError(f"ModelBuilder merge metadata references missing attributes: {sorted(stale)}")
+
+        non_lists = {
+            name
+            for name in declared_builder_attributes
+            if name != "_shape_collision_filter_pairs" and not isinstance(builder_attributes[name], list)
+        }
+        if non_lists:
+            raise RuntimeError(f"ModelBuilder merge attributes must remain lists: {sorted(non_lists)}")
 
         missing = list_attributes.difference(specs)
         if missing:

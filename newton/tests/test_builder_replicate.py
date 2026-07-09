@@ -364,6 +364,16 @@ class TestModelBuilderReplicate(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "_missing_merge_metadata"):
             builder._builder_merge_attribute_specs(builder)
 
+        builder = ModelBuilder()
+        del builder.body_lock_inertia
+        with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
+            builder._builder_merge_attribute_specs(builder)
+
+        builder = ModelBuilder()
+        builder.body_lock_inertia = ()
+        with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
+            builder._builder_merge_attribute_specs(builder)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
