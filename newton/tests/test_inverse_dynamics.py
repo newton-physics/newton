@@ -15,24 +15,6 @@ import warp as wp
 import newton
 
 
-def _gravity_vec_to_scalar_and_axis(gravity: wp.vec3) -> tuple[float, newton.Axis]:
-    """Decode an axis-aligned gravity vec3 into Newton's (scalar, axis) form.
-
-    Newton's ``ModelBuilder`` only takes scalar gravity plus an up-axis, so we
-    accept at most one non-zero component and recover the signed magnitude and
-    matching axis. When all components are zero, the axis is indeterminate and
-    defaults to Y.
-    """
-    components = (float(gravity[0]), float(gravity[1]), float(gravity[2]))
-    non_zero = [i for i, v in enumerate(components) if v != 0.0]
-    if len(non_zero) > 1:
-        raise ValueError(f"gravity must have at most one non-zero component (axis-aligned); got {components}.")
-    if non_zero:
-        axis_idx = non_zero[0]
-        return components[axis_idx], (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)[axis_idx]
-    return 0.0, newton.Axis.Y
-
-
 class TestInverseDynamicsBase:
     """Shared test body. Concrete subclasses set :attr:`device`."""
 
@@ -57,8 +39,7 @@ class TestInverseDynamicsBase:
         joint_frames: list[wp.transform],
         link_inertias: list[wp.mat33],
     ) -> newton.ModelBuilder:
-        gravity_scalar, up_axis = _gravity_vec_to_scalar_and_axis(gravity)
-        builder = newton.ModelBuilder(gravity=gravity_scalar, up_axis=up_axis)
+        builder = newton.ModelBuilder(gravity=gravity)
 
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
@@ -173,8 +154,6 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 controller would apply to hold the articulation static under
                 gravity.
         """
-        gravity_scalar, up_axis = _gravity_vec_to_scalar_and_axis(gravity_vec)
-
         # Derive shape constants from the structured inputs.
         num_worlds = len(is_floating_base)
         num_arts_per_world = len(is_floating_base[0])
@@ -194,9 +173,9 @@ class TestGravCompForce(TestInverseDynamicsBase):
             )
 
         # Build the model from the structured per-world / per-articulation inputs.
-        model_builder = newton.ModelBuilder(gravity=gravity_scalar, up_axis=up_axis)
+        model_builder = newton.ModelBuilder(gravity=gravity_vec)
         for i in range(0, num_worlds):
-            world_builder = newton.ModelBuilder(gravity=gravity_scalar, up_axis=up_axis)
+            world_builder = newton.ModelBuilder(gravity=gravity_vec)
             for j in range(0, num_arts_per_world):
                 articulation_builder = self._build_two_link_articulation(
                     gravity=gravity_vec,
@@ -2083,7 +2062,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         that drives the system to the prescribed ``qddot`` after one
         small-step simulation, recovered from the velocity change.
         """
-        gravity_value = -10.0 if non_zero_gravity else 0.0
+        gravity_value = wp.vec3(0.0, 0.0, -10.0 if non_zero_gravity else 0.0)
 
         # Each articulation is a chain of three uniform-density 4x2x2 boxes;
         # the per-articulation density (and so the link mass and inertia) varies
@@ -2665,7 +2644,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         matrix as a spurious third column, scaled by the large orphan ``qddot``
         value set below.
         """
-        gravity_val = -10.0
+        gravity_val = wp.vec3(0.0, 0.0, -10.0)
         mass = 2.0
         I = self.I_UNIT
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())

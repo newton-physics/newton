@@ -1020,7 +1020,7 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
     """Contact history must be allocated before CUDA graph recording."""
 
     def make_scene(pipeline_first, rigid_contact_max=4):
-        builder = newton.ModelBuilder(gravity=-10.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
         builder.add_ground_plane()
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.2), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
