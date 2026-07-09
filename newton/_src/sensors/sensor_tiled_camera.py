@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import warnings
+from typing import Any
 
 import warp as wp
 
@@ -24,9 +25,17 @@ _RENDER_CONFIG_DEPRECATION_MSG = (
     "The alias will be removed in a future release."
 )
 _CONFIG_DEPRECATION_MSG = (
-    "SensorTiledCamera(..., config=...) is deprecated as of Newton 1.4; use default_config=... instead. "
+    "SensorTiledCamera(..., config=...) is deprecated as of Newton 1.4; use default_render_config=... instead. "
     "The alias will be removed in a future release."
 )
+
+
+class _ConfigUnset:
+    def __repr__(self) -> str:
+        return "_DEPRECATED_CONFIG_UNSET"
+
+
+_DEPRECATED_CONFIG_UNSET: Any = _ConfigUnset()
 
 
 class SensorTiledCamera:
@@ -83,8 +92,8 @@ class SensorTiledCamera:
         self,
         model: Model,
         *,
-        default_config: RenderConfig | None = None,
-        config: RenderConfig | None = None,
+        default_render_config: RenderConfig | None = None,
+        config: RenderConfig | None = _DEPRECATED_CONFIG_UNSET,
         load_textures: bool = True,
     ):
         """Initialize the tiled camera sensor from a simulation model.
@@ -95,24 +104,24 @@ class SensorTiledCamera:
 
         Args:
             model: Simulation model whose shapes will be rendered.
-            default_config: Rendering configuration. Pass a :class:`RenderConfig` to
+            default_render_config: Rendering configuration. Pass a :class:`RenderConfig` to
                 control raytrace settings directly, or ``None`` to use
                 defaults. Use ``RenderConfig.output_color_space`` to control
                 whether packed ``color`` and ``albedo`` outputs are
                 display-encoded or left linear.
-            config: Deprecated as of Newton 1.4; use ``default_config`` instead.
+            config: Deprecated as of Newton 1.4; use ``default_render_config`` instead.
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
         self.model = model
 
-        if config is not None:
+        if config is not _DEPRECATED_CONFIG_UNSET:
             warnings.warn(_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if default_config is not None:
-                raise TypeError("Specify only one of `default_config` and deprecated `config`.")
-            default_config = config
+            if default_render_config is not None:
+                raise TypeError("Specify only one of `default_render_config` and deprecated `config`.")
+            default_render_config = config
 
-        self.default_render_config = default_config if default_config is not None else RenderConfig()
+        self.default_render_config = default_render_config if default_render_config is not None else RenderConfig()
         self.default_clear_data = ClearData()
 
         self.__render_context = RenderContext(

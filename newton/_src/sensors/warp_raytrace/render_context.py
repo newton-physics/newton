@@ -127,7 +127,6 @@ class RenderContext:
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.triangle_points = model.particle_q
                 self.triangle_indices = model.tri_indices.flatten()
-                self.state.has_particles = False
 
         self.shape_colors = model.shape_color
         self.gaussians_data = model.gaussians_data
