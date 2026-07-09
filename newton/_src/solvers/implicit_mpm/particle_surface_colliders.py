@@ -13,64 +13,6 @@ wp.set_module_options({"enable_backward": False})
 _DEFAULT_COLLIDER_EXTRAPOLATION_DEPTH_SCALE = 4.0
 
 
-@wp.func
-def _sample_sparse_field_trilinear(
-    node_grid: wp.uint64,
-    field: wp.array[float],
-    env_offset: wp.vec3i,
-    inv_voxel_size: float,
-    pos: wp.vec3,
-    outside_value: float,
-) -> float:
-    p = pos * inv_voxel_size
-    i0 = int(wp.floor(p[0]))
-    j0 = int(wp.floor(p[1]))
-    k0 = int(wp.floor(p[2]))
-    fx = p[0] - float(i0)
-    fy = p[1] - float(j0)
-    fz = p[2] - float(k0)
-
-    c000 = outside_value
-    c100 = outside_value
-    c010 = outside_value
-    c110 = outside_value
-    c001 = outside_value
-    c101 = outside_value
-    c011 = outside_value
-    c111 = outside_value
-    for corner in range(8):
-        coordinate = wp.vec3i(i0 + ((corner >> 2) & 1), j0 + ((corner >> 1) & 1), k0 + (corner & 1))
-        coordinate += env_offset
-        node = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
-        value = outside_value
-        if node >= 0:
-            value = field[node]
-        if corner == 0:
-            c000 = value
-        elif corner == 1:
-            c001 = value
-        elif corner == 2:
-            c010 = value
-        elif corner == 3:
-            c011 = value
-        elif corner == 4:
-            c100 = value
-        elif corner == 5:
-            c101 = value
-        elif corner == 6:
-            c110 = value
-        else:
-            c111 = value
-
-    c00 = c000 * (1.0 - fx) + c100 * fx
-    c10 = c010 * (1.0 - fx) + c110 * fx
-    c01 = c001 * (1.0 - fx) + c101 * fx
-    c11 = c011 * (1.0 - fx) + c111 * fx
-    c0 = c00 * (1.0 - fy) + c10 * fy
-    c1 = c01 * (1.0 - fy) + c11 * fy
-    return c0 * (1.0 - fz) + c1 * fz
-
-
 @wp.kernel
 def _mirror_sparse_sdf_into_colliders(
     node_grid: wp.uint64,
@@ -107,12 +49,15 @@ def _mirror_sparse_sdf_into_colliders(
         depth = onset - distance
         if depth >= 0.0 and depth <= max_depth:
             mirror_position = position + 2.0 * depth * normal
-            mirror_value = _sample_sparse_field_trilinear(
+            env_offset = env_offsets[world]
+            mirror_index = mirror_position / voxel_size + wp.vec3(
+                float(env_offset[0]), float(env_offset[1]), float(env_offset[2])
+            )
+            mirror_value = wp.volume_sample_index(
                 node_grid,
+                mirror_index,
+                wp.Volume.LINEAR,
                 field_orig,
-                env_offsets[world],
-                1.0 / voxel_size,
-                mirror_position,
                 outside_value,
             )
             blend_start = 0.5 * max_depth
