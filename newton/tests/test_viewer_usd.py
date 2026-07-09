@@ -138,11 +138,11 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.constant)
         np.testing.assert_allclose(widths, np.array([0.2], dtype=np.float32), atol=1e-6)
 
-    def test_log_points_renders_as_point_instancer_when_points_as_spheres_set(self):
+    def test_log_points_renders_as_point_instancer_by_default(self):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()
         self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
-        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=True)
+        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1)
         self.addCleanup(viewer.close)
         self.addCleanup(lambda: setattr(viewer, "output_path", ""))
 
@@ -153,15 +153,19 @@ class TestViewerUSD(unittest.TestCase):
         )
         path = viewer.log_points("/spheres", points, radii=0.05)
 
-        # Should be a PointInstancer with a sphere prototype, not a flat Points prim.
         instancer = UsdGeom.PointInstancer.Get(viewer.stage, path)
         self.assertTrue(instancer)
         self.assertFalse(UsdGeom.Points.Get(viewer.stage, path))
-        self.assertTrue(UsdGeom.Sphere.Get(viewer.stage, path.AppendChild("sphere")))
+        sphere = UsdGeom.Sphere.Get(viewer.stage, path.AppendChild("sphere"))
+        self.assertTrue(sphere)
+        self.assertEqual(sphere.GetRadiusAttr().Get(), 1.0)
 
-        # Scalar radii broadcast to per-point (3,) scales.
         scales = np.asarray(instancer.GetScalesAttr().Get(viewer._frame_index), dtype=np.float32)
         np.testing.assert_allclose(scales, np.full((3, 3), 0.05, dtype=np.float32), atol=1e-6)
+
+        hidden_path = viewer.log_points("/spheres", None)
+        self.assertEqual(hidden_path, path)
+        self.assertEqual(instancer.GetVisibilityAttr().Get(viewer._frame_index), UsdGeom.Tokens.invisible)
 
     def test_named_layers_write_distinct_prim_namespaces(self):
         viewer = self._make_viewer()

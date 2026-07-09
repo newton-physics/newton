@@ -678,11 +678,9 @@ class ViewerUSD(ViewerBase):
     ):
         """Log points as a USD primitive.
 
-        By default points are written as a ``UsdGeom.Points`` prim (flat splats).
-        When this viewer was constructed with ``points_as_spheres=True``, each
-        point becomes an instance of a ``UsdGeom.Sphere`` prototype under a
-        ``UsdGeom.PointInstancer``, producing individually-visible 3D spheres
-        scaled by ``radii``.
+        By default, each point is an instance of a ``UsdGeom.Sphere`` prototype
+        under a ``UsdGeom.PointInstancer``. Set ``points_as_spheres=False`` to
+        write flat ``UsdGeom.Points`` splats instead.
 
         Args:
             name: Unique name for the point primitive.
@@ -698,7 +696,10 @@ class ViewerUSD(ViewerBase):
 
         if points is None:
             path = self._get_path(name)
-            instancer = UsdGeom.Points.Get(self.stage, path)
+            if self.points_as_spheres:
+                instancer = UsdGeom.PointInstancer.Get(self.stage, path)
+            else:
+                instancer = UsdGeom.Points.Get(self.stage, path)
             if instancer:
                 instancer.GetVisibilityAttr().Set("invisible", self._frame_index)
                 return instancer.GetPath()
@@ -722,8 +723,9 @@ class ViewerUSD(ViewerBase):
             if name not in self._instancers:
                 self._ensure_scopes_for_path(self.stage, path)
                 instancer = UsdGeom.PointInstancer.Define(self.stage, path)
-                UsdGeom.Sphere.Define(self.stage, instancer.GetPath().AppendChild("sphere"))
-                instancer.CreatePrototypesRel().SetTargets((instancer.GetPath().AppendChild("sphere"),))
+                sphere = UsdGeom.Sphere.Define(self.stage, instancer.GetPath().AppendChild("sphere"))
+                sphere.GetRadiusAttr().Set(1.0)
+                instancer.CreatePrototypesRel().SetTargets((sphere.GetPath(),))
                 if colors is not None:
                     UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
                         "displayColor", Sdf.ValueTypeNames.Color3fArray, color_interp, 1
