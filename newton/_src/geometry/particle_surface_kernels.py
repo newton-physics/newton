@@ -1407,6 +1407,7 @@ def _compute_anisotropy(
     G_out: wp.array[wp.mat33],
     det_G_out: wp.array[float],
     density_reach_out: wp.array[wp.vec3],
+    isotropic_fallback_out: wp.array[wp.int32],
 ):
     i = wp.tid()
 
@@ -1414,6 +1415,7 @@ def _compute_anisotropy(
         G_out[i] = wp.mat33(0.0)
         det_G_out[i] = 0.0
         density_reach_out[i] = wp.vec3(0.0)
+        isotropic_fallback_out[i] = wp.int32(0)
         return
 
     xi = smoothed[i]
@@ -1421,6 +1423,7 @@ def _compute_anisotropy(
         G_out[i] = wp.mat33(0.0)
         det_G_out[i] = 0.0
         density_reach_out[i] = wp.vec3(0.0)
+        isotropic_fallback_out[i] = wp.int32(0)
         return
 
     h = search_radius
@@ -1455,6 +1458,11 @@ def _compute_anisotropy(
     inv_h = 1.0 / h
     G = wp.identity(n=3, dtype=float) * inv_h
     det_g = inv_h * inv_h * inv_h
+    isotropic_fallback_out[i] = wp.where(
+        count <= anisotropy_min_neighbors or anisotropy_strength <= 0.0 or anisotropy_ratio <= 1.0,
+        wp.int32(1),
+        wp.int32(0),
+    )
 
     if count > anisotropy_min_neighbors and w_sum > 0.0:
         mean_offset = mean_offset / w_sum
@@ -1527,6 +1535,7 @@ def _compute_anisotropy_worlds(
     G_out: wp.array[wp.mat33],
     det_G_out: wp.array[float],
     density_reach_out: wp.array[wp.vec3],
+    isotropic_fallback_out: wp.array[wp.int32],
 ):
     i = wp.tid()
 
@@ -1536,6 +1545,7 @@ def _compute_anisotropy_worlds(
         G_out[i] = wp.mat33(0.0)
         det_G_out[i] = 0.0
         density_reach_out[i] = wp.vec3(0.0)
+        isotropic_fallback_out[i] = wp.int32(0)
         return
 
     xi = smoothed[i]
@@ -1543,6 +1553,7 @@ def _compute_anisotropy_worlds(
         G_out[i] = wp.mat33(0.0)
         det_G_out[i] = 0.0
         density_reach_out[i] = wp.vec3(0.0)
+        isotropic_fallback_out[i] = wp.int32(0)
         return
 
     h = search_radius
@@ -1580,6 +1591,11 @@ def _compute_anisotropy_worlds(
     inv_h = 1.0 / h
     G = wp.identity(n=3, dtype=float) * inv_h
     det_g = inv_h * inv_h * inv_h
+    isotropic_fallback_out[i] = wp.where(
+        count <= anisotropy_min_neighbors or anisotropy_strength <= 0.0 or anisotropy_ratio <= 1.0,
+        wp.int32(1),
+        wp.int32(0),
+    )
 
     # ``count`` includes the particle itself, so this requires at least
     # ``anisotropy_min_neighbors`` other particles.
@@ -1660,6 +1676,7 @@ def _fill_isotropic_G(
     G_out: wp.array[wp.mat33],
     det_G_out: wp.array[float],
     density_reach_out: wp.array[wp.vec3],
+    isotropic_fallback_out: wp.array[wp.int32],
 ):
     """Fill active particles with isotropic G and zero inactive slots."""
     i = wp.tid()
@@ -1668,9 +1685,11 @@ def _fill_isotropic_G(
         G_out[i] = wp.mat33(0.0)
         det_G_out[i] = 0.0
         density_reach_out[i] = wp.vec3(0.0)
+        isotropic_fallback_out[i] = wp.int32(0)
         return
 
     scale = 1.0 / (kernel_scale * kernel_radius)
     G_out[i] = wp.identity(n=3, dtype=float) * scale
     det_G_out[i] = scale * scale * scale
     density_reach_out[i] = wp.vec3(_DENSITY_KERNEL_SUPPORT / scale)
+    isotropic_fallback_out[i] = wp.int32(1)

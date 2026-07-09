@@ -261,6 +261,28 @@ def test_dynamic_grid_uses_realized_support(test, device):
     test.assertTrue(np.all(grid_max >= reach))
 
 
+def test_isotropic_fallback_stencil_covers_support(test, device):
+    positions = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    radii = wp.array([1.0], dtype=wp.float32, device=device)
+    surface = ParticleSurface(
+        voxel_size=1.0,
+        max_grid_cells=10_000,
+        kernel_radius=3.0,
+        kernel_scale=1.0,
+        threshold=0.01,
+        anisotropic=False,
+        padding=0,
+        field_smooth_iterations=0,
+        mesh_smooth_iterations=0,
+        device=device,
+    )
+
+    mesh = surface.extract(positions, radii, compute_normals=False)
+
+    np.testing.assert_array_equal(mesh.counts.numpy(), [270, 1608, 0])
+    test.assertEqual(surface.sparse_volume.get_active_stats().voxel_count, 4096)
+
+
 def test_mesh_smoothing(test, device):
     positions, radii = _make_sphere_particles(device=device)
     ctx = ParticleSurface(voxel_size=0.05, kernel_radius=0.15, mesh_smooth_iterations=3, device=device)
@@ -1048,6 +1070,12 @@ add_function_test(
     TestParticleSurface,
     "test_dynamic_grid_uses_realized_support",
     test_dynamic_grid_uses_realized_support,
+    devices=devices,
+)
+add_function_test(
+    TestParticleSurface,
+    "test_isotropic_fallback_stencil_covers_support",
+    test_isotropic_fallback_stencil_covers_support,
     devices=devices,
 )
 add_function_test(TestParticleSurface, "test_mesh_smoothing", test_mesh_smoothing, devices=devices)

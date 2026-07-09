@@ -349,6 +349,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         use_flags: int,
         particle_world: wp.array[wp.int32],
         use_worlds: int,
+        isotropic_fallback: wp.array[wp.int32],
         det_G: wp.array[float],
         density_reach: wp.array[wp.vec3],
         particle_sdf_radius_scale: float,
@@ -370,6 +371,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                     particle_world,
                     use_worlds,
                     self.world_count,
+                    isotropic_fallback,
                     det_G,
                     density_reach,
                     particle_sdf_radius_scale,
@@ -1019,6 +1021,7 @@ class ParticleSurface:
         self._G: wp.array[wp.mat33] | None = None
         self._det_G: wp.array[float] | None = None
         self._density_reach: wp.array[wp.vec3] | None = None
+        self._isotropic_fallback: wp.array[wp.int32] | None = None
         self._hash_positions: wp.array[wp.vec3] | None = None
         self._all_particle_flags: wp.array[wp.int32] | None = None
         self._n_particles: int = 0
@@ -1469,6 +1472,7 @@ class ParticleSurface:
             use_flags,
             worlds,
             use_worlds,
+            self._isotropic_fallback[:particle_count],
             self._det_G[:particle_count],
             self._density_reach[:particle_count],
             self.particle_sdf_radius_scale,
@@ -1564,6 +1568,7 @@ class ParticleSurface:
         self._G = None
         self._det_G = None
         self._density_reach = None
+        self._isotropic_fallback = None
         self._hash_positions = None
         self._all_particle_flags = None
         self._n_particles = 0
@@ -1584,6 +1589,7 @@ class ParticleSurface:
         G = self._G[:particle_count]
         det_G = self._det_G[:particle_count]
         density_reach = self._density_reach[:particle_count]
+        isotropic_fallback = self._isotropic_fallback[:particle_count]
         hash_positions = positions
 
         if use_worlds != 0 and particle_count > 0:
@@ -1722,6 +1728,7 @@ class ParticleSurface:
                         G,
                         det_G,
                         density_reach,
+                        isotropic_fallback,
                     ],
                     device=device,
                 )
@@ -1743,6 +1750,7 @@ class ParticleSurface:
                         G,
                         det_G,
                         density_reach,
+                        isotropic_fallback,
                     ],
                     device=device,
                 )
@@ -1761,6 +1769,7 @@ class ParticleSurface:
                     G,
                     det_G,
                     density_reach,
+                    isotropic_fallback,
                 ],
                 device=device,
             )
@@ -1773,6 +1782,7 @@ class ParticleSurface:
         self._G = wp.empty(alloc_particles, dtype=wp.mat33, device=self._device)
         self._det_G = wp.empty(alloc_particles, dtype=float, device=self._device)
         self._density_reach = wp.empty(alloc_particles, dtype=wp.vec3, device=self._device)
+        self._isotropic_fallback = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
         self._hash_positions = wp.empty(alloc_particles, dtype=wp.vec3, device=self._device)
         self._all_particle_flags = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
         self._n_particles = alloc_particles
