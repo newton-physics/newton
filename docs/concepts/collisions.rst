@@ -1987,21 +1987,20 @@ Performance
 - **Objects tunneling through each other?** Increase ``gap`` to detect contacts earlier, or increase substep count (decrease simulation ``dt``).
 - **Hydroelastic buffer overflow warnings?** Increase ``buffer_fraction`` in :class:`~geometry.HydroelasticSDF.Config`.
 
-**CUDA graph capture**
+**Graph capture**
 
-On CUDA devices, the simulation loop (including ``collide`` and ``solver.step``) can be
-captured into a CUDA graph with ``wp.ScopedCapture`` for reduced kernel launch overhead.
-Place ``collide`` inside the captured region so it is replayed each frame:
+The simulation loop (including ``collide`` and ``solver.step``) can be captured with
+``wp.ScopedCapture`` for reduced launch overhead. Place ``collide`` inside the
+captured region so it is replayed each frame:
 
 .. code-block:: python
 
-    if wp.get_device().is_cuda:
-        with wp.ScopedCapture() as capture:
-            model.collide(state_0, contacts)
-            for _ in range(sim_substeps):
-                solver.step(state_0, state_1, control, contacts, dt)
-                state_0, state_1 = state_1, state_0
-        graph = capture.graph
+    with wp.ScopedCapture() as capture:
+        model.collide(state_0, contacts)
+        for _ in range(sim_substeps):
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+    graph = capture.graph
 
     # Each frame:
     wp.capture_launch(graph)

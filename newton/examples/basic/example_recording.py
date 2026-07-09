@@ -75,12 +75,9 @@ class Example:
 
         self.state_0, self.state_1 = self.model.state(), self.model.state()
 
-        self.use_cuda_graph = wp.get_device().is_cuda
-
-        if self.use_cuda_graph:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
         # Set model in viewer (ViewerFile will automatically record it)
         self.viewer.set_model(self.model)
@@ -93,10 +90,7 @@ class Example:
 
     def step(self):
         with wp.ScopedTimer("step", active=False):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate()
+            wp.capture_launch(self.graph)
         self.sim_time += self.frame_dt
 
     def render(self):
