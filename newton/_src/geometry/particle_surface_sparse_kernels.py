@@ -23,7 +23,7 @@ _GRID_COUNT_STRIDE = wp.constant(7)
 _MESH_VERTEX_COUNT = wp.constant(0)
 _MESH_INDEX_COUNT = wp.constant(1)
 _MESH_COUNT_STRIDE = wp.constant(3)
-_SUPPORT_VOXEL_COUNT = 27
+_SUPPORT_VOXEL_COUNT = 19
 _DENSITY_SPLAT_LANES_ANISOTROPIC = 16
 _DENSITY_SPLAT_LANES_ISOTROPIC = 2
 _DENSITY_SPLAT_BLOCK_DIM_ANISOTROPIC = 64
@@ -198,6 +198,7 @@ def emit_particle_support_voxels(
     particle_world: wp.array[wp.int32],
     use_worlds: int,
     world_count: int,
+    isotropic_fallback: wp.array[wp.int32],
     det_G: wp.array[float],
     density_reach: wp.array[wp.vec3],
     particle_sdf_radius_scale: float,
@@ -216,14 +217,16 @@ def emit_particle_support_voxels(
     world = _particle_world(particle_world, use_worlds, world_count, particle)
     position = positions[particle]
     radius = radii[particle]
-    valid = (
+    valid_particle = (
         world >= 0
         and _is_active(flags, use_flags, particle)
         and _is_finite(position)
         and radius > 0.0
         and wp.isfinite(radius)
     )
-    if valid:
+    valid_sample = True
+    if valid_particle:
+        direction = wp.vec3(0.0)
         reach = density_reach[particle]
         if particle_sdf != 0 and anisotropic_sdf == 0:
             reach = wp.vec3(radius * particle_sdf_radius_scale * particle_sdf_band)
@@ -231,12 +234,43 @@ def emit_particle_support_voxels(
             scaled_radius = wp.max(radius * particle_sdf_radius_scale, 1.0e-8)
             det_root = wp.pow(wp.max(det_G[particle], 1.0e-24), 1.0 / 3.0)
             reach *= 0.5 * particle_sdf_band * det_root * scaled_radius
-        reach += wp.vec3(float(stencil_voxels) / inv_voxel_size)
-        dx = sample // 9 - 1
-        remainder = sample - (dx + 1) * 9
-        dy = remainder // 3 - 1
-        dz = remainder - (dy + 1) * 3 - 1
-        sample_position = position + wp.cw_mul(reach, wp.vec3(float(dx), float(dy), float(dz)))
+        if isotropic_fallback[particle] != 0:
+            if sample <= 8:
+                corner = sample - 1
+                if sample > 0:
+                    direction = wp.vec3(
+                        wp.where((corner & 1) == 0, -1.0, 1.0),
+                        wp.where((corner & 2) == 0, -1.0, 1.0),
+                        wp.where((corner & 4) == 0, -1.0, 1.0),
+                    )
+                    # Cover voxel centers at the edge of an isotropic support.
+                    reach += wp.vec3(wp.static(math.sqrt(3.0) / 2.0) / inv_voxel_size)
+            elif sample <= 14:
+                axis_sample = sample - 9
+                axis = axis_sample // 2
+                direction[axis] = wp.where(axis_sample - 2 * axis == 0, -1.0, 1.0)
+                reach += wp.vec3(float(stencil_voxels) / inv_voxel_size)
+            else:
+                valid_sample = False
+        else:
+            reach += wp.vec3(float(stencil_voxels) / inv_voxel_size)
+            if sample > 0 and sample <= 6:
+                axis_sample = sample - 1
+                axis = axis_sample // 2
+                direction[axis] = wp.where(axis_sample - 2 * axis == 0, -1.0, 1.0)
+            elif sample > 6:
+                edge = sample - 7
+                zero_axis = edge // 4
+                signs = edge - 4 * zero_axis
+                sign_0 = wp.where((signs & 1) == 0, -1.0, 1.0)
+                sign_1 = wp.where((signs & 2) == 0, -1.0, 1.0)
+                if zero_axis == 0:
+                    direction = wp.vec3(0.0, sign_0, sign_1)
+                elif zero_axis == 1:
+                    direction = wp.vec3(sign_0, 0.0, sign_1)
+                else:
+                    direction = wp.vec3(sign_0, sign_1, 0.0)
+        sample_position = position + wp.cw_mul(reach, direction)
         coordinate = wp.vec3i(
             int(wp.floor(sample_position[0] * inv_voxel_size)),
             int(wp.floor(sample_position[1] * inv_voxel_size)),
@@ -245,7 +279,7 @@ def emit_particle_support_voxels(
         points[slot] = coordinate + env_offsets[world]
     else:
         points[slot] = wp.vec3i(0)
-    point_mask[slot] = wp.where(valid, wp.int32(1), wp.int32(0))
+    point_mask[slot] = wp.where(valid_particle and valid_sample, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
