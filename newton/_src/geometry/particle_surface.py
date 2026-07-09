@@ -8,7 +8,7 @@ Particle-Based Fluids Using Anisotropic Kernels", Eurographics/ACM SIGGRAPH
 Symposium on Computer Animation, 2010.
 
 The pipeline computes per-particle anisotropy matrices via Weighted PCA,
-then evaluates a smooth scalar field on a regular grid using oriented
+then evaluates a smooth scalar field on a sparse volume using oriented
 ellipsoidal kernels, and extracts the isosurface with
 :class:`warp.MarchingCubes`.
 
@@ -24,13 +24,14 @@ Typical usage::
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import warp as wp
 import warp.fem as fem
 
 from . import particle_surface_kernels as kernels
+from . import particle_surface_sparse_kernels as sparse_kernels
 
 __all__ = ["ParticleSurface", "extract_particle_surface"]
 
@@ -42,107 +43,8 @@ _MIN_DENSITY_MARCHING_THRESHOLD = 0.01
 # ---------------------------------------------------------------------------
 
 
-class ParticleSurfaceCapacity:
-    """Shared storage and launches for particle surface extraction."""
-
-    def __init__(
-        self,
-        max_grid_cells: int,
-        world_count: int,
-        voxel_size: float,
-        padding: int,
-        device: wp.DeviceLike,
-        *,
-        max_grid_nodes: int | None = None,
-        allocate_field: bool = True,
-        allocate_mesh: bool = True,
-    ):
-        if max_grid_cells <= 0:
-            raise ValueError("max_grid_cells must be positive")
-
-        self.max_grid_cells = int(max_grid_cells)
-        self.world_count = int(world_count)
-        self.voxel_size = float(voxel_size)
-        self.padding = int(padding)
-        self.device = wp.get_device(device)
-
-        # Each nonempty grid with C cells has at most 4(C + 1) nodes. Since
-        # every nonempty world consumes at least one cell, this bounds the
-        # total node count without reserving a full grid for every world.
-        if max_grid_nodes is None:
-            nonempty_world_bound = min(self.world_count, self.max_grid_cells)
-            self.max_grid_nodes = 4 * (self.max_grid_cells + nonempty_world_bound)
-        else:
-            self.max_grid_nodes = int(max_grid_nodes)
-        self.max_vertices = 3 * self.max_grid_nodes if allocate_mesh else 0
-        self.max_indices = 15 * self.max_grid_cells if allocate_mesh else 0
-        # World kernels stride over their grids, so do not replicate the total
-        # shared capacity in every world's launch dimension.
-        launch_thread_bound = (self.max_grid_nodes + self.world_count - 1) // self.world_count
-        self.launch_threads = min(max(launch_thread_bound, 1), kernels._MAX_CAPACITY_LAUNCH_THREADS)
-
-        self.lower = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
-        self.upper = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
-        self.inactive_position = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
-        self.hash_spacing = wp.zeros(1, dtype=wp.float32, device=self.device)
-        self.grid_origin = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
-        self.grid_dims = wp.empty(self.world_count, dtype=wp.vec3i, device=self.device)
-        self.grid_counts = wp.zeros(7 * self.world_count, dtype=wp.int32, device=self.device)
-        self.grid_node_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
-        self.grid_cell_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
-        self.active_particle_count = wp.zeros(1, dtype=wp.int32, device=self.device)
-        self.world_mesh_counts = wp.zeros(3 * self.world_count, dtype=wp.int32, device=self.device)
-        self.mesh_write_counts = wp.zeros(3 * self.world_count, dtype=wp.int32, device=self.device)
-        self.mesh_counts = wp.zeros(3, dtype=wp.int32, device=self.device)
-        self.vertex_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
-        self.index_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
-
-        field_size = self.max_grid_nodes if allocate_field else 0
-        self.field = wp.empty(field_size, dtype=wp.float32, device=self.device)
-        self.field_temp = wp.empty_like(self.field)
-        self.field_orig = wp.empty_like(self.field)
-        self.edge_indices: wp.array[wp.int32] | None = None
-        self.vertices: wp.array[wp.vec3] | None = None
-        self.vertices_temp: wp.array[wp.vec3] | None = None
-        self.indices: wp.array[wp.int32] | None = None
-        self.normals: wp.array[wp.vec3] | None = None
-        self.neighbor_sum: wp.array[wp.vec3] | None = None
-        self.valence: wp.array[wp.int32] | None = None
-        if allocate_mesh:
-            self.edge_indices = wp.empty(3 * field_size, dtype=wp.int32, device=self.device)
-            self.vertices = wp.empty(self.max_vertices, dtype=wp.vec3, device=self.device)
-            self.vertices_temp = wp.empty_like(self.vertices)
-            self.indices = wp.empty(self.max_indices, dtype=wp.int32, device=self.device)
-            self.normals = wp.empty(self.max_vertices, dtype=wp.vec3, device=self.device)
-            self.neighbor_sum = wp.empty(self.max_vertices, dtype=wp.vec3, device=self.device)
-            self.valence = wp.empty(self.max_vertices, dtype=wp.int32, device=self.device)
-
-        corner_offsets = wp.MarchingCubes.CUBE_CORNER_OFFSETS
-        edge_corners = wp.MarchingCubes.EDGE_TO_CORNERS
-        edge_offsets: list[tuple[int, int, int]] = []
-        edge_axes: list[int] = []
-        for first, second in edge_corners:
-            first_corner = corner_offsets[first]
-            second_corner = corner_offsets[second]
-            offset = tuple(min(first_corner[axis], second_corner[axis]) for axis in range(3))
-            edge_offsets.append(offset)
-            edge_axes.append(next(axis for axis in range(3) if first_corner[axis] != second_corner[axis]))
-
-        self.case_ranges = wp.array(
-            wp.MarchingCubes.CASE_TO_TRI_RANGE,
-            dtype=wp.int32,
-            device=self.device,
-        )
-        self.local_edges = wp.array(
-            wp.MarchingCubes.TRI_LOCAL_INDICES,
-            dtype=wp.int32,
-            device=self.device,
-        )
-        self.corner_offsets = wp.array(corner_offsets, dtype=wp.vec3i, device=self.device)
-        self.edge_offsets = wp.array(edge_offsets, dtype=wp.vec3i, device=self.device)
-        self.edge_axes = wp.array(edge_axes, dtype=wp.int32, device=self.device)
-        self._dummy_vertex = wp.empty(1, dtype=wp.vec3, device=self.device)
-        self._dummy_index = wp.empty(1, dtype=wp.int32, device=self.device)
+class _ParticleSurfaceCapacityBase:
+    """Common particle-bound and mesh-count launches."""
 
     def reset(self) -> None:
         if self.world_count > 1:
@@ -178,35 +80,6 @@ class ParticleSurfaceCapacity:
             ],
             device=self.device,
         )
-
-    def resize_grid_exact(self, node_count: int, cell_count: int, max_world_node_count: int) -> None:
-        """Replace provisional field storage with realized-size buffers."""
-        self.max_grid_nodes = node_count
-        self.max_grid_cells = cell_count
-        self.launch_threads = min(max(max_world_node_count, 1), kernels._MAX_CAPACITY_LAUNCH_THREADS)
-        if self.field.shape[0] != node_count:
-            self.field = wp.empty(node_count, dtype=wp.float32, device=self.device)
-            self.field_temp = wp.empty_like(self.field)
-            self.field_orig = wp.empty_like(self.field)
-        wp.launch(kernels.clear_grid_overflow, dim=self.world_count, inputs=[self.grid_counts], device=self.device)
-        if self.world_count > 1:
-            self.compute_grid_world_starts()
-
-    def resize_mesh_exact(self, vertex_count: int, index_count: int) -> None:
-        """Allocate realized-size marching-cubes and post-processing buffers."""
-        self.max_vertices = vertex_count
-        self.max_indices = index_count
-        edge_count = 3 * self.field.shape[0]
-        if self.edge_indices is None or self.edge_indices.shape[0] != edge_count:
-            self.edge_indices = wp.empty(edge_count, dtype=wp.int32, device=self.device)
-        if self.vertices is None or self.vertices.shape[0] != vertex_count:
-            self.vertices = wp.empty(vertex_count, dtype=wp.vec3, device=self.device)
-            self.vertices_temp = wp.empty_like(self.vertices)
-            self.normals = wp.empty(vertex_count, dtype=wp.vec3, device=self.device)
-            self.neighbor_sum = wp.empty(vertex_count, dtype=wp.vec3, device=self.device)
-            self.valence = wp.empty(vertex_count, dtype=wp.int32, device=self.device)
-        if self.indices is None or self.indices.shape[0] != index_count:
-            self.indices = wp.empty(index_count, dtype=wp.int32, device=self.device)
 
     def compute_particle_bounds(
         self,
@@ -259,6 +132,154 @@ class ParticleSurfaceCapacity:
                 device=self.device,
             )
 
+
+class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
+    """Sparse-volume storage and launches for particle surface extraction."""
+
+    def __init__(
+        self,
+        max_grid_cells: int | None,
+        world_count: int,
+        voxel_size: float,
+        padding: int,
+        device: wp.DeviceLike,
+    ):
+        self.world_count = int(world_count)
+        self.voxel_size = float(voxel_size)
+        self.padding = int(padding)
+        self.device = wp.get_device(device)
+        self.rebuildable = max_grid_cells is not None
+        self.requested_max_grid_cells = max_grid_cells
+
+        self.lower = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
+        self.upper = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
+        self.inactive_position = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
+        self.hash_spacing = wp.zeros(1, dtype=wp.float32, device=self.device)
+        self.grid_origin = wp.empty(self.world_count, dtype=wp.vec3, device=self.device)
+        self.grid_dims = wp.empty(self.world_count, dtype=wp.vec3i, device=self.device)
+        self.grid_counts = wp.zeros(7 * self.world_count, dtype=wp.int32, device=self.device)
+        self.grid_node_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
+        self.grid_cell_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
+        self.active_particle_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self.world_mesh_counts = wp.zeros(3 * self.world_count, dtype=wp.int32, device=self.device)
+        self.mesh_write_counts = wp.zeros(3 * self.world_count, dtype=wp.int32, device=self.device)
+        self.mesh_counts = wp.zeros(3, dtype=wp.int32, device=self.device)
+        self.vertex_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
+        self.index_world_start = wp.zeros(self.world_count + 1, dtype=wp.int32, device=self.device)
+        self.env_offsets = wp.zeros(self.world_count, dtype=wp.vec3i, device=self.device)
+        self.packed_lower = wp.zeros(self.world_count, dtype=wp.vec3i, device=self.device)
+        self.packed_upper = wp.zeros(self.world_count, dtype=wp.vec3i, device=self.device)
+
+        self.volume: wp.Volume | None = None
+        self.voxel_ijk: wp.array[wp.vec3i] | None = None
+        self.cell_world: wp.array[wp.int32] | None = None
+        self.node_world: wp.array[wp.int32] | None = None
+        self.field = wp.empty(0, dtype=wp.float32, device=self.device)
+        self.field_temp = wp.empty_like(self.field)
+        self.field_orig = wp.empty_like(self.field)
+        self.edge_indices: wp.array[wp.int32] | None = None
+        self.vertices: wp.array[wp.vec3] | None = None
+        self.vertices_temp: wp.array[wp.vec3] | None = None
+        self.indices: wp.array[wp.int32] | None = None
+        self.normals: wp.array[wp.vec3] | None = None
+        self.neighbor_sum: wp.array[wp.vec3] | None = None
+        self.valence: wp.array[wp.int32] | None = None
+        self.emitted_voxels = wp.empty(1, dtype=wp.vec3i, device=self.device)
+        self.emitted_voxel_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self.rebuild_status = wp.zeros(1, dtype=wp.uint32, device=self.device)
+
+        corner_offsets = wp.MarchingCubes.CUBE_CORNER_OFFSETS
+        edge_offsets: list[tuple[int, int, int]] = []
+        edge_axes: list[int] = []
+        for first, second in wp.MarchingCubes.EDGE_TO_CORNERS:
+            first_corner = corner_offsets[first]
+            second_corner = corner_offsets[second]
+            edge_offsets.append(tuple(min(first_corner[a], second_corner[a]) for a in range(3)))
+            edge_axes.append(next(a for a in range(3) if first_corner[a] != second_corner[a]))
+        self.case_ranges = wp.array(wp.MarchingCubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=self.device)
+        self.local_edges = wp.array(wp.MarchingCubes.TRI_LOCAL_INDICES, dtype=wp.int32, device=self.device)
+        self.corner_offsets = wp.array(corner_offsets, dtype=wp.vec3i, device=self.device)
+        self.edge_offsets = wp.array(edge_offsets, dtype=wp.vec3i, device=self.device)
+        self.edge_axes = wp.array(edge_axes, dtype=wp.int32, device=self.device)
+        self._dummy_vertex = wp.empty(1, dtype=wp.vec3, device=self.device)
+        self._dummy_index = wp.empty(1, dtype=wp.int32, device=self.device)
+
+        self.max_grid_cells = 0
+        self.max_grid_nodes = 0
+        self.max_vertices = 0
+        self.max_indices = 0
+        self.launch_threads = 1
+        if self.rebuildable:
+            self._allocate_rebuildable_topology(int(max_grid_cells))
+
+    @property
+    def cell_grid(self) -> wp.Volume | None:
+        """Sparse active-cell index grid."""
+        return self.volume
+
+    @property
+    def node_grid(self) -> wp.Volume | None:
+        """Sparse scalar-field node index grid."""
+        return self.volume
+
+    @property
+    def cell_ijk(self) -> wp.array[wp.vec3i] | None:
+        return self.voxel_ijk
+
+    @property
+    def node_ijk(self) -> wp.array[wp.vec3i] | None:
+        return self.voxel_ijk
+
+    def _allocate_rebuildable_topology(self, max_grid_cells: int) -> None:
+        if max_grid_cells <= 0:
+            raise ValueError("max_grid_cells must be positive")
+        max_tiles = max((max_grid_cells + 511) // 512, 1)
+        self.max_grid_cells = max_tiles * 512
+        dummy_points = wp.zeros(1, dtype=wp.vec3i, device=self.device)
+        dummy_status = self.rebuild_status[0:1]
+        self.volume = wp.Volume.allocate_by_tiles(
+            dummy_points,
+            voxel_size=self.voxel_size,
+            translation=(0.5 * self.voxel_size,) * 3,
+            bg_value=None,
+            device=self.device,
+            rebuildable=True,
+            max_tiles=max_tiles,
+            max_lower_nodes=max_tiles,
+            max_upper_nodes=max_tiles,
+            status=dummy_status,
+        )
+        self.cell_world = wp.zeros(self.max_grid_cells, dtype=wp.int32, device=self.device)
+        self.node_world = self.cell_world
+        self.voxel_ijk = wp.empty(self.max_grid_cells, dtype=wp.vec3i, device=self.device)
+        self.max_grid_nodes = self.max_grid_cells
+        self._allocate_field_and_mesh(self.max_grid_nodes, self.max_grid_cells, allocate_mesh=True)
+
+    def _allocate_field_and_mesh(self, node_count: int, cell_count: int, *, allocate_mesh: bool) -> None:
+        self.max_grid_nodes = int(node_count)
+        self.max_grid_cells = int(cell_count)
+        self.field = wp.empty(node_count, dtype=wp.float32, device=self.device)
+        self.field_temp = wp.empty_like(self.field)
+        self.field_orig = wp.empty_like(self.field)
+        self.launch_threads = min(max(node_count, cell_count, 1), kernels._MAX_CAPACITY_LAUNCH_THREADS)
+        if not allocate_mesh:
+            return
+        self.max_vertices = 3 * node_count
+        self.max_indices = 15 * cell_count
+        self.edge_indices = wp.empty(3 * node_count, dtype=wp.int32, device=self.device)
+        self.vertices = wp.empty(self.max_vertices, dtype=wp.vec3, device=self.device)
+        self.vertices_temp = wp.empty_like(self.vertices)
+        self.indices = wp.empty(self.max_indices, dtype=wp.int32, device=self.device)
+        self.normals = wp.empty(self.max_vertices, dtype=wp.vec3, device=self.device)
+        self.neighbor_sum = wp.empty(self.max_vertices, dtype=wp.vec3, device=self.device)
+        self.valence = wp.empty(self.max_vertices, dtype=wp.int32, device=self.device)
+
+    def ensure_emitted_voxels(self, particle_count: int) -> None:
+        size = max(sparse_kernels._SUPPORT_VOXEL_COUNT * particle_count, 1)
+        if self.emitted_voxels.shape[0] != size:
+            self.emitted_voxels = wp.empty(size, dtype=wp.vec3i, device=self.device)
+            self.emitted_voxel_mask = wp.empty(size, dtype=wp.int32, device=self.device)
+
     def compute_grid(
         self,
         positions: wp.array[wp.vec3],
@@ -301,41 +322,128 @@ class ParticleSurfaceCapacity:
                 device=self.device,
             )
         wp.launch(
-            kernels.finalize_grid,
-            dim=self.world_count,
+            sparse_kernels.finalize_sparse_grids,
+            dim=1,
             inputs=[
                 self.lower,
                 self.upper,
                 self.grid_counts,
                 self.grid_origin,
                 self.grid_dims,
-                self.grid_counts,
-                self.grid_node_world_start,
-                self.grid_cell_world_start,
+                self.env_offsets,
+                self.packed_lower,
+                self.packed_upper,
                 self.active_particle_count,
                 self.world_count,
                 self.voxel_size,
                 self.padding,
-                self.max_grid_cells,
-                self.max_grid_nodes,
             ],
             device=self.device,
         )
-        if self.world_count > 1:
-            self.compute_grid_world_starts()
 
-    def compute_grid_world_starts(self) -> None:
+    def build_topology(
+        self,
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
+        flags: wp.array[wp.int32],
+        use_flags: int,
+        particle_world: wp.array[wp.int32],
+        use_worlds: int,
+        det_G: wp.array[float],
+        density_reach: wp.array[wp.vec3],
+        particle_sdf_radius_scale: float,
+        particle_sdf_band: float,
+        particle_sdf: bool,
+        anisotropic_sdf: bool,
+        stencil_voxels: int,
+    ) -> None:
+        self.ensure_emitted_voxels(positions.shape[0])
+        if positions.shape[0] > 0:
+            wp.launch(
+                sparse_kernels.emit_particle_support_voxels,
+                dim=sparse_kernels._SUPPORT_VOXEL_COUNT * positions.shape[0],
+                inputs=[
+                    positions,
+                    radii,
+                    flags,
+                    use_flags,
+                    particle_world,
+                    use_worlds,
+                    self.world_count,
+                    det_G,
+                    density_reach,
+                    particle_sdf_radius_scale,
+                    particle_sdf_band,
+                    int(particle_sdf),
+                    int(anisotropic_sdf),
+                    stencil_voxels,
+                    self.env_offsets,
+                    1.0 / self.voxel_size,
+                    self.emitted_voxels,
+                    self.emitted_voxel_mask,
+                ],
+                device=self.device,
+            )
+        else:
+            self.emitted_voxel_mask.zero_()
+
+        if self.rebuildable:
+            self._rebuild_topology()
+        else:
+            self._build_exact_topology()
+        self._classify_topology()
+
+    def _rebuild_topology(self) -> None:
+        self.volume.rebuild(
+            self.emitted_voxels,
+            status=self.rebuild_status[0:1],
+            point_mask=self.emitted_voxel_mask,
+        )
+        self.volume.get_voxels(out=self.voxel_ijk)
+
+    def _build_exact_topology(self) -> None:
+        volume = wp.Volume.allocate_by_tiles(
+            self.emitted_voxels,
+            voxel_size=self.voxel_size,
+            translation=(0.5 * self.voxel_size,) * 3,
+            bg_value=None,
+            device=self.device,
+            point_mask=self.emitted_voxel_mask,
+        )
+        self.volume = volume
+        cell_count = volume.get_active_stats().voxel_count
+        self.cell_world = wp.empty(cell_count, dtype=wp.int32, device=self.device)
+        self.node_world = self.cell_world
+        self.voxel_ijk = wp.empty(cell_count, dtype=wp.vec3i, device=self.device)
+        volume.get_voxels(out=self.voxel_ijk)
+        node_count = cell_count
+        self._allocate_field_and_mesh(node_count, cell_count, allocate_mesh=False)
+
+    def _classify_topology(self) -> None:
         wp.launch(
-            kernels.compute_grid_world_starts,
-            dim=1,
+            sparse_kernels.classify_sparse_topology,
+            dim=self.launch_threads,
             inputs=[
+                self.volume.id,
+                self.voxel_ijk,
+                self.packed_lower,
+                self.packed_upper,
+                self.cell_world,
                 self.grid_counts,
                 self.world_count,
+                self.launch_threads,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            sparse_kernels.finalize_sparse_topology,
+            dim=1,
+            inputs=[
+                self.rebuild_status,
+                self.grid_counts,
                 self.grid_node_world_start,
                 self.grid_cell_world_start,
-                self.active_particle_count,
-                self.max_grid_cells,
-                self.max_grid_nodes,
+                self.world_count,
             ],
             device=self.device,
         )
@@ -366,86 +474,65 @@ class ParticleSurfaceCapacity:
     ) -> None:
         particle_sdf = surface_method == "particle_sdf"
         outside_value = kernel_radius * particle_sdf_band if particle_sdf else 0.0
+        node_grid = self.volume
         wp.launch(
-            kernels.fill_field,
-            dim=(self.world_count, self.launch_threads),
-            inputs=[
-                self.field,
-                self.grid_counts,
-                self.grid_node_world_start,
-                outside_value,
-                self.launch_threads,
-            ],
+            sparse_kernels.fill_field,
+            dim=self.launch_threads,
+            inputs=[node_grid.id, self.field, outside_value, self.launch_threads],
             device=self.device,
         )
-
-        particle_count = smoothed.shape[0]
-        if particle_count > 0:
-            if particle_sdf:
-                kernel = (
-                    kernels.evaluate_particle_sdf_anisotropic
-                    if anisotropic_sdf
-                    else kernels.evaluate_particle_sdf_isotropic
-                )
-                if anisotropic_sdf:
-                    inputs = [
-                        smoothed,
-                        radii,
-                        flags,
-                        use_flags,
-                        particle_world,
-                        use_worlds,
-                        self.world_count,
+        if smoothed.shape[0] > 0:
+            common = [
+                node_grid.id,
+                smoothed,
+                radii,
+                flags,
+                use_flags,
+                particle_world,
+                use_worlds,
+                self.world_count,
+            ]
+            if particle_sdf and anisotropic_sdf:
+                wp.launch(
+                    sparse_kernels.evaluate_particle_sdf_anisotropic,
+                    dim=smoothed.shape[0],
+                    inputs=[
+                        *common,
                         G,
                         det_G,
                         density_reach,
                         particle_sdf_radius_scale,
                         particle_sdf_band,
-                        self.grid_origin,
-                        self.grid_dims,
-                        self.grid_counts,
-                        self.grid_node_world_start,
+                        self.env_offsets,
                         1.0 / self.voxel_size,
                         self.field,
-                    ]
-                else:
-                    inputs = [
-                        smoothed,
-                        radii,
-                        flags,
-                        use_flags,
-                        particle_world,
-                        use_worlds,
-                        self.world_count,
+                    ],
+                    device=self.device,
+                )
+            elif particle_sdf:
+                wp.launch(
+                    sparse_kernels.evaluate_particle_sdf_isotropic,
+                    dim=smoothed.shape[0],
+                    inputs=[
+                        *common,
                         particle_sdf_radius_scale,
                         particle_sdf_band,
-                        self.grid_origin,
-                        self.grid_dims,
-                        self.grid_counts,
-                        self.grid_node_world_start,
+                        self.env_offsets,
                         1.0 / self.voxel_size,
                         self.field,
-                    ]
-                wp.launch(kernel, dim=particle_count, inputs=inputs, device=self.device)
+                    ],
+                    device=self.device,
+                )
             else:
                 wp.launch(
-                    kernels.evaluate_density,
-                    dim=particle_count,
+                    sparse_kernels.evaluate_density,
+                    dim=smoothed.shape[0],
                     inputs=[
-                        smoothed,
-                        radii,
-                        flags,
-                        use_flags,
-                        particle_world,
-                        use_worlds,
-                        self.world_count,
+                        *common,
                         G,
                         det_G,
                         density_reach,
-                        self.grid_origin,
-                        self.grid_dims,
-                        self.grid_counts,
-                        self.grid_node_world_start,
+                        self.env_offsets,
                         1.0 / self.voxel_size,
                         self.field,
                     ],
@@ -458,17 +545,17 @@ class ParticleSurfaceCapacity:
             for _ in range(blur_iterations):
                 for axis in range(3):
                     wp.launch(
-                        kernels.blur_field_axis,
-                        dim=(self.world_count, self.launch_threads),
+                        sparse_kernels.blur_field_axis,
+                        dim=self.launch_threads,
                         inputs=[
+                            node_grid.id,
+                            self.voxel_ijk,
                             source,
                             destination,
                             blur_weights,
                             blur_radius,
                             axis,
-                            self.grid_dims,
-                            self.grid_counts,
-                            self.grid_node_world_start,
+                            outside_value,
                             self.launch_threads,
                         ],
                         device=self.device,
@@ -480,36 +567,98 @@ class ParticleSurfaceCapacity:
         if field_mode == "sdf":
             if not particle_sdf:
                 wp.launch(
-                    kernels.density_to_sdf,
-                    dim=(self.world_count, self.launch_threads),
-                    inputs=[
-                        self.field,
-                        self.grid_counts,
-                        self.grid_node_world_start,
-                        threshold,
-                        self.launch_threads,
-                    ],
+                    sparse_kernels.density_to_sdf,
+                    dim=self.launch_threads,
+                    inputs=[node_grid.id, self.field, threshold, self.launch_threads],
                     device=self.device,
                 )
-            self.redistance(redistance_iterations)
+            self.redistance(redistance_iterations, outside_value=outside_value if particle_sdf else threshold)
 
-    def redistance(self, iterations: int) -> None:
+    def redistance(self, iterations: int, *, outside_value: float = 0.0) -> None:
         for _ in range(iterations):
             wp.launch(
-                kernels.redistance_step,
-                dim=(self.world_count, self.launch_threads),
+                sparse_kernels.redistance_step,
+                dim=self.launch_threads,
                 inputs=[
+                    self.volume.id,
+                    self.voxel_ijk,
                     self.field,
                     self.field_temp,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.grid_node_world_start,
+                    outside_value,
                     1.0 / self.voxel_size,
                     self.launch_threads,
                 ],
                 device=self.device,
             )
             self.field, self.field_temp = self.field_temp, self.field
+
+    def resize_mesh_exact(self, vertex_count: int, index_count: int) -> None:
+        self.max_vertices = vertex_count
+        self.max_indices = index_count
+        self.edge_indices = wp.empty(3 * self.max_grid_nodes, dtype=wp.int32, device=self.device)
+        self.vertices = wp.empty(vertex_count, dtype=wp.vec3, device=self.device)
+        self.vertices_temp = wp.empty_like(self.vertices)
+        self.indices = wp.empty(index_count, dtype=wp.int32, device=self.device)
+        self.normals = wp.empty(vertex_count, dtype=wp.vec3, device=self.device)
+        self.neighbor_sum = wp.empty(vertex_count, dtype=wp.vec3, device=self.device)
+        self.valence = wp.empty(vertex_count, dtype=wp.int32, device=self.device)
+
+    def _launch_mesh(self, threshold: float, output_counts: wp.array[wp.int32], write_output: int) -> None:
+        vertices = self.vertices if write_output != 0 else self._dummy_vertex
+        edge_indices = self.edge_indices if write_output != 0 else self._dummy_index
+        indices = self.indices if write_output != 0 else self._dummy_index
+        wp.launch(
+            sparse_kernels.extract_mesh_vertices,
+            dim=self.launch_threads,
+            inputs=[
+                self.volume.id,
+                self.voxel_ijk,
+                self.node_world,
+                self.env_offsets,
+                self.field,
+                threshold,
+                self.voxel_size,
+                self.world_count,
+                vertices,
+                edge_indices,
+                output_counts,
+                self.vertex_world_start,
+                write_output,
+                self.launch_threads,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            sparse_kernels.extract_mesh_indices,
+            dim=self.launch_threads,
+            inputs=[
+                self.volume.id,
+                self.volume.id,
+                self.voxel_ijk,
+                self.cell_world,
+                self.field,
+                threshold,
+                self.world_count,
+                self.case_ranges,
+                self.local_edges,
+                self.corner_offsets,
+                self.edge_offsets,
+                self.edge_axes,
+                edge_indices,
+                indices,
+                output_counts,
+                self.index_world_start,
+                write_output,
+                self.launch_threads,
+            ],
+            device=self.device,
+        )
+
+    def count_mesh(self, threshold: float) -> None:
+        self.reset_mesh_counts()
+        counts = self.mesh_counts if self.world_count == 1 else self.world_mesh_counts
+        self._launch_mesh(threshold, counts, 0)
+        self.compute_mesh_world_starts()
 
     def extract_mesh(
         self,
@@ -521,15 +670,7 @@ class ParticleSurfaceCapacity:
         smooth_lambda: float,
         compute_normals: bool,
     ) -> None:
-        if (
-            self.edge_indices is None
-            or self.vertices is None
-            or self.vertices_temp is None
-            or self.indices is None
-            or self.normals is None
-            or self.neighbor_sum is None
-            or self.valence is None
-        ):
+        if self.edge_indices is None or self.vertices is None or self.indices is None:
             raise RuntimeError("Mesh capacity was not allocated")
         if counts_precomputed:
             self.mesh_write_counts.zero_()
@@ -537,107 +678,13 @@ class ParticleSurfaceCapacity:
         else:
             self.reset_mesh_counts()
             output_counts = self.mesh_counts if self.world_count == 1 else self.world_mesh_counts
-        if self.world_count == 1:
-            wp.launch(
-                kernels.reset_edge_indices,
-                dim=self.launch_threads,
-                inputs=[self.edge_indices, self.grid_counts, self.launch_threads],
-                device=self.device,
-            )
-            wp.launch(
-                kernels.extract_mesh_vertices,
-                dim=self.launch_threads,
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_origin,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.voxel_size,
-                    self.vertices,
-                    self.edge_indices,
-                    output_counts,
-                    1,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                kernels.extract_mesh_indices,
-                dim=self.launch_threads,
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.case_ranges,
-                    self.local_edges,
-                    self.corner_offsets,
-                    self.edge_offsets,
-                    self.edge_axes,
-                    self.edge_indices,
-                    self.indices,
-                    output_counts,
-                    1,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-        else:
-            wp.launch(
-                kernels.reset_edge_indices_worlds,
-                dim=(self.world_count, self.launch_threads),
-                inputs=[
-                    self.edge_indices,
-                    self.grid_counts,
-                    self.grid_node_world_start,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                kernels.extract_mesh_vertices_worlds,
-                dim=(self.world_count, self.launch_threads),
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_origin,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.grid_node_world_start,
-                    self.voxel_size,
-                    self.vertices,
-                    self.edge_indices,
-                    output_counts,
-                    self.vertex_world_start,
-                    1,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                kernels.extract_mesh_indices_worlds,
-                dim=(self.world_count, self.launch_threads),
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.grid_node_world_start,
-                    self.case_ranges,
-                    self.local_edges,
-                    self.corner_offsets,
-                    self.edge_offsets,
-                    self.edge_axes,
-                    self.edge_indices,
-                    self.indices,
-                    output_counts,
-                    self.index_world_start,
-                    1,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
+        wp.launch(
+            sparse_kernels.reset_edge_indices,
+            dim=self.launch_threads,
+            inputs=[self.volume.id, self.edge_indices, self.launch_threads],
+            device=self.device,
+        )
+        self._launch_mesh(threshold, output_counts, 1)
         if not counts_precomputed:
             self.compute_mesh_world_starts()
         if flip_winding:
@@ -702,96 +749,6 @@ class ParticleSurfaceCapacity:
                 device=self.device,
             )
 
-    def count_mesh(self, threshold: float) -> None:
-        """Count marching-cubes output using the production extraction kernels."""
-        self.reset_mesh_counts()
-        world_mesh_counts = self.mesh_counts if self.world_count == 1 else self.world_mesh_counts
-        if self.world_count == 1:
-            wp.launch(
-                kernels.extract_mesh_vertices,
-                dim=self.launch_threads,
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_origin,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.voxel_size,
-                    self._dummy_vertex,
-                    self._dummy_index,
-                    world_mesh_counts,
-                    0,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                kernels.extract_mesh_indices,
-                dim=self.launch_threads,
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.case_ranges,
-                    self.local_edges,
-                    self.corner_offsets,
-                    self.edge_offsets,
-                    self.edge_axes,
-                    self._dummy_index,
-                    self._dummy_index,
-                    world_mesh_counts,
-                    0,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-        else:
-            wp.launch(
-                kernels.extract_mesh_vertices_worlds,
-                dim=(self.world_count, self.launch_threads),
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_origin,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.grid_node_world_start,
-                    self.voxel_size,
-                    self._dummy_vertex,
-                    self._dummy_index,
-                    world_mesh_counts,
-                    self.vertex_world_start,
-                    0,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-            wp.launch(
-                kernels.extract_mesh_indices_worlds,
-                dim=(self.world_count, self.launch_threads),
-                inputs=[
-                    self.field,
-                    threshold,
-                    self.grid_dims,
-                    self.grid_counts,
-                    self.grid_node_world_start,
-                    self.case_ranges,
-                    self.local_edges,
-                    self.corner_offsets,
-                    self.edge_offsets,
-                    self.edge_axes,
-                    self._dummy_index,
-                    self._dummy_index,
-                    world_mesh_counts,
-                    self.index_world_start,
-                    0,
-                    self.launch_threads,
-                ],
-                device=self.device,
-            )
-        self.compute_mesh_world_starts()
-
 
 class ParticleSurface:
     """Reusable context for extracting a triangle mesh from particle data.
@@ -802,9 +759,10 @@ class ParticleSurface:
 
     Args:
         voxel_size: Edge length of each grid voxel [m].
-        max_grid_cells: Maximum total logical grid cell count across all worlds.
+        max_grid_cells: Maximum active sparse-grid cell count across all worlds.
             When set, extraction uses preallocated, graph-capturable buffers.
-            When ``None``, each extraction uses tight field and mesh allocations.
+            When ``None``, each extraction uses tight sparse field and mesh
+            allocations.
         world_count: Number of independent particle worlds to extract.
         kernel_radius: Search radius for neighbor queries [m].
             Defaults to ``3 * voxel_size``.
@@ -892,7 +850,7 @@ class ParticleSurface:
         @classmethod
         def _from_capacity(
             cls,
-            workspace: ParticleSurfaceCapacity,
+            workspace: ParticleSurfaceSparseCapacity,
             *,
             compute_normals: bool,
             exact: bool,
@@ -1046,7 +1004,7 @@ class ParticleSurface:
         self._n_particles: int = 0
         self._max_particles: int = 0
         self._max_grid_cells = max_grid_cells
-        self._capacity: ParticleSurfaceCapacity | None = None
+        self._capacity: ParticleSurfaceSparseCapacity | None = None
         self._grid_dims: list[tuple[int, int, int]] | None = None
         self._has_field = False
 
@@ -1067,7 +1025,7 @@ class ParticleSurface:
 
     @property
     def max_grid_cells(self) -> int | None:
-        """Total preallocated logical grid-cell capacity, or ``None`` for tight allocation."""
+        """Requested active sparse-cell capacity, or ``None`` for tight allocation."""
         return self._max_grid_cells
 
     @property
@@ -1077,7 +1035,7 @@ class ParticleSurface:
 
     @property
     def grid_cell_world_start(self) -> wp.array[wp.int32] | None:
-        """Start of each world's logical grid-cell range."""
+        """Start of each world's compact sparse-cell range."""
         return None if self._capacity is None else self._capacity.grid_cell_world_start
 
     @property
@@ -1091,17 +1049,14 @@ class ParticleSurface:
         return self._normals
 
     @property
-    def field(self) -> wp.array3d[wp.float32] | None:
-        """Exact-size scalar field view for a single-world surface.
-
-        Accessing a preallocated field reads its logical dimensions from the device.
-        """
+    def field(self) -> wp.array[wp.float32] | None:
+        """Compact scalar-field values for a single-world sparse grid."""
         if self.world_count != 1:
             raise RuntimeError("Use field_for_world() for a multi-world surface")
         return self.field_for_world(0)
 
-    def field_for_world(self, world: int) -> wp.array3d[wp.float32] | None:
-        """Return the exact-size scalar field for one world.
+    def field_for_world(self, world: int) -> wp.array[wp.float32] | None:
+        """Return compact scalar-field values for one world.
 
         Args:
             world: World index.
@@ -1113,19 +1068,20 @@ class ParticleSurface:
             return None
         if world < 0 or world >= self.world_count:
             raise IndexError(f"world index {world} is out of range for {self.world_count} worlds")
-        if self.max_grid_cells is None:
-            dims = self._grid_dims[world]
-        else:
-            counts = self._capacity.grid_counts.numpy().reshape(self.world_count, 7)[world]
-            if int(counts[3]) != 0:
-                raise ValueError("Particle surface exceeds configured max_grid_cells")
-            dims = tuple(int(value) for value in counts[4:7])
+        counts = self._capacity.grid_counts.numpy().reshape(self.world_count, 7)[world]
+        if int(counts[3]) != 0:
+            raise ValueError("Particle surface exceeds configured max_grid_cells")
         starts = self._capacity.grid_node_world_start.numpy()
         begin = int(starts[world])
         end = int(starts[world + 1])
         if end == begin:
             return None
-        return self._capacity.field[begin:end].reshape(dims)
+        return self._capacity.field[begin:end]
+
+    @property
+    def sparse_volume(self) -> wp.Volume | None:
+        """Sparse index volume holding the extraction topology."""
+        return None if self._capacity is None else self._capacity.volume
 
     @property
     def grid_origin(self) -> wp.vec3 | None:
@@ -1154,7 +1110,7 @@ class ParticleSurface:
 
     @property
     def grid_dims(self) -> tuple[int, int, int] | None:
-        """Logical grid node counts for a single-world surface.
+        """Bounding-box grid node counts for a single-world surface.
 
         Accessing a preallocated grid reads its dimensions from the device.
         """
@@ -1163,13 +1119,13 @@ class ParticleSurface:
         return self.grid_dims_for_world(0)
 
     def grid_dims_for_world(self, world: int) -> tuple[int, int, int] | None:
-        """Return the logical grid node counts for one world.
+        """Return the bounding-box grid node counts for one world.
 
         Args:
             world: World index.
 
         Returns:
-            Logical grid node counts, or ``None`` before field extraction.
+            Bounding-box grid node counts, or ``None`` before field extraction.
         """
         if world < 0 or world >= self.world_count:
             raise IndexError(f"world index {world} is out of range for {self.world_count} worlds")
@@ -1196,7 +1152,7 @@ class ParticleSurface:
         self._max_grid_cells = max_grid_cells
         self._device = device_obj
         self._resource_device = device_obj
-        self._capacity = ParticleSurfaceCapacity(
+        self._capacity = ParticleSurfaceSparseCapacity(
             max_grid_cells=max_grid_cells,
             world_count=self.world_count,
             voxel_size=self.voxel_size,
@@ -1218,7 +1174,7 @@ class ParticleSurface:
         radii: wp.array[float],
         particle_flags: wp.array[wp.int32] | None = None,
         particle_world: wp.array[wp.int32] | None = None,
-    ) -> wp.array[Any]:
+    ) -> wp.array[float]:
         """Update the scalar field without extracting a mesh.
 
         Args:
@@ -1231,8 +1187,8 @@ class ParticleSurface:
                 negative or out-of-range world indices are skipped.
 
         Returns:
-            The exact field when ``max_grid_cells`` is ``None``, otherwise the
-            preallocated flat field buffer.
+            Compact field values when ``max_grid_cells`` is ``None``, otherwise
+            the preallocated field buffer. Use :attr:`sparse_volume` for topology.
         """
         self.extract(
             positions,
@@ -1249,8 +1205,8 @@ class ParticleSurface:
     def fem_field(self, world: int = 0) -> fem.DiscreteField:
         """Return the scalar field as a :class:`warp.fem.DiscreteField`.
 
-        The field lives on a Q1 (trilinear) function space over a
-        :class:`warp.fem.Grid3D` matching the extraction grid.  It can be
+        This method builds a Q1 (trilinear) :class:`warp.fem.Nanogrid` view of
+        the sparse extraction volume. The resulting field can be
         used directly with :func:`warp.fem.interpolate` or
         :func:`warp.fem.integrate` to evaluate smooth values, gradients,
         and curvature at arbitrary positions.  With ``field_mode="density"``,
@@ -1271,23 +1227,32 @@ class ParticleSurface:
         dims = self.grid_dims_for_world(world)
         if dims is None or any(dim < 2 for dim in dims):
             raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
-        field = self.field_for_world(world)
-        origin = self.grid_origin_for_world(world)
-        if field is None or origin is None:
+        if self._capacity.volume is None:
             raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
-        nx, ny, nz = field.shape
-        grid = fem.Grid3D(
-            bounds_lo=origin,
-            bounds_hi=wp.vec3(
-                origin[0] + (nx - 1) * self.voxel_size,
-                origin[1] + (ny - 1) * self.voxel_size,
-                origin[2] + (nz - 1) * self.voxel_size,
-            ),
-            res=wp.vec3i(nx - 1, ny - 1, nz - 1),
+        geometry = fem.Nanogrid(
+            self._capacity.volume,
+            cell_env=self._capacity.cell_world,
+            env_offsets=self._capacity.env_offsets,
         )
-        space = fem.make_polynomial_space(grid, degree=1, dtype=float)
+        space = fem.make_polynomial_space(geometry, degree=1, dtype=float)
         discrete_field = fem.make_discrete_field(space)
-        discrete_field.dof_values = field.flatten()
+        outside_value = 0.0
+        if self.surface_method == "particle_sdf":
+            outside_value = self.kernel_radius * self.particle_sdf_band
+        elif self.field_mode == "sdf":
+            outside_value = self.threshold
+        wp.launch(
+            sparse_kernels.copy_field_to_nanogrid,
+            dim=geometry.vertex_count(),
+            inputs=[
+                self._capacity.volume.id,
+                self._capacity.field,
+                geometry._node_ijk,
+                discrete_field.dof_values,
+                outside_value,
+            ],
+            device=self._capacity.device,
+        )
         return discrete_field
 
     # -- Core extraction --
@@ -1352,7 +1317,10 @@ class ParticleSurface:
             iterations = self.redistance_iterations
         if iterations <= 0:
             return
-        self._capacity.redistance(iterations)
+        outside_value = self.threshold
+        if self.surface_method == "particle_sdf":
+            outside_value = self.kernel_radius * self.particle_sdf_band
+        self._capacity.redistance(iterations, outside_value=outside_value)
 
     def resurface(
         self,
@@ -1365,6 +1333,16 @@ class ParticleSurface:
         """
         if self._capacity is None or not self._has_field:
             raise RuntimeError("extract() or update_field() must populate the field before resurface()")
+        if self._capacity.volume is None:
+            self._capacity.reset_mesh_counts()
+            self._capacity.compute_mesh_world_starts()
+            result = self.ExtractionMesh._from_capacity(
+                self._capacity,
+                compute_normals=compute_normals,
+                exact=self.max_grid_cells is None,
+            )
+            self._verts, self._indices, self._normals = None, None, None
+            return result
         return self._extract_current_mesh(
             self._capacity,
             compute_normals=compute_normals,
@@ -1394,17 +1372,13 @@ class ParticleSurface:
                 self._resource_device = device_obj
             hash_grid_dim = max(16, int(math.ceil(max(particle_count, 1) ** (1.0 / 3.0))))
             self._ensure_hash_grid(hash_grid_dim, device)
-            if self._capacity is None:
-                self._capacity = ParticleSurfaceCapacity(
-                    max_grid_cells=1,
-                    world_count=self.world_count,
-                    max_grid_nodes=1,
-                    voxel_size=self.voxel_size,
-                    padding=self.padding,
-                    device=device,
-                    allocate_field=False,
-                    allocate_mesh=False,
-                )
+            self._capacity = ParticleSurfaceSparseCapacity(
+                max_grid_cells=None,
+                world_count=self.world_count,
+                voxel_size=self.voxel_size,
+                padding=self.padding,
+                device=device,
+            )
             workspace = self._capacity
         else:
             if device_obj != self._resource_device:
@@ -1453,18 +1427,36 @@ class ParticleSurface:
         )
         if exact:
             grid_counts = workspace.grid_counts.numpy().reshape(self.world_count, 7)
-            node_counts = grid_counts[:, 0]
-            cell_counts = grid_counts[:, 1]
-            node_count = int(np.sum(node_counts))
-            cell_count = int(np.sum(cell_counts))
             self._grid_dims = [tuple(int(value) for value in counts[4:7]) for counts in grid_counts]
-            workspace.resize_grid_exact(
-                node_count,
-                cell_count,
-                int(np.max(node_counts, initial=0)),
-            )
+            if int(np.sum(grid_counts[:, 2])) == 0:
+                self._has_field = True
+                workspace.reset_mesh_counts()
+                workspace.compute_mesh_world_starts()
+                result = self.ExtractionMesh._from_capacity(
+                    workspace,
+                    compute_normals=compute_normals,
+                    exact=True,
+                )
+                self._verts, self._indices, self._normals = None, None, None
+                return result
         else:
             self._grid_dims = None
+
+        workspace.build_topology(
+            self._smoothed[:particle_count],
+            radii,
+            flags,
+            use_flags,
+            worlds,
+            use_worlds,
+            self._det_G[:particle_count],
+            self._density_reach[:particle_count],
+            self.particle_sdf_radius_scale,
+            self.particle_sdf_band,
+            self.surface_method == "particle_sdf",
+            not isotropic_sdf,
+            self.padding + self.field_smooth_iterations * self.field_smooth_radius + self.redistance_iterations + 1,
+        )
 
         if self.field_smooth_iterations > 0 and self.field_smooth_radius > 0:
             self._ensure_blur_weights(workspace.device)
@@ -1506,7 +1498,7 @@ class ParticleSurface:
 
     def _extract_current_mesh(
         self,
-        workspace: ParticleSurfaceCapacity,
+        workspace: ParticleSurfaceSparseCapacity,
         *,
         compute_normals: bool,
         exact: bool,
@@ -1559,7 +1551,7 @@ class ParticleSurface:
 
     def _prepare_particle_values(
         self,
-        workspace: ParticleSurfaceCapacity,
+        workspace: ParticleSurfaceSparseCapacity,
         positions: wp.array[wp.vec3],
         particle_count: int,
         flags: wp.array[wp.int32],
@@ -1923,9 +1915,9 @@ def extract_particle_surface(
         positions: Particle positions [m], shape ``(N,)``, dtype ``wp.vec3``.
         radii: Per-particle radii [m], shape ``(N,)``, dtype ``wp.float32``.
         voxel_size: Edge length of each grid voxel [m].
-        max_grid_cells: Maximum total logical grid cell count across all worlds.
+        max_grid_cells: Maximum active sparse-grid cell count across all worlds.
             When set, extraction uses graph-capturable preallocated buffers.
-            When ``None``, it uses tight allocations.
+            When ``None``, it uses tight sparse allocations.
         kernel_radius: Search radius [m].  Defaults to ``3 * voxel_size``.
         threshold: Isosurface level.
         smooth_lambda: Position smoothing blend factor [0, 1].

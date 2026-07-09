@@ -14,39 +14,53 @@ _DEFAULT_COLLIDER_EXTRAPOLATION_DEPTH_SCALE = 4.0
 
 
 @wp.func
-def _capacity_node_index(i: int, j: int, k: int, dims: wp.vec3i) -> int:
-    return (i * dims[1] + j) * dims[2] + k
-
-
-@wp.func
-def _sample_capacity_field_trilinear(
+def _sample_sparse_field_trilinear(
+    node_grid: wp.uint64,
     field: wp.array[float],
-    node_start: int,
-    dims: wp.vec3i,
-    grid_origin: wp.vec3,
+    env_offset: wp.vec3i,
     inv_voxel_size: float,
     pos: wp.vec3,
+    outside_value: float,
 ) -> float:
-    p = (pos - grid_origin) * inv_voxel_size
-    px = wp.clamp(p[0], 0.0, float(dims[0] - 1))
-    py = wp.clamp(p[1], 0.0, float(dims[1] - 1))
-    pz = wp.clamp(p[2], 0.0, float(dims[2] - 1))
+    p = pos * inv_voxel_size
+    i0 = int(wp.floor(p[0]))
+    j0 = int(wp.floor(p[1]))
+    k0 = int(wp.floor(p[2]))
+    fx = p[0] - float(i0)
+    fy = p[1] - float(j0)
+    fz = p[2] - float(k0)
 
-    i0 = wp.clamp(int(wp.floor(px)), 0, dims[0] - 2)
-    j0 = wp.clamp(int(wp.floor(py)), 0, dims[1] - 2)
-    k0 = wp.clamp(int(wp.floor(pz)), 0, dims[2] - 2)
-    fx = px - float(i0)
-    fy = py - float(j0)
-    fz = pz - float(k0)
-
-    c000 = field[node_start + _capacity_node_index(i0, j0, k0, dims)]
-    c100 = field[node_start + _capacity_node_index(i0 + 1, j0, k0, dims)]
-    c010 = field[node_start + _capacity_node_index(i0, j0 + 1, k0, dims)]
-    c110 = field[node_start + _capacity_node_index(i0 + 1, j0 + 1, k0, dims)]
-    c001 = field[node_start + _capacity_node_index(i0, j0, k0 + 1, dims)]
-    c101 = field[node_start + _capacity_node_index(i0 + 1, j0, k0 + 1, dims)]
-    c011 = field[node_start + _capacity_node_index(i0, j0 + 1, k0 + 1, dims)]
-    c111 = field[node_start + _capacity_node_index(i0 + 1, j0 + 1, k0 + 1, dims)]
+    c000 = outside_value
+    c100 = outside_value
+    c010 = outside_value
+    c110 = outside_value
+    c001 = outside_value
+    c101 = outside_value
+    c011 = outside_value
+    c111 = outside_value
+    for corner in range(8):
+        coordinate = wp.vec3i(i0 + ((corner >> 2) & 1), j0 + ((corner >> 1) & 1), k0 + (corner & 1))
+        coordinate += env_offset
+        node = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
+        value = outside_value
+        if node >= 0:
+            value = field[node]
+        if corner == 0:
+            c000 = value
+        elif corner == 1:
+            c001 = value
+        elif corner == 2:
+            c010 = value
+        elif corner == 3:
+            c011 = value
+        elif corner == 4:
+            c100 = value
+        elif corner == 5:
+            c101 = value
+        elif corner == 6:
+            c110 = value
+        else:
+            c111 = value
 
     c00 = c000 * (1.0 - fx) + c100 * fx
     c10 = c010 * (1.0 - fx) + c110 * fx
@@ -58,14 +72,16 @@ def _sample_capacity_field_trilinear(
 
 
 @wp.kernel
-def _mirror_capacity_sdf_into_colliders(
+def _mirror_sparse_sdf_into_colliders(
+    node_grid: wp.uint64,
+    node_ijk: wp.array[wp.vec3i],
+    node_world: wp.array[wp.int32],
+    env_offsets: wp.array[wp.vec3i],
     field: wp.array[float],
     field_orig: wp.array[float],
-    grid_origin: wp.array[wp.vec3],
-    grid_dims: wp.array[wp.vec3i],
     grid_counts: wp.array[wp.int32],
-    grid_node_world_start: wp.array[wp.int32],
     voxel_size: float,
+    outside_value: float,
     onset: float,
     max_depth: float,
     collider: Collider,
@@ -75,21 +91,15 @@ def _mirror_capacity_sdf_into_colliders(
     body_q_prev: wp.array[wp.transform],
     stride: int,
 ):
-    world, index = wp.tid()
-    counts_base = 7 * world
-    node_count = grid_counts[counts_base]
-    if grid_counts[counts_base + 3] != 0:
-        node_count = 0
-    dims = grid_dims[world]
-    yz = dims[1] * dims[2]
-    origin = grid_origin[world]
-    node_start = grid_node_world_start[world]
+    index = wp.tid()
+    node_count = wp.volume_voxel_count(node_grid)
     while index < node_count:
-        i = index // yz
-        remainder = index - i * yz
-        j = remainder // dims[2]
-        k = remainder - j * dims[2]
-        position = origin + voxel_size * wp.vec3(float(i), float(j), float(k))
+        world = node_world[index]
+        if world < 0 or grid_counts[7 * world + 3] != 0:
+            index += stride
+            continue
+        coordinate = node_ijk[index] - env_offsets[world]
+        position = voxel_size * wp.vec3(float(coordinate[0]), float(coordinate[1]), float(coordinate[2]))
 
         distance, normal, _velocity, _collider_id, _material_id = collision_sdf(
             position, collider, body_q, body_qd, body_q_prev, 1.0, collider_world, world
@@ -97,21 +107,21 @@ def _mirror_capacity_sdf_into_colliders(
         depth = onset - distance
         if depth >= 0.0 and depth <= max_depth:
             mirror_position = position + 2.0 * depth * normal
-            mirror_value = _sample_capacity_field_trilinear(
+            mirror_value = _sample_sparse_field_trilinear(
+                node_grid,
                 field_orig,
-                node_start,
-                dims,
-                origin,
+                env_offsets[world],
                 1.0 / voxel_size,
                 mirror_position,
+                outside_value,
             )
             blend_start = 0.5 * max_depth
             if depth <= blend_start:
-                field[node_start + index] = mirror_value
+                field[index] = mirror_value
             else:
                 t = (depth - blend_start) / wp.max(max_depth - blend_start, 1.0e-10)
                 blend = t * t * (3.0 - 2.0 * t)
-                field[node_start + index] = (1.0 - blend) * mirror_value + blend * field_orig[node_start + index]
+                field[index] = (1.0 - blend) * mirror_value + blend * field_orig[index]
         index += stride
 
 
@@ -153,22 +163,29 @@ def extrapolate_surface_sdf_into_colliders(
         raise ValueError("Particle surface field has not been extracted")
     if max_depth is None:
         max_depth = _DEFAULT_COLLIDER_EXTRAPOLATION_DEPTH_SCALE * surface.voxel_size
+    if capacity.volume is None or capacity.voxel_ijk is None or capacity.node_world is None:
+        raise ValueError("Particle surface field has no sparse grid topology")
 
     wp.copy(capacity.field_orig, capacity.field)
+    outside_value = surface.threshold
+    if surface.surface_method == "particle_sdf":
+        outside_value = surface.kernel_radius * surface.particle_sdf_band
     previous_query_distance = collider.query_max_dist
     collider.query_max_dist = max(previous_query_distance, max_depth + abs(onset) + surface.voxel_size)
     try:
         wp.launch(
-            _mirror_capacity_sdf_into_colliders,
-            dim=(capacity.world_count, capacity.launch_threads),
+            _mirror_sparse_sdf_into_colliders,
+            dim=capacity.launch_threads,
             inputs=[
+                capacity.volume.id,
+                capacity.voxel_ijk,
+                capacity.node_world,
+                capacity.env_offsets,
                 capacity.field,
                 capacity.field_orig,
-                capacity.grid_origin,
-                capacity.grid_dims,
                 capacity.grid_counts,
-                capacity.grid_node_world_start,
                 surface.voxel_size,
+                outside_value,
                 onset,
                 max_depth,
                 collider,

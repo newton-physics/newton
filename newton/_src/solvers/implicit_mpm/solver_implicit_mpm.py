@@ -1465,9 +1465,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Args:
             voxel_size: Voxel size for the density grid [m].
                 Defaults to ``0.45 * solver_voxel_size``.
-            max_grid_cells: Maximum total logical grid cell count across all
+            max_grid_cells: Maximum active sparse-grid cell count across all
                 worlds. When set, extraction uses graph-capturable preallocated
-                buffers. When ``None``, it uses tight allocations.
+                buffers. When ``None``, it uses tight sparse allocations.
             **kwargs: Forwarded to :class:`newton.geometry.ParticleSurface`.
 
         Returns:
