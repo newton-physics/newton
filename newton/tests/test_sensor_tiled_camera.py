@@ -212,6 +212,30 @@ class TestSensorTiledCamera(unittest.TestCase):
             np.testing.assert_array_equal(packed[:3], expected_rgb)
             self.assertEqual(packed[3], 255)
 
+    def test_render_context_none_config_uses_default(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+        render_context = sensor._SensorTiledCamera__render_context
+
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+        depth_image = sensor.utils.create_depth_image_output(1, 1, camera_count=1)
+
+        render_context.render(
+            model,
+            model.state(),
+            camera_transforms=camera_transforms,
+            camera_rays=camera_rays,
+            depth_image=depth_image,
+            config=None,
+        )
+
+        self.assertGreater(depth_image.numpy()[0, 0, 0, 0], 0.0)
+
     def test_cloth_renders_via_triangle_mesh_construction(self) -> None:
         """wp.Mesh must be lazily constructed on the first render call for cloth models.
 

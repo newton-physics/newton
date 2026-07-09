@@ -199,6 +199,9 @@ class RenderContext:
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
+        if config is None:
+            config = RenderContext.DEFAULT_RENDER_CONFIG
+
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError(
                 "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
