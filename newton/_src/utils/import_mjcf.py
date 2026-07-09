@@ -194,6 +194,7 @@ def parse_mjcf(
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
     override_root_xform: bool = False,
+    legacy_margin_gap: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -308,6 +309,10 @@ def parse_mjcf(
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
         path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+        legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+            where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
+            Use for MJCF files authored against MuJoCo <= 3.8. Defaults
+            to False (identity translation matching MuJoCo 3.9 semantics).
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -770,24 +775,23 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin and gap for collision.
-            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap.
-            # When gap is absent, mj_gap defaults to 0 for the margin conversion.
-            # When margin is absent but gap is present, shape_cfg.margin keeps its
-            # default (matching MuJoCo's default margin=0 minus gap would produce a
-            # negative value, which is invalid).
+            # MuJoCo 3.9 margin/gap match shape_margin/shape_gap (identity import).
+            # legacy_margin_gap=True restores the pre-3.9 mj_margin - mj_gap form.
             mj_gap = float(geom_attrib.get("gap", "0")) * scale
             if "margin" in geom_attrib:
                 mj_margin = float(geom_attrib["margin"]) * scale
-                newton_margin = mj_margin - mj_gap
-                if newton_margin < 0.0:
-                    warnings.warn(
-                        f"Geom '{geom_name}': MuJoCo gap ({mj_gap}) exceeds margin ({mj_margin}), "
-                        f"resulting Newton margin is negative ({newton_margin}). "
-                        f"This may indicate an invalid MuJoCo model.",
-                        stacklevel=2,
-                    )
-                shape_cfg.margin = newton_margin
+                if legacy_margin_gap:
+                    newton_margin = mj_margin - mj_gap
+                    if newton_margin < 0.0:
+                        warnings.warn(
+                            f"Geom '{geom_name}': legacy translation yields "
+                            f"negative margin (mj_margin={mj_margin}, "
+                            f"mj_gap={mj_gap}).",
+                            stacklevel=2,
+                        )
+                    shape_cfg.margin = newton_margin
+                else:
+                    shape_cfg.margin = mj_margin
             if "gap" in geom_attrib:
                 shape_cfg.gap = mj_gap
 

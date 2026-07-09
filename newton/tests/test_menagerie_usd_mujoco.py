@@ -1139,8 +1139,16 @@ class TestMenagerieUSD(TestMenagerieBase):
         "dof_",
         # Joint ordering may differ -> compared via _compare_jnt_range
         "jnt_",
-        # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
-        "M_",
+        # Sparse D-structure CSR arrays (top-level in mujoco_warp >= 3.9); the same
+        # sparsity is already verified via _compare_qD_structure (qD_fullm_i/j).
+        "D_rownnz",
+        "D_rowadr",
+        "D_diag",
+        "D_colind",
+        # M<->D sparse-layout mappings (mujoco_warp >= 3.9); DOF-indexed, so USD
+        # body reordering only permutes contents, preserving semantics.
+        "mapM2D",
+        "mapD2M",
         # Sparse RNE derivative D-structure: DOF-indexed, compared via _compare_qD_structure
         "qD_fullm_",
         # Sparse tendon Jacobian structure: DOF-indexed, compared via _compare_tendon_jacobian_structure
@@ -1208,9 +1216,16 @@ class TestMenagerieUSD(TestMenagerieBase):
         newton_opt = newton_solver.mjw_model.opt
         native_opt = native_mjw_model.opt
         for attr in dir(native_opt):
-            if attr.startswith("_") or callable(getattr(native_opt, attr)):
+            if attr.startswith("_"):
                 continue
-            native_val = getattr(native_opt, attr)
+            try:
+                native_val = getattr(native_opt, attr)
+            except AttributeError:
+                # Removed options (e.g. ls_parallel, removed in mujoco_warp 3.9.1)
+                # keep their property defined but raise on access.
+                continue
+            if callable(native_val):
+                continue
             if isinstance(native_val, (int, float, bool)):
                 setattr(newton_opt, attr, native_val)
 

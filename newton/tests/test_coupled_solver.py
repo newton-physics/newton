@@ -24,6 +24,7 @@ from newton.solvers.experimental.coupled import (
     SolverCoupled,
     SolverCoupledProxy,
 )
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 @wp.kernel(enable_backward=False)
@@ -430,6 +431,15 @@ class TestModelView(unittest.TestCase):
         self.assertIs(view.body_inv_mass, new_mass)
         # Parent unchanged
         self.assertIsNot(self.model.body_inv_mass, new_mass)
+
+    def test_override_accepts_set_subclass_parent(self):
+        """Set overrides should accept a native set when the parent uses a set subclass."""
+        view = ModelView(self.model, "test")
+        filters = set(self.model.shape_collision_filter_pairs)
+
+        view.shape_collision_filter_pairs = filters
+
+        self.assertIs(view.shape_collision_filter_pairs, filters)
 
     def test_count_override_slices_frequency_arrays(self):
         """Frequency-matched arrays should follow view-local counts."""
@@ -1608,6 +1618,98 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         )
 
 
+def _coupled_vbd_reset_preserves_pose_history(test, device):
+    """Preserve VBD pose history across coupled masked/full resets and restarts."""
+    builder = newton.ModelBuilder(gravity=0.0)
+
+    def add_free_body(*, is_kinematic=False):
+        body = builder.add_link(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            is_kinematic=is_kinematic,
+        )
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        return body, joint
+
+    builder.begin_world()
+    dynamic_body, dynamic_joint = add_free_body()
+    proxy_body, _ = add_free_body()
+    builder.end_world()
+    builder.begin_world()
+    kinematic_body, kinematic_joint = add_free_body(is_kinematic=True)
+    builder.end_world()
+    builder.color()
+    model = builder.finalize(device=device)
+
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(
+                name="vbd",
+                solver=lambda view: SolverVBD(view, iterations=0),
+                bodies=[dynamic_body, kinematic_body],
+                joints=[dynamic_joint, kinematic_joint],
+            ),
+            SolverCoupled.Entry(name="copy", solver=_StepCountingCopySolver),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="vbd",
+                    destination="copy",
+                    bodies=[dynamic_body],
+                    proxy_bodies=[proxy_body],
+                )
+            ],
+            iterations=2,
+        ),
+    )
+
+    source_bodies = np.array([dynamic_body, kinematic_body])
+    state_in = model.state()
+    state_out = model.state()
+    dt = 1.0e-2
+    model_q = model.body_q.numpy().copy()
+    model_qd = model.body_qd.numpy().copy()
+
+    # Establish VBD's first-step pose baseline away from the model defaults.
+    initial_q = model_q.copy()
+    initial_q[source_bodies, 0] = [3.0, 4.0]
+    state_in.body_q.assign(initial_q)
+    state_in.body_qd.zero_()
+    coupled.step(state_in, state_out, None, None, dt)
+    np.testing.assert_allclose(state_out.body_q.numpy()[source_bodies], initial_q[source_bodies], atol=1.0e-6)
+    np.testing.assert_allclose(state_out.body_qd.numpy()[source_bodies], 0.0, atol=1.0e-5)
+    state_in, state_out = state_out, state_in
+
+    # Reset world 1 while retaining world 0's authored displacement as motion.
+    moved_q = state_in.body_q.numpy().copy()
+    moved_q[source_bodies, 0] += 1.0
+    state_in.body_q.assign(moved_q)
+    state_in.body_qd.zero_()
+    coupled.reset(
+        state_in,
+        world_mask=wp.array([False, True], dtype=wp.bool, device=device),
+        flags=0,
+    )
+    steps_before = coupled.solver("copy").step_count
+    coupled.step(state_in, state_out, None, None, dt)
+    test.assertEqual(coupled.solver("copy").step_count, steps_before + 2)
+
+    np.testing.assert_allclose(state_out.body_q.numpy()[source_bodies], moved_q[source_bodies], atol=1.0e-6)
+    qd = state_out.body_qd.numpy()
+    np.testing.assert_allclose(qd[dynamic_body, 0], 1.0 / dt, rtol=1.0e-5, atol=1.0e-3)
+    np.testing.assert_allclose(qd[kinematic_body], 0.0, atol=1.0e-5)
+
+    # Default reset restores model state and rebaselines both source bodies.
+    state_in, state_out = state_out, state_in
+    coupled.reset(state_in)
+    coupled.step(state_in, state_out, None, None, dt)
+    np.testing.assert_allclose(state_out.body_q.numpy()[source_bodies], model_q[source_bodies], atol=1.0e-6)
+    np.testing.assert_allclose(state_out.body_qd.numpy()[source_bodies], model_qd[source_bodies], atol=1.0e-5)
+
+
 class TestSolverVBDCouplingHooks(unittest.TestCase):
     """VBD-specific coupling hook behavior."""
 
@@ -2677,6 +2779,14 @@ class TestSolverCoupledVBDColoring(unittest.TestCase):
         np.testing.assert_array_equal(view.test.environment.numpy(), [0, 1])
         np.testing.assert_allclose(view.test.node_value.numpy(), [1.0, 1.0])
         np.testing.assert_array_equal(view.test.environment_start.numpy(), [0, 1, 2, 2])
+
+
+add_function_test(
+    TestSolverVBDCouplingHooks,
+    "test_reset_preserves_pose_history",
+    _coupled_vbd_reset_preserves_pose_history,
+    devices=get_test_devices(mode="basic"),
+)
 
 
 if __name__ == "__main__":
