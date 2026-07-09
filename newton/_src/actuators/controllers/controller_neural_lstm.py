@@ -23,15 +23,13 @@ if typing.TYPE_CHECKING:
 
 
 @wp.kernel
-def _compute_errors_kernel(
+def _compute_inputs_kernel(
     target_pos: wp.array[float],
-    target_vel: wp.array[float],
     positions: wp.array[float],
     velocities: wp.array[float],
     pos_indices: wp.array[wp.uint32],
     vel_indices: wp.array[wp.uint32],
     target_pos_indices: wp.array[wp.uint32],
-    target_vel_indices: wp.array[wp.uint32],
     pos_scale: float,
     vel_scale: float,
     out: wp.array3d[float],
@@ -40,9 +38,8 @@ def _compute_errors_kernel(
     pi = pos_indices[i]
     vi = vel_indices[i]
     tpi = target_pos_indices[i]
-    tvi = target_vel_indices[i]
     out[0, i, 0] = (target_pos[tpi] - positions[pi]) * pos_scale
-    out[0, i, 1] = (target_vel[tvi] - velocities[vi]) * vel_scale
+    out[0, i, 1] = velocities[vi] * vel_scale
 
 
 @wp.kernel
@@ -69,14 +66,24 @@ class ControllerNeuralLSTM(Controller):
     """LSTM-based neural network controller.
 
     Uses a pre-trained LSTM network to compute joint effort from position
-    error and velocity error. Hidden and cell state are maintained across
+    error and joint velocity. Hidden and cell state are maintained across
     timesteps.
 
-    ``.pt`` and ``.pth`` checkpoints use the Torch backend and preserve the
-    Torch state interface. ``.onnx`` checkpoints use Warp-NN. The exported ONNX
-    model must have three inputs: input, initial hidden, and initial cell. It
-    must have three graph outputs: effort, hidden output, and cell output.
-    Metadata properties map those names to controller roles.
+    Torch checkpoints use the Torch backend and preserve the Torch state
+    interface. They accept pt2 archives (``.pt2`` saved with
+    ``torch.export.save``; preferred) and the deprecated TorchScript (``.pt``
+    saved with ``torch.jit.save``) and module-bundle
+    (``{"model": <network module>, "metadata": {...}}`` saved with
+    ``torch.save``) formats.
+
+    ``.pt2`` and ``.onnx`` checkpoints must record ``num_layers`` and
+    ``hidden_size`` in metadata; only legacy Torch checkpoints may omit them,
+    since their loaded networks expose a live ``lstm`` attribute to inspect.
+
+    ``.onnx`` checkpoints use Warp-NN. The exported ONNX model must have three
+    inputs (input, initial hidden, and initial cell) and three graph outputs
+    (effort, hidden output, and cell output). Metadata properties map those
+    names to controller roles.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -129,7 +136,8 @@ class ControllerNeuralLSTM(Controller):
         """Initialize LSTM controller from a checkpoint file.
 
         Args:
-            model_path: Path to the ``.onnx``, ``.pt``, or ``.pth`` checkpoint.
+            model_path: Path to the ``.onnx``, ``.pt2``, ``.pt``, or ``.pth``
+                checkpoint.
         """
         self.model_path = model_path
 
@@ -149,22 +157,35 @@ class ControllerNeuralLSTM(Controller):
             self.vel_scale = metadata.get("vel_scale", 1.0)
             self.effort_scale = metadata.get("effort_scale", metadata.get("torque_scale", 1.0))
 
-            if not hasattr(self.network, "lstm"):
-                raise ValueError("network must expose a 'lstm' attribute (torch.nn.LSTM)")
-            lstm = self.network.lstm
-            if not hasattr(lstm, "num_layers"):
-                raise ValueError("network.lstm must be a torch.nn.LSTM (missing num_layers)")
-            if not lstm.batch_first:
-                raise ValueError("network.lstm.batch_first must be True")
-            if lstm.input_size != 2:
-                raise ValueError(f"network.lstm.input_size must be 2 (pos_error, vel_error); got {lstm.input_size}")
-            if lstm.bidirectional:
-                raise ValueError("network.lstm must not be bidirectional")
-            if getattr(lstm, "proj_size", 0) != 0:
-                raise ValueError(f"network.lstm.proj_size must be 0; got {lstm.proj_size}")
+            lstm = getattr(self.network, "lstm", None)
+            if lstm is not None and hasattr(lstm, "num_layers"):
+                if not lstm.batch_first:
+                    raise ValueError("network.lstm.batch_first must be True")
+                if lstm.input_size != 2:
+                    raise ValueError(f"network.lstm.input_size must be 2 (pos_error, vel); got {lstm.input_size}")
+                if lstm.bidirectional:
+                    raise ValueError("network.lstm must not be bidirectional")
+                if getattr(lstm, "proj_size", 0) != 0:
+                    raise ValueError(f"network.lstm.proj_size must be 0; got {lstm.proj_size}")
 
-            self._num_layers = lstm.num_layers
-            self._hidden_size = lstm.hidden_size
+                self._num_layers = lstm.num_layers
+                self._hidden_size = lstm.hidden_size
+                for key, expected in (("num_layers", self._num_layers), ("hidden_size", self._hidden_size)):
+                    if key in metadata and int(metadata[key]) != expected:
+                        raise ValueError(
+                            f"Metadata '{key}' in '{model_path}' is {metadata[key]}, "
+                            f"but the network's LSTM has {key}={expected}"
+                        )
+            elif "num_layers" in metadata and "hidden_size" in metadata:
+                self._num_layers = int(metadata["num_layers"])
+                self._hidden_size = int(metadata["hidden_size"])
+            else:
+                raise ValueError(
+                    f"Cannot determine the LSTM configuration for '{model_path}': the checkpoint "
+                    f"does not expose an 'lstm' module (torch.nn.LSTM) and its metadata does not "
+                    f"provide 'num_layers' and 'hidden_size'. Record both in the checkpoint "
+                    f"metadata when exporting pt2 archives."
+                )
         else:
             self.pos_scale = _parse_metadata_scale(metadata, "pos_scale", model_path)
             self.vel_scale = _parse_metadata_scale(metadata, "vel_scale", model_path)
@@ -308,17 +329,15 @@ class ControllerNeuralLSTM(Controller):
             return
 
         wp.launch(
-            _compute_errors_kernel,
+            _compute_inputs_kernel,
             dim=n,
             inputs=[
                 target_pos,
-                target_vel,
                 positions,
                 velocities,
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
-                target_vel_indices,
                 self.pos_scale,
                 self.vel_scale,
                 self._net_input,
@@ -383,19 +402,15 @@ class ControllerNeuralLSTM(Controller):
         current_pos = wp.to_torch(positions)
         current_vel = wp.to_torch(velocities)
         target_p = wp.to_torch(target_pos)
-        target_v = wp.to_torch(target_vel)
 
         torch_target_pos_idx = (
             self._torch_input_indices if target_pos_indices is pos_indices else self._torch_sequential_indices
         )
-        torch_target_vel_idx = (
-            self._torch_vel_indices if target_vel_indices is vel_indices else self._torch_sequential_indices
-        )
 
         pos_error = target_p[torch_target_pos_idx] - current_pos[self._torch_input_indices]
-        vel_error = target_v[torch_target_vel_idx] - current_vel[self._torch_vel_indices]
+        vel = current_vel[self._torch_vel_indices]
 
-        net_input = torch.stack([pos_error * self.pos_scale, vel_error * self.vel_scale], dim=1).unsqueeze(1)
+        net_input = torch.stack([pos_error * self.pos_scale, vel * self.vel_scale], dim=1).unsqueeze(1)
 
         with torch.inference_mode():
             effort, (self._hidden, self._cell) = self.network(

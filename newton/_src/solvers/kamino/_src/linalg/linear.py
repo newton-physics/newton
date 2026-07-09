@@ -14,12 +14,11 @@ intra-system parallelism may be exploited.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Generic
 
 import warp as wp
 
 from .....core.types import override
-from ..core.types import FloatType
 from . import conjugate, factorize
 from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance
 from .sparse_matrix import (
@@ -28,6 +27,7 @@ from .sparse_matrix import (
     dense_to_block_sparse_copy_values,
 )
 from .sparse_operator import BlockSparseLinearOperators
+from .types import IndexType, ScalarType
 
 ###
 # Module interface
@@ -49,29 +49,29 @@ __all__ = [
 ###
 
 
-class LinearSolver(ABC):
+class LinearSolver(ABC, Generic[ScalarType, IndexType]):
     """
     An abstract base class for linear system solvers.
     """
 
     def __init__(
         self,
-        operator: DenseLinearOperatorData | None = None,
+        operator: DenseLinearOperatorData[ScalarType, IndexType] | None = None,
         atol: float | None = None,
         rtol: float | None = None,
-        dtype: FloatType = wp.float32,
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
         # Declare and initialize the internal reference to the matrix/operator data
-        self._operator: DenseLinearOperatorData | None = operator
+        self._operator: DenseLinearOperatorData[ScalarType, IndexType] | None = operator
 
         # Override dtype if linear operator is provided
         if operator is not None:
             dtype = operator.info.dtype
 
         # Declare and initialize internal meta-data
-        self._dtype: Any = dtype
+        self._dtype: type[ScalarType] = dtype
         self._atol: float = atol
         self._rtol: float = rtol
 
@@ -87,13 +87,13 @@ class LinearSolver(ABC):
     ###
 
     @property
-    def operator(self) -> DenseLinearOperatorData:
+    def operator(self) -> DenseLinearOperatorData[ScalarType, IndexType]:
         if self._operator is None:
             raise ValueError("No linear operator has been allocated!")
         return self._operator
 
     @property
-    def dtype(self) -> FloatType:
+    def dtype(self) -> type[ScalarType]:
         return self._dtype
 
     @property
@@ -113,30 +113,32 @@ class LinearSolver(ABC):
     ###
 
     @abstractmethod
-    def _allocate_impl(self, operator: DenseLinearOperatorData, **kwargs: dict[str, Any]) -> None:
+    def _allocate_impl(
+        self, operator: DenseLinearOperatorData[ScalarType, IndexType], **kwargs: dict[str, Any]
+    ) -> None:
         raise NotImplementedError("An allocation operation is not implemented.")
 
     @abstractmethod
-    def _reset_impl(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _reset_impl(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         raise NotImplementedError("A reset operation is not implemented.")
 
     @abstractmethod
-    def _compute_impl(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _compute_impl(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         raise NotImplementedError("A compute operation is not implemented.")
 
     @abstractmethod
-    def _solve_impl(self, b: wp.array, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_impl(self, b: wp.array[ScalarType], x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         raise NotImplementedError("A solve operation is not implemented.")
 
     @abstractmethod
-    def _solve_inplace_impl(self, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_inplace_impl(self, x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         raise NotImplementedError("A solve-in-place operation is not implemented.")
 
     ###
     # Public API
     ###
 
-    def finalize(self, operator: DenseLinearOperatorData, **kwargs: dict[str, Any]) -> None:
+    def finalize(self, operator: DenseLinearOperatorData[ScalarType, IndexType], **kwargs: dict[str, Any]) -> None:
         """
         Ingest a linear operator and allocate any necessary internal memory
         based on the multi-linear layout specified by the operator's info.
@@ -157,13 +159,13 @@ class LinearSolver(ABC):
         """Resets the internal solver data (e.g. possibly to zeros)."""
         self._reset_impl()
 
-    def compute(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def compute(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Ingest matrix data and pre-compute any rhs-independent intermediate data."""
         if not self._operator.info.is_matrix_compatible(A):
             raise ValueError("The provided flat matrix data array does not have enough memory!")
         self._compute_impl(A=A, **kwargs)
 
-    def solve(self, b: wp.array, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def solve(self, b: wp.array[ScalarType], x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Solves the multi-linear systems `A @ x = b`."""
         if not self._operator.info.is_rhs_compatible(b):
             raise ValueError("The provided flat rhs vector data array does not have enough memory!")
@@ -171,25 +173,25 @@ class LinearSolver(ABC):
             raise ValueError("The provided flat input vector data array does not have enough memory!")
         self._solve_impl(b=b, x=x, **kwargs)
 
-    def solve_inplace(self, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def solve_inplace(self, x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Solves the multi-linear systems `A @ x = b` in-place, where `x` is initialized with rhs data."""
         if not self._operator.info.is_input_compatible(x):
             raise ValueError("The provided flat input vector data array does not have enough memory!")
         self._solve_inplace_impl(x=x, **kwargs)
 
 
-class DirectSolver(LinearSolver):
+class DirectSolver(LinearSolver[ScalarType, IndexType]):
     """
     An abstract base class for direct linear system solvers based on matrix factorization.
     """
 
     def __init__(
         self,
-        operator: DenseLinearOperatorData | None = None,
+        operator: DenseLinearOperatorData[ScalarType, IndexType] | None = None,
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
-        dtype: FloatType = wp.float32,
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
@@ -224,11 +226,11 @@ class DirectSolver(LinearSolver):
     ###
 
     @abstractmethod
-    def _factorize_impl(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _factorize_impl(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         raise NotImplementedError("A matrix factorization implementation is not provided.")
 
     @abstractmethod
-    def _reconstruct_impl(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _reconstruct_impl(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         raise NotImplementedError("A matrix reconstruction implementation is not provided.")
 
     ###
@@ -236,10 +238,10 @@ class DirectSolver(LinearSolver):
     ###
 
     @override
-    def _compute_impl(self, A: wp.array, **kwargs: dict[str, Any]):
+    def _compute_impl(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]):
         self._factorize(A, **kwargs)
 
-    def _factorize(self, A: wp.array, ftol: float | None = None, **kwargs: dict[str, Any]) -> None:
+    def _factorize(self, A: wp.array[ScalarType], ftol: float | None = None, **kwargs: dict[str, Any]) -> None:
         # Override the current tolerance if provided otherwise ensure
         # it does not exceed machine precision for the current dtype
         if ftol is not None:
@@ -255,39 +257,44 @@ class DirectSolver(LinearSolver):
     # Public API
     ###
 
-    def reconstruct(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def reconstruct(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         """Reconstructs the original matrix from the current factorization."""
         self._check_has_factorization()
         self._reconstruct_impl(A, **kwargs)
 
 
-class IterativeSolver(LinearSolver):
+class IterativeSolver(LinearSolver[ScalarType, IndexType]):
     """
     An abstract base class for iterative linear system solvers.
     """
 
     def __init__(
         self,
-        operator: conjugate.BatchedLinearOperator | DenseLinearOperatorData | BlockSparseLinearOperators | None = None,
-        atol: float | wp.array | None = None,
-        rtol: float | wp.array | None = None,
-        dtype: FloatType = wp.float32,
+        operator: (
+            conjugate.BatchedLinearOperator[ScalarType, IndexType]
+            | DenseLinearOperatorData[ScalarType, IndexType]
+            | BlockSparseLinearOperators[ScalarType, IndexType]
+            | None
+        ) = None,
+        atol: float | wp.array[ScalarType] | None = None,
+        rtol: float | wp.array[ScalarType] | None = None,
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike | None = None,
-        maxiter: int | wp.array | None = None,
+        maxiter: int | wp.array[wp.int32] | None = None,
         world_active: wp.array[wp.bool] | None = None,
         preconditioner: Any = None,
         loop_granularity: int = 1,
         **kwargs: dict[str, Any],
     ):
-        self._maxiter: int | wp.array | None = maxiter
+        self._maxiter: int | wp.array[wp.int32] | None = maxiter
         self._preconditioner: Any = preconditioner
         self._world_active: wp.array[wp.bool] | None = world_active
-        self.atol: float | wp.array | None = atol
-        self.rtol: float | wp.array | None = rtol
+        self.atol: float | wp.array[ScalarType] | None = atol
+        self.rtol: float | wp.array[ScalarType] | None = rtol
 
         self._num_worlds: int | None = None
         self._max_dim: int | None = None
-        self._batched_operator: conjugate.BatchedLinearOperator | None = None
+        self._batched_operator: conjugate.BatchedLinearOperator[ScalarType, IndexType] | None = None
         self._use_graph_conditionals: bool = kwargs.pop("use_graph_conditionals", True)
         self.loop_granularity = loop_granularity
 
@@ -295,8 +302,8 @@ class IterativeSolver(LinearSolver):
         self._discover_sparse: bool = kwargs.pop("discover_sparse", False)
         self._sparse_block_size: int = kwargs.pop("sparse_block_size", 4)
         self._sparse_threshold: float = kwargs.pop("sparse_threshold", 0.5)
-        self._sparse_bsm: BlockSparseMatrices | None = None
-        self._sparse_operator: conjugate.BatchedLinearOperator | None = None
+        self._sparse_bsm: BlockSparseMatrices[ScalarType, IndexType, Any] | None = None
+        self._sparse_operator: conjugate.BatchedLinearOperator[ScalarType, IndexType] | None = None
         self._sparse_solver: Any = None  # Set by concrete classes
 
         super().__init__(
@@ -309,8 +316,13 @@ class IterativeSolver(LinearSolver):
         )
 
     def _to_batched_operator(
-        self, operator: conjugate.BatchedLinearOperator | DenseLinearOperatorData | BlockSparseLinearOperators
-    ) -> conjugate.BatchedLinearOperator:
+        self,
+        operator: (
+            conjugate.BatchedLinearOperator[ScalarType, IndexType]
+            | DenseLinearOperatorData[ScalarType, IndexType]
+            | BlockSparseLinearOperators[ScalarType, IndexType]
+        ),
+    ) -> conjugate.BatchedLinearOperator[ScalarType, IndexType]:
         """Convert various operator types to BatchedLinearOperator."""
         if isinstance(operator, conjugate.BatchedLinearOperator):
             return operator
@@ -325,8 +337,12 @@ class IterativeSolver(LinearSolver):
     @override
     def finalize(
         self,
-        operator: conjugate.BatchedLinearOperator | DenseLinearOperatorData | BlockSparseLinearOperators,
-        maxiter: int | wp.array | None = None,
+        operator: (
+            conjugate.BatchedLinearOperator[ScalarType, IndexType]
+            | DenseLinearOperatorData[ScalarType, IndexType]
+            | BlockSparseLinearOperators[ScalarType, IndexType]
+        ),
+        maxiter: int | wp.array[wp.int32] | None = None,
         world_active: wp.array[wp.bool] | None = None,
         preconditioner: Any = None,
         **kwargs: dict[str, Any],
@@ -366,8 +382,8 @@ class IterativeSolver(LinearSolver):
         self._num_worlds = self._batched_operator.n_worlds
         self._max_dim = self._batched_operator.max_dim
         self._total_vec_size = self._batched_operator.total_vec_size
-        self._solve_iterations: wp.array | None = None
-        self._solve_residual_norm: wp.array | None = None
+        self._solve_iterations: wp.array[wp.int32] | None = None
+        self._solve_residual_norm: wp.array[ScalarType] | None = None
 
         with wp.ScopedDevice(self._device):
             if self._world_active is None:
@@ -399,7 +415,9 @@ class IterativeSolver(LinearSolver):
         self._allocate_impl(operator, **kwargs)
 
     @override
-    def solve(self, b: wp.array, x: wp.array, zero_x: bool = False, **kwargs: dict[str, Any]) -> None:
+    def solve(
+        self, b: wp.array[ScalarType], x: wp.array[ScalarType], zero_x: bool = False, **kwargs: dict[str, Any]
+    ) -> None:
         """Solves the multi-linear systems `A @ x = b`."""
         if self._operator is not None:
             if not self._operator.info.is_rhs_compatible(b):
@@ -428,7 +446,7 @@ class IterativeSolver(LinearSolver):
 ###
 
 
-class LLTSequentialSolver(DirectSolver):
+class LLTSequentialSolver(DirectSolver[ScalarType, IndexType]):
     """
     A LLT (i.e. Cholesky) factorization class computing each matrix block sequentially.
     This parallelizes the factorization and solve operations over each block
@@ -437,18 +455,18 @@ class LLTSequentialSolver(DirectSolver):
 
     def __init__(
         self,
-        operator: DenseLinearOperatorData | None = None,
+        operator: DenseLinearOperatorData[ScalarType, IndexType] | None = None,
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
-        dtype: FloatType = wp.float32,
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
         # Declare LLT-specific internal data
-        self._L: wp.array | None = None
+        self._L: wp.array[ScalarType] | None = None
         """A flat array containing the Cholesky factorization of each matrix block."""
-        self._y: wp.array | None = None
+        self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
 
         # Initialize base class members
@@ -467,13 +485,13 @@ class LLTSequentialSolver(DirectSolver):
     ###
 
     @property
-    def L(self) -> wp.array:
+    def L(self) -> wp.array[ScalarType]:
         if self._L is None:
             raise ValueError("The factorization array has not been allocated!")
         return self._L
 
     @property
-    def y(self) -> wp.array:
+    def y(self) -> wp.array[ScalarType]:
         if self._y is None:
             raise ValueError("The intermediate result array has not been allocated!")
         return self._y
@@ -483,7 +501,7 @@ class LLTSequentialSolver(DirectSolver):
     ###
 
     @override
-    def _allocate_impl(self, A: DenseLinearOperatorData, **kwargs: dict[str, Any]) -> None:
+    def _allocate_impl(self, A: DenseLinearOperatorData[ScalarType, IndexType], **kwargs: dict[str, Any]) -> None:
         # Check the operator has info
         if A.info is None:
             raise ValueError("The provided operator does not have any associated info!")
@@ -505,7 +523,7 @@ class LLTSequentialSolver(DirectSolver):
         self._has_factors = False
 
     @override
-    def _factorize_impl(self, A: wp.array) -> None:
+    def _factorize_impl(self, A: wp.array[ScalarType]) -> None:
         factorize.llt_sequential_factorize(
             num_blocks=self._operator.info.num_blocks,
             dim=self._operator.info.dim,
@@ -515,11 +533,11 @@ class LLTSequentialSolver(DirectSolver):
         )
 
     @override
-    def _reconstruct_impl(self, A: wp.array) -> None:
+    def _reconstruct_impl(self, A: wp.array[ScalarType]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override
-    def _solve_impl(self, b: wp.array, x: wp.array) -> None:
+    def _solve_impl(self, b: wp.array[ScalarType], x: wp.array[ScalarType]) -> None:
         # Solve the system L * y = b and L^T * x = y
         factorize.llt_sequential_solve(
             num_blocks=self._operator.info.num_blocks,
@@ -533,7 +551,7 @@ class LLTSequentialSolver(DirectSolver):
         )
 
     @override
-    def _solve_inplace_impl(self, x: wp.array) -> None:
+    def _solve_inplace_impl(self, x: wp.array[ScalarType]) -> None:
         # Solve the system L * y = x and L^T * x = y
         factorize.llt_sequential_solve_inplace(
             num_blocks=self._operator.info.num_blocks,
@@ -545,28 +563,28 @@ class LLTSequentialSolver(DirectSolver):
         )
 
 
-class LLTBlockedSolver(DirectSolver):
+class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
     """
     A Blocked LLT (i.e. Cholesky) factorization class computing each matrix block with Tile-based parallelism.
     """
 
     def __init__(
         self,
-        operator: DenseLinearOperatorData | None = None,
+        operator: DenseLinearOperatorData[ScalarType, IndexType] | None = None,
         block_size: int = 32,
         solve_block_dim: int = 128,
         factortize_block_dim: int = 128,
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
-        dtype: FloatType = wp.float32,
+        dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
         # Declare LLT-specific internal data
-        self._L: wp.array | None = None
+        self._L: wp.array[ScalarType] | None = None
         """A flat array containing the Cholesky factorization of each matrix block."""
-        self._y: wp.array | None = None
+        self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
 
         # Cache the fixed block size
@@ -595,13 +613,13 @@ class LLTBlockedSolver(DirectSolver):
     ###
 
     @property
-    def L(self) -> wp.array:
+    def L(self) -> wp.array[ScalarType]:
         if self._L is None:
             raise ValueError("The factorization array has not been allocated!")
         return self._L
 
     @property
-    def y(self) -> wp.array:
+    def y(self) -> wp.array[ScalarType]:
         if self._y is None:
             raise ValueError("The intermediate result array has not been allocated!")
         return self._y
@@ -611,7 +629,7 @@ class LLTBlockedSolver(DirectSolver):
     ###
 
     @override
-    def _allocate_impl(self, A: DenseLinearOperatorData, **kwargs: dict[str, Any]) -> None:
+    def _allocate_impl(self, A: DenseLinearOperatorData[ScalarType, IndexType], **kwargs: dict[str, Any]) -> None:
         # Check the operator has info
         if A.info is None:
             raise ValueError("The provided operator does not have any associated info!")
@@ -633,7 +651,7 @@ class LLTBlockedSolver(DirectSolver):
         self._has_factors = False
 
     @override
-    def _factorize_impl(self, A: wp.array) -> None:
+    def _factorize_impl(self, A: wp.array[ScalarType]) -> None:
         factorize.llt_blocked_factorize(
             kernel=self._factorize_kernel,
             num_blocks=self._operator.info.num_blocks,
@@ -645,11 +663,11 @@ class LLTBlockedSolver(DirectSolver):
         )
 
     @override
-    def _reconstruct_impl(self, A: wp.array) -> None:
+    def _reconstruct_impl(self, A: wp.array[ScalarType]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override
-    def _solve_impl(self, b: wp.array, x: wp.array) -> None:
+    def _solve_impl(self, b: wp.array[ScalarType], x: wp.array[ScalarType]) -> None:
         # Solve the system L * y = b and L^T * x = y
         factorize.llt_blocked_solve(
             kernel=self._solve_kernel,
@@ -665,7 +683,7 @@ class LLTBlockedSolver(DirectSolver):
         )
 
     @override
-    def _solve_inplace_impl(self, x: wp.array) -> None:
+    def _solve_inplace_impl(self, x: wp.array[ScalarType]) -> None:
         # Solve the system L * y = b and L^T * x = y
         factorize.llt_blocked_solve_inplace(
             kernel=self._solve_inplace_kernel,
@@ -685,7 +703,7 @@ class LLTBlockedSolver(DirectSolver):
 ###
 
 
-class ConjugateGradientSolver(IterativeSolver):
+class ConjugateGradientSolver(IterativeSolver[ScalarType, IndexType]):
     """
     A wrapper around the batched Conjugate Gradient implementation in `conjugate.cg`.
 
@@ -696,9 +714,9 @@ class ConjugateGradientSolver(IterativeSolver):
         self,
         **kwargs: dict[str, Any],
     ):
-        self._Mi = None
-        self._jacobi_preconditioner = None
-        self.solver = None
+        self._Mi: conjugate.BatchedLinearOperator[ScalarType, IndexType] | None = None
+        self._jacobi_preconditioner: wp.array[ScalarType] | None = None
+        self.solver: conjugate.CGSolver[ScalarType, IndexType] | None = None
         super().__init__(**kwargs)
 
     @override
@@ -751,14 +769,14 @@ class ConjugateGradientSolver(IterativeSolver):
             )
 
     @override
-    def _reset_impl(self, A: wp.array | None = None, **kwargs: dict[str, Any]) -> None:
+    def _reset_impl(self, A: wp.array[ScalarType] | None = None, **kwargs: dict[str, Any]) -> None:
         if self._jacobi_preconditioner is not None:
             self._jacobi_preconditioner.zero_()
-        self._solve_iterations: wp.array = None
-        self._solve_residual_norm: wp.array = None
+        self._solve_iterations: wp.array[wp.int32] | None = None
+        self._solve_residual_norm: wp.array[ScalarType] | None = None
 
     @override
-    def _compute_impl(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _compute_impl(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         if self._operator is not None and A.ptr != self._operator.mat.ptr:
             raise ValueError(f"{self.__class__.__name__} cannot be re-used with a different matrix.")
         if self._Mi is not None:
@@ -766,11 +784,11 @@ class ConjugateGradientSolver(IterativeSolver):
         self._update_sparse_bsm()
 
     @override
-    def _solve_inplace_impl(self, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_inplace_impl(self, x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         self._solve_impl(x, x, **kwargs)
 
     @override
-    def _solve_impl(self, b: wp.array, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_impl(self, b: wp.array[ScalarType], x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         solver = self._sparse_solver or self.solver
         if solver is None:
             raise ValueError("ConjugateGradientSolver.allocate() must be called before solve().")
@@ -798,7 +816,7 @@ class ConjugateGradientSolver(IterativeSolver):
         )
 
 
-class ConjugateResidualSolver(IterativeSolver):
+class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
     """
     A wrapper around the batched Conjugate Residual implementation in `conjugate.cr`.
 
@@ -809,9 +827,9 @@ class ConjugateResidualSolver(IterativeSolver):
         self,
         **kwargs: dict[str, Any],
     ):
-        self._Mi = None
-        self._jacobi_preconditioner = None
-        self.solver = None
+        self._Mi: conjugate.BatchedLinearOperator[ScalarType, IndexType] | None = None
+        self._jacobi_preconditioner: wp.array[ScalarType] | None = None
+        self.solver: conjugate.CRSolver[ScalarType, IndexType] | None = None
         super().__init__(**kwargs)
 
     @override
@@ -863,14 +881,14 @@ class ConjugateResidualSolver(IterativeSolver):
             )
 
     @override
-    def _reset_impl(self, A: wp.array | None = None, **kwargs: dict[str, Any]) -> None:
+    def _reset_impl(self, A: wp.array[ScalarType] | None = None, **kwargs: dict[str, Any]) -> None:
         if self._jacobi_preconditioner is not None:
             self._jacobi_preconditioner.zero_()
-        self._solve_iterations: wp.array = None
-        self._solve_residual_norm: wp.array = None
+        self._solve_iterations: wp.array[wp.int32] | None = None
+        self._solve_residual_norm: wp.array[ScalarType] | None = None
 
     @override
-    def _compute_impl(self, A: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _compute_impl(self, A: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         if self._operator is not None and A.ptr != self._operator.mat.ptr:
             raise ValueError(f"{self.__class__.__name__} cannot be re-used with a different matrix.")
         if self._Mi is not None:
@@ -878,11 +896,11 @@ class ConjugateResidualSolver(IterativeSolver):
         self._update_sparse_bsm()
 
     @override
-    def _solve_inplace_impl(self, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_inplace_impl(self, x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         self._solve_impl(x, x)
 
     @override
-    def _solve_impl(self, b: wp.array, x: wp.array, **kwargs: dict[str, Any]) -> None:
+    def _solve_impl(self, b: wp.array[ScalarType], x: wp.array[ScalarType], **kwargs: dict[str, Any]) -> None:
         solver = self._sparse_solver or self.solver
         if solver is None:
             raise ValueError("ConjugateResidualSolver.allocate() must be called before solve().")

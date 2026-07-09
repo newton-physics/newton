@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 import warp as wp
@@ -20,6 +20,7 @@ from warp.types import type_size_in_bytes
 
 from ..core.types import FloatType, IntType
 from .core import DenseSquareMultiLinearInfo
+from .types import BlockScalarType, BlockType, IndexType, ScalarType
 
 if TYPE_CHECKING:
     from .core import DenseLinearOperatorData
@@ -41,10 +42,10 @@ __all__ = [
 ###
 
 
-class BlockDType:
+class BlockDType(Generic[BlockScalarType]):
     """A utility type for bundling meta-data about sparse-block types."""
 
-    def __init__(self, dtype: FloatType | IntType, shape: int | tuple[int] | tuple[int, int] | None = None):
+    def __init__(self, dtype: type[BlockScalarType], shape: int | tuple[int] | tuple[int, int] | None = None):
         """
         Constructs a new BlockDType descriptor given scalar Warp data-type and the block shape.
 
@@ -58,7 +59,7 @@ class BlockDType:
             ValueError: If the `shape` field is not a positive integer or a tuple of one or two positive integers.
         """
         # Ensure the underlying scalar dtype is valid
-        if (dtype not in get_args(FloatType)) and (dtype not in get_args(IntType)):
+        if not issubclass(dtype, FloatType | IntType):
             raise TypeError("The `dtype` field must be a valid FloatType or IntType such as wp.float32 or wp.int32.")
 
         # If no shape is provided, default to scalar blocks
@@ -84,14 +85,14 @@ class BlockDType:
         else:
             raise TypeError("The `shape` field must be an int or a tuple of ints.")
 
-        self._dtype: FloatType | IntType = dtype
+        self._dtype: type[BlockScalarType] = dtype
         """The underlying data type of the sparse blocks."""
 
         self._shape: int | tuple[int] | tuple[int, int] = shape
         """The shape of each sparse block."""
 
     @property
-    def dtype(self) -> FloatType | IntType:
+    def dtype(self) -> type[BlockScalarType]:
         """Returns the underlying data type of the sparse blocks."""
         return self._dtype
 
@@ -139,9 +140,15 @@ class BlockDType:
 
 
 @dataclass
-class BlockSparseMatrices:
+class BlockSparseMatrices(Generic[BlockScalarType, IndexType, BlockType]):
     """
     A container to represent multiple block-sparse matrices of fixed non-zero block size.
+
+    The generic parameters describe:
+
+    - ``BlockScalarType``: scalar dtype of each block element (float or int).
+    - ``IndexType``: integer type for index arrays (e.g. ``wp.int32``).
+    - ``BlockType``: Warp dtype of a non-zero block (matching ``BlockDType.warp_type``).
     """
 
     ###
@@ -151,10 +158,10 @@ class BlockSparseMatrices:
     device: wp.DeviceLike | None = None
     """Host-side cache of the device on which all data arrays are allocated."""
 
-    nzb_dtype: BlockDType | None = None
+    nzb_dtype: BlockDType[BlockScalarType] | None = None
     """Host-side cache of the fixed non-zero block data type contained in all sparse matrices."""
 
-    index_dtype: IntType = wp.int32
+    index_dtype: type[IndexType] = wp.int32  # type: ignore[assignment]
     """Host-side cache of the integer type used for indexing the underlying data arrays."""
 
     num_matrices: int = 0
@@ -194,34 +201,34 @@ class BlockSparseMatrices:
 
     # These arrays are expected to stay constant once this object is finalized
 
-    max_dims: wp.array | None = None
+    max_dims: wp.array2d[IndexType] | None = None
     """
     The maximum dimensions of each sparse matrices.
-    Shape of ``(num_matrices,)`` and type :class:`vec2i`.
+    Shape of ``(num_matrices, 2)``.
     """
 
-    max_nzb: wp.array | None = None
+    max_nzb: wp.array[IndexType] | None = None
     """
     The maximum number of non-zero blocks per sparse matrices.
-    Shape of ``(num_matrices,)`` and type :class:`int`.
+    Shape of ``(num_matrices,)``.
     """
 
-    nzb_start: wp.array | None = None
+    nzb_start: wp.array[IndexType] | None = None
     """
     The index of the first non-zero block of each sparse matrices.
-    Shape of ``(num_matrices,)`` and type :class:`int`.
+    Shape of ``(num_matrices,)``.
     """
 
-    row_start: wp.array | None = None
+    row_start: wp.array[IndexType] | None = None
     """
     The start index of each row vector block in a flattened data array of size sum_of_max_rows.
-    Shape of ``(num_matrices,)`` and type :class:`int`.
+    Shape of ``(num_matrices,)``.
     """
 
-    col_start: wp.array | None = None
+    col_start: wp.array[IndexType] | None = None
     """
     The start index of each column vector block in a flattened data array of size sum_of_max_cols.
-    Shape of ``(num_matrices,)`` and type :class:`int`.
+    Shape of ``(num_matrices,)``.
     """
 
     ###
@@ -230,28 +237,28 @@ class BlockSparseMatrices:
 
     # These are the arrays to update when assembling the matrices
 
-    dims: wp.array | None = None
+    dims: wp.array2d[IndexType] | None = None
     """
     The active dimensions of each sparse matrices.
-    Shape of ``(num_matrices,)`` and type :class:`vec2i`.
+    Shape of ``(num_matrices, 2)``.
     """
 
-    num_nzb: wp.array | None = None
+    num_nzb: wp.array[IndexType] | None = None
     """
     The active number of non-zero blocks per sparse matrices.
-    Shape of ``(num_matrices,)`` and type :class:`int`.
+    Shape of ``(num_matrices,)``.
     """
 
-    nzb_coords: wp.array | None = None
+    nzb_coords: wp.array2d[IndexType] | None = None
     """
     The row-column coordinates of each non-zero block within its corresponding sparse matrix.
-    Shape of ``(sum_of_num_nzb,)`` and type :class:`vec2i`.
+    Shape of ``(sum_of_num_nzb, 2)``.
     """
 
-    nzb_values: wp.array | None = None
+    nzb_values: wp.array[BlockType] | None = None
     """
     The flattened array containing all non-zero blocks over all sparse matrices.
-    Shape of ``(sum_of_num_nzb,)`` and type :class:`float | vector | matrix`.
+    Shape of ``(sum_of_num_nzb,)``.
     """
 
     ###
@@ -259,7 +266,7 @@ class BlockSparseMatrices:
     ###
 
     @property
-    def max_rows(self) -> wp.array:
+    def max_rows(self) -> wp.array[IndexType]:
         assert self.max_dims is not None and self.max_dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
         return wp.array(
@@ -271,7 +278,7 @@ class BlockSparseMatrices:
         )
 
     @property
-    def max_cols(self) -> wp.array:
+    def max_cols(self) -> wp.array[IndexType]:
         assert self.max_dims is not None and self.max_dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
         return wp.array(
@@ -283,7 +290,7 @@ class BlockSparseMatrices:
         )
 
     @property
-    def num_rows(self) -> wp.array:
+    def num_rows(self) -> wp.array[IndexType]:
         assert self.dims is not None and self.dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
         return wp.array(
@@ -296,7 +303,7 @@ class BlockSparseMatrices:
         )
 
     @property
-    def num_cols(self) -> wp.array:
+    def num_cols(self) -> wp.array[IndexType]:
         assert self.dims is not None and self.dims.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
         return wp.array(
@@ -309,7 +316,7 @@ class BlockSparseMatrices:
         )
 
     @property
-    def nzb_row(self) -> wp.array:
+    def nzb_row(self) -> wp.array[IndexType]:
         assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
         return wp.array(
@@ -322,7 +329,7 @@ class BlockSparseMatrices:
         )
 
     @property
-    def nzb_col(self) -> wp.array:
+    def nzb_col(self) -> wp.array[IndexType]:
         assert self.nzb_coords is not None and self.nzb_coords.ptr is not None
         index_dtype_size_bytes = type_size_in_bytes(self.index_dtype)
         return wp.array(
@@ -342,8 +349,8 @@ class BlockSparseMatrices:
         self,
         max_dims: list[tuple[int, int]],
         capacities: list[int],
-        nzb_dtype: BlockDType | None = None,
-        index_dtype: IntType | None = None,
+        nzb_dtype: BlockDType[BlockScalarType] | None = None,
+        index_dtype: type[IndexType] | None = None,
         device: wp.DeviceLike | None = None,
     ):
         """
@@ -379,7 +386,7 @@ class BlockSparseMatrices:
             raise TypeError("The `nzb_dtype` field must be a valid BlockDType instance.")
         if self.index_dtype is None:
             raise RuntimeError("The `index_type` field must be specified before finalizing the data arrays.")
-        elif self.index_dtype not in get_args(IntType):
+        elif not issubclass(self.index_dtype, IntType):
             raise TypeError("The `index_type` field must be a valid IntType such as wp.int32 or wp.int64.")
 
         # Ensure that the max dimensions are valid
@@ -739,11 +746,11 @@ def _make_dense_to_bsm_copy_kernel(block_size: int):
 
 
 def allocate_block_sparse_from_dense(
-    dense_op: DenseLinearOperatorData,
+    dense_op: DenseLinearOperatorData[ScalarType, IndexType],
     block_size: int,
     sparsity_threshold: float = 1.0,
     device: wp.DeviceLike | None = None,
-) -> BlockSparseMatrices:
+) -> BlockSparseMatrices[ScalarType, IndexType, Any]:
     """
     Allocates a BlockSparseMatrices container sized for converting from a dense operator.
 
@@ -793,8 +800,8 @@ def allocate_block_sparse_from_dense(
 
 
 def dense_to_block_sparse_copy_values(
-    dense_op: DenseLinearOperatorData,
-    bsm: BlockSparseMatrices,
+    dense_op: DenseLinearOperatorData[ScalarType, IndexType],
+    bsm: BlockSparseMatrices[ScalarType, IndexType, Any],
     block_size: int,
 ) -> None:
     """

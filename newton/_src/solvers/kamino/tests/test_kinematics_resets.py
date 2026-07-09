@@ -565,9 +565,7 @@ class TestJointBodyStateConversions(unittest.TestCase):
         rng = np.random.default_rng(self.seed)
 
         # Setup a model with all joint types
-        builder = build_all_joints_test_model(
-            binary_joints=True, unary_joints=False, actuated=True, floating_base=True, exclude_universal=True
-        )
+        builder = build_all_joints_test_model(binary_joints=True, unary_joints=False, actuated=True, floating_base=True)
         model = builder.finalize(device=self.default_device)
 
         # Set the model into a non-trivial pose

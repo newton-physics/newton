@@ -24,11 +24,22 @@ def _update_vbd_body_input_state_kernel(
     dt: float,
     body_flags: wp.array[wp.int32],
     kinematic_flag: int,
+    body_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
     body_q: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
     local_body = wp.tid()
+
+    world = body_world[local_body]
+    if world < 0:
+        world = pose_rebaseline_mask.shape[0] - 1
+    if pose_rebaseline_mask[world]:
+        # Accept first/reset poses before teleport conversion or the kinematic early exit.
+        body_q_prev[local_body] = body_q[local_body]
+        return
+
     if (body_flags[local_body] & kinematic_flag) != 0:
         return
 
