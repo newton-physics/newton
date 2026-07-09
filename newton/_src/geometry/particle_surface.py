@@ -805,6 +805,9 @@ class ParticleSurface:
             the isotropic fallback scale.  Defaults to 1.
         anisotropy_min_neighbors: Minimum number of other particles required
             for anisotropic kernels. Sparser particles use isotropic kernels.
+        anisotropy_binning: Share one WPCA kernel among particles in each
+            spatial bin. Bins are half the kernel radius wide. This reduces
+            neighbor-query cost at the expense of spatial resolution.
         anisotropy_strength: Blend from isotropic kernels to anisotropic
             kernels [0, 1].  Lower values preserve more normal support from
             boundary particles back into the interior.
@@ -936,6 +939,7 @@ class ParticleSurface:
         particle_sdf_band: float = 2.0,
         max_grid_cells: int | None = None,
         world_count: int = 1,
+        anisotropy_binning: bool = False,
     ):
         if not math.isfinite(voxel_size) or voxel_size <= 0.0:
             raise ValueError("voxel_size must be positive")
@@ -995,6 +999,7 @@ class ParticleSurface:
         self.anisotropy_scale = anisotropy_scale
         self.kernel_scale = kernel_scale
         self.anisotropy_min_neighbors = anisotropy_min_neighbors
+        self.anisotropy_binning = anisotropy_binning
         self.anisotropy_strength = anisotropy_strength
         self.surface_method = surface_method
         self.particle_sdf_radius_scale = particle_sdf_radius_scale
@@ -1023,6 +1028,10 @@ class ParticleSurface:
         self._density_reach: wp.array[wp.vec3] | None = None
         self._isotropic_fallback: wp.array[wp.int32] | None = None
         self._hash_positions: wp.array[wp.vec3] | None = None
+        self._anisotropy_bin_keys: wp.array[wp.uint64] | None = None
+        self._anisotropy_bin_particles: wp.array[wp.int32] | None = None
+        self._anisotropy_bin_markers: wp.array[wp.int32] | None = None
+        self._anisotropy_bin_indices: wp.array[wp.int32] | None = None
         self._all_particle_flags: wp.array[wp.int32] | None = None
         self._n_particles: int = 0
         self._max_particles: int = 0
@@ -1570,6 +1579,10 @@ class ParticleSurface:
         self._density_reach = None
         self._isotropic_fallback = None
         self._hash_positions = None
+        self._anisotropy_bin_keys = None
+        self._anisotropy_bin_particles = None
+        self._anisotropy_bin_markers = None
+        self._anisotropy_bin_indices = None
         self._all_particle_flags = None
         self._n_particles = 0
         self._max_particles = 0
@@ -1706,7 +1719,22 @@ class ParticleSurface:
                     device=device,
                 )
             self._hash_grid.build(anisotropy_hash_positions, self.kernel_radius)
-            if use_worlds != 0:
+            if self.anisotropy_binning:
+                self._prepare_binned_anisotropy(
+                    workspace,
+                    smoothed,
+                    particle_count,
+                    flags,
+                    use_flags,
+                    particle_world,
+                    use_worlds,
+                    G,
+                    det_G,
+                    density_reach,
+                    isotropic_fallback,
+                    device,
+                )
+            elif use_worlds != 0:
                 wp.launch(
                     kernels._compute_anisotropy_worlds,
                     dim=particle_count,
@@ -1774,6 +1802,96 @@ class ParticleSurface:
                 device=device,
             )
 
+    def _prepare_binned_anisotropy(
+        self,
+        workspace: ParticleSurfaceSparseCapacity,
+        smoothed: wp.array[wp.vec3],
+        particle_count: int,
+        flags: wp.array[wp.int32],
+        use_flags: int,
+        particle_world: wp.array[wp.int32],
+        use_worlds: int,
+        G: wp.array[wp.mat33],
+        det_G: wp.array[float],
+        density_reach: wp.array[wp.vec3],
+        isotropic_fallback: wp.array[wp.int32],
+        device: wp.DeviceLike,
+    ) -> None:
+        keys = self._anisotropy_bin_keys
+        particles = self._anisotropy_bin_particles
+        bin_markers = self._anisotropy_bin_markers[:particle_count]
+        bin_indices = self._anisotropy_bin_indices[:particle_count]
+        bin_starts = particles[particle_count : 2 * particle_count]
+        bin_size = 0.5 * self.kernel_radius
+
+        wp.launch(
+            kernels.build_anisotropy_bin_keys,
+            dim=particle_count,
+            inputs=[
+                smoothed,
+                flags,
+                use_flags,
+                particle_world,
+                use_worlds,
+                self.world_count,
+                workspace.lower,
+                1.0 / bin_size,
+                keys,
+                particles,
+                G,
+                det_G,
+                density_reach,
+                isotropic_fallback,
+            ],
+            device=device,
+        )
+        wp.utils.radix_sort_pairs(keys, particles, particle_count)
+        wp.launch(
+            kernels.mark_anisotropy_bins,
+            dim=particle_count,
+            inputs=[keys, bin_markers],
+            device=device,
+        )
+        wp.utils.array_scan(bin_markers, bin_indices, inclusive=True)
+        wp.launch(
+            kernels.compact_anisotropy_bins,
+            dim=particle_count,
+            inputs=[bin_markers, bin_indices, bin_starts],
+            device=device,
+        )
+        wp.launch(
+            kernels._compute_anisotropy_bins,
+            dim=particle_count,
+            inputs=[
+                self._hash_grid.id,
+                smoothed,
+                flags,
+                use_flags,
+                particle_world,
+                use_worlds,
+                self.world_count,
+                keys,
+                particles,
+                bin_starts,
+                bin_indices,
+                particle_count,
+                workspace.lower,
+                workspace.hash_spacing,
+                bin_size,
+                self.kernel_radius,
+                self.anisotropy_ratio,
+                self.anisotropy_scale,
+                self.kernel_scale,
+                self.anisotropy_min_neighbors,
+                self.anisotropy_strength,
+                G,
+                det_G,
+                density_reach,
+                isotropic_fallback,
+            ],
+            device=device,
+        )
+
     def _ensure_capacity_particle_resources(self, particle_count: int) -> None:
         if particle_count <= self._max_particles and self._smoothed is not None:
             return
@@ -1784,6 +1902,11 @@ class ParticleSurface:
         self._density_reach = wp.empty(alloc_particles, dtype=wp.vec3, device=self._device)
         self._isotropic_fallback = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
         self._hash_positions = wp.empty(alloc_particles, dtype=wp.vec3, device=self._device)
+        if self.anisotropy_binning:
+            self._anisotropy_bin_keys = wp.empty(2 * alloc_particles, dtype=wp.uint64, device=self._device)
+            self._anisotropy_bin_particles = wp.empty(2 * alloc_particles, dtype=wp.int32, device=self._device)
+            self._anisotropy_bin_markers = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
+            self._anisotropy_bin_indices = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
         self._all_particle_flags = wp.empty(alloc_particles, dtype=wp.int32, device=self._device)
         self._n_particles = alloc_particles
         self._max_particles = particle_count
@@ -1932,6 +2055,7 @@ def extract_particle_surface(
     kernel_scale: float = 0.5,
     anisotropy_scale: float = 1.0,
     anisotropy_min_neighbors: int = 25,
+    anisotropy_binning: bool = False,
     anisotropy_strength: float = 1.0,
     field_smooth_iterations: int = 0,
     field_smooth_radius: int = 1,
@@ -1968,6 +2092,9 @@ def extract_particle_surface(
         anisotropy_scale: Relative multiplier for anisotropic kernel radii.
         anisotropy_min_neighbors: Minimum number of other particles required
             for anisotropic kernels.
+        anisotropy_binning: Share one WPCA kernel among particles in each
+            spatial bin. Bins are half the kernel radius wide. This reduces
+            neighbor-query cost at the expense of spatial resolution.
         anisotropy_strength: Blend from isotropic kernels to anisotropic
             kernels [0, 1].
         field_smooth_iterations: Number of separable Gaussian blur passes
@@ -1994,6 +2121,7 @@ def extract_particle_surface(
         anisotropy_scale=anisotropy_scale,
         kernel_scale=kernel_scale,
         anisotropy_min_neighbors=anisotropy_min_neighbors,
+        anisotropy_binning=anisotropy_binning,
         anisotropy_strength=anisotropy_strength,
         field_smooth_iterations=field_smooth_iterations,
         field_smooth_radius=field_smooth_radius,

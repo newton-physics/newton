@@ -1347,6 +1347,68 @@ def _weight_squared(dist_sq: float, inv_radius_sq: float) -> float:
     return 1.0 - q_sq * wp.sqrt(q_sq)
 
 
+@wp.kernel
+def build_anisotropy_bin_keys(
+    positions: wp.array[wp.vec3],
+    flags: wp.array[wp.int32],
+    use_flags: int,
+    particle_world: wp.array[wp.int32],
+    use_worlds: int,
+    world_count: int,
+    world_lower: wp.array[wp.vec3],
+    inv_bin_size: float,
+    keys: wp.array[wp.uint64],
+    particle_indices: wp.array[wp.int32],
+    G_out: wp.array[wp.mat33],
+    det_G_out: wp.array[float],
+    density_reach_out: wp.array[wp.vec3],
+    isotropic_fallback_out: wp.array[wp.int32],
+):
+    particle = wp.tid()
+    position = positions[particle]
+    world = _particle_world(particle_world, use_worlds, world_count, particle)
+    if world < 0 or not _is_active_particle(flags, use_flags, particle) or not _is_finite_position(position):
+        keys[particle] = ~wp.uint64(0)
+        G_out[particle] = wp.mat33(0.0)
+        det_G_out[particle] = 0.0
+        density_reach_out[particle] = wp.vec3(0.0)
+        isotropic_fallback_out[particle] = wp.int32(0)
+    else:
+        scaled = (position - world_lower[world]) * inv_bin_size
+        coordinate = wp.vec3i(
+            wp.max(int(wp.floor(scaled[0])), 0),
+            wp.max(int(wp.floor(scaled[1])), 0),
+            wp.max(int(wp.floor(scaled[2])), 0),
+        )
+        mask = wp.uint64((1 << 16) - 1)
+        keys[particle] = (
+            wp.uint64(world) << wp.uint64(48)
+            | (wp.uint64(coordinate[0]) & mask) << wp.uint64(32)
+            | (wp.uint64(coordinate[1]) & mask) << wp.uint64(16)
+            | (wp.uint64(coordinate[2]) & mask)
+        )
+    particle_indices[particle] = particle
+
+
+@wp.kernel
+def mark_anisotropy_bins(keys: wp.array[wp.uint64], bin_markers: wp.array[wp.int32]):
+    index = wp.tid()
+    key = keys[index]
+    is_start = key != ~wp.uint64(0) and (index == 0 or key != keys[index - 1])
+    bin_markers[index] = wp.where(is_start, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def compact_anisotropy_bins(
+    bin_markers: wp.array[wp.int32],
+    bin_indices: wp.array[wp.int32],
+    bin_starts: wp.array[wp.int32],
+):
+    sorted_index = wp.tid()
+    if bin_markers[sorted_index] != 0:
+        bin_starts[bin_indices[sorted_index] - 1] = sorted_index
+
+
 # ---------------------------------------------------------------------------
 # Pass 1: Smooth particle centers (Eq. 6 of Yu & Turk 2010)
 # ---------------------------------------------------------------------------
@@ -1514,6 +1576,143 @@ def _compute_anisotropy(
         wp.length(wp.vec3(G_inv[0, 1], G_inv[1, 1], G_inv[2, 1])),
         wp.length(wp.vec3(G_inv[0, 2], G_inv[1, 2], G_inv[2, 2])),
     )
+
+
+@wp.kernel
+def _compute_anisotropy_bins(
+    grid: wp.uint64,
+    smoothed: wp.array[wp.vec3],
+    flags: wp.array[wp.int32],
+    use_flags: int,
+    particle_world: wp.array[wp.int32],
+    use_worlds: int,
+    world_count: int,
+    sorted_keys: wp.array[wp.uint64],
+    sorted_particles: wp.array[wp.int32],
+    bin_starts: wp.array[wp.int32],
+    bin_indices: wp.array[wp.int32],
+    particle_count: int,
+    world_lower: wp.array[wp.vec3],
+    hash_spacing: wp.array[float],
+    bin_size: float,
+    search_radius: float,
+    anisotropy_ratio: float,
+    anisotropy_scale: float,
+    kernel_scale: float,
+    anisotropy_min_neighbors: int,
+    anisotropy_strength: float,
+    G_out: wp.array[wp.mat33],
+    det_G_out: wp.array[float],
+    density_reach_out: wp.array[wp.vec3],
+    isotropic_fallback_out: wp.array[wp.int32],
+):
+    bin_index = wp.tid()
+    if bin_index >= bin_indices[particle_count - 1]:
+        return
+    sorted_index = bin_starts[bin_index]
+    key = sorted_keys[sorted_index]
+    world = int(key >> wp.uint64(48))
+
+    mask = wp.uint64((1 << 16) - 1)
+    x = int((key >> wp.uint64(32)) & mask)
+    y = int((key >> wp.uint64(16)) & mask)
+    z = int(key & mask)
+    local_center = bin_size * wp.vec3(float(x) + 0.5, float(y) + 0.5, float(z) + 0.5)
+    center = world_lower[world] + local_center
+    query_center = center
+    if use_worlds != 0:
+        query_center = local_center + wp.vec3(float(world) * hash_spacing[0], 0.0, 0.0)
+
+    mean_offset = wp.vec3(0.0)
+    moment_xx = float(0.0)
+    moment_xy = float(0.0)
+    moment_xz = float(0.0)
+    moment_yy = float(0.0)
+    moment_yz = float(0.0)
+    moment_zz = float(0.0)
+    w_sum = float(0.0)
+    count = int(0)
+    inv_radius_sq = 1.0 / (search_radius * search_radius)
+
+    query = wp.hash_grid_query(grid, query_center, search_radius)
+    particle = int(0)
+    while wp.hash_grid_query_next(query, particle):
+        if _particle_world(particle_world, use_worlds, world_count, particle) == world and _is_active_particle(
+            flags, use_flags, particle
+        ):
+            offset = smoothed[particle] - center
+            w = _weight_squared(wp.dot(offset, offset), inv_radius_sq)
+            mean_offset += w * offset
+            moment_xx += w * offset[0] * offset[0]
+            moment_xy += w * offset[0] * offset[1]
+            moment_xz += w * offset[0] * offset[2]
+            moment_yy += w * offset[1] * offset[1]
+            moment_yz += w * offset[1] * offset[2]
+            moment_zz += w * offset[2] * offset[2]
+            w_sum += w
+            if w > 0.0:
+                count += 1
+
+    inv_h = 1.0 / search_radius
+    G = wp.identity(n=3, dtype=float) * inv_h
+    det_g = inv_h * inv_h * inv_h
+    isotropic_fallback = wp.where(
+        count <= anisotropy_min_neighbors or anisotropy_strength <= 0.0 or anisotropy_ratio <= 1.0,
+        wp.int32(1),
+        wp.int32(0),
+    )
+
+    if count > anisotropy_min_neighbors and w_sum > 0.0:
+        mean_offset = mean_offset / w_sum
+        inv_w_sum = 1.0 / w_sum
+        C = wp.mat33(
+            moment_xx * inv_w_sum - mean_offset[0] * mean_offset[0],
+            moment_xy * inv_w_sum - mean_offset[0] * mean_offset[1],
+            moment_xz * inv_w_sum - mean_offset[0] * mean_offset[2],
+            moment_xy * inv_w_sum - mean_offset[0] * mean_offset[1],
+            moment_yy * inv_w_sum - mean_offset[1] * mean_offset[1],
+            moment_yz * inv_w_sum - mean_offset[1] * mean_offset[2],
+            moment_xz * inv_w_sum - mean_offset[0] * mean_offset[2],
+            moment_yz * inv_w_sum - mean_offset[1] * mean_offset[2],
+            moment_zz * inv_w_sum - mean_offset[2] * mean_offset[2],
+        )
+
+        U, sigma, _V = wp.svd3(C)
+        s1 = wp.sqrt(wp.max(sigma[0], 1.0e-10))
+        s2 = wp.sqrt(wp.max(sigma[1], 1.0e-10))
+        s3 = wp.sqrt(wp.max(sigma[2], 1.0e-10))
+        s2 = wp.max(s2, s1 / anisotropy_ratio)
+        s3 = wp.max(s3, s1 / anisotropy_ratio)
+        s_geo = wp.pow(s1 * s2 * s3, 1.0 / 3.0)
+        anisotropic_axis_scale = kernel_scale * anisotropy_scale / wp.max(s_geo, 1.0e-10)
+        inv_s1 = 1.0 / (anisotropic_axis_scale * s1)
+        inv_s2 = 1.0 / (anisotropic_axis_scale * s2)
+        inv_s3 = 1.0 / (anisotropic_axis_scale * s3)
+        iso_scale = 1.0 / (kernel_scale * search_radius)
+        g1 = (1.0 - anisotropy_strength) * iso_scale + anisotropy_strength * inv_h * inv_s1
+        g2 = (1.0 - anisotropy_strength) * iso_scale + anisotropy_strength * inv_h * inv_s2
+        g3 = (1.0 - anisotropy_strength) * iso_scale + anisotropy_strength * inv_h * inv_s3
+        G = U @ wp.diag(wp.vec3(g1, g2, g3)) @ wp.transpose(U)
+        det_g = g1 * g2 * g3
+    elif count > 0:
+        scale = 1.0 / (kernel_scale * search_radius)
+        G = wp.identity(n=3, dtype=float) * scale
+        det_g = scale * scale * scale
+
+    G_inv = wp.inverse(G)
+    density_reach = _DENSITY_KERNEL_SUPPORT * wp.vec3(
+        wp.length(wp.vec3(G_inv[0, 0], G_inv[1, 0], G_inv[2, 0])),
+        wp.length(wp.vec3(G_inv[0, 1], G_inv[1, 1], G_inv[2, 1])),
+        wp.length(wp.vec3(G_inv[0, 2], G_inv[1, 2], G_inv[2, 2])),
+    )
+    run_index = sorted_index
+    while run_index < particle_count and sorted_keys[run_index] == key:
+        particle = sorted_particles[run_index]
+        G_out[particle] = G
+        det_G_out[particle] = det_g
+        density_reach_out[particle] = density_reach
+        isotropic_fallback_out[particle] = isotropic_fallback
+        run_index += 1
 
 
 @wp.kernel
