@@ -901,13 +901,10 @@ def closest_edge_coordinate_cylinder(
 
 @wp.func
 def mesh_query_point_sign(mesh: wp.uint64, point: wp.vec3, max_dist: float, sign_method: int):
+    """Closest-point query with the inside/outside sign strategy selected by *sign_method*."""
     if sign_method == MeshSignMethod.PARITY:
-        query = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
-    else:
-        query = wp.mesh_query_point_sign_normal(mesh, point, max_dist)
-    if query.result:
-        return True, query.sign, query.face, query.u, query.v
-    return False, 0.0, int(0), 0.0, 0.0
+        return wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+    return wp.mesh_query_point_sign_normal(mesh, point, max_dist)
 
 
 @wp.func
@@ -1148,13 +1145,18 @@ def create_soft_contacts(
         # Use magnitude of components: the search radius must always be positive
         # regardless of mirror parity.
         min_scale = wp.min(wp.min(wp.abs(geo_scale[0]), wp.abs(geo_scale[1])), wp.abs(geo_scale[2]))
-        hit, sign, face_index, face_u, face_v = mesh_query_point_sign(
+        query = mesh_query_point_sign(
             mesh,
             wp.cw_div(x_local, geo_scale),
             margin + s_margin / min_scale + radius / min_scale,
             resolve_mesh_sign_method(shape_mesh_properties[shape_index]),
         )
-        if hit:
+        if query.result:
+            sign = query.sign
+            face_index = query.face
+            face_u = query.u
+            face_v = query.v
+
             shape_p = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
             shape_v = wp.mesh_eval_velocity(mesh, face_index, face_u, face_v)
 
