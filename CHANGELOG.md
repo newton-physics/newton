@@ -81,6 +81,7 @@
 ### Fixed
 
 - Fix `ModelBuilder.add_usd()` to honor `ignore_paths` in the custom-frequency traversal, so prims under ignored subtrees no longer register spurious custom-frequency rows in two-pass import workflows. (#3406)
+- Speed up `ModelBuilder.replicate()` by merging homogeneous worlds in one batched pass instead of calling `add_builder()` for every world.
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Raise an error when `SolverVBD(rigid_contact_history=True)` would allocate or grow contact-history buffers during CUDA graph capture; construct `CollisionPipeline` before `SolverVBD`, or run one uncaptured solver step before capture.
@@ -101,6 +102,7 @@
 - Fix mesh-SDF contacts with positive contact gaps by making contact reduction prefer margin-depth contacts over gap-only directional fallbacks.
 - Fix USD import of `MjcJointAPI` joints without authored `mjc:solreflimit` to use MuJoCo's `(0.02, 1)` default instead of `ModelBuilder` defaults. (#2929)
 - Fix `SolverImplicitMPM` whole-step CUDA graph capture failing when the rheology inner solver is an iterative linear method such as `solver="cg"`. (#3155)
+- Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Preserve MJCF geom visualization groups when constructing MuJoCo models. (#2492)
 - Fix USD import so non-unit `metersPerUnit` and `kilogramsPerUnit` warn as unsupported, and stop scaling `PhysicsScene` gravity magnitude by `metersPerUnit`.
 - Fix swapped kinetic and potential energy labels in the `basic_plotting` example, and report per-world values directly so the live plot overlays match the side-panel readouts
@@ -111,6 +113,7 @@
 - Fix USD import of MJCF weld and connect equalities that represent world with the stage's non-rigid default prim.
 - Fix USD import of authored rigid-body centers of mass to apply inherited transform scale. (#3332)
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
+- Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
 - Fix `SolverVBD` building unused per-body rigid and particle contact lists for static and kinematic bodies, which caused unnecessary work and misleading contact-buffer overflow warnings.
 - Fix multi-world soft contact filtering to avoid cross-world rigid-soft particle-shape pairs and VBD soft-soft triangle/edge candidates.
 - Fix `ModelBuilder.add_usd` so a stray authored joint outside any articulation root no longer suppresses base-joint (articulation) creation for unrelated floating rigid bodies in the same call. (#3002)
