@@ -34,7 +34,12 @@ from newton._src.sim.collide import (
 )
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    configure_sdf_for_collision_shapes,
+    get_cuda_test_devices,
+    get_test_devices,
+)
 
 
 class TestLevel(IntFlag):
@@ -2924,7 +2929,7 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
         cell_y=0.2,
         mass=0.1,
     )
-    builder.configure_sdf_for_collision_shapes()
+    configure_sdf_for_collision_shapes(builder)
     model = builder.finalize(device=device)
     # The participating mesh now carries a provisioned volume SDF.
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[mesh_shape]), 0)
@@ -2941,40 +2946,30 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
     test.assertGreater(int(np.sum(idx[:, 1] >= 0)), 0)
 
 
-def test_configure_sdf_for_collision_shapes_params(test, device):
-    """configure_sdf_for_collision_shapes marks the right shapes and forwards resolution / narrow band /
-    the shapes= subset to their per-shape SDF settings (builder-level; no SDF is built here)."""
+def test_force_sdf_provisions_collision_meshes(test, device):
+    """ShapeConfig.configure_sdf(force_sdf=True) marks a mesh/convex COLLIDE_PARTICLES shape for SDF
+    construction; analytic primitives are skipped (builder-level; no SDF is built here)."""
     builder = newton.ModelBuilder()
-    m0 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
-    m1 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
-    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)  # analytic: never provisioned
+    cfg = newton.ModelBuilder.ShapeConfig()
+    cfg.configure_sdf(force_sdf=True)
+    m0 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), cfg=cfg)
+    m1 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))  # default cfg, no force_sdf
+    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)  # analytic: never provisioned
 
-    # Subset: only m0, at a chosen resolution + narrow band.
-    configured = builder.configure_sdf_for_collision_shapes(
-        max_resolution=64, narrow_band_range=(-0.2, 0.2), shapes=[m0]
-    )
-    test.assertEqual(configured, [m0])
     test.assertTrue(builder.shape_force_sdf[m0])
-    test.assertEqual(builder.shape_sdf_max_resolution[m0], 64)
-    test.assertEqual(tuple(builder.shape_sdf_narrow_band_range[m0]), (-0.2, 0.2))
-    test.assertFalse(builder.shape_force_sdf[m1])  # not in the subset
-    test.assertFalse(builder.shape_force_sdf[box])  # analytic, skipped even if listed
+    test.assertFalse(builder.shape_force_sdf[m1])
+    # force_sdf on an analytic shape is captured but harmless: finalize only builds mesh/convex SDFs.
+    test.assertTrue(builder.shape_force_sdf[box])
 
-    # Bare call provisions every remaining COLLIDE_PARTICLES mesh (m1); the analytic box is left alone.
-    configured_all = builder.configure_sdf_for_collision_shapes()
-    test.assertIn(m1, configured_all)
-    test.assertNotIn(box, configured_all)
-    test.assertTrue(builder.shape_force_sdf[m1])
-
-    # max_resolution and target_voxel_size are mutually exclusive.
+    # configure_sdf still rejects both resolution knobs at once.
     with test.assertRaises(ValueError):
-        builder.configure_sdf_for_collision_shapes(max_resolution=64, target_voxel_size=0.01)
+        newton.ModelBuilder.ShapeConfig().configure_sdf(max_resolution=64, target_voxel_size=0.01)
 
 
 add_function_test(
     TestFullSurfaceSoftContact,
-    "test_configure_sdf_for_collision_shapes_params",
-    test_configure_sdf_for_collision_shapes_params,
+    "test_force_sdf_provisions_collision_meshes",
+    test_force_sdf_provisions_collision_meshes,
     devices=soft_devices,
 )
 
@@ -2988,7 +2983,7 @@ def test_optimize_against_mesh_texture_sdf(test, device):
     box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
     builder = newton.ModelBuilder()
     builder.add_shape_mesh(body=-1, mesh=box_mesh)
-    builder.configure_sdf_for_collision_shapes()
+    configure_sdf_for_collision_shapes(builder)
     model = builder.finalize(device=device)
     sdf_idx = int(model._shape_sdf_index.numpy()[0])
     test.assertGreaterEqual(sdf_idx, 0)
@@ -3056,8 +3051,8 @@ def test_unprovisioned_mesh_raises(test, device):
     """A participating mesh with no SDF makes CollisionPipeline raise when the flag is enabled.
 
     Mirrors SolverVBD raising on an uncolored model: provisioning an SDF (e.g. via
-    configure_sdf_for_collision_shapes()) is a required build step, and skipping it is an error rather
-    than a silent degrade to the per-particle path.
+    ShapeConfig.configure_sdf(force_sdf=True)) is a required build step, and skipping it is an error
+    rather than a silent degrade to the per-particle path.
     """
     box_mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
     builder = newton.ModelBuilder()
@@ -3271,7 +3266,7 @@ def _build_all_shapes_scene(device, rng):
         density=0.1,
         particle_radius=0.0,  # so the pass threshold is exactly `margin` (matches the brute-force check)
     )
-    builder.configure_sdf_for_collision_shapes()
+    configure_sdf_for_collision_shapes(builder)
     return builder.finalize(device=device)
 
 
@@ -3466,7 +3461,7 @@ def test_face_cull_uses_max_vertex_reach(test, device):
     builder.add_triangle(b0, a0, c0)
 
     builder.color()
-    builder.configure_sdf_for_collision_shapes()
+    configure_sdf_for_collision_shapes(builder)
     model = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(
         model, broad_phase="nxn", soft_contact_margin=0.01, enable_rigid_soft_full_surface_contact=True

@@ -134,8 +134,6 @@ class Example:
         self._add_soft_mesh(builder)
 
         builder.color()
-        if self.params["enable_water_tight"]:
-            builder.configure_sdf_for_collision_shapes()
         self.model = builder.finalize()
 
         self.model.soft_contact_ke = self.params["soft_contact_ke"]
@@ -209,6 +207,10 @@ class Example:
         )
 
         finger_cfg = newton.ModelBuilder.ShapeConfig(density=p["finger_density"], mu=p["soft_contact_mu"])
+        if p["enable_water_tight"]:
+            # Provision the rigid finger mesh's SDF for full-surface rigid-soft contact (analytic box
+            # fingers ignore this -- finalize only builds mesh/convex SDFs).
+            finger_cfg.configure_sdf(force_sdf=True)
         if p["finger_mesh"]:
             cube = _box_mesh(h)  # one mesh shared by both jaws -> a single deduplicated SDF
             builder.add_shape_mesh(left_finger, mesh=cube, cfg=finger_cfg, color=p["finger_color_left"])
