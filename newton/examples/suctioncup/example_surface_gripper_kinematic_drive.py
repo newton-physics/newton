@@ -58,9 +58,11 @@ class VelocityProfile(Enum):
     LIFT_AND_LOWER = 2
     UP_AND_HOLD = 3
     CONSTANT_UP_AND_DROP = 4
+    UP_LEFT_DOWN = 5
+    UP_LEFT_ROLL_DOWN = 6
 
 
-DEFAULT_PROFILE = VelocityProfile.CONSTANT_UP
+DEFAULT_PROFILE = VelocityProfile.UP_LEFT_ROLL_DOWN
 
 
 def make_profile(profile: VelocityProfile):
@@ -72,13 +74,23 @@ def make_profile(profile: VelocityProfile):
     length (``num_frames = round(end_time * FPS)``). For now every seal profile is engaged for
     the whole run; per-profile seal series come later.
     """
-    up = wp.spatial_vector(0.0, 0.0, 0.4, 0.0, 0.0, 0.0)
-    down = wp.spatial_vector(0.0, 0.0, -0.4, 0.0, 0.0, 0.0)
+    speed = 0.8  # magnitude of the prescribed gripper velocity [m/s]
+    up = wp.spatial_vector(0.0, 0.0, speed, 0.0, 0.0, 0.0)
+    down = wp.spatial_vector(0.0, 0.0, -speed, 0.0, 0.0, 0.0)
+    left = wp.spatial_vector(0.0, -speed, 0.0, 0.0, 0.0, 0.0)
     rest = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    # rotating legs for UP_LEFT_ROLL_DOWN. Angular velocity is world-frame; while A is near its
+    # start orientation these axes match the pad-frame seal DOF -- twist about z (the suction axis),
+    # swing (peel) about x and y. spin gives ~90 deg per leg, spread over the ~1.25 s each leg is
+    # active (its flat span plus half of each adjoining 0.2 s ramp).
+    spin = (math.pi / 2.0) / 1.25
+    up_twist = wp.spatial_vector(0.0, 0.0, speed, 0.0, 0.0, spin)  # up + twist (z)
+    left_swing_y = wp.spatial_vector(0.0, -speed, 0.0, 0.0, spin, 0.0)  # left + swing Y
+    down_swing_x_twist = wp.spatial_vector(0.0, 0.0, -speed, spin, 0.0, spin)  # down + swing X + twist
     seal_times = [0.0]
     seal_values = [True]  # engaged for the whole run
     if profile == VelocityProfile.CONSTANT_UP:
-        # rise at 0.4 m/s for 10 s
+        # rise at 0.8 m/s for 10 s
         return [0.0, 10.0], [up, up], seal_times, seal_values
     if profile == VelocityProfile.LIFT_AND_LOWER:
         # up, hold at the top, then back down to the start over 10 s (net-zero displacement)
@@ -89,6 +101,29 @@ def make_profile(profile: VelocityProfile):
     if profile == VelocityProfile.CONSTANT_UP_AND_DROP:
         # same upward motion as CONSTANT_UP, but the seal releases at t = 4 s (box B drops)
         return [0.0, 10.0], [up, up], [0.0, 4.0], [True, False]
+    if profile == VelocityProfile.UP_LEFT_DOWN:
+        # lift 1 m (+z), shift 1 m left (-y), then lower 1 m (-z), all at 0.8 m/s with 0.2 s ramps
+        # between legs and a final 0.2 s ramp to rest. Flat times (1.15/1.05/1.05 s) plus each
+        # leg's share of the ramps make every leg exactly 1 m. Ending at rest holds A in place
+        # afterwards (the sampler clamps past the end to the last twist, so a trailing 'down' would
+        # keep dragging B down if playback runs past the profile). Seal engaged throughout.
+        return (
+            [0.0, 1.15, 1.35, 2.40, 2.60, 3.65, 3.85],
+            [up, up, left, left, down, down, rest],
+            seal_times,
+            seal_values,
+        )
+    if profile == VelocityProfile.UP_LEFT_ROLL_DOWN:
+        # like UP_LEFT_DOWN (1 m legs at 0.8 m/s, 0.2 s ramps), but each leg adds a rotation: twist
+        # about z on the way up, swing about y while shifting 1 m left, then swing about x plus
+        # twist about z on the way down. Rotations ramp in/out with their leg (~90 deg each). Seal
+        # engaged throughout (exercises the seal's twist and swing/peel resistance).
+        return (
+            [0.0, 1.15, 1.35, 2.40, 2.60, 3.65, 3.85],
+            [up_twist, up_twist, left_swing_y, left_swing_y, down_swing_x_twist, down_swing_x_twist, rest],
+            seal_times,
+            seal_values,
+        )
     raise ValueError(f"unknown velocity profile: {profile}")
 
 
@@ -244,9 +279,13 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # --- scene constants ---
-        # geometry: box half-extents (A is the small gripper body, B the larger gripped box)
+        # geometry: box half-extents (A is the small gripper body, B the larger gripped box) and
+        # the initial clearance of box B's underside above the ground. start_height_b must exceed the
+        # largest downward excursion of a profile (e.g. UP_LEFT_DOWN lowers 1 m) so B never hits
+        # the ground while still sealed.
         LA = 0.1
         LB = 0.2
+        start_height_b = 1.5
         # masses and gravity
         m_a, m_b = 0.5, 1.0
         gravity = 10.0
@@ -268,7 +307,7 @@ class Example:
         # Create a scene with two bodies A and B.
         # A is kinematically controlled and has an attached surface gripper.
         # B is gripped by the surface gripper on A.
-        builder = self._create_builder(LA, LB, m_a, m_b, gravity)
+        builder = self._create_builder(LA, LB, m_a, m_b, gravity, start_height_b)
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(self.model, use_mujoco_contacts=False)
         self.state_0 = self.model.state()
@@ -323,11 +362,9 @@ class Example:
         self.viewer.set_model(self.model)
         self.capture()
 
-    def _create_builder(self, LA, LB, m_a, m_b, gravity):
-        """Build the two-box scene: kinematic gripper A stacked on free box B, plus a ground plane.
-
-        Sets ``self.box_a``, ``self.box_b`` and ``self.gripper_joint``, and returns the builder.
-        """
+    def _create_builder(self, LA, LB, m_a, m_b, gravity, start_height_b):
+        """Build the two-box scene (kinematic gripper A on free box B, plus a ground plane) and
+        return the builder."""
         builder = newton.ModelBuilder(gravity=-gravity)
 
         # zero-density box shapes so the builder honours the explicit mass/inertia passed to
@@ -339,10 +376,10 @@ class Example:
             s = (1.0 / 6.0) * mass * (2.0 * half) ** 2  # solid cube about its centre
             return wp.diag(wp.vec3(s, s, s))
 
-        # box B (free, dynamic) rests on the ground; box A (the kinematic gripper) sits on top
-        # with its pad sealing B's top face (A_center = B_center + LA + LB).
-        pose_b = wp.transform(wp.vec3(0.0, 0.0, LB), wp.quat_identity())
-        pose_a = wp.transform(wp.vec3(0.0, 0.0, LB + LA + LB), wp.quat_identity())
+        # box B (free, dynamic) starts start_height_b above the ground; box A (the kinematic gripper)
+        # sits on top with its pad sealing B's top face (A_center = B_center + LA + LB).
+        pose_b = wp.transform(wp.vec3(0.0, 0.0, start_height_b + LB), wp.quat_identity())
+        pose_a = wp.transform(wp.vec3(0.0, 0.0, start_height_b + LB + LA + LB), wp.quat_identity())
 
         # box A is the gripper: kinematic (does not respond to forces) and driven entirely by a
         # prescribed 6-DOF velocity through a free joint to the world -- every DOF is prescribed.
@@ -354,6 +391,8 @@ class Example:
             label="gripper_box_A",
         )
         builder.add_shape_box(self.box_a, hx=LA, hy=LA, hz=LA, cfg=box_cfg)
+        # keep this joint's handle: the reduced-coordinate solver controls A by its joint velocity
+        # (we write this free joint's joint_qd every substep in simulate), not by setting body_qd.
         self.gripper_joint = builder.add_joint_free(child=self.box_a, label="gripper_free")
         builder.add_articulation([self.gripper_joint], label="gripper_articulation")
 
@@ -475,14 +514,16 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        # box A (kinematic) rises at a constant 0.4 m/s; box B is carried by the suction seal.
-        # Sanity bounds only (the exact height depends on the run length): both rise off the
-        # start, stay on-axis, and don't fly off. The per-step seal check lives in test_surface_gripper.
+        # Default profile UP_LEFT_ROLL_DOWN: A lifts 1 m, shifts 1 m left (-y) while rolling 90 deg
+        # about +x, then lowers 1 m, ending ~1 m left near the start height (box B swings to sit
+        # beside A as the seal rolls). Sanity bounds only: both boxes stay near x=0, end shifted
+        # along -y, and don't fly off or hit the ground. The per-step seal check lives in
+        # test_surface_gripper.
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "gripper A lifts box B upward and both stay on-axis",
-            lambda q, qd: 0.1 < q[2] < 5.0 and abs(q[0]) < 0.1 and abs(q[1]) < 0.1,
+            "gripper A carries box B up, left with a roll, then down",
+            lambda q, qd: 0.1 < q[2] < 4.0 and abs(q[0]) < 0.2 and -1.6 < q[1] < -0.4,
             [self.box_a, self.box_b],
         )
 
