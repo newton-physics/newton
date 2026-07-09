@@ -75,6 +75,8 @@ def test_one_shot(test, device):
         radii,
         voxel_size=0.05,
         kernel_radius=0.15,
+        anisotropic=True,
+        anisotropy_binning=True,
     )
     test.assertIsNotNone(verts)
     test.assertGreater(verts.shape[0], 0)
@@ -116,6 +118,9 @@ def test_multi_world_mesh(test, device):
     surface = ParticleSurface(
         voxel_size=0.08,
         kernel_radius=0.24,
+        anisotropic=True,
+        anisotropy_min_neighbors=4,
+        anisotropy_binning=True,
         world_count=3,
         device=device,
     )
@@ -598,14 +603,24 @@ def test_update_field_skips_inactive_particles(test, device):
     flags = wp.array(flags_np, dtype=wp.int32, device=device)
 
     ref = ParticleSurface(
-        voxel_size=0.08, kernel_radius=0.24, anisotropic=True, anisotropy_min_neighbors=4, device=device
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        anisotropic=True,
+        anisotropy_min_neighbors=4,
+        anisotropy_binning=True,
+        device=device,
     )
     ref.update_field(
         wp.array(active_np, dtype=wp.vec3, device=device), wp.array(active_radii.numpy(), dtype=float, device=device)
     )
 
     ctx = ParticleSurface(
-        voxel_size=0.08, kernel_radius=0.24, anisotropic=True, anisotropy_min_neighbors=4, device=device
+        voxel_size=0.08,
+        kernel_radius=0.24,
+        anisotropic=True,
+        anisotropy_min_neighbors=4,
+        anisotropy_binning=True,
+        device=device,
     )
     ctx.update_field(positions, radii, particle_flags=flags)
 
@@ -634,6 +649,7 @@ def test_update_field_cuda_graph(test, device):
         kernel_radius=0.24,
         anisotropic=True,
         anisotropy_min_neighbors=4,
+        anisotropy_binning=True,
         field_mode="sdf",
         field_smooth_iterations=1,
         field_smooth_radius=1,

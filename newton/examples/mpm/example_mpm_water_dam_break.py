@@ -118,6 +118,7 @@ class Example:
             anisotropy_ratio=args.anisotropy_ratio,
             anisotropy_scale=args.anisotropy_scale,
             anisotropy_min_neighbors=args.anisotropy_min_neighbors,
+            anisotropy_binning=args.anisotropic and args.anisotropy_binning,
             anisotropy_strength=args.anisotropy_strength,
             field_smooth_iterations=args.field_smooth_iterations,
             field_smooth_radius=args.field_smooth_radius,
@@ -478,6 +479,12 @@ class Example:
             type=int,
             default=4,
             help="Minimum neighbors required for anisotropy; sparse particles remain isotropic",
+        )
+        parser.add_argument(
+            "--anisotropy-binning",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Share anisotropy kernels within half-radius spatial bins",
         )
         parser.add_argument(
             "--anisotropy-strength",
