@@ -4369,7 +4369,7 @@ def Xform "Root" (
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
     """Verify model based on the UsdPhysics Parsing Utils"""
     # [1] https://openusd.org/release/api/usd_physics_page_front.html
-    from pxr import Sdf, Usd, UsdPhysics
+    from pxr import Gf, Sdf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(file)
     parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
@@ -4403,12 +4403,16 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
         if prim.HasAPI(UsdPhysics.MassAPI):
             mass_api = UsdPhysics.MassAPI(prim)
             # Parents' explicit total masses override any mass properties specified further down in the subtree. [1]
-            if mass_api.GetMassAttr().HasAuthoredValue():
-                mass = mass_api.GetMassAttr().Get()
+            mass = mass_api.GetMassAttr().Get()
+            if mass > 0.0:
                 test.assertAlmostEqual(body_mass[body_idx], mass, places=5)
-            if mass_api.GetDiagonalInertiaAttr().HasAuthoredValue():
-                diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
-                principal_axes = mass_api.GetPrincipalAxesAttr().Get().Normalize()
+            diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
+            if np.any(np.array(diag_inertia) != 0.0):
+                principal_axes = mass_api.GetPrincipalAxesAttr().Get()
+                if principal_axes.GetLength() == 0.0:
+                    principal_axes = Gf.Quatf(1.0)
+                else:
+                    principal_axes = principal_axes.GetNormalized()
                 p = np.array(wp.quat_to_matrix(wp.quat(*principal_axes.imaginary, principal_axes.real))).reshape((3, 3))
                 inertia = p @ np.diag(diag_inertia) @ p.T
                 assert_np_equal(body_inertia[body_idx], inertia, tol=1e-5)
@@ -6944,8 +6948,8 @@ def Xform "Articulation" (
         np.testing.assert_allclose(builder.body_com[body_idx], [0.6, 0.0, 0.0], atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
-        """If body has authored mass+diagonalInertia, use them directly without compute fallback."""
+    def test_massapi_authored_mass_and_inertia_are_preserved(self):
+        """Body mass and diagonal inertia take precedence over collider values."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7015,6 +7019,106 @@ def Xform "Articulation" (
         np.testing.assert_allclose(
             np.diag(inertia), np.array([expected_diag, expected_diag, expected_diag]), atol=1e-5, rtol=1e-5
         )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_fallback_values_are_ignored(self):
+        """Explicit MassAPI fallbacks have the same effect as unauthored values."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        fallback_authors = {
+            "Mass": lambda api: api.CreateMassAttr().Set(0.0),
+            "Density": lambda api: api.CreateDensityAttr().Set(0.0),
+            "Inertia": lambda api: api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.0)),
+            "CenterOfMass": lambda api: api.CreateCenterOfMassAttr().Set(Gf.Vec3f(-math.inf)),
+            "PrincipalAxes": lambda api: api.CreatePrincipalAxesAttr().Set(Gf.Quatf(0.0)),
+        }
+
+        body_pairs = []
+        for name, author_fallback in fallback_authors.items():
+            pair = []
+            for suffix in ("Unauthored", "Authored"):
+                body_path = f"/World/{name}{suffix}"
+                body = UsdGeom.Xform.Define(stage, body_path)
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                if suffix == "Authored":
+                    author_fallback(mass_api)
+
+                collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                collider.CreateSizeAttr().Set(0.2)
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                pair.append(body_path)
+            body_pairs.append((name, pair))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        for name, (unauthored_path, authored_path) in body_pairs:
+            with self.subTest(attribute=name):
+                unauthored = result["path_body_map"][unauthored_path]
+                authored = result["path_body_map"][authored_path]
+                self.assertAlmostEqual(builder.body_mass[authored], builder.body_mass[unauthored], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[authored], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
+                )
+                np.testing.assert_allclose(
+                    builder.body_com[authored], builder.body_com[unauthored], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_zero_inertia_is_derived(self):
+        """A zero diagonal-inertia sentinel does not suppress derived inertia."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass_api.CreateMassAttr().Set(1.0)
+        mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.0))
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/World/Body"]
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], 1.0, places=6)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), np.full(3, 2.0 / 3.0), atol=1e-5, rtol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_small_inertia_is_preserved(self):
+        """A nonzero inertia below OpenUSD's comparison tolerance remains effective."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass_api.CreateMassAttr().Set(0.02)
+        mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0e-6, 2.0e-6, 3.0e-6))
+        mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.0))
+        mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(1.0))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/Body"]
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], 0.02, places=6)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), [1.0e-6, 2.0e-6, 3.0e-6], atol=1e-10, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
