@@ -73,7 +73,7 @@ class TestViewerParticleFlags(unittest.TestCase):
         np.testing.assert_allclose(points_np[:, 0], [0.0, 2.0, 4.0], atol=1e-6)
 
     def test_all_inactive_clears_particles(self):
-        """When no particles are ACTIVE, log_points is called with an empty array and hidden=True."""
+        """Clear particles when none are active."""
         model = self._build_model([0, 0, 0])
         state = model.state()
 

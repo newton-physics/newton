@@ -1331,7 +1331,6 @@ def build_all_joints_test_model(
     actuated: bool = False,
     damped: bool = True,
     floating_base: bool = False,
-    exclude_universal: bool = False,
 ) -> ModelBuilderKamino:
     """
     Constructs a model builder containing a world for each joint type.
@@ -1342,7 +1341,6 @@ def build_all_joints_test_model(
         actuated: Whether to make the joints actuated (passive otherwise).
         damped: Whether to add slight damping to the joints to increase realism.
         floating_base: Whether to replace the fixed with a free base joint for binary examples.
-        exclude_universal: Whether to skip universal joints.
 
     Returns:
         The populated model builder.
@@ -1406,9 +1404,7 @@ def build_all_joints_test_model(
 
     # Add a new world for each joint type
     folder_path = os.path.join(utils.get_testing_usd_assets_path(), "joints")
-    joint_names = ["cartesian", "cylindrical", "fixed", "prismatic", "revolute", "spherical"]
-    if not exclude_universal:
-        joint_names.append("universal")
+    joint_names = ["cartesian", "cylindrical", "fixed", "prismatic", "revolute", "spherical", "universal"]
     need_alteration = actuated or damped or floating_base
     for name in joint_names:
         builder_in = USDImporter().import_from(source=os.path.join(folder_path, f"test_{name}/test_{name}.usda"))

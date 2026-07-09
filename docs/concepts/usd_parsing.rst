@@ -37,6 +37,210 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Deformable Bodies
+-----------------
+
+.. experimental::
+
+   Deformable-body import targets the **proposed** AOUSD UsdPhysics Deformables schema,
+   which is not yet registered in any USD distribution. This is pre-release coverage:
+   the schema, its attribute names, and the import behavior may change without notice as
+   the proposal evolves.
+
+   It is an initial implementation of a **subset** of the proposal -- see the supported
+   subset and limitations below -- and is not fully proposal-compliant. It also does not
+   import native OmniPhysics/PhysX deformable assets (see the vendor-namespace note below).
+
+:meth:`newton.ModelBuilder.add_usd` imports deformable bodies authored with the `AOUSD UsdPhysics
+Deformables proposal
+<https://github.com/aousd/OpenUSD-proposals/blob/5d89c0ed46a26de92f4d3fefef3bfad6500c07ce/proposals/physics_deformables/wp_deformable_physics.md>`_,
+across three families:
+
+* **Curve / cable** -- a linear ``UsdGeom.BasisCurves`` with ``PhysicsCurvesDeformableSimAPI``
+  becomes a rod: a chain of capsule bodies joined by cable joints, usable by any solver that
+  supports cable joints. A ``wrap=periodic`` curve also gets a body for the closing segment.
+* **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
+  cloth: particles with FEM triangles and bending edges. Polygonal faces (such as quads) are
+  fan-triangulated on import.
+* **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` becomes a soft
+  body. Under a ``PhysicsDeformableBodyAPI`` ancestor exactly one simulation TetMesh is
+  selected; other TetMeshes in that hierarchy are graphics/collision geometry and are not
+  simulated. A bare ``UsdGeom.TetMesh`` without these APIs keeps the older material-density
+  import.
+
+Material attributes are read from the standard ``physics:`` namespace, as the proposal defines.
+Vendor namespaces (``omniphysics:``, ``physxDeformableBody:``) are an opt-in fallback for the
+same proposal-shaped attributes on bound materials: a schema resolver (e.g.
+``SchemaResolverPhysx``) declares them, and they are consulted only for deformable attributes.
+That is the full extent of the vendor support -- the resolver does not translate
+OmniPhysics/PhysX applied schemas (such as ``PhysxDeformableSurfaceAPI``), renamed attributes,
+concrete attachment prims, pose purposes, or hierarchy conventions. A native Omni/PhysX
+deformable asset that does not apply the AOUSD simulation APIs is not recognized as a
+deformable and imports as ordinary (static) geometry. One temporary exception: a TetMesh
+material that authors its values only under the vendor namespaces is still read without a
+resolver, with a ``DeprecationWarning``, so existing assets keep their stiffness and density
+during the deprecation window.
+
+Supported subset
+~~~~~~~~~~~~~~~~
+
+The first release deliberately supports a narrow, predictable set of inputs:
+
+* Valid, enabled, **dynamic** cable, cloth, and volume simulation prims that use the AOUSD
+  deformable APIs. A bound simulation material supplies thickness, stiffness, and density;
+  unauthored material properties fall back to documented builder defaults.
+* The points and topology **as currently authored**. Newton builds the deformable at that pose;
+  a standalone cable's ``restShapePoints`` may affect stiffness normalization but never
+  establishes an initial strain state.
+* Point attachments only where the authored constraint can be represented without moving any
+  geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
+* ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
+  of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
+  an empty counts array selects all elements). Cloth and volume element sources warn and are
+  skipped, as are filters targeting a dedicated deformable collider (that collider is not
+  represented in the model).
+* Standard ``physics:filteredPairs`` relationships are honored for shape-backed participants:
+  a rigid collider or body, a cable (every segment shape), or a deformable body prim owning a
+  cable. The relationship can be authored on either endpoint. Pairs naming a cloth or volume
+  deformable warn and are not lowered (they are particles, not shapes), as do pairs whose
+  target is missing or produced no collision participant.
+* ``UsdPhysicsCollisionGroup`` membership is **not** applied to deformables; deformable
+  collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
+  ``PhysicsElementCollisionFilter`` support above).
+* Every imported deformable can be found by prim path in the import results (see below).
+
+Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
+attributes. It never silently becomes a different physical model. In particular: disabled
+(``physics:bodyEnabled = false``) and kinematic (``physics:kinematicEnabled = true``)
+deformables are skipped, malformed topology or curves are skipped, and compliant
+(finite-stiffness) attachments and non-coincident cable junctions are kept as data but not
+imported. Dynamic and static friction belong to collision geometry and are not mapped onto
+the deformable collision approximation yet.
+
+Limitations
+~~~~~~~~~~~
+
+Known gaps of the experimental importer, tracked as follow-ups:
+
+* **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
+  configuration. Cloth and volume rest attributes are ignored with a warning, and welded cable
+  graphs drop ``restShapePoints``. For a standalone cable, a valid ``restShapePoints`` supplies
+  only the segment lengths used to convert the material moduli into joint stiffness; the rod
+  itself is still built relaxed at the current ``points`` pose, and mass distribution also uses
+  the current geometry. A body saved in a deformed pose therefore resumes relaxed at that pose
+  instead of springing back.
+* **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
+  preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
+  hardening them would change the authored physics); only hard attachments (unauthored or
+  infinite stiffness; damping does not affect hardness) become joints.
+* **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
+  deformables are skipped rather than simulated.
+* **Per-element materials** -- ``GeomSubset`` physics material bindings warn and are
+  ignored; one material applies to the whole simulation prim.
+* **Collision participation** -- follows the rigid semantics: a deformable collides when
+  its simulation geometry (or, approximated with a warning, another prim in its deformable
+  body hierarchy) carries an enabled ``PhysicsCollisionAPI``; ``physics:collisionEnabled``
+  falls back to true. Cables without an enabled collider import as non-colliding rods
+  (dynamics only, per the proposal). Cloth and volume deformables cannot disable particle
+  collision in Newton yet: they warn and import colliding. A welded cable graph shares one
+  shape configuration, so any collision-enabled member curve makes the whole graph collide
+  (mixed authoring warns).
+* **Collision and graphics geometry** -- separate collision or render geometry under a
+  deformable body is not simulated or driven (embedding is not implemented): untagged
+  PointBased graphics geometry warns and is skipped (a static import would leave a frozen
+  copy behind), and a dedicated point-based collider (every one warns) only toggles the
+  simulation geometry's collision as described above and never becomes a separate rigid
+  shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
+  deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
+  rather than falling back to a rigid representation. A disabled
+  (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
+  it is not simulated, but its collision geometry persists as static colliders (TetMesh
+  and BasisCurves simulation geometry has no static representation and stays out).
+* **Cable frames and stiffness** -- if per-point normals are missing, segment orientation is
+  synthesized. One stiffness value, computed from the mean segment length, applies to a whole
+  curve or graph, so curves with very uneven segment lengths lose per-segment accuracy. When a
+  standalone cable authors valid ``restShapePoints``, its segment lengths are used for this
+  conversion; the current ``points`` still define the rod's constructed and relaxed pose.
+* **Thickness fallbacks** -- without an authored thickness the importer assumes a default
+  (2 mm cloth shell thickness, 2.5 mm cable radius) for the mass, stiffness, and
+  collision-radius conversions, and warns with the assumed value. Author
+  ``physics:thickness`` on the material to override.
+* **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
+  the rod representation needs at least two segments. A periodic two-point curve closes into
+  two segments and imports.
+
+**Mass distribution** follows the proposal's precedence order. Per-point ``physics:masses`` on
+the simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` total, then
+the body or material density. Density- and total-derived masses are spread over the **current**
+geometry (segment lengths, triangle areas, tet volumes). The proposal spreads them over the rest
+shape instead, but rest state is not imported yet (see the limitations above), so a deformed
+saved pose shifts mass with it.
+
+Every imported deformable can be looked up by its prim path in the mapping
+:meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
+``path_cable_map`` holds each cable's body and joint indices, and ``path_cloth_map`` /
+``path_soft_map`` hold each cloth's and soft body's ``[start, end)`` particle and topology
+ranges. Without the flag the return shape carries no deformable entries.
+
+A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
+(``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
+naming what on that prim is attached -- ``point``, ``segment``, ``face``, ``tetrahedron``, or
+``xform`` -- and ``indices``/``coords`` locating the site on the target (for example, which cable
+segment and the ``(u, s, t)`` position along it).
+
+The importer supports attachments on cables. When ``src0`` is an imported cable, ``type0`` is
+``point`` or ``segment``, and ``type1`` is ``xform``, each attachment site becomes a ball joint.
+The joint connects the cable segment body (for an interior cable point, one flanking segment
+body -- each site is a single point-point constraint) to the target: an xform, a rigid body
+(kinematic bodies included), or the world frame. The created joints are returned in
+``path_attachment_map``. Every parsed attachment, including unsupported ones, is described in
+``path_attachment_attrs``. A finite attachment stiffness cannot be represented yet, so
+compliant attachments warn and are preserved as metadata instead of becoming joints. Attachments on cloth or volume sites warn and are kept in
+``path_attachment_attrs`` until Newton has a constraint for them.
+
+A ``point``->``point`` attachment between two imported cables can be a weld. Welding happens
+only when the attachment is **hard** (no authored stiffness, or infinite; authored damping
+does not affect hardness) **and** the two attached points sit at the same position. Such a junction is shared structure,
+not a runtime constraint: the two points become one node, and every curve connected through such
+junctions is built as one rod graph with a single :meth:`~newton.ModelBuilder.add_rod_graph`
+call (one capsule body per segment, junction nodes shared). Welded junction attachments are
+absorbed into the graph, so they appear in neither ``path_attachment_map`` nor
+``path_attachment_attrs``. A springy or non-coincident cable-to-cable attachment is **not**
+welded. It warns and is kept as unsupported in ``path_attachment_attrs``, so the authored
+geometry and the constraint intent are never silently rewritten. Cable-to-xform attachments on
+the same curves still import as described above.
+
+Each imported cable is wrapped into its own articulation, labelled ``"<path>_articulation"``
+(a multi-curve prim labels per curve: ``"<path>_curveN_articulation"``).
+The model is therefore ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
+A welded rod graph gets one articulation per connected component; each of its curves keeps its
+own body range but shares that articulation. Attachment joints that tie a cable to other bodies
+close a loop, so they stay outside the articulation.
+
+.. code-block:: python
+
+    result = builder.add_usd("cables.usda", return_deformable_results=True)
+    # Look up an imported cable by prim path:
+    cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
+    model = builder.finalize()  # cables are already wrapped and finalize-ready
+
+The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
+``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly
+as authored, independent of any solver. The cable and cloth entries expose the parsed
+``material`` moduli and the ``resolved_density``. The volume entry exposes the
+``resolved_density`` (a volume material's ``youngsModulus`` / ``poissonsRatio`` are applied to
+the built soft body and not repeated there). The cable and cloth ``material`` keeps moduli the
+imported rod and membrane cannot express -- for example cable ``shearStiffness`` /
+``twistStiffness`` -- so a solver with a richer cable or surface model can rebuild the
+deformable from the import without re-parsing the stage. A cable entry carries a
+``graph_component`` identifier only when the curve was welded into a rod graph; curves of one
+graph share it, and independent or fallback cables have no such key.
+
+.. note::
+
+   Solver tuning that is not part of the AOUSD schema (e.g. damping) is not imported; supply it
+   on the builder or model after import.
+
 Material Color Spaces
 ---------------------
 
@@ -165,6 +369,38 @@ On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArtic
      - Direct mapping
 
 The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
+
+**Newton Joint Attribute Remapping:**
+
+On joint prims (``RevoluteJoint``, ``PrismaticJoint``, ``D6Joint``), the following ``NewtonJointAPI`` attributes are resolved uniformly across all DOFs of the joint:
+
+.. list-table:: Newton Joint Attribute Remapping
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - **Newton Attribute**
+     - **Resolved key**
+     - **Notes**
+   * - ``newton:armature``
+     - ``armature``
+     - Direct mapping
+   * - ``newton:damping``
+     - ``damping``
+     - Passive velocity damping
+   * - ``newton:friction``
+     - ``friction``
+     - Direct mapping
+   * - ``newton:velocityLimit``
+     - ``velocity_limit``
+     - ``+inf`` = unlimited (builder default)
+   * - ``newton:limitStiffness``
+     - ``limit_ke``
+     - ``-inf`` = engine default; ``+inf`` = hard limit
+   * - ``newton:limitDamping``
+     - ``limit_kd``
+     - ``-inf`` = engine default; ignored when ``limitStiffness`` is ``+inf``
+
+Angular joints store gains per-degree in USD and the importer converts to per-radian internally.
 
 **MuJoCo Attribute Remapping Examples:**
 

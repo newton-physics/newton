@@ -141,7 +141,6 @@ class TestViewerUSD(unittest.TestCase):
     def test_log_points_hides_existing_prim_with_empty_points_and_hidden(self):
         viewer = self._make_viewer()
 
-        # First frame: render two visible particles so the Points prim exists.
         viewer.begin_frame(0.0)
         points = wp.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=wp.vec3)
         path = viewer.log_points("/particles", points, radii=0.01)
@@ -152,7 +151,6 @@ class TestViewerUSD(unittest.TestCase):
             UsdGeom.Tokens.inherited,
         )
 
-        # Second frame: empty array + hidden=True should hide the prim.
         viewer.begin_frame(1.0 / 60.0)
         empty = wp.empty(0, dtype=wp.vec3)
         viewer.log_points("/particles", empty, hidden=True)

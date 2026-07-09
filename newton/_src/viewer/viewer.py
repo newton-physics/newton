@@ -7,7 +7,7 @@ import enum
 import os
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -625,26 +625,6 @@ class ViewerBase(ABC):
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
-
-    def set_picking_linear_only_bodies(self, body_ids: Iterable[int] | None) -> None:
-        """Configure bodies that receive no torque from mouse picking.
-
-        Args:
-            body_ids: Iterable of body indices into ``model.body_q``. Pass
-                ``None`` to restore normal picking torque for every body.
-
-        Raises:
-            ValueError: If any ``body_id`` falls outside the model body range.
-        """
-        picking = getattr(self, "picking", None)
-        if picking is not None:
-            picking.set_linear_only_bodies(body_ids)
-
-    def clear_picking_linear_only_bodies(self) -> None:
-        """Restore normal mouse picking torque for all bodies."""
-        picking = getattr(self, "picking", None)
-        if picking is not None:
-            picking.clear_linear_only_bodies()
 
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""
@@ -2738,8 +2718,7 @@ class ViewerBase(ABC):
                 # Slice to transfer only the last element instead of the full array.
                 active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
                 if active_count == 0:
-                    # Pass an empty array (not None) so log_points hides the existing prim;
-                    # None is a no-op in some backends and would leave stale geometry visible.
+                    # None is a no-op in some backends, so use an empty array to hide stale geometry.
                     empty_points = wp.empty(0, dtype=wp.vec3, device=self.device)
                     self.log_points(name=self._qualify("/model/particles"), points=empty_points, hidden=True)
                     return

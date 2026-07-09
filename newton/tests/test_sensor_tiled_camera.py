@@ -138,7 +138,7 @@ class TestSensorTiledCamera(unittest.TestCase):
                 model=model,
                 config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
             )
-            camera_rays = sensor.utils.compute_pinhole_camera_rays(1, 1, math.radians(30.0))
+            camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
             albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
 
             sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
@@ -193,7 +193,7 @@ class TestSensorTiledCamera(unittest.TestCase):
             dtype=wp.transformf,
             device="cpu",
         )
-        camera_rays = sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(60.0))
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(60.0))
         depth_image = sensor.utils.create_depth_image_output(width, height)
 
         sensor.update(model.state(), camera_transforms, camera_rays, depth_image=depth_image)
@@ -229,7 +229,9 @@ class TestSensorTiledCamera(unittest.TestCase):
             shape_indices=np.arange(model.shape_count, dtype=np.int32)
         )
 
-        camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        camera_rays = tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            width, height, camera_fovs=math.radians(45.0)
+        )
         color_image = tiled_camera_sensor.utils.create_color_image_output(width, height, camera_count)
         depth_image = tiled_camera_sensor.utils.create_depth_image_output(width, height, camera_count)
 
@@ -269,7 +271,9 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
-        camera_rays = tiled_camera_sensor.utils.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        camera_rays = tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            width, height, camera_fovs=math.radians(45.0)
+        )
 
         state = model.state()
 
