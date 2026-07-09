@@ -911,18 +911,13 @@ def mesh_query_point_sign(mesh: wp.uint64, point: wp.vec3, max_dist: float, sign
 
 
 @wp.func
-def mesh_sdf_with_sign_method(mesh: wp.uint64, point: wp.vec3, max_dist: float, sign_method: int):
-    hit, sign, face_index, face_u, face_v = mesh_query_point_sign(mesh, point, max_dist, sign_method)
-
-    if hit:
-        closest = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
-        return wp.length(point - closest) * sign
-    return max_dist
-
-
-@wp.func
 def mesh_sdf(mesh: wp.uint64, point: wp.vec3, max_dist: float):
-    return mesh_sdf_with_sign_method(mesh, point, max_dist, MeshSignMethod.PARITY)
+    res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return wp.length(point - closest) * res.sign
+    return max_dist
 
 
 @wp.func
