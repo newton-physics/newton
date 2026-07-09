@@ -597,7 +597,7 @@ def eval_peel_moment(
 
 
 @wp.func
-def eval_break_limit(
+def eval_break_metric(
     fz_unclamped: float,
     f_normal_max: float,
     k_peel_x: float,
@@ -791,7 +791,7 @@ def eval_pad_force(
     wp.atomic_add(body_f, body_b, wp.spatial_vector(-force, -torque + wp.cross(r_b, -force)))
 
     # --- brittle break envelope: reported for the external disengage policy (see gripper.pdf) ---
-    pad_break_metric[pad] = eval_break_limit(
+    pad_break_metric[pad] = eval_break_metric(
         fz_unclamped,
         f_normal_max,
         k_peel_x,
