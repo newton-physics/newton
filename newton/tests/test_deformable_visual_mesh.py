@@ -3,6 +3,9 @@
 
 """Tests for deformable visual meshes: binding kinds, ownership, validation, skinning."""
 
+import math
+import os
+import tempfile
 import unittest
 import warnings
 from types import SimpleNamespace
@@ -13,9 +16,10 @@ import warp as wp
 import newton
 from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
 from newton._src.utils.import_usd_deformable_visual import _sim_bind_positions
+from newton.sensors import SensorTiledCamera
 from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
-from newton.viewer import ViewerNull
+from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
 
 
 class _MeshProbe(ViewerNull):
@@ -425,7 +429,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
     """ViewerBase drawing: naming, visibility, world offsets, legacy overrides."""
 
     @staticmethod
-    def _cloth_skin_builder():
+    def _cloth_skin_builder(label="skin"):
         builder = newton.ModelBuilder()
         _add_cloth(builder)
         n = builder.particle_count
@@ -434,7 +438,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         # A non-degenerate grid quad (0-1-5-4) so face normals are well defined.
         quad = np.array([0, 1, 5, 0, 5, 4], dtype=np.int32)
         builder.add_deformable_visual_mesh(
-            verts, quad, kind="particle", particles=np.arange(n, dtype=np.int32), uvs=uvs, label="skin"
+            verts, quad, kind="particle", particles=np.arange(n, dtype=np.int32), uvs=uvs, label=label
         )
         return builder, uvs
 
@@ -452,7 +456,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         state.particle_q = wp.array(moved, dtype=wp.vec3)
         viewer._frame(state)
 
-        call = viewer.calls["/model/deformable_visual_meshes/0_skin"]
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
         self.assertFalse(call["hidden"])
         assert_np_equal(call["points"], moved, tol=1.0e-5)
         assert_np_equal(call["uvs"], uvs, tol=1.0e-6)
@@ -460,6 +464,37 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         # Unit normals on every vertex the triangles reference.
         referenced = np.linalg.norm(call["normals"][[0, 1, 4, 5]], axis=1)
         assert_np_equal(referenced, np.ones(4, dtype=np.float32), tol=1.0e-4)
+
+    def test_viewer_name_is_valid_for_usd_paths(self):
+        """Visual mesh names keep the invariant index without creating invalid USD prim names."""
+        builder, _uvs = self._cloth_skin_builder(label="123 bad/skin!")
+        model = builder.finalize()
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer._frame(model.state())
+
+        self.assertIn("/model/deformable_visual_meshes/mesh_0_123_bad_skin", viewer.calls)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_viewer_usd_accepts_deformable_visual_mesh_name(self):
+        """USD-backed viewers can create prims for visual meshes with numeric indices."""
+        builder, _uvs = self._cloth_skin_builder(label="123 bad/skin!")
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".usd", delete=False) as tmp:
+            file_path = tmp.name
+
+        try:
+            viewer = ViewerUSD(file_path, num_frames=1)
+            viewer.set_model(model)
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            viewer.close()
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
     def test_sim_triangles_stay_visible_and_mesh_toggles(self):
         """Visual meshes draw in addition to the simulation triangles; toggling
@@ -472,11 +507,11 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
 
         viewer._frame(state)
         self.assertFalse(viewer.calls["/model/triangles"]["hidden"])
-        self.assertFalse(viewer.calls["/model/deformable_visual_meshes/0_skin"]["hidden"])
+        self.assertFalse(viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]["hidden"])
 
         viewer.show_deformable_visual_meshes = False
         viewer._frame(state, 1.0)
-        call = viewer.calls["/model/deformable_visual_meshes/0_skin"]
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
         self.assertTrue(call["hidden"])
         self.assertEqual(len(call["points"]), model.deformable_visual_meshes[0].vertex_count)
         self.assertFalse(viewer.calls["/model/triangles"]["hidden"])
@@ -501,10 +536,293 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         viewer._frame(model.state())
 
         offsets = viewer.world_offsets.numpy()
-        p0 = viewer.calls["/model/deformable_visual_meshes/0_skin"]["points"]
-        p1 = viewer.calls["/model/deformable_visual_meshes/1_skin"]["points"]
+        p0 = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]["points"]
+        p1 = viewer.calls["/model/deformable_visual_meshes/mesh_1_skin"]["points"]
         assert_np_equal(p0, verts + offsets[0], tol=1.0e-5)
         assert_np_equal(p1, verts + offsets[1], tol=1.0e-5)
+
+    def test_viewer_file_roundtrips_deformable_visual_mesh(self):
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        n = builder.particle_count
+        verts = np.array(builder.particle_q, dtype=np.float32)
+        uvs = np.linspace(0.0, 1.0, n * 2, dtype=np.float32).reshape(n, 2)
+        builder.add_deformable_visual_mesh(
+            verts,
+            _QUAD,
+            kind="particle",
+            particles=np.arange(n, dtype=np.int32),
+            uvs=uvs,
+            label="recorded_skin",
+        )
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            file_path = tmp.name
+
+        try:
+            recorder = ViewerFile(file_path, auto_save=False)
+            recorder.set_model(model)
+            recorder.log_state(model.state())
+            recorder.save_recording()
+
+            playback = ViewerFile(file_path)
+            playback.load_recording()
+            restored_model = newton.Model()
+            playback.load_model(restored_model)
+
+            self.assertEqual(restored_model.deformable_visual_mesh_count, 1)
+            restored_mesh = restored_model.deformable_visual_meshes[0]
+            self.assertIsInstance(restored_mesh, newton.DeformableVisualMesh)
+            self.assertEqual(restored_mesh.kind, newton.DeformableVisualMesh.Kind.PARTICLE)
+            self.assertEqual(restored_mesh.label, "recorded_skin")
+            assert_np_equal(restored_mesh.rest_vertices.numpy(), verts, tol=1.0e-6)
+            assert_np_equal(restored_mesh.uvs.numpy(), uvs, tol=1.0e-6)
+
+            viewer = _MeshProbe()
+            viewer.set_model(restored_model)
+            restored_state = restored_model.state()
+            playback.load_state(restored_state, 0)
+            viewer._frame(restored_state)
+            self.assertIn("/model/deformable_visual_meshes/mesh_0_recorded_skin", viewer.calls)
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+
+class TestDeformableVisualMeshSensor(unittest.TestCase):
+    """Camera sensor visibility for skinned deformable visual meshes."""
+
+    @staticmethod
+    def _unpack_rgba(packed: int) -> np.ndarray:
+        value = int(packed)
+        return np.array(
+            [
+                value & 0xFF,
+                (value >> 8) & 0xFF,
+                (value >> 16) & 0xFF,
+                (value >> 24) & 0xFF,
+            ],
+            dtype=np.uint8,
+        )
+
+    @staticmethod
+    def _triangle_surface_with_visual_mesh_behind(texture=None, visual_uvs=None):
+        builder = newton.ModelBuilder()
+        verts = np.array(
+            [
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        particles = [
+            builder.add_particle(pos=wp.vec3(*p), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, radius=0.0) for p in verts
+        ]
+        builder.add_triangle(particles[0], particles[1], particles[2])
+        builder.add_triangle(particles[0], particles[2], particles[3])
+
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()))
+        visual_verts = verts.copy()
+        visual_verts[:, 2] = -0.5
+        if visual_uvs is None:
+            visual_uvs = np.array(
+                [
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [1.0, 1.0],
+                    [0.0, 1.0],
+                ],
+                dtype=np.float32,
+            )
+        builder.add_deformable_visual_mesh(
+            visual_verts,
+            _QUAD,
+            kind="body",
+            bodies=[body],
+            uvs=visual_uvs,
+            texture=texture,
+            label="sensor_skin",
+        )
+        return builder.finalize()
+
+    @staticmethod
+    def _camera_setup(sensor, model, width=16, height=16):
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(45.0))
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0, 0.0, 2.0), wp.quat_identity())]],
+            dtype=wp.transformf,
+            device=model.device,
+        )
+        return camera_rays, camera_transforms
+
+    def test_tiled_camera_sees_particle_bound_visual_mesh(self):
+        builder = newton.ModelBuilder()
+        verts = np.array(
+            [
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        particles = [builder.add_particle(pos=tuple(p), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0) for p in verts]
+        builder.add_deformable_visual_mesh(
+            verts,
+            _QUAD,
+            kind="particle",
+            particles=np.array(particles, dtype=np.int32),
+            label="sensor_quad",
+        )
+        model = builder.finalize()
+        state = model.state()
+
+        sensor = SensorTiledCamera(
+            model,
+            config=SensorTiledCamera.RenderConfig(
+                enable_particles=False,
+                max_distance=10.0,
+            ),
+        )
+        width = 16
+        height = 16
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(45.0))
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0, 0.0, 2.0), wp.quat_identity())]],
+            dtype=wp.transformf,
+            device=model.device,
+        )
+        depth_image = sensor.utils.create_depth_image_output(width, height, camera_count=1)
+
+        sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
+        depth = depth_image.numpy()[0, 0]
+
+        self.assertGreater(int(np.count_nonzero(depth > 0.0)), 0)
+        self.assertAlmostEqual(float(depth[height // 2, width // 2]), 2.0, delta=0.25)
+
+        moved = state.particle_q.numpy()
+        moved[:, 2] += 0.5
+        state.particle_q = wp.array(moved, dtype=wp.vec3, device=model.device)
+
+        sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
+        moved_depth = depth_image.numpy()[0, 0]
+        self.assertAlmostEqual(float(moved_depth[height // 2, width // 2]), 1.5, delta=0.25)
+
+    def test_tiled_camera_can_hide_sim_triangles_for_visual_mesh_capture(self):
+        model = self._triangle_surface_with_visual_mesh_behind()
+        state = model.state()
+
+        default_sensor = SensorTiledCamera(
+            model,
+            config=SensorTiledCamera.RenderConfig(enable_particles=False, max_distance=10.0),
+        )
+        camera_rays, camera_transforms = self._camera_setup(default_sensor, model)
+        default_depth_image = default_sensor.utils.create_depth_image_output(16, 16, camera_count=1)
+        default_sensor.update(state, camera_transforms, camera_rays, depth_image=default_depth_image)
+        default_depth = default_depth_image.numpy()[0, 0]
+        self.assertAlmostEqual(float(default_depth[8, 8]), 2.0, delta=0.25)
+
+        visual_sensor = SensorTiledCamera(
+            model,
+            config=SensorTiledCamera.RenderConfig(
+                enable_particles=False,
+                enable_simulation_triangles=False,
+                max_distance=10.0,
+            ),
+        )
+        camera_rays, camera_transforms = self._camera_setup(visual_sensor, model)
+        visual_depth_image = visual_sensor.utils.create_depth_image_output(16, 16, camera_count=1)
+        visual_sensor.update(state, camera_transforms, camera_rays, depth_image=visual_depth_image)
+        visual_depth = visual_depth_image.numpy()[0, 0]
+        self.assertAlmostEqual(float(visual_depth[8, 8]), 2.5, delta=0.25)
+
+    def test_tiled_camera_colors_dynamic_visual_mesh_rgb_hits(self):
+        model = self._triangle_surface_with_visual_mesh_behind()
+        state = model.state()
+
+        sensor = SensorTiledCamera(
+            model,
+            config=SensorTiledCamera.RenderConfig(
+                enable_particles=False,
+                enable_simulation_triangles=False,
+                max_distance=10.0,
+            ),
+        )
+        camera_rays, camera_transforms = self._camera_setup(sensor, model)
+        color_image = sensor.utils.create_color_image_output(16, 16, camera_count=1)
+
+        sensor.update(state, camera_transforms, camera_rays, color_image=color_image)
+        rgba = sensor.utils.to_rgba_from_color(color_image).numpy()[0, 8, 8]
+
+        self.assertGreater(int(rgba[3]), 0)
+        self.assertTrue(int(rgba[0]) != int(rgba[1]) or int(rgba[1]) != int(rgba[2]))
+
+    def test_tiled_camera_samples_dynamic_visual_mesh_texture(self):
+        texture = np.zeros((4, 4, 4), dtype=np.uint8)
+        texture[..., 0] = 255
+        texture[..., 3] = 255
+        model = self._triangle_surface_with_visual_mesh_behind(texture=texture)
+        state = model.state()
+
+        sensor = SensorTiledCamera(
+            model,
+            config=SensorTiledCamera.RenderConfig(
+                enable_particles=False,
+                enable_simulation_triangles=False,
+                enable_textures=True,
+                max_distance=10.0,
+            ),
+        )
+        camera_rays, camera_transforms = self._camera_setup(sensor, model)
+        albedo_image = sensor.utils.create_albedo_image_output(16, 16, camera_count=1)
+
+        sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
+        rgba = self._unpack_rgba(albedo_image.numpy()[0, 0, 8, 8])
+
+        self.assertGreater(int(rgba[0]), 240)
+        self.assertLess(int(rgba[1]), 16)
+        self.assertLess(int(rgba[2]), 16)
+        self.assertEqual(int(rgba[3]), 255)
+
+    def test_tiled_camera_wraps_dynamic_visual_mesh_texture_uvs(self):
+        texture = np.zeros((4, 4, 4), dtype=np.uint8)
+        texture[:, :2, 0] = 255
+        texture[:, 2:, 1] = 255
+        texture[..., 3] = 255
+        visual_uvs = np.array(
+            [
+                [1.0, 0.0],
+                [1.5, 0.0],
+                [1.5, 1.0],
+                [1.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        model = self._triangle_surface_with_visual_mesh_behind(texture=texture, visual_uvs=visual_uvs)
+        state = model.state()
+
+        sensor = SensorTiledCamera(
+            model,
+            config=SensorTiledCamera.RenderConfig(
+                enable_particles=False,
+                enable_simulation_triangles=False,
+                enable_textures=True,
+                max_distance=10.0,
+            ),
+        )
+        camera_rays, camera_transforms = self._camera_setup(sensor, model)
+        albedo_image = sensor.utils.create_albedo_image_output(16, 16, camera_count=1)
+
+        sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
+        rgba = self._unpack_rgba(albedo_image.numpy()[0, 0, 8, 8])
+
+        self.assertGreater(int(rgba[0]), 240)
+        self.assertLess(int(rgba[1]), 16)
+        self.assertLess(int(rgba[2]), 16)
+        self.assertEqual(int(rgba[3]), 255)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

@@ -112,6 +112,8 @@ def create_kernel(
         particles_radius: wp.array[wp.float32],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_uvs: wp.array[wp.vec2f],
+        triangle_mesh_texture_ids: wp.array[wp.int32],
         # Meshes
         mesh_data: wp.array[MeshData],
         # Gaussians
@@ -223,6 +225,8 @@ def create_kernel(
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
+            elif closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+                albedo_color = srgb_to_linear_wp(wp.vec3f(0.35, 0.55, 0.95))
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]
@@ -242,6 +246,19 @@ def create_kernel(
                     )
 
                     albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
+            elif wp.static(config.enable_textures) and closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+                if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_mesh_texture_ids.shape[0]:
+                    texture_index = triangle_mesh_texture_ids[closest_hit.face_idx]
+                    if texture_index > -1 and texture_index < texture_data.shape[0] and triangle_mesh_uvs.shape[0] > 0:
+                        tex_color = textures.sample_texture_dynamic_triangle_mesh(
+                            closest_hit.bary_u,
+                            closest_hit.bary_v,
+                            closest_hit.face_idx,
+                            triangle_mesh_id,
+                            triangle_mesh_uvs,
+                            texture_data[texture_index],
+                        )
+                        albedo_color = srgb_to_linear_wp(tex_color)
 
         if wp.static(state.render_albedo):
             packed_albedo = albedo_color
