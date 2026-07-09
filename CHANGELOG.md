@@ -79,7 +79,6 @@
 
 ### Fixed
 
-- Limit mouse-picking torque using each body's rotational inertia to prevent unstable angular acceleration on low-inertia bodies.
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Raise an error when `SolverVBD(rigid_contact_history=True)` would allocate or grow contact-history buffers during CUDA graph capture; construct `CollisionPipeline` before `SolverVBD`, or run one uncaptured solver step before capture.
@@ -94,6 +93,7 @@
 - Fix `SolverMuJoCo` inertia randomization for bodies initialized with diagonal inertia.
 - Fix `SolverMuJoCo` static worldbody geometry poses so offset batched worlds collide with their local geometry.
 - Fix memory growth in the Style3D solver when CUDA Graph capture is disabled
+- Limit mouse-picking torque using each body's rotational inertia to prevent unstable angular acceleration on low-inertia bodies.
 - Fix `newton.eval_jacobian`, `SolverFeatherstone`, and the IK analytic Jacobian building `JointType.D6` angular motion-subspace columns from raw axes, so `J @ joint_qd` now matches `State.body_qd` for two- or three-angular-DOF joints at non-identity configurations.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
 - Fix `ModelBuilder.add_builder()` and `ModelBuilder.finalize()` time and memory scaling for large replicated scenes with collision filter pairs. (#1675)
