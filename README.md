@@ -564,7 +564,8 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples deformable_visual_mesh_camera</code>
+      <code>python -m newton.examples deformable_visual_mesh_camera</code><br>
+      <code>python -m newton.examples deformable_visual_mesh_camera --load-from-usd</code>
     </td>
     <td align="center" width="33%">
     </td>

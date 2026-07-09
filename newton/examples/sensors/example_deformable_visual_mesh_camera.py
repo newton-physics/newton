@@ -13,6 +13,7 @@
 #
 ###########################################################################
 
+import argparse
 import atexit
 import math
 import subprocess
@@ -119,12 +120,7 @@ class Example:
         self.iterations = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
-        self._add_cable(builder, x_offset=-2.4)
-        self._add_cloth(builder, x_offset=0.0)
-        self._add_volume(builder, x_offset=2.4)
-        builder.color()
+        builder = self._build_model_builder(args)
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1.0e5
@@ -192,6 +188,21 @@ class Example:
             np.asarray(faces, dtype=np.int32),
             np.asarray(uvs, dtype=np.float32),
         )
+
+    def _build_model_builder(self, args):
+        if getattr(args, "load_from_usd", False):
+            builder = newton.ModelBuilder()
+            builder.add_usd(newton.examples.get_asset("deformable_visual_mesh_camera.usda"))
+            builder.color()
+            return builder
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        self._add_cable(builder, x_offset=-2.4)
+        self._add_cloth(builder, x_offset=0.0)
+        self._add_volume(builder, x_offset=2.4)
+        builder.color()
+        return builder
 
     def _add_cable(self, builder: newton.ModelBuilder, x_offset: float):
         num_elements = 36
@@ -475,6 +486,12 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        parser.add_argument(
+            "--load-from-usd",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Load the deformable simulation and graphics meshes from a checked-in AOUSD asset.",
+        )
         parser.add_argument("--camera-view", choices=["none", "rgb", "depth", "both"], default="both")
         parser.add_argument("--camera-width", type=int, default=320)
         parser.add_argument("--camera-height", type=int, default=320)

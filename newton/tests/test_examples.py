@@ -805,6 +805,21 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
+    name="sensors.example_deformable_visual_mesh_camera",
+    devices=cuda_test_devices,
+    test_options={
+        "usd_required": True,
+        "num-frames": 2,
+        "camera-width": 64,
+        "camera-height": 64,
+        "load-from-usd": True,
+    },
+    use_viewer=True,
+    test_suffix="usd",
+)
+
+add_example_test(
+    TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle

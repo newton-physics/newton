@@ -1,0 +1,234 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "Compact AOUSD deformable scene used by the deformable_visual_mesh_camera example. It contains cable, cloth, and soft-volume simulation geometry plus untagged textured graphics meshes that Newton imports as skinned deformable visual meshes."
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "PhysicsScene"
+{
+}
+
+def Xform "World"
+{
+    def Mesh "Ground" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        point3f[] points = [(-4, -3, 0), (4, -3, 0), (4, 3, 0), (-4, 3, 0)]
+        int[] faceVertexCounts = [3, 3]
+        int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+    }
+
+    def Xform "Cable" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def BasisCurves "Sim" (
+            prepend apiSchemas = ["PhysicsCurvesDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+        )
+        {
+            uniform token type = "linear"
+            uniform token wrap = "nonperiodic"
+            int[] curveVertexCounts = [5]
+            point3f[] points = [(-3.3, 0, 1.55), (-2.85, 0, 1.55), (-2.4, 0, 1.55), (-1.95, 0, 1.55), (-1.5, 0, 1.55)]
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            point3f[] physics:deformablePose:bind:points = [(-3.3, 0, 1.55), (-2.85, 0, 1.55), (-2.4, 0, 1.55), (-1.95, 0, 1.55), (-1.5, 0, 1.55)]
+            rel material:binding:physics = </World/Materials/CablePhysics>
+        }
+
+        def Mesh "Graphics" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+        )
+        {
+            point3f[] points = [
+                (-3.3, 0, 1.50), (-3.3, 0, 1.60),
+                (-2.85, 0, 1.50), (-2.85, 0, 1.60),
+                (-2.4, 0, 1.50), (-2.4, 0, 1.60),
+                (-1.95, 0, 1.50), (-1.95, 0, 1.60),
+                (-1.5, 0, 1.50), (-1.5, 0, 1.60)
+            ]
+            int[] faceVertexCounts = [3, 3, 3, 3, 3, 3, 3, 3]
+            int[] faceVertexIndices = [0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5, 4, 6, 5, 5, 6, 7, 6, 8, 7, 7, 8, 9]
+            texCoord2f[] primvars:st = [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1), (4, 0), (4, 1)] (
+                interpolation = "vertex"
+            )
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            point3f[] physics:deformablePose:bind:points = [
+                (-3.3, 0, 1.50), (-3.3, 0, 1.60),
+                (-2.85, 0, 1.50), (-2.85, 0, 1.60),
+                (-2.4, 0, 1.50), (-2.4, 0, 1.60),
+                (-1.95, 0, 1.50), (-1.95, 0, 1.60),
+                (-1.5, 0, 1.50), (-1.5, 0, 1.60)
+            ]
+            rel material:binding = </World/Materials/CheckerVisual>
+        }
+    }
+
+    def Xform "Cloth" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def Mesh "Sim" (
+            prepend apiSchemas = ["PhysicsSurfaceDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+        )
+        {
+            point3f[] points = [
+                (-0.6, -0.6, 1.05), (-0.3, -0.6, 1.05), (0, -0.6, 1.05), (0.3, -0.6, 1.05), (0.6, -0.6, 1.05),
+                (-0.6, -0.3, 1.05), (-0.3, -0.3, 1.05), (0, -0.3, 1.05), (0.3, -0.3, 1.05), (0.6, -0.3, 1.05),
+                (-0.6, 0, 1.05), (-0.3, 0, 1.05), (0, 0, 1.05), (0.3, 0, 1.05), (0.6, 0, 1.05),
+                (-0.6, 0.3, 1.05), (-0.3, 0.3, 1.05), (0, 0.3, 1.05), (0.3, 0.3, 1.05), (0.6, 0.3, 1.05),
+                (-0.6, 0.6, 1.05), (-0.3, 0.6, 1.05), (0, 0.6, 1.05), (0.3, 0.6, 1.05), (0.6, 0.6, 1.05)
+            ]
+            int[] faceVertexCounts = [
+                3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3
+            ]
+            int[] faceVertexIndices = [
+                0, 1, 6, 0, 6, 5, 1, 2, 7, 1, 7, 6, 2, 3, 8, 2, 8, 7, 3, 4, 9, 3, 9, 8,
+                5, 6, 11, 5, 11, 10, 6, 7, 12, 6, 12, 11, 7, 8, 13, 7, 13, 12, 8, 9, 14, 8, 14, 13,
+                10, 11, 16, 10, 16, 15, 11, 12, 17, 11, 17, 16, 12, 13, 18, 12, 18, 17, 13, 14, 19, 13, 19, 18,
+                15, 16, 21, 15, 21, 20, 16, 17, 22, 16, 22, 21, 17, 18, 23, 17, 23, 22, 18, 19, 24, 18, 24, 23
+            ]
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            point3f[] physics:deformablePose:bind:points = [
+                (-0.6, -0.6, 1.05), (-0.3, -0.6, 1.05), (0, -0.6, 1.05), (0.3, -0.6, 1.05), (0.6, -0.6, 1.05),
+                (-0.6, -0.3, 1.05), (-0.3, -0.3, 1.05), (0, -0.3, 1.05), (0.3, -0.3, 1.05), (0.6, -0.3, 1.05),
+                (-0.6, 0, 1.05), (-0.3, 0, 1.05), (0, 0, 1.05), (0.3, 0, 1.05), (0.6, 0, 1.05),
+                (-0.6, 0.3, 1.05), (-0.3, 0.3, 1.05), (0, 0.3, 1.05), (0.3, 0.3, 1.05), (0.6, 0.3, 1.05),
+                (-0.6, 0.6, 1.05), (-0.3, 0.6, 1.05), (0, 0.6, 1.05), (0.3, 0.6, 1.05), (0.6, 0.6, 1.05)
+            ]
+            rel material:binding:physics = </World/Materials/ClothPhysics>
+        }
+
+        def Mesh "Graphics" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+        )
+        {
+            point3f[] points = [
+                (-0.6, -0.6, 1.05), (-0.3, -0.6, 1.05), (0, -0.6, 1.05), (0.3, -0.6, 1.05), (0.6, -0.6, 1.05),
+                (-0.6, -0.3, 1.05), (-0.3, -0.3, 1.05), (0, -0.3, 1.05), (0.3, -0.3, 1.05), (0.6, -0.3, 1.05),
+                (-0.6, 0, 1.05), (-0.3, 0, 1.05), (0, 0, 1.05), (0.3, 0, 1.05), (0.6, 0, 1.05),
+                (-0.6, 0.3, 1.05), (-0.3, 0.3, 1.05), (0, 0.3, 1.05), (0.3, 0.3, 1.05), (0.6, 0.3, 1.05),
+                (-0.6, 0.6, 1.05), (-0.3, 0.6, 1.05), (0, 0.6, 1.05), (0.3, 0.6, 1.05), (0.6, 0.6, 1.05)
+            ]
+            int[] faceVertexCounts = [
+                3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3,
+                3, 3, 3, 3, 3, 3, 3, 3
+            ]
+            int[] faceVertexIndices = [
+                0, 1, 6, 0, 6, 5, 1, 2, 7, 1, 7, 6, 2, 3, 8, 2, 8, 7, 3, 4, 9, 3, 9, 8,
+                5, 6, 11, 5, 11, 10, 6, 7, 12, 6, 12, 11, 7, 8, 13, 7, 13, 12, 8, 9, 14, 8, 14, 13,
+                10, 11, 16, 10, 16, 15, 11, 12, 17, 11, 17, 16, 12, 13, 18, 12, 18, 17, 13, 14, 19, 13, 19, 18,
+                15, 16, 21, 15, 21, 20, 16, 17, 22, 16, 22, 21, 17, 18, 23, 17, 23, 22, 18, 19, 24, 18, 24, 23
+            ]
+            texCoord2f[] primvars:st = [
+                (0, 0), (0.25, 0), (0.5, 0), (0.75, 0), (1, 0),
+                (0, 0.25), (0.25, 0.25), (0.5, 0.25), (0.75, 0.25), (1, 0.25),
+                (0, 0.5), (0.25, 0.5), (0.5, 0.5), (0.75, 0.5), (1, 0.5),
+                (0, 0.75), (0.25, 0.75), (0.5, 0.75), (0.75, 0.75), (1, 0.75),
+                (0, 1), (0.25, 1), (0.5, 1), (0.75, 1), (1, 1)
+            ] (
+                interpolation = "vertex"
+            )
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            point3f[] physics:deformablePose:bind:points = [
+                (-0.6, -0.6, 1.05), (-0.3, -0.6, 1.05), (0, -0.6, 1.05), (0.3, -0.6, 1.05), (0.6, -0.6, 1.05),
+                (-0.6, -0.3, 1.05), (-0.3, -0.3, 1.05), (0, -0.3, 1.05), (0.3, -0.3, 1.05), (0.6, -0.3, 1.05),
+                (-0.6, 0, 1.05), (-0.3, 0, 1.05), (0, 0, 1.05), (0.3, 0, 1.05), (0.6, 0, 1.05),
+                (-0.6, 0.3, 1.05), (-0.3, 0.3, 1.05), (0, 0.3, 1.05), (0.3, 0.3, 1.05), (0.6, 0.3, 1.05),
+                (-0.6, 0.6, 1.05), (-0.3, 0.6, 1.05), (0, 0.6, 1.05), (0.3, 0.6, 1.05), (0.6, 0.6, 1.05)
+            ]
+            rel material:binding = </World/Materials/CheckerVisual>
+        }
+    }
+
+    def Xform "Volume" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def TetMesh "Sim" (
+            prepend apiSchemas = ["PhysicsVolumeDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+        )
+        {
+            point3f[] points = [(1.85, -0.55, 0.85), (3.05, -0.45, 0.85), (1.95, 0.65, 0.85), (1.95, -0.45, 1.95)]
+            int4[] tetVertexIndices = [(0, 1, 2, 3)]
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            point3f[] physics:deformablePose:bind:points = [(1.85, -0.55, 0.85), (3.05, -0.45, 0.85), (1.95, 0.65, 0.85), (1.95, -0.45, 1.95)]
+            rel material:binding:physics = </World/Materials/VolumePhysics>
+        }
+
+        def Mesh "Graphics" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+        )
+        {
+            point3f[] points = [(2.06, -0.34, 1.015), (2.54, -0.30, 1.015), (2.10, 0.14, 1.015), (2.10, -0.30, 1.455)]
+            int[] faceVertexCounts = [3, 3, 3, 3]
+            int[] faceVertexIndices = [0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3]
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (0, 1), (1, 1)] (
+                interpolation = "vertex"
+            )
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            point3f[] physics:deformablePose:bind:points = [(2.06, -0.34, 1.015), (2.54, -0.30, 1.015), (2.10, 0.14, 1.015), (2.10, -0.30, 1.455)]
+            rel material:binding = </World/Materials/CheckerVisual>
+        }
+    }
+
+    def Scope "Materials"
+    {
+        def Material "CheckerVisual"
+        {
+            token outputs:surface.connect = </World/Materials/CheckerVisual/PreviewSurface.outputs:surface>
+
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:baseColor.connect = </World/Materials/CheckerVisual/CheckerTexture.outputs:rgb>
+                float inputs:roughness = 0.65
+                token outputs:surface
+            }
+
+            def Shader "CheckerTexture"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @deformable_visual_checker.ppm@
+                token inputs:sourceColorSpace = "sRGB"
+                float3 outputs:rgb
+            }
+        }
+
+        def Material "CablePhysics" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsCurvesDeformableMaterialAPI"]
+        )
+        {
+            float physics:thickness = 0.07
+            float physics:density = 1000
+            float physics:bendStiffness = 50
+            float physics:stretchStiffness = 100000
+        }
+
+        def Material "ClothPhysics" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsSurfaceDeformableMaterialAPI"]
+        )
+        {
+            float physics:thickness = 0.01
+            float physics:density = 1000
+            float physics:stretchStiffness = 1000
+            float physics:bendStiffness = 10
+        }
+
+        def Material "VolumePhysics" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsVolumeDeformableMaterialAPI"]
+        )
+        {
+            float physics:density = 1000
+            float physics:youngsModulus = 20000
+            float physics:poissonsRatio = 0.3
+        }
+    }
+}
