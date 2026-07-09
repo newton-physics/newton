@@ -95,7 +95,6 @@ def apply_picking_force_kernel(
     # Adjust force to mass for more adaptive manipulation of picked bodies.
     force_multiplier = 10.0 + body_mass[pick_body]
 
-    # Compute the force to apply
     pick_force = force_multiplier * (
         pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (pick_state[0].pick_damping * pick_vel)
     )
@@ -112,10 +111,8 @@ def apply_picking_force_kernel(
 
     pick_torque = wp.cross(offset, pick_force)
 
-    # Bound the rotational response using the picked body's own inertia. The
-    # force limit above uses articulation mass so a light link can pull its
-    # chain, but applying the resulting torque to that link's much smaller
-    # inertia can otherwise produce an unstable angular acceleration.
+    # The articulation-mass force limit can produce unstable torque on low-inertia
+    # links, so bound it using the picked body's own mass and inertia.
     mass = body_mass[pick_body]
     if mass > 0.0:
         body_rotation = wp.transform_get_rotation(X_wb)

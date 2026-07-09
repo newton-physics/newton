@@ -14,7 +14,15 @@ from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_
 def _make_single_sphere_model(
     device=None, *, is_kinematic: bool = False, body_com=None, body_inertia=None, body_rotation=None
 ):
-    """Model with one body and one sphere at origin (radius 0.5)."""
+    """Create a model containing one body and a sphere at the origin.
+
+    Args:
+        device: Device on which to finalize the model.
+        is_kinematic: Whether to make the body kinematic.
+        body_com: Optional body-frame center of mass.
+        body_inertia: Optional body-frame inertia tensor.
+        body_rotation: Optional initial body orientation.
+    """
     lock_inertia = body_com is not None or body_inertia is not None
     if body_inertia is None:
         body_inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)

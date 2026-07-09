@@ -70,7 +70,7 @@ class Picking:
         else:
             self.pick_body = wp.array([-1], dtype=int, device="cpu")
 
-        pick_state_np = np.zeros(1, dtype=PickingState.numpy_dtype())
+        pick_state_np = np.empty(1, dtype=PickingState.numpy_dtype())
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
         pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
