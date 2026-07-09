@@ -40,6 +40,9 @@ coverage_branch = None
 # the user cannot act on.
 strict_warnings = False
 
+# Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
+warp_config_overrides: list[str] = []
+
 try:
     if sys.platform == "win32":
         LIBC = ctypes.CDLL("ucrtbase.dll")

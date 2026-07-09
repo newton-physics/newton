@@ -122,7 +122,11 @@ class ControllerNeuralMLP(Controller):
     Configuration parameters (``input_order``, ``input_idx``,
     ``pos_scale``, ``vel_scale``, ``effort_scale``) are read from checkpoint
     metadata, falling back to defaults when absent. ``.onnx`` checkpoints run
-    through Warp-NN. ``.pt`` and ``.pth`` checkpoints keep the Torch backend.
+    through Warp-NN. Torch checkpoints keep the Torch backend and accept pt2
+    archives (``.pt2`` saved with ``torch.export.save``; preferred) and the
+    deprecated TorchScript (``.pt`` saved with ``torch.jit.save``) and
+    module-bundle (``{"model": <network module>, "metadata": {...}}`` saved
+    with ``torch.save``) formats.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -171,7 +175,8 @@ class ControllerNeuralMLP(Controller):
         """Initialize MLP controller from a checkpoint file.
 
         Args:
-            model_path: Path to the ``.onnx``, ``.pt``, or ``.pth`` checkpoint.
+            model_path: Path to the ``.onnx``, ``.pt2``, ``.pt``, or ``.pth``
+                checkpoint.
         """
         self.model_path = model_path
         self._is_torch_checkpoint = _looks_like_torch_checkpoint(model_path)

@@ -392,7 +392,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
             # derived rigid body data (maximal coordinates)
             # Previous public body poses used when step-in-place refreshes descendant FREE/DISTANCE joints.
-            target.body_q_prev = wp.empty_like(model.body_q, requires_grad=requires_grad)
+            target._featherstone_body_q_prev = wp.empty_like(model.body_q, requires_grad=requires_grad)
             # FK body twists in the public COM/world-coordinate convention.
             target.body_qd_fk = wp.empty_like(model.body_qd, requires_grad=requires_grad)
             # Body COM poses in world coordinates for frame shifts back to public wrenches.
@@ -482,8 +482,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
                 if step_in_place and self.descendant_free_distance_joint_indices is not None:
-                    wp.copy(state_aug.body_q_prev, state_in.body_q)
-                    descendant_body_q_prev = state_aug.body_q_prev
+                    wp.copy(state_aug._featherstone_body_q_prev, state_in.body_q)
+                    descendant_body_q_prev = state_aug._featherstone_body_q_prev
 
             particle_f = None
             body_f = None
@@ -576,6 +576,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     eval_rigid_id,
                     dim=model.articulation_count,
                     inputs=[
+                        None,  # articulation_mask: solver runs on all articulations
                         model.articulation_start,
                         model.articulation_end,
                         model.joint_type,
@@ -672,6 +673,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         eval_rigid_tau,
                         dim=model.articulation_count,
                         inputs=[
+                            None,  # articulation_mask: solver runs on all articulations
                             model.articulation_start,
                             model.articulation_end,
                             model.joint_type,

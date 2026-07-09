@@ -6,6 +6,7 @@ from __future__ import annotations
 import collections
 import copy
 import datetime
+import hashlib
 import inspect
 import itertools
 import logging
@@ -16,7 +17,7 @@ import re
 import warnings
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -48,6 +49,15 @@ from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .import_usd_deformable_attachments import (
+    _deformable_import_attachments,
+    _deformable_import_element_collision_filters,
+    _deformable_remap_collapsed,
+)
+from .import_usd_deformable_cable import _deformable_import_cable, _deformable_import_cable_graphs
+from .import_usd_deformable_cloth import _deformable_import_cloth
+from .import_usd_deformable_utils import _DeformableImportContext, _scout_deformable_prims
+from .import_usd_deformable_volume import _deformable_import_volume
 from .import_utils import should_show_collider
 
 logger = logging.getLogger("newton")
@@ -55,6 +65,86 @@ logger = logging.getLogger("newton")
 AttributeFrequency = Model.AttributeFrequency
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+
+# Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
+_HARD_LIMIT_KE = 1.0e8
+
+
+def _resolve_newton_limit_ke(
+    limit_ke: float | None,
+    fallback: float,
+    fallback_source: str,
+    builder_default: float,
+) -> tuple[float, str]:
+    """Resolve a NewtonJointAPI ``newton:limitStiffness`` value.
+
+    ``limit_ke`` is ``None`` when the attribute is not authored, ``-inf`` when
+    authored as the engine-default sentinel, ``+inf`` for a hard limit, or a
+    finite stiffness value.
+
+    ``fallback`` is the per-DOF stiffness resolved from lower-priority schemas
+    (PhysX/MuJoCo).  ``builder_default`` is the ModelBuilder engine default.
+
+    An explicit ``-inf`` takes precedence over the per-DOF fallback and selects
+    the builder default so that a lower-priority schema cannot override an
+    authored Newton sentinel.
+
+    Returns (resolved_value, source) where source is ``"force"`` when Newton
+    broadcast values are used, or the original ``fallback_source`` otherwise.
+    """
+    if limit_ke is None:
+        return fallback, fallback_source
+    if limit_ke == float("-inf"):
+        return builder_default, "force"
+    if limit_ke == float("inf"):
+        return _HARD_LIMIT_KE, "force"
+    return limit_ke, "force"
+
+
+def _resolve_newton_limit_kd(
+    limit_ke: float | None,
+    limit_kd: float | None,
+    fallback: float,
+    fallback_source: str,
+    builder_default: float,
+) -> tuple[float, str]:
+    """Resolve a NewtonJointAPI ``newton:limitDamping`` value.
+
+    Hard limits (``limit_ke`` or ``limit_kd`` == ``+inf``) have no damping.
+    An authored ``-inf`` selects the builder default (engine default), taking
+    precedence over per-DOF fallbacks from lower-priority schemas.
+    When neither Newton attribute is authored (``None``), the per-DOF ``fallback``
+    from other resolvers is used.
+
+    Returns (resolved_value, source) where source is ``"force"`` when Newton
+    broadcast values are used, or the original ``fallback_source`` otherwise.
+    """
+    # Hard (rigid) limit: infinite ke or kd means no dissipation is needed.
+    if limit_ke is not None and limit_ke == float("inf"):
+        return 0.0, "force"
+    if limit_kd is not None and limit_kd == float("inf"):
+        return 0.0, "force"
+    # Not authored → lower-priority per-DOF fallback.
+    if limit_kd is None:
+        return fallback, fallback_source
+    # Authored -inf → builder default.
+    if limit_kd == float("-inf"):
+        return builder_default, "force"
+    return limit_kd, "force"
+
+
+def _validate_https_usd_url(url: str) -> None:
+    """Reject non-HTTPS URLs before USD asset downloads."""
+    if urlparse(url).scheme != "https":
+        raise ValueError(f"USD URL downloads require HTTPS: {url}")
+
+
+def _cache_path_for_absolute_usd_reference(url: str) -> str:
+    """Return a safe cache-relative path for an absolute USD reference URL."""
+    parsed = urlparse(url)
+    basename = posixpath.basename(parsed.path) or "reference.usd"
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    return posixpath.join("_external_usd", digest, basename)
 
 
 def _external_stacklevel() -> int:
@@ -103,6 +193,8 @@ def parse_usd(
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
+    legacy_margin_gap: bool = False,
+    return_deformable_results: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -232,8 +324,35 @@ def parse_usd(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+        legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+            where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
+            Use for USD files authored against MuJoCo <= 3.8. Defaults to
+            False (identity translation matching MuJoCo 3.9 semantics).
+
+        return_deformable_results: If True, include the experimental deformable entries in the
+            returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+            ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
+            default return shape carries no deformable additions.
 
     Returns:
+        .. experimental::
+
+           ``return_deformable_results`` and its conditional result entries are experimental and
+           may change or be removed without prior notice.
+
+        When ``return_deformable_results=True``, imported deformable (cable/cloth/volume) element
+        ranges are returned by prim path in the ``path_cable_map`` / ``path_cloth_map`` /
+        ``path_soft_map`` entries below, and the material attributes as authored in the
+        matching ``path_*_attrs`` entries. The map entries are build-time snapshots of the
+        builder immediately after this call (already remapped when this call collapses fixed
+        joints); they are not live selections, and a later ``replicate()``, ``add_builder()``,
+        or other structural mutation is outside their contract. The ``path_*_attrs`` entries
+        hold authored or resolved source values (``material`` as authored,
+        ``resolved_density`` as used), while the map entries and ``joint_indices`` inside
+        ``path_attachment_attrs`` are realized builder indices; ``unsupported_reason`` is
+        diagnostic text, not a stable code, and a prim absent from a realized map may still
+        appear in the authored metadata.
+
         The returned mapping has the following entries:
 
         .. list-table::
@@ -253,6 +372,22 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - ``"path_cable_map"``
+              - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
+            * - ``"path_cloth_map"``
+              - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
+            * - ``"path_soft_map"``
+              - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+            * - ``"path_cable_attrs"``
+              - Mapping from prim path (str) of a curve deformable (cable) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``, ``closed``); includes moduli the imported rod cannot express (e.g. shear / twist). ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the component identifier. Present only with ``return_deformable_results=True``.
+            * - ``"path_cloth_attrs"``
+              - Mapping from prim path (str) of a surface deformable (cloth) to its as-authored, solver-neutral attributes (``material`` moduli, ``resolved_density``). Present only with ``return_deformable_results=True``.
+            * - ``"path_soft_attrs"``
+              - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its as-authored, solver-neutral attributes (``resolved_density``). Present only with ``return_deformable_results=True``.
+            * - ``"path_attachment_map"``
+              - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
+            * - ``"path_attachment_attrs"``
+              - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
             * - ``"mass_unit"``
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
             * - ``"linear_unit"``
@@ -307,6 +442,7 @@ def parse_usd(
 
     # load joint defaults
     default_joint_friction = builder.default_joint_cfg.friction
+    default_joint_damping = builder.default_joint_cfg.damping
     default_joint_limit_ke = builder.default_joint_cfg.limit_ke
     default_joint_limit_kd = builder.default_joint_cfg.limit_kd
     default_joint_armature = builder.default_joint_cfg.armature
@@ -372,10 +508,27 @@ def parse_usd(
         )
 
     non_regex_ignore_paths = [path for path in ignore_paths if ".*" not in path]
-    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=non_regex_ignore_paths)
+    # One scouting walk classifies every deformable candidate prim; it runs before the
+    # native loader so deformable-owned geometry (simulation prims and their colliders)
+    # can be excluded from rigid parsing, and the buckets are reused by the deformable
+    # passes below instead of re-traversing the stage.
+    root_prim = stage.GetPrimAtPath(root_path)
+    _deformable_prims = _scout_deformable_prims(root_prim, ignore_paths)
+    native_exclude_paths = list(
+        dict.fromkeys([*non_regex_ignore_paths, *_deformable_prims.native_physics_exclude_paths])
+    )
+    ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
+
+    # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
+    # fallback to the canonical physics: deformable schema. Empty unless a
+    # resolver declaring them (e.g. SchemaResolverPhysx) is active, so a default
+    # import parses the AOUSD proposal as written.
+    deformable_compat_ns = R.deformable_compat_namespaces()
+    # Resolver-owned deformable read (physics: first, then opted-in vendor namespaces).
+    deformable_read = R.read_deformable_attr
 
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
@@ -390,6 +543,26 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
+    # Import-internal deformable index maps (not returned): the attachment and collapse passes
+    # look up a curve/cloth/soft prim's element indices by path while building. The equivalent
+    # per-group index ranges are recorded on the builder/Model registries for callers.
+    path_cable_map: dict[str, tuple[list[int], list[int]]] = {}
+    path_cloth_map: dict[str, dict[str, tuple[int, int]]] = {}
+    path_soft_map: dict[str, dict[str, tuple[int, int]]] = {}
+    # Solver-neutral deformable attributes per prim path: the parsed material moduli
+    # (including ones the VBD build ignores) and the resolved density, so a non-VBD
+    # consumer can rebuild the deformable without re-parsing the stage.
+    path_cable_attrs: dict[str, dict[str, Any]] = {}
+    path_cloth_attrs: dict[str, dict[str, Any]] = {}
+    path_soft_attrs: dict[str, dict[str, Any]] = {}
+    path_attachment_map: dict[str, list[int]] = {}
+    # Attachment attributes are preserved even when the current builder cannot lower
+    # the attachment faithfully (e.g. cloth/volume feature attachments).
+    path_attachment_attrs: dict[str, dict[str, Any]] = {}
+    # Internal cable maps used by the PhysicsAttachment post-pass. Proposal
+    # point/segment indices are flattened across each BasisCurves prim in curve order.
+    path_cable_point_anchors: dict[str, dict[int, list[tuple[int, wp.vec3]]]] = {}
+    path_cable_segments: dict[str, dict[int, tuple[int, float]]] = {}
     # DOF offset within a merged D6 joint for each original prim path (only populated for merged joints)
     merged_dof_offset: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
@@ -823,13 +996,25 @@ def parse_usd(
         """Load and cache TetMesh data to avoid repeated USD extraction."""
         prim_path = str(prim.GetPath())
         if prim_path not in tetmesh_cache:
-            tetmesh_cache[prim_path] = usd.get_tetmesh(prim)
+            # Pass the resolver-declared namespaces explicitly (never None), so the importer keeps the
+            # canonical physics: default and does not trip get_tetmesh()'s legacy-default deprecation.
+            compat_ns = deformable_compat_ns
+            if not compat_ns and usd._material_authors_legacy_deformable_attrs(prim):
+                # Without this deprecation window, a vendor-only material would silently
+                # import with default stiffness/density instead of its authored values.
+                warnings.warn(
+                    f"{prim_path}: the bound material authors legacy vendor-namespaced deformable "
+                    f"material attributes (omniphysics: / physxDeformableBody:) without "
+                    f"PhysicsVolumeDeformableMaterialAPI. add_usd() still reads them, but this is "
+                    f"deprecated: author the canonical physics: attributes with the material API, or "
+                    f"pass schema_resolvers=[..., SchemaResolverPhysx()] to keep vendor namespaces "
+                    f"explicitly.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                compat_ns = usd.DEFORMABLE_LEGACY_NAMESPACES
+            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=compat_ns)
         return tetmesh_cache[prim_path]
-
-    def _is_uniform_scale(scale: wp.vec3) -> bool:
-        """Return whether a decomposed scale vector is effectively uniform."""
-        scale_np = np.array(scale, dtype=np.float32)
-        return bool(np.allclose(scale_np, scale_np[0], rtol=1e-6, atol=1e-6))
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
@@ -1206,6 +1391,11 @@ def parse_usd(
         joint_friction = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
+        _joint_damping_usd = R.get_value(
+            joint_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
+        )
+        joint_damping_authored = _joint_damping_usd is not None
+        joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
         joint_velocity_limit = R.get_value(
             joint_prim,
             prim_type=PrimType.JOINT,
@@ -1213,6 +1403,11 @@ def parse_usd(
             default=None,
             verbose=verbose,
         )
+        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
+        if joint_velocity_limit == float("inf"):
+            joint_velocity_limit = None
+        limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
+        limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
 
         # Extract custom attributes for this joint
         joint_custom_attrs = usd.get_custom_attribute_values(
@@ -1240,15 +1435,21 @@ def parse_usd(
                 limit_gains_scaling = 1.0
 
             limit_key = "limit_angular" if key == UsdPhysics.ObjectType.RevoluteJoint else "limit_linear"
-            current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+            fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 joint_prim,
                 f"{limit_key}_ke",
                 default_joint_limit_ke * limit_gains_scaling,
             )
-            current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+            fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 joint_prim,
                 f"{limit_key}_kd",
                 default_joint_limit_kd * limit_gains_scaling,
+            )
+            current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke * limit_gains_scaling
+            )
+            current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, default_joint_limit_kd * limit_gains_scaling
             )
             if _should_write_solreflimit_mode():
                 joint_custom_attrs[solreflimit_mode_key] = _joint_limit_solref_mode(limit_ke_source, limit_kd_source)
@@ -1259,6 +1460,7 @@ def parse_usd(
             joint_params["limit_kd"] = current_joint_limit_kd
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
+            joint_params["damping"] = joint_damping
             joint_params["velocity_limit"] = joint_velocity_limit
             if joint_desc.drive.enabled:
                 target_vel = joint_desc.drive.targetVelocity
@@ -1312,6 +1514,8 @@ def parse_usd(
                 joint_params["limit_upper"] *= DegreesToRadian
                 joint_params["limit_ke"] /= DegreesToRadian
                 joint_params["limit_kd"] /= DegreesToRadian
+                if joint_damping_authored:
+                    joint_params["damping"] /= DegreesToRadian
                 if joint_params["velocity_limit"] is not None:
                     joint_params["velocity_limit"] *= DegreesToRadian
 
@@ -1414,15 +1618,21 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{trans_name}_ke",
                         default_joint_limit_ke,
                     )
-                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{trans_name}_kd",
                         default_joint_limit_kd,
+                    )
+                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                        limit_ke, fallback_limit_ke, limit_ke_source, default_joint_limit_ke
+                    )
+                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                        limit_ke, limit_kd, fallback_limit_kd, limit_kd_source, default_joint_limit_kd
                     )
                     linear_axes.append(
                         ModelBuilder.JointDofConfig(
@@ -1435,6 +1645,7 @@ def parse_usd(
                             target_vel=target_vel,
                             target_ke=target_ke,
                             target_kd=target_kd,
+                            damping=joint_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit
@@ -1465,14 +1676,27 @@ def parse_usd(
                         default=None,
                         verbose=verbose,
                     )
-                    current_joint_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+                    fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{rot_name}_ke",
                         default_joint_limit_ke * DegreesToRadian,
                     )
-                    current_joint_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+                    fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                         joint_prim,
                         f"limit_{rot_name}_kd",
+                        default_joint_limit_kd * DegreesToRadian,
+                    )
+                    current_joint_limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                        limit_ke,
+                        fallback_limit_ke,
+                        limit_ke_source,
+                        default_joint_limit_ke * DegreesToRadian,
+                    )
+                    current_joint_limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                        limit_ke,
+                        limit_kd,
+                        fallback_limit_kd,
+                        limit_kd_source,
                         default_joint_limit_kd * DegreesToRadian,
                     )
 
@@ -1487,6 +1711,7 @@ def parse_usd(
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
+                            damping=joint_damping / DegreesToRadian if joint_damping_authored else joint_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian
@@ -1702,19 +1927,45 @@ def parse_usd(
             j_friction = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
             )
+            _j_damping_usd = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
+            )
+            j_damping_authored = _j_damping_usd is not None
+            j_damping = _j_damping_usd if j_damping_authored else default_joint_damping
             j_velocity_limit = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
+            if j_velocity_limit == float("inf"):
+                j_velocity_limit = None
 
             limit_key = "limit_angular" if is_revolute else "limit_linear"
-            limit_ke, limit_ke_source = _resolve_joint_limit_gain(
+            j_newton_limit_ke = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose
+            )
+            j_newton_limit_kd = R.get_value(
+                jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose
+            )
+            fallback_limit_ke, limit_ke_source = _resolve_joint_limit_gain(
                 jp_prim,
                 f"{limit_key}_ke",
                 default_joint_limit_ke * limit_gains_scaling,
             )
-            limit_kd, limit_kd_source = _resolve_joint_limit_gain(
+            fallback_limit_kd, limit_kd_source = _resolve_joint_limit_gain(
                 jp_prim,
                 f"{limit_key}_kd",
+                default_joint_limit_kd * limit_gains_scaling,
+            )
+            limit_ke, limit_ke_source = _resolve_newton_limit_ke(
+                j_newton_limit_ke,
+                fallback_limit_ke,
+                limit_ke_source,
+                default_joint_limit_ke * limit_gains_scaling,
+            )
+            limit_kd, limit_kd_source = _resolve_newton_limit_kd(
+                j_newton_limit_ke,
+                j_newton_limit_kd,
+                fallback_limit_kd,
+                limit_kd_source,
                 default_joint_limit_kd * limit_gains_scaling,
             )
 
@@ -1762,6 +2013,8 @@ def parse_usd(
                 limit_upper *= DegreesToRadian
                 limit_ke /= DegreesToRadian
                 limit_kd /= DegreesToRadian
+                if j_damping_authored:
+                    j_damping /= DegreesToRadian
                 if jd.drive.enabled:
                     target_pos *= DegreesToRadian
                     target_vel *= DegreesToRadian
@@ -1805,6 +2058,7 @@ def parse_usd(
                 target_vel=target_vel,
                 target_ke=target_ke,
                 target_kd=target_kd,
+                damping=j_damping,
                 armature=j_armature,
                 friction=j_friction,
                 effort_limit=effort_limit,
@@ -2844,7 +3098,22 @@ def parse_usd(
         return mass_info
 
     # parse shapes attached to the rigid bodies
-    path_collision_filters = set()
+    # Canonicalized (sorted) USD path pairs from physics:filteredPairs. Collected from native
+    # colliders and deformable participants, applied only after deformable lowering so every
+    # endpoint's Newton shapes exist (a cable maps to several capsule shapes created late).
+    authored_filtered_path_pairs: set[tuple[str, str]] = set()
+
+    def _collect_filtered_pairs(prim):
+        if not prim.HasRelationship("physics:filteredPairs"):
+            return
+        src = str(prim.GetPath())
+        for target in prim.GetRelationship("physics:filteredPairs").GetTargets():
+            dst = str(target)
+            # The relationship may be authored on either or both endpoints and Newton's
+            # filter pair is symmetric; canonicalizing dedups both. A self-pair is invalid.
+            if src != dst:
+                authored_filtered_path_pairs.add((src, dst) if src < dst else (dst, src))
+
     no_collision_shapes = set()
     collision_group_ids = {}
     rigid_body_mass_info_map = {}
@@ -2867,6 +3136,9 @@ def parse_usd(
                 if any(re.match(p, path) for p in ignore_paths):
                     continue
                 prim = stage.GetPrimAtPath(xpath)
+                # Deformable-owned meshes never reach this loop: the scout excludes them
+                # from the native parse. A sim-API mesh seen here was deliberately left
+                # rigid (e.g. its body API conflicts with RigidBodyAPI), so import it.
                 if path in path_shape_map:
                     if verbose:
                         print(f"Shape at {path} already added, skipping.")
@@ -2915,7 +3187,7 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
-                margin_val = R.get_value(
+                margin_val, margin_resolver = R.get_value_with_resolver(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="margin",
@@ -2930,6 +3202,18 @@ def parse_usd(
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
+                if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
+                    # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
+                    mjc_gap = usd.get_attribute(prim, "mjc:gap")
+                    mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
+                    newton_margin = float(margin_val) - mjc_gap
+                    if newton_margin < 0.0:
+                        warnings.warn(
+                            f"Prim '{prim.GetPath()}': legacy translation yields "
+                            f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
+                            stacklevel=2,
+                        )
+                    margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 material_props = _get_material_props_cached(prim)
@@ -3381,10 +3665,7 @@ def parse_usd(
                         if mass_info is not None:
                             rigid_body_mass_info_map[path] = mass_info
 
-                if prim.HasRelationship("physics:filteredPairs"):
-                    other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
-                    for other_path in other_paths:
-                        path_collision_filters.add((path, str(other_path)))
+                _collect_filtered_pairs(prim)
 
                 if not _is_enabled_collider(prim):
                     no_collision_shapes.add(shape_id)
@@ -3394,11 +3675,8 @@ def parse_usd(
     for remeshing_method, shape_ids in remeshing_queue.items():
         builder.approximate_meshes(method=remeshing_method, shape_indices=shape_ids)
 
-    # apply collision filters now that we have added all shapes
-    for path1, path2 in path_collision_filters:
-        shape1 = path_shape_map[path1]
-        shape2 = path_shape_map[path2]
-        builder.add_shape_collision_filter_pair(shape1, shape2)
+    # Filtered pairs are applied after the deformable passes below, once every endpoint's
+    # Newton shapes exist.
 
     # apply collision filters to all shapes that have no collision
     for shape_id in no_collision_shapes:
@@ -3413,58 +3691,6 @@ def parse_usd(
                 for shape1 in builder.body_shapes[body1]:
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
-
-    root_prim = stage.GetPrimAtPath(root_path)
-    if root_prim and root_prim.IsValid():
-        for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
-            if not prim.IsA(UsdGeom.TetMesh):
-                continue
-
-            path = str(prim.GetPath())
-            if path.startswith("/Prototypes/"):
-                continue
-            if any(re.match(pattern, path) for pattern in ignore_paths):
-                continue
-
-            if collect_schema_attrs:
-                R.collect_prim_attrs(prim)
-
-            tetmesh = _get_tetmesh_cached(prim)
-            tetmesh_for_builder = tetmesh
-            if tetmesh.custom_attributes:
-                filtered_custom_attributes = {
-                    k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
-                }
-                if len(filtered_custom_attributes) != len(tetmesh.custom_attributes):
-                    # Preserve the cached TetMesh while keeping add_usd's
-                    # current behavior of dropping unregistered import attrs.
-                    tetmesh_for_builder = copy.copy(tetmesh)
-                    tetmesh_for_builder.custom_attributes = filtered_custom_attributes
-
-            soft_mesh_mat = _get_prim_world_mat(prim, None, incoming_world_xform)
-            soft_mesh_pos, soft_mesh_rot, soft_mesh_scale = wp.transform_decompose(soft_mesh_mat)
-
-            add_soft_mesh_kwargs = {
-                "pos": soft_mesh_pos,
-                "rot": soft_mesh_rot,
-                "scale": 1.0,
-                "vel": wp.vec3(0.0, 0.0, 0.0),
-                "mesh": tetmesh_for_builder,
-                "label": path,
-            }
-            if _is_uniform_scale(soft_mesh_scale):
-                add_soft_mesh_kwargs["scale"] = float(np.array(soft_mesh_scale, dtype=np.float32)[0])
-            else:
-                add_soft_mesh_kwargs["vertices"] = tetmesh_for_builder.vertices * np.array(
-                    soft_mesh_scale, dtype=np.float32
-                )
-
-            builder.add_soft_mesh(**add_soft_mesh_kwargs)
-
-            if verbose:
-                print(
-                    f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra."
-                )
 
     # Load Gaussian splat prims that weren't already captured as children of rigid bodies.
     if load_visual_shapes:
@@ -3539,7 +3765,7 @@ def parse_usd(
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
-        for path, _rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
+        for path, rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             if not prim.HasAPI(UsdPhysics.MassAPI):
                 continue
@@ -3600,7 +3826,8 @@ def parse_usd(
                     # created by schema resolvers are not real USD prims). Fall back to
                     # builder-accumulated mass properties from add_shape_*() calls.
                     cmp_mass = builder.body_mass[body_id]
-                    cmp_com = builder.body_com[body_id]
+                    if not has_authored_com:
+                        cmp_com = builder.body_com[body_id]
                     # When the body has an authored density, rescale accumulated mass
                     # and inertia from the builder's default shape density to the
                     # body-level density (USD body density overrides per-shape density).
@@ -3617,6 +3844,10 @@ def parse_usd(
                         )
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+
+            if has_authored_com:
+                # Match the scale/frame convention used by OpenUSD's collider and joint descriptors.
+                cmp_com = Gf.CompMult(mass_api.GetCenterOfMassAttr().Get(), rigid_body_desc.scale)
 
             # Inertia: newton:inertia > physics:diagonalInertia + physics:principalAxes > mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia
@@ -3684,11 +3915,7 @@ def parse_usd(
             builder.body_mass[body_id] = mass
             builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0
 
-            # Center of mass: authored value takes precedence over mass computer.
-            if has_authored_com:
-                builder.body_com[body_id] = wp.vec3(*mass_api.GetCenterOfMassAttr().Get())
-            else:
-                builder.body_com[body_id] = wp.vec3(*cmp_com)
+            builder.body_com[body_id] = wp.vec3(*cmp_com)
 
             # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated.
             I_m = np.array(builder.body_inertia[body_id])
@@ -3784,6 +4011,147 @@ def parse_usd(
                     )
                 else:
                     builder.add_articulation([joint_id], label=body_path)
+
+    # Build deformables (cables/cloth/volume) after rigid bodies, their collider-mass computation,
+    # and the floating-body base-joint pass above. The importer wraps each cable into its own
+    # articulation, so building deformables last keeps those articulations after any
+    # importer-created ones (e.g. kinematic anchors), preserving ascending articulation order.
+    # Volume deformables (TetMesh -> soft body). PhysicsVolumeDeformableSimAPI (or a
+    # PhysicsDeformableBodyAPI) opts into the mass precedence; a bare TetMesh stays legacy.
+    # Mass precedence (proposal): per-point physics:masses > body mass > body density
+    # > material density; per-element weighting is left to the add_* builders.
+    if _deformable_prims.has_candidates():
+        _deformable_ctx = _DeformableImportContext(
+            builder=builder,
+            stage=stage,
+            root_prim=root_prim,
+            resolver=R,
+            collect_schema_attrs=collect_schema_attrs,
+            deformable_read=deformable_read,
+            get_prim_world_mat=_get_prim_world_mat,
+            get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
+            get_first_target=_get_first_target,
+            get_tetmesh_cached=_get_tetmesh_cached,
+            incoming_world_xform=incoming_world_xform,
+            linear_unit=linear_unit,
+            ignore_paths=ignore_paths,
+            verbose=verbose,
+            path_body_map=path_body_map,
+            path_shape_map=path_shape_map,
+            path_cable_map=path_cable_map,
+            path_cable_attrs=path_cable_attrs,
+            path_cable_segments=path_cable_segments,
+            path_cable_point_anchors=path_cable_point_anchors,
+            path_cloth_map=path_cloth_map,
+            path_cloth_attrs=path_cloth_attrs,
+            path_soft_map=path_soft_map,
+            path_soft_attrs=path_soft_attrs,
+            path_attachment_map=path_attachment_map,
+            path_attachment_attrs=path_attachment_attrs,
+            prims=_deformable_prims,
+        )
+
+        # Curve-to-curve junctions weld into rod graphs before the per-curve cable pass, which skips
+        # the consumed curves; the attachment pass below skips the consumed junctions. Each pass runs
+        # only when its bucket has candidates; welding additionally needs attachments to weld with.
+        consumed_cable_curve_paths: set[str] = set()
+        consumed_junction_attachment_paths: set[str] = set()
+        if _deformable_prims.cables and _deformable_prims.attachments:
+            consumed_cable_curve_paths, consumed_junction_attachment_paths = _deformable_import_cable_graphs(
+                _deformable_ctx
+            )
+        if _deformable_prims.cables:
+            _deformable_import_cable(_deformable_ctx, consumed_cable_curve_paths)
+        if _deformable_prims.cloth:
+            _deformable_import_cloth(_deformable_ctx)
+        if _deformable_prims.tetmeshes:
+            _deformable_import_volume(_deformable_ctx)
+
+        # PhysicsAttachment prims from the AOUSD deformables proposal. The current
+        # builder can faithfully lower the cable/rod subset because imported cables
+        # are rigid capsule bodies. Surface/volume attachments require a separate
+        # deformable-site constraint model, so those are preserved as attrs and warned.
+        if _deformable_prims.attachments:
+            _deformable_import_attachments(_deformable_ctx, consumed_junction_attachment_paths)
+
+        # AOUSD PhysicsElementCollisionFilter prims: suppress collision between authored element
+        # groups (cable segments / collider shapes); runs after the cables and colliders exist.
+        if _deformable_prims.element_filters:
+            _deformable_import_element_collision_filters(_deformable_ctx)
+
+        # physics:filteredPairs may be authored on the deformable side: simulation geometry,
+        # a deformable body prim, or a deformable-owned collider. Those prims are excluded
+        # from the native collider loop, so collect their relationships here (the set
+        # deduplicates prims reachable through more than one route).
+        for _filter_prim in (*_deformable_prims.cables, *_deformable_prims.cloth, *_deformable_prims.tetmeshes):
+            _collect_filtered_pairs(_filter_prim)
+        for _filter_path in (*_deformable_prims.body_owner, *_deformable_prims.native_physics_exclude_paths):
+            _filter_prim = stage.GetPrimAtPath(_filter_path)
+            if _filter_prim and _filter_prim.IsValid():
+                _collect_filtered_pairs(_filter_prim)
+
+    def _resolve_collision_shape_ids(path: str) -> tuple[list[int], str | None]:
+        """Resolve a filtered-pair endpoint to Newton shape indices, or an unsupported reason.
+
+        Endpoint ownership comes only from the import maps (never path-prefix matching): a
+        native collider is one shape, a rigid body or cable is all of its shapes, and a
+        deformable body prim resolves through its simulation geometry. Cloth and volume
+        deformables are particles, which Newton's shape filter pairs cannot express.
+        """
+        if path in path_shape_map:
+            return [path_shape_map[path]], None
+        if path in path_body_map:
+            return sorted(set(builder.body_shapes.get(path_body_map[path], []))), None
+        if path in path_cable_map:
+            shape_ids: set[int] = set()
+            for cable_body in path_cable_map[path][0]:
+                shape_ids.update(builder.body_shapes.get(cable_body, []))
+            return sorted(shape_ids), None
+        owner_path = _deformable_prims.body_owner.get(path)
+        if owner_path is not None and owner_path != path:
+            return _resolve_collision_shape_ids(owner_path)
+        if path in path_cloth_map:
+            return [], "it is a cloth particle deformable, and standard particle collision filters are not supported"
+        if path in path_soft_map:
+            return [], "it is a volume particle deformable, and standard particle collision filters are not supported"
+        target_prim = stage.GetPrimAtPath(path)
+        if not target_prim or not target_prim.IsValid():
+            return [], "the target path does not exist"
+        return [], "it produced no collision participant (it may be disabled, ignored, malformed, or non-colliding)"
+
+    # physics:filteredPairs may also be authored on a rigid-body prim (UsdPhysics allows
+    # collider, body, or articulation endpoints); the collider loop never visits body prims.
+    # path_body_map covers every imported body regardless of which creation path added it.
+    for body_prim_path in path_body_map:
+        body_prim = stage.GetPrimAtPath(body_prim_path)
+        if body_prim and body_prim.IsValid():
+            _collect_filtered_pairs(body_prim)
+
+    # Apply the authored filtered pairs: every native shape and cable capsule exists now, and
+    # the deformable maps allow precise unsupported diagnostics. Shape indices are stable from
+    # here on (collapse_fixed_joints only remaps bodies). Seed the dedup set from the builder
+    # so pairs the element-filter pass already added are not appended again.
+    if authored_filtered_path_pairs:
+        existing_filter_pairs = set(builder.shape_collision_filter_pairs)
+        for filter_path1, filter_path2 in sorted(authored_filtered_path_pairs):
+            shapes1, reason1 = _resolve_collision_shape_ids(filter_path1)
+            shapes2, reason2 = _resolve_collision_shape_ids(filter_path2)
+            if not shapes1 or not shapes2:
+                bad_path, reason = (filter_path1, reason1) if not shapes1 else (filter_path2, reason2)
+                warnings.warn(
+                    f"{filter_path1} <-> {filter_path2}: physics:filteredPairs was not imported "
+                    f"because {bad_path}: {reason}.",
+                    stacklevel=2,
+                )
+                continue
+            for shape1 in shapes1:
+                for shape2 in shapes2:
+                    if shape1 == shape2:
+                        continue
+                    pair = (shape1, shape2) if shape1 < shape2 else (shape2, shape1)
+                    if pair not in existing_filter_pairs:
+                        existing_filter_pairs.add(pair)
+                        builder.add_shape_collision_filter_pair(*pair)
 
     # Parse MjcEquality constraints *before* collapsing fixed joints so that the
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
@@ -4037,6 +4405,17 @@ def parse_usd(
 
             path_body_map[path] = new_id
 
+        # Cable bodies/joints and attachment joints are addressed by index (not prim path), so
+        # remap them through the collapse maps to keep their path maps valid after collapsing.
+        path_cable_map, path_attachment_map = _deformable_remap_collapsed(
+            path_cable_map,
+            path_attachment_map,
+            path_attachment_attrs,
+            collapse_results["joint_remap"],
+            body_remap,
+            body_merged_parent,
+        )
+
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         # First rebuild the canonical label→index map, then re-add merged joint aliases.
         new_label_to_idx = {label: idx for idx, label in enumerate(builder.joint_label)}
@@ -4275,6 +4654,9 @@ def parse_usd(
     # Use TraverseInstanceProxies to include prims under instanceable prims
     if frequencies_with_filters:
         for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
+            prim_path = str(prim.GetPath())
+            if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+                continue
             for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
                 # Build per-frequency callback context and pass the same object to
                 # usd_prim_filter and usd_entry_expander.
@@ -4439,6 +4821,22 @@ def parse_usd(
 
         if verbose and converted > 0:
             print(f"Mapped {converted} MuJoCo USD actuator(s) to joint targets")
+    if return_deformable_results:
+        # The deformable results are opt-in so the default return shape carries no
+        # deformable additions and stays isolated from changes to this experimental contract.
+        result.update(
+            {
+                "path_cable_map": path_cable_map,
+                "path_cloth_map": path_cloth_map,
+                "path_soft_map": path_soft_map,
+                "path_cable_attrs": path_cable_attrs,
+                "path_cloth_attrs": path_cloth_attrs,
+                "path_soft_attrs": path_soft_attrs,
+                "path_attachment_map": path_attachment_map,
+                "path_attachment_attrs": path_attachment_attrs,
+            }
+        )
+
     return result
 
 
@@ -4464,14 +4862,33 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
-    request_timeout_s = 30
-    response = requests.get(url, allow_redirects=True, timeout=request_timeout_s)
+    def _download_https_url(source_url: str):
+        """Download a URL while validating every redirect target is HTTPS."""
+        current_url = source_url
+        request_timeout_s = 30
+        for _ in range(10):
+            _validate_https_usd_url(current_url)
+            response = requests.get(current_url, allow_redirects=False, timeout=request_timeout_s)
+            if int(response.status_code) in {301, 302, 303, 307, 308}:
+                redirect_url = response.headers.get("Location")
+                if not redirect_url:
+                    return response, current_url
+                current_url = urljoin(current_url, redirect_url)
+                continue
+            final_url = getattr(response, "url", current_url)
+            if not isinstance(final_url, str):
+                final_url = current_url
+            _validate_https_usd_url(final_url)
+            return response, final_url
+        raise RuntimeError(f"Too many redirects while downloading USD file: {source_url}")
+
+    response, resolved_url = _download_https_url(url)
     if response.status_code != 200:
         raise RuntimeError(f"Failed to download USD file. Status code: {response.status_code}")
     file = response.content
     dot = os.path.extsep
-    base = os.path.basename(url)
-    url_folder = os.path.dirname(url)
+    base = posixpath.basename(urlparse(resolved_url).path)
+    url_folder = posixpath.dirname(resolved_url)
     base_name = dot.join(base.split(dot)[:-1])
     if target_folder_name is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -4482,32 +4899,56 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
         f.write(file)
 
     stage = Usd.Stage.Open(target_filename, Usd.Stage.LoadNone)
-    stage_str = stage.GetRootLayer().ExportToString()
+    root_layer = stage.GetRootLayer()
+    stage_str = root_layer.ExportToString()
     print(f"Downloaded USD file to {target_filename}.")
+
+    # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
+    # Each entry in the queue is (resolved_url, cache_relative_path).
+    downloaded_urls: set[str] = {url, resolved_url}
+    pending: collections.deque[tuple[str, str]] = collections.deque()
+
+    def _write_layer_string(filename: str, layer, layer_str: str) -> None:
+        """Persist rewritten USDA text to both the layer and cache file."""
+        import_from_string = getattr(layer, "ImportFromString", None)
+        if callable(import_from_string):
+            import_from_string(layer_str)
+            save = getattr(layer, "Save", None)
+            if callable(save):
+                save()
+        with open(filename, "w") as f:
+            f.write(layer_str)
+
+    def _extract_references(layer_str, parent_url_folder, parent_local_folder):
+        """Extract references, queue downloads, and return rewritten layer text."""
+        rewritten_layer_str = layer_str
+        for match in re.finditer(r"references.=.@(.*?)@", layer_str):
+            raw_ref = match.group(1)
+            ref_url = urljoin(parent_url_folder + "/", raw_ref)
+            raw_ref_scheme = urlparse(raw_ref).scheme
+            if raw_ref_scheme in {"http", "https"}:
+                _validate_https_usd_url(ref_url)
+                local_path = _cache_path_for_absolute_usd_reference(ref_url)
+                rewritten_layer_str = rewritten_layer_str.replace(f"@{raw_ref}@", f"@{local_path}@")
+            else:
+                local_path = posixpath.normpath(posixpath.join(parent_local_folder, raw_ref))
+            if posixpath.isabs(local_path) or local_path == ".." or local_path.startswith("../"):
+                print(f"Skipping reference that escapes target folder: {raw_ref}")
+                continue
+            if ref_url not in downloaded_urls:
+                pending.append((ref_url, local_path))
+        return rewritten_layer_str
+
+    rewritten_stage_str = _extract_references(stage_str, url_folder, "")
+    if rewritten_stage_str != stage_str:
+        _write_layer_string(target_filename, root_layer, rewritten_stage_str)
+        stage_str = rewritten_stage_str
+
     if export_usda:
         usda_filename = os.path.join(target_folder_name, base_name + ".usda")
         with open(usda_filename, "w") as f:
             f.write(stage_str)
             print(f"Exported USDA file to {usda_filename}.")
-
-    # Recursively resolve referenced USD files like `references = @./franka_collisions.usd@`
-    # Each entry in the queue is (resolved_url, cache_relative_path).
-    downloaded_urls: set[str] = {url}
-    pending: collections.deque[tuple[str, str]] = collections.deque()
-
-    def _extract_references(layer_str, parent_url_folder, parent_local_folder):
-        """Extract reference paths from a USD layer string and queue them for download."""
-        for match in re.finditer(r"references.=.@(.*?)@", layer_str):
-            raw_ref = match.group(1)
-            ref_url = urljoin(parent_url_folder + "/", raw_ref)
-            local_path = os.path.normpath(os.path.join(parent_local_folder, raw_ref))
-            if os.path.isabs(local_path) or local_path.startswith(".."):
-                print(f"Skipping reference that escapes target folder: {raw_ref}")
-                continue
-            if ref_url not in downloaded_urls:
-                pending.append((ref_url, local_path))
-
-    _extract_references(stage_str, url_folder, "")
 
     while pending:
         ref_url, local_path = pending.popleft()
@@ -4515,12 +4956,13 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             continue
         downloaded_urls.add(ref_url)
         try:
-            response = requests.get(ref_url, allow_redirects=True, timeout=request_timeout_s)
+            response, resolved_ref_url = _download_https_url(ref_url)
             if response.status_code != 200:
                 print(f"Failed to download reference {local_path}. Status code: {response.status_code}")
                 continue
+            downloaded_urls.add(resolved_ref_url)
             file = response.content
-            local_dir = os.path.dirname(local_path)
+            local_dir = posixpath.dirname(local_path)
             if local_dir:
                 os.makedirs(os.path.join(target_folder_name, local_dir), exist_ok=True)
             ref_filename = os.path.join(target_folder_name, local_path)
@@ -4530,7 +4972,13 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
             print(f"Downloaded USD reference {local_path} to {ref_filename}.")
 
             ref_stage = Usd.Stage.Open(ref_filename, Usd.Stage.LoadNone)
-            ref_stage_str = ref_stage.GetRootLayer().ExportToString()
+            ref_layer = ref_stage.GetRootLayer()
+            ref_stage_str = ref_layer.ExportToString()
+
+            rewritten_ref_stage_str = _extract_references(ref_stage_str, posixpath.dirname(resolved_ref_url), local_dir)
+            if rewritten_ref_stage_str != ref_stage_str:
+                _write_layer_string(ref_filename, ref_layer, rewritten_ref_stage_str)
+                ref_stage_str = rewritten_ref_stage_str
 
             if export_usda:
                 ref_base = os.path.basename(ref_filename)
@@ -4543,9 +4991,8 @@ def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export
                 with open(usda_filename, "w") as f:
                     f.write(ref_stage_str)
                     print(f"Exported USDA file to {usda_filename}.")
-
-            # Recurse: resolve references relative to this file's location
-            _extract_references(ref_stage_str, posixpath.dirname(ref_url), local_dir)
+        except ValueError:
+            raise
         except Exception:
             print(f"Failed to download {local_path}.")
     return target_filename
