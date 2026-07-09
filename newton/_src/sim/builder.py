@@ -10284,7 +10284,7 @@ class ModelBuilder:
             # build list of ids for geometry sources (meshes, sdfs, heightfields)
             geo_sources = []
             shape_mesh_properties = []
-            mesh_properties_by_source_id: dict[int, int] = {}
+            mesh_properties_by_geo_hash: dict[int, int] = {}
             finalized_geos = {}  # do not duplicate geometry
             gaussians = []
             heightfield_meshes = []
@@ -10332,11 +10332,12 @@ class ModelBuilder:
                 mesh_properties = 0
                 is_collidable = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
                 if is_collidable and shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and isinstance(geo, Mesh):
-                    source_id = id(geo)
-                    mesh_properties = mesh_properties_by_source_id.get(source_id)
+                    # Content-based key, matching finalized_geos above: distinct
+                    # Mesh objects with identical data share one watertight check.
+                    mesh_properties = mesh_properties_by_geo_hash.get(geo_hash)
                     if mesh_properties is None:
                         mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
-                        mesh_properties_by_source_id[source_id] = mesh_properties
+                        mesh_properties_by_geo_hash[geo_hash] = mesh_properties
                 shape_mesh_properties.append(mesh_properties)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)

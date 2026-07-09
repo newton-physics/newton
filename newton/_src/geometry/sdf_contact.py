@@ -248,7 +248,6 @@ def sample_sdf_grad_using_mesh(
             gradient = (diff / dist) * res.sign
         else:
             # Point is exactly on surface - use face normal
-            # Get the face normal from the mesh
             mesh = wp.mesh_get(mesh_id)
             i0 = mesh.indices[res.face * 3 + 0]
             i1 = mesh.indices[res.face * 3 + 1]
