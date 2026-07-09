@@ -121,6 +121,34 @@ def _build_branching_articulation(device):
     return model
 
 
+def test_mujoco_sparse_articulation_construction(test, device):
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder(gravity=0.0)
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        joints = []
+        parent = -1
+        for _ in range(70):
+            child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3, dtype=np.float32)))
+            joints.append(builder.add_joint_revolute(parent=parent, child=child, axis=newton.Axis.Z))
+            parent = child
+        builder.add_articulation(joints)
+
+        model = builder.finalize(device=device)
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        solver = newton.solvers.SolverMuJoCo(
+            model,
+            use_mujoco_cpu=False,
+            disable_contacts=True,
+            iterations=1,
+            ls_iterations=1,
+            deterministic=DETERMINISTIC_MODE,
+        )
+
+        solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
+        test.assertTrue(np.isfinite(state_out.joint_q.numpy()).all())
+
+
 def _make_articulation_solver(model, solver_name):
     if solver_name == "featherstone":
         return newton.solvers.SolverFeatherstone(model, deterministic=DETERMINISTIC_MODE)
@@ -384,6 +412,14 @@ for solver_name in ("featherstone", "mujoco"):
         solver_name=solver_name,
         check_output=False,
     )
+
+add_function_test(
+    TestSolverDeterminism,
+    "test_mujoco_sparse_articulation_construction",
+    test_mujoco_sparse_articulation_construction,
+    devices=devices,
+    check_output=False,
+)
 
 
 if __name__ == "__main__":

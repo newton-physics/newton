@@ -252,6 +252,9 @@ def _mujoco_warp_deterministic_modules() -> list[Any]:
     ]
 
 
+_MUJOCO_WARP_DYNAMIC_RECORD_MODULES = frozenset({"mujoco_warp._src.smooth"})
+
+
 def _mujoco_warp_max_constraint_row_width(mj_model: MjModel) -> int:
     """Return a model-derived upper bound for sparse constraint row width."""
     nv = int(mj_model.nv)
@@ -573,11 +576,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _set_mujoco_warp_module_options(self) -> None:
         """Configure loaded shared modules without overriding code-generated bounds."""
-        options = {
-            "deterministic": self._deterministic,
-            "deterministic_max_records": 0,
-        }
         for module in [*_mujoco_warp_deterministic_modules(), kernels]:
+            max_records = (
+                self._deterministic_max_records if module.__name__ in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES else 0
+            )
+            options = {
+                "deterministic": self._deterministic,
+                "deterministic_max_records": max_records,
+            }
             self._set_module_options(options, module=module)
 
     @staticmethod

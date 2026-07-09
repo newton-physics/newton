@@ -112,31 +112,37 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
 
 
 class TestMuJoCoDeterminismConfig(unittest.TestCase):
-    def test_loaded_modules_keep_codegen_record_bound(self):
+    def test_only_dynamic_record_modules_receive_model_bound(self):
         solver = object.__new__(solver_mujoco.SolverMuJoCo)
         solver._deterministic = solver_mujoco.wp.DeterministicMode.RUN_TO_RUN
         solver._deterministic_max_records = 17
-        loaded_module = object()
+        smooth_module = types.SimpleNamespace(__name__="mujoco_warp._src.smooth")
+        forward_module = types.SimpleNamespace(__name__="mujoco_warp._src.forward")
 
         with (
             mock.patch.object(
                 solver_mujoco,
                 "_mujoco_warp_deterministic_modules",
-                return_value=[loaded_module],
+                return_value=[smooth_module, forward_module],
             ),
             mock.patch.object(solver, "_set_module_options") as set_module_options,
         ):
             solver._set_mujoco_warp_module_options()
 
-        options = {
+        dynamic_options = {
+            "deterministic": solver_mujoco.wp.DeterministicMode.RUN_TO_RUN,
+            "deterministic_max_records": 17,
+        }
+        generated_options = {
             "deterministic": solver_mujoco.wp.DeterministicMode.RUN_TO_RUN,
             "deterministic_max_records": 0,
         }
         self.assertEqual(
             set_module_options.call_args_list,
             [
-                mock.call(options, module=loaded_module),
-                mock.call(options, module=solver_mujoco.kernels),
+                mock.call(dynamic_options, module=smooth_module),
+                mock.call(generated_options, module=forward_module),
+                mock.call(generated_options, module=solver_mujoco.kernels),
             ],
         )
 
