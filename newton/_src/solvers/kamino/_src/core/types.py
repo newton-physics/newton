@@ -75,6 +75,10 @@ class vec8f(wp.types.vector(length=8, dtype=wp.float32)):
     pass
 
 
+class mat61f(wp.types.matrix(shape=(6, 1), dtype=wp.float32)):
+    pass
+
+
 class mat63f(wp.types.matrix(shape=(6, 3), dtype=wp.float32)):
     pass
 

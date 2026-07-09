@@ -10,7 +10,7 @@ from typing import Any
 
 import warp as wp
 
-from ..core.types import FloatType
+from ..core.types import FloatType, vec7f
 from .sparse_matrix import BlockDType, BlockSparseMatrices
 
 ###
@@ -1137,7 +1137,7 @@ def dense_gemv(
 
 
 def block_sparse_matvec(
-    A: BlockSparseMatrices,
+    A: BlockSparseMatrices[wp.float32, wp.int32, Any],
     x: wp.array[wp.float32] | wp.array2d[wp.float32],
     y: wp.array[wp.float32] | wp.array2d[wp.float32],
     matrix_mask: wp.array[wp.bool],
@@ -1201,7 +1201,7 @@ def block_sparse_matvec(
 
 
 def block_sparse_transpose_matvec(
-    A: BlockSparseMatrices,
+    A: BlockSparseMatrices[wp.float32, wp.int32, Any],
     y: wp.array[wp.float32] | wp.array2d[wp.float32],
     x: wp.array[wp.float32] | wp.array2d[wp.float32],
     matrix_mask: wp.array[wp.bool],
@@ -1265,7 +1265,7 @@ def block_sparse_transpose_matvec(
 
 
 def block_sparse_gemv(
-    A: BlockSparseMatrices,
+    A: BlockSparseMatrices[wp.float32, wp.int32, Any],
     x: wp.array[wp.float32] | wp.array2d[wp.float32],
     y: wp.array[wp.float32] | wp.array2d[wp.float32],
     alpha: wp.float32,
@@ -1340,7 +1340,7 @@ def block_sparse_gemv(
 
 
 def block_sparse_transpose_gemv(
-    A: BlockSparseMatrices,
+    A: BlockSparseMatrices[wp.float32, wp.int32, Any],
     y: wp.array[wp.float32] | wp.array2d[wp.float32],
     x: wp.array[wp.float32] | wp.array2d[wp.float32],
     alpha: wp.float32,
@@ -1415,7 +1415,7 @@ def block_sparse_transpose_gemv(
 
 
 def block_sparse_ATA_inv_diagonal_2d(
-    A: BlockSparseMatrices,
+    A: BlockSparseMatrices[wp.float32, wp.int32, Any],
     inv_diag: wp.array2d[wp.float32],
     matrix_mask: wp.array[wp.bool],
     diag_offset: wp.float32 = 0.0,
@@ -1462,7 +1462,7 @@ def block_sparse_ATA_inv_diagonal_2d(
 
 
 def block_sparse_ATA_blockwise_3_4_inv_diagonal_2d(
-    A: BlockSparseMatrices,
+    A: BlockSparseMatrices[wp.float32, wp.int32, vec7f],
     inv_blocks_3: wp.array2d[wp.mat33f],
     inv_blocks_4: wp.array2d[wp.mat44f],
     matrix_mask: wp.array[wp.bool],

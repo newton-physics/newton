@@ -78,7 +78,7 @@ def set_task_targets(
 
 
 def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, enabled: bool = True):
-    if not enabled or not model.device.is_cuda:
+    if not enabled:
         return None
 
     with wp.ScopedDevice(model.device):
@@ -86,7 +86,7 @@ def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, e
             simulate()
 
     if capture.graph is None:
-        raise RuntimeError(f"CUDA graph capture failed on device {model.device}")
+        raise RuntimeError(f"Graph capture failed on device {model.device}")
     return capture.graph
 
 
@@ -140,6 +140,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
         self.device = self.model.device
+        self.use_graph = self.use_graph and self.device.is_cuda
         self._count_admm_shape_pairs_per_world()
 
         mujoco_contact_budget = max(64, 16 * self.world_count)
@@ -587,8 +588,8 @@ class Example:
         assert np.all(self.admm_shape_pairs_per_world == self.admm_shape_pairs_per_world[0]), (
             "Franka-payload ADMM contact pair counts should be identical across replicated worlds"
         )
-        if self.use_graph and self.device.is_cuda:
-            assert self.graph is not None, "CUDA graph capture was requested but no graph was captured"
+        if self.use_graph:
+            assert self.graph is not None, "Graph capture was requested but no graph was captured"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -659,7 +660,7 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 

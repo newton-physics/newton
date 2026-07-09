@@ -108,6 +108,7 @@ class Example:
         self.surface_z = float(CABLE_CENTER[2]) - self.payload_radius
 
         self._build_scene()
+        self.use_graph = self.use_graph and self.device.is_cuda
         self.control = self.model.control()
         self._build_solvers(args)
         self._build_ik()
@@ -465,9 +466,11 @@ class Example:
     # ------------------------------------------------------------------
     def capture(self):
         self.graph = None
-        if self.use_graph and self.device.is_cuda:
+        if self.use_graph:
             with wp.ScopedDevice(self.device), wp.ScopedCapture() as capture:
                 self.simulate()
+            if capture.graph is None:
+                raise RuntimeError(f"Graph capture failed on device {self.device}")
             self.graph = capture.graph
 
     def simulate(self):
@@ -504,6 +507,9 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        if self.use_graph:
+            assert self.graph is not None, "Graph capture was requested but no graph was captured"
+
         body_q = self.state_0.body_q.numpy()
         body_qd = self.state_0.body_qd.numpy()
         assert np.all(np.isfinite(body_q)), "Body positions contain NaN or inf values"
@@ -559,7 +565,7 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 

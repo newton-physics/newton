@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import warnings
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -392,18 +393,29 @@ def get_name_from_label(label: str):
     return label.rsplit("/", maxsplit=1)[-1]
 
 
-def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
+def find_matching_ids(
+    pattern: str | list[str] | list[int], labels: list[str], world_ids, world_count: int
+) -> tuple[list[list[int]], list[int]]:
+    matching_ids = match_labels(labels, pattern)
+
+    if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
+        # ArticulationView derives its layouts from model order. String patterns already produce this order.
+        for idx in range(1, len(matching_ids)):
+            if matching_ids[idx] <= matching_ids[idx - 1]:
+                raise ValueError("Articulation indices must be unique and in ascending order")
+        if matching_ids[0] < 0 or matching_ids[-1] >= len(labels):
+            raise ValueError(f"Articulation indices must be in range [0, {len(labels)})")
+
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
-    for id, label in enumerate(labels):
-        if fnmatch(label, pattern):
-            world = world_ids[id]
-            if world == -1:
-                global_ids.append(id)
-            elif world >= 0 and world < world_count:
-                grouped_ids[world].append(id)
-            else:
-                raise ValueError(f"World index out of range: {world}")
+    for idx in matching_ids:
+        world = world_ids[idx]
+        if world == -1:
+            global_ids.append(idx)
+        elif world >= 0 and world < world_count:
+            grouped_ids[world].append(idx)
+        else:
+            raise ValueError(f"World index out of range: {world}")
     return grouped_ids, global_ids
 
 
@@ -498,14 +510,18 @@ class ArticulationView:
         view.set_dof_positions(state, q_np)
 
     The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
-    and ``exclude_links`` parameters accept label patterns — see :ref:`label-matching`.
+    and ``exclude_links`` parameters accept label patterns or integer indices — see
+    :ref:`label-matching`.
 
     Args:
         model: The model containing the articulations.
-        pattern: Pattern to match articulation labels.
-        include_joints: List of joint names, patterns, or indices to include.
+        pattern: Pattern or list of patterns to match articulation labels, or a list
+            of absolute articulation indices. Indices must be unique and in ascending order.
+        include_joints: List of joint names, patterns, or indices to include. Unsorted
+            integer indices are deprecated and will be rejected in a future release.
         exclude_joints: List of joint names, patterns, or indices to exclude.
-        include_links: List of link names, patterns, or indices to include.
+        include_links: List of link names, patterns, or indices to include. Unsorted
+            integer indices are deprecated and will be rejected in a future release.
         exclude_links: List of link names, patterns, or indices to exclude.
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
@@ -517,7 +533,7 @@ class ArticulationView:
     def __init__(
         self,
         model: Model,
-        pattern: str,
+        pattern: str | list[str] | list[int],
         *,
         include_joints: list[str] | list[int] | None = None,
         exclude_joints: list[str] | list[int] | None = None,
@@ -533,6 +549,20 @@ class ArticulationView:
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
+
+        for parameter_name, indices in (("include_joints", include_joints), ("include_links", include_links)):
+            if (
+                isinstance(indices, list)
+                and all(isinstance(index, int) for index in indices)
+                and any(indices[i] < indices[i - 1] for i in range(1, len(indices)))
+            ):
+                warnings.warn(
+                    f"Passing unsorted integer indices to ArticulationView({parameter_name}=...) is deprecated and "
+                    "will raise a ValueError in a future release. Sort the indices in ascending order before passing "
+                    "them.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
 
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()
@@ -792,9 +822,13 @@ class ArticulationView:
         else:
             joint_include_indices = set()
             if include_joints is not None:
-                joint_include_indices.update(
-                    idx for idx in match_labels(arti_joint_names, include_joints) if 0 <= idx < arti_joint_count
-                )
+                matching_joint_indices = match_labels(arti_joint_names, include_joints)
+                for index in matching_joint_indices:
+                    if index < 0 or index >= arti_joint_count:
+                        raise ValueError(
+                            f"include_joints indices must be in range [0, {arti_joint_count}), got {index}"
+                        )
+                joint_include_indices.update(matching_joint_indices)
             if include_joint_types is not None:
                 for idx in range(arti_joint_count):
                     if arti_joint_types[idx] in include_joint_types:
@@ -815,9 +849,11 @@ class ArticulationView:
         if include_links is None:
             link_include_indices = set(range(arti_link_count))
         else:
-            link_include_indices = {
-                idx for idx in match_labels(arti_link_names, include_links) if 0 <= idx < arti_link_count
-            }
+            matching_link_indices = match_labels(arti_link_names, include_links)
+            for index in matching_link_indices:
+                if index < 0 or index >= arti_link_count:
+                    raise ValueError(f"include_links indices must be in range [0, {arti_link_count}), got {index}")
+            link_include_indices = set(matching_link_indices)
 
         # create link exclusion set
         link_exclude_indices = set()
