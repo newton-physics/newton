@@ -56,6 +56,18 @@ def _make_disk_particles(n=3000, seed=123, z_extent=0.02, device=None):
     return positions, radii
 
 
+def _sparse_field_samples(surface):
+    capacity = surface._capacity
+    node_count = capacity.volume.get_active_stats().voxel_count
+    packed = capacity.voxel_ijk[:node_count].numpy()
+    worlds = capacity.node_world[:node_count].numpy()
+    offsets = capacity.env_offsets.numpy()
+    coordinates = packed - offsets[worlds]
+    values = capacity.field[:node_count].numpy()
+    order = np.lexsort(coordinates.T[::-1])
+    return coordinates[order], values[order]
+
+
 def test_one_shot(test, device):
     positions, radii = _make_sphere_particles(device=device)
     verts, indices, normals = extract_particle_surface(
@@ -332,21 +344,9 @@ def test_fem_field(test, device):
 
     with wp.ScopedDevice(device):
         sdf = ctx.fem_field()
-        field_np = ctx.field.numpy()
-        origin = np.array([ctx.grid_origin[i] for i in range(3)])
-        dx = ctx.voxel_size
-        dims = ctx.grid_dims
-
-        # Query at exact grid node positions — Q1 interpolation must reproduce DOF values.
-        node_pts = []
-        node_vals = []
-        for ix in range(1, dims[0] - 1, 3):
-            for iy in range(1, dims[1] - 1, 3):
-                for iz in range(1, dims[2] - 1, 3):
-                    node_pts.append(origin + np.array([ix, iy, iz]) * dx)
-                    node_vals.append(field_np[ix, iy, iz])
-        node_pts = np.array(node_pts, dtype=np.float32)
-        node_vals = np.array(node_vals, dtype=np.float32)
+        node_coords, field_values = _sparse_field_samples(ctx)
+        node_pts = (node_coords[::17] * ctx.voxel_size).astype(np.float32)
+        node_vals = field_values[::17]
 
         query_wp = wp.array(node_pts, dtype=wp.vec3, device=device)
         domain = fem.Cells(sdf.space.geometry)
@@ -483,8 +483,7 @@ def test_grid_capacity_extraction(test, device):
         device=device,
     )
     reference_vertices, reference_indices, _ = reference.extract(positions, radii=radii, compute_normals=False)
-    cell_dims = np.asarray(reference.grid_dims, dtype=np.int64) - 1
-    max_grid_cells = int(np.prod(cell_dims))
+    max_grid_cells = reference.sparse_volume.get_active_stats().voxel_count
 
     surface = ParticleSurface(
         voxel_size=0.08,
@@ -501,10 +500,10 @@ def test_grid_capacity_extraction(test, device):
     )
     mesh = surface.extract(positions, radii, compute_normals=False)
 
-    grid_dims = tuple(int(value) for value in surface._capacity.grid_dims.numpy()[0])
-    node_count = int(surface._capacity.grid_counts.numpy()[0])
-    capacity_field = surface._capacity.field[:node_count].numpy().reshape(grid_dims)
-    np.testing.assert_allclose(capacity_field, reference.field.numpy(), rtol=1.0e-6, atol=1.0e-6)
+    reference_coordinates, reference_field = _sparse_field_samples(reference)
+    capacity_coordinates, capacity_field = _sparse_field_samples(surface)
+    np.testing.assert_array_equal(capacity_coordinates, reference_coordinates)
+    np.testing.assert_allclose(capacity_field, reference_field, rtol=1.0e-6, atol=1.0e-6)
     mesh_counts = mesh.counts.numpy()
     test.assertEqual(int(mesh_counts[0]), reference_vertices.shape[0])
     test.assertEqual(int(mesh_counts[1]), reference_indices.shape[0])
@@ -513,6 +512,49 @@ def test_grid_capacity_extraction(test, device):
         with wp.ScopedCapture(device=device) as capture:
             surface.extract(positions, radii, compute_normals=False)
         wp.capture_launch(capture.graph)
+
+
+def test_sparse_grid_avoids_empty_span(test, device):
+    positions = wp.array([[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    radii = wp.full(2, value=0.05, dtype=float, device=device)
+    surface = ParticleSurface(
+        voxel_size=0.1,
+        kernel_radius=0.3,
+        smooth_lambda=0.0,
+        max_grid_cells=30_000,
+        device=device,
+    )
+
+    surface.update_field(positions, radii)
+
+    test.assertIsInstance(surface.sparse_volume, wp.Volume)
+    active_cells = surface.sparse_volume.get_active_stats().voxel_count
+    dense_cell_count = int(np.prod(np.asarray(surface.grid_dims, dtype=np.int64) - 1))
+    test.assertLessEqual(active_cells, surface._capacity.max_grid_cells)
+    test.assertGreater(dense_cell_count, surface._capacity.max_grid_cells)
+    test.assertGreater(dense_cell_count, 5 * active_cells)
+    test.assertEqual(surface._capacity.max_grid_nodes, surface._capacity.max_grid_cells)
+    test.assertEqual(int(surface._capacity.grid_counts.numpy()[3]), 0)
+
+
+def test_sparse_topology_classification_strides_over_capacity(test, device):
+    positions, radii = _make_sphere_particles(n=100, seed=23, device=device)
+    surface = ParticleSurface(
+        voxel_size=0.1,
+        kernel_radius=0.3,
+        smooth_lambda=0.0,
+        max_grid_cells=30_000,
+        device=device,
+    )
+    surface._capacity.launch_threads = 1
+
+    surface.update_field(positions, radii)
+
+    counts = surface._capacity.grid_counts.numpy()
+    cell_count = surface.sparse_volume.get_active_stats().voxel_count
+    node_count = cell_count
+    test.assertEqual(int(counts[0]), node_count)
+    test.assertEqual(int(counts[1]), cell_count)
 
 
 def test_update_field_skips_inactive_particles(test, device):
@@ -578,14 +620,19 @@ def test_update_field_cuda_graph(test, device):
         device=device,
     )
     ctx.update_field(positions, radii, particle_flags=flags)
+    origin_before = np.array(ctx.grid_origin)
 
     with wp.ScopedCapture(device=device_obj) as capture:
         ctx.update_field(positions, radii, particle_flags=flags)
+    moved_positions_np = positions_np.copy()
+    moved_positions_np[flags_np != 0] += np.array([4.0, 0.0, 0.0], dtype=np.float32)
+    wp.copy(positions, wp.array(moved_positions_np, dtype=wp.vec3, device=device))
     wp.capture_launch(capture.graph)
 
     field_np = ctx.field.numpy()
     test.assertLess(field_np.min(), 0.0)
     test.assertGreater(field_np.max(), 0.0)
+    np.testing.assert_allclose(np.array(ctx.grid_origin) - origin_before, [4.0, 0.0, 0.0], atol=ctx.voxel_size)
 
 
 def test_particle_sdf_surface_method(test, device):
@@ -624,13 +671,13 @@ def test_isotropic_particle_sdf_values(test, device):
     )
     ctx.update_field(positions, radii)
 
-    field = ctx.field.numpy()
-    center = tuple(round(-float(value) / ctx.voxel_size) for value in ctx.grid_origin)
-    test.assertAlmostEqual(float(field[center]), -0.5)
-    test.assertAlmostEqual(float(field[center[0] - 1, center[1], center[2]]), 0.5)
-    test.assertAlmostEqual(float(field[center[0], center[1] - 1, center[2]]), 0.5)
-    test.assertAlmostEqual(float(field[center[0], center[1], center[2] - 1]), 0.5)
-    test.assertAlmostEqual(float(field[0, 0, 0]), 6.0)
+    coordinates, values = _sparse_field_samples(ctx)
+    field = {tuple(coordinate): float(value) for coordinate, value in zip(coordinates, values, strict=True)}
+    test.assertAlmostEqual(field[(0, 0, 0)], -0.5)
+    test.assertAlmostEqual(field[(-1, 0, 0)], 0.5)
+    test.assertAlmostEqual(field[(0, -1, 0)], 0.5)
+    test.assertAlmostEqual(field[(0, 0, -1)], 0.5)
+    test.assertAlmostEqual(max(field.values()), 6.0)
 
 
 def test_anisotropy_scale(test, device):
@@ -1014,7 +1061,7 @@ add_function_test(
 add_function_test(TestParticleSurface, "test_radii_length_mismatch", test_radii_length_mismatch, devices=devices)
 add_function_test(TestParticleSurface, "test_radii_device_mismatch", test_radii_device_mismatch, devices=devices)
 add_function_test(TestParticleSurface, "test_array_layout_validation", test_array_layout_validation, devices=devices)
-# fem_field test uses Grid3D which doesn't support multi-GPU partitioning;
+# fem_field test uses FEM geometry that doesn't support multi-GPU partitioning;
 # run only on the first selected test device.
 add_function_test(TestParticleSurface, "test_fem_field", test_fem_field, devices=devices[:1])
 add_function_test(TestParticleSurface, "test_anisotropic", test_anisotropic, devices=devices)
@@ -1027,6 +1074,15 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestParticleSurface, "test_grid_capacity_extraction", test_grid_capacity_extraction, devices=devices)
+add_function_test(
+    TestParticleSurface, "test_sparse_grid_avoids_empty_span", test_sparse_grid_avoids_empty_span, devices=devices
+)
+add_function_test(
+    TestParticleSurface,
+    "test_sparse_topology_classification_strides_over_capacity",
+    test_sparse_topology_classification_strides_over_capacity,
+    devices=devices,
+)
 add_function_test(
     TestParticleSurface,
     "test_update_field_skips_inactive_particles",
