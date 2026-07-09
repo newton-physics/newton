@@ -148,18 +148,20 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):
-        source = self._make_source()
         world_count = 4
-        for spacing in ((0.0, 0.0, 0.0), (2.0, 3.0, 0.0)):
-            with self.subTest(spacing=spacing):
-                expected = self._make_destination()
-                for offset in compute_world_offsets(world_count, spacing, expected.up_axis):
-                    expected.add_world(source, wp.transform(offset, wp.quat_identity()))
+        for use_coord_layout_targets in (False, True):
+            with mock.patch("newton.use_coord_layout_targets", use_coord_layout_targets):
+                source = self._make_source()
+                for spacing in ((0.0, 0.0, 0.0), (2.0, 3.0, 0.0)):
+                    with self.subTest(use_coord_layout_targets=use_coord_layout_targets, spacing=spacing):
+                        expected = self._make_destination()
+                        for offset in compute_world_offsets(world_count, spacing, expected.up_axis):
+                            expected.add_world(source, wp.transform(offset, wp.quat_identity()))
 
-                actual = self._make_destination()
-                actual.replicate(source, world_count, spacing)
+                        actual = self._make_destination()
+                        actual.replicate(source, world_count, spacing)
 
-                self.assert_builder_merge_state_equal(expected, actual)
+                        self.assert_builder_merge_state_equal(expected, actual)
 
     def test_replicate_does_not_call_add_world(self):
         source = self._make_source()
@@ -351,18 +353,16 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(scene.muscle_activations, source.muscle_activations * 2)
         np.testing.assert_array_equal(scene.body_color_groups[0], np.asarray([0, 1, 2, 3]))
 
-    def test_all_builder_lists_have_merge_strategy(self):
+    def test_all_builder_lists_have_merge_metadata(self):
         builder = ModelBuilder()
         list_attributes = {name for name, value in vars(builder).items() if isinstance(value, list)}
-        strategies = (
-            builder._MERGE_LABEL_ATTRS,
-            builder._MERGE_VERBATIM_ATTRS,
-            builder._MERGE_SPECIAL_ATTRS,
-            builder._MERGE_MANAGED_ATTRS,
-        )
-        classified = set().union(*strategies)
-        self.assertEqual(sum(len(strategy) for strategy in strategies), len(classified))
-        self.assertEqual(classified, list_attributes)
+        specs = builder._builder_merge_attribute_specs(builder)
+        self.assertEqual(set(specs), list_attributes)
+        self.assertIs(specs["shape_body"], Model._CORE_ATTRIBUTE_SPECS["shape_body"])
+
+        builder._missing_merge_metadata = []
+        with self.assertRaisesRegex(RuntimeError, "_missing_merge_metadata"):
+            builder._builder_merge_attribute_specs(builder)
 
 
 if __name__ == "__main__":

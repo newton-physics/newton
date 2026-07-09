@@ -13,7 +13,7 @@ import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 import warp as wp
@@ -272,164 +272,58 @@ class ModelBuilder:
         "COM-centered capsule body frames."
     )
 
-    _MERGE_LABEL_ATTRS = (
-        "articulation_label",
-        "body_label",
-        "joint_label",
-        "shape_label",
-        "_cable_label",
-        "_cloth_label",
-        "_soft_label",
-    )
+    _BUILDER_ATTRIBUTE_SPECS: ClassVar[dict[str, Model.AttributeSpec]] = {
+        "body_lock_inertia": Model.AttributeSpec(Model.AttributeFrequency.BODY),
+        "joint_collision_filter_parent": Model.AttributeSpec(Model.AttributeFrequency.JOINT),
+        "joint_cts": Model.AttributeSpec(Model.AttributeFrequency.JOINT_CONSTRAINT),
+        "joint_cts_start": Model.AttributeSpec(
+            Model.AttributeFrequency.JOINT,
+            references=Model.AttributeFrequency.JOINT_CONSTRAINT,
+            compaction_policy="start",
+        ),
+        "shape_sdf_narrow_band_range": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
+        "shape_sdf_max_resolution": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
+        "shape_sdf_target_voxel_size": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
+        "shape_sdf_texture_format": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
+        "shape_sdf_padding": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
+        "muscle_start": Model.AttributeSpec("muscle", references="muscle_point", compaction_policy="start"),
+        "muscle_params": Model.AttributeSpec("muscle"),
+        "muscle_activations": Model.AttributeSpec("muscle"),
+        "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
+        "muscle_points": Model.AttributeSpec("muscle_point"),
+        "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
+        "_equality_constraint_world_start": Model.AttributeSpec(
+            Model.AttributeFrequency.WORLD,
+            compaction_policy="passthrough",
+        ),
+        "_shape_collision_filter_pairs": Model.AttributeSpec(
+            Model.AttributeFrequency.ONCE,
+            compaction_policy="passthrough",
+        ),
+    }
 
-    _MERGE_VERBATIM_ATTRS = (
-        "body_inertia",
-        "body_mass",
-        "body_inv_inertia",
-        "body_inv_mass",
-        "body_com",
-        "body_lock_inertia",
-        "body_flags",
-        "body_qd",
-        "joint_type",
-        "joint_enabled",
-        "joint_collision_filter_parent",
-        "joint_X_c",
-        "joint_armature",
-        "joint_axis",
-        "joint_dof_dim",
-        "joint_qd",
-        "joint_cts",
-        "joint_f",
-        "joint_act",
-        "joint_target_qd",
-        "joint_limit_lower",
-        "joint_limit_upper",
-        "joint_limit_ke",
-        "joint_limit_kd",
-        "joint_target_ke",
-        "joint_target_kd",
-        "joint_damping",
-        "joint_target_mode",
-        "joint_effort_limit",
-        "joint_velocity_limit",
-        "joint_friction",
-        "shape_flags",
-        "shape_type",
-        "shape_scale",
-        "shape_source",
-        "shape_color",
-        "shape_is_solid",
-        "shape_margin",
-        "shape_material_ke",
-        "shape_material_kd",
-        "shape_material_kf",
-        "shape_material_ka",
-        "shape_material_mu",
-        "shape_material_restitution",
-        "shape_material_mu_torsional",
-        "shape_material_mu_rolling",
-        "shape_material_kh",
-        "shape_collision_radius",
-        "shape_gap",
-        "shape_sdf_narrow_band_range",
-        "shape_sdf_max_resolution",
-        "shape_sdf_target_voxel_size",
-        "shape_sdf_texture_format",
-        "shape_sdf_padding",
-        "particle_qd",
-        "particle_mass",
-        "particle_radius",
-        "particle_flags",
-        "edge_rest_angle",
-        "edge_rest_length",
-        "edge_bending_properties",
-        "spring_rest_length",
-        "spring_stiffness",
-        "spring_damping",
-        "spring_control",
-        "tri_poses",
-        "tri_activations",
-        "tri_materials",
-        "tri_areas",
-        "tet_poses",
-        "tet_activations",
-        "tet_materials",
-        "joint_twist_lower",
-        "joint_twist_upper",
-        "muscle_params",
-        "muscle_activations",
-        "muscle_points",
-    )
-
-    _MERGE_SPECIAL_ATTRS = (
-        "particle_q",
-        "particle_color_groups",
-        "particle_world",
-        "shape_transform",
-        "shape_body",
-        "shape_collision_group",
-        "shape_world",
-        "spring_indices",
-        "edge_indices",
-        "tri_indices",
-        "tet_indices",
-        "body_q",
-        "body_color_groups",
-        "body_world",
-        "joint_X_p",
-        "joint_q",
-        "joint_target_q",
-        "joint_parent",
-        "joint_child",
-        "joint_q_start",
-        "joint_qd_start",
-        "joint_cts_start",
-        "joint_world",
-        "joint_articulation",
-        "articulation_start",
-        "articulation_end",
-        "articulation_world",
-        "constraint_mimic_joint0",
-        "constraint_mimic_joint1",
-        "constraint_mimic_coef0",
-        "constraint_mimic_coef1",
-        "constraint_mimic_enabled",
-        "constraint_mimic_label",
-        "constraint_mimic_world",
-        "muscle_start",
-        "muscle_bodies",
-        "_cable_world",
-        "_cable_body_start",
-        "_cable_body_end",
-        "_cable_joint_start",
-        "_cable_joint_end",
-        "_cloth_world",
-        "_cloth_particle_start",
-        "_cloth_particle_end",
-        "_cloth_tri_start",
-        "_cloth_tri_end",
-        "_cloth_edge_start",
-        "_cloth_edge_end",
-        "_soft_world",
-        "_soft_particle_start",
-        "_soft_particle_end",
-        "_soft_tet_start",
-        "_soft_tet_end",
-    )
-
-    _MERGE_MANAGED_ATTRS = (
-        "world_gravity",
-        "particle_world_start",
-        "body_world_start",
-        "shape_world_start",
-        "joint_world_start",
-        "articulation_world_start",
-        "_equality_constraint_world_start",
-        "joint_dof_world_start",
-        "joint_coord_world_start",
-        "joint_constraint_world_start",
-    )
+    _BUILDER_GROUP_REFERENCES: ClassVar[dict[str, dict[str, Model.AttributeFrequency]]] = {
+        "cable": {
+            "body_start": Model.AttributeFrequency.BODY,
+            "body_end": Model.AttributeFrequency.BODY,
+            "joint_start": Model.AttributeFrequency.JOINT,
+            "joint_end": Model.AttributeFrequency.JOINT,
+        },
+        "cloth": {
+            "particle_start": Model.AttributeFrequency.PARTICLE,
+            "particle_end": Model.AttributeFrequency.PARTICLE,
+            "tri_start": Model.AttributeFrequency.TRIANGLE,
+            "tri_end": Model.AttributeFrequency.TRIANGLE,
+            "edge_start": Model.AttributeFrequency.EDGE,
+            "edge_end": Model.AttributeFrequency.EDGE,
+        },
+        "soft": {
+            "particle_start": Model.AttributeFrequency.PARTICLE,
+            "particle_end": Model.AttributeFrequency.PARTICLE,
+            "tet_start": Model.AttributeFrequency.TETRAHEDRON,
+            "tet_end": Model.AttributeFrequency.TETRAHEDRON,
+        },
+    }
 
     @staticmethod
     def _shape_palette_color(index: int) -> tuple[float, float, float]:
@@ -2706,90 +2600,43 @@ class ModelBuilder:
 
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
-        bases = {
-            "particle": self.particle_count,
-            "body": self.body_count,
-            "shape": self.shape_count,
-            "joint": self.joint_count,
-            "joint_dof": self.joint_dof_count,
-            "joint_coord": self.joint_coord_count,
-            "joint_constraint": self.joint_constraint_count,
-            "articulation": self.articulation_count,
-            "constraint_mimic": len(self.constraint_mimic_joint0),
-            "edge": self.edge_count,
-            "triangle": self.tri_count,
-            "tetrahedron": self.tet_count,
-            "spring": self.spring_count,
-        }
+        attribute_specs = self._builder_merge_attribute_specs(builder)
+        bases = self._builder_merge_counts(self)
 
         start_arrays = {
             kind: base + np.arange(world_count, dtype=np.int64) * counts[kind] for kind, base in bases.items()
         }
+        start_arrays["muscle_point"] = len(self.muscle_bodies) + np.arange(world_count, dtype=np.int64) * len(
+            builder.muscle_bodies
+        )
 
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
 
-        def extend_indexed(dst: list, values: Sequence[int], kind: str, *, keep_negative: bool = False) -> None:
+        def extend_referenced(dst: list, values: Sequence[Any], kind: str) -> None:
             if not values:
                 return
             source = np.asarray(values, dtype=np.int64)
-            tiled = np.tile(source, world_count)
-            translated = tiled + np.repeat(starts(kind), len(source))
-            if keep_negative:
-                translated = np.where(tiled >= 0, translated, tiled)
-            dst.extend(translated.tolist())
-
-        def extend_rows(
-            dst: list,
-            values: Sequence[Sequence[int]],
-            kind: str,
-            *,
-            keep_negative: bool = False,
-        ) -> None:
-            if not values:
-                return
-            source = np.asarray(values, dtype=np.int64)
-            tiled = np.tile(source, (world_count, 1))
-            translated = tiled + np.repeat(starts(kind), len(source))[:, None]
-            if keep_negative:
-                translated = np.where(tiled >= 0, translated, tiled)
+            tiled = np.tile(source, (world_count,) + (1,) * (source.ndim - 1))
+            offset_shape = (world_count * len(source),) + (1,) * (source.ndim - 1)
+            offsets = np.repeat(starts(kind), len(source)).reshape(offset_shape)
+            translated = np.where(tiled >= 0, tiled + offsets, tiled)
             dst.extend(translated.tolist())
 
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
+        attribute_specs.pop("particle_q")
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
             self.particle_q.extend(particle_q.tolist())
 
-        if counts["spring"]:
-            source = np.asarray(builder.spring_indices, dtype=np.int64)
-            tiled = np.tile(source, world_count)
-            particle_offsets = np.repeat(starts("particle"), len(source))
-            self.spring_indices.extend((tiled + particle_offsets).tolist())
-        extend_rows(self.edge_indices, builder.edge_indices, "particle", keep_negative=True)
-        extend_rows(self.tri_indices, builder.tri_indices, "particle")
-        extend_rows(self.tet_indices, builder.tet_indices, "particle")
-
-        particle_starts = starts("particle")
-        for particle_start in particle_starts.tolist():
-            translated = [group + particle_start for group in builder.particle_color_groups]
-            self.particle_color_groups = combine_independent_particle_coloring(self.particle_color_groups, translated)
-
-        for body_start in starts("body").tolist():
-            translated = [group + body_start for group in builder.body_color_groups]
-            self.body_color_groups = combine_independent_particle_coloring(self.body_color_groups, translated)
-
         shape_starts = starts("shape")
         body_starts = starts("body")
-        shape_body = np.tile(np.asarray(builder.shape_body, dtype=np.int64), world_count)
-        if len(shape_body):
-            translated = shape_body + np.repeat(body_starts, counts["shape"])
-            translated = np.where(shape_body >= 0, translated, shape_body)
-            self.shape_body.extend(translated.tolist())
 
+        attribute_specs.pop("shape_transform")
         shape_transform_start = len(self.shape_transform)
         self.shape_transform.extend(builder.shape_transform * world_count)
         if counts["shape"]:
@@ -2813,8 +2660,9 @@ class ModelBuilder:
         joint_starts = starts("joint")
         joint_coord_starts = starts("joint_coord")
         joint_dof_starts = starts("joint_dof")
-        articulation_starts = starts("articulation")
 
+        attribute_specs.pop("joint_X_p")
+        attribute_specs.pop("joint_q")
         joint_X_p_start = len(self.joint_X_p)
         self.joint_X_p.extend(builder.joint_X_p * world_count)
         joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
@@ -2845,15 +2693,6 @@ class ModelBuilder:
                     joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
 
         self.joint_q.extend(joint_q.tolist())
-        self.joint_target_q.extend(builder.joint_target_q * world_count)
-
-        extend_indexed(self.articulation_start, builder.articulation_start, "joint")
-        extend_indexed(self.articulation_end, builder.articulation_end, "joint")
-        extend_indexed(self.joint_parent, builder.joint_parent, "body", keep_negative=True)
-        extend_indexed(self.joint_child, builder.joint_child, "body")
-        extend_indexed(self.joint_q_start, builder.joint_q_start, "joint_coord")
-        extend_indexed(self.joint_qd_start, builder.joint_qd_start, "joint_dof")
-        extend_indexed(self.joint_cts_start, builder.joint_cts_start, "joint_constraint")
 
         for world_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[world_index])
@@ -2865,6 +2704,7 @@ class ModelBuilder:
                 self.joint_parents.setdefault(new_child, []).append((new_parent, joint))
                 self.joint_children.setdefault(new_parent, []).append((new_child, joint))
 
+        attribute_specs.pop("body_q")
         if counts["body"]:
             if all(xform is None for xform in xforms):
                 self.body_q.extend(builder.body_q * world_count)
@@ -2881,7 +2721,6 @@ class ModelBuilder:
                     else:
                         self.body_q.extend(transform_mul(xform, body_q) for body_q in builder.body_q)
 
-        self.shape_collision_group.extend(builder.shape_collision_group * world_count)
         source_filter_pairs = builder._shape_collision_filter_pairs
         if source_filter_pairs:
             template_pairs = (
@@ -2902,90 +2741,30 @@ class ModelBuilder:
                         (shape_a + shape_start, shape_b + shape_start) for shape_a, shape_b in template_pairs
                     )
 
-        for attr, kind in (
-            ("particle_world", "particle"),
-            ("body_world", "body"),
-            ("shape_world", "shape"),
-            ("joint_world", "joint"),
-            ("articulation_world", "articulation"),
-            ("constraint_mimic_world", "constraint_mimic"),
-        ):
-            getattr(self, attr).extend(np.repeat(worlds, counts[kind]).tolist())
-
-        if counts["joint"]:
-            source_articulation = np.asarray(builder.joint_articulation, dtype=np.int64)
-            tiled = np.tile(source_articulation, world_count)
-            translated = tiled + np.repeat(articulation_starts, counts["joint"])
-            self.joint_articulation.extend(np.where(tiled >= 0, translated, tiled).tolist())
-
-        def extend_group_ranges(prefix: str, mappings: tuple[tuple[str, str], ...]) -> None:
-            labels = getattr(builder, f"_{prefix}_label")
-            if not labels:
-                return
-            group_count = len(labels)
-            for attr_suffix, kind in mappings:
-                source = np.asarray(getattr(builder, f"_{prefix}_{attr_suffix}"), dtype=np.int64)
-                translated = np.tile(source, world_count) + np.repeat(starts(kind), group_count)
-                getattr(self, f"_{prefix}_{attr_suffix}").extend(translated.tolist())
-            getattr(self, f"_{prefix}_world").extend(np.repeat(worlds, group_count).tolist())
-
-        extend_group_ranges(
-            "cable", (("body_start", "body"), ("body_end", "body"), ("joint_start", "joint"), ("joint_end", "joint"))
-        )
-        extend_group_ranges(
-            "cloth",
-            (
-                ("particle_start", "particle"),
-                ("particle_end", "particle"),
-                ("tri_start", "triangle"),
-                ("tri_end", "triangle"),
-                ("edge_start", "edge"),
-                ("edge_end", "edge"),
-            ),
-        )
-        extend_group_ranges(
-            "soft",
-            (
-                ("particle_start", "particle"),
-                ("particle_end", "particle"),
-                ("tet_start", "tetrahedron"),
-                ("tet_end", "tetrahedron"),
-            ),
-        )
-
-        extend_indexed(self.constraint_mimic_joint0, builder.constraint_mimic_joint0, "joint", keep_negative=True)
-        extend_indexed(self.constraint_mimic_joint1, builder.constraint_mimic_joint1, "joint", keep_negative=True)
-        self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0 * world_count)
-        self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1 * world_count)
-        self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled * world_count)
-        for label_prefix in label_prefixes:
-            if label_prefix:
-                self.constraint_mimic_label.extend(
-                    f"{label_prefix}/{label}" if label else label for label in builder.constraint_mimic_label
-                )
-            else:
-                self.constraint_mimic_label.extend(builder.constraint_mimic_label)
-
-        if builder.muscle_count:
-            muscle_body_base = len(self.muscle_bodies)
-            waypoint_count = len(builder.muscle_bodies)
-            self.muscle_start.extend(
-                start + muscle_body_base + copy * waypoint_count
-                for copy in range(world_count)
-                for start in builder.muscle_start
-            )
-            extend_indexed(self.muscle_bodies, builder.muscle_bodies, "body", keep_negative=True)
-
-        for attr in self._MERGE_LABEL_ATTRS:
+        for attr, spec in attribute_specs.items():
             source = getattr(builder, attr)
             destination = getattr(self, attr)
-            for label_prefix in label_prefixes:
-                if label_prefix:
-                    destination.extend(f"{label_prefix}/{label}" if label else label for label in source)
-                else:
-                    destination.extend(source)
-        for attr in self._MERGE_VERBATIM_ATTRS:
-            getattr(self, attr).extend(getattr(builder, attr) * world_count)
+            if spec.compaction_policy in {"world_start", "passthrough"}:
+                continue
+            if spec.compaction_policy == "color_groups":
+                kind = self._builder_frequency_key(spec.frequency)
+                for start in starts(kind).tolist():
+                    translated = [group + start for group in source]
+                    destination = combine_independent_particle_coloring(destination, translated)
+                setattr(self, attr, destination)
+            elif attr.endswith("_label"):
+                for label_prefix in label_prefixes:
+                    if label_prefix:
+                        destination.extend(f"{label_prefix}/{label}" if label else label for label in source)
+                    else:
+                        destination.extend(source)
+            elif spec.references in {Model.AttributeFrequency.WORLD, "world"}:
+                source_count = counts.get(self._builder_frequency_key(spec.frequency), len(source))
+                destination.extend(np.repeat(worlds, source_count).tolist())
+            elif spec.references is not None:
+                extend_referenced(destination, source, self._builder_frequency_key(spec.references))
+            else:
+                destination.extend(source * world_count)
 
         self.joint_dof_count += world_count * counts["joint_dof"]
         self.joint_coord_count += world_count * counts["joint_coord"]
@@ -3001,22 +2780,51 @@ class ModelBuilder:
             )
 
     @staticmethod
-    def _builder_merge_counts(builder: ModelBuilder) -> dict[str, int]:
-        return {
-            "particle": builder.particle_count,
-            "body": builder.body_count,
-            "shape": builder.shape_count,
-            "joint": builder.joint_count,
-            "joint_dof": builder.joint_dof_count,
-            "joint_coord": builder.joint_coord_count,
-            "joint_constraint": builder.joint_constraint_count,
-            "articulation": builder.articulation_count,
-            "constraint_mimic": len(builder.constraint_mimic_joint0),
-            "edge": builder.edge_count,
-            "triangle": builder.tri_count,
-            "tetrahedron": builder.tet_count,
-            "spring": builder.spring_count,
-        }
+    def _builder_frequency_key(frequency: Model.AttributeFrequency | str) -> str:
+        return frequency.name.lower() if isinstance(frequency, Model.AttributeFrequency) else frequency
+
+    @classmethod
+    def _builder_merge_counts(cls, builder: ModelBuilder) -> dict[str, int]:
+        counts = {}
+        for frequency, count_attr in Model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.items():
+            if frequency == Model.AttributeFrequency.WORLD:
+                continue
+            key = cls._builder_frequency_key(frequency)
+            if hasattr(builder, count_attr):
+                counts[key] = getattr(builder, count_attr)
+            elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
+                counts[key] = len(builder.constraint_mimic_joint0)
+        return counts
+
+    @classmethod
+    def _builder_merge_attribute_specs(cls, builder: ModelBuilder) -> dict[str, Model.AttributeSpec]:
+        list_attributes = {name for name, value in vars(builder).items() if isinstance(value, list)}
+        specs = {name: spec for name, spec in Model._CORE_ATTRIBUTE_SPECS.items() if name in list_attributes}
+        specs.update(cls._BUILDER_ATTRIBUTE_SPECS)
+
+        import newton  # noqa: PLC0415
+
+        target_q_frequency = (
+            Model.AttributeFrequency.JOINT_COORD
+            if newton.use_coord_layout_targets
+            else Model.AttributeFrequency.JOINT_DOF
+        )
+        specs["joint_target_q"] = Model.AttributeSpec(target_q_frequency)
+
+        for group, references in cls._BUILDER_GROUP_REFERENCES.items():
+            specs[f"_{group}_label"] = Model.AttributeSpec(group)
+            specs[f"_{group}_world"] = Model.AttributeSpec(group, references=Model.AttributeFrequency.WORLD)
+            for suffix, reference in references.items():
+                specs[f"_{group}_{suffix}"] = Model.AttributeSpec(
+                    group,
+                    references=reference,
+                    compaction_policy="start" if suffix.endswith("_start") else "end",
+                )
+
+        missing = list_attributes.difference(specs)
+        if missing:
+            raise RuntimeError(f"ModelBuilder list attributes are missing merge metadata: {sorted(missing)}")
+        return {name: specs[name] for name in list_attributes}
 
     @staticmethod
     def _custom_attribute_defaults_match(existing: Any, incoming: Any) -> bool:
