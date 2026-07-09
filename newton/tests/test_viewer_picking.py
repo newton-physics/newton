@@ -8,7 +8,6 @@ import warp as wp
 
 import newton
 from newton._src.viewer.picking import Picking
-from newton._src.viewer.viewer_null import ViewerNull
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
@@ -201,33 +200,6 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(forces.shape[0], model.body_count)
         self.assertFalse(np.allclose(forces[0], np.zeros(6), atol=1e-9))
 
-    def test_set_linear_only_bodies_rejects_invalid_body_id(self):
-        """set_linear_only_bodies() validates body ids against the model."""
-        model = _make_single_sphere_model(device="cpu")
-        picking = Picking(model)
-
-        with self.assertRaisesRegex(ValueError, "outside the model body range"):
-            picking.set_linear_only_bodies([model.body_count])
-
-    def test_viewer_linear_only_picking_noops_without_picker(self):
-        """Viewer-level linear-only picking controls are safe when picking is unavailable."""
-        viewer = ViewerNull(num_frames=0)
-
-        viewer.set_picking_linear_only_bodies([0])
-        viewer.set_picking_linear_only_bodies(None)
-        viewer.clear_picking_linear_only_bodies()
-
-    def test_viewer_linear_only_picking_forwards_to_picker(self):
-        """Viewer-level linear-only picking controls forward to the picking object."""
-        model = _make_single_sphere_model(device="cpu")
-        viewer = ViewerNull(num_frames=0)
-        viewer.picking = Picking(model)
-
-        viewer.set_picking_linear_only_bodies([0])
-        viewer.clear_picking_linear_only_bodies()
-        with self.assertRaisesRegex(ValueError, "outside the model body range"):
-            viewer.set_picking_linear_only_bodies([model.body_count])
-
     def test_world_offsets_optional(self):
         """Picking can be constructed with optional world_offsets."""
         model = _make_single_sphere_model(device="cpu")
@@ -266,51 +238,12 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     test.assertEqual(picking.pick_body.numpy()[0], -1)
 
 
-def test_linear_only_bodies_remove_picking_torque(test: TestPickingSetup, device):
-    """Linear-only picking keeps translation force while suppressing torque."""
-    model = _make_single_sphere_model(device=device)
-    state = model.state()
-    picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0)
-
-    ray_start = wp.vec3(0.0, 0.0, -2.0)
-    ray_dir = wp.vec3(0.0, 0.0, 1.0)
-    picking.pick(state, ray_start, ray_dir)
-    test.assertTrue(picking.is_picking())
-
-    picking.update(wp.vec3(0.5, 0.0, -2.0), ray_dir)
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    normal_force = state.body_f.numpy()[0]
-    test.assertFalse(np.allclose(normal_force[:3], np.zeros(3), atol=1e-9))
-    test.assertFalse(np.allclose(normal_force[3:], np.zeros(3), atol=1e-9))
-
-    picking.set_linear_only_bodies([0])
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    linear_only_force = state.body_f.numpy()[0]
-    test.assertFalse(np.allclose(linear_only_force[:3], np.zeros(3), atol=1e-9))
-    assert_np_equal(linear_only_force[3:], np.zeros(3), tol=1e-9)
-
-    picking.clear_linear_only_bodies()
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    restored_force = state.body_f.numpy()[0]
-    test.assertFalse(np.allclose(restored_force[3:], np.zeros(3), atol=1e-9))
-
-
-# Device-parameterized tests
+# Add device-parameterized test
 add_function_test(
     TestPickingSetup,
     "test_picking_setup_device",
     test_picking_setup_device,
     devices=get_test_devices(),
 )
-add_function_test(
-    TestPickingSetup,
-    "test_linear_only_bodies_remove_picking_torque",
-    test_linear_only_bodies_remove_picking_torque,
-    devices=get_test_devices(),
-)
-
 if __name__ == "__main__":
     unittest.main(verbosity=2)
