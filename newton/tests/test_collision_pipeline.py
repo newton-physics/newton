@@ -2941,6 +2941,44 @@ def test_mesh_sdf_provisioned_and_emits(test, device):
     test.assertGreater(int(np.sum(idx[:, 1] >= 0)), 0)
 
 
+def test_configure_sdf_for_collision_shapes_params(test, device):
+    """configure_sdf_for_collision_shapes marks the right shapes and forwards resolution / narrow band /
+    the shapes= subset to their per-shape SDF settings (builder-level; no SDF is built here)."""
+    builder = newton.ModelBuilder()
+    m0 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+    m1 = builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)  # analytic: never provisioned
+
+    # Subset: only m0, at a chosen resolution + narrow band.
+    configured = builder.configure_sdf_for_collision_shapes(
+        max_resolution=64, narrow_band_range=(-0.2, 0.2), shapes=[m0]
+    )
+    test.assertEqual(configured, [m0])
+    test.assertTrue(builder.shape_force_sdf[m0])
+    test.assertEqual(builder.shape_sdf_max_resolution[m0], 64)
+    test.assertEqual(tuple(builder.shape_sdf_narrow_band_range[m0]), (-0.2, 0.2))
+    test.assertFalse(builder.shape_force_sdf[m1])  # not in the subset
+    test.assertFalse(builder.shape_force_sdf[box])  # analytic, skipped even if listed
+
+    # Bare call provisions every remaining COLLIDE_PARTICLES mesh (m1); the analytic box is left alone.
+    configured_all = builder.configure_sdf_for_collision_shapes()
+    test.assertIn(m1, configured_all)
+    test.assertNotIn(box, configured_all)
+    test.assertTrue(builder.shape_force_sdf[m1])
+
+    # max_resolution and target_voxel_size are mutually exclusive.
+    with test.assertRaises(ValueError):
+        builder.configure_sdf_for_collision_shapes(max_resolution=64, target_voxel_size=0.01)
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_configure_sdf_for_collision_shapes_params",
+    test_configure_sdf_for_collision_shapes_params,
+    devices=soft_devices,
+)
+
+
 def test_optimize_against_mesh_texture_sdf(test, device):
     """optimize_edge/face_sdf against a MESH's provisioned texture SDF match the box it represents.
 

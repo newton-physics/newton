@@ -9787,6 +9787,8 @@ class ModelBuilder:
         max_resolution: int | None = None,
         target_voxel_size: float | None = None,
         texture_format: str | None = None,
+        narrow_band_range: tuple[float, float] | None = None,
+        shapes: list[int] | None = None,
     ) -> list[int]:
         """Provision volume SDFs for every mesh/convex shape that collides with particles.
 
@@ -9808,6 +9810,10 @@ class ModelBuilder:
             target_voxel_size: SDF voxel size [m] to set on each shape; mutually exclusive with
                 ``max_resolution``.
             texture_format: Subgrid texture storage format to set on each shape.
+            narrow_band_range: ``(inner, outer)`` narrow-band distance range [m] to set on each shape.
+            shapes: Restrict to these shape indices; ``None`` (default) applies to every eligible
+                mesh/convex shape. Indices in the list that are not eligible (analytic primitives or
+                shapes without ``COLLIDE_PARTICLES``) are skipped.
 
         Returns:
             The indices of the shapes marked for SDF construction.
@@ -9819,8 +9825,11 @@ class ModelBuilder:
             raise ValueError(
                 "configure_sdf_for_collision_shapes accepts either max_resolution or target_voxel_size, not both."
             )
+        _subset = None if shapes is None else set(shapes)
         configured: list[int] = []
         for i in range(len(self.shape_type)):
+            if _subset is not None and i not in _subset:
+                continue
             if self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH):
                 continue
             if not (self.shape_flags[i] & ShapeFlags.COLLIDE_PARTICLES):
@@ -9834,6 +9843,8 @@ class ModelBuilder:
                 self.shape_sdf_max_resolution[i] = None
             if texture_format is not None:
                 self.shape_sdf_texture_format[i] = texture_format
+            if narrow_band_range is not None:
+                self.shape_sdf_narrow_band_range[i] = narrow_band_range
             configured.append(i)
         return configured
 
