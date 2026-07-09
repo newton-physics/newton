@@ -51,6 +51,40 @@ class TestUSDImporter(unittest.TestCase):
     # Joints supported natively by USD
     ###
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_preserve_floating_articulation_root_free_joint_with_loop(self):
+        """Test preserving a floating root while importing a loop without tree sorting."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Cube.Define(stage, "/Root")
+        child = UsdGeom.Cube.Define(stage, "/Child")
+        for body in (root, child):
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr(1.0)
+            mass.CreateDiagonalInertiaAttr(Gf.Vec3f(1.0, 1.0, 1.0))
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        primary = UsdPhysics.FixedJoint.Define(stage, "/Primary")
+        primary.CreateBody0Rel().SetTargets([root.GetPath()])
+        primary.CreateBody1Rel().SetTargets([child.GetPath()])
+        loop = UsdPhysics.FixedJoint.Define(stage, "/Loop")
+        loop.CreateBody0Rel().SetTargets([child.GetPath()])
+        loop.CreateBody1Rel().SetTargets([root.GetPath()])
+        loop.CreateExcludeFromArticulationAttr().Set(True)
+
+        builder = USDImporter().import_from(stage, load_static_geometry=False, load_materials=False)
+
+        self.assertEqual(builder.num_joints, 3)
+        self.assertEqual(builder.num_joint_coords, 7)
+        self.assertEqual(builder.num_joint_dofs, 6)
+        self.assertEqual([joint.name for joint in builder.joints[0]], ["world_to_Root", "Primary", "Loop"])
+        self.assertEqual(builder.joints[0][0].dof_type, JointDoFType.FREE)
+
+        model = builder.finalize(device=self.default_device)
+        self.assertEqual(model.info.base_joint_index.numpy().tolist(), [0])
+
     def test_import_joint_revolute_passive_unary(self):
         """Test importing a passive revolute joint with limits from a USD file"""
         usd_asset_filename = get_kamino_testing_asset("joints/test_joint_revolute_passive_unary.usda")

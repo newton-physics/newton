@@ -87,16 +87,13 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            try:
-                with wp.ScopedCapture() as capture:
-                    self.simulate()
-                self.graph = capture.graph
-            except Exception as exc:
-                self.graph = None
-                warnings.warn(f"CUDA graph capture failed: {exc}", stacklevel=2)
-        else:
+        try:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        except Exception as exc:
             self.graph = None
+            warnings.warn(f"Graph capture failed: {exc}", stacklevel=2)
 
     def simulate(self):
         for _ in range(self.sim_substeps):

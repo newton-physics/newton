@@ -196,10 +196,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate_robot()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate_robot()
+        self.graph = capture.graph
 
         self.sand_graph = None
         if wp.get_device().is_cuda and self.mpm_solver.grid_type == "fixed":

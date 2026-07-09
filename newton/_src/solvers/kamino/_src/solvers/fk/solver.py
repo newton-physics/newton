@@ -33,6 +33,7 @@ from .kernels import (
     _add_regularizer_to_diagonal,
     _apply_line_search_step,
     _correct_actuator_coords,
+    _correct_universal_constraint_velocities,
     _eval_actuator_coords,
     _eval_body_velocities,
     _eval_fk_actuated_dofs_or_coords,
@@ -407,7 +408,8 @@ class ForwardKinematicsSolver:
 
         # Retrieve / compute dimensions - Constraints
         num_constraints = num_bodies.copy()  # Number of kinematic constraints per world (unit quat. + joints)
-        has_universal_joints = False  # Whether the model has a least one passive universal joint
+        has_universal_joints = False  # Whether the model has at least one passive universal joint
+        self.has_universal_actuators = False  # Whether the model has at least one actuated universal joint
         constraint_full_to_red_map = np.full(6 * self.num_joints_tot, -1, dtype=np.int32)
         for eq_class in classes:
             # Count constraints for first world in equivalence class
@@ -415,12 +417,14 @@ class ForwardKinematicsSolver:
             ct_count = num_constraints[wd_id]
             for jt_id in range(first_joint_id[wd_id], first_joint_id[wd_id + 1]):
                 act_type = joints_act_type[jt_id]
+                dof_type = joints_dof_type[jt_id]
                 if act_type != JointActuationType.PASSIVE:  # Actuator: select all six constraints
                     for i in range(6):
                         constraint_full_to_red_map[6 * jt_id + i] = ct_count + i
                     ct_count += 6
+                    if dof_type == FKJointDoFType.UNIVERSAL:
+                        self.has_universal_actuators = True
                 else:
-                    dof_type = joints_dof_type[jt_id]
                     if dof_type == FKJointDoFType.AXIS:
                         constraint_full_to_red_map[6 * jt_id + 3] = ct_count
                         ct_count += 1
@@ -1737,6 +1741,29 @@ class ForwardKinematicsSolver:
             ],
             device=self.device,
         )
+        if self.has_universal_actuators:
+            wp.launch(
+                _correct_universal_constraint_velocities,
+                dim=(
+                    self.num_worlds,
+                    self.num_joints_max,
+                ),
+                inputs=[
+                    self.num_joints,
+                    self.first_joint_id,
+                    self.joints_dof_type,
+                    self.joints_act_type,
+                    self.joints_bid_B,
+                    self.joints_bid_F,
+                    self.joints_X_Bj,
+                    self.joints_X_Fj,
+                    self.constraint_full_to_red_map,
+                    bodies_q,
+                    world_mask,
+                    self.target_cts_u,
+                ],
+                device=self.device,
+            )
 
         # Update constraints Jacobian
         self._update_jacobian(bodies_q, target_rel_transforms, world_mask)
