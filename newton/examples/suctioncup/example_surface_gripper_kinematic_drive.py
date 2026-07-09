@@ -279,15 +279,16 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         # --- scene constants ---
-        # geometry: box half-extents (A is the small gripper body, B the larger gripped box) and
-        # the initial clearance of box B's underside above the ground. start_height_b must exceed the
-        # largest downward excursion of a profile (e.g. UP_LEFT_DOWN lowers 1 m) so B never hits
-        # the ground while still sealed.
+        # geometry: box half-extents. K is the kinematic controller, A the gripper body K drives, B
+        # the gripped free body. start_height_b is B's initial clearance above the ground; it must
+        # exceed a profile's largest downward excursion (e.g. UP_LEFT_DOWN lowers 1 m) so B never
+        # hits the ground while still sealed.
+        LK = 0.1
         LA = 0.1
         LB = 0.2
         start_height_b = 1.5
-        # masses and gravity
-        m_a, m_b = 0.5, 1.0
+        # masses and gravity (K is kinematic, so its mass is nominal)
+        m_k, m_a, m_b = 0.5, 0.5, 1.0
         gravity = 10.0
         # surface-gripper stiffness, damping and force limits. Shear stiffness (which also sets the
         # derived torsion stiffness) and peel damping are non-zero so all 6 DOF of the seal are
@@ -303,11 +304,35 @@ class Example:
         d_peel_x = 10.0
         d_peel_y = 10.0
         pad_shape = PadShape.RECTANGLE
+        # PD gains for the 6-DOF drive coupling kinematic body K to gripper body A (target 0 = A at
+        # its rest offset below K). Armature adds artificial inertia to each drive DOF so the stiff
+        # gains give a low, timestep-resolvable natural frequency -- the gripper's own inertia is
+        # tiny, which otherwise makes a stiff angular drive ring unstably. Tunable.
+        drive_ke_lin = 8000.0
+        drive_kd_lin = 300.0
+        drive_armature_lin = 1.0
+        drive_ke_ang = 500.0
+        drive_kd_ang = 30.0
+        drive_armature_ang = 0.2
 
-        # Create a scene with two bodies A and B.
-        # A is kinematically controlled and has an attached surface gripper.
-        # B is gripped by the surface gripper on A.
-        builder = self._create_builder(LA, LB, m_a, m_b, gravity, start_height_b)
+        # Scene: the velocity profile drives kinematic body K; a 6-DOF PD drive couples K to dynamic
+        # gripper body A so A follows K compliantly; the gripper on A seals onto free box B.
+        builder = self._create_builder(
+            LK,
+            LA,
+            LB,
+            m_k,
+            m_a,
+            m_b,
+            gravity,
+            start_height_b,
+            drive_ke_lin,
+            drive_kd_lin,
+            drive_armature_lin,
+            drive_ke_ang,
+            drive_kd_ang,
+            drive_armature_ang,
+        )
         self.model = builder.finalize()
         self.solver = newton.solvers.SolverMuJoCo(self.model, use_mujoco_contacts=False)
         self.state_0 = self.model.state()
@@ -340,7 +365,7 @@ class Example:
         self.seal_engaged = wp.full(1, True, dtype=wp.bool, device=self.model.device)
         self.seal_body_b = wp.full(1, self.box_b, dtype=wp.int32, device=self.model.device)
 
-        # velocity time series driving the gripper (box A), from the selected profile.
+        # velocity time series driving kinematic body K, from the selected profile.
         self.vel_times = wp.array(vel_times, dtype=wp.float32, device=self.model.device)
         self.vel_twists = wp.array(vel_twists, dtype=wp.spatial_vector, device=self.model.device)
         self.num_vel = len(vel_times)
@@ -356,15 +381,31 @@ class Example:
             self.seal_values = None
 
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
-        self.gripper_q_start = int(self.model.joint_q_start.numpy()[self.gripper_joint])
-        self.gripper_qd_start = int(self.model.joint_qd_start.numpy()[self.gripper_joint])
+        self.box_k_q_start = int(self.model.joint_q_start.numpy()[self.box_k_joint])
+        self.box_k_qd_start = int(self.model.joint_qd_start.numpy()[self.box_k_joint])
 
         self.viewer.set_model(self.model)
         self.capture()
 
-    def _create_builder(self, LA, LB, m_a, m_b, gravity, start_height_b):
-        """Build the two-box scene (kinematic gripper A on free box B, plus a ground plane) and
-        return the builder."""
+    def _create_builder(
+        self,
+        LK,
+        LA,
+        LB,
+        m_k,
+        m_a,
+        m_b,
+        gravity,
+        start_height_b,
+        drive_ke_lin,
+        drive_kd_lin,
+        drive_armature_lin,
+        drive_ke_ang,
+        drive_kd_ang,
+        drive_armature_ang,
+    ):
+        """Build the scene: kinematic body K drives dynamic gripper body A through a 6-DOF PD drive;
+        A's gripper seals onto free box B, above a ground plane. Returns the builder."""
         builder = newton.ModelBuilder(gravity=-gravity)
 
         # zero-density box shapes so the builder honours the explicit mass/inertia passed to
@@ -376,25 +417,48 @@ class Example:
             s = (1.0 / 6.0) * mass * (2.0 * half) ** 2  # solid cube about its centre
             return wp.diag(wp.vec3(s, s, s))
 
-        # box B (free, dynamic) starts start_height_b above the ground; box A (the kinematic gripper)
-        # sits on top with its pad sealing B's top face (A_center = B_center + LA + LB).
+        # box B (free, dynamic) starts start_height_b above the ground; gripper body A sits on top
+        # with its pad sealing B's top face (A_center = B_center + LA + LB). Kinematic body K is a
+        # visible box a small gap above A; the drive's rest state (target 0) holds A drive_gap below K.
+        drive_gap = LK + LA + 0.05
         pose_b = wp.transform(wp.vec3(0.0, 0.0, start_height_b + LB), wp.quat_identity())
         pose_a = wp.transform(wp.vec3(0.0, 0.0, start_height_b + LB + LA + LB), wp.quat_identity())
+        pose_k = wp.transform(wp.vec3(0.0, 0.0, start_height_b + LB + LA + LB + drive_gap), wp.quat_identity())
 
-        # box A is the gripper: kinematic (does not respond to forces) and driven entirely by a
-        # prescribed 6-DOF velocity through a free joint to the world -- every DOF is prescribed.
-        self.box_a = builder.add_link(
-            xform=pose_a,
-            mass=m_a,
-            inertia=box_inertia(m_a, LA),
-            is_kinematic=True,
-            label="gripper_box_A",
+        # K: the kinematic controller -- a box driven by the velocity profile through a free joint to
+        # the world (we write its joint_qd every substep). It ignores forces and does not collide.
+        self.box_k = builder.add_link(
+            xform=pose_k, mass=m_k, inertia=box_inertia(m_k, LK), is_kinematic=True, label="kinematic_K"
         )
+        kinematic_cfg = box_cfg.copy()
+        kinematic_cfg.has_shape_collision = False  # visual only; never collides
+        builder.add_shape_box(self.box_k, hx=LK, hy=LK, hz=LK, cfg=kinematic_cfg)
+        self.box_k_joint = builder.add_joint_free(child=self.box_k, label="kinematic_free")
+
+        # A: the dynamic gripper body carrying the surface gripper. A 6-DOF D6 joint with per-axis PD
+        # drives (target 0) couples A to K, so A follows K but seal loads deflect it against the drive
+        # springs. Armature adds artificial inertia so the stiff gains stay timestep-stable. The joint
+        # anchor is offset drive_gap down from K so the rest pose puts A at pose_a.
+        self.box_a = builder.add_link(xform=pose_a, mass=m_a, inertia=box_inertia(m_a, LA), label="gripper_box_A")
         builder.add_shape_box(self.box_a, hx=LA, hy=LA, hz=LA, cfg=box_cfg)
-        # keep this joint's handle: the reduced-coordinate solver controls A by its joint velocity
-        # (we write this free joint's joint_qd every substep in simulate), not by setting body_qd.
-        self.gripper_joint = builder.add_joint_free(child=self.box_a, label="gripper_free")
-        builder.add_articulation([self.gripper_joint], label="gripper_articulation")
+        JointDof = newton.ModelBuilder.JointDofConfig
+        axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        self.drive_joint = builder.add_joint_d6(
+            parent=self.box_k,
+            child=self.box_a,
+            linear_axes=[
+                JointDof(axis=ax, target_ke=drive_ke_lin, target_kd=drive_kd_lin, armature=drive_armature_lin)
+                for ax in axes
+            ],
+            angular_axes=[
+                JointDof(axis=ax, target_ke=drive_ke_ang, target_kd=drive_kd_ang, armature=drive_armature_ang)
+                for ax in axes
+            ],
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, -drive_gap), wp.quat_identity()),
+            child_xform=wp.transform_identity(),
+            label="gripper_drive",
+        )
+        builder.add_articulation([self.box_k_joint, self.drive_joint], label="gripper_articulation")
 
         # box B is the gripped object: a free body pulled up by the suction seal (no joint drive).
         self.box_b = builder.add_body(xform=pose_b, mass=m_b, inertia=box_inertia(m_b, LB), label="gripped_box_B")
@@ -469,8 +533,8 @@ class Example:
                 # the current geometric state to determine if a seal can be formed.
                 evaluate_seal(self.gripper_model, self.gripper_state, self.seal_engaged)
 
-            # kinematically drive the gripper (box A) at its prescribed 6-DOF velocity, then
-            # propagate the new joint state to the kinematic body's maximal coordinates.
+            # kinematically drive body K at its prescribed 6-DOF velocity, then propagate the new
+            # joint state to the kinematic body's maximal coordinates (A follows via the drive).
             wp.launch(
                 apply_twist_at_current_time,
                 dim=1,
@@ -479,8 +543,8 @@ class Example:
                     self.vel_twists,
                     self.num_vel,
                     self.sim_dt,
-                    self.gripper_q_start,
-                    self.gripper_qd_start,
+                    self.box_k_q_start,
+                    self.box_k_qd_start,
                 ],
                 outputs=[self.sim_time_wp, self.state_0.joint_q, self.state_0.joint_qd],
             )
