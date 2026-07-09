@@ -163,14 +163,12 @@ class Example:
                     ),
                     bodies=self.franka_bodies,
                     joints=self.franka_joints,
-                    shapes=self.franka_shapes,
                 ),
                 SolverCoupled.Entry(
                     name=payload_name,
                     solver=payload_solver,
                     bodies=self.payload_bodies,
                     joints=self.payload_joints,
-                    shapes=self.payload_shapes + self.ground_shapes,
                 ),
             ],
             coupling=SolverCoupledADMM.Config(
