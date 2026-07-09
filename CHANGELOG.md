@@ -79,6 +79,7 @@
 
 ### Fixed
 
+- Fix `ModelBuilder.add_usd()` to honor `ignore_paths` in the custom-frequency traversal, so prims under ignored subtrees no longer register spurious custom-frequency rows in two-pass import workflows. (#3406)
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Raise an error when `SolverVBD(rigid_contact_history=True)` would allocate or grow contact-history buffers during CUDA graph capture; construct `CollisionPipeline` before `SolverVBD`, or run one uncaptured solver step before capture.

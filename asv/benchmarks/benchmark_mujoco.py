@@ -38,6 +38,74 @@ def _target_q(owner):
     return target
 
 
+# Slew targets toward per-joint random waypoints instead of teleporting them:
+# unbounded setpoint jumps create solves the MuJoCo Newton solver cannot finish
+# within any iteration budget (exposed by mujoco_warp#1374), so the benchmark
+# measured the iteration cap instead of converged stepping.
+TARGET_SLEW_PER_FRAME = 0.01  # fraction of each target's range per frame
+TARGET_WAYPOINT_FRAMES = 50  # frames between waypoint draws
+
+
+@wp.kernel
+def _waypoint_control(
+    seed: int,
+    frame: wp.array[int],
+    lo: wp.array[float],
+    hi: wp.array[float],
+    slew_per_frame: float,
+    waypoint_frames: int,
+    joint_target: wp.array[float],
+):
+    # The waypoint is a pure function of (seed, leg, tid): deterministic, and
+    # no state beyond the frame counter, so the kernel is graph-capturable.
+    tid = wp.tid()
+    leg = frame[0] // waypoint_frames
+    state = wp.rand_init(seed, leg * joint_target.shape[0] + tid)
+    span = hi[tid] - lo[tid]
+    waypoint = lo[tid] + wp.randf(state) * span
+    slew = slew_per_frame * span
+    joint_target[tid] = joint_target[tid] + wp.clamp(waypoint - joint_target[tid], -slew, slew)
+
+
+@wp.kernel
+def _advance_frame(frame: wp.array[int]):
+    frame[0] = frame[0] + 1
+
+
+def _target_bounds(model):
+    """Per-entry bounds for randomized position targets in the ``_target_q``
+    layout. Joints whose coords map 1:1 to dofs get their limits intersected
+    with the historical [-1, 1] command range (sentinel/unlimited sides fall
+    back to +-1); free/ball/distance coordinates keep the initial target.
+    """
+    init = _target_q(model).numpy().astype(np.float32)
+    lo, hi = init.copy(), init.copy()
+    joint_types = model.joint_type.numpy()
+    q_starts = model.joint_q_start.numpy()
+    qd_starts = model.joint_qd_start.numpy()
+    limit_lo = model.joint_limit_lower.numpy()
+    limit_hi = model.joint_limit_upper.numpy()
+    dof_total = limit_lo.shape[0]
+    coord_layout = init.shape[0] == model.joint_coord_count
+    quat_joints = (int(newton.JointType.FREE), int(newton.JointType.BALL), int(newton.JointType.DISTANCE))
+    for j, jt in enumerate(joint_types):
+        if jt in quat_joints:
+            continue
+        d0 = int(qd_starts[j])
+        d1 = int(qd_starts[j + 1]) if j + 1 < len(qd_starts) else dof_total
+        for d in range(d0, d1):
+            i = int(q_starts[j]) + (d - d0) if coord_layout else d
+            lower_raw = float(limit_lo[d])
+            upper_raw = float(limit_hi[d])
+            lower = max(lower_raw, -1.0) if lower_raw > -1.0e6 else -1.0
+            upper = min(upper_raw, 1.0) if upper_raw < 1.0e6 else 1.0
+            if lower >= upper and -1.0e6 < lower_raw < upper_raw < 1.0e6:
+                lower, upper = lower_raw, upper_raw  # bounded range outside [-1, 1]
+            if lower < upper:
+                lo[i], hi[i] = lower, upper
+    return lo, hi
+
+
 ROBOT_CONFIGS = {
     "humanoid": {
         "solver": "newton",
@@ -315,9 +383,7 @@ class Example:
         self.use_mujoco_cpu = use_mujoco_cpu
         self.actuation = actuation
 
-        # set numpy random seed
         self.seed = 123
-        self.rng = np.random.default_rng(self.seed)
 
         if not stage_path:
             stage_path = "example_" + robot + ".usd"
@@ -353,16 +419,8 @@ class Example:
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self._quat_target_q_offsets: list[int] = []
-        target_q = _target_q(self.model)
-        if target_q is not None and target_q.shape[0] == self.model.joint_coord_count:
-            joint_types = self.model.joint_type.numpy()
-            q_starts = self.model.joint_q_start.numpy()
-            for j, jt in enumerate(joint_types):
-                if jt == int(newton.JointType.BALL):
-                    self._quat_target_q_offsets.append(int(q_starts[j]))
-                elif jt in (int(newton.JointType.FREE), int(newton.JointType.DISTANCE)):
-                    self._quat_target_q_offsets.append(int(q_starts[j]) + 3)
+        if self.actuation == "random":
+            self.init_waypoint_control()
 
         self.sensor_contact = None
         sensing_bodies = ROBOT_CONFIGS.get(robot, {}).get("sensing_bodies", None)
@@ -395,15 +453,33 @@ class Example:
             self.solver.update_contacts(self.contacts, self.state_0)
             self.sensor_contact.update(self.state_0, self.contacts)
 
+    def init_waypoint_control(self):
+        lo, hi = _target_bounds(self.model)
+        self._target_lo = wp.array(lo, dtype=wp.float32)
+        self._target_hi = wp.array(hi, dtype=wp.float32)
+        self._target_frame = wp.zeros(1, dtype=int)
+
+    def apply_waypoint_control(self):
+        """Enqueue one frame of waypoint target tracking; safe to graph-capture."""
+        target_q = _target_q(self.control)
+        wp.launch(
+            _waypoint_control,
+            dim=(target_q.shape[0],),
+            inputs=[
+                self.seed,
+                self._target_frame,
+                self._target_lo,
+                self._target_hi,
+                TARGET_SLEW_PER_FRAME,
+                TARGET_WAYPOINT_FRAMES,
+            ],
+            outputs=[target_q],
+        )
+        wp.launch(_advance_frame, dim=1, inputs=[self._target_frame])
+
     def step(self):
         if self.actuation == "random":
-            target_q = _target_q(self.control)
-            target_size = target_q.shape[0]
-            samples = self.rng.uniform(-1.0, 1.0, size=target_size).astype(np.float32)
-            for offset in self._quat_target_q_offsets:
-                samples[offset : offset + 4] = (0.0, 0.0, 0.0, 1.0)
-            joint_target = wp.array(samples, dtype=wp.float32)
-            wp.copy(target_q, joint_target)
+            self.apply_waypoint_control()
 
         wp.synchronize_device()
         start_time = time.time()
