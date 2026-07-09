@@ -25,7 +25,9 @@ from ...sim import (
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
+from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
+from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -244,6 +246,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
+        deterministic: wp.DeterministicMode | None = None,
     ):
         """
         Args:
@@ -354,6 +357,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
+            deterministic: Opt-in determinism for this solver's atomic-emitting
+                kernel modules. Pass a :class:`warp.DeterministicMode`, or
+                ``None`` (default) to inherit the current
+                ``wp.config.deterministic`` mode.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -377,6 +384,47 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
 
         super().__init__(model)
+
+        effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        particle_deterministic_max_records = 0
+        coupling_deterministic_max_records = 0
+        if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+            edge_iterations = (
+                particle_edge_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
+            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
+            vertex_iterations = (
+                particle_vertex_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
+            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
+            truncation_records = 4 * (edge_iterations + vertex_iterations)
+            force_records = 2 * edge_iterations + 4 * vertex_iterations
+            if model.shape_count > 0:
+                force_records += 1
+            particle_deterministic_max_records = max(truncation_records, force_records)
+            coupling_deterministic_max_records = 2 * edge_iterations + 3 * vertex_iterations
+        if model.particle_count > 0:
+            self._set_module_options(
+                {
+                    "deterministic": effective_deterministic,
+                    "deterministic_max_records": particle_deterministic_max_records,
+                },
+                module=particle_vbd_kernels,
+            )
+        self._set_module_options(
+            {
+                "deterministic": effective_deterministic,
+                "deterministic_max_records": coupling_deterministic_max_records,
+            },
+            module=vbd_coupling_kernels,
+        )
+
+        options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
+        if model.body_count > 0 and not integrate_with_external_rigid_solver:
+            self._set_module_options(options, module=rigid_vbd_kernels)
+        if model.joint_count > 0:
+            self._set_module_options(
+                {"deterministic": effective_deterministic, "deterministic_max_records": 0},
+                module=xpbd_kernels,
+            )
 
         # Common parameters
         self.iterations = iterations
@@ -779,6 +827,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
@@ -795,6 +844,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
+        self._apply_module_options()
         flags = int(flags)
 
         if (
@@ -870,6 +920,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling interface, so VBD harvests explicit contact forces instead of
         inferring feedback from total proxy momentum change.
         """
+        self._apply_module_options()
         if not self._coupling_has_rigid_avbd_state:
             super().coupling_harvest_proxy_wrenches(
                 body_local_to_proxy_global,
@@ -965,6 +1016,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling, but those proxy-only interactions should not appear as
         feedback forces on the source side.
         """
+        self._apply_module_options()
         del particle_qd_before
         out_particle_f.zero_()
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0:
@@ -1086,10 +1138,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
-        if self.device.is_capturing and not wp.is_mempool_enabled(self.device):
+        from ...utils import is_graph_capture_allocation_enabled  # noqa: PLC0415
+
+        if self.device.is_capturing and not is_graph_capture_allocation_enabled(self.device):
             raise RuntimeError(
                 f"SolverVBD {name} buffer needs to grow from {current} to {required} "
-                "during CUDA graph capture, but Warp mempool is disabled. "
+                "during graph capture, but allocation during capture is not enabled on this device. "
                 "Pre-size before capture by constructing CollisionPipeline before SolverVBD, "
                 "passing explicit rigid_contact_max/soft_contact_max to CollisionPipeline, or running one "
                 "uncaptured step/force-collection pass."
@@ -1654,6 +1708,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
                 need to be allocated or grown during CUDA graph capture.
         """
+        self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
 
