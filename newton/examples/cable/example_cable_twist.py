@@ -209,7 +209,6 @@ class Example:
         self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_torque_scale(0.0)
 
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)

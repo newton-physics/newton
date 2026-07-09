@@ -293,7 +293,6 @@ class Example:
 
         self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_torque_scale(0.0)
 
         # Obstacle kinematics parameters
         self.obstacle_bodies_wp = wp.array(self.obstacle_bodies, dtype=int, device=self.solver.device)

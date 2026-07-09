@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import warp as wp
 
@@ -28,7 +30,6 @@ class Picking:
         pick_damping: float = 5.0,
         pick_max_acceleration: float = 5.0,
         world_offsets: wp.array[wp.vec3] | None = None,
-        pick_torque_scale: float = 1.0,
     ) -> None:
         """
         Initializes the picking system.
@@ -38,21 +39,20 @@ class Picking:
             pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
             pick_damping: The damping that will be used to compute the force applied to the picked body.
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
-                Clamps the picking force to prevent runaway divergence on light objects
-                near stiff contacts.
+                Clamps both linear and equivalent rotational acceleration to prevent
+                runaway divergence on light or low-inertia objects.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
-            pick_torque_scale: Scale of the effective picking lever arm from the body's center of mass to
-                the clicked point. Must be in ``[0, 1]``; ``0`` translates the center of mass without torque
-                and ``1`` preserves normal point-force behavior.
+
+        Raises:
+            ValueError: If ``pick_max_acceleration`` is negative or non-finite.
         """
-        pick_torque_scale = float(pick_torque_scale)
-        if not 0.0 <= pick_torque_scale <= 1.0:
-            raise ValueError("Picking torque scale must be in [0, 1].")
+        pick_max_acceleration = float(pick_max_acceleration)
+        if not math.isfinite(pick_max_acceleration) or pick_max_acceleration < 0.0:
+            raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
 
         self.model = model
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
-        self.pick_torque_scale = pick_torque_scale
         self.world_offsets = world_offsets
         self.visible_worlds_mask: wp.array[int] | None = None
 
@@ -74,7 +74,6 @@ class Picking:
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
         pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
-        pick_state_np[0]["pick_torque_scale"] = pick_torque_scale
         self.pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
 
         self.pick_dist = 0.0
@@ -117,29 +116,11 @@ class Picking:
                 self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
+                self.model.body_inv_inertia,
                 self._pick_effective_mass,
             ],
             device=self.model.device,
         )
-
-    def set_torque_scale(self, scale: float) -> None:
-        """Set the effective mouse-picking lever-arm scale.
-
-        Args:
-            scale: Effective lever-arm scale in ``[0, 1]``; ``0`` translates the
-                center of mass without torque, while ``1`` preserves point-force behavior.
-
-        Raises:
-            ValueError: If ``scale`` is outside ``[0, 1]``.
-        """
-        scale = float(scale)
-        if not 0.0 <= scale <= 1.0:
-            raise ValueError("Picking torque scale must be in [0, 1].")
-
-        pick_state = self.pick_state.numpy()
-        pick_state[0]["pick_torque_scale"] = scale
-        self.pick_state.assign(pick_state)
-        self.pick_torque_scale = scale
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
@@ -327,7 +308,7 @@ class Picking:
             wp.launch(
                 kernel=compute_pick_state_kernel,
                 dim=1,
-                inputs=[state.body_q, self.model.body_com, self.model.body_flags, body_index, hit_point_world],
+                inputs=[state.body_q, self.model.body_flags, body_index, hit_point_world],
                 outputs=[self.pick_body, self.pick_state],
                 device=self.model.device,
             )

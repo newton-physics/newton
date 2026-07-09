@@ -811,7 +811,6 @@ class Example:
 
         # Viewer setup.
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_torque_scale(0.0)
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
             pick_state = picking.pick_state.numpy()

@@ -626,25 +626,6 @@ class ViewerBase(ABC):
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
 
-    def set_picking_torque_scale(self, scale: float) -> None:
-        """Set the mouse-picking lever-arm scale for the active model.
-
-        Args:
-            scale: Effective lever-arm scale in ``[0, 1]``. A value of ``0``
-                translates the body's center of mass without torque; ``1``
-                preserves normal point-force behavior.
-
-        Raises:
-            ValueError: If ``scale`` is outside ``[0, 1]``.
-        """
-        scale = float(scale)
-        if not 0.0 <= scale <= 1.0:
-            raise ValueError("Picking torque scale must be in [0, 1].")
-
-        picking = getattr(self, "picking", None)
-        if picking is not None:
-            picking.set_torque_scale(scale)
-
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""
         if world_idx == -1:  # Global entities always rendered

@@ -175,7 +175,6 @@ class Example:
         self.control = self.model.control()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_torque_scale(0.0)
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:

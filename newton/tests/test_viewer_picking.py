@@ -8,19 +8,25 @@ import warp as wp
 
 import newton
 from newton._src.viewer.picking import Picking
-from newton._src.viewer.viewer_null import ViewerNull
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 
 
-def _make_single_sphere_model(device=None, *, is_kinematic: bool = False, body_com=None):
+def _make_single_sphere_model(
+    device=None, *, is_kinematic: bool = False, body_com=None, body_inertia=None, body_rotation=None
+):
     """Model with one body and one sphere at origin (radius 0.5)."""
+    lock_inertia = body_com is not None or body_inertia is not None
+    if body_inertia is None:
+        body_inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    if body_rotation is None:
+        body_rotation = wp.quat_identity()
     builder = newton.ModelBuilder()
     builder.add_body(
-        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), body_rotation),
         com=body_com,
         mass=1.0,
-        inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-        lock_inertia=body_com is not None,
+        inertia=body_inertia,
+        lock_inertia=lock_inertia,
         is_kinematic=is_kinematic,
     )
     builder.add_shape_sphere(body=0, radius=0.5)
@@ -70,7 +76,6 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(picking.pick_body.numpy()[0], -1)
         self.assertEqual(picking.pick_stiffness, 100.0)
         self.assertEqual(picking.pick_damping, 10.0)
-        self.assertEqual(picking.pick_torque_scale, 1.0)
         self.assertIsNotNone(picking.pick_state)
         self.assertEqual(picking.pick_state.shape[0], 1)
 
@@ -204,19 +209,14 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(forces.shape[0], model.body_count)
         self.assertFalse(np.allclose(forces[0], np.zeros(6), atol=1e-9))
 
-    def test_viewer_picking_torque_scale(self):
-        """Viewer-level torque control is safe without a picker and forwards when available."""
-        viewer = ViewerNull(num_frames=0)
-        viewer.set_picking_torque_scale(0.5)
-        for scale in (-0.1, 1.1):
-            with self.subTest(scale=scale), self.assertRaisesRegex(ValueError, "must be in"):
-                viewer.set_picking_torque_scale(scale)
-
+    def test_pick_max_acceleration_validation(self):
+        """Picking rejects negative and non-finite acceleration limits."""
         model = _make_single_sphere_model(device="cpu")
-        viewer.picking = Picking(model)
+        for value in (-0.1, np.nan, np.inf, -np.inf):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite and nonnegative"):
+                Picking(model, pick_max_acceleration=value)
 
-        viewer.set_picking_torque_scale(0.25)
-        self.assertEqual(viewer.picking.pick_torque_scale, 0.25)
+        Picking(model, pick_max_acceleration=0.0)
 
     def test_world_offsets_optional(self):
         """Picking can be constructed with optional world_offsets."""
@@ -256,111 +256,128 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     test.assertEqual(picking.pick_body.numpy()[0], -1)
 
 
-def test_picking_torque_scale(test: TestPickingSetup, device):
-    """Picking scales torque while preserving consistent point-force behavior."""
+def _apply_picking_target(picking: Picking, state: newton.State, target: tuple[float, float, float]) -> np.ndarray:
+    pick_state = picking.pick_state.numpy()
+    pick_state[0]["picking_target_world"] = target
+    picking.pick_state.assign(pick_state)
+    state.body_f.zero_()
+    picking._apply_picking_force(state)
+    return state.body_f.numpy()[0].copy()
+
+
+def test_picking_torque_limit(test: TestPickingSetup, device):
+    """Picking limits inertia-weighted angular response without changing force."""
+    inertia = wp.mat33(1.0e-4, 0.0, 0.0, 0.0, 2.0e-4, 0.0, 0.0, 0.0, 3.0e-4)
+    model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0), body_inertia=inertia)
+    state = model.state()
+    picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
+
+    picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+    test.assertTrue(picking.is_picking())
+    wrench = _apply_picking_target(picking, state, (0.5, 0.0, -0.5))
+
+    mass = model.body_mass.numpy()[0]
+    inv_inertia = model.body_inv_inertia.numpy()[0]
+    max_acceleration = 5.0 * 9.81
+    rotational_acceleration_sq = wrench[3:] @ inv_inertia @ wrench[3:] / mass
+
+    assert_np_equal(wrench[:3], np.array([max_acceleration * mass, 0.0, 0.0]), tol=1.0e-5)
+    test.assertLessEqual(rotational_acceleration_sq, max_acceleration**2 * (1.0 + 2.0e-5))
+
+    raw_torque = np.cross(np.array([0.0, 0.0, -0.5]), wrench[:3])
+    test.assertGreater(np.dot(raw_torque, wrench[3:]), 0.0)
+    assert_np_equal(np.cross(raw_torque, wrench[3:]), np.zeros(3), tol=1.0e-6)
+    test.assertLess(np.linalg.norm(wrench[3:]), np.linalg.norm(raw_torque))
+
+
+def test_picking_torque_limit_is_noop_below_limit(test: TestPickingSetup, device):
+    """Picking preserves the original point-force wrench below the angular limit."""
     model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0))
     state = model.state()
-    picking = Picking(model, pick_stiffness=4.0, pick_damping=2.0, pick_max_acceleration=1.0e6)
+    picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
 
-    def apply_scale(scale: float) -> np.ndarray:
-        picking.set_torque_scale(scale)
-        state.body_f.zero_()
-        picking._apply_picking_force(state)
-        return state.body_f.numpy()[0].copy()
+    picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+    wrench = _apply_picking_target(picking, state, (0.01, 0.0, -0.5))
+    expected_force = np.array([(10.0 + model.body_mass.numpy()[0]) * 100.0 * 0.01, 0.0, 0.0])
+    expected_torque = np.cross(np.array([0.0, 0.0, -0.5]), expected_force)
+    assert_np_equal(wrench, np.concatenate((expected_force, expected_torque)), tol=1.0e-5)
 
-    ray_start = wp.vec3(0.0, 0.0, -2.0)
-    ray_dir = wp.vec3(0.0, 0.0, 1.0)
-    picking.pick(state, ray_start, ray_dir)
-    test.assertTrue(picking.is_picking())
 
-    picking.update(wp.vec3(0.5, 0.0, -2.0), ray_dir)
-    normal_force = apply_scale(1.0)
-    test.assertFalse(np.allclose(normal_force[:3], np.zeros(3), atol=1e-9))
-    test.assertFalse(np.allclose(normal_force[3:], np.zeros(3), atol=1e-9))
+def test_picking_torque_limit_rotates_with_inertia(test: TestPickingSetup, device):
+    """Picking evaluates anisotropic inertia in the body's local frame."""
+    inertia = wp.mat33(1.0e-4, 0.0, 0.0, 0.0, 2.0e-4, 0.0, 0.0, 0.0, 3.0e-4)
 
-    half_torque_force = apply_scale(0.5)
-    assert_np_equal(half_torque_force[:3], normal_force[:3], tol=1e-6)
-    assert_np_equal(half_torque_force[3:], 0.5 * normal_force[3:], tol=1e-6)
-
-    force_only = apply_scale(0.0)
-    assert_np_equal(force_only[:3], normal_force[:3], tol=1e-6)
-    assert_np_equal(force_only[3:], np.zeros(3), tol=1e-9)
-
-    # Exercise the previous point-force formula and an intermediate virtual
-    # attachment with nonzero rotation, linear/angular velocity, and damping.
-    state.body_q.assign(
-        wp.array(
-            [
-                wp.transform(
-                    wp.vec3(0.1, 0.2, 0.3),
-                    wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi),
-                )
-            ],
-            dtype=wp.transform,
+    def apply_with_rotation(rotation: wp.quat) -> np.ndarray:
+        model = _make_single_sphere_model(
             device=device,
+            body_com=wp.vec3(0.0),
+            body_inertia=inertia,
+            body_rotation=rotation,
         )
+        state = model.state()
+        picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
+        picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+        return _apply_picking_target(picking, state, (0.5, 0.0, -0.5))
+
+    identity_wrench = apply_with_rotation(wp.quat_identity())
+    rotated_wrench = apply_with_rotation(wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi))
+
+    assert_np_equal(rotated_wrench[:3], identity_wrench[:3], tol=1.0e-5)
+    test.assertAlmostEqual(
+        np.linalg.norm(rotated_wrench[3:]) / np.linalg.norm(identity_wrench[3:]),
+        np.sqrt(3.0 / 2.0),
+        delta=2.0e-5,
     )
-    state.body_qd.assign(
-        wp.array(
-            [wp.spatial_vector(0.2, -0.1, 0.3, 1.0, 0.0, 0.0)],
-            dtype=wp.spatial_vector,
-            device=device,
-        )
+
+
+def test_picking_torque_limit_cable(test: TestPickingSetup, device):
+    """Default picking keeps a low-inertia cable's angular speed bounded."""
+    num_links = 12
+    segment_length = 0.05
+    builder = newton.ModelBuilder(gravity=0.0)
+    points = [wp.vec3(-0.5 * num_links * segment_length + i * segment_length, 0.0, 0.3) for i in range(num_links + 1)]
+    quaternions = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
+    bodies, _ = builder.add_rod(
+        positions=points,
+        quaternions=quaternions,
+        radius=0.012,
+        stretch_stiffness=5.0e5,
+        bend_stiffness=20.0,
+        bend_damping=20.0,
+        body_frame_origin="com",
     )
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    control = model.control()
+    solver = newton.solvers.SolverVBD(model, iterations=5)
+    picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
+
+    picking.pick(state_in, wp.vec3(0.025, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0))
+    picked_body = int(picking.pick_body.numpy()[0])
+    test.assertEqual(picked_body, bodies[num_links // 2])
     pick_state = picking.pick_state.numpy()
-    pick_state[0]["picking_target_world"] = (0.4, 0.6, 0.2)
-    picking.pick_state.assign(pick_state)
+    anchor = np.array(pick_state[0]["picking_target_world"], dtype=np.float32)
 
-    force_multiplier = 10.0 + model.body_mass.numpy()[0]
+    dt = 1.0 / 600.0
+    peak_angular_speed = 0.0
+    for step in range(300):
+        target = anchor + np.array([0.0, 0.5 * min(1.0, step / 150.0), 0.0], dtype=np.float32)
+        pick_state[0]["picking_target_world"] = target
+        picking.pick_state.assign(pick_state)
+        state_in.clear_forces()
+        picking._apply_picking_force(state_in)
+        solver.step(state_in, state_out, control, None, dt)
+        state_in, state_out = state_out, state_in
 
-    scale_one_force = force_multiplier * np.array([0.8, -0.2, -2.0])
-    scale_one_expected = np.concatenate((scale_one_force, np.cross([0.0, 0.5, 0.0], scale_one_force)))
-    assert_np_equal(apply_scale(1.0), scale_one_expected, tol=1e-5)
+        body_q = state_in.body_q.numpy()
+        body_qd = state_in.body_qd.numpy()
+        test.assertTrue(np.all(np.isfinite(body_q)))
+        test.assertTrue(np.all(np.isfinite(body_qd)))
+        peak_angular_speed = max(peak_angular_speed, float(np.max(np.linalg.norm(body_qd[:, 3:], axis=1))))
 
-    half_scale_force = force_multiplier * np.array([0.8, 0.8, -0.5])
-    half_scale_expected = np.concatenate((half_scale_force, np.cross([0.0, 0.25, 0.0], half_scale_force)))
-    assert_np_equal(apply_scale(0.5), half_scale_expected, tol=1e-5)
-
-
-def test_zero_torque_scale_tracks_com(test: TestPickingSetup, device):
-    """Zero torque scale tracks the COM independently of body rotation."""
-    model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0, 0.1, 0.0))
-    state = model.state()
-    picking = Picking(model, pick_stiffness=100.0, pick_damping=5.0, pick_torque_scale=0.0)
-
-    ray_start = wp.vec3(0.0, 0.0, -2.0)
-    ray_dir = wp.vec3(0.0, 0.0, 1.0)
-    picking.pick(state, ray_start, ray_dir)
-    test.assertTrue(picking.is_picking())
-
-    rotated_q = wp.array(
-        [
-            wp.transform(
-                wp.vec3(0.0, 0.1, -0.1),
-                wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * wp.pi),
-            )
-        ],
-        dtype=wp.transform,
-        device=device,
-    )
-    angular_qd = wp.array(
-        [wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0)],
-        dtype=wp.spatial_vector,
-        device=device,
-    )
-    state.body_q.assign(rotated_q)
-    state.body_qd.assign(angular_qd)
-
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    assert_np_equal(state.body_f.numpy()[0], np.zeros(6), tol=1e-5)
-
-    picking.update(wp.vec3(0.5, 0.0, -2.0), ray_dir)
-    state.body_f.zero_()
-    picking._apply_picking_force(state)
-    translated_force = state.body_f.numpy()[0]
-    test.assertFalse(np.allclose(translated_force[:3], np.zeros(3), atol=1e-9))
-    assert_np_equal(translated_force[3:], np.zeros(3), tol=1e-9)
+    test.assertLess(peak_angular_speed, 3.0)
 
 
 # Device-parameterized tests
@@ -372,14 +389,26 @@ add_function_test(
 )
 add_function_test(
     TestPickingSetup,
-    "test_picking_torque_scale",
-    test_picking_torque_scale,
+    "test_picking_torque_limit",
+    test_picking_torque_limit,
     devices=get_test_devices(),
 )
 add_function_test(
     TestPickingSetup,
-    "test_zero_torque_scale_tracks_com",
-    test_zero_torque_scale_tracks_com,
+    "test_picking_torque_limit_is_noop_below_limit",
+    test_picking_torque_limit_is_noop_below_limit,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_torque_limit_rotates_with_inertia",
+    test_picking_torque_limit_rotates_with_inertia,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_torque_limit_cable",
+    test_picking_torque_limit_cable,
     devices=get_test_devices(),
 )
 
