@@ -23,7 +23,7 @@ if typing.TYPE_CHECKING:
 
 
 @wp.kernel
-def _assemble_net_input_kernel(
+def _compute_inputs_kernel(
     target_pos: wp.array[float],
     positions: wp.array[float],
     velocities: wp.array[float],
@@ -329,7 +329,7 @@ class ControllerNeuralLSTM(Controller):
             return
 
         wp.launch(
-            _assemble_net_input_kernel,
+            _compute_inputs_kernel,
             dim=n,
             inputs=[
                 target_pos,
