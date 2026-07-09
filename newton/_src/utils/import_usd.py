@@ -56,8 +56,8 @@ from .import_usd_deformable_attachments import (
 )
 from .import_usd_deformable_cable import _deformable_import_cable, _deformable_import_cable_graphs
 from .import_usd_deformable_cloth import _deformable_import_cloth
-from .import_usd_deformable_render import _deformable_import_render
 from .import_usd_deformable_utils import _DeformableImportContext, _scout_deformable_prims
+from .import_usd_deformable_visual import _deformable_import_visual
 from .import_usd_deformable_volume import _deformable_import_volume
 from .import_utils import should_show_collider
 
@@ -925,7 +925,7 @@ def parse_usd(
         return submesh
 
     def _get_visual_material_subset_meshes(prim: Usd.Prim) -> list[tuple[str, Mesh]]:
-        """Load one render mesh per USD material subset when subsets are authored."""
+        """Load one visual mesh per USD material subset when subsets are authored."""
         subsets = _get_face_material_subsets(prim)
         if not subsets:
             return []
@@ -4071,10 +4071,10 @@ def parse_usd(
             _deformable_import_volume(_deformable_ctx)
 
         # Proposal graphics geometry: untagged Meshes under each imported deformable body
-        # become render meshes skinned from that body's simulation elements. Runs after the
+        # become visual meshes skinned from that body's simulation elements. Runs after the
         # family passes so ownership (tet/tri ranges, cable body lists) is realized.
         if load_visual_shapes and _deformable_prims.body_owner:
-            _deformable_import_render(_deformable_ctx)
+            _deformable_import_visual(_deformable_ctx)
 
         # PhysicsAttachment prims from the AOUSD deformables proposal. The current
         # builder can faithfully lower the cable/rod subset because imported cables

@@ -1085,7 +1085,7 @@ add_example_test(
 
 add_example_test(
     TestSoftbodyExamples,
-    name="softbody.example_softbody_render_mesh",
+    name="softbody.example_softbody_visual_mesh",
     devices=cuda_test_devices,
     test_options={"num-frames": 60},
     use_viewer=True,
@@ -1093,7 +1093,7 @@ add_example_test(
 
 add_example_test(
     TestClothExamples,
-    name="cloth.example_cloth_render_mesh",
+    name="cloth.example_cloth_visual_mesh",
     devices=cuda_test_devices,
     test_options={"num-frames": 60},
     use_viewer=True,
@@ -1101,7 +1101,7 @@ add_example_test(
 
 add_example_test(
     TestCableExamples,
-    name="cable.example_cable_render_mesh",
+    name="cable.example_cable_visual_mesh",
     devices=cuda_test_devices,
     test_options={"num-frames": 60},
     use_viewer=True,

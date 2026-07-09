@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example Cable Render Mesh
+# Example Cable Visual Mesh
 #
 # A cable simulated as a chain of capsule rigid bodies (add_rod) drives a
-# smooth, textured render tube. Each render vertex is rigidly bound to its
+# smooth, textured visual tube. Each visual vertex is rigidly bound to its
 # nearest cable segment and follows that body's pose, so the checkerboard
 # tube bends and swings with the cable. Demonstrates the rigid-body
-# (cable/rod) path of the deformable render-mesh workflow
+# (cable/rod) path of the deformable visual-mesh workflow
 # (https://github.com/newton-physics/newton/issues/3223).
 #
-# Command: uv run -m newton.examples cable_render_mesh
+# Command: uv run -m newton.examples cable_visual_mesh
 #
 ###########################################################################
 
@@ -66,7 +66,7 @@ class Example:
         # High-resolution textured tube around the centerline, bound rigidly to
         # the cable segments. A larger radius hides the underlying capsules.
         verts, indices, uvs = self._tube_mesh(nodes, radius=radius * 1.3, segments=20)
-        builder.add_deformable_render_mesh(
+        builder.add_deformable_visual_mesh(
             verts,
             indices,
             kind="body",

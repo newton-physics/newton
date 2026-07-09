@@ -31,7 +31,7 @@ newton
    CollisionPipeline
    Contacts
    Control
-   DeformableRenderMesh
+   DeformableVisualMesh
    EqType
    Gaussian
    GeoType

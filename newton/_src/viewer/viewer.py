@@ -535,9 +535,9 @@ class ViewerBase(ABC):
 
         # World offset support
         layer.world_offsets = None
-        # Deformable render-mesh scratch (render-mesh index -> (sim points, points, normals))
-        layer._render_mesh_scratch: dict[int, tuple[wp.array, wp.array, wp.array]] = {}
-        layer._render_mesh_null_offsets: wp.array | None = None
+        # Deformable visual-mesh scratch (visual-mesh index -> (sim points, points, normals))
+        layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array, wp.array]] = {}
+        layer._deformable_visual_mesh_null_offsets: wp.array | None = None
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
         layer._visible_worlds_mask: wp.array | None = None
@@ -555,7 +555,7 @@ class ViewerBase(ABC):
         layer.show_contacts = False
         layer.show_springs = False
         layer.show_triangles = True
-        layer.show_render_mesh = True
+        layer.show_deformable_visual_meshes = True
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
@@ -1071,7 +1071,7 @@ class ViewerBase(ABC):
         self._log_inertia_boxes(state)
         self._log_sdf_margin_wireframes(state)
 
-        self._log_deformable_render_meshes(state)
+        self._log_deformable_visual_meshes(state)
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
@@ -2718,52 +2718,55 @@ class ViewerBase(ABC):
                 backface_culling=False,
             )
 
-    def _log_deformable_render_meshes(self, state: newton.State):
-        """Skin and draw the render meshes embedded in deformables.
+    def _log_deformable_visual_meshes(self, state: newton.State):
+        """Skin and draw the visual meshes embedded in deformables.
 
         Skinning and normal recomputation run on-device through the shared
-        deformable-render runtime (:mod:`newton._src.sim.deformable_render`);
+        deformable-visual runtime (:mod:`newton._src.sim.deformable_visual`);
         the deformed mesh is emitted through :meth:`log_mesh` so every backend
-        renders it without backend-specific code. Render meshes draw in
+        renders it without backend-specific code. Visual meshes draw in
         addition to the raw simulation triangles; toggle ``show_triangles`` and
-        ``show_render_mesh`` independently.
+        ``show_deformable_visual_meshes`` independently.
         """
-        meshes = getattr(self.model, "deformable_render_meshes", None)
+        meshes = getattr(self.model, "deformable_visual_meshes", None)
         if not meshes:
             return
 
-        from ..sim.deformable_render import compute_render_mesh_normals, skin_render_mesh  # noqa: PLC0415
+        from ..sim.deformable_visual import (  # noqa: PLC0415
+            compute_deformable_visual_mesh_normals,
+            skin_deformable_visual_mesh,
+        )
         from .kernels import apply_world_offset_and_layer_transform  # noqa: PLC0415
 
-        show = self.show_render_mesh and not self._layer_force_hidden()
+        show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
         for rm in meshes:
             # The invariant index keeps replicated worlds' duplicate labels distinct.
             suffix = f"_{rm.label}" if rm.label else ""
-            name = self._qualify(f"/model/render_meshes/{rm.index}{suffix}")
+            name = self._qualify(f"/model/deformable_visual_meshes/{rm.index}{suffix}")
             if not (show and self._should_render_world(rm.world)):
                 # Keep valid geometry registered so visibility can toggle back on.
                 self.log_mesh(name, rm.rest_vertices, rm.indices, uvs=rm.uvs, hidden=True, backface_culling=False)
                 continue
 
             n = rm.vertex_count
-            scratch = self._render_mesh_scratch.get(rm.index)
+            scratch = self._deformable_visual_mesh_scratch.get(rm.index)
             if scratch is None or len(scratch[0]) != n:
                 scratch = (
                     wp.empty(n, dtype=wp.vec3, device=self.device),
                     wp.empty(n, dtype=wp.vec3, device=self.device),
                     wp.zeros(n, dtype=wp.vec3, device=self.device),
                 )
-                self._render_mesh_scratch[rm.index] = scratch
+                self._deformable_visual_mesh_scratch[rm.index] = scratch
             sim_points, points, normals = scratch
 
-            skin_render_mesh(rm, state, self.model, sim_points)
+            skin_deformable_visual_mesh(rm, state, self.model, sim_points)
             # World offsets stay on-device; a missing offset buffer skips the add.
             offsets = self.world_offsets
             world_index = rm.world if offsets is not None else -1
             if offsets is None:
-                if self._render_mesh_null_offsets is None:
-                    self.layer._render_mesh_null_offsets = wp.zeros(1, dtype=wp.vec3, device=self.device)
-                offsets = self._render_mesh_null_offsets
+                if self._deformable_visual_mesh_null_offsets is None:
+                    self.layer._deformable_visual_mesh_null_offsets = wp.zeros(1, dtype=wp.vec3, device=self.device)
+                offsets = self._deformable_visual_mesh_null_offsets
             wp.launch(
                 apply_world_offset_and_layer_transform,
                 dim=n,
@@ -2771,7 +2774,7 @@ class ViewerBase(ABC):
                 outputs=[points],
                 device=self.device,
             )
-            compute_render_mesh_normals(points, rm.indices, normals)
+            compute_deformable_visual_mesh_normals(points, rm.indices, normals)
             self.log_mesh(
                 name,
                 points,

@@ -483,9 +483,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(len(approximations), 1)
             self.assertIn("/World/Body/Col", approximations[0])
 
-    def test_unembedded_graphics_geometry_becomes_render_mesh(self):
+    def test_unembedded_graphics_geometry_becomes_visual_mesh(self):
         """An untagged Mesh under a deformable body is graphics geometry: it imports as a
-        skinned deformable render mesh, never as a native static shape (which would leave
+        skinned deformable visual mesh, never as a native static shape (which would leave
         a frozen copy behind while the deformable moves away)."""
         from pxr import UsdGeom
 
@@ -501,9 +501,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The graphics mesh is excluded from the native loader: no shape imports for it.
         self.assertEqual(builder.shape_count, 0)
         self.assertNotIn("/World/Body/Graphics", result["path_shape_map"])
-        # It imports as a render mesh skinned from the cloth instead.
+        # It imports as a visual mesh skinned from the cloth instead.
         model = builder.finalize()
-        self.assertEqual(model.deformable_render_mesh_count, 1)
+        self.assertEqual(model.deformable_visual_mesh_count, 1)
 
     def test_dedicated_mesh_collider_owned_by_deformable_pass(self):
         """A dedicated UsdGeom.Mesh collider under a deformable body belongs to the

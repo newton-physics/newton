@@ -1,15 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render-mesh embedding data for deformable bodies.
+"""Visual-mesh embedding data for deformable bodies.
 
-A render mesh is a high-resolution, textured display surface that is embedded in
+A visual mesh is a high-resolution, textured display surface that is embedded in
 a coarse simulation deformable (cloth, volumetric soft body, or a cable's rigid
 segment chain) and skinned from the simulation state each frame. The simulation
-continues to run on the coarse mesh; the render mesh is visualization and sensor
+continues to run on the coarse mesh; the visual mesh is visualization and sensor
 geometry only and never participates in the solve or in collision.
 
-See :meth:`newton.ModelBuilder.add_deformable_render_mesh`.
+See :meth:`newton.ModelBuilder.add_deformable_visual_mesh`.
 """
 
 from __future__ import annotations
@@ -20,43 +20,70 @@ import numpy as np
 import warp as wp
 
 
-class DeformableRenderMesh:
-    """A textured render mesh skinned from a deformable's simulation state.
+class DeformableVisualBinding:
+    """Payload-neutral binding from visual points to simulation drivers.
+
+    The binding is independent of the payload being skinned. Today the payload
+    is a triangle mesh; the same binding data can later drive other visual
+    payloads, such as Gaussian splats, without changing how importer code
+    selects simulation drivers.
+    """
+
+    def __init__(
+        self,
+        kind,
+        parent: wp.array[wp.int32],
+        weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
+        local_offsets: wp.array[wp.vec3] | None = None,
+    ):
+        self.kind = kind
+        """Embedding kind."""
+        self.parent = parent
+        """Per-visual-point driver index, shape [point_count]."""
+        self.weights = weights
+        """Barycentric weights for triangle or tet bindings, or ``None``."""
+        self.local_offsets = local_offsets
+        """Body-local offsets for rigid body bindings, or ``None``."""
+
+
+class DeformableVisualMesh:
+    """A textured visual mesh skinned from a deformable's simulation state.
 
     Instances are model output: they are created by
     :meth:`newton.ModelBuilder.finalize` from bindings registered with
-    :meth:`newton.ModelBuilder.add_deformable_render_mesh` (or by the USD
-    importer) and stored in :attr:`newton.Model.deformable_render_meshes`. The
+    :meth:`newton.ModelBuilder.add_deformable_visual_mesh` (or by the USD
+    importer) and stored in :attr:`newton.Model.deformable_visual_meshes`. The
     bind-pose vertices and topology are immutable asset data; the per-vertex
-    embedding (:attr:`parent` plus :attr:`weights` or :attr:`local_offsets`)
-    references simulation elements so consumers can evaluate the current
-    surface from the state, and so future per-element simulation fields can be
-    projected onto the visual vertices.
+    embedding is stored in :attr:`binding` and also exposed through the
+    compatibility attributes :attr:`parent`, :attr:`weights`, and
+    :attr:`local_offsets`. It references simulation elements so consumers can
+    evaluate the current surface from the state, and so future per-element
+    simulation fields can be projected onto the visual vertices.
 
     Attributes are device :class:`warp.array` objects unless noted otherwise.
     """
 
     class Kind(IntEnum):
-        """How a render mesh is embedded into its driving deformable."""
+        """How a visual mesh is embedded into its driving deformable."""
 
         PARTICLE = 0
-        """Each render vertex is bound to one simulation particle (shared or
+        """Each visual vertex is bound to one simulation particle (shared or
         1:1-remapped topology). The deformed position is the particle position
         directly. This is not a general high-resolution surface embedding; use
         :attr:`TRIANGLE` for independently discretized surface meshes."""
 
         TRIANGLE = 1
-        """Each render vertex is embedded in a simulation triangle of a surface
+        """Each visual vertex is embedded in a simulation triangle of a surface
         deformable via three barycentric weights. The deformed position is the
         weighted sum of the triangle's particle positions (no normal offset)."""
 
         TET = 2
-        """Each render vertex is embedded in a tetrahedron of a volumetric soft
+        """Each visual vertex is embedded in a tetrahedron of a volumetric soft
         body via four barycentric weights. The deformed position is the
         weighted sum of the tet's particle positions."""
 
         BODY = 3
-        """Each render vertex is rigidly bound to one rigid body (e.g. a cable
+        """Each visual vertex is rigidly bound to one rigid body (e.g. a cable
         or rod capsule segment) by a body-local offset. The deformed position
         is that offset transformed by the body's current pose. Single-segment
         binding: seams can show at segment boundaries."""
@@ -78,14 +105,21 @@ class DeformableRenderMesh:
         sim_path: str | None = None,
         graphics_path: str | None = None,
     ):
-        self.kind = DeformableRenderMesh.Kind(kind)
-        """Embedding kind (see :class:`DeformableRenderMesh.Kind`)."""
+        self.kind = DeformableVisualMesh.Kind(kind)
+        """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
         self.rest_vertices = rest_vertices
-        """Bind-pose render vertices [m], shape [vertex_count, 3]."""
+        """Bind-pose visual vertices [m], shape [vertex_count, 3]."""
         self.indices = indices
-        """Flattened triangle indices into the render vertices, shape [tri_count*3]."""
+        """Flattened triangle indices into the visual vertices, shape [tri_count*3]."""
+        self.binding = DeformableVisualBinding(
+            kind=self.kind,
+            parent=parent,
+            weights=weights,
+            local_offsets=local_offsets,
+        )
+        """Binding from visual vertices to simulation drivers."""
         self.parent = parent
-        """Per-render-vertex driver index, shape [vertex_count]. A particle index
+        """Per-visual-vertex driver index, shape [vertex_count]. A particle index
         for :attr:`Kind.PARTICLE`, a triangle index into
         :attr:`newton.Model.tri_indices` for :attr:`Kind.TRIANGLE`, a tetrahedron
         index into :attr:`newton.Model.tet_indices` for :attr:`Kind.TET`, and a
@@ -98,15 +132,15 @@ class DeformableRenderMesh:
         """Body-local bind offsets for :attr:`Kind.BODY`,
         shape [vertex_count, 3]; ``None`` for other kinds."""
         self.uvs = uvs
-        """Per-render-vertex texture coordinates, shape [vertex_count, 2], or ``None``."""
+        """Per-visual-vertex texture coordinates, shape [vertex_count, 2], or ``None``."""
         self.texture = texture
         """Albedo texture as an image array (H, W, C) or a path, or ``None``."""
         self.world = world
-        """World index this render mesh belongs to (-1 for global)."""
+        """World index this visual mesh belongs to (-1 for global)."""
         self.label = label
         """Display label. Not unique; use :attr:`index` for a stable identity."""
         self.index = index
-        """Invariant index of this mesh in :attr:`newton.Model.deformable_render_meshes`."""
+        """Invariant index of this mesh in :attr:`newton.Model.deformable_visual_meshes`."""
         self.body_path = body_path
         """USD path of the owning ``PhysicsDeformableBodyAPI`` prim, or ``None``
         when created programmatically."""
@@ -123,7 +157,7 @@ class DeformableRenderMesh:
 
 
 @wp.kernel
-def _skin_render_mesh_particle(
+def _skin_deformable_visual_mesh_particle(
     particle_q: wp.array[wp.vec3],
     parent: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
@@ -133,7 +167,7 @@ def _skin_render_mesh_particle(
 
 
 @wp.kernel
-def _skin_render_mesh_triangle(
+def _skin_deformable_visual_mesh_triangle(
     particle_q: wp.array[wp.vec3],
     tri_indices: wp.array[wp.int32],
     parent: wp.array[wp.int32],
@@ -151,7 +185,7 @@ def _skin_render_mesh_triangle(
 
 
 @wp.kernel
-def _skin_render_mesh_tet(
+def _skin_deformable_visual_mesh_tet(
     particle_q: wp.array[wp.vec3],
     tet_indices: wp.array[wp.int32],
     parent: wp.array[wp.int32],
@@ -170,7 +204,7 @@ def _skin_render_mesh_tet(
 
 
 @wp.kernel
-def _skin_render_mesh_body(
+def _skin_deformable_visual_mesh_body(
     body_q: wp.array[wp.transform],
     parent: wp.array[wp.int32],
     local_offsets: wp.array[wp.vec3],
@@ -207,14 +241,14 @@ def _normalize_normals(normals: wp.array[wp.vec3]):
         normals[i] = n / length
 
 
-def skin_render_mesh(
-    mesh: DeformableRenderMesh,
+def skin_deformable_visual_mesh(
+    mesh: DeformableVisualMesh,
     state,
     model,
     out_points: wp.array[wp.vec3],
     device=None,
 ) -> None:
-    """Evaluate a render mesh's current vertex positions from the simulation state.
+    """Evaluate a visual mesh's current vertex positions from the simulation state.
 
     Writes the skinned positions in the simulation frame into ``out_points``
     (shape [vertex_count, 3]); world offsets and layer transforms are the
@@ -223,10 +257,10 @@ def skin_render_mesh(
     device by default).
     """
     device = device if device is not None else out_points.device
-    kind = DeformableRenderMesh.Kind
+    kind = DeformableVisualMesh.Kind
     if mesh.kind == kind.TET:
         wp.launch(
-            _skin_render_mesh_tet,
+            _skin_deformable_visual_mesh_tet,
             dim=len(out_points),
             inputs=[state.particle_q, model.tet_indices.flatten(), mesh.parent, mesh.weights],
             outputs=[out_points],
@@ -234,7 +268,7 @@ def skin_render_mesh(
         )
     elif mesh.kind == kind.TRIANGLE:
         wp.launch(
-            _skin_render_mesh_triangle,
+            _skin_deformable_visual_mesh_triangle,
             dim=len(out_points),
             inputs=[state.particle_q, model.tri_indices.flatten(), mesh.parent, mesh.weights],
             outputs=[out_points],
@@ -242,7 +276,7 @@ def skin_render_mesh(
         )
     elif mesh.kind == kind.BODY:
         wp.launch(
-            _skin_render_mesh_body,
+            _skin_deformable_visual_mesh_body,
             dim=len(out_points),
             inputs=[state.body_q, mesh.parent, mesh.local_offsets],
             outputs=[out_points],
@@ -250,7 +284,7 @@ def skin_render_mesh(
         )
     else:
         wp.launch(
-            _skin_render_mesh_particle,
+            _skin_deformable_visual_mesh_particle,
             dim=len(out_points),
             inputs=[state.particle_q, mesh.parent],
             outputs=[out_points],
@@ -258,7 +292,7 @@ def skin_render_mesh(
         )
 
 
-def compute_render_mesh_normals(
+def compute_deformable_visual_mesh_normals(
     points: wp.array[wp.vec3],
     indices: wp.array[wp.int32],
     out_normals: wp.array[wp.vec3],

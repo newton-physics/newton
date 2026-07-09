@@ -146,9 +146,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
 * **Graphics geometry** -- an untagged ``UsdGeom.Mesh`` under a deformable body (the
-  proposal's graphics geometry) imports as a render mesh embedded in the simulation
+  proposal's graphics geometry) imports as a visual mesh embedded in the simulation
   geometry and skinned from the simulation state each frame (see
-  :meth:`~newton.ModelBuilder.add_deformable_render_mesh`). ``PhysicsDeformablePoseAPI``
+  :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). ``PhysicsDeformablePoseAPI``
   bind poses are honored. Other point-based graphics geometry (e.g. a graphics TetMesh
   or BasisCurves) cannot be embedded yet: it warns and is skipped.
 * **Collision geometry** -- a dedicated point-based collider (every one warns) only

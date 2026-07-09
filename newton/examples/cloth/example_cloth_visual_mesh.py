@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ###########################################################################
-# Example Softbody Render Mesh
+# Example Cloth Visual Mesh
 #
-# A coarse tetrahedral soft body (a low-resolution cube) drives a
-# high-resolution render mesh embedded inside it. The render mesh is a
-# detailed UV sphere with texture coordinates; it is bound to the cube's
-# tetrahedra at build time and skinned from the simulation state each frame
-# for visualization only, demonstrating the deformable render-mesh workflow
-# from https://github.com/newton-physics/newton/issues/3223.
+# A simulated cloth grid drives a textured visual mesh that shares its
+# topology. The visual mesh is bound per-particle to the cloth and skinned
+# from the simulation state each frame, so the checkerboard texture and UVs
+# follow the cloth as it folds and swings. Demonstrates the shared-topology
+# (cloth) path of the deformable visual-mesh workflow
+# (https://github.com/newton-physics/newton/issues/3223).
 #
-# Command: uv run -m newton.examples softbody.example_softbody_render_mesh
+# Command: uv run -m newton.examples cloth_visual_mesh
 #
 ###########################################################################
 
@@ -33,55 +33,67 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         builder = newton.ModelBuilder()
+
+        # Static sphere for the cloth to drape over.
+        sphere_radius = 0.35
+        sphere_cfg = newton.ModelBuilder.ShapeConfig()
+        sphere_cfg.density = 0.0  # static (infinite mass)
+        sphere_cfg.ke = 1.0e5
+        sphere_cfg.kd = 1.0e1
+        sphere_cfg.mu = 0.5
+        sphere_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()))
+        builder.add_shape_sphere(sphere_body, radius=sphere_radius, cfg=sphere_cfg)
+
+        # Coarse simulation cloth, released flat above the sphere so it drapes.
+        dim = 40
+        cell = 0.035
+        span = dim * cell
+        particle_radius = 0.01
         builder.add_ground_plane()
 
-        # Coarse simulation cube spanning [0, L]^3, fixed on the left so it sags.
-        dim = 3
-        cell = 0.2
-        length = dim * cell
-        origin = wp.vec3(0.0, 0.0, 1.0)
-        builder.add_soft_grid(
-            pos=origin,
+        particle_start = builder.particle_count
+        tri_start = len(builder.tri_indices)
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.5 * span, -0.5 * span, 1.05),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
             dim_x=dim,
             dim_y=dim,
-            dim_z=dim,
             cell_x=cell,
             cell_y=cell,
-            cell_z=cell,
-            density=1.0e3,
-            k_mu=2.0e4,
-            k_lambda=2.0e4,
-            k_damp=1.0e1,
-            fix_left=True,
+            mass=0.1,
+            particle_radius=particle_radius,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+            tri_kd=2.0e1,
         )
+        particle_count = builder.particle_count - particle_start
 
-        # High-resolution render mesh: a UV sphere that fits inside the cube,
-        # so every render vertex embeds in a tetrahedron. A checkerboard texture
-        # makes the deformation of the embedded surface easy to see.
-        center = np.array([origin[0], origin[1], origin[2]], dtype=np.float32) + 0.5 * length
-        sphere = newton.Mesh.create_sphere(radius=0.45 * length, num_latitudes=48, num_longitudes=48)
-        render_verts = np.asarray(sphere.vertices, dtype=np.float32) + center
-        render_indices = np.asarray(sphere.indices, dtype=np.int32)
-        render_uvs = sphere.uvs
+        # Visual mesh shares the cloth topology: bind visual vertex i to cloth
+        # particle (particle_start + i). UVs come from the rest-pose extent so
+        # the checkerboard maps cleanly across the sheet.
+        rest = np.asarray(builder.particle_q[particle_start:], dtype=np.float32)
+        indices = (np.asarray(builder.tri_indices[tri_start:], dtype=np.int32) - particle_start).reshape(-1)
+        spans = rest.max(axis=0) - rest.min(axis=0)
+        u_axis, v_axis = np.argsort(spans)[-2:]
+        uvs = (rest[:, [u_axis, v_axis]] - rest[:, [u_axis, v_axis]].min(0)) / spans[[u_axis, v_axis]]
 
-        builder.add_deformable_render_mesh(
-            render_verts,
-            render_indices,
-            kind="tet",
-            tet_range=(0, builder.tet_count),
-            uvs=render_uvs,
+        builder.add_deformable_visual_mesh(
+            rest,
+            indices,
+            kind="particle",
+            particles=np.arange(particle_start, particle_start + particle_count, dtype=np.int32),
+            uvs=uvs.astype(np.float32),
             texture=self._checker_texture(),
-            label="sphere_skin",
+            label="cloth_skin",
         )
 
         builder.color()
 
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 1.0e2
-        self.model.soft_contact_kd = 0.0
-        self.model.soft_contact_mu = 1.0
+        self.model.soft_contact_ke = 1.0e5
+        self.model.soft_contact_kd = 1.0e2
+        self.model.soft_contact_mu = 0.5
 
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
@@ -96,10 +108,10 @@ class Example:
         self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
-        # The embedded skin is the point of the example: hide the coarse simulation
-        # surface so the textured render mesh is what you see.
+        # The visual mesh shares the cloth topology; hide the raw simulation surface
+        # so the textured skin does not z-fight with it.
         self.viewer.show_triangles = False
-        self.viewer.set_camera(pos=wp.vec3(0.4, -1.3, 1.45), pitch=-8.0, yaw=90.0)
+        self.viewer.set_camera(pos=wp.vec3(1.6, -1.8, 1.2), pitch=-18.0, yaw=135.0)
         self.capture()
 
     @staticmethod
@@ -137,12 +149,11 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        # The coarse cube should deform but stay within a reasonable volume.
-        p_lower = wp.vec3(-1.0, -1.0, 0.0)
+        p_lower = wp.vec3(-2.0, -2.0, 0.0)
         p_upper = wp.vec3(2.0, 2.0, 2.5)
         newton.examples.test_particle_state(
             self.state_0,
-            "soft body particles are within a reasonable volume",
+            "cloth particles are within a reasonable volume",
             lambda q, _qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
 
