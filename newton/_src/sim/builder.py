@@ -3781,6 +3781,7 @@ class ModelBuilder:
             "shape_gap",
             "shape_sdf_narrow_band_range",
             "shape_sdf_max_resolution",
+            "shape_force_sdf",
             "shape_sdf_target_voxel_size",
             "shape_sdf_texture_format",
             "shape_sdf_padding",
