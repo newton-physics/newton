@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import numpy as np
@@ -477,7 +478,11 @@ def _infer_broad_phase_mode_from_instance(broad_phase: BroadPhaseAllPairs | Broa
 
 
 def _world_compatible_pairs(
-    feature_world: np.ndarray, shape_world: np.ndarray, world_count: int, device
+    feature_world: np.ndarray,
+    shape_world: np.ndarray,
+    world_count: int,
+    device,
+    shape_ok: np.ndarray | None = None,
 ) -> wp.array[wp.vec2i]:
     """Emit ``(feature, shape)`` index pairs whose worlds are compatible: same world, or either is
     global (``-1``). ``feature_world[i]`` / ``shape_world[s]`` give each entity's world (-1 == global).
@@ -492,6 +497,11 @@ def _world_compatible_pairs(
     n_shapes = len(shape_world)
 
     def _pairs(f_idx: np.ndarray, s_idx: np.ndarray) -> wp.array[wp.vec2i]:
+        # ``shape_ok`` (optional, indexed by shape) drops pairs whose shape cannot participate -- e.g.
+        # full-surface edge/face excludes shapes without a usable SDF, which fall back to per-particle.
+        if shape_ok is not None and len(s_idx):
+            keep = shape_ok[s_idx.astype(np.intp)]
+            f_idx, s_idx = f_idx[keep], s_idx[keep]
         stacked = np.column_stack((f_idx, s_idx)).astype(np.int32) if len(f_idx) else np.empty((0, 2), np.int32)
         return wp.array(stacked, dtype=wp.vec2i, device=device)
 
@@ -552,7 +562,9 @@ def _build_soft_particle_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]
     return _world_compatible_pairs(model.particle_world.numpy(), model.shape_world.numpy(), world_count, model.device)
 
 
-def _build_soft_face_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+def _build_soft_face_rigid_contact_pairs(
+    model: Model, capable_shape_mask: np.ndarray | None = None
+) -> wp.array[wp.vec2i]:
     """World-compatible ``(soft triangle, shape)`` candidate pairs for the full-surface FACE pass,
     mirroring :func:`_build_soft_particle_rigid_contact_pairs`. A triangle's world is the world of
     its first vertex (all three share it). Empty when there are no triangles or no shapes.
@@ -565,10 +577,14 @@ def _build_soft_face_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
         return empty
     world_count = int(getattr(model, "world_count", 0) or 0)
     face_world = model.particle_world.numpy()[model.tri_indices.numpy()[:, 0]]
-    return _world_compatible_pairs(face_world, model.shape_world.numpy(), world_count, device)
+    return _world_compatible_pairs(
+        face_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
+    )
 
 
-def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
+def _build_soft_edge_rigid_contact_pairs(
+    model: Model, capable_shape_mask: np.ndarray | None = None
+) -> wp.array[wp.vec2i]:
     """World-compatible ``(soft edge, shape)`` candidate pairs for the full-surface EDGE pass,
     mirroring :func:`_build_soft_particle_rigid_contact_pairs`. An edge's world is that of one of its
     endpoints. Endpoints come straight from ``model.edge_indices`` (no mesh adjacency needed). Empty
@@ -583,7 +599,112 @@ def _build_soft_edge_rigid_contact_pairs(model: Model) -> wp.array[wp.vec2i]:
     world_count = int(getattr(model, "world_count", 0) or 0)
     # edge_indices rows are [o0, o1, v0, v1]; col 2 (v0) is an endpoint, so its world is the edge's.
     edge_world = model.particle_world.numpy()[model.edge_indices.numpy()[:, 2]]
-    return _world_compatible_pairs(edge_world, model.shape_world.numpy(), world_count, device)
+    return _world_compatible_pairs(
+        edge_world, model.shape_world.numpy(), world_count, device, shape_ok=capable_shape_mask
+    )
+
+
+def _full_surface_capable_shape_mask(model: Model) -> np.ndarray:
+    """Boolean mask over shapes: ``True`` where the shape can generate full-surface edge/face contacts.
+
+    Capable: analytic primitives (sphere/box/capsule/cylinder/cone/ellipsoid), an *infinite* plane
+    (width=length=0), and a mesh/convex with a real provisioned SDF (nonnegative ``_shape_sdf_index``
+    pointing at a non-empty descriptor). Not capable -- the shape falls back to per-particle soft
+    contact: heightfields (edge/face SDF optimization is unsupported), finite planes (the +Z normal is
+    wrong off the quad), and mesh/convex shapes without a real SDF (a nonnegative index can still point
+    at an empty BVH-fallback descriptor, whose coarse texture is ``None``).
+    """
+    stype = model.shape_type.numpy()
+    scale = model.shape_scale.numpy()
+    analytic = np.isin(
+        stype,
+        (
+            int(GeoType.SPHERE),
+            int(GeoType.BOX),
+            int(GeoType.CAPSULE),
+            int(GeoType.CYLINDER),
+            int(GeoType.CONE),
+            int(GeoType.ELLIPSOID),
+        ),
+    )
+    infinite_plane = (stype == int(GeoType.PLANE)) & (scale[:, 0] == 0.0) & (scale[:, 1] == 0.0)
+    is_mesh = np.isin(stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+    has_real_sdf = np.zeros(len(stype), dtype=bool)
+    if getattr(model, "_shape_sdf_index", None) is not None:
+        sidx = model._shape_sdf_index.numpy()
+        coarse = getattr(model, "_texture_sdf_coarse_textures", None)
+        has_real_sdf = np.array(
+            [s >= 0 and coarse is not None and s < len(coarse) and coarse[s] is not None for s in sidx],
+            dtype=bool,
+        )
+    return analytic | infinite_plane | (is_mesh & has_real_sdf)
+
+
+def _raise_on_unprovisioned_full_surface_meshes(model: Model, capable: np.ndarray) -> None:
+    """A participating mesh/convex without a real SDF is a provisioning *mistake*, not an inherent
+    limitation, so fail loudly (the edge/face passes would otherwise sample an empty descriptor and a
+    soft body could pass straight through). Distinct from the unsupported shape *types*, which warn
+    and fall back -- see :func:`_warn_full_surface_fallbacks`."""
+    stype = model.shape_type.numpy()
+    is_mesh = np.isin(stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+    collide_particles = (model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
+    unprovisioned = np.where(is_mesh & collide_particles & ~capable)[0]
+    if unprovisioned.size == 0:
+        return
+    labels = getattr(model, "shape_key", None)
+    missing = [(labels[i] if labels is not None and i < len(labels) else f"shape {int(i)}") for i in unprovisioned]
+    raise ValueError(
+        f"enable_rigid_soft_full_surface_contact=True, but these participating rigid shapes have no "
+        f"signed-distance field: {missing}. The edge and face contact passes sample each rigid "
+        f"mesh/convex shape's SDF, so a shape without one is skipped and a soft body can pass straight "
+        f"through it. Provision an SDF before ModelBuilder.finalize(), any one of these ways:\n"
+        f"  - For shapes that use the builder's default config (including importer-added shapes): "
+        f"set builder.default_shape_cfg.configure_sdf(force_sdf=True) before you add or import them.\n"
+        f"  - For a shape you gave an explicit config: call configure_sdf() on that config, e.g. "
+        f"cfg.configure_sdf(force_sdf=True) (optionally max_resolution=... or target_voxel_size=...).\n"
+        f"  - Manually: build one with mesh.build_sdf() and attach it to the shape.\n"
+        f"Or set enable_rigid_soft_full_surface_contact=False to use per-vertex (particle) contacts only."
+    )
+
+
+def _warn_full_surface_fallbacks(model: Model, capable: np.ndarray) -> None:
+    """Warn about participating shapes whose *type* cannot do edge/face -- heightfields, finite planes,
+    Gaussian splats, the NONE placeholder -- which fall back to per-particle soft contact. Mesh/convex
+    without an SDF is handled separately (it raises; see
+    :func:`_raise_on_unprovisioned_full_surface_meshes`), so it is excluded here."""
+    stype = model.shape_type.numpy()
+    is_mesh = np.isin(stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+    collide_particles = (model.shape_flags.numpy() & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
+    fallback = np.where(collide_particles & ~capable & ~is_mesh)[0]
+    if fallback.size == 0:
+        return
+    labels = getattr(model, "shape_key", None)
+
+    def _label(i: int) -> str:
+        return labels[i] if labels is not None and i < len(labels) else f"shape {int(i)}"
+
+    heightfields, finite_planes, other = [], [], []
+    for i in fallback:
+        if stype[i] == int(GeoType.HFIELD):
+            heightfields.append(_label(i))
+        elif stype[i] == int(GeoType.PLANE):
+            finite_planes.append(_label(i))
+        else:
+            other.append(_label(i))
+    reasons = []
+    if heightfields:
+        reasons.append(f"heightfields {heightfields} (edge/face SDF optimization is not supported)")
+    if finite_planes:
+        reasons.append(f"finite planes {finite_planes} (only infinite planes are supported)")
+    if other:
+        reasons.append(f"shape types without an analytic signed-distance field {other}")
+    warnings.warn(
+        "enable_rigid_soft_full_surface_contact=True: these participating shapes cannot generate "
+        "edge/face contacts and fall back to per-particle soft contact only -- "
+        + "; ".join(reasons)
+        + ". Full-surface contacts still apply to the rest of the scene.",
+        stacklevel=3,
+    )
 
 
 class CollisionPipeline:
@@ -992,8 +1113,18 @@ class CollisionPipeline:
         # Full-surface edge/face candidate pairs (world-compatible, like the particle pairs above);
         # empty when the flag is off so the flag-off default stays bit-for-bit.
         if enable_rigid_soft_full_surface_contact:
-            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model)
-            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model)
+            # Only shapes with a usable SDF can generate edge/face contacts (see
+            # _full_surface_capable_shape_mask). A participating mesh/convex WITHOUT an SDF is a
+            # provisioning mistake and fails loudly. Unsupported shape TYPES (heightfields, finite
+            # planes, Gaussian splats, ...) instead warn and are excluded from the edge/face candidate
+            # pairs, falling back to per-particle soft contact -- so one such shape does not disable
+            # full-surface for the rest of the scene.
+            _capable = _full_surface_capable_shape_mask(model) if model.shape_count > 0 else None
+            if _capable is not None:
+                _raise_on_unprovisioned_full_surface_meshes(model, _capable)
+                _warn_full_surface_fallbacks(model, _capable)
+            self.soft_edge_rigid_pairs = _build_soft_edge_rigid_contact_pairs(model, _capable)
+            self.soft_face_rigid_pairs = _build_soft_face_rigid_contact_pairs(model, _capable)
         else:
             _empty_pairs = wp.array(np.empty((0, 2), np.int32), dtype=wp.vec2i, device=model.device)
             self.soft_edge_rigid_pairs, self.soft_face_rigid_pairs = _empty_pairs, _empty_pairs
@@ -1003,69 +1134,6 @@ class CollisionPipeline:
             soft_contact_max += len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
         self.soft_contact_margin = soft_contact_margin
         self._soft_contact_max = soft_contact_max
-
-        # The full-surface edge/face passes need a provisioned SDF for every participating mesh/convex
-        # shape. Validate host-side at construction (never inside a captured collide()) and fail loudly
-        # so a missing SDF cannot silently degrade to the per-particle path.
-        if enable_rigid_soft_full_surface_contact and model.shape_count > 0:
-            _stype = model.shape_type.numpy()
-            _sflags = model.shape_flags.numpy()
-            _collide_particles = (_sflags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
-
-            # The full-surface edge/face passes have no signed-distance dispatch for heightfields, and
-            # use a +Z normal for planes that is correct only for an infinite plane (width=length=0) --
-            # a finite plane would emit off-quad contacts with the wrong normal. Reject such
-            # participating shapes loudly at construction rather than emitting silently-wrong or
-            # out-of-bounds contacts. Full heightfield/finite-plane support is deferred.
-            _scale = model.shape_scale.numpy()
-            _is_finite_plane = (_stype == int(GeoType.PLANE)) & ((_scale[:, 0] != 0.0) | (_scale[:, 1] != 0.0))
-            _unsupported = np.where(_collide_particles & ((_stype == int(GeoType.HFIELD)) | _is_finite_plane))[0]
-            if _unsupported.size > 0:
-                _labels = getattr(model, "shape_key", None)
-                bad = [
-                    (_labels[i] if _labels is not None and i < len(_labels) else f"shape {int(i)}")
-                    for i in _unsupported
-                ]
-                raise NotImplementedError(
-                    f"enable_rigid_soft_full_surface_contact=True is not supported for these participating "
-                    f"shapes: {bad}. The full-surface edge/face passes have no signed-distance dispatch for "
-                    f"heightfields, and use a +Z normal for planes that is correct only for an infinite plane "
-                    f"(width=length=0), not a finite one. Clear ShapeFlags.COLLIDE_PARTICLES on these shapes, "
-                    f"use an infinite plane, or set enable_rigid_soft_full_surface_contact=False."
-                )
-
-            # Mesh/convex shapes need a *real* provisioned SDF. A nonnegative shape_sdf_index is not
-            # sufficient: the mesh-mesh path can point it at an empty placeholder descriptor (a BVH
-            # fallback appends create_empty_texture_sdf_data(), whose coarse texture is None), which the
-            # edge/face passes would sample and crash (CUDA 700). Treat an empty descriptor as
-            # unprovisioned so this fails on the host before any launch.
-            if model._shape_sdf_index is not None:
-                _sidx = model._shape_sdf_index.numpy()
-                _coarse = getattr(model, "_texture_sdf_coarse_textures", None)
-                _is_mesh = np.isin(_stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
-                _has_real_sdf = np.array(
-                    [s >= 0 and _coarse is not None and s < len(_coarse) and _coarse[s] is not None for s in _sidx],
-                    dtype=bool,
-                )
-                _unprovisioned = np.where(_is_mesh & _collide_particles & ~_has_real_sdf)[0]
-                if _unprovisioned.size > 0:
-                    _labels = getattr(model, "shape_key", None)
-                    missing = [
-                        (_labels[i] if _labels is not None and i < len(_labels) else f"shape {int(i)}")
-                        for i in _unprovisioned
-                    ]
-                    raise ValueError(
-                        f"enable_rigid_soft_full_surface_contact=True, but these participating rigid shapes have no "
-                        f"signed-distance field: {missing}. The edge and face contact passes sample each rigid "
-                        f"mesh/convex shape's SDF, so a shape without one is skipped and a soft body can pass straight "
-                        f"through it. Provision an SDF before ModelBuilder.finalize(), any one of these ways:\n"
-                        f"  - For shapes that use the builder's default config (including importer-added shapes): "
-                        f"set builder.default_shape_cfg.configure_sdf(force_sdf=True) before you add or import them.\n"
-                        f"  - For a shape you gave an explicit config: call configure_sdf() on that config, e.g. "
-                        f"cfg.configure_sdf(force_sdf=True) (optionally max_resolution=... or target_voxel_size=...).\n"
-                        f"  - Manually: build one with mesh.build_sdf() and attach it to the shape.\n"
-                        f"Or set enable_rigid_soft_full_surface_contact=False to use per-vertex (particle) contacts only."
-                    )
 
         self.requires_grad = requires_grad
         self.deterministic = deterministic

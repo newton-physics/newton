@@ -3175,15 +3175,44 @@ def test_collide_syncs_full_surface_marker(test, device):
     )
 
 
-def test_full_surface_rejects_finite_plane(test, device):
-    """A finite plane participating in full-surface is rejected: eval_shape_sdf returns a hardcoded
-    +Z normal that is wrong off the quad (E4)."""
+def test_full_surface_finite_plane_falls_back(test, device):
+    """A finite plane can't do edge/face (its +Z normal is wrong off the quad), so it warns and falls
+    back to per-particle soft contact instead of failing the pipeline: construction succeeds, the
+    plane is excluded from the edge/face candidate pairs, and a capable box still keeps them (E4)."""
     builder = newton.ModelBuilder()
-    builder.add_shape_plane(plane=(0.0, 0.0, 1.0, 0.0), width=5.0, length=5.0)  # finite
+    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    plane = builder.add_shape_plane(plane=(0.0, 0.0, 1.0, 0.0), width=5.0, length=5.0)  # finite
     _add_soft_triangle(builder)
     model = builder.finalize(device=device)
-    with test.assertRaises(NotImplementedError):
-        newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    with test.assertWarns(UserWarning):
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    face_shapes = (
+        {int(s) for s in pipeline.soft_face_rigid_pairs.numpy()[:, 1]} if len(pipeline.soft_face_rigid_pairs) else set()
+    )
+    test.assertIn(box, face_shapes, "the capable box keeps its full-surface face pairs")
+    test.assertNotIn(plane, face_shapes, "the finite plane is excluded from full-surface (fell back)")
+
+
+def test_full_surface_heightfield_falls_back(test, device):
+    """A heightfield exposes only a per-cell local-plane distance (discontinuous across cells),
+    unsuitable for the edge/face SDF optimizers, so it warns and falls back to per-particle soft
+    contact rather than failing the pipeline; a capable box keeps full-surface (E4)."""
+    builder = newton.ModelBuilder()
+    box = builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    hf = builder.add_shape_heightfield(
+        heightfield=newton.Heightfield(
+            data=np.zeros((3, 3), dtype=np.float32), nrow=3, ncol=3, hx=1.0, hy=1.0, min_z=0.0, max_z=0.0
+        )
+    )
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+    with test.assertWarns(UserWarning):
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+    face_shapes = (
+        {int(s) for s in pipeline.soft_face_rigid_pairs.numpy()[:, 1]} if len(pipeline.soft_face_rigid_pairs) else set()
+    )
+    test.assertIn(box, face_shapes, "the capable box keeps its full-surface face pairs")
+    test.assertNotIn(hf, face_shapes, "the heightfield is excluded from full-surface (fell back)")
 
 
 def test_full_surface_allows_infinite_plane(test, device):
@@ -3201,7 +3230,8 @@ for _name, _fn in (
     ("test_soft_contact_tids_decoupled_from_capacity", test_soft_contact_tids_decoupled_from_capacity),
     ("test_full_surface_replay_spans_candidate_space", test_full_surface_replay_spans_candidate_space),
     ("test_collide_syncs_full_surface_marker", test_collide_syncs_full_surface_marker),
-    ("test_full_surface_rejects_finite_plane", test_full_surface_rejects_finite_plane),
+    ("test_full_surface_finite_plane_falls_back", test_full_surface_finite_plane_falls_back),
+    ("test_full_surface_heightfield_falls_back", test_full_surface_heightfield_falls_back),
     ("test_full_surface_allows_infinite_plane", test_full_surface_allows_infinite_plane),
 ):
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
