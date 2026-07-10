@@ -12,9 +12,22 @@ from ...core import Axis
 from ...geometry import Gaussian, GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
+from ...utils.color import ColorSpace, color_srgb_to_linear
 from .render import create_kernel
 from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
 from .utils import Utils
+
+
+def _srgb_packed_rgba_to_linear(packed: int) -> int:
+    r = packed & 0xFF
+    g = (packed >> 8) & 0xFF
+    b = (packed >> 16) & 0xFF
+    a = (packed >> 24) & 0xFF
+    linear = color_srgb_to_linear((r / 255.0, g / 255.0, b / 255.0))
+    lr = min(max(int(linear[0] * 255.0), 0), 255)
+    lg = min(max(int(linear[1] * 255.0), 0), 255)
+    lb = min(max(int(linear[2] * 255.0), 0), 255)
+    return (a << 24) | (lb << 16) | (lg << 8) | lr
 
 
 class RenderContext:
@@ -294,10 +307,22 @@ class RenderContext:
             if hdr_color_image is not None:
                 hdr_color_image = hdr_color_image.reshape(self.world_count * camera_count * width * height)
 
-            kernel_cache_key = hash((self.config, self.state, clear_data, kernel_block_dim))
+            # Pre-fill outputs with clear values so the render kernel only needs
+            # to write hit pixels; misses simply keep the pre-filled value.
+            self._fill_clear_outputs(
+                clear_data,
+                color_image,
+                depth_image,
+                shape_index_image,
+                normal_image,
+                albedo_image,
+                hdr_color_image,
+            )
+
+            kernel_cache_key = hash((self.config, self.state, kernel_block_dim))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
-                render_kernel = create_kernel(self.config, self.state, clear_data, block_dim=kernel_block_dim)
+                render_kernel = create_kernel(self.config, self.state, block_dim=kernel_block_dim)
                 self.kernel_cache[kernel_cache_key] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
@@ -360,6 +385,39 @@ class RenderContext:
                 device=self.device,
                 block_dim=kernel_block_dim,
             )
+
+    def _fill_clear_outputs(
+        self,
+        clear_data: RenderContext.ClearData,
+        color_image: wp.array[wp.uint32] | None,
+        depth_image: wp.array[wp.float32] | None,
+        shape_index_image: wp.array[wp.uint32] | None,
+        normal_image: wp.array[wp.vec3f] | None,
+        albedo_image: wp.array[wp.uint32] | None,
+        hdr_color_image: wp.array[wp.vec3f] | None,
+    ):
+        """Fill each active output buffer with its clear value before rendering.
+
+        Packed color and albedo are converted to linear when
+        :attr:`Config.output_color_space` is ``ColorSpace.LINEAR``, matching the
+        color space the render kernel writes hit pixels in.
+        """
+        linear = self.config.output_color_space == ColorSpace.LINEAR
+
+        if color_image is not None:
+            clear_color = _srgb_packed_rgba_to_linear(clear_data.clear_color) if linear else clear_data.clear_color
+            color_image.fill_(clear_color)
+        if depth_image is not None:
+            depth_image.fill_(clear_data.clear_depth)
+        if shape_index_image is not None:
+            shape_index_image.fill_(clear_data.clear_shape_index)
+        if normal_image is not None:
+            normal_image.fill_(wp.vec3f(*clear_data.clear_normal))
+        if albedo_image is not None:
+            clear_albedo = _srgb_packed_rgba_to_linear(clear_data.clear_albedo) if linear else clear_data.clear_albedo
+            albedo_image.fill_(clear_albedo)
+        if hdr_color_image is not None:
+            hdr_color_image.fill_(wp.vec3f(0.0))
 
     @property
     def world_count_total(self) -> int:

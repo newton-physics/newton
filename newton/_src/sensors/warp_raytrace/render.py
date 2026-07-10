@@ -8,30 +8,17 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType
-from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
+from ...utils.color import ColorSpace, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .types import ClearData, MeshData, RenderOrder, TextureData
+from .types import MeshData, RenderOrder, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-def _srgb_packed_rgba_to_linear(packed: int) -> int:
-    r = packed & 0xFF
-    g = (packed >> 8) & 0xFF
-    b = (packed >> 16) & 0xFF
-    a = (packed >> 24) & 0xFF
-    linear = color_srgb_to_linear((r / 255.0, g / 255.0, b / 255.0))
-    lr = min(max(int(linear[0] * 255.0), 0), 255)
-    lg = min(max(int(linear[1] * 255.0), 0), 255)
-    lb = min(max(int(linear[2] * 255.0), 0), 255)
-    return (a << 24) | (lb << 16) | (lg << 8) | lr
-
-
 def create_kernel(
     config: RenderContext.Config,
     state: RenderContext.State,
-    clear_data: RenderContext.ClearData,
     block_dim: int = 64,
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
@@ -45,42 +32,6 @@ def create_kernel(
         raytrace_closest_hit = raytrace.create_closest_hit_function(config, state)
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
-
-    if config.output_color_space == ColorSpace.LINEAR:
-        clear_data = ClearData(
-            clear_color=_srgb_packed_rgba_to_linear(clear_data.clear_color),
-            clear_depth=clear_data.clear_depth,
-            clear_shape_index=clear_data.clear_shape_index,
-            clear_normal=clear_data.clear_normal,
-            clear_albedo=_srgb_packed_rgba_to_linear(clear_data.clear_albedo),
-        )
-
-    @wp.func
-    def write_clear_outputs(
-        out_index: wp.int32,
-        out_color: wp.array[wp.uint32],
-        out_depth: wp.array[wp.float32],
-        out_shape_index: wp.array[wp.uint32],
-        out_normal: wp.array[wp.vec3f],
-        out_albedo: wp.array[wp.uint32],
-        out_hdr_color: wp.array[wp.vec3f],
-    ):
-        if wp.static(state.render_color):
-            out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
-        if wp.static(state.render_albedo):
-            out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
-        if wp.static(state.render_hdr_color):
-            out_hdr_color[out_index] = wp.vec3f(0.0)
-        if wp.static(state.render_depth):
-            out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
-        if wp.static(state.render_normal):
-            out_normal[out_index] = wp.vec3f(
-                wp.static(clear_data.clear_normal[0]),
-                wp.static(clear_data.clear_normal[1]),
-                wp.static(clear_data.clear_normal[2]),
-            )
-        if wp.static(state.render_shape_index):
-            out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
 
     @wp.kernel(
         enable_backward=False,
@@ -172,7 +123,6 @@ def create_kernel(
             camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
-            write_clear_outputs(out_index, out_color, out_depth, out_shape_index, out_normal, out_albedo, out_hdr_color)
             return
 
         closest_hit = raytrace_closest_hit(
@@ -201,7 +151,6 @@ def create_kernel(
         )
 
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
-            write_clear_outputs(out_index, out_color, out_depth, out_shape_index, out_normal, out_albedo, out_hdr_color)
             return
 
         if wp.static(state.render_depth):
