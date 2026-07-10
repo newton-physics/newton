@@ -1024,14 +1024,11 @@ class CollisionPipeline:
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:
-        if not hasattr(model, "shape_collision_filter_pairs"):
+        sorted_pairs = model.shape_collision_filter_pairs_array()
+        if sorted_pairs.shape[0] == 0:
             return None
-        filters = model.shape_collision_filter_pairs
-        if not filters:
-            return None
-        sorted_pairs = sorted(filters)  # lexicographic (already canonical min,max)
         return wp.array(
-            np.array(sorted_pairs),
+            sorted_pairs,
             dtype=wp.vec2i,
             device=model.device,
         )
@@ -1348,7 +1345,7 @@ class CollisionPipeline:
             )
 
         # Generate soft contacts for particles and shapes
-        if state.particle_q and self.soft_rigid_contact_pair_count > 0:
+        if state.particle_q and self.soft_contact_max > 0 and self.soft_rigid_contact_pair_count > 0:
             wp.launch(
                 kernel=create_soft_contacts,
                 dim=self.soft_rigid_contact_pair_count,

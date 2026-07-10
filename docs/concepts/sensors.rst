@@ -99,11 +99,44 @@ Newton provides five sensor types. See the
 :doc:`API reference <../api/newton_sensors>` for constructor arguments,
 attributes, and usage examples.
 
-* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, including friction decomposition,
-  with optional per-counterpart breakdown.
+* :class:`~newton.sensors.SensorContact` -- contact forces between bodies or shapes, with friction decomposition,
+  optional per-counterpart force matrices, and force-weighted contact positions.
 * :class:`~newton.sensors.SensorFrameTransform` -- relative transforms of shapes/sites with respect to reference sites.
 * :class:`~newton.sensors.SensorIMU` -- linear acceleration and angular velocity at site frames.
 * :class:`~newton.sensors.SensorTiledCamera` -- raytraced color and depth rendering across multiple worlds.
+
+Camera Rays from USD Data
+-------------------------
+
+``SensorTiledCamera`` can build standard USD pinhole camera rays directly. For lens models without standard USD
+attributes, read the attributes you use in your pipeline and pass the numeric values into the matching helper:
+
+.. code-block:: python
+
+   from pxr import Usd
+
+   from newton.sensors import SensorTiledCamera
+
+   stage = Usd.Stage.Open("scene.usda")
+   usd_camera = stage.GetPrimAtPath("/World/Camera")
+
+   sensor = SensorTiledCamera(model)
+   camera_rays = sensor.utils.compute_camera_rays_usd_pinhole(640, 480, usd_camera)
+   camera_transforms = sensor.utils.compute_camera_transforms_usd(usd_camera)
+
+   color = sensor.utils.create_color_image_output(640, 480)
+   sensor.update(
+       state,
+       camera_transforms,
+       camera_rays,
+       color_image=color,
+   )
+
+For fisheye cameras, extract the calibration values from your chosen USD attributes and call one of
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_opencv`,
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_ftheta`, or
+:meth:`~newton.sensors.SensorTiledCamera.Utils.compute_camera_rays_fisheye_kannala_brandt`. Each fisheye helper builds
+rays for one camera; pass ``out_rays`` and ``camera_index`` to fill a shared ray buffer.
 
 Extended Attributes
 -------------------

@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import math
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Generic
 
 import warp as wp
 
@@ -18,6 +18,7 @@ from . import blas
 from .core import DenseLinearOperatorData
 from .sparse_matrix import BlockSparseMatrices
 from .sparse_operator import BlockSparseLinearOperators
+from .types import IndexType, ScalarType
 
 # No need to auto-generate adjoint code for linear solvers
 wp.set_module_options({"enable_backward": False})
@@ -33,7 +34,7 @@ __all__ = [
 ]
 
 
-class BatchedLinearOperator:
+class BatchedLinearOperator(Generic[ScalarType, IndexType]):
     """Linear operator for batched matrix-vector products.
 
     Supports dense, diagonal, and block-sparse matrices.
@@ -45,12 +46,12 @@ class BatchedLinearOperator:
         gemv_fn: Callable,
         n_worlds: int,
         max_dim: int,
-        active_dims: wp.array,
+        active_dims: wp.array[IndexType],
         device: wp.Device,
-        dtype: type,
+        dtype: type[ScalarType],
         matvec_fn: Callable | None = None,
-        mio: wp.array | None = None,
-        vio: wp.array | None = None,
+        mio: wp.array[IndexType] | None = None,
+        vio: wp.array[IndexType] | None = None,
         total_vec_size: int = 0,
     ):
         self._gemv_fn = gemv_fn
@@ -65,7 +66,9 @@ class BatchedLinearOperator:
         self.total_vec_size = total_vec_size
 
     @classmethod
-    def from_dense(cls, operator: DenseLinearOperatorData) -> BatchedLinearOperator:
+    def from_dense(
+        cls, operator: DenseLinearOperatorData[ScalarType, IndexType]
+    ) -> BatchedLinearOperator[ScalarType, IndexType]:
         """Create operator from dense matrix data."""
         info = operator.info
         n_worlds = info.num_blocks
@@ -91,7 +94,13 @@ class BatchedLinearOperator:
         )
 
     @classmethod
-    def from_diagonal(cls, D: wp.array, active_dims: wp.array, vio: wp.array, max_dim: int) -> BatchedLinearOperator:
+    def from_diagonal(
+        cls,
+        D: wp.array[ScalarType],
+        active_dims: wp.array[IndexType],
+        vio: wp.array[IndexType],
+        max_dim: int,
+    ) -> BatchedLinearOperator[ScalarType, IndexType]:
         """Create operator from diagonal matrix (flat 1D storage)."""
         n_worlds = active_dims.shape[0]
 
@@ -101,7 +110,11 @@ class BatchedLinearOperator:
         return cls(gemv_fn, n_worlds, max_dim, active_dims, D.device, D.dtype, vio=vio, total_vec_size=D.shape[0])
 
     @classmethod
-    def from_block_sparse(cls, A: BlockSparseMatrices, active_dims: wp.array) -> BatchedLinearOperator:
+    def from_block_sparse(
+        cls,
+        A: BlockSparseMatrices[ScalarType, IndexType, Any],
+        active_dims: wp.array[IndexType],
+    ) -> BatchedLinearOperator[ScalarType, IndexType]:
         """Create operator from block-sparse matrix.
 
         The block-sparse matrix uses its own ``row_start``/``col_start`` offsets
@@ -137,7 +150,9 @@ class BatchedLinearOperator:
         )
 
     @classmethod
-    def from_block_sparse_operator(cls, A: BlockSparseLinearOperators) -> BatchedLinearOperator:
+    def from_block_sparse_operator(
+        cls, A: BlockSparseLinearOperators[ScalarType, IndexType]
+    ) -> BatchedLinearOperator[ScalarType, IndexType]:
         """Create operator from block-sparse operator.
 
         Args:
@@ -166,11 +181,18 @@ class BatchedLinearOperator:
             total_vec_size=total_vec_size,
         )
 
-    def gemv(self, x: wp.array, y: wp.array, world_active: wp.array[bool], alpha: float, beta: float):
+    def gemv(
+        self,
+        x: wp.array[ScalarType],
+        y: wp.array[ScalarType],
+        world_active: wp.array[wp.bool],
+        alpha: float,
+        beta: float,
+    ):
         """Compute y = alpha * A @ x + beta * y."""
         self._gemv_fn(x, y, world_active, alpha, beta)
 
-    def matvec(self, x: wp.array, y: wp.array, world_active: wp.array[bool]):
+    def matvec(self, x: wp.array[ScalarType], y: wp.array[ScalarType], world_active: wp.array[wp.bool]):
         if self._matvec_fn is not None:
             return self._matvec_fn(x, y, world_active)
         return self._gemv_fn(x, y, world_active, 1.0, 0.0)
@@ -186,7 +208,7 @@ def check_termination(
     loop_granularity: int,
     r_norm_sq: wp.array[Any],
     atol_sq: wp.array[Any],
-    world_active: wp.array[bool],
+    world_active: wp.array[wp.bool],
     cur_iter: wp.array[int],
     world_condition: wp.array[wp.int32],
     batch_condition: wp.array[wp.int32],
@@ -309,12 +331,12 @@ def _cr_kernel_2(
 
 def _run_capturable_loop(
     do_iteration: Callable,
-    r_norm_sq: wp.array,
-    world_active: wp.array[bool],
+    r_norm_sq: wp.array[Any],
+    world_active: wp.array[wp.bool],
     cur_iter: wp.array[wp.int32],
     conditions: wp.array[wp.int32],
     maxiter: wp.array[int],
-    atol_sq: wp.array,
+    atol_sq: wp.array[Any],
     callback: Callable | None,
     use_cuda_graph: bool,
     use_graph_conditionals: bool = True,
@@ -399,7 +421,7 @@ def make_dot_kernel(tile_size: int, maxdim: int):
         b: wp.array2d[Any],
         vio: wp.array[wp.int32],
         world_size: wp.array[wp.int32],
-        world_active: wp.array[bool],
+        world_active: wp.array[wp.bool],
         result: wp.array2d[Any],
     ):
         """Compute the dot products between flat arrays using tiles and pairwise summation."""
@@ -440,7 +462,7 @@ def dot_sequential(
     b: wp.array2d[Any],
     vio: wp.array[wp.int32],
     world_size: wp.array[wp.int32],
-    world_active: wp.array[bool],
+    world_active: wp.array[wp.bool],
     partial_sum: wp.array3d[Any],
 ):
     col, world = wp.tid()
@@ -500,7 +522,7 @@ def make_jacobi_preconditioner(
     diag[v_idx] = el_inv
 
 
-class ConjugateSolver:
+class ConjugateSolver(Generic[ScalarType, IndexType]):
     """Base class for conjugate iterative solvers (CG, CR).
 
     Solves batched linear systems Ax = b for multiple independent worlds in parallel.
@@ -525,13 +547,13 @@ class ConjugateSolver:
 
     def __init__(
         self,
-        A: BatchedLinearOperator,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[bool] | None = None,
-        atol: float | wp.array[Any] | None = None,
-        rtol: float | wp.array[Any] | None = None,
-        maxiter: wp.array = None,
-        Mi: BatchedLinearOperator | None = None,
+        A: BatchedLinearOperator[ScalarType, IndexType],
+        active_dims: wp.array[IndexType] | None = None,
+        world_active: wp.array[wp.bool] | None = None,
+        atol: float | wp.array[ScalarType] | None = None,
+        rtol: float | wp.array[ScalarType] | None = None,
+        maxiter: wp.array[wp.int32] | None = None,
+        Mi: BatchedLinearOperator[ScalarType, IndexType] | None = None,
         callback: Callable | None = None,
         use_cuda_graph: bool = True,
         use_graph_conditionals: bool = True,
@@ -578,20 +600,24 @@ class ConjugateSolver:
         self._allocate()
 
     def _allocate(self):
-        self.residual = wp.empty((self.n_worlds), dtype=self.scalar_type, device=self.device)
+        self.residual: wp.array[ScalarType] = wp.empty((self.n_worlds), dtype=self.scalar_type, device=self.device)
 
         if self.maxiter is None:
             maxiter = int(1.5 * self.maxdims)
-            self.maxiter = wp.full(self.n_worlds, maxiter, dtype=int, device=self.device)
+            self.maxiter = wp.full(self.n_worlds, maxiter, dtype=wp.int32, device=self.device)
             self.maxiter_host = maxiter
         else:
             self.maxiter_host = int(max(self.maxiter.numpy()))
 
         # TODO: non-tiled variant for CPU
         if self.tiled_dot_product:
-            self.dot_product = wp.zeros((2, self.n_worlds), dtype=self.scalar_type, device=self.device)
+            self.dot_product: wp.array2d[ScalarType] = wp.zeros(
+                (2, self.n_worlds), dtype=self.scalar_type, device=self.device
+            )
         else:
-            self.dot_partial_sums = wp.zeros((2, self.n_worlds, (self.maxdims + 1) // 2), device=self.device)
+            self.dot_partial_sums: wp.array3d[ScalarType] = wp.zeros(
+                (2, self.n_worlds, (self.maxdims + 1) // 2), dtype=self.scalar_type, device=self.device
+            )
             self.dot_product = self.dot_partial_sums[:, :, 0]
 
         atol_val = self.atol if isinstance(self.atol, float) else 1e-8
@@ -603,9 +629,9 @@ class ConjugateSolver:
         if self.rtol is None or isinstance(self.rtol, float):
             self.rtol = wp.full(self.n_worlds, rtol_val, dtype=self.scalar_type, device=self.device)
 
-        self.atol_sq = wp.empty(self.n_worlds, dtype=self.scalar_type, device=self.device)
-        self.cur_iter = wp.empty(self.n_worlds, dtype=wp.int32, device=self.device)
-        self.conditions = wp.empty(self.n_worlds + 1, dtype=wp.int32, device=self.device)
+        self.atol_sq: wp.array[ScalarType] = wp.empty(self.n_worlds, dtype=self.scalar_type, device=self.device)
+        self.cur_iter: wp.array[wp.int32] = wp.empty(self.n_worlds, dtype=wp.int32, device=self.device)
+        self.conditions: wp.array[wp.int32] = wp.empty(self.n_worlds + 1, dtype=wp.int32, device=self.device)
 
     @property
     def tiled_dot_product(self):
@@ -637,7 +663,7 @@ class ConjugateSolver:
             )
 
 
-class CGSolver(ConjugateSolver):
+class CGSolver(ConjugateSolver[ScalarType, IndexType]):
     """Conjugate Gradient solver for symmetric positive definite systems.
 
     The solver terminates when ||r||^2 < max(rtol^2 * ||b||^2, atol^2) or
@@ -648,15 +674,17 @@ class CGSolver(ConjugateSolver):
         super()._allocate()
 
         # Temp storage: (2, total_vec_size) paired arrays
-        self.r_and_z = wp.zeros((2, self.total_vec_size), dtype=self.scalar_type, device=self.device)
-        self.p_and_Ap = wp.zeros_like(self.r_and_z)
+        self.r_and_z: wp.array2d[ScalarType] = wp.zeros(
+            (2, self.total_vec_size), dtype=self.scalar_type, device=self.device
+        )
+        self.p_and_Ap: wp.array2d[ScalarType] = wp.zeros_like(self.r_and_z)
 
         # (r, r) -- so we can compute r.z and r.r at once
-        self.r_repeated = _repeat_first(self.r_and_z)
+        self.r_repeated: wp.array2d[ScalarType] = _repeat_first(self.r_and_z)
         if self.Mi is None:
             # without preconditioner r == z
             self.r_and_z = self.r_repeated
-            self.rz_new = self.dot_product[0]
+            self.rz_new: wp.array[ScalarType] = self.dot_product[0]
         else:
             self.rz_new = self.dot_product[1]
 
@@ -670,10 +698,10 @@ class CGSolver(ConjugateSolver):
 
     def solve(
         self,
-        b: wp.array,
-        x: wp.array,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[bool] | None = None,
+        b: wp.array[ScalarType],
+        x: wp.array[ScalarType],
+        active_dims: wp.array[IndexType] | None = None,
+        world_active: wp.array[wp.bool] | None = None,
     ):
         if b.shape[0] != self.total_vec_size:
             raise ValueError(f"b has size {b.shape[0]} but solver expects total_vec_size={self.total_vec_size}")
@@ -689,7 +717,7 @@ class CGSolver(ConjugateSolver):
             world_active = self.world_active
 
         r, z = self.r_and_z[0], self.r_and_z[1]
-        r_norm_sq = self.dot_product[0]
+        r_norm_sq: wp.array[ScalarType] = self.dot_product[0]
         p, Ap = self.p_and_Ap[0], self.p_and_Ap[1]
 
         self.compute_dot(b, b, active_dims, world_active)
@@ -759,7 +787,7 @@ class CGSolver(ConjugateSolver):
         )
 
 
-class CRSolver(ConjugateSolver):
+class CRSolver(ConjugateSolver[ScalarType, IndexType]):
     """Conjugate Residual solver for symmetric (possibly indefinite) systems.
 
     The solver terminates when ||r||^2 < max(rtol^2 * ||b||^2, atol^2) or
@@ -770,10 +798,12 @@ class CRSolver(ConjugateSolver):
         super()._allocate()
 
         # Temp storage: (2, total_vec_size) paired arrays
-        self.r_and_z = wp.zeros((2, self.total_vec_size), dtype=self.scalar_type, device=self.device)
-        self.r_and_Az = wp.zeros_like(self.r_and_z)
-        self.y_and_Ap = wp.zeros_like(self.r_and_z)
-        self.p = wp.zeros((self.total_vec_size,), dtype=self.scalar_type, device=self.device)
+        self.r_and_z: wp.array2d[ScalarType] = wp.zeros(
+            (2, self.total_vec_size), dtype=self.scalar_type, device=self.device
+        )
+        self.r_and_Az: wp.array2d[ScalarType] = wp.zeros_like(self.r_and_z)
+        self.y_and_Ap: wp.array2d[ScalarType] = wp.zeros_like(self.r_and_z)
+        self.p: wp.array[ScalarType] = wp.zeros((self.total_vec_size,), dtype=self.scalar_type, device=self.device)
         # (r, r) -- so we can compute r.z and r.r at once
 
         if self.Mi is None:
@@ -788,10 +818,10 @@ class CRSolver(ConjugateSolver):
 
     def solve(
         self,
-        b: wp.array,
-        x: wp.array,
-        active_dims: wp.array[Any] | None = None,
-        world_active: wp.array[bool] | None = None,
+        b: wp.array[ScalarType],
+        x: wp.array[ScalarType],
+        active_dims: wp.array[IndexType] | None = None,
+        world_active: wp.array[wp.bool] | None = None,
     ):
         if b.shape[0] != self.total_vec_size:
             raise ValueError(f"b has size {b.shape[0]} but solver expects total_vec_size={self.total_vec_size}")
@@ -901,7 +931,7 @@ class CRSolver(ConjugateSolver):
         )
 
 
-def _repeat_first(arr: wp.array):
+def _repeat_first(arr: wp.array[Any]):
     # returns a view of the first element repeated arr.shape[0] times
     view = wp.array(
         ptr=arr.ptr,
