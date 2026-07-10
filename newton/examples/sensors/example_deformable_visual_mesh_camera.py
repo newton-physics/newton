@@ -147,14 +147,9 @@ class Example:
         self.capture()
 
     @staticmethod
-    def _checker_texture(tiles: int = 8, size: int = 512) -> np.ndarray:
-        image = np.zeros((size, size, 3), dtype=np.uint8)
-        step = size // tiles
-        for i in range(tiles):
-            for j in range(tiles):
-                color = (235, 90, 40) if (i + j) % 2 else (40, 120, 255)
-                image[i * step : (i + 1) * step, j * step : (j + 1) * step] = color
-        return image
+    def _checker_texture() -> str:
+        """Return the shared procedural/USD checker texture."""
+        return newton.examples.get_asset("deformable_visual_checker.ppm")
 
     @staticmethod
     def _tube_mesh(centerline: np.ndarray, radius: float, segments: int):
@@ -190,8 +185,10 @@ class Example:
         )
 
     def _build_model_builder(self, args):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+
         if getattr(args, "load_from_usd", False):
-            builder = newton.ModelBuilder()
             import_result = builder.add_usd(
                 newton.examples.get_asset("deformable_visual_mesh_camera.usda"),
                 return_deformable_results=True,
@@ -200,8 +197,7 @@ class Example:
             builder.color()
             return builder
 
-        builder = newton.ModelBuilder()
-        builder.add_ground_plane()
+        self._add_cloth_obstacle(builder, x_offset=0.0)
         self._add_cable(builder, x_offset=-2.4)
         self._add_cloth(builder, x_offset=0.0)
         self._add_volume(builder, x_offset=2.4)
@@ -283,7 +279,8 @@ class Example:
             label="camera_cable_skin",
         )
 
-    def _add_cloth(self, builder: newton.ModelBuilder, x_offset: float):
+    @staticmethod
+    def _add_cloth_obstacle(builder: newton.ModelBuilder, x_offset: float):
         sphere_cfg = newton.ModelBuilder.ShapeConfig()
         sphere_cfg.density = 0.0
         sphere_cfg.ke = 1.0e5
@@ -295,8 +292,10 @@ class Example:
             radius=0.35,
             cfg=sphere_cfg,
             label="cloth_obstacle",
+            color=(0.35, 0.55, 0.8),
         )
 
+    def _add_cloth(self, builder: newton.ModelBuilder, x_offset: float):
         dim = 34
         cell = 0.035
         span = dim * cell
