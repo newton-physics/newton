@@ -1307,14 +1307,7 @@ def parse_usd(
         )
         path_body_map[label] = b
         if load_sites or load_visual_shapes:
-            for child in prim.GetChildren():
-                _load_visual_shapes_impl(
-                    b,
-                    child,
-                    body_xform=xform,
-                    articulation_root_xform=articulation_root_xform,
-                    allow_visual_shapes=load_visual_shapes,
-                )
+            _load_visual_shape_children(b, prim, xform, articulation_root_xform, load_visual_shapes)
         return b
 
     def parse_body(

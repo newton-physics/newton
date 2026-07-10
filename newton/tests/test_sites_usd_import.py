@@ -412,6 +412,32 @@ def Xform "World" {
         site = model.shape_label.index("/World/link/siteInstance")
         self.assertTrue(model.shape_flags.numpy()[site] & ShapeFlags.SITE)
 
+    def test_site_beneath_instanceable_rigid_body_is_loaded(self):
+        stage = self._create_usd_stage(
+            """#usda 1.0
+def Xform "LinkPrototype" {
+    def Sphere "site" (prepend apiSchemas = ["NewtonSiteAPI"]) {
+        double radius = 0.1
+    }
+}
+def Xform "World" {
+    def Xform "link" (
+        instanceable = true
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+        prepend references = </LinkPrototype>
+    ) {
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        site = model.shape_label.index("/World/link/site")
+        self.assertTrue(model.shape_flags.numpy()[site] & ShapeFlags.SITE)
+
     def test_site_without_mjcsite_api(self):
         """Test that shapes without MjcSiteAPI are not treated as sites."""
         usd_content = """#usda 1.0
