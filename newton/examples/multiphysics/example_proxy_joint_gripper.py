@@ -44,8 +44,10 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = int(args.substeps)
-        self.sim_dt = self.frame_dt / float(self.sim_substeps)
         self.use_graph = bool(args.graph_capture)
+        if self.use_graph and self.sim_substeps % 2 != 0:
+            raise ValueError("Graph capture requires an even number of simulation substeps")
+        self.sim_dt = self.frame_dt / float(self.sim_substeps)
         self.sim_time = 0.0
         self.scenario = args.scenario
         self.close_distance = (
@@ -352,9 +354,9 @@ class Example:
             default="default",
             help="Scene configuration to run.",
         )
-        parser.add_argument("--substeps", type=int, default=5, help="Simulation substeps per rendered frame.")
+        parser.add_argument("--substeps", type=int, default=6, help="Simulation substeps per rendered frame.")
         newton.examples.add_coupled_view_args(parser)
-        parser.add_argument("--vbd-iterations", type=int, default=40, help="VBD iterations per substep.")
+        parser.add_argument("--vbd-iterations", type=int, default=30, help="VBD iterations per substep.")
         parser.add_argument("--mujoco-iterations", type=int, default=20, help="MuJoCo solver iterations.")
         parser.add_argument("--proxy-iterations", type=int, default=1, help="Proxy coupling iterations per substep.")
         parser.add_argument(
