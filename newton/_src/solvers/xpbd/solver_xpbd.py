@@ -778,8 +778,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             contacts.rigid_contact_point1,
                             contacts.rigid_contact_offset0,
                             contacts.rigid_contact_offset1,
-                            contacts.rigid_contact_margin0,
-                            contacts.rigid_contact_margin1,
                             rigid_contact_inv_weight_init,
                             model.gravity,
                             dt,

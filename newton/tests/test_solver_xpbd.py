@@ -469,8 +469,6 @@ def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, de
     contact_offset0 = wp.array([wp.vec3(0.0, 0.05, 0.0)], dtype=wp.vec3, device=device)
     contact_point1 = wp.array([wp.vec3(0.0, 0.06, 0.0)], dtype=wp.vec3, device=device)
     contact_offset1 = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
-    contact_thickness0 = wp.array([0.05], dtype=float, device=device)
-    contact_thickness1 = wp.array([0.0], dtype=float, device=device)
     contact_inv_weight = wp.array([1.0], dtype=float, device=device)
     gravity = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
     deltas = wp.zeros(1, dtype=wp.spatial_vector, device=device)
@@ -497,8 +495,6 @@ def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, de
             contact_point1,
             contact_offset0,
             contact_offset1,
-            contact_thickness0,
-            contact_thickness1,
             contact_inv_weight,
             gravity,
             1.0 / 60.0,
