@@ -7,6 +7,7 @@ import inspect
 import math
 import sys
 import textwrap
+import types
 import unittest
 import warnings
 from collections.abc import Mapping
@@ -797,6 +798,34 @@ class TestModelMesh(unittest.TestCase):
 
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
+
+    def test_mesh_approximation_coacd_uses_builder_default_cfg(self):
+        builder = ModelBuilder()
+        builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape])
+        self.assertEqual(captured["threshold"], 0.5)
+
+        # an explicit argument overrides the builder default
+        captured.clear()
+        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
+        self.assertEqual(captured["threshold"], 0.2)
 
     def test_mesh_approximation_coacd_fallback_drops_coacd_kwargs(self):
         builder = ModelBuilder()

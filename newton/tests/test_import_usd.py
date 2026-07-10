@@ -6,7 +6,9 @@ import hashlib
 import math
 import os
 import posixpath
+import sys
 import tempfile
+import types
 import unittest
 import warnings
 from unittest import mock
@@ -2730,26 +2732,27 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         self.assertEqual(newton.ModelBuilder().default_mesh_approximation_cfg.coacd_threshold, 0.05)
 
-        calls = []
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
 
-        def record_approximate_meshes(builder_self, method="convex_hull", shape_indices=None, **kwargs):
-            calls.append((method, kwargs))
-            return set()
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
 
-        with mock.patch.object(newton.ModelBuilder, "approximate_meshes", record_approximate_meshes):
+        fake_coacd.run_coacd = run_coacd
+
+        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
-        kwargs_by_method = dict(calls)
-        self.assertEqual(kwargs_by_method["coacd"]["threshold"], 0.05)
-        self.assertNotIn("threshold", kwargs_by_method["convex_hull"])
+        self.assertEqual(captured["threshold"], 0.05)
 
-        calls.clear()
-        with mock.patch.object(newton.ModelBuilder, "approximate_meshes", record_approximate_meshes):
+        captured.clear()
+        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
             builder = newton.ModelBuilder()
             builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
             builder.add_usd(stage)
-        kwargs_by_method = dict(calls)
-        self.assertEqual(kwargs_by_method["coacd"]["threshold"], 0.5)
+        self.assertEqual(captured["threshold"], 0.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):

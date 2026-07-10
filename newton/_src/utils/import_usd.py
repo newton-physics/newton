@@ -461,8 +461,6 @@ def parse_usd(
     }
     # mapping from remeshing method to a list of shape indices
     remeshing_queue = {}
-    # snapshot so mutations of the builder default during parsing don't affect this import
-    mesh_approximation_cfg = copy.copy(builder.default_mesh_approximation_cfg)
 
     if ignore_paths is None:
         ignore_paths = []
@@ -3675,10 +3673,7 @@ def parse_usd(
 
     # approximate meshes
     for remeshing_method, shape_ids in remeshing_queue.items():
-        remeshing_kwargs = {}
-        if remeshing_method == "coacd":
-            remeshing_kwargs["threshold"] = mesh_approximation_cfg.coacd_threshold
-        builder.approximate_meshes(method=remeshing_method, shape_indices=shape_ids, **remeshing_kwargs)
+        builder.approximate_meshes(method=remeshing_method, shape_indices=shape_ids)
 
     # Filtered pairs are applied after the deformable passes below, once every endpoint's
     # Newton shapes exist.

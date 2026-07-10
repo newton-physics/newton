@@ -352,11 +352,12 @@ class ModelBuilder:
 
     @dataclass
     class MeshApproximationConfig:
-        """Settings for automatic mesh approximation during asset import.
+        """Default settings for mesh approximation.
 
-        Consulted by :meth:`add_usd` when the authored ``physics:approximation``
-        attribute selects an approximation method. Direct calls to
-        :meth:`approximate_meshes` are unaffected; pass settings explicitly there.
+        :attr:`ModelBuilder.default_mesh_approximation_cfg` supplies defaults for
+        settings not passed to :meth:`ModelBuilder.approximate_meshes` explicitly,
+        including approximation triggered by :meth:`ModelBuilder.add_usd` via the
+        authored ``physics:approximation`` attribute.
         """
 
         coacd_threshold: float = 0.05
@@ -997,8 +998,8 @@ class ModelBuilder:
         """Default BVH construction configuration used during model finalization."""
 
         self.default_mesh_approximation_cfg = ModelBuilder.MeshApproximationConfig()
-        """Default mesh approximation configuration applied when :meth:`add_usd` approximates
-        meshes according to their authored ``physics:approximation`` attribute."""
+        """Default mesh approximation settings used by :meth:`approximate_meshes` when not
+        passed explicitly, including USD-triggered approximation in :meth:`add_usd`."""
 
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
@@ -7115,7 +7116,7 @@ class ModelBuilder:
                         if method == "coacd":
                             cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
-                                "threshold": ModelBuilder.MeshApproximationConfig.coacd_threshold,
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
                                 "mcts_nodes": 20,
                                 "mcts_iterations": 5,
                                 "mcts_max_depth": 1,
