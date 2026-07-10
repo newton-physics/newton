@@ -41,8 +41,9 @@ MAX_ROTATION_DEG = 10.0
 # Devices and solvers
 cuda_devices = get_selected_cuda_test_devices()
 
-solvers = {
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
+
+def _make_mujoco_warp_solver(model):
+    return newton.solvers.SolverMuJoCo(
         model,
         use_mujoco_cpu=False,
         use_mujoco_contacts=False,
@@ -50,7 +51,12 @@ solvers = {
         nconmax=200,
         solver="newton",
         ls_iterations=100,
-    ),
+        deterministic=wp.DeterministicMode.NOT_GUARANTEED,
+    )
+
+
+solvers = {
+    "mujoco_warp": _make_mujoco_warp_solver,
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
 }
 
@@ -1334,6 +1340,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         iterations=20,
         ls_iterations=100,
         impratio=1000.0,
+        deterministic=wp.DeterministicMode.NOT_GUARANTEED,
     )
 
     state_0 = model.state()

@@ -121,7 +121,7 @@ def _build_branching_articulation(device):
     return model
 
 
-def test_mujoco_sparse_articulation_construction(test, device):
+def _check_mujoco_sparse_articulation_construction(device):
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(gravity=0.0)
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
@@ -146,7 +146,30 @@ def test_mujoco_sparse_articulation_construction(test, device):
         )
 
         solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
-        test.assertTrue(np.isfinite(state_out.joint_q.numpy()).all())
+        if not np.isfinite(state_out.joint_q.numpy()).all():
+            raise AssertionError("MuJoCo sparse articulation produced non-finite joint coordinates")
+
+
+def test_mujoco_sparse_articulation_construction(test, device):
+    # MJWarp and Warp keep generated kernels and GPU runtime state globally.
+    # Keep this deterministic configuration test isolated from later simulations.
+    code = (
+        "from newton.tests.determinism.test_solver_determinism "
+        "import _check_mujoco_sparse_articulation_construction; "
+        f"_check_mujoco_sparse_articulation_construction({str(device)!r})"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    test.assertEqual(
+        result.returncode,
+        0,
+        f"MuJoCo sparse articulation subprocess failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
 
 
 def _make_articulation_solver(model, solver_name):
