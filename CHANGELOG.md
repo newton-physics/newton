@@ -45,6 +45,7 @@
 - Add `SensorTiledCamera` support for deformable visual mesh camera captures, including skinned visual mesh textures and an option to hide the coarse simulation triangle surface.
 - Add `SensorTiledCamera` support for deformable visual mesh camera captures, including skinned visual mesh textures, an option to hide the coarse simulation triangle surface, and a combined cable/cloth/volume camera example.
 - Add `SensorTiledCamera` support for deformable visual mesh camera captures, including skinned visual mesh textures, an option to hide the coarse simulation triangle surface, and a combined cable/cloth/volume camera example with public-API and USD-import setup modes.
+- Add experimental deformable visual meshes with procedural builder and USD import support, textured cable/cloth/volume examples, and rendering in viewers and `SensorTiledCamera` RGB/depth output.
 - Add experimental `DeformableVisuals` buffers and model methods for sharing current deformable visual points and normals across render consumers.
 
 ### Changed
@@ -96,7 +97,6 @@
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Raise an error when `SolverVBD(rigid_contact_history=True)` would allocate or grow contact-history buffers during CUDA graph capture; construct `CollisionPipeline` before `SolverVBD`, or run one uncaptured solver step before capture.
 - Fix `SensorTiledCamera.utils.convert_ray_depth_to_forward_depth()` to preserve the clear-depth sentinel for zero-direction rays and non-positive depths.
-- Fix the procedural and USD modes of `deformable_visual_mesh_camera` to use matching ground, texture, cable mass, and obstacle configurations, and frame all three deformables in the full-scene viewer.
 - Fix `ViewerGL.get_frame()` crashing when a CPU model is rendered while a CUDA context is active.
 - Fix `eval_inverse_dynamics()` and `SolverFeatherstone` intermittently dropping descendant wrench contributions during the articulated-body backward pass on CUDA.
 - Fix XPBD particle-particle contacts to avoid non-finite particle state for exact-overlap contacts. (#1562)
@@ -307,7 +307,7 @@
 
 - Fix mesh-convex and heightfield-convex contacts missing when shapes are separated by margin but still within the contact envelope.
 - Fix `ArticulationView` link selections for closed-loop joints so BODY-frequency accessors expose each physical body once.
-- Fix USD visual mesh imports to preserve face-material `UsdGeom.Subset` colors and textures by splitting material subsets into separate visual meshes; collision/physics import behavior is unchanged
+- Fix USD visual mesh imports to preserve face-material `UsdGeom.Subset` colors and textures by splitting material subsets into separate render meshes; collision/physics import behavior is unchanged
 
 ## [1.2.0] - 2026-05-12
 
