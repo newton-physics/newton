@@ -8515,6 +8515,16 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
                 namespace="test",
             )
         )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
 
         # Parse one subtree - this should find the 2 prims under RobotA and increment count
         builder.add_usd(stage, root_path="/World/RobotA")
@@ -8533,6 +8543,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(len(item_values), 2)
         self.assertAlmostEqual(item_values[0], default_value, places=5)
         self.assertAlmostEqual(item_values[1], default_value, places=5)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, -1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_frequency_honors_ignore_paths(self):

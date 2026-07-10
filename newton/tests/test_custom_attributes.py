@@ -1622,6 +1622,84 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_equal(model.test.row_id.numpy(), [10, 11])
         np.testing.assert_array_almost_equal(model.test.row_value.numpy(), [1.5, 2.5], decimal=6)
 
+    def test_custom_frequency_world_reference_inference(self):
+        builder = ModelBuilder()
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+
+        global_indices = builder.add_custom_values(**{"test:item_value": 10})
+        self.assertEqual(global_indices["test:item_world"], 0)
+
+        builder.begin_world()
+        world_zero_indices = builder.add_custom_values(**{"test:item_value": 20})
+        self.assertEqual(world_zero_indices["test:item_world"], 1)
+        builder.add_custom_values(**{"test:item_value": 30, "test:item_world": -1})
+        builder.end_world()
+
+        builder.begin_world()
+        batch_indices = builder.add_custom_values_batch(
+            [
+                {"test:item_value": 40},
+                {"test:item_value": 50, "test:item_world": None},
+                {"test:item_value": 60, "test:item_world": 0},
+            ]
+        )
+        builder.end_world()
+
+        self.assertEqual([indices["test:item_world"] for indices in batch_indices], [3, 4, 5])
+
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, 0, -1, 1, 1, 0])
+        np.testing.assert_array_equal(model.test.item_value.numpy(), [10, 20, 30, 40, 50, 60])
+
+    def test_custom_frequency_inferred_world_remaps_during_merge(self):
+        template = ModelBuilder()
+        template.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        template.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
+        template.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+        template.add_custom_values(**{"test:item_value": 7})
+
+        builder = ModelBuilder()
+        builder.add_world(template)
+        builder.add_world(template)
+
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.test.item_value.numpy(), [7, 7])
+
     def test_custom_frequency_registration_methods(self):
         """Test different ways to register custom frequencies."""
         builder = ModelBuilder()

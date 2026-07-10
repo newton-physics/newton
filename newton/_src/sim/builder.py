@@ -803,8 +803,9 @@ class ModelBuilder:
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
-            - ``"world"``: Values are replaced with the builder-managed
-              :attr:`ModelBuilder.current_world` context (not offset)
+            - ``"world"``: Missing custom-frequency row values are initialized from
+              :attr:`ModelBuilder.current_world`. During builder merging, values are
+              replaced with the destination builder's active world context (not offset).
 
         Custom frequencies (values are offset by that frequency's count):
             - Any custom frequency string, e.g., ``"mujoco:pair"``
@@ -1795,13 +1796,19 @@ class ModelBuilder:
         This is useful for custom entity types that aren't built into the model,
         such as user-defined groupings or solver-specific data.
 
+        For each custom frequency touched by a call, attributes declared with
+        ``references="world"`` are initialized from :attr:`current_world` when
+        omitted or set to ``None``. Explicit world values, including ``-1``, are
+        preserved.
+
         Args:
             **kwargs: Mapping of attribute keys to values. Keys should be the full
                 attribute key (e.g., ``"mujoco:pair_geom1"`` or just ``"my_attr"`` if no namespace).
 
         Returns:
             A mapping from attribute keys to the index where each value was added.
-            If all attributes had the same count before the call, all indices will be equal.
+            This includes inferred world-reference attributes. If all attributes had
+            the same count before the call, all indices will be equal.
 
         Raises:
             AttributeError: If an attribute key is not defined.
@@ -1814,15 +1821,15 @@ class ModelBuilder:
                     **{
                         "mujoco:pair_geom1": 0,
                         "mujoco:pair_geom2": 1,
-                        "mujoco:pair_world": builder.current_world,
                     }
                 )
                 # Returns: {'mujoco:pair_geom1': 0, 'mujoco:pair_geom2': 0, 'mujoco:pair_world': 0}
         """
-        indices: dict[str, int] = {}
-        frequency_indices: dict[str, int] = {}  # Track indices assigned per frequency in this call
+        values = dict(kwargs)
+        touched_frequencies: set[str] = set()
 
-        for key, value in kwargs.items():
+        # Validate the supplied row before mutating any attribute storage.
+        for key in kwargs:
             attr = self.custom_attributes.get(key)
             if attr is None:
                 raise AttributeError(
@@ -1833,6 +1840,23 @@ class ModelBuilder:
                     f"Custom attribute '{key}' has frequency={attr.frequency}, "
                     f"but add_custom_values() only works with custom frequency attributes."
                 )
+            assert isinstance(attr.frequency, str), f"Custom frequency '{attr.frequency}' is not a string"
+            touched_frequencies.add(attr.frequency)
+
+        for attr in self.custom_attributes.values():
+            if (
+                attr.is_custom_frequency
+                and attr.frequency in touched_frequencies
+                and attr.references == "world"
+                and values.get(attr.key) is None
+            ):
+                values[attr.key] = self.current_world
+
+        indices: dict[str, int] = {}
+        frequency_indices: dict[str, int] = {}  # Track indices assigned per frequency in this call
+
+        for key, value in values.items():
+            attr = self.custom_attributes[key]
 
             # Ensure attr.values is initialized
             if attr.values is None:
@@ -1863,6 +1887,9 @@ class ModelBuilder:
 
     def add_custom_values_batch(self, entries: Sequence[dict[str, Any]]) -> list[dict[str, int]]:
         """Append multiple custom-frequency rows in a single call.
+
+        Each row uses :meth:`add_custom_values`, including automatic initialization
+        of omitted world-reference attributes.
 
         Args:
             entries: Sequence of rows where each row maps custom attribute keys to values.
