@@ -330,7 +330,7 @@ class TestKinematicsJoints(unittest.TestCase):
                 m_j_exp_val = a_j_np[0] + dt * b_j_np[0]
                 tau_j_exp_val = tau_j_np[0] + tau_j_ref_np[0]
             elif act_type == JointActuationType.POSITION:
-                m_j_exp_val = a_j_np[0] + dt * b_j_np[0] + dt * dt * k_p_j_np[0]
+                m_j_exp_val = a_j_np[0] + dt * (b_j_np[0] + k_d_j_np[0]) + dt * dt * k_p_j_np[0]
                 tau_j_exp_val = tau_j_np[0] + k_p_j_np[0] * (q_j_ref_np[0] - q_j_np[0])
             elif act_type == JointActuationType.VELOCITY:
                 m_j_exp_val = a_j_np[0] + dt * (b_j_np[0] + k_d_j_np[0])
