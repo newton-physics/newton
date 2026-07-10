@@ -22,7 +22,7 @@ from ...core.joints import JointActuationType
 from ...core.math import FLOAT32_MAX
 from ...core.model import ModelKamino
 from ...core.time import TimeData
-from ...core.types import FloatArrayLike, IntArrayLike, float32, int32, to_warp_int32_array
+from ...core.types import FloatArrayLike, IntArrayLike, to_warp_int32_array
 
 ###
 # Module interface
@@ -53,21 +53,21 @@ class RandomJointControllerData:
     seed: int = 0
     """Seed for random number generation."""
 
-    scale: wp.array | None = None
+    scale: wp.array[wp.float32] | None = None
     """
     Scaling applied to randomly generated control inputs.
 
-    Shape of `(sum_of_num_actuated_joint_dofs,)` and dtype of :class:`float32`.
+    Shape of `(sum_of_num_actuated_joint_dofs,)`.
     """
 
-    decimation: wp.array | None = None
+    decimation: wp.array[wp.int32] | None = None
     """
     Control decimation of each world expressed as a multiple of simulation steps.
 
     Values greater than `1` result in a zero-order hold of the control
     inputs, meaning that they will change only every `decimation` steps.
 
-    Shape of `(num_worlds,)` and dtype of :class:`int32`.
+    Shape of `(num_worlds,)`.
     """
 
 
@@ -80,17 +80,17 @@ class RandomJointControllerData:
 def _generate_random_control_inputs(
     # Inputs
     controller_seed: int,
-    controller_decimation: wp.array[int32],
-    controller_scale: wp.array[float32],
-    model_joints_wid: wp.array[int32],
-    model_joints_act_type: wp.array[int32],
-    model_joints_dofs_offset: wp.array[int32],
-    model_joints_tau_j_max: wp.array[float32],
-    state_time_steps: wp.array[int32],
+    controller_decimation: wp.array[wp.int32],
+    controller_scale: wp.array[wp.float32],
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_act_type: wp.array[wp.int32],
+    model_joints_dofs_offset: wp.array[wp.int32],
+    model_joints_tau_j_max: wp.array[wp.float32],
+    state_time_steps: wp.array[wp.int32],
     # Outputs
     # TODO: Add support for other control types
     # (e.g. position and velocity targets)
-    control_tau_j: wp.array[float32],
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     A kernel to generate random control inputs for testing and benchmarking purposes.
@@ -172,19 +172,15 @@ class RandomJointController:
         on-device data arrays if a model instance is provided.
 
         Args:
-            model (`ModelKamino`, optional):
-                The model container describing the system to be simulated.\n
+            model: The model container describing the system to be simulated.
                 If `None`, a call to ``finalize()`` must be made later.
-            decimation (`int` or `IntArrayLike`, optional):
-                Control decimation for each world expressed as a multiple of simulation steps.\n
+            decimation: Control decimation for each world expressed as a multiple of simulation steps.
                 Defaults to `1` for all worlds if `None`.
-            scale (`float` or `FloatArrayLike`, optional):
-                Scaling applied to randomly generated control inputs.\n
+            scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
-                and dtype of `float32`, or as a single float value applied uniformly across all DoFs.\n
+                and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
                 Defaults to `1.0` if `None`.
-            seed (`int`, optional):
-                Seed for random number generation. If `None`, it will default to `0`.
+            seed: Seed for random number generation. If `None`, it will default to `0`.
         """
         # Declare a local reference to the model
         # for which this controller is created
@@ -260,18 +256,14 @@ class RandomJointController:
         on-device data arrays based on the provided model.
 
         Args:
-            model (`ModelKamino`):
-                The model container describing the system to be simulated.
-            decimation (`int` or `IntArrayLike`, optional):
-                Control decimation for each world expressed as a multiple of simulation steps.\n
+            model: The model container describing the system to be simulated.
+            decimation: Control decimation for each world expressed as a multiple of simulation steps.
                 Defaults to `1` for all worlds if `None`.
-            scale (`float` or `FloatArrayLike`, optional):
-                Scaling applied to randomly generated control inputs.\n
+            scale: Scaling applied to randomly generated control inputs.
                 Can be specified per-DoF as an array of shape `(sum_of_num_actuated_joint_dofs,)`
-                and dtype of `float32`, or as a single float value applied uniformly across all DoFs.\n
+                and dtype of `wp.float32`, or as a single float value applied uniformly across all DoFs.
                 Defaults to `1.0` if `None`.
-            seed (`int`, optional):
-                Seed for random number generation. If `None`, it will default to `0`.
+            seed: Seed for random number generation. If `None`, it will default to `0`.
 
         Raises:
             ValueError: If the model has no actuated DoFs.
@@ -308,7 +300,7 @@ class RandomJointController:
             self._data = RandomJointControllerData(
                 seed=self._seed,
                 decimation=to_warp_int32_array(self._decimation),
-                scale=wp.array(self._scale, dtype=float32),
+                scale=wp.array(self._scale, dtype=wp.float32),
             )
 
     def compute(self, time: TimeData, control: ControlKamino):
@@ -319,12 +311,8 @@ class RandomJointController:
         joint index, and local DoF index to ensure reproducibility across runs.
 
         Args:
-            model (ModelKamino):
-                The input model container holding the time-invariant parameters of the simulation.
-            time (TimeData):
-                The input time data container holding the current simulation time and steps.
-            control (ControlKamino):
-                The output control container where the computed control torques will be stored.
+            time: The input time data container holding the current simulation time and steps.
+            control: The output control container where the computed control torques will be stored.
         """
         # Ensure a model has been assigned and finalized
         if self._model is None or self._data is None:

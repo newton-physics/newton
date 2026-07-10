@@ -3,10 +3,12 @@
 
 """Unit-test utilities for generating random linear system and factorization problems."""
 
+from __future__ import annotations
+
 import numpy as np
 import warp as wp
 
-from ..._src.core.types import FloatArrayLike, float32, int32
+from ..._src.core.types import FloatArrayLike
 from ..._src.linalg.utils.rand import (
     random_rhs_for_matrix,
     random_spd_matrix,
@@ -27,7 +29,7 @@ class RandomProblemLLT:
         A: list[np.ndarray] | None = None,
         b: list[np.ndarray] | None = None,
         np_dtype=np.float32,
-        wp_dtype=float32,
+        wp_dtype=wp.float32,
         device: wp.DeviceLike = None,
         upper: bool = False,
     ):
@@ -82,12 +84,12 @@ class RandomProblemLLT:
         self.x_np: list[np.ndarray] = []
 
         # Declare the warp arrays of concatenated problem data
-        self.maxdim_wp: wp.array | None = None
-        self.dim_wp: wp.array | None = None
-        self.mio_wp: wp.array | None = None
-        self.vio_wp: wp.array | None = None
-        self.A_wp: wp.array | None = None
-        self.b_wp: wp.array | None = None
+        self.maxdim_wp: wp.array[wp.int32] | None = None
+        self.dim_wp: wp.array[wp.int32] | None = None
+        self.mio_wp: wp.array[wp.int32] | None = None
+        self.vio_wp: wp.array[wp.int32] | None = None
+        self.A_wp: wp.array[wp.float32] | None = None
+        self.b_wp: wp.array[wp.float32] | None = None
 
         # Initialize the flattened problem data
         A_sizes = [n * n for n in self.maxdims]
@@ -140,12 +142,12 @@ class RandomProblemLLT:
 
         # Construct the warp arrays
         with wp.ScopedDevice(self.device):
-            self.maxdim_wp = wp.array(self.maxdims, dtype=int32)
-            self.dim_wp = wp.array(self.dims, dtype=int32)
-            self.mio_wp = wp.array(A_offsets[: self.num_blocks], dtype=int32)
-            self.vio_wp = wp.array(b_offsets[: self.num_blocks], dtype=int32)
-            self.A_wp = wp.array(A_flat, dtype=float32)
-            self.b_wp = wp.array(b_flat, dtype=float32)
+            self.maxdim_wp = wp.array(self.maxdims, dtype=wp.int32)
+            self.dim_wp = wp.array(self.dims, dtype=wp.int32)
+            self.mio_wp = wp.array(A_offsets[: self.num_blocks], dtype=wp.int32)
+            self.vio_wp = wp.array(b_offsets[: self.num_blocks], dtype=wp.int32)
+            self.A_wp = wp.array(A_flat, dtype=wp.float32)
+            self.b_wp = wp.array(b_flat, dtype=wp.float32)
 
     def __str__(self) -> str:
         return (
@@ -183,7 +185,7 @@ class RandomProblemLDLT:
         A: list[np.ndarray] | None = None,
         b: list[np.ndarray] | None = None,
         np_dtype=np.float32,
-        wp_dtype=float32,
+        wp_dtype=wp.float32,
         device: wp.DeviceLike = None,
         lower: bool = True,
     ):
@@ -267,12 +269,12 @@ class RandomProblemLDLT:
         self.x_np: list[np.ndarray] = []
 
         # Declare the warp arrays of concatenated problem data
-        self.maxdim_wp: wp.array | None = None
-        self.dim_wp: wp.array | None = None
-        self.mio_wp: wp.array | None = None
-        self.vio_wp: wp.array | None = None
-        self.A_wp: wp.array | None = None
-        self.b_wp: wp.array | None = None
+        self.maxdim_wp: wp.array[wp.int32] | None = None
+        self.dim_wp: wp.array[wp.int32] | None = None
+        self.mio_wp: wp.array[wp.int32] | None = None
+        self.vio_wp: wp.array[wp.int32] | None = None
+        self.A_wp: wp.array[wp.float32] | None = None
+        self.b_wp: wp.array[wp.float32] | None = None
 
         # Initialize the flattened problem data
         A_sizes = [n * n for n in self.maxdims]
@@ -330,12 +332,12 @@ class RandomProblemLDLT:
 
         # Construct the warp arrays
         with wp.ScopedDevice(self.device):
-            self.maxdim_wp = wp.array(self.maxdims, dtype=int32)
-            self.dim_wp = wp.array(self.dims, dtype=int32)
-            self.mio_wp = wp.array(A_offsets[: self.num_blocks], dtype=int32)
-            self.vio_wp = wp.array(b_offsets[: self.num_blocks], dtype=int32)
-            self.A_wp = wp.array(A_flat, dtype=float32)
-            self.b_wp = wp.array(b_flat, dtype=float32)
+            self.maxdim_wp = wp.array(self.maxdims, dtype=wp.int32)
+            self.dim_wp = wp.array(self.dims, dtype=wp.int32)
+            self.mio_wp = wp.array(A_offsets[: self.num_blocks], dtype=wp.int32)
+            self.vio_wp = wp.array(b_offsets[: self.num_blocks], dtype=wp.int32)
+            self.A_wp = wp.array(A_flat, dtype=wp.float32)
+            self.b_wp = wp.array(b_flat, dtype=wp.float32)
 
     def __str__(self) -> str:
         return (

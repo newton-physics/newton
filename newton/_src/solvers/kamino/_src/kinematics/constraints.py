@@ -5,11 +5,13 @@
 Provides mechanisms to define and manage constraints and their associated input/output data.
 """
 
+from __future__ import annotations
+
 import warp as wp
 
 from ..core.data import DataKamino
 from ..core.model import ModelKamino
-from ..core.types import float32, int32, to_warp_int32_array, vec3f
+from ..core.types import to_warp_int32_array
 from ..geometry.contacts import ContactMode, ContactsKamino
 from ..kinematics.limits import LimitsKamino
 
@@ -46,12 +48,12 @@ def get_max_constraints_per_world(
     Returns the maximum number of constraints for each world in the model.
 
     Args:
-        model (ModelKamino): The model for which to compute the maximum constraints.
-        limits (LimitsKamino, optional): The container holding the allocated joint-limit data.
-        contacts (ContactsKamino, optional): The container holding the allocated contacts data.
+        model: The model for which to compute the maximum constraints.
+        limits: The container holding the allocated joint-limit data.
+        contacts: The container holding the allocated contacts data.
 
     Returns:
-        List[int]: A list of the maximum constraints for each world in the model.
+        A list of the maximum constraints for each world in the model.
     """
     # Ensure the model container is valid
     if model is None:
@@ -89,10 +91,10 @@ def make_unilateral_constraints_info(
     Constructs constraints entries in the ModelKaminoInfo member of a model.
 
     Args:
-        model (ModelKamino): The model container holding time-invariant data.
-        data (DataKamino): The solver container holding time-varying data.
-        limits (LimitsKamino, optional): The limits container holding the joint-limit data.
-        contacts (ContactsKamino, optional): The contacts container holding the contact data.
+        model: The model container holding time-invariant data.
+        data: The solver container holding time-varying data.
+        limits: The limits container holding the joint-limit data.
+        contacts: The contacts container holding the contact data.
     """
 
     # Ensure the model is valid
@@ -133,8 +135,8 @@ def make_unilateral_constraints_info(
         model.size.sum_of_max_limits = 0
         model.size.max_of_max_limits = 0
         with wp.ScopedDevice(device):
-            model.info.max_limits = wp.zeros(shape=(num_worlds,), dtype=int32)
-            data.info.num_limits = wp.zeros(shape=(num_worlds,), dtype=int32)
+            model.info.max_limits = wp.zeros(shape=(num_worlds,), dtype=wp.int32)
+            data.info.num_limits = wp.zeros(shape=(num_worlds,), dtype=wp.int32)
 
     def _assign_model_contacts_info():
         nonlocal world_maxnc
@@ -150,8 +152,8 @@ def make_unilateral_constraints_info(
         model.size.sum_of_max_contacts = 0
         model.size.max_of_max_contacts = 0
         with wp.ScopedDevice(device):
-            model.info.max_contacts = wp.zeros(shape=(num_worlds,), dtype=int32)
-            data.info.num_contacts = wp.zeros(shape=(num_worlds,), dtype=int32)
+            model.info.max_contacts = wp.zeros(shape=(num_worlds,), dtype=wp.int32)
+            data.info.num_contacts = wp.zeros(shape=(num_worlds,), dtype=wp.int32)
 
     # If a limits container is provided, ensure it is valid
     # and then assign the entity counters to the model info.
@@ -256,8 +258,8 @@ def make_unilateral_constraints_info(
 
         # Allocate the per-world active constraints count arrays
         # data.info.num_total_cts = wp.clone(model.info.num_joint_cts)
-        data.info.num_limit_cts = wp.zeros(shape=(num_worlds,), dtype=int32)
-        data.info.num_contact_cts = wp.zeros(shape=(num_worlds,), dtype=int32)
+        data.info.num_limit_cts = wp.zeros(shape=(num_worlds,), dtype=wp.int32)
+        data.info.num_contact_cts = wp.zeros(shape=(num_worlds,), dtype=wp.int32)
 
         # Allocate the per-world entity start arrays
         model.info.limits_offset = to_warp_int32_array(world_lio[:num_worlds])
@@ -286,15 +288,15 @@ def make_unilateral_constraints_info(
 @wp.kernel
 def _update_constraints_info(
     # Inputs:
-    model_info_num_joint_cts: wp.array[int32],
-    data_info_num_limits: wp.array[int32],
-    data_info_num_contacts: wp.array[int32],
+    model_info_num_joint_cts: wp.array[wp.int32],
+    data_info_num_limits: wp.array[wp.int32],
+    data_info_num_contacts: wp.array[wp.int32],
     # Outputs:
-    data_info_num_total_cts: wp.array[int32],
-    data_info_num_limit_cts: wp.array[int32],
-    data_info_num_contact_cts: wp.array[int32],
-    data_info_limit_cts_group_offset: wp.array[int32],
-    data_info_contact_cts_group_offset: wp.array[int32],
+    data_info_num_total_cts: wp.array[wp.int32],
+    data_info_num_limit_cts: wp.array[wp.int32],
+    data_info_num_contact_cts: wp.array[wp.int32],
+    data_info_limit_cts_group_offset: wp.array[wp.int32],
+    data_info_contact_cts_group_offset: wp.array[wp.int32],
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -327,17 +329,17 @@ def _update_constraints_info(
 @wp.kernel
 def _unpack_joint_constraint_solutions(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_joint_wid: wp.array[int32],
-    model_joints_num_dynamic_cts: wp.array[int32],
-    model_joints_num_kinematic_cts: wp.array[int32],
-    model_joints_dynamic_cts_offset_joint_cts: wp.array[int32],
-    model_joints_kinematic_cts_offset_joint_cts: wp.array[int32],
-    model_joints_dynamic_cts_offset_total_cts: wp.array[int32],
-    model_joints_kinematic_cts_offset_total_cts: wp.array[int32],
-    lambdas: wp.array[float32],
+    model_time_inv_dt: wp.array[wp.float32],
+    model_joint_wid: wp.array[wp.int32],
+    model_joints_num_dynamic_cts: wp.array[wp.int32],
+    model_joints_num_kinematic_cts: wp.array[wp.int32],
+    model_joints_dynamic_cts_offset_joint_cts: wp.array[wp.int32],
+    model_joints_kinematic_cts_offset_joint_cts: wp.array[wp.int32],
+    model_joints_dynamic_cts_offset_total_cts: wp.array[wp.int32],
+    model_joints_kinematic_cts_offset_total_cts: wp.array[wp.int32],
+    lambdas: wp.array[wp.float32],
     # Outputs:
-    joint_lambda_j: wp.array[float32],
+    joint_lambda_j: wp.array[wp.float32],
 ):
     # Retrieve the thread index as the joint index
     jid = wp.tid()
@@ -367,17 +369,17 @@ def _unpack_joint_constraint_solutions(
 @wp.kernel
 def _unpack_limit_constraint_solutions(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_info_total_cts_offset: wp.array[int32],
-    data_info_limit_cts_group_offset: wp.array[int32],
-    limit_model_num_limits: wp.array[int32],
-    limit_wid: wp.array[int32],
-    limit_lid: wp.array[int32],
-    lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    model_time_inv_dt: wp.array[wp.float32],
+    model_info_total_cts_offset: wp.array[wp.int32],
+    data_info_limit_cts_group_offset: wp.array[wp.int32],
+    limit_model_num_limits: wp.array[wp.int32],
+    limit_wid: wp.array[wp.int32],
+    limit_lid: wp.array[wp.int32],
+    lambdas: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
     # Outputs:
-    limit_reaction: wp.array[float32],
-    limit_velocity: wp.array[float32],
+    limit_reaction: wp.array[wp.float32],
+    limit_velocity: wp.array[wp.float32],
 ):
     # Retrieve the thread index as the contact index
     lid = wp.tid()
@@ -416,18 +418,18 @@ def _unpack_limit_constraint_solutions(
 @wp.kernel
 def _unpack_contact_constraint_solutions(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_info_total_cts_offset: wp.array[int32],
-    data_info_contact_cts_group_offset: wp.array[int32],
-    contact_model_num_contacts: wp.array[int32],
-    contact_wid: wp.array[int32],
-    contact_cid: wp.array[int32],
-    lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    model_time_inv_dt: wp.array[wp.float32],
+    model_info_total_cts_offset: wp.array[wp.int32],
+    data_info_contact_cts_group_offset: wp.array[wp.int32],
+    contact_model_num_contacts: wp.array[wp.int32],
+    contact_wid: wp.array[wp.int32],
+    contact_cid: wp.array[wp.int32],
+    lambdas: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
     # Outputs:
-    contact_mode: wp.array[int32],
-    contact_reaction: wp.array[vec3f],
-    contact_velocity: wp.array[vec3f],
+    contact_mode: wp.array[wp.int32],
+    contact_reaction: wp.array[wp.vec3f],
+    contact_velocity: wp.array[wp.vec3f],
 ):
     # Retrieve the thread index as the contact index
     cid = wp.tid()
@@ -453,8 +455,8 @@ def _unpack_contact_constraint_solutions(
     contact_cts_start = total_cts_offset + contact_cts_offset + 3 * cid_k
 
     # Load the contact reaction and velocity from the global constraint arrays
-    lambda_k = vec3f(0.0)
-    v_plus_k = vec3f(0.0)
+    lambda_k = wp.vec3f(0.0)
+    v_plus_k = wp.vec3f(0.0)
     for k in range(3):
         lambda_k[k] = lambdas[contact_cts_start + k]
         v_plus_k[k] = v_plus[contact_cts_start + k]
@@ -484,8 +486,8 @@ def update_constraints_info(
     Updates the active constraints info for the given model and current data.
 
     Args:
-        model (ModelKamino): The model container holding time-invariant data.
-        data (DataKamino): The solver container holding time-varying data.
+        model: The model container holding time-invariant data.
+        data: The solver container holding time-varying data.
     """
     wp.launch(
         _update_constraints_info,
@@ -507,8 +509,8 @@ def update_constraints_info(
 
 
 def unpack_constraint_solutions(
-    lambdas: wp.array,
-    v_plus: wp.array,
+    lambdas: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
     model: ModelKamino,
     data: DataKamino,
     limits: LimitsKamino | None = None,
@@ -518,12 +520,12 @@ def unpack_constraint_solutions(
     Unpacks the constraint reactions and velocities into respective data containers.
 
     Args:
-        lambdas (wp.array): The array of constraint reactions (i.e. lagrange multipliers).
-        v_plus (wp.array): The array of post-event constraint velocities.
-        data (DataKamino): The solver container holding time-varying data.
-        limits (LimitsKamino, optional): The limits container holding the joint-limit data.\n
+        lambdas: The array of constraint reactions (i.e. lagrange multipliers).
+        v_plus: The array of post-event constraint velocities.
+        data: The solver container holding time-varying data.
+        limits: The limits container holding the joint-limit data.
             If None, limits will be skipped.
-        contacts (ContactsKamino, optional): The contacts container holding the contact data.\n
+        contacts: The contacts container holding the contact data.
             If None, contacts will be skipped.
     """
     # Unpack joint constraint multipliers if the model has joints
