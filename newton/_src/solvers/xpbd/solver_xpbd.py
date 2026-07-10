@@ -134,7 +134,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
             rigid_contact_con_weighting: Whether to divide each rigid body's contact correction by its number of
                 active contacts. Defaults to ``True``.
             angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
-            enable_restitution: Whether to apply the contact materials' restitution coefficients after the
+            enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
                 positional solve. Defaults to ``False``.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel module. Pass a :class:`warp.DeterministicMode`, or
