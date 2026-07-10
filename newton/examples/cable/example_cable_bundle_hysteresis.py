@@ -153,6 +153,7 @@ class Example:
         eps_max = args.eps_max
         tau = args.tau
         with_dahl = not args.no_dahl and eps_max > 0.0 and tau > 0.0
+        self.with_dahl = with_dahl
 
         # Simulation cadence
         self.fps = 60
@@ -195,6 +196,7 @@ class Example:
 
         # Create bundle cross-section layout
         bundle_positions = self.bundle_start_offsets_yz(self.num_cables, self.cable_radius, self.cable_gap_multiplier)
+        self.cable_body_ids: list[list[int]] = []
 
         # Build each cable in the bundle
         for i in range(self.num_cables):
@@ -209,7 +211,7 @@ class Example:
                 twist_total=0.0,
             )
 
-            builder.add_rod(
+            rod_bodies, _rod_joints = builder.add_rod(
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
@@ -218,6 +220,7 @@ class Example:
                 label=f"bundle_cable_{i}",
                 body_frame_origin="com",
             )
+            self.cable_body_ids.append(rod_bodies)
 
         # Create moving obstacles (capsules arranged along X axis)
         obstacle_cfg = newton.ModelBuilder.ShapeConfig(
@@ -265,7 +268,7 @@ class Example:
             density=builder.default_shape_cfg.density,
             kf=builder.default_shape_cfg.kf,
             ka=builder.default_shape_cfg.ka,
-            mu=2.5,
+            mu=1.0,
             restitution=builder.default_shape_cfg.restitution,
         )
         builder.add_ground_plane(cfg=ground_cfg)
@@ -399,7 +402,26 @@ class Example:
 
     def test_final(self):
         """Test cable bundle hysteresis simulation for stability and correctness (called after simulation)."""
-        pass
+        if self.sim_time < self.obstacle_release_time + 0.4:
+            return
+
+        body_positions = self.state_0.body_q.numpy()[:, :3]
+        straightness = []
+        for body_ids in self.cable_body_ids:
+            points = body_positions[body_ids]
+            arc_length = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+            end_to_end = float(np.linalg.norm(points[-1] - points[0]))
+            straightness.append(end_to_end / max(arc_length, 1.0e-8))
+
+        straightness = np.asarray(straightness)
+        if not np.all(np.isfinite(straightness)):
+            raise ValueError("Cable straightness is not finite")
+
+        mean_straightness = float(np.mean(straightness))
+        if self.with_dahl and mean_straightness > 0.9:
+            raise ValueError(f"Dahl cable bundle did not retain curvature: mean straightness={mean_straightness:.4f}")
+        if not self.with_dahl and mean_straightness < 0.95:
+            raise ValueError(f"Elastic cable bundle did not recover: mean straightness={mean_straightness:.4f}")
 
     @staticmethod
     def create_parser():

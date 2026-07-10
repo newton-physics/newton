@@ -40,8 +40,8 @@ class Example:
 
         if self.solver_type == "vbd":
             # VBD: Higher stiffness for stable rigid body contacts
-            builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
-            builder.default_shape_cfg.kd = 1.0e7  # Contact damping
+            builder.default_shape_cfg.ke = 1.0e8  # Contact stiffness
+            builder.default_shape_cfg.kd = 0.0  # Contact damping
         else:
             builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
             builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
