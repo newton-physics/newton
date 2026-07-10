@@ -3213,6 +3213,158 @@ for _name, _fn in (
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
 
 
+@wp.kernel
+def _soft_contact_gap_kernel(
+    count: wp.array[int],
+    corners: wp.array[wp.vec3i],
+    bary: wp.array[wp.vec3],
+    shape: wp.array[int],
+    body_pos: wp.array[wp.vec3],
+    normal: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    loss: wp.array[float],
+):
+    """Sum the soft-contact gap ``dot(n, x - bx)``, ``x = sum_i bary[i] * particle_q[corners[i]]``.
+
+    Replicates the differentiable core of the VBD penetration formula
+    (``rigid_vbd_kernels._eval_soft_ef_contact``): the contact geometry (``bary``, ``body_pos``,
+    ``normal``) is frozen and only the live particle positions enter, so the gradient of this loss
+    w.r.t. ``particle_q`` is the gap derivative the solver relies on -- ``bary_i * n`` per corner.
+    """
+    i = wp.tid()
+    if i >= count[0]:
+        return
+    c = corners[i]
+    b = bary[i]
+    x = b[0] * particle_q[c[0]]
+    if c[1] >= 0:
+        x = x + b[1] * particle_q[c[1]]
+    if c[2] >= 0:
+        x = x + b[2] * particle_q[c[2]]
+    X_wb = wp.transform_identity()
+    body_idx = shape_body[shape[i]]
+    if body_idx >= 0:
+        X_wb = body_q[body_idx]
+    bx = wp.transform_point(X_wb, body_pos[i])
+    wp.atomic_add(loss, 0, wp.dot(normal[i], x - bx))
+
+
+def _assert_soft_contact_gap_differentiable(test, device, builder, full_surface):
+    """collide once, freeze the contact geometry, then check the gap is differentiable w.r.t. the
+    live particle positions -- analytic tape gradient vs central finite differences. The barycentric
+    contact point is intentionally frozen (fixed-contact-point model); only the gap must be
+    differentiable, which is what the VBD contact force consumes."""
+    model = builder.finalize(device=device, requires_grad=True)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_margin=0.25,
+        enable_rigid_soft_full_surface_contact=full_surface,
+        requires_grad=True,
+    )
+    contacts = pipeline.contacts()
+    state = model.state(requires_grad=True)
+    pipeline.collide(state, contacts)
+
+    count = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "expected at least one soft contact")
+    idx = contacts.soft_contact_indices.numpy()[:count]
+
+    # Freeze the contact geometry as detached constants; only particle_q stays differentiable.
+    frozen_cnt = wp.array([count], dtype=int, device=device)
+    frozen_corners = wp.array(idx, dtype=wp.vec3i, device=device)
+    frozen_bary = wp.array(contacts.soft_contact_barycentric.numpy()[:count], dtype=wp.vec3, device=device)
+    frozen_shape = wp.array(contacts.soft_contact_shape.numpy()[:count], dtype=int, device=device)
+    frozen_body_pos = wp.array(contacts.soft_contact_body_pos.numpy()[:count], dtype=wp.vec3, device=device)
+    frozen_normal = wp.array(contacts.soft_contact_normal.numpy()[:count], dtype=wp.vec3, device=device)
+
+    def _launch(pq, loss):
+        wp.launch(
+            _soft_contact_gap_kernel,
+            dim=count,
+            inputs=[
+                frozen_cnt,
+                frozen_corners,
+                frozen_bary,
+                frozen_shape,
+                frozen_body_pos,
+                frozen_normal,
+                pq,
+                model.shape_body,
+                state.body_q,
+            ],
+            outputs=[loss],
+            device=device,
+        )
+
+    q0 = state.particle_q.numpy()
+    pq = wp.array(q0, dtype=wp.vec3, device=device, requires_grad=True)
+    loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+        _launch(pq, loss)
+    tape.backward(loss)
+    grad = pq.grad.numpy()
+
+    def _loss_at(qnp):
+        p2 = wp.array(qnp, dtype=wp.vec3, device=device)
+        loss_fd = wp.zeros(1, dtype=float, device=device)
+        _launch(p2, loss_fd)
+        return float(loss_fd.numpy()[0])
+
+    test.assertGreater(
+        np.count_nonzero(np.abs(grad) > 1e-9), 0, "gap gradient must be nonzero (path is differentiable)"
+    )
+    eps = 1e-3
+    participating = sorted({int(v) for row in idx for v in row if v >= 0})
+    for vi in participating:
+        for comp in range(3):
+            qp = q0.copy()
+            qp[vi, comp] += eps
+            qm = q0.copy()
+            qm[vi, comp] -= eps
+            fd = (_loss_at(qp) - _loss_at(qm)) / (2.0 * eps)
+            test.assertAlmostEqual(
+                float(grad[vi, comp]),
+                fd,
+                places=3,
+                msg=f"gap gradient v{vi}.{'xyz'[comp]}: analytic={grad[vi, comp]:.5f} vs FD={fd:.5f}",
+            )
+
+
+def test_particle_soft_contact_gap_differentiable(test, device):
+    """The particle soft-contact gap is differentiable w.r.t. the particle position (analytic tape
+    gradient matches finite differences; d(gap)/d(particle) = contact normal)."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    builder.add_particle(wp.vec3(0.6, 0.1, 0.05), wp.vec3(0.0), 1.0, radius=0.0)
+    _assert_soft_contact_gap_differentiable(test, device, builder, full_surface=False)
+
+
+def test_full_surface_gap_differentiable(test, device):
+    """The full-surface edge/face gap is differentiable w.r.t. the soft vertices with the barycentric
+    contact point frozen: gap = dot(n, sum_i bary_i * pos_i - bx), so d(gap)/d(pos_i) = bary_i * n.
+    Analytic tape gradient matches finite differences (confirms EF autodiff through the frozen point)."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    # A triangle whose v0-v1 edge grazes the +x face; the third vertex is far, and the endpoints are
+    # far enough in y that they are NOT within the per-particle margin -> an edge/face record only.
+    v0 = builder.add_particle(wp.vec3(0.6, -1.0, 0.0), wp.vec3(0.0), 1.0, radius=0.0)
+    v1 = builder.add_particle(wp.vec3(0.6, 1.0, 0.0), wp.vec3(0.0), 1.0, radius=0.0)
+    v2 = builder.add_particle(wp.vec3(2.0, 0.0, 0.0), wp.vec3(0.0), 1.0, radius=0.0)
+    builder.add_triangle(v0, v1, v2)
+    _assert_soft_contact_gap_differentiable(test, device, builder, full_surface=True)
+
+
+for _name, _fn in (
+    ("test_particle_soft_contact_gap_differentiable", test_particle_soft_contact_gap_differentiable),
+    ("test_full_surface_gap_differentiable", test_full_surface_gap_differentiable),
+):
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
+
+
 def test_unprovisioned_mesh_raises(test, device):
     """A participating mesh with no SDF makes CollisionPipeline raise when the flag is enabled.
 
