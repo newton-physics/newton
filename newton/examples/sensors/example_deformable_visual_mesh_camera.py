@@ -141,7 +141,7 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.show_triangles = False
-        self.viewer.set_camera(pos=wp.vec3(0.0, -4.4, 1.8), pitch=-10.0, yaw=90.0)
+        self.viewer.set_camera(pos=wp.vec3(-0.3, -8.5, 2.2), pitch=-8.0, yaw=90.0)
 
         self._init_camera_sensor(args)
         self.capture()
