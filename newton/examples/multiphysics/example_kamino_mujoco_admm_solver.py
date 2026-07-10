@@ -132,6 +132,8 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
+        self.model.rigid_contact_max = 96
+
         self.device = self.model.device
 
         kamino_config = _make_kamino_config()
