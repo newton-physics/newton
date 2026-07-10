@@ -749,7 +749,7 @@ class ConjugateGradientSolver(IterativeSolver[ScalarType, IndexType]):
             maxiter=self._maxiter,
             Mi=self._Mi,
             callback=None,
-            use_cuda_graph=True,
+            use_graph=True,
             use_graph_conditionals=self._use_graph_conditionals,
             loop_granularity=self.loop_granularity,
         )
@@ -763,7 +763,7 @@ class ConjugateGradientSolver(IterativeSolver[ScalarType, IndexType]):
                 maxiter=self._maxiter,
                 Mi=self._Mi,
                 callback=None,
-                use_cuda_graph=True,
+                use_graph=True,
                 use_graph_conditionals=self._use_graph_conditionals,
                 loop_granularity=self.loop_granularity,
             )
@@ -861,7 +861,7 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
             maxiter=self._maxiter,
             Mi=self._Mi,
             callback=None,
-            use_cuda_graph=True,
+            use_graph=True,
             use_graph_conditionals=self._use_graph_conditionals,
             loop_granularity=self.loop_granularity,
         )
@@ -875,7 +875,7 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
                 maxiter=self._maxiter,
                 Mi=self._Mi,
                 callback=None,
-                use_cuda_graph=True,
+                use_graph=True,
                 use_graph_conditionals=self._use_graph_conditionals,
                 loop_granularity=self.loop_granularity,
             )

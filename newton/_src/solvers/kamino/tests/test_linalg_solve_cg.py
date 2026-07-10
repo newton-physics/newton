@@ -75,7 +75,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         cur_iter, r_norm_sq, atol_sq = solver.solve(b_wp, x_wp)
 
@@ -223,7 +223,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=None,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver_dense.solve(b_wp, x_dense)
 
@@ -237,7 +237,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=None,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver_sparse.solve(b_wp, x_sparse)
 
@@ -335,7 +335,7 @@ class TestLinalgConjugate(unittest.TestCase):
             rtol=rtol,
             maxiter=None,
             Mi=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b_wp, x_wp)
 
@@ -477,7 +477,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=None,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b, x_wp)
 
@@ -570,7 +570,7 @@ class TestLinalgConjugate(unittest.TestCase):
             maxiter=maxiter,
             Mi=Mi,
             callback=None,
-            use_cuda_graph=False,
+            use_graph=False,
         )
         solver.solve(b, x_wp)
 
