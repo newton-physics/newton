@@ -218,6 +218,21 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(forces.shape[0], model.body_count)
         self.assertFalse(np.allclose(forces[0], np.zeros(6), atol=1e-9))
 
+    def test_gain_setters_write_through(self):
+        """Setting pick_stiffness/pick_damping after construction affects the applied force."""
+        model = _make_single_sphere_model(device="cpu", body_com=wp.vec3(0.0))
+        state = model.state()
+        picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
+
+        picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+        self.assertTrue(picking.is_picking())
+
+        picking.pick_stiffness = 200.0
+        self.assertEqual(picking.pick_stiffness, 200.0)
+        wrench = _apply_picking_target(picking, state, (0.01, 0.0, -0.5))
+        expected_force = np.array([model.body_mass.numpy()[0] * 200.0 * 0.01, 0.0, 0.0])
+        assert_np_equal(wrench[:3], expected_force, tol=1.0e-5)
+
     def test_pick_max_acceleration_validation(self):
         """Picking rejects negative and non-finite acceleration limits."""
         model = _make_single_sphere_model(device="cpu")
