@@ -7191,6 +7191,7 @@ class ModelBuilder:
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            remesh_failed = False
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
@@ -7210,6 +7211,7 @@ class ModelBuilder:
                                 f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
                                 stacklevel=2,
                             )
+                            remesh_failed = True
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
@@ -7217,6 +7219,9 @@ class ModelBuilder:
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
+            if remesh_failed:
+                # route the shapes that failed (not in remeshed_shapes) into the fallback below
+                method = "bounding_box"
 
         if method == "bounding_box":
             for shape in shape_indices:
