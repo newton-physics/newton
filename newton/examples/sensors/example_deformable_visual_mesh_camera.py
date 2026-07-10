@@ -138,8 +138,10 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
+        self.visuals = self.model.deformable_visuals()
 
         self.viewer.set_model(self.model)
+        self.viewer.set_deformable_visuals(self.visuals)
         self.viewer.show_triangles = False
         self.viewer.set_camera(pos=wp.vec3(-0.3, -8.5, 2.2), pitch=-8.0, yaw=90.0)
 
@@ -461,6 +463,8 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
+        # Evaluate once so the interactive viewer and camera see the same surface.
+        self.model.update_deformable_visuals(self.state_0, self.visuals)
         self._render_camera_sensor()
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
@@ -477,6 +481,7 @@ class Example:
             color_image=self.camera_color_image,
             depth_image=self.camera_depth_image,
             clear_data=SensorTiledCamera.GRAY_CLEAR_DATA,
+            deformable_visuals=self.visuals,
         )
 
         utils = self.tiled_camera_sensor.utils
