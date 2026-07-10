@@ -3377,9 +3377,13 @@ def test_soft_contact_detection_differentiable_through_collide(test, device):
     gradient to ``particle_q`` -- this is the path that actually exercises ``create_soft_contacts`` ->
     :func:`~newton._src.geometry.kernels.counter_increment` -> its ``@wp.func_replay`` and the
     per-thread ``tids`` replay array. A single particle-vs-box contact has a differentiable contact
-    point, so the analytic tape gradient of ``sum(body_pos.y)`` matches finite differences. (Edge/face
-    contact points are frozen by the SDF argmin, so their through-collide gradient is zero; the EF force
-    differentiability is covered by the fixed-contact-point gap tests above.)
+    point, so the analytic tape gradient of ``sum(body_pos.y)`` matches finite differences.
+
+    This measures the *contact-point location* (``body_pos``) route. For an edge/face record the SDF
+    argmin freezes that location, so *this* route is zero -- but that does NOT mean the EF path is
+    non-differentiable: the sim-relevant gradient flows through the gap ``dot(n, sum_i bary_i * pos_i
+    - bx)`` w.r.t. the live positions (``bary_i * n``), which is nonzero and covered by
+    ``test_full_surface_gap_differentiable`` above.
     """
     builder = newton.ModelBuilder(gravity=0.0)
     builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
