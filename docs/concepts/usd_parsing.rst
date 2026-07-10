@@ -270,30 +270,52 @@ Mass and Inertia Precedence
    :ref:`Mass and Inertia` for general concepts: the programmatic API,
    density-based inference, and finalize-time validation.
 
-For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton follows its value semantics:
-non-positive mass and density, zero diagonal inertia, a non-finite center of mass, and zero
-principal axes mean that the corresponding property is unspecified. Effective values take
-precedence, while ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` derives missing
-properties.
+For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inertial property
+(mass, inertia, center of mass) independently.  Authored attributes take precedence;
+``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
 
 1. ``newton:inertia`` (from ``NewtonMassAPI``) is a compact 6-element symmetric tensor
    ``[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`` already in the body frame.  When authored, it
-   overrides the inertia returned by OpenUSD.
-2. Newton supplies equivalent unit-density mass information through OpenUSD's callback. OpenUSD
-   applies collider/body ``MassAPI`` and bound ``MaterialAPI`` values while aggregating missing
-   body properties. Effective values are preserved exactly, including inertias smaller than
-   OpenUSD's internal comparison tolerance.
-3. When ``NewtonMassAPI`` is applied to a collider, ``newton:massModel`` controls whether its
-   callback inertia comes from the full volume (``"solid"``, default) or a thin shell.
-   ``newton:shellThickness`` sets the inward wall thickness [m]; its ``-inf`` fallback uses
-   ``newton:contactMargin``.
-4. A collider synthesized by a schema resolver is not discoverable by OpenUSD traversal. Bodies
-   containing such colliders use descriptor geometry and material density for the whole body
-   instead of mixing incomplete OpenUSD and Newton results. Effective collider-level ``MassAPI``
-   values cannot be included in that fallback and produce a warning; complete body-level values
-   remain authoritative.
+   overrides ``physics:diagonalInertia`` and ``physics:principalAxes``.
+2. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
+   applied directly when present.  If ``physics:principalAxes`` is missing, identity rotation
+   is used.
+3. When ``physics:mass`` is authored but inertia is not, the inertia
+   accumulated from collision shapes is scaled by ``authored_mass / accumulated_mass``.
+   Shell colliders (``newton:massModel = "shell"``) contribute shell-derived inertia to the
+   accumulation before this scaling is applied.
+4. For any remaining unresolved properties, Newton falls back to
+   ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
+   In this fallback path, collider contributions use a two-level precedence:
+
+   a. If collider ``UsdPhysics.MassAPI`` has authored ``mass`` and ``diagonalInertia``, those
+      authored values are converted to unit-density collider mass information.
+   b. Otherwise, Newton derives unit-density collider mass information from collider
+      geometry.  When ``NewtonMassAPI`` is applied to the collider, ``newton:massModel``
+      controls whether inertia is derived from the full volume (``"solid"``, default) or a
+      thin shell at the surface (``"shell"``).  For shell shapes,
+      ``newton:shellThickness`` sets the wall thickness [m] measured inward from the outer
+      surface; the sentinel ``-inf`` (default) falls back to ``newton:contactMargin``.
+
+   A collider is skipped (with warning) only if neither path provides usable collider mass
+   information.
+
+   .. note::
+
+      The callback payload provided by Newton in this path is unit-density collider shape
+      information (volume/COM/inertia basis). Collider density authored via ``UsdPhysics.MassAPI``
+      (for example, ``physics:density``) or via bound ``UsdPhysics.MaterialAPI`` is still applied
+      by USD during ``ComputeMassProperties(...)``. In other words, unit-density callback data does
+      not mean authored densities are ignored.
 
 If resolved mass is non-positive, inverse mass is set to ``0``.
+
+.. tip::
+
+   For the most predictable results, fully author ``physics:mass``, ``physics:diagonalInertia``,
+   ``physics:principalAxes``, and ``physics:centerOfMass`` on each rigid body.  This avoids any
+   fallback heuristics and is also the fastest import path since ``ComputeMassProperties(...)``
+   can be skipped entirely.
 
 .. _schema_resolvers:
 
