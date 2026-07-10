@@ -133,16 +133,14 @@ jobs:
           paths: "rspec.xml"
           show: "fail"
 
-      - name: Upload test results to Codecov
+      - name: Upload test results artifact
         if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          disable_search: true
-          files: ./rspec.xml
-          flags: warp-nightly
-          report_type: test_results
-          token: ${{ secrets.CODECOV_TOKEN }}
+          name: test-results-warp-nightly
+          path: rspec.xml
+          retention-days: 1
+          overwrite: true
 
       - name: Re-run instructions
         if: failure()
@@ -159,6 +157,38 @@ jobs:
           | ❌ | **Re-run failed jobs** | Runner no longer exists → job queued forever |
           | ✅ | **Re-run all jobs** | Starts new EC2 runner → tests re-run |
           EOF
+
+  codecov-upload:
+    name: Upload test results to Codecov
+    needs: warp-nightly-tests
+    if: ${{ !cancelled() && needs.warp-nightly-tests.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    # Same-run artifact downloads use the runtime token, not GITHUB_TOKEN.
+    permissions: {}
+    env:
+      # The workflow-level HOME targets the EC2 runner filesystem.
+      HOME: /home/runner
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+      - name: Download test results artifact
+        id: download-test-results
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: test-results-warp-nightly
+      - name: Upload test results to Codecov
+        if: ${{ steps.download-test-results.outcome == 'success' }}
+        continue-on-error: true
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        with:
+          disable_search: true
+          files: ./rspec.xml
+          flags: warp-nightly
+          report_type: test_results
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   stop-runner:
     name: Stop self-hosted EC2 runner
