@@ -22,6 +22,7 @@ from ...sim import (
     State,
     StateFlags,
 )
+from ...utils import is_graph_capture_allocation_enabled
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
@@ -1156,8 +1157,6 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
-        from ...utils import is_graph_capture_allocation_enabled  # noqa: PLC0415
-
         if self.device.is_capturing and not is_graph_capture_allocation_enabled(self.device):
             raise RuntimeError(
                 f"SolverVBD {name} buffer needs to grow from {current} to {required} "
