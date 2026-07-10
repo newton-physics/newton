@@ -816,8 +816,6 @@ class Example:
             pick_state = picking.pick_state.numpy()
             pick_state[0]["pick_stiffness"] = MOUSE_PICK_STIFFNESS
             pick_state[0]["pick_damping"] = MOUSE_PICK_DAMPING
-            picking.pick_stiffness = float(pick_state[0]["pick_stiffness"])
-            picking.pick_damping = float(pick_state[0]["pick_damping"])
             picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(

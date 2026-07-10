@@ -6,31 +6,27 @@ This reference is loaded during Phases 3, 4, and 5 of the skill. It defines conc
 
 Used to decide whether a symbol is "genuinely new" vs. "pre-existed and got extended":
 
-Newton does NOT expose its public surface through a single `__init__.py` (unlike Warp). It uses a set of per-topic public re-export modules. The authoritative list lives in `docs/generate_api.py` under `MODULES`:
+Newton exposes its public surface through per-topic re-export modules discovered dynamically by `docs/generate_api.py`:
 
-- `newton/__init__.py` — top-level (`newton.Model`, `newton.State`, `newton.Axis`, etc.)
-- `newton/geometry.py`
-- `newton/ik.py`
-- `newton/math.py`
-- `newton/selection.py`
-- `newton/sensors.py`
-- `newton/solvers.py`
-- `newton/usd.py`
-- `newton/utils.py`
-- `newton/viewer.py`
+- `api_modules()` imports `newton`, starts with the top-level module, and adds every module-valued name exported through `newton.__all__`.
+- Each discovered module's own `__all__` defines its public symbols; when `__all__` is absent, `public_symbols()` falls back to non-private, non-module attributes.
+- `solver_submodule_pages()` adds public solver submodules and recursively exposed module trees under `newton.solvers`.
+- There is no fixed `MODULES` constant. Inspect `docs/generate_api.py`, `newton/__init__.py`, and `newton/solvers.py` at both refs so additions such as a new top-level public module or nested experimental solver namespace are included.
 
-Each public module re-exports from `newton/_src/<topic>/...`. `newton._src` is internal (AGENTS.md: "Examples and docs must not import from `newton._src`").
+Representative modules include `newton.geometry`, `newton.solvers`, and `newton.viewer`. Each public module re-exports from `newton/_src/<topic>/...`. `newton._src` is internal (AGENTS.md: "Examples and docs must not import from `newton._src`").
 
 **To determine if `newton.X` existed at base**:
+- Inspect module-valued exports in `newton.__all__` at base and target using the `api_modules()` rules above.
 - For top-level symbols: `git show <base>:newton/__init__.py` and check `from ._src.<submodule> import X` / `__all__`.
 - For submodule public attributes (e.g., `newton.geometry.Mesh`): `git show <base>:newton/geometry.py` and check imports / `__all__`.
+- For nested solver modules: apply `solver_submodule_pages()` reachability rules to `newton.solvers` at the relevant ref.
 - For method additions on an existing class (e.g., `SolverXPBD.update_contacts`): resolve the class's real source file (e.g., `newton/_src/solvers/xpbd.py`) and `ast`-walk it at base.
 
 **Public-API exposure check (Phase 4a addition)**: for every symbol that is genuinely new, verify at HEAD that it is reachable via at least one public module. If the symbol lives only in `newton._src.<path>` and is not re-exported, raise a 🕵️ Private-only flag. Reason: AGENTS.md forbids examples/docs from importing `newton._src`, so a user-facing symbol that is not re-exported is unusable by Newton's own examples and will churn.
 
-## Newton has no kernel-scope builtin registry
+## No kernel-scope builtin registry
 
-Warp's release-audit walks `warp/_src/builtins.py` for `add_builtin("<name>", ...)` calls. Newton has no such registry. All user-facing Newton symbols are ordinary Python (classes, functions, enums, constants) defined in `newton/_src/**` and re-exported through the public modules above. Skip every "kernel-scope" codepath from the Warp version of this skill.
+Newton has no separate builtin registry to audit. All user-facing symbols are ordinary Python classes, functions, enums, and constants defined in `newton/_src/**` and re-exported through the public modules above. Skip kernel-scope symbol extraction.
 
 ## Paths that trigger Phase 4f semantic-change review
 
@@ -83,16 +79,19 @@ When Phase 4d / 5a encounter these patterns, treat them as migration-required ch
 
 ## Deprecation policy (Phase 4d)
 
-AGENTS.md: "Breaking changes require a deprecation first." This means every `### Removed` entry should correspond to a prior `### Deprecated` entry in an earlier release.
+AGENTS.md: "Breaking changes require a deprecation first." A prior released `### Deprecated` entry is the preferred evidence. A matching runtime `DeprecationWarning` at the base ref also proves that users received a deprecation window, even if the released CHANGELOG omitted it. The warning may be emitted directly or by a shared helper / decorator that clearly applies to the removed API or behavior.
 
 When Phase 4d cannot find the prior Deprecated entry:
-- Surface as `🚨 Policy: removed without prior deprecation` in the Breaking Changes section.
-- Cite the Removed entry in full.
-- Note whether the current CHANGELOG's own `### Deprecated` section also names the same symbol. Deprecating and removing in the same release is a policy violation: the feature needs to ship in at least one release with the Deprecated entry before removal.
+- Resolve the symbol or legacy behavior in code at the base ref.
+- Run a targeted `git grep` for `DeprecationWarning` / `deprecated` in the candidate path and inspect the warning context.
+- If the candidate calls or applies a shared deprecation helper / decorator, resolve that name and inspect its definition at the base ref. Verify that the candidate's call site connects the helper to the exact removed API or behavior and that the helper emits `DeprecationWarning`. A generic helper's existence or import alone is not evidence.
+- If a matching direct or helper-mediated runtime warning exists, record the base ref, warning text, and the direct source path or connected helper application / emission paths. Do not emit a policy violation; flag the missing released CHANGELOG entry as a documentation gap.
+- If no matching warning exists, surface `🚨 Policy: removed without prior deprecation` in the Breaking Changes section and cite the Removed entry in full.
+- Note whether the current CHANGELOG's own `### Deprecated` section also names the same symbol. Deprecating and removing in the same release is a policy violation because the warning did not ship in a prior release.
 
-A release manager reading the report should be able to resolve the flag in one of three ways:
-1. Point to the prior Deprecated entry that Claude missed (Claude re-scans).
-2. Confirm the symbol was deprecated via runtime `DeprecationWarning` but the CHANGELOG entry was forgotten.
-3. Block the release / add a deprecation shim for one more release cycle.
+A release manager reading the report should see one of three resolved outcomes:
+1. Prior CHANGELOG entry found: report its release version.
+2. Runtime `DeprecationWarning` found at base: deprecation policy satisfied, with a non-blocking CHANGELOG documentation flag.
+3. Neither found: block the release or add a deprecation shim for one more release cycle.
 
-Claude does NOT decide which path is correct; it surfaces the gap with enough evidence for the release manager to decide.
+Do not infer a policy violation from CHANGELOG evidence alone. The code-level check is mandatory before raising the blocking flag.

@@ -59,8 +59,6 @@ class Example:
         builder = newton.ModelBuilder()
         builder.rigid_gap = 0.0
 
-        rod_bodies_all: list[int] = []
-
         # Material properties
         builder.default_shape_cfg.mu = 1.0e0
         builder.default_shape_cfg.ke = 1.0e5
@@ -146,7 +144,7 @@ class Example:
 
                 edge_q = newton.utils.create_parallel_transport_cable_quaternions(pts, twist_total=float(twist))
 
-                rod_bodies, _rod_joints = builder.add_rod(
+                builder.add_rod(
                     positions=pts,
                     quaternions=edge_q,
                     radius=cable_radius,
@@ -157,11 +155,13 @@ class Example:
                     label=f"cable_l{layer}_{lane}",
                     body_frame_origin="com",
                 )
-                rod_bodies_all.extend(rod_bodies)
 
         builder.color()
 
         self.model = builder.finalize()
+        # Size persistent contact history before CUDA graph capture.
+        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -173,11 +173,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(rod_bodies_all)
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
@@ -189,13 +186,10 @@ class Example:
         self.capture()
 
     def capture(self):
-        """Capture simulation loop into a CUDA graph for optimal GPU performance."""
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as cap:
-                self.simulate()
-            self.graph = cap.graph
-        else:
-            self.graph = None
+        """Capture simulation loop into a graph for optimal performance."""
+        with wp.ScopedCapture() as cap:
+            self.simulate()
+        self.graph = cap.graph
 
     def simulate(self):
         """Execute all simulation substeps for one frame."""

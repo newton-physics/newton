@@ -12,7 +12,6 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.model import DataKamino, ModelKamino
-from newton._src.solvers.kamino._src.core.types import float32, transformf, vec6f
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.resets import reset_joints_state_from_bodies_state, set_floating_base
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
@@ -38,10 +37,10 @@ atol = 1e-5
 
 def assert_binary_joint_states_equal(
     model: ModelKamino,
-    joint_q: wp.array[float32],
-    joint_q_ref: wp.array[float32],
-    joint_u: wp.array[float32],
-    joint_u_ref: wp.array[float32],
+    joint_q: wp.array[wp.float32],
+    joint_q_ref: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
+    joint_u_ref: wp.array[wp.float32],
 ):
     """Check that joint coords/velocities match provided references, except possibly for unary joints."""
     # Build boolean mask for joint coords/dofs, excluding unary joints
@@ -62,10 +61,10 @@ def assert_binary_joint_states_equal(
 
 def assert_body_states_equal_masked(
     model: ModelKamino,
-    body_q: wp.array[transformf],
-    body_q_ref: wp.array[transformf],
-    body_u: wp.array[vec6f],
-    body_u_ref: wp.array[vec6f],
+    body_q: wp.array[wp.transformf],
+    body_q_ref: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
+    body_u_ref: wp.array[wp.spatial_vectorf],
     world_mask: wp.array[wp.bool],
 ):
     """Check that body poses/velocities match provided references for worlds where the mask is False."""
@@ -109,10 +108,10 @@ def assert_rigid_poses_close(
 
 def validate_base_pose_reset(
     model: ModelKamino,
-    base_q: wp.array[transformf] | None,
+    base_q: wp.array[wp.transformf] | None,
     data_prev: DataKamino,
     data_new: DataKamino,
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Check that the result of set_floating_base() has the expected base pose
@@ -157,10 +156,10 @@ def validate_base_pose_reset(
 
 def validate_base_velocity_reset(
     model: ModelKamino,
-    base_u: wp.array[vec6f] | None,
+    base_u: wp.array[wp.spatial_vectorf] | None,
     data_prev: DataKamino,
     data_new: DataKamino,
-    world_mask: wp.array[bool],
+    world_mask: wp.array[wp.bool],
 ):
     """
     Check that the result of set_floating_base() has the expected base velocity (relative_base_u = False case)
@@ -220,9 +219,9 @@ def validate_base_velocity_reset(
 
 def run_set_floating_base_check(
     model: ModelKamino,
-    base_q: wp.array[transformf] | None,
-    base_u: wp.array[vec6f] | None,
-    world_mask: wp.array[bool],
+    base_q: wp.array[wp.transformf] | None,
+    base_u: wp.array[wp.spatial_vectorf] | None,
+    world_mask: wp.array[wp.bool],
     data_prev: DataKamino,
 ):
     """
@@ -304,16 +303,16 @@ def setup_test_fourbar_model(
 
 def sample_base_state_wp(model: ModelKamino, rng: np.random.Generator):
     base_q_np, base_u_np = sample_base_state(model.size.num_worlds, rng)
-    base_q = wp.from_numpy(base_q_np[0], dtype=transformf, device=model.device)
-    base_u = wp.from_numpy(base_u_np[0], dtype=vec6f, device=model.device)
+    base_q = wp.from_numpy(base_q_np[0], dtype=wp.transformf, device=model.device)
+    base_u = wp.from_numpy(base_u_np[0], dtype=wp.spatial_vectorf, device=model.device)
     return base_q, base_u
 
 
 def sample_actuator_state_wp(model: ModelKamino, rng: np.random.Generator):
     actuator_q_np = sample_actuator_coords(model, rng)[0]
     actuator_u_np = sample_actuator_velocities(model, rng)[0]
-    actuator_q = wp.from_numpy(actuator_q_np, dtype=float32, device=model.device)
-    actuator_u = wp.from_numpy(actuator_u_np, dtype=float32, device=model.device)
+    actuator_q = wp.from_numpy(actuator_q_np, dtype=wp.float32, device=model.device)
+    actuator_u = wp.from_numpy(actuator_u_np, dtype=wp.float32, device=model.device)
     return actuator_q, actuator_u
 
 
@@ -393,7 +392,7 @@ class TestSetFloatingBase(unittest.TestCase):
         data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=wp.bool, device=self.default_device)
         base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check validity of set_floating_base for all options combinations
@@ -418,7 +417,7 @@ class TestSetFloatingBase(unittest.TestCase):
         data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=wp.bool, device=self.default_device)
         base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check validity of set_floating_base for all options combinations
@@ -442,7 +441,7 @@ class TestSetFloatingBase(unittest.TestCase):
         data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=wp.bool, device=self.default_device)
         base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check that a call to set_floating_base() with relative_base_u enabled is equivalent
@@ -496,7 +495,7 @@ class TestSetFloatingBase(unittest.TestCase):
         data = set_model_to_random_pose(self, model, rng)
 
         # Sample non-trivial world mask and base state
-        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=bool, device=self.default_device)
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=wp.bool, device=self.default_device)
         base_q, base_u = sample_base_state_wp(model, rng)
 
         # Check that a call to set_floating_base() with relative_base_u enabled is equivalent
@@ -566,9 +565,7 @@ class TestJointBodyStateConversions(unittest.TestCase):
         rng = np.random.default_rng(self.seed)
 
         # Setup a model with all joint types
-        builder = build_all_joints_test_model(
-            binary_joints=True, unary_joints=False, actuated=True, floating_base=True, exclude_universal=True
-        )
+        builder = build_all_joints_test_model(binary_joints=True, unary_joints=False, actuated=True, floating_base=True)
         model = builder.finalize(device=self.default_device)
 
         # Set the model into a non-trivial pose
@@ -578,7 +575,7 @@ class TestJointBodyStateConversions(unittest.TestCase):
         state = model.state()
         wp.copy(state.q_i, data.bodies.q_i)
         wp.copy(state.u_i, data.bodies.u_i)
-        all_worlds_mask = wp.ones(shape=model.size.num_worlds, dtype=bool, device=model.device)
+        all_worlds_mask = wp.ones(shape=model.size.num_worlds, dtype=wp.bool, device=model.device)
         reset_joints_state_from_bodies_state(model, state, world_mask=all_worlds_mask)
 
         # Compare against joint state in joint data

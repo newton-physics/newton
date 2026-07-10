@@ -29,11 +29,57 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
 
 
 class TestSelection(unittest.TestCase):
+    def test_articulation_selector_lists(self):
+        builder = newton.ModelBuilder()
+        for label in ["robot_a", "robot_b", "prop"]:
+            body = builder.add_link(label=f"{label}/body")
+            joint = builder.add_joint_free(child=body, label=f"{label}/joint")
+            builder.add_articulation([joint], label=label)
+        model = builder.finalize()
+
+        pattern_view = ArticulationView(model, pattern=["robot_*", "prop"])
+        assert_np_equal(pattern_view.articulation_ids.numpy(), [[0, 1, 2]])
+
+        index_view = ArticulationView(model, pattern=[0, 2])
+        assert_np_equal(index_view.articulation_ids.numpy(), [[0, 2]])
+
+        with self.assertRaisesRegex(ValueError, "must be unique and in ascending order"):
+            ArticulationView(model, pattern=[2, 0])
+        with self.assertRaisesRegex(ValueError, "must be unique and in ascending order"):
+            ArticulationView(model, pattern=[0, 0])
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 3\)"):
+            ArticulationView(model, pattern=[3])
+
+        # each articulation has a single joint and link
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 1\)"):
+            ArticulationView(model, pattern="robot_a", include_joints=[1])
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 1\)"):
+            ArticulationView(model, pattern="robot_a", include_links=[1])
+
     def test_no_match(self):
         builder = newton.ModelBuilder()
         builder.add_body()
         model = builder.finalize()
         self.assertRaises(KeyError, ArticulationView, model, pattern="no_match")
+
+    def test_unsorted_include_indices_deprecated(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="root")
+        middle = builder.add_link(label="middle")
+        tip = builder.add_link(label="tip")
+        root_joint = builder.add_joint_free(child=root, label="root_joint")
+        middle_joint = builder.add_joint_revolute(parent=root, child=middle, label="middle_joint")
+        tip_joint = builder.add_joint_revolute(parent=middle, child=tip, label="tip_joint")
+        builder.add_articulation([root_joint, middle_joint, tip_joint], label="robot")
+        model = builder.finalize()
+
+        with self.assertWarnsRegex(DeprecationWarning, "include_joints"):
+            joint_view = ArticulationView(model, "robot", include_joints=[2, 0])
+        self.assertEqual(joint_view.joint_names, ["root_joint", "tip_joint"])
+
+        with self.assertWarnsRegex(DeprecationWarning, "include_links"):
+            link_view = ArticulationView(model, "robot", include_links=[2, 0])
+        self.assertEqual(link_view.link_names, ["root", "tip"])
 
     def test_empty_selection(self):
         builder = newton.ModelBuilder()

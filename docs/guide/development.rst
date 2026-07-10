@@ -174,42 +174,6 @@ Pass ``--help`` to either run method below to see all available flags.
             # run tests
             python -m newton.tests
             
-Most tests run when the ``dev`` extras are installed. The tests using PyTorch
-to run inference on an RL policy are skipped if the ``torch`` dependency is
-not installed. In order to run these tests, include the ``torch-cu12`` or
-``torch-cu13`` extras matching your NVIDIA driver's CUDA support:
-
-.. tab-set::
-    :sync-group: env
-
-    .. tab-item:: uv
-        :sync: uv
-
-        .. code-block:: console
-
-            # install development extras and run tests
-            uv run --extra dev --extra torch-cu12 -m newton.tests
-
-    .. tab-item:: venv
-        :sync: venv
-
-        .. code-block:: console
-
-            # install both dev and torch-cu12 extras (need to pull from PyTorch CUDA 12.8 wheel index)
-            python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e ".[dev,torch-cu12]"
-            # run tests
-            python -m newton.tests
-
-.. note::
-
-    The ``torch-cu12`` extra requires PyTorch built against CUDA 12.8. If your
-    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), install
-    PyTorch 2.6.0 manually instead of using the ``torch-cu12`` extra:
-
-    .. code-block:: console
-
-        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
-
 Specific Newton examples can be tested in isolation via the ``-k`` argument:
 
 .. tab-set::

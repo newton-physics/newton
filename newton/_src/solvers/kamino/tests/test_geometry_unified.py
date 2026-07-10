@@ -18,7 +18,6 @@ from newton._src.solvers.kamino._src.core.math import I_3
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.shapes import SphereShape
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.core.types import transformf, vec6f
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.models.builders import basics, testing
@@ -651,8 +650,8 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
         bid_a = builder.add_rigid_body(
             m_i=1.0,
             i_I_i=I_3,
-            q_i_0=transformf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
-            u_i_0=vec6f(0.0),
+            q_i_0=wp.transformf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+            u_i_0=wp.spatial_vectorf(0.0),
         )
         if same_body:
             bid_b = bid_a
@@ -660,8 +659,8 @@ class TestUnifiedPipelineNxnBroadphase(unittest.TestCase):
             bid_b = builder.add_rigid_body(
                 m_i=1.0,
                 i_I_i=I_3,
-                q_i_0=transformf(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                u_i_0=vec6f(0.0),
+                q_i_0=wp.transformf(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                u_i_0=wp.spatial_vectorf(0.0),
             )
         builder.add_geometry(body=bid_a, shape=SphereShape(radius=0.5), group=group_a, collides=collides_a)
         builder.add_geometry(body=bid_b, shape=SphereShape(radius=0.5), group=group_b, collides=collides_b)
