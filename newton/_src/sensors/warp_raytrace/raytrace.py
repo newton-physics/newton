@@ -35,64 +35,121 @@ class ClosestHit:
 
 
 @wp.func
-def _ray_intersect_mesh_smooth(
-    transform: wp.transformf,
-    scale: wp.vec3f,
-    ray_origin: wp.vec3f,
-    ray_direction: wp.vec3f,
-    mesh_id: wp.uint64,
-    shape_mesh_data_id: wp.int32,
-    mesh_data: wp.array[MeshData],
+def _plane_hit_with_culling_local(
+    ray_origin_local: wp.vec3f,
+    ray_direction_local: wp.vec3f,
+    size: wp.vec3f,
     enable_backface_culling: wp.bool,
-    max_t: wp.float32,
-) -> tuple[wp.float32, wp.vec3f, wp.float32, wp.float32, wp.int32]:
-    """Ray-mesh intersection with optional per-vertex normal interpolation.
-
-    When ``shape_mesh_data_id`` is non-negative and the referenced ``mesh_data`` entry
-    supplies per-vertex normals, the returned normal is the barycentric interpolation
-    of those vertex normals (for smooth shading); otherwise the triangle's face normal
-    is used.
-    """
-    ray_origin_local, ray_direction_local = raycast.map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
-
-    query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
-
-    if query.result:
-        if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
-            normal_local = query.normal
-
-            if shape_mesh_data_id > -1:
-                normals = mesh_data[shape_mesh_data_id].normals
-                if normals.shape[0] > 0:
-                    n0 = wp.mesh_get_index(mesh_id, query.face * 3 + 0)
-                    n1 = wp.mesh_get_index(mesh_id, query.face * 3 + 1)
-                    n2 = wp.mesh_get_index(mesh_id, query.face * 3 + 2)
-                    normal_local = (
-                        normals[n0] * query.u + normals[n1] * query.v + normals[n2] * (1.0 - query.u - query.v)
-                    )
-
-            normal_world = wp.transform_vector(transform, raycast.safe_div_vec3(normal_local, scale))
-            normal_world = wp.normalize(normal_world)
-            return query.t, normal_world, query.u, query.v, query.face
-
-    return wp.float32(-1.0), wp.vec3f(0.0), wp.float32(0.0), wp.float32(0.0), wp.int32(-1)
+) -> tuple[wp.float32, wp.vec3f]:
+    """Local-frame ray-plane intersection; when ``enable_backface_culling`` is set,
+    rejects rays that approach the plane from behind. The plane normal is +Z in
+    local space, so the world-space test ``dot(ray_dir, normal) > -eps`` reduces
+    to the local ray direction's Z component (rigid transforms preserve dot
+    products)."""
+    hit_distance, hit_normal = raycast.ray_intersect_plane_local(ray_origin_local, ray_direction_local, size)
+    if enable_backface_culling and hit_distance >= 0.0:
+        if ray_direction_local[2] > -_BACKFACE_EPS:
+            return wp.float32(-1.0), wp.vec3f(0.0)
+    return hit_distance, hit_normal
 
 
 @wp.func
-def _plane_hit_with_culling(
-    transform: wp.transformf,
+def _intersect_primitive_local(
+    shape_type: wp.int32,
+    ray_origin_local: wp.vec3f,
+    ray_direction_local: wp.vec3f,
     size: wp.vec3f,
-    ray_origin: wp.vec3f,
-    ray_direction: wp.vec3f,
     enable_backface_culling: wp.bool,
 ) -> tuple[wp.float32, wp.vec3f]:
-    """Ray-plane intersection; when ``enable_backface_culling`` is set, rejects rays that
-    approach the plane from behind (ray direction aligned with the plane normal)."""
-    hit_distance, hit_normal = raycast.ray_intersect_plane(transform, ray_origin, ray_direction, size)
-    if enable_backface_culling and hit_distance >= 0.0:
-        if wp.dot(ray_direction, hit_normal) > -_BACKFACE_EPS:
-            return wp.float32(-1.0), wp.vec3f(0.0)
-    return hit_distance, hit_normal
+    """Dispatch a local-frame ray against one primitive's local-frame intersector.
+
+    The ray is mapped into the shape's frame once by the caller and shared by
+    every branch, so the divergent shape-type switch only contains the
+    per-primitive math. The returned normal is local-space and unnormalized;
+    callers convert the *winning* hit to a world normal once after traversal
+    instead of per candidate. Meshes are handled separately by callers
+    (they additionally produce barycentrics and a face index, and shadow rays
+    use the cheaper any-hit query).
+    """
+    hit_distance = wp.float32(-1.0)
+    hit_normal_local = wp.vec3f(0.0)
+
+    if shape_type == GeoType.PLANE:
+        hit_distance, hit_normal_local = _plane_hit_with_culling_local(
+            ray_origin_local,
+            ray_direction_local,
+            size,
+            enable_backface_culling,
+        )
+    elif shape_type == GeoType.SPHERE:
+        hit_distance, hit_normal_local = raycast.ray_intersect_sphere_local(
+            ray_origin_local, ray_direction_local, size[0]
+        )
+    elif shape_type == GeoType.ELLIPSOID:
+        hit_distance, hit_normal_local = raycast.ray_intersect_ellipsoid_local(
+            ray_origin_local, ray_direction_local, size
+        )
+    elif shape_type == GeoType.CAPSULE:
+        hit_distance, hit_normal_local = raycast.ray_intersect_capsule_local(
+            ray_origin_local, ray_direction_local, size[0], size[1]
+        )
+    elif shape_type == GeoType.CYLINDER:
+        hit_distance, hit_normal_local = raycast.ray_intersect_cylinder_local(
+            ray_origin_local, ray_direction_local, size[0], size[1]
+        )
+    elif shape_type == GeoType.CONE:
+        hit_distance, hit_normal_local = raycast.ray_intersect_cone_local(
+            ray_origin_local, ray_direction_local, size[0], size[1]
+        )
+    elif shape_type == GeoType.BOX:
+        hit_distance, hit_normal_local = raycast.ray_intersect_box_local(ray_origin_local, ray_direction_local, size)
+
+    return hit_distance, hit_normal_local
+
+
+@wp.func
+def _finalize_shape_normal(
+    closest_hit: ClosestHit,
+    shape_types: wp.array[wp.int32],
+    shape_sizes: wp.array[wp.vec3f],
+    shape_transforms: wp.array[wp.transformf],
+    shape_source_ptr: wp.array[wp.uint64],
+    shape_mesh_data_ids: wp.array[wp.int32],
+    mesh_data: wp.array[MeshData],
+) -> ClosestHit:
+    """Convert the winning shape hit's local normal to a world-space normal.
+
+    Runs once per ray after traversal, so per-vertex normal interpolation
+    (smooth shading) and the local-to-world normal transform are paid only for
+    the visible hit instead of for every BVH candidate along the ray.
+    """
+    if closest_hit.shape_index < MAX_SHAPE_ID:
+        si = wp.int32(closest_hit.shape_index)
+        shape_type = shape_types[si]
+
+        # Gaussian hits already carry a world-space normal from shading.
+        if shape_type != GeoType.GAUSSIAN:
+            normal_local = closest_hit.normal
+
+            if shape_type == GeoType.MESH:
+                shape_mesh_data_id = shape_mesh_data_ids[si]
+                if shape_mesh_data_id > -1:
+                    normals = mesh_data[shape_mesh_data_id].normals
+                    if normals.shape[0] > 0:
+                        mesh_id = shape_source_ptr[si]
+                        n0 = wp.mesh_get_index(mesh_id, closest_hit.face_idx * 3 + 0)
+                        n1 = wp.mesh_get_index(mesh_id, closest_hit.face_idx * 3 + 1)
+                        n2 = wp.mesh_get_index(mesh_id, closest_hit.face_idx * 3 + 2)
+                        normal_local = (
+                            normals[n0] * closest_hit.bary_u
+                            + normals[n1] * closest_hit.bary_v
+                            + normals[n2] * (1.0 - closest_hit.bary_u - closest_hit.bary_v)
+                        )
+                normal_local = raycast.safe_div_vec3(normal_local, shape_sizes[si])
+
+            closest_hit.normal = wp.normalize(wp.transform_vector(shape_transforms[si], normal_local))
+
+    return closest_hit
 
 
 @wp.func
@@ -138,109 +195,63 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
 
                 while wp.bvh_query_next(query, shape_index, closest_hit.distance):
                     si = shape_enabled[shape_index]
+                    shape_type = shape_types[si]
+
+                    if wp.static(state.num_gaussians > 0):
+                        if shape_type == GeoType.GAUSSIAN:
+                            # Gaussians are shaded after traversal (see below).
+                            if num_gaussians_hit < wp.static(state.num_gaussians):
+                                gaussians_hit[num_gaussians_hit] = si
+                                num_gaussians_hit += 1
+
+                    # Map the ray into the shape's frame once; every shape-type
+                    # intersector shares it (see _intersect_primitive_local).
+                    ray_origin_local, ray_dir_local = raycast.map_ray_to_local(
+                        shape_transforms[si], ray_origin_world, ray_dir_world
+                    )
+                    shape_size = shape_sizes[si]
 
                     hit_distance = wp.float32(-1.0)
-                    hit_normal = wp.vec3f(0.0)
+                    hit_normal_local = wp.vec3f(0.0)
                     hit_u = wp.float32(0.0)
                     hit_v = wp.float32(0.0)
                     hit_face_id = wp.int32(-1)
-                    hit_color = wp.vec3f(0.0)
 
-                    shape_type = shape_types[si]
                     # Heightfields are triangulated meshes; RenderContext remaps
                     # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
-                        hit_distance, hit_normal, hit_u, hit_v, hit_face_id = _ray_intersect_mesh_smooth(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
+                        hit_distance, hit_normal_local, hit_u, hit_v, hit_face_id = raycast.ray_intersect_mesh_local(
+                            ray_origin_local,
+                            ray_dir_local,
+                            shape_size,
                             shape_source_ptr[si],
-                            shape_mesh_data_ids[si],
-                            mesh_data,
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
-                    elif shape_type == GeoType.PLANE:
-                        hit_distance, hit_normal = _plane_hit_with_culling(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
+                    else:
+                        hit_distance, hit_normal_local = _intersect_primitive_local(
+                            shape_type,
+                            ray_origin_local,
+                            ray_dir_local,
+                            shape_size,
                             wp.static(config.enable_backface_culling),
                         )
-                    elif shape_type == GeoType.SPHERE:
-                        hit_distance, hit_normal = raycast.ray_intersect_sphere(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                        )
-                    elif shape_type == GeoType.ELLIPSOID:
-                        hit_distance, hit_normal = raycast.ray_intersect_ellipsoid(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
-                        )
-                    elif shape_type == GeoType.CAPSULE:
-                        hit_distance, hit_normal = raycast.ray_intersect_capsule(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CYLINDER:
-                        hit_distance, hit_normal = raycast.ray_intersect_cylinder(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CONE:
-                        hit_distance, hit_normal = raycast.ray_intersect_cone(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.BOX:
-                        hit_distance, hit_normal = raycast.ray_intersect_box(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
-                        )
-                    elif shape_type == GeoType.GAUSSIAN:
-                        if num_gaussians_hit < wp.static(state.num_gaussians):
-                            gaussians_hit[num_gaussians_hit] = si
-                            num_gaussians_hit += 1
-                            # gaussian_id = shape_source_ptr[si]
-                            # hit_distance, hit_normal, hit_color = shade_gaussians(
-                            #     shape_transforms[si],
-                            #     shape_sizes[si],
-                            #     ray_origin_world,
-                            #     ray_dir_world,
-                            #     gaussians_data[gaussian_id],
-                            #     closest_hit.distance
-                            # )
 
                     if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
+                        # The normal stays in local space until the traversal
+                        # ends; _finalize_shape_normal converts the winner.
                         closest_hit.distance = hit_distance
-                        closest_hit.normal = hit_normal
+                        closest_hit.normal = hit_normal_local
                         closest_hit.shape_index = si
                         closest_hit.bary_u = hit_u
                         closest_hit.bary_v = hit_v
                         closest_hit.face_idx = hit_face_id
-                        closest_hit.color = hit_color
+                        closest_hit.color = wp.vec3f(0.0)
 
                 # Temporary workaround. Warp BVH queries share some stack data,
                 # which breaks nested wp.bvh_query_ray calls.
-                # Once it is fixed in Warp, remove this code block and put
-                # the commented out block above back in.
+                # Once it is fixed in Warp, remove this code block and shade
+                # gaussians inside the traversal loop.
                 # Although, this workaround may actually be a performance improvement
                 # since it only renders gaussians if they are not blocked by other
                 # objects.
@@ -264,6 +275,16 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             closest_hit.normal = hit_normal
                             closest_hit.shape_index = si
                             closest_hit.color = hit_color
+
+            closest_hit = _finalize_shape_normal(
+                closest_hit,
+                shape_types,
+                shape_sizes,
+                shape_transforms,
+                shape_source_ptr,
+                shape_mesh_data_ids,
+                mesh_data,
+            )
 
         return closest_hit
 
@@ -433,70 +454,44 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
 
                 while wp.bvh_query_next(query, shape_index, closest_hit.distance):
                     si = shape_enabled[shape_index]
-
-                    hit_dist = -1.0
-
                     shape_type = shape_types[si]
+
+                    if wp.static(state.num_gaussians > 0):
+                        if shape_type == GeoType.GAUSSIAN:
+                            # Gaussians are shaded after traversal (see below).
+                            if num_gaussians_hit < wp.static(state.num_gaussians):
+                                gaussians_hit[num_gaussians_hit] = si
+                                num_gaussians_hit += 1
+
+                    # Map the ray into the shape's frame once; every shape-type
+                    # intersector shares it (see _intersect_primitive_local). The
+                    # normal outputs are unused here, so their computation is
+                    # eliminated by the compiler.
+                    ray_origin_local, ray_dir_local = raycast.map_ray_to_local(
+                        shape_transforms[si], ray_origin_world, ray_dir_world
+                    )
+                    shape_size = shape_sizes[si]
+
+                    hit_dist = wp.float32(-1.0)
                     # Heightfields are triangulated meshes; RenderContext remaps
                     # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
+                        hit_dist, _normal_local, _u, _v, _face = raycast.ray_intersect_mesh_local(
+                            ray_origin_local,
+                            ray_dir_local,
+                            shape_size,
                             shape_source_ptr[si],
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
-                    elif shape_type == GeoType.PLANE:
-                        hit_dist, _plane_normal = _plane_hit_with_culling(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
+                    else:
+                        hit_dist, _normal_local = _intersect_primitive_local(
+                            shape_type,
+                            ray_origin_local,
+                            ray_dir_local,
+                            shape_size,
                             wp.static(config.enable_backface_culling),
                         )
-                    elif shape_type == GeoType.SPHERE:
-                        hit_dist, _normal = raycast.ray_intersect_sphere(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0]
-                        )
-                    elif shape_type == GeoType.ELLIPSOID:
-                        hit_dist, _normal = raycast.ray_intersect_ellipsoid(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
-                    elif shape_type == GeoType.CAPSULE:
-                        hit_dist, _normal = raycast.ray_intersect_capsule(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CYLINDER:
-                        hit_dist, _normal = raycast.ray_intersect_cylinder(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CONE:
-                        hit_dist, _normal = raycast.ray_intersect_cone(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.BOX:
-                        hit_dist, _normal = raycast.ray_intersect_box(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
-                    elif shape_type == GeoType.GAUSSIAN:
-                        if num_gaussians_hit < wp.static(state.num_gaussians):
-                            gaussians_hit[num_gaussians_hit] = si
-                            num_gaussians_hit += 1
 
                     if hit_dist > -1.0 and hit_dist < closest_hit.distance:
                         closest_hit.distance = hit_dist
@@ -676,66 +671,39 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
 
                 while wp.bvh_query_next(query, shape_index, max_dist):
                     si = shape_enabled[shape_index]
+                    shape_type = shape_types[si]
+
+                    # Map the ray into the shape's frame once; every shape-type
+                    # intersector shares it (see _intersect_primitive_local). The
+                    # normal outputs are unused here, so their computation is
+                    # eliminated by the compiler.
+                    ray_origin_local, ray_dir_local = raycast.map_ray_to_local(
+                        shape_transforms[si], ray_origin_world, ray_dir_world
+                    )
+                    shape_size = shape_sizes[si]
 
                     hit_dist = wp.float32(-1)
-
-                    shape_type = shape_types[si]
                     # Heightfields are triangulated meshes; RenderContext remaps
                     # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
+                        # Meshes take the cheaper any-hit query: shadow rays only
+                        # need occlusion, not the closest triangle.
+                        hit_dist = raycast.ray_intersect_mesh_anyhit_local(
+                            ray_origin_local,
+                            ray_dir_local,
+                            shape_size,
                             shape_source_ptr[si],
-                            False,
                             max_dist,
                         )
-                    elif shape_type == GeoType.PLANE:
-                        hit_dist, _plane_normal = _plane_hit_with_culling(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
+                    else:
+                        hit_dist, _normal_local = _intersect_primitive_local(
+                            shape_type,
+                            ray_origin_local,
+                            ray_dir_local,
+                            shape_size,
                             wp.static(config.enable_backface_culling),
                         )
-                    elif shape_type == GeoType.SPHERE:
-                        hit_dist, _normal = raycast.ray_intersect_sphere(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0]
-                        )
-                    elif shape_type == GeoType.ELLIPSOID:
-                        hit_dist, _normal = raycast.ray_intersect_ellipsoid(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
-                    elif shape_type == GeoType.CAPSULE:
-                        hit_dist, _normal = raycast.ray_intersect_capsule(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CYLINDER:
-                        hit_dist, _normal = raycast.ray_intersect_cylinder(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CONE:
-                        hit_dist, _normal = raycast.ray_intersect_cone(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.BOX:
-                        hit_dist, _normal = raycast.ray_intersect_box(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
+
                     if hit_dist > -1 and hit_dist < max_dist:
                         return True
 

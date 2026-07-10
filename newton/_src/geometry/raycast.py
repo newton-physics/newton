@@ -77,28 +77,30 @@ def map_ray_to_local_scaled(
 
 
 @wp.func
-def ray_intersect_sphere(
-    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, r: float
+def ray_intersect_sphere_local(
+    ray_origin_local: wp.vec3, ray_direction_local: wp.vec3, r: float
 ) -> tuple[float, wp.vec3]:
-    """Computes ray-sphere intersection.
+    """Ray-sphere intersection in the sphere's local frame (center at origin).
+
+    The returned normal is in local space and not normalized; callers map it
+    to world space with ``wp.normalize(wp.transform_vector(...))``. Sharing the
+    local-frame ray lets traversal loops map a ray into a shape's frame once
+    and reuse it across shape-type intersectors.
 
     Args:
-        geom_to_world: The world transform of the sphere.
-        ray_origin: The origin of the ray in world space.
-        ray_direction: The direction of the ray in world space.
+        ray_origin_local: Ray origin in the sphere's local frame.
+        ray_direction_local: Ray direction in the sphere's local frame.
         r: The radius of the sphere.
 
     Returns:
-        The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+        The distance along the ray and the unnormalized local-space normal, or -1.0 and a zero vector if there is no intersection.
     """
     t_hit = -1.0
-    normal = wp.vec3(0.0)
-
-    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    normal_local = wp.vec3(0.0)
 
     d_len_sq = wp.dot(ray_direction_local, ray_direction_local)
     if d_len_sq < MINVAL:
-        return t_hit, normal
+        return t_hit, normal_local
 
     inv_d_len = 1.0 / wp.sqrt(d_len_sq)
     d_local_norm = ray_direction_local * inv_d_len
@@ -119,9 +121,31 @@ def ray_intersect_sphere(
                 t_hit = t2 * inv_d_len
 
     if t_hit >= 0.0:
-        hit_point = ray_origin + t_hit * ray_direction
-        normal = wp.normalize(hit_point - wp.transform_get_translation(geom_to_world))
+        normal_local = ray_origin_local + t_hit * ray_direction_local
 
+    return t_hit, normal_local
+
+
+@wp.func
+def ray_intersect_sphere(
+    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, r: float
+) -> tuple[float, wp.vec3]:
+    """Computes ray-sphere intersection.
+
+    Args:
+        geom_to_world: The world transform of the sphere.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        r: The radius of the sphere.
+
+    Returns:
+        The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+    """
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_sphere_local(ray_origin_local, ray_direction_local, r)
+    normal = wp.vec3(0.0)
+    if t_hit >= 0.0:
+        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
     return t_hit, normal
 
 
@@ -165,38 +189,37 @@ def ray_intersect_particle_sphere(
 
 
 @wp.func
-def ray_intersect_ellipsoid(
-    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, semi_axes: wp.vec3
+def ray_intersect_ellipsoid_local(
+    ray_origin_local: wp.vec3, ray_direction_local: wp.vec3, semi_axes: wp.vec3
 ) -> tuple[float, wp.vec3]:
-    """Computes ray-ellipsoid intersection.
+    """Ray-ellipsoid intersection in the ellipsoid's local frame.
 
-    The ellipsoid is defined by semi-axes (a, b, c) along the local X, Y, Z axes respectively.
-    Based on Inigo Quilez's ellipsoid intersection algorithm.
+    See :func:`ray_intersect_sphere_local` for the local-frame convention.
 
     Args:
-        geom_to_world: The world transform of the ellipsoid.
-        ray_origin: The origin of the ray in world space.
-        ray_direction: The direction of the ray in world space.
+        ray_origin_local: Ray origin in the ellipsoid's local frame.
+        ray_direction_local: Ray direction in the ellipsoid's local frame.
         semi_axes: The semi-axes (a, b, c) of the ellipsoid.
 
     Returns:
-        The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+        The distance along the ray and the unnormalized local-space normal, or -1.0 and a zero vector if there is no intersection.
     """
     t_hit = -1.0
-    normal = wp.vec3(0.0)
+    normal_local = wp.vec3(0.0)
 
-    ro, rd = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    ro = ray_origin_local
+    rd = ray_direction_local
 
     # Reject degenerate rays (matching sphere/capsule pattern)
     d_len_sq = wp.dot(rd, rd)
     if d_len_sq < MINVAL:
-        return t_hit, normal
+        return t_hit, normal_local
 
     ra = semi_axes
 
     # Ensure semi-axes are valid
     if ra[0] < MINVAL or ra[1] < MINVAL or ra[2] < MINVAL:
-        return t_hit, normal
+        return t_hit, normal_local
 
     # Scale by inverse semi-axes (transforms ellipsoid to unit sphere)
     ocn = wp.cw_div(ro, ra)
@@ -208,7 +231,7 @@ def ray_intersect_ellipsoid(
 
     h = b * b - a * (c - 1.0)
     if h < 0.0:
-        return t_hit, normal  # No intersection
+        return t_hit, normal_local  # No intersection
 
     h = wp.sqrt(h)
 
@@ -227,8 +250,33 @@ def ray_intersect_ellipsoid(
         inv_size = safe_div_vec3(wp.vec3(1.0), semi_axes)
         inv_size_sq = wp.cw_mul(inv_size, inv_size)
         normal_local = wp.cw_mul(hit_local, inv_size_sq)
-        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
 
+    return t_hit, normal_local
+
+
+@wp.func
+def ray_intersect_ellipsoid(
+    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, semi_axes: wp.vec3
+) -> tuple[float, wp.vec3]:
+    """Computes ray-ellipsoid intersection.
+
+    The ellipsoid is defined by semi-axes (a, b, c) along the local X, Y, Z axes respectively.
+    Based on Inigo Quilez's ellipsoid intersection algorithm.
+
+    Args:
+        geom_to_world: The world transform of the ellipsoid.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        semi_axes: The semi-axes (a, b, c) of the ellipsoid.
+
+    Returns:
+        The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+    """
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_ellipsoid_local(ray_origin_local, ray_direction_local, semi_axes)
+    normal = wp.vec3(0.0)
+    if t_hit >= 0.0:
+        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
     return t_hit, normal
 
 
@@ -236,22 +284,21 @@ _IFACE = wp.types.matrix((3, 2), dtype=wp.int32)(1, 2, 0, 2, 0, 1)
 
 
 @wp.func
-def ray_intersect_box(
-    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
+def ray_intersect_box_local(
+    ray_origin_local: wp.vec3, ray_direction_local: wp.vec3, size: wp.vec3
 ) -> tuple[float, wp.vec3]:
-    """Computes ray-box intersection.
+    """Ray-box intersection in the box's local frame.
+
+    See :func:`ray_intersect_sphere_local` for the local-frame convention.
 
     Args:
-        geom_to_world: The world transform of the box.
-        ray_origin: The origin of the ray in world space.
-        ray_direction: The direction of the ray in world space.
+        ray_origin_local: Ray origin in the box's local frame.
+        ray_direction_local: Ray direction in the box's local frame.
         size: The half-extents of the box.
 
     Returns:
-        The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+        The distance along the ray and the unnormalized local-space normal, or -1.0 and a zero vector if there is no intersection.
     """
-    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
-
     t_hit = -1.0
     normal = wp.vec3(0.0)
     t_near = -1.0e10
@@ -296,31 +343,53 @@ def ray_intersect_box(
                         if wp.abs(p0) <= size[id0] and wp.abs(p1) <= size[id1]:
                             if wp.abs(sol - t_hit) < EPSILON:
                                 normal_local[i] = -1.0 if side < 0 else 1.0
-        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+        normal = normal_local
 
     return t_hit, normal
 
 
 @wp.func
-def ray_intersect_capsule(
-    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, r: float, h: float
+def ray_intersect_box(
+    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
 ) -> tuple[float, wp.vec3]:
-    """Computes ray-capsule intersection.
+    """Computes ray-box intersection.
 
     Args:
-        geom_to_world: The world transform of the capsule.
+        geom_to_world: The world transform of the box.
         ray_origin: The origin of the ray in world space.
         ray_direction: The direction of the ray in world space.
-        r: The radius of the capsule.
-        h: The half-height of the capsule's cylindrical part.
+        size: The half-extents of the box.
 
     Returns:
         The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
     """
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_box_local(ray_origin_local, ray_direction_local, size)
+    normal = wp.vec3(0.0)
+    if t_hit >= 0.0:
+        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+    return t_hit, normal
+
+
+@wp.func
+def ray_intersect_capsule_local(
+    ray_origin_local: wp.vec3, ray_direction_local: wp.vec3, r: float, h: float
+) -> tuple[float, wp.vec3]:
+    """Ray-capsule intersection in the capsule's local frame.
+
+    See :func:`ray_intersect_sphere_local` for the local-frame convention.
+
+    Args:
+        ray_origin_local: Ray origin in the capsule's local frame.
+        ray_direction_local: Ray direction in the capsule's local frame.
+        r: The radius of the capsule.
+        h: The half-height of the capsule's cylindrical part.
+
+    Returns:
+        The distance along the ray and the unnormalized local-space normal, or -1.0 and a zero vector if there is no intersection.
+    """
     t_hit = -1.0
     normal = wp.vec3(0.0)
-
-    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
 
     d_len_sq = wp.dot(ray_direction_local, ray_direction_local)
     if d_len_sq < MINVAL:
@@ -393,30 +462,52 @@ def ray_intersect_capsule(
         hit_local = ray_origin_local + t_hit * ray_direction_local
         z_clamped = wp.min(h, wp.max(-h, hit_local[2]))
         axis_point = wp.vec3(0.0, 0.0, z_clamped)
-        normal_local = wp.normalize(hit_local - axis_point)
-        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+        normal = hit_local - axis_point
 
     return t_hit, normal
 
 
 @wp.func
-def ray_intersect_cylinder(
+def ray_intersect_capsule(
     geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, r: float, h: float
 ) -> tuple[float, wp.vec3]:
-    """Computes ray-cylinder intersection.
+    """Computes ray-capsule intersection.
 
     Args:
-        geom_to_world: The world transform of the cylinder.
+        geom_to_world: The world transform of the capsule.
         ray_origin: The origin of the ray in world space.
         ray_direction: The direction of the ray in world space.
-        r: The radius of the cylinder.
-        h: The half-height of the cylinder.
+        r: The radius of the capsule.
+        h: The half-height of the capsule's cylindrical part.
 
     Returns:
         The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
     """
     ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_capsule_local(ray_origin_local, ray_direction_local, r, h)
+    normal = wp.vec3(0.0)
+    if t_hit >= 0.0:
+        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+    return t_hit, normal
 
+
+@wp.func
+def ray_intersect_cylinder_local(
+    ray_origin_local: wp.vec3, ray_direction_local: wp.vec3, r: float, h: float
+) -> tuple[float, wp.vec3]:
+    """Ray-cylinder intersection in the cylinder's local frame.
+
+    See :func:`ray_intersect_sphere_local` for the local-frame convention.
+
+    Args:
+        ray_origin_local: Ray origin in the cylinder's local frame.
+        ray_direction_local: Ray direction in the cylinder's local frame.
+        r: The radius of the cylinder.
+        h: The half-height of the cylinder.
+
+    Returns:
+        The distance along the ray and the unnormalized local-space normal, or -1.0 and a zero vector if there is no intersection.
+    """
     t_hit = -1.0
     normal = wp.vec3(0.0)
     min_t = 1.0e10
@@ -468,36 +559,57 @@ def ray_intersect_cylinder(
         hit_local = ray_origin_local + t_hit * ray_direction_local
         z_clamped = wp.min(h, wp.max(-h, hit_local[2]))
         if z_clamped >= (h - EPSILON) or z_clamped <= (-h + EPSILON):
-            normal_local = wp.vec3(0.0, 0.0, z_clamped)
+            normal = wp.vec3(0.0, 0.0, z_clamped)
         else:
-            normal_local = wp.normalize(hit_local - wp.vec3(0.0, 0.0, z_clamped))
-        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+            normal = hit_local - wp.vec3(0.0, 0.0, z_clamped)
 
     return t_hit, normal
 
 
 @wp.func
-def ray_intersect_cone(
-    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, radius: float, half_height: float
+def ray_intersect_cylinder(
+    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, r: float, h: float
 ) -> tuple[float, wp.vec3]:
-    """Computes ray-cone intersection.
-
-    The cone is oriented along the Z-axis with the tip at +half_height and base at -half_height.
+    """Computes ray-cylinder intersection.
 
     Args:
-        geom_to_world: The world transform of the cone.
+        geom_to_world: The world transform of the cylinder.
         ray_origin: The origin of the ray in world space.
         ray_direction: The direction of the ray in world space.
-        radius: The radius of the cone's base.
-        half_height: Half the height of the cone (distance from center to tip/base).
+        r: The radius of the cylinder.
+        h: The half-height of the cylinder.
 
     Returns:
         The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
     """
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_cylinder_local(ray_origin_local, ray_direction_local, r, h)
+    normal = wp.vec3(0.0)
+    if t_hit >= 0.0:
+        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+    return t_hit, normal
+
+
+@wp.func
+def ray_intersect_cone_local(
+    ray_origin_local: wp.vec3, ray_direction_local: wp.vec3, radius: float, half_height: float
+) -> tuple[float, wp.vec3]:
+    """Ray-cone intersection in the cone's local frame.
+
+    The cone is oriented along the Z-axis with the tip at +half_height and base at -half_height.
+    See :func:`ray_intersect_sphere_local` for the local-frame convention.
+
+    Args:
+        ray_origin_local: Ray origin in the cone's local frame.
+        ray_direction_local: Ray direction in the cone's local frame.
+        radius: The radius of the cone's base.
+        half_height: Half the height of the cone (distance from center to tip/base).
+
+    Returns:
+        The distance along the ray and the unnormalized local-space normal, or -1.0 and a zero vector if there is no intersection.
+    """
     t_hit = -1.0
     normal = wp.vec3(0.0)
-
-    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
 
     if wp.abs(half_height) < MINVAL:
         return t_hit, normal
@@ -555,19 +667,92 @@ def ray_intersect_cone(
     if t_hit >= 0.0:
         hit_local = ray_origin_local + t_hit * ray_direction_local
         if wp.abs(hit_local[2] - half_height) <= EPSILON:
-            normal_local = wp.vec3(0.0, 0.0, 1.0)
+            normal = wp.vec3(0.0, 0.0, 1.0)
         elif wp.abs(hit_local[2] + half_height) <= EPSILON:
-            normal_local = wp.vec3(0.0, 0.0, -1.0)
+            normal = wp.vec3(0.0, 0.0, -1.0)
         else:
             radial_sq = hit_local[0] * hit_local[0] + hit_local[1] * hit_local[1]
             radial = wp.sqrt(radial_sq)
             if radial <= EPSILON:
-                normal_local = wp.vec3(0.0, 0.0, 1.0)
+                normal = wp.vec3(0.0, 0.0, 1.0)
             else:
                 denom = wp.max(2.0 * wp.abs(half_height), EPSILON)
                 slope = radius / denom
-                normal_local = wp.normalize(wp.vec3(hit_local[0], hit_local[1], slope * radial))
+                normal = wp.normalize(wp.vec3(hit_local[0], hit_local[1], slope * radial))
+
+    return t_hit, normal
+
+
+@wp.func
+def ray_intersect_cone(
+    geom_to_world: wp.transform, ray_origin: wp.vec3, ray_direction: wp.vec3, radius: float, half_height: float
+) -> tuple[float, wp.vec3]:
+    """Computes ray-cone intersection.
+
+    The cone is oriented along the Z-axis with the tip at +half_height and base at -half_height.
+
+    Args:
+        geom_to_world: The world transform of the cone.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        radius: The radius of the cone's base.
+        half_height: Half the height of the cone (distance from center to tip/base).
+
+    Returns:
+        The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+    """
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_cone_local(ray_origin_local, ray_direction_local, radius, half_height)
+    normal = wp.vec3(0.0)
+    if t_hit >= 0.0:
         normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+    return t_hit, normal
+
+
+@wp.func
+def ray_intersect_plane_local(
+    ray_origin_local: wp.vec3, ray_direction_local: wp.vec3, size: wp.vec3
+) -> tuple[float, wp.vec3]:
+    """Ray-plane intersection in the plane's local frame (plane at z = 0, normal +Z).
+
+    See :func:`ray_intersect_plane` for the plane conventions and
+    :func:`ray_intersect_sphere_local` for the local-frame convention.
+
+    Args:
+        ray_origin_local: Ray origin in the plane's local frame.
+        ray_direction_local: Ray direction in the plane's local frame.
+        size: ``(width, length, 0)`` -- full extents; ``0`` = infinite.
+
+    Returns:
+        The distance along the ray and the local-space normal ``(0, 0, 1)``, or -1.0 and a zero vector if there is no intersection.
+    """
+    t_hit = -1.0
+    normal = wp.vec3(0.0)
+
+    ro = ray_origin_local
+    rd = ray_direction_local
+
+    # Ray parallel to the plane (or degenerate)
+    if wp.abs(rd[2]) < PARALLEL_TOL:
+        return t_hit, normal
+
+    t = -ro[2] / rd[2]
+    if t < 0.0:
+        return t_hit, normal
+
+    hit_x = ro[0] + t * rd[0]
+    hit_y = ro[1] + t * rd[1]
+
+    half_w = size[0] * 0.5
+    half_l = size[1] * 0.5
+
+    if half_w > 0.0 and wp.abs(hit_x) > half_w:
+        return t_hit, normal
+    if half_l > 0.0 and wp.abs(hit_y) > half_l:
+        return t_hit, normal
+
+    t_hit = t
+    normal = wp.vec3(0.0, 0.0, 1.0)
 
     return t_hit, normal
 
@@ -592,34 +777,93 @@ def ray_intersect_plane(
     Returns:
         The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
     """
-    t_hit = -1.0
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_local = ray_intersect_plane_local(ray_origin_local, ray_direction_local, size)
     normal = wp.vec3(0.0)
-
-    ro, rd = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
-
-    # Ray parallel to the plane (or degenerate)
-    if wp.abs(rd[2]) < PARALLEL_TOL:
-        return t_hit, normal
-
-    t = -ro[2] / rd[2]
-    if t < 0.0:
-        return t_hit, normal
-
-    hit_x = ro[0] + t * rd[0]
-    hit_y = ro[1] + t * rd[1]
-
-    half_w = size[0] * 0.5
-    half_l = size[1] * 0.5
-
-    if half_w > 0.0 and wp.abs(hit_x) > half_w:
-        return t_hit, normal
-    if half_l > 0.0 and wp.abs(hit_y) > half_l:
-        return t_hit, normal
-
-    t_hit = t
-    normal = wp.normalize(wp.transform_vector(geom_to_world, wp.vec3(0.0, 0.0, 1.0)))
-
+    if t_hit >= 0.0:
+        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
     return t_hit, normal
+
+
+@wp.func
+def ray_intersect_mesh_local(
+    ray_origin_local: wp.vec3,
+    ray_direction_local: wp.vec3,
+    size: wp.vec3,
+    mesh_id: wp.uint64,
+    enable_backface_culling: bool,
+    max_t: float,
+) -> tuple[float, wp.vec3, float, float, int]:
+    """Ray-mesh intersection in the mesh's (unscaled) local frame.
+
+    Applies the per-axis mesh ``size`` scaling internally. The returned normal
+    is the triangle face normal in the *scaled* local frame; callers map it to
+    world space with ``wp.normalize(wp.transform_vector(tf, safe_div_vec3(n, size)))``.
+    See :func:`ray_intersect_sphere_local` for the local-frame convention.
+
+    Args:
+        ray_origin_local: Ray origin in the mesh's local frame (before scaling).
+        ray_direction_local: Ray direction in the mesh's local frame (before scaling).
+        size: The 3D scale of the mesh.
+        mesh_id: The Warp mesh ID for raycasting.
+        enable_backface_culling: When ``True``, reject hits whose triangle normal
+            is aligned with the ray direction (back faces).
+        max_t: Maximum parameter ``t`` along the (local, scaled) ray to consider.
+
+    Returns:
+        Tuple ``(distance, normal, u, v, face_index)`` with the normal in scaled-local space, or ``(-1.0, 0-vector, 0, 0, -1)`` on miss.
+    """
+    if mesh_id == wp.uint64(0):
+        return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
+
+    inv_size = safe_div_vec3(wp.vec3(1.0), size)
+    ray_origin_scaled = wp.cw_mul(ray_origin_local, inv_size)
+    ray_direction_scaled = wp.cw_mul(ray_direction_local, inv_size)
+
+    query = wp.mesh_query_ray(mesh_id, ray_origin_scaled, ray_direction_scaled, max_t)
+
+    if query.result:
+        if not enable_backface_culling or wp.dot(ray_direction_scaled, query.normal) < 0.0:
+            return query.t, query.normal, query.u, query.v, query.face
+
+    return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
+
+
+@wp.func
+def ray_intersect_mesh_anyhit_local(
+    ray_origin_local: wp.vec3,
+    ray_direction_local: wp.vec3,
+    size: wp.vec3,
+    mesh_id: wp.uint64,
+    max_t: float,
+) -> float:
+    """Any-hit ray-mesh test in the mesh's (unscaled) local frame.
+
+    See :func:`ray_intersect_mesh_local` for the frame conventions.
+
+    Args:
+        ray_origin_local: Ray origin in the mesh's local frame (before scaling).
+        ray_direction_local: Ray direction in the mesh's local frame (before scaling).
+        size: The 3D scale of the mesh.
+        mesh_id: The Warp mesh ID for raycasting.
+        max_t: Maximum parameter ``t`` along the (local, scaled) ray to consider.
+
+    Returns:
+        ``0.0`` if any intersection exists within ``max_t``, otherwise ``-1.0``.
+    """
+    if mesh_id == wp.uint64(0):
+        return -1.0
+
+    inv_size = safe_div_vec3(wp.vec3(1.0), size)
+    ray_origin_scaled = wp.cw_mul(ray_origin_local, inv_size)
+    ray_direction_scaled = wp.cw_mul(ray_direction_local, inv_size)
+
+    hit = wp.mesh_query_ray_anyhit(mesh_id, ray_origin_scaled, ray_direction_scaled, max_t)
+
+    if hit:
+        return 0.0
+
+    return -1.0
 
 
 @wp.func
@@ -645,21 +889,46 @@ def ray_intersect_mesh(
         max_t: Maximum parameter ``t`` along the (local, scaled) ray to consider.
 
     Returns:
-        Tuple ``(distance, normal, u, v, face_index)``. The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection; on miss, ``u`` and ``v`` are ``0.0`` and ``face_index`` is -1.
+        Tuple ``(distance, normal, u, v, face_index)``. The distance and normal of the intersection point along the ray, or -1.0 if there is no intersection.
     """
     if mesh_id == wp.uint64(0):
         return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
 
-    ray_origin_local, ray_direction_local = map_ray_to_local_scaled(geom_to_world, size, ray_origin, ray_direction)
-
-    query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
-
-    if query.result:
-        if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
-            normal = wp.normalize(wp.transform_vector(geom_to_world, safe_div_vec3(query.normal, size)))
-            return query.t, normal, query.u, query.v, query.face
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    t_hit, normal_scaled, u, v, face = ray_intersect_mesh_local(
+        ray_origin_local, ray_direction_local, size, mesh_id, enable_backface_culling, max_t
+    )
+    if t_hit >= 0.0:
+        normal = wp.normalize(wp.transform_vector(geom_to_world, safe_div_vec3(normal_scaled, size)))
+        return t_hit, normal, u, v, face
 
     return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
+
+
+@wp.func
+def ray_intersect_mesh_anyhit(
+    geom_to_world: wp.transform,
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+    size: wp.vec3,
+    mesh_id: wp.uint64,
+    max_t: float,
+) -> float:
+    """Computes ray-mesh intersection using Warp's built-in mesh query.
+
+    Args:
+        geom_to_world: The world transform of the mesh.
+        ray_origin: The origin of the ray in world space.
+        ray_direction: The direction of the ray in world space.
+        size: The 3D scale of the mesh.
+        mesh_id: The Warp mesh ID for raycasting.
+        max_t: Maximum parameter ``t`` along the (local, scaled) ray to consider.
+
+    Returns:
+        Tuple ``(distance, normal, u, v, face_index)``. The distance and normal of the intersection point along the ray, or -1.0 if there is no intersection.
+    """
+    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+    return ray_intersect_mesh_anyhit_local(ray_origin_local, ray_direction_local, size, mesh_id, max_t)
 
 
 @wp.func
