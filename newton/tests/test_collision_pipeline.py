@@ -3365,6 +3365,94 @@ for _name, _fn in (
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
 
 
+@wp.kernel
+def _sum_soft_contact_bodypos_y(count: wp.array[int], body_pos: wp.array[wp.vec3], loss: wp.array[float]):
+    i = wp.tid()
+    if i < count[0]:
+        wp.atomic_add(loss, 0, body_pos[i][1])
+
+
+def test_soft_contact_detection_differentiable_through_collide(test, device):
+    """Differentiating THROUGH ``collide()`` (the detection recorded on the tape) propagates a correct
+    gradient to ``particle_q`` -- this is the path that actually exercises ``create_soft_contacts`` ->
+    :func:`~newton._src.geometry.kernels.counter_increment` -> its ``@wp.func_replay`` and the
+    per-thread ``tids`` replay array. A single particle-vs-box contact has a differentiable contact
+    point, so the analytic tape gradient of ``sum(body_pos.y)`` matches finite differences. (Edge/face
+    contact points are frozen by the SDF argmin, so their through-collide gradient is zero; the EF force
+    differentiability is covered by the fixed-contact-point gap tests above.)
+    """
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    builder.add_particle(wp.vec3(0.6, 0.1, 0.05), wp.vec3(0.0), 1.0, radius=0.0)
+    model = builder.finalize(device=device, requires_grad=True)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.25, requires_grad=True)
+    q0 = model.state().particle_q.numpy()
+
+    def _loss(qnp, on_tape):
+        state = model.state(requires_grad=on_tape)
+        state.particle_q.assign(qnp)
+        contacts = pipeline.contacts()
+        loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+        if on_tape:
+            tape = wp.Tape()
+            with tape:
+                pipeline.collide(state, contacts)
+                wp.launch(
+                    _sum_soft_contact_bodypos_y,
+                    dim=pipeline.soft_contact_max,
+                    inputs=[contacts.soft_contact_count, contacts.soft_contact_body_pos],
+                    outputs=[loss],
+                    device=device,
+                )
+            tape.backward(loss)
+            return state.particle_q.grad.numpy(), int(contacts.soft_contact_count.numpy()[0])
+        pipeline.collide(state, contacts)
+        wp.launch(
+            _sum_soft_contact_bodypos_y,
+            dim=pipeline.soft_contact_max,
+            inputs=[contacts.soft_contact_count, contacts.soft_contact_body_pos],
+            outputs=[loss],
+            device=device,
+        )
+        return float(loss.numpy()[0]), int(contacts.soft_contact_count.numpy()[0])
+
+    grad, count = _loss(q0, on_tape=True)
+    test.assertEqual(count, 1, "expected exactly one particle-vs-box contact")
+    test.assertGreater(
+        np.count_nonzero(np.abs(grad) > 1e-9),
+        0,
+        "detection must be differentiable through collide() (counter_increment replay path)",
+    )
+
+    eps = 1e-3
+    for comp in range(3):
+        if abs(grad[0, comp]) < 1e-9:
+            continue
+        qp = q0.copy()
+        qp[0, comp] += eps
+        qm = q0.copy()
+        qm[0, comp] -= eps
+        lp, cp = _loss(qp, on_tape=False)
+        lm, cm = _loss(qm, on_tape=False)
+        test.assertEqual(cp, count)
+        test.assertEqual(cm, count)
+        fd = (lp - lm) / (2.0 * eps)
+        test.assertAlmostEqual(
+            float(grad[0, comp]),
+            fd,
+            places=3,
+            msg=f"through-collide gradient p.{'xyz'[comp]}: analytic={grad[0, comp]:.5f} vs FD={fd:.5f}",
+        )
+
+
+add_function_test(
+    TestFullSurfaceSoftContact,
+    "test_soft_contact_detection_differentiable_through_collide",
+    test_soft_contact_detection_differentiable_through_collide,
+    devices=soft_devices,
+)
+
+
 def test_unprovisioned_mesh_raises(test, device):
     """A participating mesh with no SDF makes CollisionPipeline raise when the flag is enabled.
 
