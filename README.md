@@ -558,6 +558,9 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_deformable_visual_mesh_camera.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_deformable_visual_mesh_camera_depth.jpg" alt="Deformable Visual Mesh Camera Depth">
+      </a>
     </td>
     <td align="center" width="33%">
     </td>
@@ -568,6 +571,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples deformable_visual_mesh_camera --load-from-usd</code>
     </td>
     <td align="center" width="33%">
+      Tiled camera depth
     </td>
     <td align="center" width="33%">
     </td>

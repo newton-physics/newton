@@ -151,7 +151,7 @@ class Example:
     @staticmethod
     def _checker_texture() -> str:
         """Return the shared procedural/USD checker texture."""
-        return newton.examples.get_asset("deformable_visual_checker.ppm")
+        return newton.examples.get_asset("deformable_visual_checker.png")
 
     @staticmethod
     def _tube_mesh(centerline: np.ndarray, radius: float, segments: int):

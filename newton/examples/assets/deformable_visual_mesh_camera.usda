@@ -7308,7 +7308,7 @@ def Xform "World"
             def Shader "CheckerTexture"
             {
                 uniform token info:id = "UsdUVTexture"
-                asset inputs:file = @deformable_visual_checker.ppm@
+                asset inputs:file = @deformable_visual_checker.png@
                 float2 inputs:st.connect = </World/Materials/CheckerVisual/PrimvarReader.outputs:result>
                 token inputs:sourceColorSpace = "sRGB"
                 token inputs:wrapS = "repeat"
