@@ -176,13 +176,6 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            ps = picking.pick_state.numpy()
-            ps[0]["pick_stiffness"] = 100.0
-            ps[0]["pick_damping"] = 0.0
-            picking.pick_state.assign(ps)
-
         self.capture()
 
     def capture(self):

@@ -36,8 +36,11 @@ class Picking:
 
         Args:
             model: The model to pick from.
-            pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
-            pick_damping: The damping that will be used to compute the force applied to the picked body.
+            pick_stiffness: Stiffness of the picking spring, in acceleration per unit
+                displacement [1/s^2]. The commanded acceleration is scaled by the
+                picked body's effective mass, so gains are mass-independent.
+            pick_damping: Damping of the picking spring, in acceleration per unit
+                velocity of the pick point [1/s].
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
                 Clamps both linear and equivalent rotational acceleration to prevent
                 runaway divergence on light or low-inertia objects.

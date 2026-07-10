@@ -125,13 +125,6 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 2.0
-            pick_state[0]["pick_damping"] = 0.0
-            picking.pick_state.assign(pick_state)
-
         self.viewer.set_camera(
             pos=wp.vec3(2.10, 0.0, z0 - 0.15),
             pitch=0.0,
