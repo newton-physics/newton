@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
@@ -335,13 +334,7 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.JOINT: {
             "armature": SchemaAttribute("physxJoint:armature", 0.0),
             "velocity_limit": SchemaAttribute("physxJoint:maxJointVelocity", None),
-            # Per-axis linear limit aliases
-            "limit_transX_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
-            "limit_transY_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
-            "limit_transZ_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
-            "limit_transX_kd": SchemaAttribute("physxLimit:linear:damping", 0.0),
-            "limit_transY_kd": SchemaAttribute("physxLimit:linear:damping", 0.0),
-            "limit_transZ_kd": SchemaAttribute("physxLimit:linear:damping", 0.0),
+            # PhysX has genuine per-axis variance for rotational limits
             "limit_linear_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
             "limit_angular_ke": SchemaAttribute("physxLimit:angular:stiffness", 0.0),
             "limit_rotX_ke": SchemaAttribute("physxLimit:rotX:stiffness", 0.0),
@@ -449,26 +442,6 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
-# `parse_usd` divides revolute and D6-angular `limit_ke` / `limit_kd` by
-# DegreesToRadian (= pi/180) on the assumption that resolver-supplied gains are
-# authored in per-degree units (UsdPhysics convention). MuJoCo's `mjc:solreflimit`
-# always produces per-radian stiffness/damping (mjModel never expresses stiffness
-# per-degree). Pre-multiplying here cancels the importer's later division so the
-# per-radian value survives. Linear axes are unaffected and use the un-scaled
-# helpers above.
-_RAD_PER_DEG = math.pi / 180.0
-
-
-def _solref_to_stiffness_per_rad(solref: Sequence[float] | None) -> float | None:
-    s = solref_to_stiffness(solref)
-    return s * _RAD_PER_DEG if s is not None else None
-
-
-def _solref_to_damping_per_rad(solref: Sequence[float] | None) -> float | None:
-    d = solref_to_damping(solref)
-    return d * _RAD_PER_DEG if d is not None else None
-
-
 class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
@@ -485,23 +458,11 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.JOINT: {
             "armature": SchemaAttribute("mjc:armature", 0.0),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
-            # Per-axis aliases mapped to solreflimit (MjcJointAPI authors joint limit solref here)
-            "limit_transX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_transY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_transZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_linear_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_angular_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_linear_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_angular_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
+            # Broadcast limit stiffness/damping from solreflimit (MuJoCo has no per-axis differentiation).
+            # Default is None so the resolver only returns a value when solreflimit is authored;
+            # the MuJoCo default [0.02, 1.0] is handled by _get_mjc_joint_limit_default in the importer.
+            "limit_ke": SchemaAttribute("mjc:solreflimit", None, solref_to_stiffness),
+            "limit_kd": SchemaAttribute("mjc:solreflimit", None, solref_to_damping),
         },
         PrimType.SHAPE: {
             # Mesh
