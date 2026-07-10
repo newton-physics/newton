@@ -708,6 +708,117 @@ recovered generalized velocities are rotated back into the joint parent frame.
    :noindex:
 
 
+.. _Inverse Dynamics:
+
+Inverse Dynamics
+----------------
+
+Newton can evaluate the **manipulator equation** for an articulated rigid-body system:
+
+.. math::
+
+   \tau = M(q)\, \ddot{q} + C(q, \dot{q})\, \dot{q} + g(q)
+
+.. list-table:: Manipulator-equation terms
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Symbol
+     - Description
+   * - :math:`q`
+     - Generalized joint coordinates (:attr:`State.joint_q`).
+   * - :math:`\dot{q}`
+     - Generalized joint velocities (:attr:`State.joint_qd`).
+   * - :math:`\ddot{q}`
+     - Generalized joint accelerations (user-supplied ``qddot``).
+   * - :math:`\tau`
+     - Generalized joint forces / torques, same layout as :attr:`Control.joint_f`.
+   * - :math:`M(q)`
+     - Joint-space mass matrix, shape ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
+   * - :math:`g(q) = \partial U / \partial q`
+     - Gravity force, where :math:`U(q) = \sum_i -m_i\, \mathbf{g} \cdot \mathbf{x}_{\text{com},i}` is the system's gravitational potential energy (sum over bodies of mass × gravity-vector · CoM position). Equivalently, the feed-forward joint-space force a controller must apply to hold the articulation static under gravity.
+   * - :math:`C(q, \dot{q})\, \dot{q}`
+     - Coriolis + centrifugal force.
+
+:func:`newton.eval_inverse_dynamics` populates any combination of
+:math:`M(q)`, :math:`g(q)`, and :math:`C(q, \dot{q})\, \dot{q}` into an
+:class:`~newton.InverseDynamics` container. The desired combination is selected via
+:class:`~newton.InverseDynamics.EvalType` flags.
+:func:`newton.eval_inverse_dynamics_force` then combines them with a
+user-supplied :math:`\ddot{q}` to produce :math:`\tau`.
+
+Both functions require ``state.body_q`` to be consistent with
+``state.joint_q``: callers must invoke :func:`newton.eval_fk` (or
+otherwise update ``state.body_q``) first.
+
+The inverse dynamics container :class:`~newton.InverseDynamics` is allocated using :meth:`newton.Model.inverse_dynamics`.
+It holds the public output buffers and owns the internal RNEA/Jacobian scratch privately, so callers manage only the one object.
+
+.. code-block:: python
+
+    # bring state.body_q in sync with state.joint_q (precondition of
+    # eval_inverse_dynamics)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    # allocate the output container, sized to the model
+    inverse_dynamics = model.inverse_dynamics()
+
+    # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
+    newton.eval_inverse_dynamics(
+        model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics,
+    )
+    M = inverse_dynamics.mass_matrix     # (articulation_count, max_dofs, max_dofs)
+    g = inverse_dynamics.gravity_force   # (joint_dof_count,)
+    c = inverse_dynamics.coriolis_force  # (joint_dof_count,)
+
+    # combine into tau = M*qddot + C*qdot + g for a user-supplied qddot
+    qddot = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+    newton.eval_inverse_dynamics_force(
+        model, state, M, qddot, c, g, inverse_dynamics.tau,
+    )
+
+Combine flags with bitwise-or to compute only what you need. For
+example, ``EvalType.GRAVITY_FORCE | EvalType.CORIOLIS_FORCE`` skips
+the mass-matrix Jacobian pass when only the bias terms are needed.
+
+Restricting evaluation with the selection API
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`newton.selection.ArticulationView` exposes
+:meth:`~newton.selection.ArticulationView.eval_inverse_dynamics`, which
+masks the computation to a label-matched (and optionally per-world)
+subset of articulations. Output buffers stay sized for the whole model;
+slots belonging to unselected articulations and DOFs come back as zero,
+mirroring the convention :func:`newton.eval_mass_matrix` uses for its
+own ``mask=`` argument.
+
+.. code-block:: python
+
+    # only compute M(q), g(q), and C*q_dot for articulations labelled "arm"
+    view = newton.selection.ArticulationView(model, pattern="arm")
+    view.eval_inverse_dynamics(
+        state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics,
+    )
+
+    # optionally narrow further with a per-world submask (shape [world_count])
+    per_world_mask = wp.array([True], dtype=bool, device=model.device)
+    view.eval_inverse_dynamics(
+        state, newton.InverseDynamics.EvalType.ALL,
+        inverse_dynamics, mask=per_world_mask,
+    )
+
+
+.. autofunction:: newton.eval_inverse_dynamics
+   :noindex:
+
+.. autofunction:: newton.eval_inverse_dynamics_force
+   :noindex:
+
+.. autoclass:: newton.InverseDynamics
+   :members:
+   :noindex:
+
+
 .. _Orphan joints:
 
 Orphan joints
@@ -718,20 +829,22 @@ An **orphan joint** is a joint that is not part of any articulation **and** whos
 * The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
 * A joint connects two bodies that are not under any ``PhysicsArticulationRootAPI`` prim, even though other articulations exist in the scene.
 
-A joint that is excluded from every :meth:`~newton.ModelBuilder.add_articulation` call but whose two bodies are already reachable through the articulation tree is **not** an orphan joint; it is a **loop-closing joint** (see :ref:`Loop closure`) and is handled separately.
+A joint that is excluded from every :meth:`~newton.ModelBuilder.add_articulation` call but whose two bodies are already reachable through the articulation tree is **not** an orphan joint; it is a **loop-closing joint** (see :ref:`Loop closure`) and is handled separately. A joint from world to a body is also allowed to remain outside articulation metadata as a **standalone world-root joint**.
 
-When orphan joints are detected during USD parsing (:meth:`~newton.ModelBuilder.add_usd`), Newton issues a warning that lists the affected joint paths.
+USD import preserves joints outside authored articulations without emitting an articulation warning. The model's validation and the selected solver determine whether the resulting topology is supported.
 
 **Validation and finalization**
 
-By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` if any orphan joint is found. (Loop-closing joints pass this check — see :ref:`Loop closure`.) To proceed with orphan joints, skip this validation:
+By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` for non-root orphan joints. Loop-closing joints and standalone world-root joints pass this check. To proceed with another orphan topology, skip this validation explicitly:
 
 .. testsetup:: articulation-orphan-joints
 
    builder = newton.ModelBuilder()
-   body = builder.add_link()
-   builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-   builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
+   parent = builder.add_link()
+   child = builder.add_link()
+   builder.add_shape_box(parent, hx=0.1, hy=0.1, hz=0.1)
+   builder.add_shape_box(child, hx=0.1, hy=0.1, hz=0.1)
+   builder.add_joint_revolute(parent=parent, child=child, axis=newton.Axis.Z)
 
 .. testcode:: articulation-orphan-joints
 
@@ -739,9 +852,11 @@ By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` i
 
 **Solver compatibility**
 
-Only maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) support orphan joints.
-Generalized-coordinate solvers (:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverMuJoCo`) require every joint to belong to an articulation.
-(Loop-closing joints are not orphan joints and are handled separately — see :ref:`Loop closure`.)
+Maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) consume joints independently of articulation membership. Semi-implicit joint constraints are penalty forces, so their accuracy and stability depend on the configured stiffness, damping, and time step.
+
+:class:`~newton.solvers.SolverMuJoCo` converts standalone world-root joints through a solver-specific fallback and emits a warning. It rejects general rootless mechanisms whose remaining bodies cannot be instantiated from articulations or standalone world roots. :class:`~newton.solvers.SolverFeatherstone` requires reduced-coordinate articulation metadata.
+
+Loop-closing joints are handled separately; see :ref:`Loop closure`.
 
 .. _Loop closure:
 

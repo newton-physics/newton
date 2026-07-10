@@ -353,12 +353,9 @@ class Example:
         self.initial_pose = self.model.joint_q.numpy()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def create_articulation(self, builder):
         asset_path = newton.utils.download_asset("franka_emika_panda")
