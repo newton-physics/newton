@@ -626,25 +626,26 @@ def parse_usd(
     # UsdPhysics.MassAPI value semantics: a schema fallback value (0 mass/density, zero
     # diagonal inertia or principal axes, non-finite center of mass) means "unspecified"
     # even when explicitly authored, so authoredness must not be used as the override signal.
+    # A blocked attribute resolves to no value (Get() returns None) and is also unspecified.
     def _mass_api_effective_mass(mass_api: UsdPhysics.MassAPI) -> float | None:
-        mass = float(mass_api.GetMassAttr().Get())
-        return mass if math.isfinite(mass) and mass > 0.0 else None
+        mass = mass_api.GetMassAttr().Get()
+        return float(mass) if mass is not None and math.isfinite(mass) and mass > 0.0 else None
 
     def _mass_api_effective_density(mass_api: UsdPhysics.MassAPI) -> float | None:
-        density = float(mass_api.GetDensityAttr().Get())
-        return density if math.isfinite(density) and density > 0.0 else None
+        density = mass_api.GetDensityAttr().Get()
+        return float(density) if density is not None and math.isfinite(density) and density > 0.0 else None
 
     def _mass_api_effective_diag_inertia(mass_api: UsdPhysics.MassAPI):
         diag = mass_api.GetDiagonalInertiaAttr().Get()
-        return diag if any(v != 0.0 for v in diag) else None
+        return diag if diag is not None and any(v != 0.0 for v in diag) else None
 
     def _mass_api_effective_com(mass_api: UsdPhysics.MassAPI):
         com = mass_api.GetCenterOfMassAttr().Get()
-        return com if all(math.isfinite(v) for v in com) else None
+        return com if com is not None and all(math.isfinite(v) for v in com) else None
 
     def _mass_api_effective_principal_axes(mass_api: UsdPhysics.MassAPI):
         axes = mass_api.GetPrincipalAxesAttr().Get()
-        return axes if axes != Gf.Quatf(0.0) else None
+        return axes if axes is not None and axes != Gf.Quatf(0.0) else None
 
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
@@ -3004,9 +3005,10 @@ def parse_usd(
         mass = _mass_api_effective_mass(mass_api)
         diag_val = _mass_api_effective_diag_inertia(mass_api)
         if mass is None or diag_val is None:
-            # Warn when an intended override is dropped: inertia is effective but mass is
-            # invalid. The 0.0 schema fallback means "unspecified" and stays silent.
-            if diag_val is not None and float(mass_api.GetMassAttr().Get()) != 0.0:
+            # Warn when an authored override is dropped: mass carries a non-fallback value
+            # that is unusable. The 0.0 schema fallback and blocked values stay silent.
+            raw_mass = mass_api.GetMassAttr().Get()
+            if mass is None and raw_mass is not None and raw_mass != 0.0:
                 warnings.warn(
                     f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be positive and finite "
                     "to derive volume and density.",
@@ -3860,9 +3862,12 @@ def parse_usd(
                     if body_density is not None and default_shape_density > 0.0:
                         density_scale = body_density / default_shape_density
                         cmp_mass *= density_scale
-                        builder.body_inertia[body_id] = wp.mat33(
-                            np.array(builder.body_inertia[body_id]) * density_scale
-                        )
+                        scaled_inertia = np.array(builder.body_inertia[body_id]) * density_scale
+                        builder.body_inertia[body_id] = wp.mat33(scaled_inertia)
+                        if scaled_inertia.any():
+                            builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
+                        else:
+                            builder.body_inv_inertia[body_id] = wp.mat33(0.0)
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
@@ -3919,7 +3924,8 @@ def parse_usd(
             if has_effective_mass:
                 mass = effective_mass
                 shape_accumulated_mass = builder.body_mass[body_id]
-                if not has_effective_inertia and _mass_api_effective_density(mass_api) is not None:
+                raw_density = mass_api.GetDensityAttr().Get()
+                if not has_effective_inertia and raw_density is not None and raw_density != 0.0:
                     warnings.warn(
                         f"Body {body_path}: authored mass and density without authored diagonalInertia. "
                         f"Ignoring body-level density.",
@@ -3932,6 +3938,13 @@ def parse_usd(
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * scale)
                     builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
             else:
+                raw_mass = mass_api.GetMassAttr().Get()
+                if raw_mass is not None and raw_mass != 0.0:
+                    warnings.warn(
+                        f"Body {body_path}: authored mass is not positive and finite. "
+                        "Falling back to mass-computer result.",
+                        stacklevel=2,
+                    )
                 mass = cmp_mass
             builder.body_mass[body_id] = mass
             builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0

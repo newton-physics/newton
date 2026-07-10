@@ -7131,7 +7131,9 @@ def Xform "Articulation" (
             body_pairs.append((name, pair))
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage)
 
         for name, (unauthored_path, authored_path) in body_pairs:
             with self.subTest(attribute=name):
@@ -7176,7 +7178,7 @@ def Xform "Articulation" (
         """Invalid non-fallback collider mass warns; the 0.0 fallback stays silent."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-        def make_stage(collider_mass):
+        def make_stage(collider_mass, collider_diag):
             stage = Usd.Stage.CreateInMemory()
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
             UsdGeom.SetStageMetersPerUnit(stage, 1.0)
@@ -7191,21 +7193,138 @@ def Xform "Articulation" (
             UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
             collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
             collider_mass_api.CreateMassAttr().Set(collider_mass)
-            collider_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.1))
+            collider_mass_api.CreateDiagonalInertiaAttr().Set(collider_diag)
             return stage
 
         with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
             builder = newton.ModelBuilder()
-            result = builder.add_usd(make_stage(-1.0))
+            result = builder.add_usd(make_stage(-1.0, Gf.Vec3f(0.1)))
         # The collider falls back to geometry-derived mass information.
         body_idx = result["path_body_map"]["/World/Body"]
         expected_mass = builder.default_shape_cfg.density * 0.2**3
         self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
 
+        # Invalid mass warns even when the authored diagonal inertia is the zero fallback.
+        with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
+            newton.ModelBuilder().add_usd(make_stage(-1.0, Gf.Vec3f(0.0)))
+
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            newton.ModelBuilder().add_usd(make_stage(0.0))
+            newton.ModelBuilder().add_usd(make_stage(0.0, Gf.Vec3f(0.1)))
         self.assertFalse([w for w in caught if "must be positive and finite" in str(w.message)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_blocked_attributes_are_unspecified(self):
+        """Blocked MassAPI attributes resolve to no value and behave like unauthored ones."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        for name in ("Unauthored", "Blocked", "BlockedCom"):
+            body_path = f"/World/{name}"
+            body = UsdGeom.Xform.Define(stage, body_path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            if name != "Unauthored":
+                mass_api.CreateMassAttr().Set(5.0)
+                mass_api.CreateDensityAttr().Set(2000.0)
+                mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0))
+                mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(1.0))
+                blocked_attrs = [
+                    mass_api.GetMassAttr(),
+                    mass_api.GetDensityAttr(),
+                    mass_api.GetDiagonalInertiaAttr(),
+                    mass_api.GetPrincipalAxesAttr(),
+                ]
+                if name == "BlockedCom":
+                    mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(1.0, 0.0, 0.0))
+                    blocked_attrs.append(mass_api.GetCenterOfMassAttr())
+                for attr in blocked_attrs:
+                    attr.Block()
+
+            collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        unauthored = result["path_body_map"]["/World/Unauthored"]
+        blocked = result["path_body_map"]["/World/Blocked"]
+        self.assertAlmostEqual(builder.body_mass[blocked], builder.body_mass[unauthored], places=6)
+        np.testing.assert_allclose(
+            builder.body_inertia[blocked], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
+        )
+        np.testing.assert_allclose(builder.body_com[blocked], builder.body_com[unauthored], atol=1e-6, rtol=1e-6)
+        # A blocked centerOfMass must not crash the import, but inertia/COM equality cannot be
+        # asserted: OpenUSD's ComputeMassProperties reads the blocked attribute internally and
+        # aggregates with uninitialized data (pre-existing upstream behavior, same on main).
+        blocked_com = result["path_body_map"]["/World/BlockedCom"]
+        self.assertAlmostEqual(builder.body_mass[blocked_com], builder.body_mass[unauthored], places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_body_values_warn(self):
+        """Invalid non-fallback body mass/density warn when the authored override is dropped."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        def make_stage(author):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            author(UsdPhysics.MassAPI.Apply(body.GetPrim()))
+            collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            return stage
+
+        with self.assertWarnsRegex(UserWarning, r"authored mass is not positive and finite"):
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(make_stage(lambda api: api.CreateMassAttr().Set(-5.0)))
+        body_idx = result["path_body_map"]["/World/Body"]
+        self.assertGreater(builder.body_mass[body_idx], 0.0)
+
+        with self.assertWarnsRegex(UserWarning, r"Ignoring body-level density"):
+            newton.ModelBuilder().add_usd(
+                make_stage(lambda api: (api.CreateMassAttr().Set(5.0), api.CreateDensityAttr().Set(math.inf)))
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_density_rescale_keeps_inverse_inertia_consistent(self):
+        """The accumulated-property fallback rescales inertia and its inverse together."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateDensityAttr().Set(2000.0)
+
+        # A non-finite collider mass drives ComputeMassProperties to a non-finite
+        # result, entering the accumulated-property fallback with a density rescale.
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(0.2)
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+        UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(math.inf)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage)
+
+        body_idx = result["path_body_map"]["/World/Body"]
+        self.assertAlmostEqual(builder.body_mass[body_idx], 2000.0 * 0.2**3, places=4)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        inv_inertia = np.array(builder.body_inv_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), atol=1e-5, rtol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
