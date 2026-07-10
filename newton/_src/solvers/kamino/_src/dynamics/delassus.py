@@ -642,8 +642,8 @@ def _scale_row_vector_kernel(
     # Vector block offsets:
     row_start: wp.array[wp.int32],
     # Inputs:
-    x: wp.array[Any],
-    beta: Any,
+    x: wp.array[wp.float32],
+    beta: float,
     # Mask:
     matrix_mask: wp.array[wp.bool],
 ):
@@ -779,7 +779,7 @@ class DelassusOperator:
         self._size: SizeKamino | None = None
 
         # Initialize the Delassus data container
-        self._operator: DenseLinearOperatorData | None = None
+        self._operator: DenseLinearOperatorData[wp.float32, wp.int32] | None = None
 
         # Declare the optional Cholesky factorization
         self._solver: LinearSolverType | None = None
@@ -820,7 +820,7 @@ class DelassusOperator:
         return self._model_maxsize
 
     @property
-    def operator(self) -> DenseLinearOperatorData:
+    def operator(self) -> DenseLinearOperatorData[wp.float32, wp.int32]:
         """
         Returns a reference to the flat Delassus matrix array.
         """
@@ -835,7 +835,7 @@ class DelassusOperator:
         return self._solver
 
     @property
-    def info(self) -> DenseSquareMultiLinearInfo:
+    def info(self) -> DenseSquareMultiLinearInfo[wp.float32, wp.int32]:
         """
         Returns a reference to the flat Delassus matrix array.
         """
@@ -913,8 +913,8 @@ class DelassusOperator:
         self._device = model.device
 
         # Construct the Delassus operator data structure
-        self._operator = DenseLinearOperatorData()
-        self._operator.info = DenseSquareMultiLinearInfo()
+        self._operator = DenseLinearOperatorData[wp.float32, wp.int32]()
+        self._operator.info = DenseSquareMultiLinearInfo[wp.float32, wp.int32]()
         self._operator.mat = wp.zeros(shape=(self._model_maxsize,), dtype=wp.float32, device=self._device)
         if (model.info is not None) and (data.info is not None):
             mat_offsets = [0] + [sum(self._world_maxsize[:i]) for i in range(1, self._num_worlds + 1)]
@@ -1141,7 +1141,7 @@ class DelassusOperator:
         return self._solver.solve_inplace(x=x)
 
 
-class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
+class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float32, wp.int32]):
     """
     A matrix-free Delassus operator for representing and operating on multiple independent sparse
     linear systems.
@@ -1240,7 +1240,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
 
         # Problem info object
         # TODO: Create more general info object independent of dense matrix representation
-        self._info: DenseSquareMultiLinearInfo | None = None
+        self._info: DenseSquareMultiLinearInfo[wp.float32, wp.int32] | None = None
 
         # Declare the device cache
         self._device: wp.DeviceLike = None
@@ -1255,7 +1255,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         self._vec_temp_body_space: wp.array[wp.float32] | None = None
 
         self._col_major_jacobian: ColMajorSparseConstraintJacobians | None = None
-        self._transpose_op_matrix: BlockSparseMatrices | None = None
+        self._transpose_op_matrix: BlockSparseMatrices[wp.float32, wp.int32, Any] | None = None
 
         # Combined regularization vector for implicit joint dynamics
         self._combined_regularization: wp.array[wp.float32] | None = None
@@ -1327,7 +1327,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         # Use the model's device
         self._device = model.device
 
-        self._info = DenseSquareMultiLinearInfo()
+        self._info = DenseSquareMultiLinearInfo[wp.float32, wp.int32]()
         if model.info is not None and data.info is not None:
             self._info.assign(
                 maxdim=model.info.max_total_cts,
@@ -1715,7 +1715,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
     ###
 
     @property
-    def info(self) -> DenseSquareMultiLinearInfo | None:
+    def info(self) -> DenseSquareMultiLinearInfo[wp.float32, wp.int32] | None:
         """
         Returns the info object for the Delassus problem dimensions and sizes.
         """
@@ -1752,7 +1752,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators):
         return self._model.device
 
     @property
-    def constraint_jacobian(self) -> BlockSparseMatrices:
+    def constraint_jacobian(self) -> BlockSparseMatrices[wp.float32, wp.int32, vec6f]:
         return self._jacobians._J_cts.bsm
 
     ###

@@ -14,44 +14,9 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_mujoco import Example, _target_q
+from benchmark_mujoco import Example
 
-import newton
 from newton.utils import EventTracer
-
-
-@wp.kernel
-def apply_random_control(state: wp.uint32, joint_target: wp.array[float]):
-    tid = wp.tid()
-
-    joint_target[tid] = wp.randf(state) * 2.0 - 1.0
-
-
-@wp.kernel
-def restore_target_quat_identity(joint_target: wp.array[float], quat_offsets: wp.array[int]):
-    i = wp.tid()
-    o = quat_offsets[i]
-    joint_target[o + 0] = 0.0
-    joint_target[o + 1] = 0.0
-    joint_target[o + 2] = 0.0
-    joint_target[o + 3] = 1.0
-
-
-def _free_ball_quat_offsets(model) -> list[int]:
-    """Coord-space indices of the quaternion slot of every FREE/BALL/DISTANCE
-    joint in ``model.joint_target_q`` (empty under the legacy DOF layout)."""
-    offsets: list[int] = []
-    target_q = _target_q(model)
-    if target_q is None or target_q.shape[0] != model.joint_coord_count:
-        return offsets
-    joint_types = model.joint_type.numpy()
-    q_starts = model.joint_q_start.numpy()
-    for j, jt in enumerate(joint_types):
-        if jt == int(newton.JointType.BALL):
-            offsets.append(int(q_starts[j]))
-        elif jt in (int(newton.JointType.FREE), int(newton.JointType.DISTANCE)):
-            offsets.append(int(q_starts[j]) + 3)
-    return offsets
 
 
 class _FastBenchmark:
@@ -90,26 +55,11 @@ class _FastBenchmark:
         if not cuda_graph_comp:
             raise SkipNotImplemented
         else:
-            state = wp.rand_init(self.example.seed)
-            target_q = _target_q(self.example.control)
-            quat_offsets = _free_ball_quat_offsets(self.example.model)
-            quat_offsets_wp = wp.array(quat_offsets, dtype=int, device=target_q.device) if quat_offsets else None
+            self.example.init_waypoint_control()
             with wp.ScopedCapture() as capture:
-                wp.launch(
-                    apply_random_control,
-                    dim=(target_q.shape[0],),
-                    inputs=[state],
-                    outputs=[target_q],
-                )
-                if quat_offsets_wp is not None:
-                    wp.launch(
-                        restore_target_quat_identity,
-                        dim=(quat_offsets_wp.shape[0],),
-                        inputs=[target_q, quat_offsets_wp],
-                    )
+                self.example.apply_waypoint_control()
                 self.example.simulate()
             self.graph = capture.graph
-            self._quat_offsets_wp = quat_offsets_wp
 
         wp.synchronize_device()
 
