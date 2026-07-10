@@ -205,6 +205,7 @@ class SolverStyle3D(SolverBase):
                     self.drag_index,
                     self.drag_bary_coord,
                     self.model.tri_indices,
+                    self.model.particle_mass,
                     self.model.particle_flags,
                 ],
                 outputs=[self.static_A_diags],
@@ -286,6 +287,7 @@ class SolverStyle3D(SolverBase):
                     inputs=[
                         self.static_A_diags,
                         self.collision.contact_hessian_diagonal(),
+                        self.model.particle_mass,
                         self.model.particle_flags,
                     ],
                     outputs=[self.inv_A_diags],
