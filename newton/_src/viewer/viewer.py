@@ -544,8 +544,10 @@ class ViewerBase(ABC):
 
         # World offset support
         layer.world_offsets = None
-        # Deformable visual-mesh scratch (visual-mesh index -> (sim points, points, normals))
-        layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array, wp.array]] = {}
+        # Deformable visual data and transformed viewer buffers.
+        layer._deformable_visuals: newton.DeformableVisuals | None = None
+        layer._deformable_visuals_explicit = False
+        layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
         layer._deformable_visual_mesh_null_offsets: wp.array | None = None
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
@@ -640,6 +642,38 @@ class ViewerBase(ABC):
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
+
+    def set_deformable_visuals(self, visuals: newton.DeformableVisuals | None) -> None:
+        """Use precomputed deformable visuals when logging model states.
+
+        Passing shared visual data lets the viewer reuse the same evaluated
+        points and normals as other consumers, such as camera sensors. Pass
+        ``None`` to restore automatic evaluation during :meth:`log_state`.
+
+        Args:
+            visuals: Updated visual data for the current model, or ``None``.
+
+        Raises:
+            RuntimeError: If no model has been set.
+            TypeError: If ``visuals`` is not :class:`newton.DeformableVisuals`.
+            ValueError: If ``visuals`` belongs to another model.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        if visuals is None:
+            self._deformable_visuals = None
+            self._deformable_visuals_explicit = False
+            return
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_deformable_visuals()")
+        if not isinstance(visuals, newton.DeformableVisuals):
+            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
+        visuals._validate_model(self.model)
+        self._deformable_visuals = visuals
+        self._deformable_visuals_explicit = True
 
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""
@@ -2741,13 +2775,21 @@ class ViewerBase(ABC):
         if not meshes:
             return
 
-        from ..sim.deformable_visual import (  # noqa: PLC0415
-            compute_deformable_visual_mesh_normals,
-            skin_deformable_visual_mesh,
-        )
-        from .kernels import apply_world_offset_and_layer_transform  # noqa: PLC0415
+        from .kernels import apply_world_offset_and_layer_transform_normals  # noqa: PLC0415
 
         show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
+        visuals = self._deformable_visuals
+        if show and any(self._should_render_world(mesh.world) for mesh in meshes):
+            if visuals is None:
+                visuals = self.model.deformable_visuals()
+                self._deformable_visuals = visuals
+            if self._deformable_visuals_explicit:
+                visuals._validate_model(self.model)
+                visuals._require_updated(state)
+            else:
+                self.model.update_deformable_visuals(state, visuals)
+            visuals.wait()
+
         for rm in meshes:
             # The invariant index keeps replicated worlds' duplicate labels distinct.
             # Prefix the component with "mesh" so USD-backed viewers do not
@@ -2764,13 +2806,11 @@ class ViewerBase(ABC):
             if scratch is None or len(scratch[0]) != n:
                 scratch = (
                     wp.empty(n, dtype=wp.vec3, device=self.device),
-                    wp.empty(n, dtype=wp.vec3, device=self.device),
                     wp.zeros(n, dtype=wp.vec3, device=self.device),
                 )
                 self._deformable_visual_mesh_scratch[rm.index] = scratch
-            sim_points, points, normals = scratch
+            points, normals = scratch
 
-            skin_deformable_visual_mesh(rm, state, self.model, sim_points)
             # World offsets stay on-device; a missing offset buffer skips the add.
             offsets = self.world_offsets
             world_index = rm.world if offsets is not None else -1
@@ -2779,13 +2819,12 @@ class ViewerBase(ABC):
                     self.layer._deformable_visual_mesh_null_offsets = wp.zeros(1, dtype=wp.vec3, device=self.device)
                 offsets = self._deformable_visual_mesh_null_offsets
             wp.launch(
-                apply_world_offset_and_layer_transform,
+                apply_world_offset_and_layer_transform_normals,
                 dim=n,
-                inputs=[sim_points, offsets, world_index, self.layer.xform],
-                outputs=[points],
+                inputs=[visuals.get_points(rm), visuals.get_normals(rm), offsets, world_index, self.layer.xform],
+                outputs=[points, normals],
                 device=self.device,
             )
-            compute_deformable_visual_mesh_normals(points, rm.indices, normals)
             self.log_mesh(
                 name,
                 points,

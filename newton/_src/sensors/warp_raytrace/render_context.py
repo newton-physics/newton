@@ -10,8 +10,7 @@ import warp as wp
 
 from ...core import Axis
 from ...geometry import Gaussian, GeoType, Mesh
-from ...sim import Model, State
-from ...sim.deformable_visual import skin_deformable_visual_mesh
+from ...sim import DeformableVisuals, Model, State
 from ...utils import load_texture, normalize_texture
 from ...utils.texture import compute_texture_hash
 from .render import create_kernel
@@ -71,7 +70,7 @@ class RenderContext:
         self.__triangle_indices: wp.array[wp.int32] | None = None
         self.__dynamic_triangle_points: wp.array[wp.vec3f] | None = None
         self.__dynamic_triangle_particle_count: int = 0
-        self.__deformable_visual_entries: list[tuple[object, int, wp.array]] = []
+        self.__deformable_visual_entries: list[tuple[object, int]] = []
         self.__deformable_visual_texture_ids: list[int] = []
 
         self.__gaussians_data: wp.array[Gaussian.Data] | None = None
@@ -166,7 +165,7 @@ class RenderContext:
         if deformable_visual_meshes:
             self.__init_deformable_visual_triangle_mesh(model, deformable_visual_meshes)
 
-    def update(self, model: Model, state: State):
+    def update(self, model: Model, state: State, deformable_visuals: DeformableVisuals | None = None):
         """Synchronize triangle-mesh points from the current simulation state.
 
         Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
@@ -176,6 +175,8 @@ class RenderContext:
         Args:
             model: Newton simulation model (for shape metadata).
             state: Current simulation state with particle positions.
+            deformable_visuals: Updated points for the model's deformable
+                visual meshes, or ``None`` when the model has none.
         """
 
         if self.__dynamic_triangle_points is not None:
@@ -186,12 +187,13 @@ class RenderContext:
                     inputs=[state.particle_q, self.__dynamic_triangle_points, 0],
                     device=self.device,
                 )
-            for mesh, vertex_offset, scratch_points in self.__deformable_visual_entries:
-                skin_deformable_visual_mesh(mesh, state, model, scratch_points, device=self.device)
+            for mesh, vertex_offset in self.__deformable_visual_entries:
+                if deformable_visuals is None:
+                    raise ValueError("deformable_visuals is required by this render context")
                 wp.launch(
                     _copy_points_to_offset,
                     dim=mesh.vertex_count,
-                    inputs=[scratch_points, self.__dynamic_triangle_points, vertex_offset],
+                    inputs=[deformable_visuals.get_points(mesh), self.__dynamic_triangle_points, vertex_offset],
                     device=self.device,
                 )
         elif self.has_triangle_mesh:
@@ -600,8 +602,7 @@ class RenderContext:
                 texture_id = self.__deformable_visual_texture_ids[mesh_index]
             triangle_texture_ids.append(np.full(visual_indices.size // 3, texture_id, dtype=np.int32))
 
-            scratch_points = wp.empty(mesh.vertex_count, dtype=wp.vec3, device=self.device)
-            visual_entries.append((mesh, vertex_offset, scratch_points))
+            visual_entries.append((mesh, vertex_offset))
             vertex_offset += mesh.vertex_count
 
         self.__dynamic_triangle_points = wp.empty(vertex_offset, dtype=wp.vec3f, device=self.device)

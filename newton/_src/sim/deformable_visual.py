@@ -245,7 +245,8 @@ class DeformableVisuals:
     def _mark_updated(self, state: State) -> None:
         self._state = state
         if self._completion_event is not None:
-            wp.get_stream(self.device).record_event(self._completion_event)
+            stream = wp.get_stream(self.device)
+            stream.record_event(self._completion_event, external=stream.is_capturing)
 
     def wait(self, stream: wp.Stream | None = None) -> None:
         """Make a device stream wait for the most recent visual update.
@@ -258,7 +259,7 @@ class DeformableVisuals:
         if self._completion_event is not None:
             if stream is None:
                 stream = wp.get_stream(self.device)
-            stream.wait_event(self._completion_event)
+            stream.wait_event(self._completion_event, external=stream.is_capturing)
 
     def get_points(self, mesh: DeformableVisualMesh | SupportsIndex) -> wp.array[wp.vec3]:
         """Return the current point view for one deformable visual mesh.

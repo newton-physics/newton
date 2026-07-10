@@ -853,3 +853,22 @@ def apply_world_offset_and_layer_transform(
     if world_index >= 0:
         p = p + world_offsets[world_index]
     out_points[i] = wp.transform_point(layer_xform, p)
+
+
+@wp.kernel
+def apply_world_offset_and_layer_transform_normals(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    world_offsets: wp.array[wp.vec3],
+    world_index: int,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+):
+    """Transform visual points and normals into a viewer layer."""
+    i = wp.tid()
+    p = points[i]
+    if world_index >= 0:
+        p = p + world_offsets[world_index]
+    out_points[i] = wp.transform_point(layer_xform, p)
+    out_normals[i] = wp.quat_rotate(wp.transform_get_rotation(layer_xform), normals[i])

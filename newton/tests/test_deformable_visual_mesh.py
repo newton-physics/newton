@@ -399,6 +399,27 @@ class TestDeformableVisuals(unittest.TestCase):
         assert_np_equal(visuals_a.get_points(0).numpy(), independent_a, tol=0.0)
         assert_np_equal(visuals_b.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
 
+    def test_update_is_cuda_graph_capturable(self):
+        model, particle_indices, _vertices = self._model()
+        if not model.device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+
+        state = model.state()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+
+        with wp.ScopedCapture(model.device) as capture:
+            model.update_deformable_visuals(state, visuals)
+
+        moved = state.particle_q.numpy()
+        moved[:, 1] += 2.0
+        state.particle_q.assign(moved)
+        wp.capture_launch(capture.graph)
+        visuals.wait()
+
+        for mesh in model.deformable_visual_meshes:
+            assert_np_equal(visuals.get_points(mesh).numpy(), moved[particle_indices], tol=1.0e-6)
+
     def test_rejects_results_and_meshes_from_another_model(self):
         model_a, _particle_indices, _vertices = self._model()
         model_b, _particle_indices, _vertices = self._model()
@@ -561,6 +582,36 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         # Unit normals on every vertex the triangles reference.
         referenced = np.linalg.norm(call["normals"][[0, 1, 4, 5]], axis=1)
         assert_np_equal(referenced, np.ones(4, dtype=np.float32), tol=1.0e-4)
+
+    def test_viewer_consumes_explicit_deformable_visuals_without_updating_again(self):
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        state = model.state()
+        moved = state.particle_q.numpy()
+        moved[:, 2] += 0.75
+        state.particle_q.assign(moved)
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+
+        live = moved.copy()
+        live[:, 2] += 1.0
+        state.particle_q.assign(live)
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer.set_deformable_visuals(visuals)
+        viewer._frame(state)
+
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
+        assert_np_equal(call["points"], moved, tol=1.0e-5)
+
+        with self.assertRaisesRegex(ValueError, "another state"):
+            viewer._frame(model.state(), 1.0)
+
+        viewer.set_deformable_visuals(None)
+        viewer._frame(state, 2.0)
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
+        assert_np_equal(call["points"], live, tol=1.0e-5)
 
     def test_viewer_name_is_valid_for_usd_paths(self):
         """Visual mesh names keep the invariant index without creating invalid USD prim names."""
@@ -807,6 +858,47 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
         moved_depth = depth_image.numpy()[0, 0]
         self.assertAlmostEqual(float(moved_depth[height // 2, width // 2]), 1.5, delta=0.25)
+
+    def test_tiled_camera_consumes_explicit_deformable_visuals_without_updating_again(self):
+        model = self._triangle_surface_with_visual_mesh_behind()
+        state = model.state()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+
+        body_q = state.body_q.numpy()
+        body_q[:, 2] += 1.0
+        state.body_q.assign(body_q)
+
+        sensor = SensorTiledCamera(
+            model,
+            config=SensorTiledCamera.RenderConfig(
+                enable_particles=False,
+                enable_simulation_triangles=False,
+                max_distance=10.0,
+            ),
+        )
+        camera_rays, camera_transforms = self._camera_setup(sensor, model)
+        depth_image = sensor.utils.create_depth_image_output(16, 16, camera_count=1)
+
+        sensor.update(
+            state,
+            camera_transforms,
+            camera_rays,
+            depth_image=depth_image,
+            deformable_visuals=visuals,
+        )
+
+        depth = depth_image.numpy()[0, 0]
+        self.assertAlmostEqual(float(depth[8, 8]), 2.5, delta=0.25)
+
+        with self.assertRaisesRegex(ValueError, "another state"):
+            sensor.update(
+                model.state(),
+                camera_transforms,
+                camera_rays,
+                depth_image=depth_image,
+                deformable_visuals=visuals,
+            )
 
     def test_tiled_camera_can_hide_sim_triangles_for_visual_mesh_capture(self):
         model = self._triangle_surface_with_visual_mesh_behind()
