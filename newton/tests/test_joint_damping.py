@@ -199,6 +199,7 @@ devices = get_test_devices()
 solvers = {
     "featherstone": (lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0), False),
     "semi_implicit": (lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0), True),
+    "kamino": (newton.solvers.SolverKamino, False),
 }
 
 for device in devices:

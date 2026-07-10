@@ -11,21 +11,27 @@
 ###########################################################################
 
 import sys
-import warnings
 
 import numpy as np
-import torch
 import warp as wp
+from warp_nn.runtime import OnnxRuntime
 
 import newton
 import newton.examples
 import newton.utils
-from newton.examples.robot.example_robot_anymal_c_walk import compute_obs, lab_to_mujoco, mujoco_to_lab
+from newton.examples.robot.example_robot_anymal_c_walk import (
+    _build_joint_target_q_kernel,
+    _compute_obs_kernel,
+    lab_to_mujoco,
+    mujoco_to_lab,
+)
+from newton.examples.robot.onnx_policy_utils import validate_policy_io_shapes
 from newton.solvers import SolverImplicitMPM
 
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         voxel_size = args.voxel_size
         particles_per_cell = args.particles_per_cell
         tolerance = args.tolerance
@@ -160,31 +166,26 @@ class Example:
         # Setup control policy
         self.control = self.model.control()
 
-        q0 = wp.to_torch(self.state_0.joint_q)
-        self.torch_device = q0.device
-        self.joint_pos_initial = q0[7:].unsqueeze(0).detach().clone()
-        self.act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
-        self.rearranged_act = torch.zeros(1, 12, device=self.torch_device, dtype=torch.float32)
-
-        # Download the policy from the newton-assets repository
-        policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.pt")
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"`torch\.jit\.load` is deprecated\. Please switch to `torch\.export`\.",
-                category=DeprecationWarning,
-            )
-            self.policy = torch.jit.load(policy_path, map_location=self.torch_device)
-
-        # Pre-compute tensors that don't change during simulation
-        self.lab_to_mujoco_indices = torch.tensor(
-            [lab_to_mujoco[i] for i in range(len(lab_to_mujoco))], device=self.torch_device
+        policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
+        self.policy = OnnxRuntime(policy_path, device=self.device)
+        self._policy_input_name = self.policy.input_names[0]
+        self._policy_output_name = self.policy.output_names[0]
+        validate_policy_io_shapes(
+            policy_path,
+            self._policy_input_name,
+            self._policy_output_name,
+            obs_width=48,
+            action_width=12,
+            context="example_mpm_anymal",
         )
-        self.mujoco_to_lab_indices = torch.tensor(
-            [mujoco_to_lab[i] for i in range(len(mujoco_to_lab))], device=self.torch_device
-        )
-        self.gravity_vec = torch.tensor([0.0, 0.0, -1.0], device=self.torch_device, dtype=torch.float32).unsqueeze(0)
-        self.command = torch.zeros((1, 3), device=self.torch_device, dtype=torch.float32)
+
+        self._joint_pos_initial_wp = wp.clone(self.state_0.joint_q[7:])
+        self._lab_to_mujoco_wp = wp.array(np.asarray(lab_to_mujoco, dtype=np.int32), dtype=wp.int32, device=self.device)
+        self._mujoco_to_lab_wp = wp.array(np.asarray(mujoco_to_lab, dtype=np.int32), dtype=wp.int32, device=self.device)
+        self._gravity_w = wp.vec3(0.0, 0.0, -1.0)
+        self._command = wp.vec3(0.0, 0.0, 0.0)
+        self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
+        self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
 
         self._auto_forward = True
 
@@ -195,10 +196,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate_robot()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate_robot()
+        self.graph = capture.graph
 
         self.sand_graph = None
         if wp.get_device().is_cuda and self.mpm_solver.grid_type == "fixed":
@@ -207,23 +207,38 @@ class Example:
             self.sand_graph = capture.graph
 
     def apply_control(self):
-        obs = compute_obs(
-            self.act,
-            self.state_0,
-            self.joint_pos_initial,
-            self.torch_device,
-            self.lab_to_mujoco_indices,
-            self.gravity_vec,
-            self.command,
+        wp.launch(
+            _compute_obs_kernel,
+            dim=1,
+            inputs=[
+                self.state_0.joint_q,
+                self.state_0.joint_qd,
+                self._joint_pos_initial_wp,
+                self._lab_to_mujoco_wp,
+                self._gravity_w,
+                self._command,
+                self._prev_act_wp,
+                self._obs_wp,
+            ],
+            device=self.device,
         )
-        with torch.no_grad():
-            self.act = self.policy(obs)
-            self.rearranged_act = torch.gather(self.act, 1, self.mujoco_to_lab_indices.unsqueeze(0))
-            a = self.joint_pos_initial + 0.5 * self.rearranged_act
-            a_with_zeros = torch.cat([torch.zeros(6, device=self.torch_device, dtype=torch.float32), a.squeeze(0)])
-            a_wp = wp.from_torch(a_with_zeros, dtype=wp.float32, requires_grad=False)
-            # copy action targets to control buffer
-            wp.copy(self.control.joint_target_q, a_wp)
+        out = self.policy({self._policy_input_name: self._obs_wp})
+        act_wp = out[self._policy_output_name]
+
+        wp.launch(
+            _build_joint_target_q_kernel,
+            dim=19,
+            inputs=[
+                act_wp,
+                self._joint_pos_initial_wp,
+                self._mujoco_to_lab_wp,
+                0.5,
+                7,
+                self.control.joint_target_q,
+            ],
+            device=self.device,
+        )
+        wp.copy(self._prev_act_wp, act_wp)
 
     def simulate_robot(self):
         # robot substeps
@@ -248,12 +263,10 @@ class Example:
                 # disable forward motion
                 self._auto_forward = False
 
-            self.command[0, 0] = float(fwd)
-            self.command[0, 1] = float(lat)
-            self.command[0, 2] = float(rot)
+            self._command = wp.vec3(float(fwd), float(lat), float(rot))
 
         if self._auto_forward:
-            self.command[0, 0] = 1
+            self._command = wp.vec3(1.0, 0.0, 0.0)
 
         # compute control before graph/step
         self.apply_control()

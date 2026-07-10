@@ -16,6 +16,7 @@ newton.utils
    ColorSpace
    EventTracer
    MeshAdjacency
+   MeshAdjacencyData
 
 .. rubric:: Functions
 
