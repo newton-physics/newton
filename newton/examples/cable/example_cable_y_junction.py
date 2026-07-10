@@ -124,7 +124,6 @@ class Example:
         self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.graph_bodies)
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:

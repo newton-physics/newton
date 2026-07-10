@@ -18,11 +18,11 @@ import math
 
 import warp as wp
 
+from ......core.types import Axis
 from ...core import ModelBuilderKamino, inertia
 from ...core.joints import JointActuationType, JointDoFType
-from ...core.math import FLOAT32_MAX, FLOAT32_MIN, I_3
-from ...core.shapes import BoxShape, SphereShape
-from ...core.types import Axis, transformf, vec3f, vec6f
+from ...core.math import FLOAT32_MAX, FLOAT32_MIN, I_3, axis_to_mat33
+from ...core.shapes import BoxShape, PlaneShape, SphereShape
 
 ###
 # Module interface
@@ -55,26 +55,21 @@ def build_box_on_plane(
     Constructs a basic model of a free-floating 'box' body and a ground box geom.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the box.
+        ground: Whether to add a static ground plane to the model.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -90,8 +85,8 @@ def build_box_on_plane(
     bid0 = _builder.add_rigid_body(
         m_i=1.0,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(1.0, 0.2, 0.2, 0.2),
-        q_i_0=transformf(0.0, 0.0, 0.1 + z_offset, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.0, 0.0, 0.1 + z_offset, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -103,7 +98,7 @@ def build_box_on_plane(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -126,26 +121,21 @@ def build_box_pendulum(
     This version initializes the pendulum in a horizontal configuration.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the box.
+        ground: Whether to add a static ground plane to the model.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -169,8 +159,8 @@ def build_box_pendulum(
         name="pendulum",
         m_i=m,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m, d, w, h),
-        q_i_0=transformf(0.5 * d, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.5 * d, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -181,9 +171,9 @@ def build_box_pendulum(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid0,
-        B_r_Bj=vec3f(0.0, 0.0, 0.5 * h + z_0),
-        F_r_Fj=vec3f(-0.5 * d, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, 0.5 * h + z_0),
+        F_r_Fj=wp.vec3f(-0.5 * d, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         a_j=1.0 if dynamic_joints else None,
         b_j=0.1 if dynamic_joints else None,
         k_p_j=100.0 if implicit_pd else None,
@@ -205,7 +195,7 @@ def build_box_pendulum(
             name="ground",
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -226,26 +216,21 @@ def build_box_pendulum_vertical(
     This version initializes the pendulum in a vertical configuration.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the box.
+        ground: Whether to add a static ground plane to the model.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -269,8 +254,8 @@ def build_box_pendulum_vertical(
         name="pendulum",
         m_i=m,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m, d, w, h),
-        q_i_0=transformf(0.0, 0.0, -0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.0, 0.0, -0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -281,9 +266,9 @@ def build_box_pendulum_vertical(
         act_type=JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid0,
-        B_r_Bj=vec3f(0.0, 0.0, 0.0 + z_0),
-        F_r_Fj=vec3f(0.0, 0.0, 0.5 * h),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, 0.0 + z_0),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.5 * h),
+        X_Bj=axis_to_mat33(Axis.Y),
         world_index=world_index,
     )
 
@@ -301,7 +286,7 @@ def build_box_pendulum_vertical(
             name="ground",
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -321,26 +306,21 @@ def build_cartpole(
     Constructs a basic model of a cartpole mounted onto a rail.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the box.
+        ground: Whether to add a static ground plane to the model.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -367,8 +347,8 @@ def build_cartpole(
         name="cart",
         m_i=m_cart,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_cart, *dims_cart),
-        q_i_0=transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -379,8 +359,8 @@ def build_cartpole(
         name="pole",
         m_i=m_pole,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_pole, *dims_pole),
-        q_i_0=transformf(x_0_pole, 0.0, z_0_pole, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(x_0_pole, 0.0, z_0_pole, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -391,9 +371,9 @@ def build_cartpole(
         act_type=JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid0,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         q_j_min=[-4.0] if limits else [float(FLOAT32_MIN)],
         q_j_max=[4.0] if limits else [float(FLOAT32_MAX)],
         tau_j_max=[1000.0],
@@ -407,9 +387,9 @@ def build_cartpole(
         act_type=JointActuationType.PASSIVE,
         bid_B=bid0,
         bid_F=bid1,
-        B_r_Bj=vec3f(0.5 * dims_cart[0], 0.0, 0.0),
-        F_r_Fj=vec3f(-0.5 * dims_pole[0], 0.0, -0.5 * dims_pole[2]),
-        X_Bj=Axis.X.to_mat33(),
+        B_r_Bj=wp.vec3f(0.5 * dims_cart[0], 0.0, 0.0),
+        F_r_Fj=wp.vec3f(-0.5 * dims_pole[0], 0.0, -0.5 * dims_pole[2]),
+        X_Bj=axis_to_mat33(Axis.X),
         world_index=world_index,
     )
 
@@ -434,7 +414,7 @@ def build_cartpole(
         name="rail",
         body=-1,
         shape=BoxShape(*half_dims_rail),
-        offset=transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
+        offset=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
         group=1,
         collides=1,
         world_index=world_index,
@@ -446,7 +426,7 @@ def build_cartpole(
             name="ground",
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.0 + z_offset, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.0 + z_offset, 0.0, 0.0, 0.0, 1.0),
             group=1,
             collides=1,
             world_index=world_index,
@@ -469,26 +449,21 @@ def build_boxes_hinged(
     Constructs a basic model of a two floating boxes connected via revolute joint.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the box.
+        ground: Whether to add a static ground plane to the model.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -513,8 +488,8 @@ def build_boxes_hinged(
         name="base",
         m_i=m_0,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_0, d, w, h),
-        q_i_0=transformf(0.25, -0.05, 0.05 + z0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.25, -0.05, 0.05 + z0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -523,8 +498,8 @@ def build_boxes_hinged(
         name="follower",
         m_i=m_1,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_1, d, w, h),
-        q_i_0=transformf(0.75, 0.05, 0.05 + z0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.75, 0.05, 0.05 + z0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -535,9 +510,9 @@ def build_boxes_hinged(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=bid0,
         bid_F=bid1,
-        B_r_Bj=vec3f(0.25, 0.05, 0.0),
-        F_r_Fj=vec3f(-0.25, -0.05, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.25, 0.05, 0.0),
+        F_r_Fj=wp.vec3f(-0.25, -0.05, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         a_j=1.0 if dynamic_joints else None,
         b_j=0.1 if dynamic_joints else None,
         k_p_j=100.0 if implicit_pd else None,
@@ -569,7 +544,7 @@ def build_boxes_hinged(
             name="ground",
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             group=1,
             collides=7,
             world_index=world_index,
@@ -593,26 +568,21 @@ def build_boxes_nunchaku(
     This version initializes the nunchaku in a horizontal configuration.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the box.
+        ground: Whether to add a static ground plane to the model.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -642,8 +612,8 @@ def build_boxes_nunchaku(
         name="box_bottom",
         m_i=m_0,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_0, d, w, h),
-        q_i_0=transformf(0.5 * d, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.5 * d, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -652,8 +622,8 @@ def build_boxes_nunchaku(
         name="sphere_middle",
         m_i=m_1,
         i_I_i=inertia.solid_sphere_body_moment_of_inertia(m_1, r),
-        q_i_0=transformf(r + d, 0.0, r + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(r + d, 0.0, r + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -662,8 +632,8 @@ def build_boxes_nunchaku(
         name="box_top",
         m_i=m_2,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_2, d, w, h),
-        q_i_0=transformf(1.5 * d + 2.0 * r, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(1.5 * d + 2.0 * r, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -674,8 +644,8 @@ def build_boxes_nunchaku(
         act_type=JointActuationType.PASSIVE,
         bid_B=bid0,
         bid_F=bid1,
-        B_r_Bj=vec3f(0.5 * d, 0.0, 0.0),
-        F_r_Fj=vec3f(-r, 0.0, 0.0),
+        B_r_Bj=wp.vec3f(0.5 * d, 0.0, 0.0),
+        F_r_Fj=wp.vec3f(-r, 0.0, 0.0),
         X_Bj=I_3,
         world_index=world_index,
     )
@@ -687,8 +657,8 @@ def build_boxes_nunchaku(
         act_type=JointActuationType.PASSIVE,
         bid_B=bid1,
         bid_F=bid2,
-        B_r_Bj=vec3f(r, 0.0, 0.0),
-        F_r_Fj=vec3f(-0.5 * d, 0.0, 0.0),
+        B_r_Bj=wp.vec3f(r, 0.0, 0.0),
+        F_r_Fj=wp.vec3f(-0.5 * d, 0.0, 0.0),
         X_Bj=I_3,
         world_index=world_index,
     )
@@ -720,7 +690,7 @@ def build_boxes_nunchaku(
             name="ground",
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             group=1,
             collides=7,
             world_index=world_index,
@@ -744,26 +714,21 @@ def build_boxes_nunchaku_vertical(
     This version initializes the nunchaku in a vertical configuration.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the box.
+        ground: Whether to add a static ground plane to the model.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is True, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -793,8 +758,8 @@ def build_boxes_nunchaku_vertical(
         name="box_bottom",
         m_i=m_0,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_0, d, w, h),
-        q_i_0=transformf(0.0, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.0, 0.0, 0.5 * h + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -803,8 +768,8 @@ def build_boxes_nunchaku_vertical(
         name="sphere_middle",
         m_i=m_1,
         i_I_i=inertia.solid_sphere_body_moment_of_inertia(m_1, r),
-        q_i_0=transformf(0.0, 0.0, h + r + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.0, 0.0, h + r + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -813,8 +778,8 @@ def build_boxes_nunchaku_vertical(
         name="box_top",
         m_i=m_2,
         i_I_i=inertia.solid_cuboid_body_moment_of_inertia(m_2, d, w, h),
-        q_i_0=transformf(0.0, 0.0, 1.5 * h + 2.0 * r + z_0, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.0, 0.0, 1.5 * h + 2.0 * r + z_0, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
 
@@ -825,8 +790,8 @@ def build_boxes_nunchaku_vertical(
         act_type=JointActuationType.PASSIVE,
         bid_B=bid0,
         bid_F=bid1,
-        B_r_Bj=vec3f(0.0, 0.0, 0.5 * h),
-        F_r_Fj=vec3f(0.0, 0.0, -r),
+        B_r_Bj=wp.vec3f(0.0, 0.0, 0.5 * h),
+        F_r_Fj=wp.vec3f(0.0, 0.0, -r),
         X_Bj=I_3,
         world_index=world_index,
     )
@@ -838,8 +803,8 @@ def build_boxes_nunchaku_vertical(
         act_type=JointActuationType.PASSIVE,
         bid_B=bid1,
         bid_F=bid2,
-        B_r_Bj=vec3f(0.0, 0.0, r),
-        F_r_Fj=vec3f(0.0, 0.0, -0.5 * h),
+        B_r_Bj=wp.vec3f(0.0, 0.0, r),
+        F_r_Fj=wp.vec3f(0.0, 0.0, -0.5 * h),
         X_Bj=I_3,
         world_index=world_index,
     )
@@ -871,7 +836,7 @@ def build_boxes_nunchaku_vertical(
             name="ground",
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             group=1,
             collides=7,
             world_index=world_index,
@@ -894,32 +859,41 @@ def build_boxes_fourbar(
     new_world: bool = True,
     world_index: int = 0,
     actuator_ids: list[int] | None = None,
+    use_plane_shape: bool = False,
 ) -> ModelBuilderKamino:
     """
     Constructs a basic model of a four-bar linkage.
 
     Args:
-        builder (ModelBuilderKamino | None):
-            An optional existing model builder to populate.\n
+        builder: An optional existing model builder to populate.
             If `None`, a new builder is created.
-        z_offset (float):
-            A vertical offset to apply to the initial position of the box.
-        ground (bool):
-            Whether to add a static ground plane to the model.
-        new_world (bool):
-            Whether to create a new world in the builder for this model.\n
-            If `False`, the model is added to the existing world specified by `world_index`.\n
+        z_offset: A vertical offset to apply to the initial position of the first box.
+        fixedbase: Whether to add a fixed joint between the first box and the world.
+        floatingbase: Whether to add a free joint between the first box and the world.
+        limits: Whether to set finite position limits to revolute joints.
+        ground: Whether to add a static ground plane to the model.
+        dynamic_joints: Whether to set non-trivial armature and damping to the first revolute joint.
+        implicit_pd: Whether to set non-trivial implicit PD gains to the first revolute joint.
+        verbose: Whether to print debug information such as body/joint positions.
+        new_world: Whether to create a new world in the builder for this model.
+            If `False`, the model is added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
-            argument is ignored, and the index of the newly created world will be used instead.\n
-        world_index (int):
-            The index of the world to which the model should be added if `new_world` is False.\n
-            If `new_world` is True, this argument is ignored.\n
-            If the value does not correspond to an existing world, an error will be raised.\n
+            argument is ignored, and the index of the newly created world will be used instead.
+        world_index: The index of the world to which the model should be added if `new_world` is False.
+            If `new_world` is `True`, this argument is ignored.
+            If the value does not correspond to an existing world, an error will be raised.
             Defaults to `0`.
+        actuator_ids: List of revolute joint indices in [1, 2, 3, 4] to make into actuators.
+            If not provided, defaults to [1, 3]
+        use_plane_shape: If `True`, and `ground` is `True`, will use a plane shape for the ground instead
+            of a wide and thin box. Note that planes are not supported in the primitive collision pipeline.
 
     Returns:
-        ModelBuilderKamino: A model builder containing the four-bar linkage.
+        A model builder containing the four-bar linkage.
     """
+    if fixedbase and floatingbase:
+        raise ValueError("At most one of fixedbase or floatingbase can be enabled.")
+
     # Create a new builder if none is provided
     if builder is None:
         _builder = ModelBuilderKamino(default_world=False)
@@ -984,11 +958,11 @@ def build_boxes_fourbar(
         print(f"i_I_i_4:\n{i_I_i_4}")
 
     # Initial body positions
-    r_0 = vec3f(0.0, 0.0, z_0)
-    dr_b1 = vec3f(0.0, 0.0, 0.5 * d)
-    dr_b2 = vec3f(0.5 * h + dj, 0.0, 0.5 * h + dj)
-    dr_b3 = vec3f(0.0, 0.0, 0.5 * d + h + dj + mj)
-    dr_b4 = vec3f(-0.5 * h - dj, 0.0, 0.5 * h + dj)
+    r_0 = wp.vec3f(0.0, 0.0, z_0)
+    dr_b1 = wp.vec3f(0.0, 0.0, 0.5 * d)
+    dr_b2 = wp.vec3f(0.5 * h + dj, 0.0, 0.5 * h + dj)
+    dr_b3 = wp.vec3f(0.0, 0.0, 0.5 * d + h + dj + mj)
+    dr_b4 = wp.vec3f(-0.5 * h - dj, 0.0, 0.5 * h + dj)
 
     # Initial positions of the bodies
     r_b1 = r_0 + dr_b1
@@ -1002,16 +976,16 @@ def build_boxes_fourbar(
         print(f"r_b4: {r_b4}")
 
     # Initial body poses
-    q_i_1 = transformf(r_b1, wp.quat_identity())
-    q_i_2 = transformf(r_b2, wp.quat_identity())
-    q_i_3 = transformf(r_b3, wp.quat_identity())
-    q_i_4 = transformf(r_b4, wp.quat_identity())
+    q_i_1 = wp.transformf(r_b1, wp.quat_identity())
+    q_i_2 = wp.transformf(r_b2, wp.quat_identity())
+    q_i_3 = wp.transformf(r_b3, wp.quat_identity())
+    q_i_4 = wp.transformf(r_b4, wp.quat_identity())
 
     # Initial joint positions
-    r_j1 = vec3f(r_b2.x, 0.0, r_b1.z)
-    r_j2 = vec3f(r_b2.x, 0.0, r_b3.z)
-    r_j3 = vec3f(r_b4.x, 0.0, r_b3.z)
-    r_j4 = vec3f(r_b4.x, 0.0, r_b1.z)
+    r_j1 = wp.vec3f(r_b2.x, 0.0, r_b1.z)
+    r_j2 = wp.vec3f(r_b2.x, 0.0, r_b3.z)
+    r_j3 = wp.vec3f(r_b4.x, 0.0, r_b3.z)
+    r_j4 = wp.vec3f(r_b4.x, 0.0, r_b1.z)
     if verbose:
         print(f"r_j1: {r_j1}")
         print(f"r_j2: {r_j2}")
@@ -1019,7 +993,7 @@ def build_boxes_fourbar(
         print(f"r_j4: {r_j4}")
 
     # Joint axes matrix
-    X_j = Axis.Y.to_mat33()
+    X_j = axis_to_mat33(Axis.Y)
 
     ###
     # Bodies
@@ -1030,7 +1004,7 @@ def build_boxes_fourbar(
         m_i=m_i,
         i_I_i=i_I_i_1,
         q_i_0=q_i_1,
-        u_i_0=vec6f(0.0),
+        u_i_0=wp.spatial_vectorf(0.0),
         world_index=world_index,
     )
 
@@ -1039,7 +1013,7 @@ def build_boxes_fourbar(
         m_i=m_i,
         i_I_i=i_I_i_2,
         q_i_0=q_i_2,
-        u_i_0=vec6f(0.0),
+        u_i_0=wp.spatial_vectorf(0.0),
         world_index=world_index,
     )
 
@@ -1048,7 +1022,7 @@ def build_boxes_fourbar(
         m_i=m_i,
         i_I_i=i_I_i_3,
         q_i_0=q_i_3,
-        u_i_0=vec6f(0.0),
+        u_i_0=wp.spatial_vectorf(0.0),
         world_index=world_index,
     )
 
@@ -1057,7 +1031,7 @@ def build_boxes_fourbar(
         m_i=m_i,
         i_I_i=i_I_i_4,
         q_i_0=q_i_4,
-        u_i_0=vec6f(0.0),
+        u_i_0=wp.spatial_vectorf(0.0),
         world_index=world_index,
     )
 
@@ -1079,8 +1053,8 @@ def build_boxes_fourbar(
             act_type=JointActuationType.PASSIVE,
             bid_B=-1,
             bid_F=bid1,
-            B_r_Bj=vec3f(0.0),
-            F_r_Fj=-r_b1,
+            B_r_Bj=wp.vec3f(0.0),
+            F_r_Fj=wp.vec3f(0.0),
             X_Bj=I_3,
             world_index=world_index,
         )
@@ -1092,8 +1066,8 @@ def build_boxes_fourbar(
             act_type=JointActuationType.FORCE if 0 in actuator_ids else JointActuationType.PASSIVE,
             bid_B=-1,
             bid_F=bid1,
-            B_r_Bj=vec3f(0.0),
-            F_r_Fj=-r_b1,
+            B_r_Bj=wp.vec3f(0.0),
+            F_r_Fj=wp.vec3f(0.0),
             X_Bj=I_3,
             world_index=world_index,
         )
@@ -1183,8 +1157,8 @@ def build_boxes_fourbar(
         _builder.add_geometry(
             name="ground",
             body=-1,
-            shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
+            shape=PlaneShape() if use_plane_shape else BoxShape(10.0, 10.0, 0.5),
+            offset=None if use_plane_shape else wp.transformf(0.0, 0.0, -0.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -1203,7 +1177,7 @@ def make_basics_heterogeneous_builder(
     This function constructs a model builder containing all basic models.
 
     Returns:
-        ModelBuilderKamino: The constructed model builder.
+        The constructed model builder.
     """
     builder = ModelBuilderKamino(default_world=False)
     builder.add_builder(build_boxes_fourbar(ground=ground, dynamic_joints=dynamic_joints, implicit_pd=implicit_pd))

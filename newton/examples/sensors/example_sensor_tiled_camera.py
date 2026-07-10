@@ -206,8 +206,8 @@ class Example:
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
-            self.sensor_render_width, self.sensor_render_height, math.radians(fov)
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            self.sensor_render_width, self.sensor_render_height, camera_fovs=math.radians(fov)
         )
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count

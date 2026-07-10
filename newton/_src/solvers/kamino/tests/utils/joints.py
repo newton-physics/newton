@@ -175,8 +175,6 @@ def actuator_coords_from_units(
             pass
         elif dof_type == JointDoFType.FREE:
             coords.extend([pos_val, pos_val, pos_val, quat_val, quat_val, quat_val, quat_val])
-        elif dof_type == JointDoFType.GIMBAL:
-            coords.extend([angle_val, angle_val, angle_val])
         elif dof_type == JointDoFType.PRISMATIC:
             coords.extend([pos_val])
         elif dof_type == JointDoFType.REVOLUTE:
@@ -209,8 +207,6 @@ def actuator_dofs_from_units(
             pass
         elif dof_type == JointDoFType.FREE:
             dofs.extend([lin_vel_val, lin_vel_val, lin_vel_val, ang_vel_val, ang_vel_val, ang_vel_val])
-        elif dof_type == JointDoFType.GIMBAL:
-            dofs.extend([ang_vel_val, ang_vel_val, ang_vel_val])
         elif dof_type == JointDoFType.PRISMATIC:
             dofs.extend([lin_vel_val])
         elif dof_type == JointDoFType.REVOLUTE:

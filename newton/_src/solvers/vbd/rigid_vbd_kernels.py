@@ -75,6 +75,62 @@ class RigidContactHistory:
 
 
 @wp.func
+def _world_selected(world: int, mask: wp.array[wp.bool]):
+    """Query an internal world mask whose final entry selects global entities."""
+    mask_index = world
+    if world < 0:
+        mask_index = mask.shape[0] - 1
+    return mask[mask_index]
+
+
+@wp.func
+def _reset_world_selected(
+    world: int,
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+):
+    """Query a public reset mask whose optional final entry selects unassigned entities."""
+    if reset_all:
+        return True
+    if world < 0:
+        if world_mask.shape[0] == world_count:
+            return False
+        world = world_count
+    return world_mask[world]
+
+
+@wp.func
+def _shape_world_selected(
+    shape: int,
+    shape_world: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+):
+    """Return whether a shape's world (its own, or its attached body's) is selected by ``mask``."""
+    if _world_selected(shape_world[shape], mask):
+        return True
+    body = shape_body[shape]
+    return body >= 0 and _world_selected(body_world[body], mask)
+
+
+@wp.func
+def _contact_world_selected(
+    shape0: int,
+    shape1: int,
+    shape_world: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+):
+    """Return whether either contact endpoint's world is selected by ``mask``."""
+    if _shape_world_selected(shape0, shape_world, shape_body, body_world, mask):
+        return True
+    return _shape_world_selected(shape1, shape_world, shape_body, body_world, mask)
+
+
+@wp.func
 def ldlt6_solve(h_ll: wp.mat33, h_aa: wp.mat33, h_al: wp.mat33, rhs_lin: wp.vec3, rhs_ang: wp.vec3):
     """Solve the 6x6 SPD block system via direct LDL^T factorization.
 
@@ -1781,6 +1837,103 @@ def evaluate_joint_force_hessian(
 # -----------------------------
 # Utility kernels
 # -----------------------------
+@wp.func
+def _reset_joint_history(
+    joint: int,
+    joint_constraint_start: wp.array[wp.int32],
+    joint_constraint_dim: wp.array[wp.int32],
+    joint_penalty_k_min: wp.array[float],
+    joint_penalty_k: wp.array[float],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+):
+    """Reset immediately available joint solver history.
+
+    The cable Dahl friction state (kappa/sigma/increment: curvature, hysteretic
+    stress, and increment) is left untouched here: an enabled cable rebaselines it
+    from the next pre-step pose, while a disabled cable refreshes it in the
+    end-of-step finalizer.
+    """
+    constraint_start = joint_constraint_start[joint]
+    constraint_dim = joint_constraint_dim[joint]
+    for slot in range(constraint_dim):
+        constraint = constraint_start + slot
+        joint_penalty_k[constraint] = joint_penalty_k_min[constraint]
+    joint_C0_lin[joint] = wp.vec3(0.0)
+    joint_C0_ang[joint] = wp.vec3(0.0)
+    joint_lambda_lin[joint] = wp.vec3(0.0)
+    joint_lambda_ang[joint] = wp.vec3(0.0)
+
+
+@wp.kernel(enable_backward=False)
+def reset_rigid_state(
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+    body_world: wp.array[wp.int32],
+    joint_world: wp.array[wp.int32],
+    joint_constraint_start: wp.array[wp.int32],
+    joint_constraint_dim: wp.array[wp.int32],
+    model_body_q: wp.array[wp.transform],
+    model_body_qd: wp.array[wp.spatial_vector],
+    joint_penalty_k_min: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    joint_penalty_k: wp.array[float],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    rigid_pose_rebaseline_mask: wp.array[wp.bool],
+    contact_history_reset_mask: wp.array[wp.bool],
+    contact_history_reset_pending: wp.array[wp.int32],
+):
+    """Apply rigid resets in parallel by mask slot, body, and joint."""
+    tid = wp.tid()
+
+    if tid < world_count + 1:
+        world = tid
+        if tid == world_count:
+            world = -1
+        select_slot = _reset_world_selected(world, world_mask, reset_all, world_count)
+        if select_slot:
+            rigid_pose_rebaseline_mask[tid] = True
+            # Contact-reset state is allocated only with contact warm-starting on.
+            if contact_history_reset_mask:
+                contact_history_reset_mask[tid] = True
+                if reset_all:
+                    if tid == world_count:
+                        contact_history_reset_pending[0] = 1
+                else:
+                    wp.atomic_max(contact_history_reset_pending, 0, 1)
+
+    # A non-null output is the caller's request to reset that field.
+    if (body_q or body_qd) and tid < body_world.shape[0]:
+        body_selected = _reset_world_selected(body_world[tid], world_mask, reset_all, world_count)
+        if body_selected:
+            if body_q:
+                body_q[tid] = model_body_q[tid]
+            if body_qd:
+                body_qd[tid] = model_body_qd[tid]
+
+    if tid < joint_world.shape[0]:
+        joint_selected = _reset_world_selected(joint_world[tid], world_mask, reset_all, world_count)
+        if joint_selected:
+            _reset_joint_history(
+                tid,
+                joint_constraint_start,
+                joint_constraint_dim,
+                joint_penalty_k_min,
+                joint_penalty_k,
+                joint_C0_lin,
+                joint_C0_ang,
+                joint_lambda_lin,
+                joint_lambda_ang,
+            )
+
+
 @wp.kernel
 def _count_num_adjacent_joints(
     joint_parent: wp.array[wp.int32],
@@ -1836,6 +1989,7 @@ def forward_step_rigid_bodies(
     dt: float,
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
     body_f: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     body_inertia: wp.array[wp.mat33],
@@ -1843,6 +1997,7 @@ def forward_step_rigid_bodies(
     body_inv_inertia: wp.array[wp.mat33],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
     body_inertia_q: wp.array[wp.transform],
 ):
     """
@@ -1852,6 +2007,7 @@ def forward_step_rigid_bodies(
         dt: Time step [s].
         gravity: Gravity vector array (world frame).
         body_world: World index for each body.
+        pose_rebaseline_mask: Per-world flags for the ``body_q_prev`` rebaseline below.
         body_f: External forces on bodies (spatial wrenches, world frame).
         body_com: Centers of mass (local body frame).
         body_inertia: Inertia tensors (local body frame).
@@ -1859,11 +2015,18 @@ def forward_step_rigid_bodies(
         body_inv_inertia: Inverse inertia tensors (local body frame).
         body_q: Body transforms (input: start-of-step pose, output: integrated pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
+        body_q_prev: Previous body transforms (output). Rebaselined to the current
+            pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
+            after construction or reset); left unchanged otherwise.
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
     """
     tid = wp.tid()
 
+    world_idx = body_world[tid]
     q_current = body_q[tid]
+    if _world_selected(world_idx, pose_rebaseline_mask):
+        # The constructor or reset() may precede state pose preparation.
+        body_q_prev[tid] = q_current
 
     # Early exit for kinematic bodies (inv_mass == 0).
     inv_m = body_inv_mass[tid]
@@ -1877,7 +2040,6 @@ def forward_step_rigid_bodies(
     com_local = body_com[tid]
     I_local = body_inertia[tid]
     inv_I = body_inv_inertia[tid]
-    world_idx = body_world[tid]
     world_g = gravity[wp.max(world_idx, 0)]
 
     # Integrate rigid body motion (semi-implicit Euler, no angular damping)
@@ -1906,6 +2068,7 @@ def build_body_body_contact_lists(
     rigid_contact_shape0: wp.array[int],
     rigid_contact_shape1: wp.array[int],
     shape_body: wp.array[wp.int32],
+    body_inv_mass_effective: wp.array[float],
     body_contact_buffer_pre_alloc: int,
     body_contact_counts: wp.array[wp.int32],
     body_contact_indices: wp.array[wp.int32],
@@ -1913,7 +2076,10 @@ def build_body_body_contact_lists(
 ):
     """
     Build per-body contact lists for body-centric per-color contact evaluation.
-    Tracks overflow into body_contact_overflow_max for diagnostics.
+
+    Each contact is listed only under its dynamic bodies (effective inverse
+    mass > 0); static/kinematic bodies are skipped since VBD never moves them.
+    Overflow is tracked in body_contact_overflow_max for diagnostics.
     """
     t_id = wp.tid()
     if t_id >= rigid_contact_count[0]:
@@ -1924,14 +2090,14 @@ def build_body_body_contact_lists(
     b0 = shape_body[s0] if s0 >= 0 else -1
     b1 = shape_body[s1] if s1 >= 0 else -1
 
-    if b0 >= 0:
+    if b0 >= 0 and body_inv_mass_effective[b0] > 0.0:
         idx = wp.atomic_add(body_contact_counts, b0, 1)
         if idx < body_contact_buffer_pre_alloc:
             body_contact_indices[b0 * body_contact_buffer_pre_alloc + idx] = t_id
         else:
             wp.atomic_max(body_contact_overflow_max, 0, idx + 1)
 
-    if b1 >= 0:
+    if b1 >= 0 and body_inv_mass_effective[b1] > 0.0:
         idx = wp.atomic_add(body_contact_counts, b1, 1)
         if idx < body_contact_buffer_pre_alloc:
             body_contact_indices[b1 * body_contact_buffer_pre_alloc + idx] = t_id
@@ -1944,6 +2110,7 @@ def build_body_particle_contact_lists(
     body_particle_contact_count: wp.array[int],
     body_particle_contact_shape: wp.array[int],
     shape_body: wp.array[wp.int32],
+    body_inv_mass_effective: wp.array[float],
     body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
@@ -1951,7 +2118,10 @@ def build_body_particle_contact_lists(
 ):
     """
     Build per-body contact lists for body-particle contacts.
-    Tracks overflow into body_particle_contact_overflow_max for diagnostics.
+
+    Each contact is listed only if its body is dynamic (effective inverse
+    mass > 0); static/kinematic bodies are skipped since VBD never moves them.
+    Overflow is tracked in body_particle_contact_overflow_max for diagnostics.
     """
     tid = wp.tid()
     if tid >= body_particle_contact_count[0]:
@@ -1960,7 +2130,7 @@ def build_body_particle_contact_lists(
     shape = body_particle_contact_shape[tid]
     body = shape_body[shape] if shape >= 0 else -1
 
-    if body < 0:
+    if body < 0 or body_inv_mass_effective[body] <= 0.0:
         return
 
     idx = wp.atomic_add(body_particle_contact_counts, body, 1)
@@ -2142,6 +2312,12 @@ def init_body_body_contacts_avbd(
     # Pipeline-owned correspondence and VBD-owned cross-step state
     match_index: wp.array[wp.int32],
     history: RigidContactHistory,
+    # Optional reset context; a null pending array disables masked invalidation.
+    contact_history_reset_pending: wp.array[wp.int32],
+    contact_history_reset_mask: wp.array[wp.bool],
+    shape_world: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
     # Scalar parameters
     k_start: float,
     # In/out: replayed only for matched hard contacts that were sticking.
@@ -2168,6 +2344,7 @@ def init_body_body_contacts_avbd(
 
     match_index[i] addresses saved contact rows from the last snapshot.
     Negative values (-1 unmatched, -2 broken) cold-start identically.
+    Contacts in pending reset worlds are also treated as unmatched.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2190,6 +2367,12 @@ def init_body_body_contacts_avbd(
 
     k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
     slot = match_index[i]
+    # Drop the saved match for reset-selected worlds so they cold-start instead
+    # of warm-starting from pre-reset history.
+    if slot >= 0 and contact_history_reset_pending:
+        if contact_history_reset_pending[0] != 0:
+            if _contact_world_selected(s0, s1, shape_world, shape_body, body_world, contact_history_reset_mask):
+                slot = -1
 
     if slot >= 0:
         contact_penalty_k[i] = wp.clamp(history.penalty_k[slot], k_floor, avg_ke)
@@ -2229,7 +2412,7 @@ def snapshot_body_body_contact_history(
     contact_lambda: wp.array[wp.vec3],
     contact_stick_flag: wp.array[wp.int32],
     contact_penalty_k: wp.array[float],
-    # Outputs, same order as RigidContactHistory
+    # Persistent outputs, in RigidContactHistory order
     prev_lambda: wp.array[wp.vec3],
     prev_stick_flag: wp.array[wp.int32],
     prev_penalty_k: wp.array[float],
@@ -2374,6 +2557,8 @@ def compute_cable_dahl_parameters(
     # Inputs
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
+    joint_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_X_p: wp.array[wp.transform],
@@ -2391,23 +2576,26 @@ def compute_cable_dahl_parameters(
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
 ):
-    """
-    Compute Dahl hysteresis parameters (sigma0, C_fric) for cable bending,
-    given the current curvature state and the stored previous Dahl state.
+    """Compute per-step Dahl friction parameters for cable bending.
 
-    The outputs are:
-      - sigma0: linearized friction stress at the start of the step (per component)
-      - C_fric: tangent stiffness d(sigma)/d(kappa) (per component)
+    ``joint_sigma_start`` is the linearized friction stress at step start;
+    ``joint_C_fric`` is d(sigma) / d(kappa). On a selected first/reset step,
+    curvature is based on the current start-of-step pose and the stored stress
+    and curvature increment are cleared. This pre-solve rebaseline covers enabled
+    cables; a disabled cable refreshes its history in ``update_cable_dahl_state``
+    (the end-of-step finalizer) instead, so a reset while disabled is applied there.
     """
     j = wp.tid()
 
-    if not joint_enabled[j]:
+    # Only cable joints own Dahl state.
+    if joint_type[j] != JointType.CABLE:
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
         return
 
-    # Only process cable joints
-    if joint_type[j] != JointType.CABLE:
+    # Disabled cables are not solved, and the finalizer refreshes their Dahl
+    # history every step, so they need no begin-of-step rebaseline.
+    if not joint_enabled[j]:
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
         return
@@ -2420,6 +2608,8 @@ def compute_cable_dahl_parameters(
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
         return
+
+    rebaseline = _world_selected(joint_world[j], pose_rebaseline_mask)
 
     # Compute joint frames in world space (current and rest only)
     if parent >= 0:
@@ -2438,13 +2628,20 @@ def compute_cable_dahl_parameters(
     q_wp_rest = wp.transform_get_rotation(X_wp_rest)
     q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
-    # Compute current curvature vector at beginning-of-step (predicted state)
+    # Compute curvature at the start-of-step pose.
     kappa_now = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
     # Read previous state (from last converged timestep)
     kappa_prev = joint_kappa_prev[j]
     d_kappa_prev = joint_dkappa_prev[j]
     sigma_prev = joint_sigma_prev[j]
+    if rebaseline:
+        kappa_prev = kappa_now
+        d_kappa_prev = wp.vec3(0.0)
+        sigma_prev = wp.vec3(0.0)
+        joint_kappa_prev[j] = kappa_prev
+        joint_dkappa_prev[j] = d_kappa_prev
+        joint_sigma_prev[j] = sigma_prev
 
     # Read per-joint Dahl parameters (isotropic)
     eps_max = joint_eps_max[j]
@@ -3861,9 +4058,9 @@ def update_body_velocity(
             contacts carry DEADZONE but not ANCHOR.
         stick_freeze_translation_eps: Translation deadzone [m] for anti-creep snapping.
         stick_freeze_angular_eps: Angular deadzone [rad] for anti-creep snapping.
-        body_q_prev: Previous body transforms (input/output, advanced to current
-            pose for next step). For kinematic bodies set body_q. For dynamic
-            teleportation also set body_q_prev and body_qd.
+        body_q_prev: Previous body transforms (input/output), advanced to the
+            current pose for the next step. ``SolverVBD.reset()`` is the supported
+            way to establish a new baseline after a discontinuous pose change.
         body_qd: Output body velocities (spatial vectors, world frame), bound to state_out.
         body_qd_mirror: Output body velocities, bound to state_in. Mirrors body_qd so the
             next step's forward integrator sees the finalized velocity even when the
