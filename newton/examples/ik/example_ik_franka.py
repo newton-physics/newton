@@ -111,10 +111,9 @@ class Example:
     # ----------------------------------------------------------------------
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         self.solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)

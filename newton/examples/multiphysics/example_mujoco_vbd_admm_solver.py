@@ -77,7 +77,7 @@ def _rigid_solver_entry_args(
 
 
 def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, enabled: bool = True):
-    if not enabled or not model.device.is_cuda:
+    if not enabled:
         return None
 
     with wp.ScopedDevice(model.device):
@@ -85,7 +85,7 @@ def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, e
             simulate()
 
     if capture.graph is None:
-        raise RuntimeError(f"CUDA graph capture failed on device {model.device}")
+        raise RuntimeError(f"Graph capture failed on device {model.device}")
     return capture.graph
 
 

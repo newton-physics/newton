@@ -195,7 +195,6 @@ class Example:
 
         # Create bundle cross-section layout
         bundle_positions = self.bundle_start_offsets_yz(self.num_cables, self.cable_radius, self.cable_gap_multiplier)
-        cable_body_ids: list[int] = []
 
         # Build each cable in the bundle
         for i in range(self.num_cables):
@@ -210,7 +209,7 @@ class Example:
                 twist_total=0.0,
             )
 
-            rod_bodies, _rod_joints = builder.add_rod(
+            builder.add_rod(
                 positions=points,
                 quaternions=quats,
                 radius=self.cable_radius,
@@ -219,7 +218,6 @@ class Example:
                 label=f"bundle_cable_{i}",
                 body_frame_origin="com",
             )
-            cable_body_ids.extend(rod_bodies)
 
         # Create moving obstacles (capsules arranged along X axis)
         obstacle_cfg = newton.ModelBuilder.ShapeConfig(
@@ -295,7 +293,6 @@ class Example:
 
         self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(cable_body_ids)
 
         # Obstacle kinematics parameters
         self.obstacle_bodies_wp = wp.array(self.obstacle_bodies, dtype=int, device=self.solver.device)
@@ -319,17 +316,14 @@ class Example:
         # Time tracking for obstacle motion (stored in device array for graph capture)
         self.sim_time_array = wp.zeros(1, dtype=float, device=self.solver.device)
 
-        # Initialize CUDA graph
+        # Initialize graph capture
         self.capture()
 
     def capture(self):
-        """Capture simulation loop into a CUDA graph for optimal GPU performance."""
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        """Capture the simulation loop into a graph for optimal performance."""
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         """Execute all simulation substeps for one frame."""
