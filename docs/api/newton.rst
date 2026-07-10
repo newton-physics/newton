@@ -32,6 +32,7 @@ newton
    Contacts
    Control
    DeformableVisualMesh
+   DeformableVisuals
    EqType
    Gaussian
    GeoType

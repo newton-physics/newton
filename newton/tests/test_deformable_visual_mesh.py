@@ -316,6 +316,102 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         assert_np_equal(np.abs(n[:, 2]), np.ones(4, dtype=np.float32), tol=1.0e-5)
 
 
+class TestDeformableVisuals(unittest.TestCase):
+    """Shared current visual data allocated and updated through Model."""
+
+    @staticmethod
+    def _model():
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        particle_indices = np.array([0, 1, 5, 4], dtype=np.int32)
+        vertices = np.asarray(builder.particle_q, dtype=np.float32)[particle_indices]
+        builder.add_deformable_visual_mesh(
+            vertices,
+            _QUAD,
+            kind="particle",
+            particles=particle_indices,
+            label="first",
+        )
+        builder.add_deformable_visual_mesh(
+            vertices,
+            _QUAD,
+            kind="particle",
+            particles=particle_indices,
+            label="second",
+        )
+        return builder.finalize(), particle_indices, vertices
+
+    def test_allocate_update_and_access_mesh_ranges(self):
+        model, particle_indices, vertices = self._model()
+
+        visuals = model.deformable_visuals()
+
+        self.assertIsInstance(visuals, newton.DeformableVisuals)
+        self.assertIs(visuals.model, model)
+        self.assertEqual(visuals.device, model.device)
+        self.assertEqual(visuals.vertex_count, 2 * len(vertices))
+        self.assertEqual(visuals.mesh_ranges, ((0, 4), (4, 8)))
+        self.assertEqual(len(visuals.points), 8)
+        self.assertEqual(len(visuals.normals), 8)
+        self.assertIsNone(visuals.state)
+
+        with self.assertRaisesRegex(RuntimeError, "update_deformable_visuals"):
+            visuals.get_points(model.deformable_visual_meshes[0])
+
+        state = model.state()
+        moved = state.particle_q.numpy()
+        moved[:, 2] += 1.25
+        state.particle_q.assign(moved)
+
+        self.assertIs(model.update_deformable_visuals(state, visuals), visuals)
+        self.assertIs(visuals.state, state)
+        for mesh in model.deformable_visual_meshes:
+            assert_np_equal(visuals.get_points(mesh).numpy(), moved[particle_indices], tol=1.0e-6)
+            normals = visuals.get_normals(mesh).numpy()
+            assert_np_equal(np.linalg.norm(normals, axis=1), np.ones(4, dtype=np.float32), tol=1.0e-5)
+
+    def test_reuse_and_simultaneous_states_keep_fixed_independent_buffers(self):
+        model, particle_indices, _vertices = self._model()
+        state_a = model.state()
+        state_b = model.state()
+        moved_b = state_b.particle_q.numpy()
+        moved_b[:, 0] += 3.0
+        state_b.particle_q.assign(moved_b)
+
+        visuals = model.deformable_visuals()
+        points_ptr = visuals.points.ptr
+        model.update_deformable_visuals(state_a, visuals)
+        points_a = visuals.get_points(0).numpy().copy()
+        model.update_deformable_visuals(state_b, visuals)
+
+        self.assertEqual(visuals.points.ptr, points_ptr)
+        self.assertIs(visuals.state, state_b)
+        assert_np_equal(visuals.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
+        self.assertFalse(np.allclose(points_a, visuals.get_points(0).numpy()))
+
+        visuals_a = model.deformable_visuals()
+        visuals_b = model.deformable_visuals()
+        model.update_deformable_visuals(state_a, visuals_a)
+        independent_a = visuals_a.get_points(0).numpy().copy()
+        model.update_deformable_visuals(state_b, visuals_b)
+
+        self.assertNotEqual(visuals_a.points.ptr, visuals_b.points.ptr)
+        assert_np_equal(visuals_a.get_points(0).numpy(), independent_a, tol=0.0)
+        assert_np_equal(visuals_b.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
+
+    def test_rejects_results_and_meshes_from_another_model(self):
+        model_a, _particle_indices, _vertices = self._model()
+        model_b, _particle_indices, _vertices = self._model()
+        visuals_a = model_a.deformable_visuals()
+
+        with self.assertRaisesRegex(ValueError, "created for another model"):
+            model_b.update_deformable_visuals(model_b.state(), visuals_a)
+
+        model_a.update_deformable_visuals(model_a.state(), visuals_a)
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            visuals_a.get_points(model_b.deformable_visual_meshes[0])
+
+
 class TestDeformableVisualMeshValidation(unittest.TestCase):
     """Input validation and ownership errors."""
 

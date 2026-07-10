@@ -45,6 +45,7 @@
 - Add `SensorTiledCamera` support for deformable visual mesh camera captures, including skinned visual mesh textures and an option to hide the coarse simulation triangle surface.
 - Add `SensorTiledCamera` support for deformable visual mesh camera captures, including skinned visual mesh textures, an option to hide the coarse simulation triangle surface, and a combined cable/cloth/volume camera example.
 - Add `SensorTiledCamera` support for deformable visual mesh camera captures, including skinned visual mesh textures, an option to hide the coarse simulation triangle surface, and a combined cable/cloth/volume camera example with public-API and USD-import setup modes.
+- Add experimental `DeformableVisuals` buffers and model methods for sharing current deformable visual points and normals across render consumers.
 
 ### Changed
 

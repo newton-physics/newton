@@ -6,7 +6,7 @@ from .builder import ModelBuilder
 from .collide import CollisionPipeline
 from .contacts import Contacts
 from .control import Control
-from .deformable_visual import DeformableVisualMesh
+from .deformable_visual import DeformableVisualMesh, DeformableVisuals
 from .enums import (
     BodyFlags,
     EqType,
@@ -25,6 +25,7 @@ __all__ = [
     "Contacts",
     "Control",
     "DeformableVisualMesh",
+    "DeformableVisuals",
     "EqType",
     "InverseDynamics",
     "JointTargetMode",
