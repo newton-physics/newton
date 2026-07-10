@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from ..core.types import assign_to_warp_int32_array, int32, to_warp_int32_array, uint64
+from ..core.types import assign_to_warp_int32_array, to_warp_int32_array
 
 ###
 # Module interface
@@ -47,25 +47,24 @@ class DiscreteSignature:
     num_worlds: int
     """Number of worlds"""
 
-    data: wp.array
-    """Flat data array, with type int32, concatenating a signature block for each world"""
+    data: wp.array[wp.int32]
+    """Flat data array, concatenating a signature block for each world"""
 
-    world_offset: wp.array | None = None
+    world_offset: wp.array[wp.int32] | None = None
     """
-    Per-world offset of the signature block into `data`, with shape (num_worlds) and type int32.
+    Per-world offset of the signature block into `data`, with shape (num_worlds).
     Optional if data has exactly one entry per world.
     """
 
-    world_size: wp.array | None = None
+    world_size: wp.array[wp.int32] | None = None
     """
-    Per-world size of the signature block into `data`, with shape (num_worlds) and type int32.
+    Per-world size of the signature block into `data`, with shape (num_worlds).
     Optional if data has exactly one entry per world.
     """
 
-    world_delta: wp.array | None = None
+    world_delta: wp.array[wp.int32] | None = None
     """
-    Optional per-world delta to subtract from signature values before comparison, with shape (num_worlds)
-    and type int32.
+    Optional per-world delta to subtract from signature values before comparison, with shape (num_worlds).
     If provided, two signature coefficients are considered equivalent if coeff1 - delta1 = coeff2 - delta2.
     """
 
@@ -110,7 +109,7 @@ class DiscreteSignature:
 
 
 @wp.func
-def comparison_value(value: int32, delta: int32, ignore_negative: wp.bool):
+def comparison_value(value: wp.int32, delta: wp.int32, ignore_negative: wp.bool):
     if ignore_negative and value < 0:
         return -1
     return value - delta
@@ -118,12 +117,12 @@ def comparison_value(value: int32, delta: int32, ignore_negative: wp.bool):
 
 @wp.kernel
 def equivalence_mask_kernel(
-    data: wp.array[int32],
-    world_offset: wp.array[int32],
-    world_size: wp.array[int32],
-    world_delta: wp.array[int32],
+    data: wp.array[wp.int32],
+    world_offset: wp.array[wp.int32],
+    world_size: wp.array[wp.int32],
+    world_delta: wp.array[wp.int32],
     ignore_negative: wp.bool,
-    world_ref_index: wp.array[int32],
+    world_ref_index: wp.array[wp.int32],
     world_equivalence_mask: wp.array[wp.bool],
 ):
     """Updates a mask indicating whether the signature of each world matches the one of the reference world"""
@@ -157,13 +156,13 @@ def equivalence_mask_kernel(
 
 @wp.kernel
 def hash_kernel(
-    data: wp.array[int32],
-    world_offset: wp.array[int32],
-    world_size: wp.array[int32],
-    world_delta: wp.array[int32],
+    data: wp.array[wp.int32],
+    world_offset: wp.array[wp.int32],
+    world_size: wp.array[wp.int32],
+    world_delta: wp.array[wp.int32],
     ignore_negative: wp.bool,
-    world_class_index: wp.array[int32],
-    world_hash: wp.array[uint64],
+    world_class_index: wp.array[wp.int32],
+    world_hash: wp.array[wp.uint64],
 ):
     """Updates a per-world hash based on the signature, for worlds that don't have a class yet"""
     wid = wp.tid()  # Retrieve world index

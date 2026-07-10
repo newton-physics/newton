@@ -28,16 +28,15 @@ installed package metadata via ``importlib.metadata``.
 Dependency versioning strategy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``pyproject.toml`` specifies **minimum** compatible versions
+``pyproject.toml`` generally specifies **minimum** compatible versions
 (e.g. ``warp-lang>=1.12.0``).  ``uv.lock`` pins the **latest known-good**
 versions for reproducible installs.
 
-Exception: on the **release branch**, ``mujoco`` and ``mujoco-warp`` use
-**compatible-release** pins (e.g. ``mujoco~=3.5.0``) to allow ``3.5.x``
-updates while excluding ``3.6.0`` and later.  MuJoCo follows `custom
-versioning from 3.5.0 onward`_; its third component is ``MINOR_OR_PATCH``
-and guarantees API backward compatibility.  ``main`` uses a version floor
-like other dependencies.
+``mujoco`` and ``mujoco-warp`` instead use **compatible-release** pins on
+both ``main`` and release branches (e.g. ``mujoco~=3.5.0``) to allow
+``3.5.x`` updates while excluding ``3.6.0`` and later.  MuJoCo follows
+`custom versioning from 3.5.0 onward`_; its third component is
+``MINOR_OR_PATCH`` and guarantees API backward compatibility.
 
 .. _custom versioning from 3.5.0 onward:
    https://github.com/google-deepmind/mujoco/blob/main/VERSIONING.md#from-350--semantic-versioning
@@ -63,8 +62,9 @@ Pre-release planning
    * - ☐
      - Determine target version (``X.Y.Z``).
    * - ☐
-     - Confirm dependency versions and availability: warp-lang, mujoco,
-       mujoco-warp, newton-usd-schemas.
+     - Select release dependency versions and confirm their availability on
+       public PyPI: warp-lang, mujoco, mujoco-warp, newton-usd-schemas.  Land
+       release-ready versions on ``main`` before the branch cut when possible.
    * - ☐
      - Set timeline: code freeze → RC1 → testing window → GA.
    * - ☐
@@ -98,17 +98,19 @@ Code freeze and release branch creation
      - Create ``release-X.Y`` branch from ``main`` and push it.
    * - ☐
      - On **main**: bump the version in ``pyproject.toml`` to ``X.(Y+1).0.dev0`` and run
-       ``uv run docs/generate_api.py``.
+       ``uv run docs/generate_api.py``, then regenerate ``uv.lock`` (``uv lock``).
    * - ☐
      - On **release-X.Y**: bump the version in ``pyproject.toml`` to ``X.Y.ZrcN`` and
-       run ``uv run docs/generate_api.py``.
+       run ``uv run docs/generate_api.py``, then regenerate ``uv.lock`` (``uv lock``).
    * - ☐
      - On **release-X.Y**: update dependencies in ``pyproject.toml`` from dev
-       to RC versions where applicable and remove the NVIDIA package index
-       (``[[tool.uv.index]]`` entry for ``nvidia`` **and** the
-       ``warp-lang`` entry in ``[tool.uv.sources]`` that references it) so
-       the release wheel installs purely from PyPI, then regenerate
-       ``uv.lock`` (``uv lock``) and commit.
+       to RC or stable versions where applicable and remove the NVIDIA package
+       index (``[[tool.uv.index]]`` entry for ``nvidia`` **and** the
+       ``warp-lang`` entry in ``[tool.uv.sources]`` that references it) so the
+       release wheel installs purely from PyPI.  Update the Warp install command
+       in ``asv.conf.json`` to the same stable release from public PyPI, without
+       ``--pre`` or the NVIDIA index.  Then regenerate ``uv.lock`` (``uv lock``)
+       and commit.
    * - ☐
      - Run the ``release-audit`` skill in **release-candidate mode** against
        ``release-X.Y``; address or acknowledge flagged entries before
@@ -142,9 +144,10 @@ branch and open a pull request targeting ``release-X.Y`` — never push
 directly to the release branch.
 
 For each new RC (``rc2``, ``rc3``, …) bump the version in
-``pyproject.toml`` and run ``uv run docs/generate_api.py``, then tag and push.
-Resolve any cherry-pick conflicts or missing dependent cherry-picks that
-cause CI failures before tagging.
+``pyproject.toml``, run ``uv run docs/generate_api.py``, and regenerate
+``uv.lock`` (``uv lock``), then tag and push.  Resolve any cherry-pick
+conflicts or missing dependent cherry-picks that cause CI failures before
+tagging.
 
 .. _testing-criteria:
 
@@ -226,11 +229,12 @@ otherwise.
      - Verify all dependency pins in ``pyproject.toml`` use stable
        (non-pre-release) versions.
    * - ☐
-     - Regenerate ``uv.lock`` (``uv lock``) and verify that no pre-release
-       dependencies remain in the lock file.
-   * - ☐
      - Bump the version in ``pyproject.toml`` to ``X.Y.Z`` (remove the RC suffix) and
        run ``uv run docs/generate_api.py``.
+   * - ☐
+     - Regenerate ``uv.lock`` (``uv lock``) after all ``pyproject.toml``
+       changes and verify that no pre-release dependencies remain in the lock
+       file.
    * - ☐
      - Commit and push tag ``vX.Y.Z``.  Automated workflows trigger:
 
