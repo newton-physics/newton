@@ -55,8 +55,11 @@ class TestMuJoCoSiteExport(unittest.TestCase):
         assert_site_poses_match_model()
 
         transforms = [
-            wp.transform(wp.vec3(-0.2, 0.4, 0.3), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.2)),
-            wp.transform(wp.vec3(3.0, 1.5, -0.1), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -0.3)),
+            wp.transform(
+                wp.vec3(-0.2 + i, 0.4 + 0.5 * i, 0.3 - 0.1 * i),
+                wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.2 + 0.15 * i),
+            )
+            for i in range(model.shape_count)
         ]
         model.shape_transform.assign(wp.array(transforms, dtype=wp.transform, device=model.device))
         solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
