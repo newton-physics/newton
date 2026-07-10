@@ -7172,6 +7172,42 @@ def Xform "Articulation" (
         self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collider_massapi_invalid_mass_warns_and_uses_geometry(self):
+        """Invalid non-fallback collider mass warns; the 0.0 fallback stays silent."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def make_stage(collider_mass):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim())  # incomplete -> compute fallback
+
+            collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+            collider_mass_api.CreateMassAttr().Set(collider_mass)
+            collider_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.1))
+            return stage
+
+        with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(make_stage(-1.0))
+        # The collider falls back to geometry-derived mass information.
+        body_idx = result["path_body_map"]["/World/Body"]
+        expected_mass = builder.default_shape_cfg.density * 0.2**3
+        self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            newton.ModelBuilder().add_usd(make_stage(0.0))
+        self.assertFalse([w for w in caught if "must be positive and finite" in str(w.message)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
         """Authored mass without inertia should produce inertia consistent with a uniform-density body.
 

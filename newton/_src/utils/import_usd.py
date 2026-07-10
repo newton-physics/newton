@@ -3004,6 +3004,14 @@ def parse_usd(
         mass = _mass_api_effective_mass(mass_api)
         diag_val = _mass_api_effective_diag_inertia(mass_api)
         if mass is None or diag_val is None:
+            # Warn when an intended override is dropped: inertia is effective but mass is
+            # invalid. The 0.0 schema fallback means "unspecified" and stays silent.
+            if diag_val is not None and float(mass_api.GetMassAttr().Get()) != 0.0:
+                warnings.warn(
+                    f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be positive and finite "
+                    "to derive volume and density.",
+                    stacklevel=2,
+                )
             return None
 
         shape_volume, _, _ = compute_inertia_shape(shape_geo_type, shape_scale, shape_src, density=1.0)
