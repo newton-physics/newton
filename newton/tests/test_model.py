@@ -3259,6 +3259,22 @@ class TestModelValidation(unittest.TestCase):
                 self.assertEqual(builder.particle_flags, [])
                 self.assertEqual(builder.particle_world, [])
 
+        for name in ("vel", "mass"):
+            with self.subTest(name=name, value=None):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = None
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*None"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
         for name, value in (("vel", (0.0, 0.0, 0.0)), ("mass", 1.0)):
             with self.subTest(name=name, empty_pos=True):
                 builder = ModelBuilder()

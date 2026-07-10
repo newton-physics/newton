@@ -7915,15 +7915,26 @@ class ModelBuilder:
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+
+        Raises:
+            ValueError: If a particle input or custom attribute list has a mismatched length.
         """
         particle_count = len(pos)
-        particle_inputs = (
+        required_inputs = (
             ("vel", vel),
             ("mass", mass),
+        )
+        optional_inputs = (
             ("radius", radius),
             ("flags", flags),
         )
-        for name, values in particle_inputs:
+        for name, values in required_inputs:
+            if values is None or len(values) != particle_count:
+                actual_count = "None" if values is None else len(values)
+                raise ValueError(
+                    f"{name} length mismatch: expected {particle_count} values to match pos, got {actual_count}"
+                )
+        for name, values in optional_inputs:
             if values is not None and len(values) != particle_count:
                 raise ValueError(
                     f"{name} length mismatch: expected {particle_count} values to match pos, got {len(values)}"
