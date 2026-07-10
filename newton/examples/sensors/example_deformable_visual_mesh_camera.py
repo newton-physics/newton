@@ -149,9 +149,9 @@ class Example:
         self.capture()
 
     @staticmethod
-    def _checker_texture() -> str:
-        """Return the shared procedural/USD checker texture."""
-        return newton.examples.get_asset("deformable_visual_checker.png")
+    def _diagnostic_texture() -> str:
+        """Return the shared procedural/USD UV diagnostic texture."""
+        return newton.examples.get_asset("deformable_visual_uv_grid.png")
 
     @staticmethod
     def _tube_mesh(centerline: np.ndarray, radius: float, segments: int):
@@ -277,7 +277,7 @@ class Example:
             kind="body",
             bodies=rod_bodies,
             uvs=uvs,
-            texture=self._checker_texture(),
+            texture=self._diagnostic_texture(),
             label="camera_cable_skin",
         )
 
@@ -331,7 +331,7 @@ class Example:
             kind="particle",
             particles=np.arange(particle_start, particle_start + particle_count, dtype=np.int32),
             uvs=uvs.astype(np.float32),
-            texture=self._checker_texture(),
+            texture=self._diagnostic_texture(),
             label="camera_cloth_skin",
         )
 
@@ -369,7 +369,7 @@ class Example:
             kind="tet",
             tet_range=(tet_start, builder.tet_count),
             uvs=sphere.uvs,
-            texture=self._checker_texture(),
+            texture=self._diagnostic_texture(),
             label="camera_volume_skin",
         )
 

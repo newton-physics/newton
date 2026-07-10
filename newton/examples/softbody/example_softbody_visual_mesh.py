@@ -58,7 +58,7 @@ class Example:
         )
 
         # High-resolution visual mesh: a UV sphere that fits inside the cube,
-        # so every visual vertex embeds in a tetrahedron. A checkerboard texture
+        # so every visual vertex embeds in a tetrahedron. A diagnostic texture
         # makes the deformation of the embedded surface easy to see.
         center = np.array([origin[0], origin[1], origin[2]], dtype=np.float32) + 0.5 * length
         sphere = newton.Mesh.create_sphere(radius=0.45 * length, num_latitudes=48, num_longitudes=48)
@@ -72,7 +72,7 @@ class Example:
             kind="tet",
             tet_range=(0, builder.tet_count),
             uvs=visual_uvs,
-            texture=self._checker_texture(),
+            texture=self._diagnostic_texture(),
             label="sphere_skin",
         )
 
@@ -103,15 +103,9 @@ class Example:
         self.capture()
 
     @staticmethod
-    def _checker_texture(tiles: int = 8, size: int = 512) -> np.ndarray:
-        """Build an RGB checkerboard texture (H, W, 3) uint8."""
-        image = np.zeros((size, size, 3), dtype=np.uint8)
-        step = size // tiles
-        for i in range(tiles):
-            for j in range(tiles):
-                color = (235, 90, 40) if (i + j) % 2 else (40, 120, 255)
-                image[i * step : (i + 1) * step, j * step : (j + 1) * step] = color
-        return image
+    def _diagnostic_texture() -> str:
+        """Return the shared asymmetric UV diagnostic texture."""
+        return newton.examples.get_asset("deformable_visual_uv_grid.png")
 
     def capture(self):
         if wp.get_device().is_cuda:

@@ -6,7 +6,7 @@
 #
 # A simulated cloth grid drives a textured visual mesh that shares its
 # topology. The visual mesh is bound per-particle to the cloth and skinned
-# from the simulation state each frame, so the checkerboard texture and UVs
+# from the simulation state each frame, so the diagnostic texture and UVs
 # follow the cloth as it folds and swings. Demonstrates the shared-topology
 # (cloth) path of the deformable visual-mesh workflow
 # (https://github.com/newton-physics/newton/issues/3223).
@@ -76,7 +76,7 @@ class Example:
 
         # Visual mesh shares the cloth topology: bind visual vertex i to cloth
         # particle (particle_start + i). UVs come from the rest-pose extent so
-        # the checkerboard maps cleanly across the sheet.
+        # the diagnostic texture maps cleanly across the sheet.
         rest = np.asarray(builder.particle_q[particle_start:], dtype=np.float32)
         indices = (np.asarray(builder.tri_indices[tri_start:], dtype=np.int32) - particle_start).reshape(-1)
         spans = rest.max(axis=0) - rest.min(axis=0)
@@ -89,7 +89,7 @@ class Example:
             kind="particle",
             particles=np.arange(particle_start, particle_start + particle_count, dtype=np.int32),
             uvs=uvs.astype(np.float32),
-            texture=self._checker_texture(),
+            texture=self._diagnostic_texture(),
             label="cloth_skin",
         )
 
@@ -120,15 +120,9 @@ class Example:
         self.capture()
 
     @staticmethod
-    def _checker_texture(tiles: int = 8, size: int = 512) -> np.ndarray:
-        """Build an RGB checkerboard texture (H, W, 3) uint8."""
-        image = np.zeros((size, size, 3), dtype=np.uint8)
-        step = size // tiles
-        for i in range(tiles):
-            for j in range(tiles):
-                color = (235, 90, 40) if (i + j) % 2 else (40, 120, 255)
-                image[i * step : (i + 1) * step, j * step : (j + 1) * step] = color
-        return image
+    def _diagnostic_texture() -> str:
+        """Return the shared asymmetric UV diagnostic texture."""
+        return newton.examples.get_asset("deformable_visual_uv_grid.png")
 
     def capture(self):
         if wp.get_device().is_cuda:

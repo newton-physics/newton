@@ -1012,7 +1012,7 @@ def Xform "World"
                 (-1.5, 0, 1.59549999), (-1.5, -0.0140602728, 1.59327304), (-1.5, -0.0267442297, 1.58681023),
                 (-1.5, -0.0368102714, 1.5767442), (-1.5, -0.0432730727, 1.56406021)
             ]
-            rel material:binding = </World/Materials/CheckerVisual>
+            rel material:binding = </World/Materials/DiagnosticVisual>
         }
     }
 
@@ -4184,7 +4184,7 @@ def Xform "World"
                 (0.49000001, 0.595000029, 1.04999995), (0.524999976, 0.595000029, 1.04999995), (0.559999943, 0.595000029, 1.04999995),
                 (0.595000029, 0.595000029, 1.04999995)
             ]
-            rel material:binding = </World/Materials/CheckerVisual>
+            rel material:binding = </World/Materials/DiagnosticVisual>
         }
     }
 
@@ -7280,20 +7280,20 @@ def Xform "World"
                 (2.39999986, -0.0699999928, 1.29999995), (2.39999986, -0.0699999928, 1.29999995), (2.39999986, -0.0699999928, 1.29999995),
                 (2.39999986, -0.0699999928, 1.29999995)
             ]
-            rel material:binding = </World/Materials/CheckerVisual>
+            rel material:binding = </World/Materials/DiagnosticVisual>
         }
     }
 
     def Scope "Materials"
     {
-        def Material "CheckerVisual"
+        def Material "DiagnosticVisual"
         {
-            token outputs:surface.connect = </World/Materials/CheckerVisual/PreviewSurface.outputs:surface>
+            token outputs:surface.connect = </World/Materials/DiagnosticVisual/PreviewSurface.outputs:surface>
 
             def Shader "PreviewSurface"
             {
                 uniform token info:id = "UsdPreviewSurface"
-                color3f inputs:diffuseColor.connect = </World/Materials/CheckerVisual/CheckerTexture.outputs:rgb>
+                color3f inputs:diffuseColor.connect = </World/Materials/DiagnosticVisual/DiagnosticTexture.outputs:rgb>
                 float inputs:roughness = 0.65
                 token outputs:surface
             }
@@ -7305,11 +7305,11 @@ def Xform "World"
                 float2 outputs:result
             }
 
-            def Shader "CheckerTexture"
+            def Shader "DiagnosticTexture"
             {
                 uniform token info:id = "UsdUVTexture"
-                asset inputs:file = @deformable_visual_checker.png@
-                float2 inputs:st.connect = </World/Materials/CheckerVisual/PrimvarReader.outputs:result>
+                asset inputs:file = @deformable_visual_uv_grid.png@
+                float2 inputs:st.connect = </World/Materials/DiagnosticVisual/PrimvarReader.outputs:result>
                 token inputs:sourceColorSpace = "sRGB"
                 token inputs:wrapS = "repeat"
                 token inputs:wrapT = "repeat"

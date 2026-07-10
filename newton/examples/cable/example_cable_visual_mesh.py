@@ -6,8 +6,8 @@
 #
 # A cable simulated as a chain of capsule rigid bodies (add_rod) drives a
 # smooth, textured visual tube. Each visual vertex is rigidly bound to its
-# nearest cable segment and follows that body's pose, so the checkerboard
-# tube bends and swings with the cable. Demonstrates the rigid-body
+# nearest cable segment and follows that body's pose. The diagnostic texture
+# makes the tube's bending and swinging easy to see. Demonstrates the rigid-body
 # (cable/rod) path of the deformable visual-mesh workflow
 # (https://github.com/newton-physics/newton/issues/3223).
 #
@@ -72,7 +72,7 @@ class Example:
             kind="body",
             bodies=rod_bodies,
             uvs=uvs,
-            texture=self._checker_texture(),
+            texture=self._diagnostic_texture(),
             label="cable_skin",
         )
 
@@ -126,15 +126,9 @@ class Example:
         )
 
     @staticmethod
-    def _checker_texture(tiles: int = 8, size: int = 512) -> np.ndarray:
-        """Build an RGB checkerboard texture (H, W, 3) uint8."""
-        image = np.zeros((size, size, 3), dtype=np.uint8)
-        step = size // tiles
-        for i in range(tiles):
-            for j in range(tiles):
-                color = (235, 90, 40) if (i + j) % 2 else (40, 120, 255)
-                image[i * step : (i + 1) * step, j * step : (j + 1) * step] = color
-        return image
+    def _diagnostic_texture() -> str:
+        """Return the shared asymmetric UV diagnostic texture."""
+        return newton.examples.get_asset("deformable_visual_uv_grid.png")
 
     def capture(self):
         if wp.get_device().is_cuda:
