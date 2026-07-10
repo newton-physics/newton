@@ -42,7 +42,7 @@ class SensorTiledCamera:
         ::
 
             sensor = SensorTiledCamera(model)
-            rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
+            rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=fov)
             color = sensor.utils.create_color_image_output(width, height)
 
             # BVHs are built for the initial state by ModelBuilder.finalize().
@@ -143,7 +143,7 @@ class SensorTiledCamera:
         Args:
             state: Simulation state with body and particle transforms.
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
-            camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
+            camera_rays: Camera-space rays from ``SensorTiledCamera.utils`` ray helpers, shape
                 ``(camera_count, height, width, 2)``.
             color_image: Output for packed RGBA color. The bytes are
                 display/sRGB by default, or linear when

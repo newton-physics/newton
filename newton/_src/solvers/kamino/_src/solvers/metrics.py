@@ -72,6 +72,8 @@ A typical example for using this module is:
     )
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import warp as wp
@@ -80,7 +82,7 @@ from ..core.data import DataKamino
 from ..core.math import screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
-from ..core.types import float32, int32, int64, mat33f, uint32, vec2f, vec3f, vec4f, vec6f
+from ..core.types import vec6f
 from ..dynamics.dual import DualProblem
 from ..geometry.contacts import ContactsKamino
 from ..geometry.keying import build_pair_key2
@@ -126,28 +128,19 @@ class SolutionMetricsData:
     of the computed solution to the dual forward-dynamics Nonlinear Complementarity Problem (NCP).
 
     Attributes:
-        r_eom (wp.array):
-            The largest residual across all DoF dimensions of the Equations-of-Motion (EoM).
-        r_kinematics (wp.array):
-            The largest residual across all kinematic bilateral (i.e. equality) constraints.
-        r_cts_joints (wp.array):
-            The largest constraint violation residual across all bilateral kinematic joint constraints.
-        r_cts_limits (wp.array):
-            The largest constraint violation residual across all unilateral joint-limit constraints.
-        r_cts_contacts (wp.array):
-            The largest constraint violation residual across all contact constraints.
-        r_ncp_primal (wp.array):
-            The NCP primal residual representing the violation of set-valued constraint reactions.
-        r_ncp_dual (wp.array):
-            The NCP dual residual representing the violation of set-valued augmented constraint velocities.
-        r_ncp_compl (wp.array):
-            The NCP complementarity residual representing the violation of complementarity conditions.
-        r_vi_natmap (wp.array):
-            The Variational Inequality (VI) natural-map residual representing the proximity
+        r_eom: The largest residual across all DoF dimensions of the Equations-of-Motion (EoM).
+        r_kinematics: The largest residual across all kinematic bilateral (i.e. equality) constraints.
+        r_cts_joints: The largest constraint violation residual across all bilateral kinematic joint constraints.
+        r_cts_limits: The largest constraint violation residual across all unilateral joint-limit constraints.
+        r_cts_contacts: The largest constraint violation residual across all contact constraints.
+        r_ncp_primal: The NCP primal residual representing the violation of set-valued constraint reactions.
+        r_ncp_dual: The NCP dual residual representing the violation of set-valued augmented constraint velocities.
+        r_ncp_compl: The NCP complementarity residual representing the violation of complementarity conditions.
+        r_vi_natmap: The Variational Inequality (VI) natural-map residual representing the proximity
             of the constraint reactions to a true solution of the VI defined by the NCP.
     """
 
-    r_eom: wp.array | None = None
+    r_eom: wp.array[wp.float32] | None = None
     """
     The largest residual across all DoF dimensions of the Equations-of-Motion (EoM).
 
@@ -168,18 +161,18 @@ class SolutionMetricsData:
     - `J_dofs` is the actuation Jacobian matrix
     - `tau` is the vector of generalized actuation forces
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_eom_argmax: wp.array | None = None
+    r_eom_argmax: wp.array[wp.int64] | None = None
     """
     The index pair key computed from the body index and
     degree-of-freedom (DoF) with the largest EoM residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int64`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_kinematics: wp.array | None = None
+    r_kinematics: wp.array[wp.float32] | None = None
     """
     The largest residual across all kinematic bilateral (i.e. equality) constraints.
 
@@ -193,18 +186,18 @@ class SolutionMetricsData:
     - `J_cts_joints` is the constraint Jacobian matrix for bilateral joint constraints
     - `u^+` is the post-event generalized velocity
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_kinematics_argmax: wp.array | None = None
+    r_kinematics_argmax: wp.array[wp.int64] | None = None
     """
     The index pair key computed from the joint index and
     bilateral kinematic constraint with the largest residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int64`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_cts_joints: wp.array | None = None
+    r_cts_joints: wp.array[wp.float32] | None = None
     """
     The largest constraint violation residual across all bilateral joint constraints.
 
@@ -213,18 +206,18 @@ class SolutionMetricsData:
     Equivalent to `r_cts_joints := || r_j ||_inf`, where `r_j` is the
     array of joint constraint residuals defined in :class:`JointsData`.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_cts_joints_argmax: wp.array | None = None
+    r_cts_joints_argmax: wp.array[wp.int64] | None = None
     """
     The index pair key computed from the joint index and bilateral
     kinematic joint constraint with the largest residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int64`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_cts_limits: wp.array | None = None
+    r_cts_limits: wp.array[wp.float32] | None = None
     """
     The largest constraint violation residual across all unilateral joint-limit constraints.
 
@@ -233,18 +226,18 @@ class SolutionMetricsData:
     Equivalent to `r_cts_limits := || r_l ||_inf`, where `r_l` would be an array of joint-limit
     constraint residuals constructed from the collection of `r_q` elements defined in :class:`LimitsKaminoData`.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_cts_limits_argmax: wp.array | None = None
+    r_cts_limits_argmax: wp.array[wp.int64] | None = None
     """
     The index pair key computed from the joint index and degree-of-freedom
     (DoF) with the largest unilateral joint-limit constraint residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int64`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_cts_contacts: wp.array | None = None
+    r_cts_contacts: wp.array[wp.float32] | None = None
     """
     The largest constraint violation residual across all contact constraints.
 
@@ -253,17 +246,17 @@ class SolutionMetricsData:
     Equivalent to `r_cts_contacts := || d_k ||_inf`, where `d_k` would be an array of
     contact penetrations extracted from the `gapfunc` elements of :class:`ContactsKaminoData`.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_cts_contacts_argmax: wp.array | None = None
+    r_cts_contacts_argmax: wp.array[wp.int32] | None = None
     """
-    The indexir of the contact  with the largest unilateral contact constraint residual.
+    The index of the contact  with the largest unilateral contact constraint residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_v_plus: wp.array | None = None
+    r_v_plus: wp.array[wp.float32] | None = None
     """
     The largest error in the estimation of the post-event constraint-space velocity.
 
@@ -278,17 +271,17 @@ class SolutionMetricsData:
       `v_plus_true = v_f + D @ lambdas`, where `v_f` is the unconstrained constraint-space velocity,
       `D` is the Delassus operator, and `lambdas` is the vector of all constraint reactions (i.e. Lagrange multipliers).
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_v_plus_argmax: wp.array | None = None
+    r_v_plus_argmax: wp.array[wp.int32] | None = None
     """
     The index of the constraint with the largest post-event constraint-space velocity estimation error.
 
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_ncp_primal: wp.array | None = None
+    r_ncp_primal: wp.array[wp.float32] | None = None
     """
     The NCP primal residual representing the violation of set-valued constraint reactions.
 
@@ -302,16 +295,16 @@ class SolutionMetricsData:
     Euclidean projection, i.e. proximal operator, onto K, and `lambda` is the
     vector of all constraint reactions (i.e. Lagrange multipliers).
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_ncp_primal_argmax: wp.array | None = None
+    r_ncp_primal_argmax: wp.array[wp.int32] | None = None
     """
-    The index of the constraint with the largest NCP primal residual.\n
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    The index of the constraint with the largest NCP primal residual.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_ncp_dual: wp.array | None = None
+    r_ncp_dual: wp.array[wp.float32] | None = None
     """
     The NCP dual residual representing the violation of set-valued augmented constraint velocities.
 
@@ -325,17 +318,17 @@ class SolutionMetricsData:
     `v_hat^+ = v^+ + Gamma(v^+)`, where `v^+ := v_f D @ lambda` is the post-event
     constraint-space velocity, and `Gamma(v^+)` is the De Saxce correction term.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_ncp_dual_argmax: wp.array | None = None
+    r_ncp_dual_argmax: wp.array[wp.int32] | None = None
     """
     The index of the constraint with the largest NCP dual residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_ncp_compl: wp.array | None = None
+    r_ncp_compl: wp.array[wp.float32] | None = None
     """
     The NCP complementarity residual representing the violation of complementarity conditions.
 
@@ -348,17 +341,17 @@ class SolutionMetricsData:
     where `lambda` is the vector of all constraint reactions (i.e. Lagrange multipliers),
     and `v_hat^+` is the augmented constraint-space velocity defined above.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_ncp_compl_argmax: wp.array | None = None
+    r_ncp_compl_argmax: wp.array[wp.int32] | None = None
     """
     The index of the constraint with the largest NCP complementarity residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_vi_natmap: wp.array | None = None
+    r_vi_natmap: wp.array[wp.float32] | None = None
     """
     The Variational Inequality (VI) natural-map residual representing the proximity
     of the constraint reactions to a true solution of the VI defined by the NCP.
@@ -374,17 +367,17 @@ class SolutionMetricsData:
     `lambda` is the vector of all constraint reactions (i.e. Lagrange multipliers),
     and `v_hat^+(lambda)` is the augmented constraint-space velocity defined above.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    r_vi_natmap_argmax: wp.array | None = None
+    r_vi_natmap_argmax: wp.array[wp.int32] | None = None
     """
     The index of the constraint with the largest VI natural-map residual.
 
-    Shape of ``(num_worlds,)`` and type :class:`int32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    f_ncp: wp.array | None = None
+    f_ncp: wp.array[wp.float32] | None = None
     """
     Evaluation of the NCP energy dissipation objective function.
 
@@ -399,10 +392,10 @@ class SolutionMetricsData:
     `f_ncp(lambda) = f_ccp(lambda) + lambda.T @ s`,
     where `f_ccp` is the CCP energy dissipation objective.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
-    f_ccp: wp.array | None = None
+    f_ccp: wp.array[wp.float32] | None = None
     """
     Evaluation of the CCP energy dissipation objective function.
 
@@ -417,7 +410,7 @@ class SolutionMetricsData:
     `f_ccp(lambda) := 0.5 * lambda.T @ (v+ + v_f)`,
     where `v+ = v_f + D @ lambda` is the post-event constraint-space velocity.
 
-    Shape of ``(num_worlds,)`` and type :class:`float32`.
+    Shape of ``(num_worlds,)``.
     """
 
     def clear(self):
@@ -467,15 +460,15 @@ class SolutionMetricsData:
 
 @wp.func
 def compute_v_plus(
-    dim: int32,
-    vio: int32,
-    mio: int32,
-    sigma: float32,
-    P: wp.array[float32],
-    D_p: wp.array[float32],
-    v_f_p: wp.array[float32],
-    lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    dim: wp.int32,
+    vio: wp.int32,
+    mio: wp.int32,
+    sigma: wp.float32,
+    P: wp.array[wp.float32],
+    D_p: wp.array[wp.float32],
+    v_f_p: wp.array[wp.float32],
+    lambdas: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
 ):
     """
     Computes the post-event constraint-space velocity as:
@@ -497,18 +490,14 @@ def compute_v_plus(
     with dimensions `dim`, starting from the vector index offset `vio`.
 
     Args:
-        maxdim (int32): The maximum dimension of the matrix `A`.
-        dim (int32): The active dimension of the matrix `A` and the vectors `x, b, c`.
-        vio (int32): The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        mio (int32): The matrix index offset (i.e. start index) for the matrix `A`.
-        D_p (wp.array[float32]):
-            Input preconditioned Delassus matrix stored in row-major order.
-        v_f_p (wp.array[float32]):
-            Input preconditioned unconstrained constraint-space velocity vector.
-        lambdas (wp.array[float32]):
-            Input constraint reactions (i.e. Lagrange multipliers) vector.
-        v_plus (wp.array[float32]):
-            Output array to store the post-event constraint-space velocity vector.
+        maxdim: The maximum dimension of the matrix `A`.
+        dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
+        vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
+        mio: The matrix index offset (i.e. start index) for the matrix `A`.
+        D_p: Input preconditioned Delassus matrix stored in row-major order.
+        v_f_p: Input preconditioned unconstrained constraint-space velocity vector.
+        lambdas: Input constraint reactions (i.e. Lagrange multipliers) vector.
+        v_plus: Output array to store the post-event constraint-space velocity vector.
     """
     v_f_p_i = float(0.0)
     lambdas_j = float(0.0)
@@ -529,12 +518,12 @@ def compute_v_plus(
 
 @wp.func
 def compute_v_plus_sparse(
-    dim: int32,
-    vio: int32,
-    P: wp.array[float32],
-    v_f_p: wp.array[float32],
-    D_p_lambdas: wp.array[float32],
-    v_plus: wp.array[float32],
+    dim: wp.int32,
+    vio: wp.int32,
+    P: wp.array[wp.float32],
+    v_f_p: wp.array[wp.float32],
+    D_p_lambdas: wp.array[wp.float32],
+    v_plus: wp.array[wp.float32],
 ):
     """
     Computes the post-event constraint-space velocity as:
@@ -551,15 +540,12 @@ def compute_v_plus_sparse(
     the vector index offset `vio`.
 
     Args:
-        dim (int32): The active dimension of the matrix `A` and the vectors `x, b, c`.
-        vio (int32): The vector index offset (i.e. start index) for the vectors `x, b, c`.
-        v_f_p (wp.array[float32]):
-            Input preconditioned unconstrained constraint-space velocity vector.
-        D_p_lambdas (wp.array[float32]):
-            Product of the Delassus matrix with the input constraint reactions
+        dim: The active dimension of the matrix `A` and the vectors `x, b, c`.
+        vio: The vector index offset (i.e. start index) for the vectors `x, b, c`.
+        v_f_p: Input preconditioned unconstrained constraint-space velocity vector.
+        D_p_lambdas: Product of the Delassus matrix with the input constraint reactions
             (i.e. Lagrange multipliers) vector.
-        v_plus (wp.array[float32]):
-            Output array to store the post-event constraint-space velocity vector.
+        v_plus: Output array to store the post-event constraint-space velocity vector.
     """
     for i in range(dim):
         v_i = vio + i
@@ -568,27 +554,26 @@ def compute_v_plus_sparse(
 
 @wp.func
 def compute_vector_difference_infnorm(
-    dim: int32,
-    vio: int32,
-    x: wp.array[float32],
-    y: wp.array[float32],
-) -> tuple[float32, int32]:
+    dim: wp.int32,
+    vio: wp.int32,
+    x: wp.array[wp.float32],
+    y: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32]:
     """
-    Computes the sum of two vectors `x` and `y` and stores the result in vector `z`.\n
-    All vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.
+    Computes the infinity norm of the element-wise difference between vectors `x` and `y`.
+    Both vectors are stored in flat arrays, with dimension `dim` and starting from the vector index offset `vio`.
 
     Args:
-        dim (int32): The dimension (i.e. size) of the vectors.
-        vio (int32): The vector index offset (i.e. start index).
-        x (wp.array[float32]): The first vector.
-        y (wp.array[float32]): The second vector.
-        z (wp.array[float32]): The output vector where the sum is stored.
+        dim: The dimension (i.e. size) of the vectors.
+        vio: The vector index offset (i.e. start index).
+        x: The first vector.
+        y: The second vector.
 
     Returns:
-        None: The result is stored in the output vector `z`.
+        Maximum absolute difference and index of the largest component.
     """
     max = float(0.0)
-    argmax = int32(-1)
+    argmax = wp.int32(-1)
     for i in range(dim):
         v_i = vio + i
         err = wp.abs(x[v_i] - y[v_i])
@@ -606,17 +591,17 @@ def compute_vector_difference_infnorm(
 @wp.kernel
 def _compute_eom_residual(
     # Inputs
-    model_time_dt: wp.array[float32],
-    model_gravity: wp.array[vec4f],
-    model_bodies_wid: wp.array[int32],
-    model_bodies_m_i: wp.array[float32],
-    state_bodies_I_i: wp.array[mat33f],
-    state_bodies_w_i: wp.array[vec6f],
-    state_bodies_u_i: wp.array[vec6f],
-    state_bodies_u_i_p: wp.array[vec6f],
+    model_time_dt: wp.array[wp.float32],
+    model_gravity: wp.array[wp.vec4f],
+    model_bodies_wid: wp.array[wp.int32],
+    model_bodies_m_i: wp.array[wp.float32],
+    state_bodies_I_i: wp.array[wp.mat33f],
+    state_bodies_w_i: wp.array[wp.spatial_vectorf],
+    state_bodies_u_i: wp.array[wp.spatial_vectorf],
+    state_bodies_u_i_p: wp.array[wp.spatial_vectorf],
     # Outputs
-    metric_r_eom: wp.array[float32],
-    metric_r_eom_argmax: wp.array[int64],
+    metric_r_eom: wp.array[wp.float32],
+    metric_r_eom_argmax: wp.array[wp.int64],
 ):
     # Retrieve the thread index as the body index
     bid = wp.tid()
@@ -632,7 +617,7 @@ def _compute_eom_residual(
     # Retrieve the time step
     dt = model_time_dt[wid]
     gravity = model_gravity[wid]
-    g = gravity.w * vec3f(gravity.x, gravity.y, gravity.z)
+    g = gravity.w * wp.vec3f(gravity.x, gravity.y, gravity.z)
 
     # Decompose into linear and angular parts
     f_i = screw_linear(w_i)
@@ -650,32 +635,32 @@ def _compute_eom_residual(
 
     # Compute the per-body maximum residual and argmax index
     r_eom_i = wp.max(r_i)
-    r_eom_argmax_i = int32(wp.argmax(r_i))
+    r_eom_argmax_i = wp.int32(wp.argmax(r_i))
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_eom, wid, r_eom_i)
     if r_eom_i >= previous_max:
-        argmax_key = int64(build_pair_key2(uint32(bid), uint32(r_eom_argmax_i)))
-        wp.atomic_exch(metric_r_eom_argmax, int32(wid), argmax_key)
+        argmax_key = wp.int64(build_pair_key2(wp.uint32(bid), wp.uint32(r_eom_argmax_i)))
+        wp.atomic_exch(metric_r_eom_argmax, wp.int32(wid), argmax_key)
 
 
 @wp.kernel
 def _compute_joint_kinematics_residual_dense(
     # Inputs:
-    model_info_bodies_offset: wp.array[int32],
-    model_info_total_cts_offset: wp.array[int32],
-    model_info_joint_kinematic_cts_group_offset: wp.array[int32],
-    model_joint_wid: wp.array[int32],
-    model_joint_num_kinematic_cts: wp.array[int32],
-    model_joint_kinematic_cts_offset_total_cts: wp.array[int32],
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    data_bodies_u_i: wp.array[vec6f],
-    jacobian_cts_offset: wp.array[int32],
-    jacobian_cts_data: wp.array[float32],
+    model_info_bodies_offset: wp.array[wp.int32],
+    model_info_total_cts_offset: wp.array[wp.int32],
+    model_info_joint_kinematic_cts_group_offset: wp.array[wp.int32],
+    model_joint_wid: wp.array[wp.int32],
+    model_joint_num_kinematic_cts: wp.array[wp.int32],
+    model_joint_kinematic_cts_offset_total_cts: wp.array[wp.int32],
+    model_joint_bid_B: wp.array[wp.int32],
+    model_joint_bid_F: wp.array[wp.int32],
+    data_bodies_u_i: wp.array[wp.spatial_vectorf],
+    jacobian_cts_offset: wp.array[wp.int32],
+    jacobian_cts_data: wp.array[wp.float32],
     # Outputs:
-    metric_r_kinematics: wp.array[float32],
-    metric_r_kinematics_argmax: wp.array[int64],
+    metric_r_kinematics: wp.array[wp.float32],
+    metric_r_kinematics_argmax: wp.array[wp.int64],
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -699,7 +684,7 @@ def _compute_joint_kinematics_residual_dense(
     mio = jacobian_cts_offset[wid]
 
     # Compute the per-joint constraint Jacobian matrix-vector product
-    j_v_j = vec6f(0.0)
+    j_v_j = wp.spatial_vectorf(0.0)
     u_i_F = data_bodies_u_i[bid_F_j]
     dio_F = 6 * (bid_F_j - bio)
     for j in range(num_cts_j):
@@ -722,26 +707,26 @@ def _compute_joint_kinematics_residual_dense(
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
     if r_kinematics_j >= previous_max:
-        argmax_key = int64(build_pair_key2(uint32(jid), uint32(cts_offset_j - kgo) + kin_argmax_local))
+        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cts_offset_j - kgo) + kin_argmax_local))
         wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
 
 
 @wp.kernel
 def _compute_joint_kinematics_residual_sparse(
     # Inputs:
-    model_info_joint_kinematic_cts_offset: wp.array[int32],
-    model_joint_wid: wp.array[int32],
-    model_joint_num_dynamic_cts: wp.array[int32],
-    model_joint_num_kinematic_cts: wp.array[int32],
-    model_joint_kinematic_cts_offset: wp.array[int32],
-    model_joint_bid_B: wp.array[int32],
-    model_joint_bid_F: wp.array[int32],
-    data_bodies_u_i: wp.array[vec6f],
+    model_info_joint_kinematic_cts_offset: wp.array[wp.int32],
+    model_joint_wid: wp.array[wp.int32],
+    model_joint_num_dynamic_cts: wp.array[wp.int32],
+    model_joint_num_kinematic_cts: wp.array[wp.int32],
+    model_joint_kinematic_cts_offset: wp.array[wp.int32],
+    model_joint_bid_B: wp.array[wp.int32],
+    model_joint_bid_F: wp.array[wp.int32],
+    data_bodies_u_i: wp.array[wp.spatial_vectorf],
     jac_nzb_values: wp.array[vec6f],
-    jac_joint_nzb_offsets: wp.array[int32],
+    jac_joint_nzb_offsets: wp.array[wp.int32],
     # Outputs:
-    metric_r_kinematics: wp.array[float32],
-    metric_r_kinematics_argmax: wp.array[int64],
+    metric_r_kinematics: wp.array[wp.float32],
+    metric_r_kinematics_argmax: wp.array[wp.int64],
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -763,7 +748,7 @@ def _compute_joint_kinematics_residual_sparse(
     jac_j_nzb_start = jac_joint_nzb_offsets[jid] + (2 * num_dyn_cts_j if bid_B_j >= 0 else num_dyn_cts_j)
 
     # Compute the per-joint constraint Jacobian matrix-vector product
-    j_v_j = vec6f(0.0)
+    j_v_j = wp.spatial_vectorf(0.0)
     u_i_F = data_bodies_u_i[bid_F_j]
     for j in range(num_kin_cts_j):
         jac_block = jac_nzb_values[jac_j_nzb_start + j]
@@ -782,21 +767,21 @@ def _compute_joint_kinematics_residual_sparse(
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_kinematics, wid, r_kinematics_j)
     if r_kinematics_j >= previous_max:
-        argmax_key = int64(build_pair_key2(uint32(jid), uint32(kin_cts_offset_j) + kin_argmax_local))
+        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(kin_cts_offset_j) + kin_argmax_local))
         wp.atomic_exch(metric_r_kinematics_argmax, wid, argmax_key)
 
 
 @wp.kernel
 def _compute_cts_joints_residual(
     # Inputs:
-    model_info_joint_kinematic_cts_offset: wp.array[int32],
-    model_joint_wid: wp.array[int32],
-    model_joint_num_kinematic_cts: wp.array[int32],
-    model_joint_kinematic_cts_offset: wp.array[int32],
-    data_joints_r_j: wp.array[float32],
+    model_info_joint_kinematic_cts_offset: wp.array[wp.int32],
+    model_joint_wid: wp.array[wp.int32],
+    model_joint_num_kinematic_cts: wp.array[wp.int32],
+    model_joint_kinematic_cts_offset: wp.array[wp.int32],
+    data_joints_r_j: wp.array[wp.float32],
     # Outputs:
-    metric_r_cts_joints: wp.array[float32],
-    metric_r_cts_joints_argmax: wp.array[int64],
+    metric_r_cts_joints: wp.array[wp.float32],
+    metric_r_cts_joints_argmax: wp.array[wp.int64],
 ):
     # Retrieve the joint index from the thread index
     jid = wp.tid()
@@ -807,35 +792,35 @@ def _compute_cts_joints_residual(
     cio_j = model_joint_kinematic_cts_offset[jid]
 
     # Compute the per-joint constraint residual (infinity-norm) and local argmax row
-    r_cts_joints_j = float32(0.0)
-    argmax_j = int32(0)
+    r_cts_joints_j = wp.float32(0.0)
+    argmax_j = wp.int32(0)
     if num_cts_j > 0:
         r_cts_joints_j = wp.abs(data_joints_r_j[cio_j])
         for j in range(1, num_cts_j):
             v = wp.abs(data_joints_r_j[cio_j + j])
             if v > r_cts_joints_j:
                 r_cts_joints_j = v
-                argmax_j = int32(j)
+                argmax_j = wp.int32(j)
 
     # Update the per-world maximum residual and argmax index
     previous_max = wp.atomic_max(metric_r_cts_joints, wid, r_cts_joints_j)
     if r_cts_joints_j >= previous_max:
         cio_j_loc = cio_j - model_info_joint_kinematic_cts_offset[wid]
-        argmax_key = int64(build_pair_key2(uint32(jid), uint32(cio_j_loc + argmax_j)))
+        argmax_key = wp.int64(build_pair_key2(wp.uint32(jid), wp.uint32(cio_j_loc + argmax_j)))
         wp.atomic_exch(metric_r_cts_joints_argmax, wid, argmax_key)
 
 
 @wp.kernel
 def _compute_cts_limits_residual(
     # Inputs:
-    limit_model_num_limits: wp.array[int32],
-    limit_wid: wp.array[int32],
-    limit_lid: wp.array[int32],
-    limit_dof: wp.array[int32],
-    limit_r_q: wp.array[float32],
+    limit_model_num_limits: wp.array[wp.int32],
+    limit_wid: wp.array[wp.int32],
+    limit_lid: wp.array[wp.int32],
+    limit_dof: wp.array[wp.int32],
+    limit_r_q: wp.array[wp.float32],
     # Outputs:
-    metric_r_cts_limits: wp.array[float32],
-    metric_r_cts_limits_argmax: wp.array[int64],
+    metric_r_cts_limits: wp.array[wp.float32],
+    metric_r_cts_limits_argmax: wp.array[wp.int64],
 ):
     # Retrieve the thread index as the limit index
     lid = wp.tid()
@@ -858,20 +843,20 @@ def _compute_cts_limits_residual(
     # Update the per-world maximum residual
     previous_max = wp.atomic_max(metric_r_cts_limits, wid, r_cts_limits_l)
     if r_cts_limits_l >= previous_max:
-        argmax_key = int64(build_pair_key2(uint32(wlid), uint32(dof)))
+        argmax_key = wp.int64(build_pair_key2(wp.uint32(wlid), wp.uint32(dof)))
         wp.atomic_exch(metric_r_cts_limits_argmax, wid, argmax_key)
 
 
 @wp.kernel
 def _compute_cts_contacts_residual(
     # Inputs:
-    contact_model_num_contacts: wp.array[int32],
-    contact_wid: wp.array[int32],
-    contact_cid: wp.array[int32],
-    contact_gapfunc: wp.array[vec4f],
+    contact_model_num_contacts: wp.array[wp.int32],
+    contact_wid: wp.array[wp.int32],
+    contact_cid: wp.array[wp.int32],
+    contact_gapfunc: wp.array[wp.vec4f],
     # Outputs:
-    metric_r_cts_contacts: wp.array[float32],
-    metric_r_cts_contacts_argmax: wp.array[int32],
+    metric_r_cts_contacts: wp.array[wp.float32],
+    metric_r_cts_contacts_argmax: wp.array[wp.int32],
 ):
     # Retrieve the thread index as the contact index
     cid = wp.tid()
@@ -900,37 +885,37 @@ def _compute_cts_contacts_residual(
 @wp.kernel
 def _compute_dual_problem_metrics(
     # Inputs:
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    problem_D: wp.array[float32],
-    problem_P: wp.array[float32],
-    solution_sigma: wp.array[vec2f],
-    solution_lambdas: wp.array[float32],
-    solution_v_plus: wp.array[float32],
+    problem_nl: wp.array[wp.int32],
+    problem_nc: wp.array[wp.int32],
+    problem_cio: wp.array[wp.int32],
+    problem_lcgo: wp.array[wp.int32],
+    problem_ccgo: wp.array[wp.int32],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_mio: wp.array[wp.int32],
+    problem_mu: wp.array[wp.float32],
+    problem_v_f: wp.array[wp.float32],
+    problem_D: wp.array[wp.float32],
+    problem_P: wp.array[wp.float32],
+    solution_sigma: wp.array[wp.vec2f],
+    solution_lambdas: wp.array[wp.float32],
+    solution_v_plus: wp.array[wp.float32],
     # Buffers:
-    buffer_s: wp.array[float32],
-    buffer_v: wp.array[float32],
+    buffer_s: wp.array[wp.float32],
+    buffer_v: wp.array[wp.float32],
     # Outputs:
-    metric_r_v_plus: wp.array[float32],
-    metric_r_v_plus_argmax: wp.array[int32],
-    metric_r_ncp_primal: wp.array[float32],
-    metric_r_ncp_primal_argmax: wp.array[int32],
-    metric_r_ncp_dual: wp.array[float32],
-    metric_r_ncp_dual_argmax: wp.array[int32],
-    metric_r_ncp_compl: wp.array[float32],
-    metric_r_ncp_compl_argmax: wp.array[int32],
-    metric_r_vi_natmap: wp.array[float32],
-    metric_r_vi_natmap_argmax: wp.array[int32],
-    metric_f_ncp: wp.array[float32],
-    metric_f_ccp: wp.array[float32],
+    metric_r_v_plus: wp.array[wp.float32],
+    metric_r_v_plus_argmax: wp.array[wp.int32],
+    metric_r_ncp_primal: wp.array[wp.float32],
+    metric_r_ncp_primal_argmax: wp.array[wp.int32],
+    metric_r_ncp_dual: wp.array[wp.float32],
+    metric_r_ncp_dual_argmax: wp.array[wp.int32],
+    metric_r_ncp_compl: wp.array[wp.float32],
+    metric_r_ncp_compl_argmax: wp.array[wp.int32],
+    metric_r_vi_natmap: wp.array[wp.float32],
+    metric_r_vi_natmap_argmax: wp.array[wp.int32],
+    metric_f_ncp: wp.array[wp.float32],
+    metric_f_ccp: wp.array[wp.float32],
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -1001,34 +986,34 @@ def _compute_dual_problem_metrics(
 @wp.kernel
 def _compute_dual_problem_metrics_sparse(
     # Inputs:
-    problem_nl: wp.array[int32],
-    problem_nc: wp.array[int32],
-    problem_cio: wp.array[int32],
-    problem_lcgo: wp.array[int32],
-    problem_ccgo: wp.array[int32],
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_mu: wp.array[float32],
-    problem_v_f: wp.array[float32],
-    problem_P: wp.array[float32],
-    solution_lambdas: wp.array[float32],
-    solution_v_plus: wp.array[float32],
+    problem_nl: wp.array[wp.int32],
+    problem_nc: wp.array[wp.int32],
+    problem_cio: wp.array[wp.int32],
+    problem_lcgo: wp.array[wp.int32],
+    problem_ccgo: wp.array[wp.int32],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_mu: wp.array[wp.float32],
+    problem_v_f: wp.array[wp.float32],
+    problem_P: wp.array[wp.float32],
+    solution_lambdas: wp.array[wp.float32],
+    solution_v_plus: wp.array[wp.float32],
     # Buffers:
-    buffer_s: wp.array[float32],
-    buffer_v: wp.array[float32],
+    buffer_s: wp.array[wp.float32],
+    buffer_v: wp.array[wp.float32],
     # Outputs:
-    metric_r_v_plus: wp.array[float32],
-    metric_r_v_plus_argmax: wp.array[int32],
-    metric_r_ncp_primal: wp.array[float32],
-    metric_r_ncp_primal_argmax: wp.array[int32],
-    metric_r_ncp_dual: wp.array[float32],
-    metric_r_ncp_dual_argmax: wp.array[int32],
-    metric_r_ncp_compl: wp.array[float32],
-    metric_r_ncp_compl_argmax: wp.array[int32],
-    metric_r_vi_natmap: wp.array[float32],
-    metric_r_vi_natmap_argmax: wp.array[int32],
-    metric_f_ncp: wp.array[float32],
-    metric_f_ccp: wp.array[float32],
+    metric_r_v_plus: wp.array[wp.float32],
+    metric_r_v_plus_argmax: wp.array[wp.int32],
+    metric_r_ncp_primal: wp.array[wp.float32],
+    metric_r_ncp_primal_argmax: wp.array[wp.int32],
+    metric_r_ncp_dual: wp.array[wp.float32],
+    metric_r_ncp_dual_argmax: wp.array[wp.int32],
+    metric_r_ncp_compl: wp.array[wp.float32],
+    metric_r_ncp_compl_argmax: wp.array[wp.int32],
+    metric_r_vi_natmap: wp.array[wp.float32],
+    metric_r_vi_natmap_argmax: wp.array[wp.int32],
+    metric_f_ncp: wp.array[wp.float32],
+    metric_f_ccp: wp.array[wp.float32],
 ):
     # Retrieve the thread index as the world index
     wid = wp.tid()
@@ -1118,8 +1103,7 @@ class SolutionMetrics:
         Initializes the solution metrics evaluator.
 
         Args:
-            model (ModelKamino):
-                The model containing the time-invariant data of the simulation.
+            model: The model containing the time-invariant data of the simulation.
         """
         # Declare the device cache
         self._device: wp.DeviceLike = None
@@ -1128,8 +1112,8 @@ class SolutionMetrics:
         self._data: SolutionMetricsData | None = None
 
         # Declare data buffers for metrics computations
-        self._buffer_s: wp.array | None = None
-        self._buffer_v: wp.array | None = None
+        self._buffer_s: wp.array[wp.float32] | None = None
+        self._buffer_v: wp.array[wp.float32] | None = None
 
         # If a model is provided, finalize the metrics data allocations
         if model is not None:
@@ -1140,8 +1124,7 @@ class SolutionMetrics:
         Finalizes the metrics data allocations on the specified device.
 
         Args:
-            model (ModelKamino):
-                The model containing the time-invariant data of the simulation.
+            model: The model containing the time-invariant data of the simulation.
         """
         # Ensure the model is valid
         if not isinstance(model, ModelKamino):
@@ -1153,33 +1136,33 @@ class SolutionMetrics:
         # Allocate metrics data on the target device
         with wp.ScopedDevice(self._device):
             # Allocate reusable buffers for metrics computations
-            self._buffer_v = wp.zeros(model.size.sum_of_max_total_cts, dtype=float32)
-            self._buffer_s = wp.zeros(model.size.sum_of_max_total_cts, dtype=float32)
+            self._buffer_v = wp.zeros(model.size.sum_of_max_total_cts, dtype=wp.float32)
+            self._buffer_s = wp.zeros(model.size.sum_of_max_total_cts, dtype=wp.float32)
 
             # Allocate the metrics container data arrays
             self._data = SolutionMetricsData(
-                r_eom=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_eom_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int64),
-                r_kinematics=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_kinematics_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int64),
-                r_cts_joints=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_cts_joints_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int64),
-                r_cts_limits=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_cts_limits_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int64),
-                r_cts_contacts=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_cts_contacts_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int32),
-                r_v_plus=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_v_plus_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int32),
-                r_ncp_primal=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_ncp_primal_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int32),
-                r_ncp_dual=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_ncp_dual_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int32),
-                r_ncp_compl=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_ncp_compl_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int32),
-                r_vi_natmap=wp.zeros(model.size.num_worlds, dtype=float32),
-                r_vi_natmap_argmax=wp.full(model.size.num_worlds, value=-1, dtype=int32),
-                f_ncp=wp.zeros(model.size.num_worlds, dtype=float32),
-                f_ccp=wp.zeros(model.size.num_worlds, dtype=float32),
+                r_eom=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_eom_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int64),
+                r_kinematics=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_kinematics_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int64),
+                r_cts_joints=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_cts_joints_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int64),
+                r_cts_limits=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_cts_limits_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int64),
+                r_cts_contacts=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_cts_contacts_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int32),
+                r_v_plus=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_v_plus_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int32),
+                r_ncp_primal=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_ncp_primal_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int32),
+                r_ncp_dual=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_ncp_dual_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int32),
+                r_ncp_compl=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_ncp_compl_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int32),
+                r_vi_natmap=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                r_vi_natmap_argmax=wp.full(model.size.num_worlds, value=-1, dtype=wp.int32),
+                f_ncp=wp.zeros(model.size.num_worlds, dtype=wp.float32),
+                f_ccp=wp.zeros(model.size.num_worlds, dtype=wp.float32),
             )
 
     ###
@@ -1213,9 +1196,9 @@ class SolutionMetrics:
 
     def evaluate(
         self,
-        sigma: wp.array,
-        lambdas: wp.array,
-        v_plus: wp.array,
+        sigma: wp.array[wp.vec2f],
+        lambdas: wp.array[wp.float32],
+        v_plus: wp.array[wp.float32],
         model: ModelKamino,
         data: DataKamino,
         state_p: StateKamino,
@@ -1228,26 +1211,16 @@ class SolutionMetrics:
         Evaluates all solution performance metrics.
 
         Args:
-            model (ModelKamino):
-                The model containing the time-invariant data of the simulation.
-            data (DataKamino):
-                The model data containing the time-variant data of the simulation.
-            state_p (StateKamino):
-                The previous state of the simulation.
-            limits (LimitsKamino):
-                The joint-limits data describing active limit constraints.
-            contacts (ContactsKamino):
-                The contact data describing active contact constraints.
-            problem (DualProblem):
-                The dual forward dynamics problem of the current time-step.
-            jacobians (DenseSystemJacobians | SparseSystemJacobians):
-                The system Jacobians of the current time-step.
-            sigma (wp.array):
-                The array diagonal regularization applied to the Delassus matrix of the current dual problem.
-            lambdas (wp.array):
-                The array of constraint reactions (i.e. Lagrange multipliers) of the current dual problem solution.
-            v_plus (wp.array):
-                The array of post-event constraint-space velocities of the current dual problem solution.
+            model: The model containing the time-invariant data of the simulation.
+            data: The model data containing the time-variant data of the simulation.
+            state_p: The previous state of the simulation.
+            limits: The joint-limits data describing active limit constraints.
+            contacts: The contact data describing active contact constraints.
+            problem: The dual forward dynamics problem of the current time-step.
+            jacobians: The system Jacobians of the current time-step.
+            sigma: The array diagonal regularization applied to the Delassus matrix of the current dual problem.
+            lambdas: The array of constraint reactions (i.e. Lagrange multipliers) of the current dual problem solution.
+            v_plus: The array of post-event constraint-space velocities of the current dual problem solution.
         """
         self._assert_has_data()
         self._evaluate_constraint_violations_perf(model, data, limits, contacts)
@@ -1279,14 +1252,10 @@ class SolutionMetrics:
         Evaluates the constraint-violation performance metrics.
 
         Args:
-            model (ModelKamino):
-                The model containing the time-invariant data of the simulation.
-            data (DataKamino):
-                The model data containing the time-variant data of the simulation.
-            limits (LimitsKamino):
-                The joint-limits data describing active limit constraints.
-            contacts (ContactsKamino):
-                The contact data describing active contact constraints.
+            model: The model containing the time-invariant data of the simulation.
+            data: The model data containing the time-variant data of the simulation.
+            limits: The joint-limits data describing active limit constraints.
+            contacts: The contact data describing active contact constraints.
         """
         # Ensure metrics data is available
         self._assert_has_data()
@@ -1358,14 +1327,10 @@ class SolutionMetrics:
         Evaluates the primal problem performance metrics.
 
         Args:
-            model (ModelKamino):
-                The model containing the time-invariant data of the simulation.
-            data (DataKamino):
-                The model data containing the time-variant data of the simulation.
-            state_p (StateKamino):
-                The previous state of the simulation.
-            jacobians (DenseSystemJacobians | SparseSystemJacobians):
-                The system Jacobians of the current time-step.
+            model: The model containing the time-invariant data of the simulation.
+            data: The model data containing the time-variant data of the simulation.
+            state_p: The previous state of the simulation.
+            jacobians: The system Jacobians of the current time-step.
         """
         # Ensure metrics data is available
         self._assert_has_data()
@@ -1443,23 +1408,19 @@ class SolutionMetrics:
 
     def _evaluate_dual_problem_perf(
         self,
-        sigma: wp.array,
-        lambdas: wp.array,
-        v_plus: wp.array,
+        sigma: wp.array[wp.vec2f],
+        lambdas: wp.array[wp.float32],
+        v_plus: wp.array[wp.float32],
         problem: DualProblem,
     ):
         """
         Evaluates the dual problem performance metrics.
 
         Args:
-            problem (DualProblem):
-                The dual problem containing the time-invariant and time-variant data of the simulation.
-            sigma (wp.array):
-                The array of sigma values for the dual problem.
-            lambdas (wp.array):
-                The array of lambda values for the dual problem.
-            v_plus (wp.array):
-                The array of v_plus values for the dual problem.
+            problem: The dual problem containing the time-invariant and time-variant data of the simulation.
+            sigma: The array of sigma values for the dual problem.
+            lambdas: The array of lambda values for the dual problem.
+            v_plus: The array of v_plus values for the dual problem.
         """
         # Ensure metrics data is available
         self._assert_has_data()
