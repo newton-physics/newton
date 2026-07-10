@@ -104,7 +104,10 @@ def eval_shape_sdf(
     if tex.scale_baked:
         return texture_sample_sdf_grad(tex, x_local)
     inv_scale = wp.vec3(1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2])
-    min_scale = wp.min(scale)
+    # Magnitude of the smallest scale factor. Use abs() so a mirrored/negative mesh scale (e.g.
+    # (-1, 1, 1)) does not flip the SDF sign; the mirror itself is already applied by the query-time
+    # cw_div below and by inv_scale on the gradient.
+    min_scale = wp.min(wp.abs(scale))
     dist, grad = texture_sample_sdf_grad(tex, wp.cw_div(x_local, scale))
     scaled_dist = dist * min_scale
     scaled_grad = wp.cw_mul(grad, inv_scale)

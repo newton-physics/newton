@@ -1007,31 +1007,65 @@ class CollisionPipeline:
         # The full-surface edge/face passes need a provisioned SDF for every participating mesh/convex
         # shape. Validate host-side at construction (never inside a captured collide()) and fail loudly
         # so a missing SDF cannot silently degrade to the per-particle path.
-        if enable_rigid_soft_full_surface_contact and model.shape_count > 0 and model._shape_sdf_index is not None:
+        if enable_rigid_soft_full_surface_contact and model.shape_count > 0:
             _stype = model.shape_type.numpy()
             _sflags = model.shape_flags.numpy()
-            _sidx = model._shape_sdf_index.numpy()
-            _is_mesh = np.isin(_stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
             _collide_particles = (_sflags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0
-            _unprovisioned = np.where(_is_mesh & _collide_particles & (_sidx < 0))[0]
-            if _unprovisioned.size > 0:
+
+            # The full-surface edge/face passes have no signed-distance dispatch for heightfields, and
+            # use a +Z normal for planes that is correct only for an infinite plane (width=length=0) --
+            # a finite plane would emit off-quad contacts with the wrong normal. Reject such
+            # participating shapes loudly at construction rather than emitting silently-wrong or
+            # out-of-bounds contacts. Full heightfield/finite-plane support is deferred.
+            _scale = model.shape_scale.numpy()
+            _is_finite_plane = (_stype == int(GeoType.PLANE)) & ((_scale[:, 0] != 0.0) | (_scale[:, 1] != 0.0))
+            _unsupported = np.where(_collide_particles & ((_stype == int(GeoType.HFIELD)) | _is_finite_plane))[0]
+            if _unsupported.size > 0:
                 _labels = getattr(model, "shape_key", None)
-                missing = [
+                bad = [
                     (_labels[i] if _labels is not None and i < len(_labels) else f"shape {int(i)}")
-                    for i in _unprovisioned
+                    for i in _unsupported
                 ]
-                raise ValueError(
-                    f"enable_rigid_soft_full_surface_contact=True, but these participating rigid shapes have no "
-                    f"signed-distance field: {missing}. The edge and face contact passes sample each rigid "
-                    f"mesh/convex shape's SDF, so a shape without one is skipped and a soft body can pass straight "
-                    f"through it. Provision an SDF before ModelBuilder.finalize(), any one of these ways:\n"
-                    f"  - For shapes that use the builder's default config (including importer-added shapes): "
-                    f"set builder.default_shape_cfg.configure_sdf(force_sdf=True) before you add or import them.\n"
-                    f"  - For a shape you gave an explicit config: call configure_sdf() on that config, e.g. "
-                    f"cfg.configure_sdf(force_sdf=True) (optionally max_resolution=... or target_voxel_size=...).\n"
-                    f"  - Manually: build one with mesh.build_sdf() and attach it to the shape.\n"
-                    f"Or set enable_rigid_soft_full_surface_contact=False to use per-vertex (particle) contacts only."
+                raise NotImplementedError(
+                    f"enable_rigid_soft_full_surface_contact=True is not supported for these participating "
+                    f"shapes: {bad}. The full-surface edge/face passes have no signed-distance dispatch for "
+                    f"heightfields, and use a +Z normal for planes that is correct only for an infinite plane "
+                    f"(width=length=0), not a finite one. Clear ShapeFlags.COLLIDE_PARTICLES on these shapes, "
+                    f"use an infinite plane, or set enable_rigid_soft_full_surface_contact=False."
                 )
+
+            # Mesh/convex shapes need a *real* provisioned SDF. A nonnegative shape_sdf_index is not
+            # sufficient: the mesh-mesh path can point it at an empty placeholder descriptor (a BVH
+            # fallback appends create_empty_texture_sdf_data(), whose coarse texture is None), which the
+            # edge/face passes would sample and crash (CUDA 700). Treat an empty descriptor as
+            # unprovisioned so this fails on the host before any launch.
+            if model._shape_sdf_index is not None:
+                _sidx = model._shape_sdf_index.numpy()
+                _coarse = getattr(model, "_texture_sdf_coarse_textures", None)
+                _is_mesh = np.isin(_stype, (int(GeoType.MESH), int(GeoType.CONVEX_MESH)))
+                _has_real_sdf = np.array(
+                    [s >= 0 and _coarse is not None and s < len(_coarse) and _coarse[s] is not None for s in _sidx],
+                    dtype=bool,
+                )
+                _unprovisioned = np.where(_is_mesh & _collide_particles & ~_has_real_sdf)[0]
+                if _unprovisioned.size > 0:
+                    _labels = getattr(model, "shape_key", None)
+                    missing = [
+                        (_labels[i] if _labels is not None and i < len(_labels) else f"shape {int(i)}")
+                        for i in _unprovisioned
+                    ]
+                    raise ValueError(
+                        f"enable_rigid_soft_full_surface_contact=True, but these participating rigid shapes have no "
+                        f"signed-distance field: {missing}. The edge and face contact passes sample each rigid "
+                        f"mesh/convex shape's SDF, so a shape without one is skipped and a soft body can pass straight "
+                        f"through it. Provision an SDF before ModelBuilder.finalize(), any one of these ways:\n"
+                        f"  - For shapes that use the builder's default config (including importer-added shapes): "
+                        f"set builder.default_shape_cfg.configure_sdf(force_sdf=True) before you add or import them.\n"
+                        f"  - For a shape you gave an explicit config: call configure_sdf() on that config, e.g. "
+                        f"cfg.configure_sdf(force_sdf=True) (optionally max_resolution=... or target_voxel_size=...).\n"
+                        f"  - Manually: build one with mesh.build_sdf() and attach it to the shape.\n"
+                        f"Or set enable_rigid_soft_full_surface_contact=False to use per-vertex (particle) contacts only."
+                    )
 
         self.requires_grad = requires_grad
         self.deterministic = deterministic
@@ -1100,6 +1134,11 @@ class CollisionPipeline:
         contacts = Contacts(
             self.rigid_contact_max,
             self.soft_contact_max,
+            # The per-thread replay array must span every soft candidate-pair thread (particle + edge +
+            # face), independent of soft_contact_max (which the caller may set smaller). See E2 fix.
+            soft_contact_tids_size=(
+                self._soft_rigid_contact_pair_count + len(self.soft_edge_rigid_pairs) + len(self.soft_face_rigid_pairs)
+            ),
             requires_grad=self.requires_grad,
             device=self.model.device,
             per_contact_shape_properties=self.narrow_phase.hydroelastic_sdf is not None,
@@ -1161,6 +1200,12 @@ class CollisionPipeline:
                 contact threshold also incorporates per-shape margins from
                 ``model.shape_margin``.
         """
+        # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
+        # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/
+        # face passes below would otherwise populate records while the marker stayed False, so
+        # particle-only solvers (XPBD, semi-implicit, Style3D) would not raise and would silently
+        # ignore them. Mirrors the assignment in CollisionPipeline.contacts().
+        contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
 
         # Counter zeroing and generation bump are fused into compute_shape_aabbs.
         # Only call contacts.clear() if clear_buffers mode is enabled (debug path).

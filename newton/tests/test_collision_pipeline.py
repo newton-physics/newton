@@ -3047,6 +3047,172 @@ for _name, _fn in (
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
 
 
+@wp.kernel
+def _eval_shape_sdf_kernel(
+    geo: wp.int32,
+    scale: wp.vec3,
+    x: wp.vec3,
+    sdf_idx: wp.int32,
+    table: wp.array[TextureSDFData],
+    out_phi: wp.array[float],
+    out_grad: wp.array[wp.vec3],
+):
+    phi, grad = eval_shape_sdf(geo, scale, x, sdf_idx, table)
+    out_phi[0] = phi
+    out_grad[0] = grad
+
+
+def _make_box_mesh_sdf_model(device):
+    """A single box MESH with a provisioned (unscaled) volume SDF, for eval_shape_sdf tests."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5))
+    configure_sdf_for_collision_shapes(builder)
+    model = builder.finalize(device=device)
+    return model, int(model._shape_sdf_index.numpy()[0])
+
+
+def test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign(test, device):
+    """A mirrored (negative) mesh scale must not flip the SDF sign (E3). wp.min(scale) would go
+    negative and invert an outside distance; wp.min(wp.abs(scale)) keeps the magnitude positive."""
+    model, sdf_idx = _make_box_mesh_sdf_model(device)
+    test.assertGreaterEqual(sdf_idx, 0)
+    table = model._texture_sdf_data
+    x_out = wp.vec3(1.0, 0.0, 0.0)  # clearly outside the |x| <= 0.5 box
+    out_phi = wp.zeros(1, dtype=float, device=device)
+    out_grad = wp.zeros(1, dtype=wp.vec3, device=device)
+
+    def _sample(scl):
+        wp.launch(
+            _eval_shape_sdf_kernel,
+            dim=1,
+            inputs=[int(GeoType.MESH), scl, x_out, sdf_idx, table],
+            outputs=[out_phi, out_grad],
+            device=device,
+        )
+        return float(out_phi.numpy()[0]), out_grad.numpy()[0].copy()
+
+    phi_id, grad_id = _sample(wp.vec3(1.0, 1.0, 1.0))
+    phi_mir, grad_mir = _sample(wp.vec3(-1.0, 1.0, 1.0))
+
+    test.assertGreater(phi_id, 0.0, "identity-scale SDF must be positive outside the box")
+    test.assertGreater(phi_mir, 0.0, "mirrored mesh scale must not flip the SDF sign")
+    test.assertLess(abs(phi_id - phi_mir), 3.0e-2, "mirror of a symmetric box must not change |phi|")
+    test.assertGreater(float(grad_id[0]), 0.0, "gradient must point outward (+x)")
+    test.assertGreater(float(grad_mir[0]), 0.0, "mirrored gradient must still point outward (+x)")
+
+
+def test_full_surface_empty_sdf_descriptor_rejected(test, device):
+    """A participating mesh whose shape_sdf_index points at an empty placeholder descriptor (coarse
+    texture None, e.g. a mesh-mesh BVH fallback) is rejected by the full-surface guard rather than
+    sampled -- sampling one reproduced CUDA error 700 (E1)."""
+    model, sdf_idx = _make_box_mesh_sdf_model(device)
+    test.assertGreaterEqual(sdf_idx, 0)
+    # Simulate an empty placeholder descriptor at that slot: a nonnegative index whose descriptor
+    # carries no texture (coarse texture None), exactly what a BVH fallback appends.
+    model._texture_sdf_coarse_textures[sdf_idx] = None
+    with test.assertRaises(ValueError):
+        newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+
+
+def _add_soft_triangle(builder, z=1.0):
+    p0 = builder.add_particle(wp.vec3(-0.2, -0.2, z), wp.vec3(0.0), 0.1, radius=0.0)
+    p1 = builder.add_particle(wp.vec3(0.2, -0.2, z), wp.vec3(0.0), 0.1, radius=0.0)
+    p2 = builder.add_particle(wp.vec3(0.0, 0.2, z), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(p0, p1, p2)
+
+
+def test_soft_contact_tids_decoupled_from_capacity(test, device):
+    """soft_contact_tids is sized independently of soft_contact_max so a small custom capacity cannot
+    drop a launch thread's replay slot (E2, unit)."""
+    from newton._src.sim.contacts import Contacts  # noqa: PLC0415
+
+    c = Contacts(rigid_contact_max=4, soft_contact_max=1, soft_contact_tids_size=37, device=device)
+    test.assertEqual(c.soft_contact_tids.shape[0], 37)
+    c_default = Contacts(rigid_contact_max=4, soft_contact_max=9, device=device)
+    test.assertEqual(c_default.soft_contact_tids.shape[0], 9)
+
+
+def test_full_surface_replay_spans_candidate_space(test, device):
+    """The pipeline sizes soft_contact_tids to the full particle+edge+face candidate space even when
+    soft_contact_max is overridden smaller, so differentiable backward never loses a thread (E2)."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True, soft_contact_max=1
+    )
+    contacts = pipeline.contacts()
+    candidate = (
+        pipeline.soft_rigid_contact_pair_count
+        + len(pipeline.soft_edge_rigid_pairs)
+        + len(pipeline.soft_face_rigid_pairs)
+    )
+    test.assertGreater(candidate, 1, "test needs a candidate space larger than the capacity override")
+    test.assertEqual(contacts.soft_contact_max, 1, "explicit soft_contact_max capacity must be honored")
+    test.assertEqual(contacts.soft_contact_tids.shape[0], candidate, "replay array must span the full candidate space")
+
+
+def test_collide_syncs_full_surface_marker(test, device):
+    """collide() sets the buffer's full-surface capability marker on every call so a buffer created
+    elsewhere (or by a flag-off pipeline) cannot silently misroute edge/face records (E6)."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    _add_soft_triangle(builder, z=0.5)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()
+    # Simulate a buffer whose marker was left False (e.g. constructed by a flag-off pipeline).
+    contacts._enable_rigid_soft_full_surface_contact = False
+    pipeline.collide(model.state(), contacts)
+    test.assertTrue(
+        contacts._enable_rigid_soft_full_surface_contact,
+        "collide() must re-sync the full-surface marker so particle-only solvers can refuse the buffer",
+    )
+
+
+def test_full_surface_rejects_finite_plane(test, device):
+    """A finite plane participating in full-surface is rejected: eval_shape_sdf returns a hardcoded
+    +Z normal that is wrong off the quad (E4)."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_plane(plane=(0.0, 0.0, 1.0, 0.0), width=5.0, length=5.0)  # finite
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+    with test.assertRaises(NotImplementedError):
+        newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+
+
+def test_full_surface_allows_infinite_plane(test, device):
+    """An infinite plane (width=length=0) is supported by full-surface (+Z normal is correct
+    everywhere), so the common ground-plane case keeps working (E4 regression guard)."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()  # infinite
+    _add_soft_triangle(builder)
+    model = builder.finalize(device=device)
+    # Must not raise.
+    newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
+
+
+for _name, _fn in (
+    ("test_soft_contact_tids_decoupled_from_capacity", test_soft_contact_tids_decoupled_from_capacity),
+    ("test_full_surface_replay_spans_candidate_space", test_full_surface_replay_spans_candidate_space),
+    ("test_collide_syncs_full_surface_marker", test_collide_syncs_full_surface_marker),
+    ("test_full_surface_rejects_finite_plane", test_full_surface_rejects_finite_plane),
+    ("test_full_surface_allows_infinite_plane", test_full_surface_allows_infinite_plane),
+):
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=soft_devices)
+
+for _name, _fn in (
+    ("test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign", test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign),
+    ("test_full_surface_empty_sdf_descriptor_rejected", test_full_surface_empty_sdf_descriptor_rejected),
+):
+    add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
+
+
 def test_unprovisioned_mesh_raises(test, device):
     """A participating mesh with no SDF makes CollisionPipeline raise when the flag is enabled.
 

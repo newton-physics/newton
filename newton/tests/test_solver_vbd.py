@@ -3226,6 +3226,29 @@ def test_flag_off_is_inert(test, device):
     np.testing.assert_allclose(q_after, q_before, atol=1.0e-6, err_msg="flag off must not move the soft body")
 
 
+def test_full_surface_rejected_by_vbd_proxy_coupling(test, device):
+    """SolverVBD's proxy-coupling hook fails loud on full-surface contacts, which its proxy harvest
+    cannot yet consume, instead of silently dropping edge/face force feedback (E5). Standalone
+    SolverVBD is unaffected -- this only guards the SolverCoupledProxy path (coupling_* hooks)."""
+    builder = newton.ModelBuilder()
+    b = builder.add_body()
+    builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
+    p0 = builder.add_particle(wp.vec3(-0.2, -0.2, 0.6), wp.vec3(0.0), 0.1, radius=0.0)
+    p1 = builder.add_particle(wp.vec3(0.2, -0.2, 0.6), wp.vec3(0.0), 0.1, radius=0.0)
+    p2 = builder.add_particle(wp.vec3(0.0, 0.2, 0.6), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(p0, p1, p2)
+    builder.color()  # SolverVBD requires a particle coloring
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model, broad_phase="nxn", soft_contact_margin=0.1, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts = pipeline.contacts()  # capability marker set True
+    solver = newton.solvers.SolverVBD(model)
+    with test.assertRaises(NotImplementedError):
+        solver.coupling_prepare_proxy_contacts(model.state(), contacts)
+
+
 class TestVBDFullSurfaceContact(unittest.TestCase):
     pass
 
@@ -3264,6 +3287,12 @@ add_function_test(
     TestVBDFullSurfaceContact,
     "test_flag_off_is_inert",
     test_flag_off_is_inert,
+    devices=devices,
+)
+add_function_test(
+    TestVBDFullSurfaceContact,
+    "test_full_surface_rejected_by_vbd_proxy_coupling",
+    test_full_surface_rejected_by_vbd_proxy_coupling,
     devices=devices,
 )
 

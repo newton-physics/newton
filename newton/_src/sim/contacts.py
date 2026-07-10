@@ -142,6 +142,7 @@ class Contacts:
         rigid_contact_max: int,
         soft_contact_max: int,
         *,
+        soft_contact_tids_size: int | None = None,
         requires_grad: bool = False,
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
@@ -156,6 +157,11 @@ class Contacts:
         Args:
             rigid_contact_max: Maximum number of rigid contacts
             soft_contact_max: Maximum number of soft contacts
+            soft_contact_tids_size: Length of the internal per-thread replay-index array
+                (``soft_contact_tids``) used for differentiable backward. Defaults to
+                ``soft_contact_max``; the collision pipeline sets it to the full
+                particle + edge + face candidate-pair count so a custom (smaller)
+                ``soft_contact_max`` cannot drop a launch thread's replay slot.
             requires_grad: Whether contact arrays require gradients for differentiable
                 simulation.  When ``True``, soft contact arrays (body_pos, body_vel, normal)
                 are allocated with gradients so that gradient-based optimization can flow
@@ -358,7 +364,12 @@ class Contacts:
             """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
-            self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
+            # Replay index array for differentiable backward: recorded per launch *thread*, not per
+            # contact, so it must span the full particle+edge+face candidate-pair space -- which can
+            # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a
+            # smaller soft_contact_max never drops a thread's replay slot. Defaults to soft_contact_max.
+            _tids_size = soft_contact_tids_size if soft_contact_tids_size is not None else soft_contact_max
+            self.soft_contact_tids = wp.full(_tids_size, -1, dtype=int)
 
             # Private capability flag: set by the collision pipeline when full-surface (edge/face)
             # soft contacts are enabled, so soft_contact_indices may hold edge/face records. Solvers
