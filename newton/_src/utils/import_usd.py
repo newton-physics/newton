@@ -644,7 +644,7 @@ def parse_usd(
 
     def _mass_api_effective_principal_axes(mass_api: UsdPhysics.MassAPI):
         axes = mass_api.GetPrincipalAxesAttr().Get()
-        return axes if axes.GetLength() > 0.0 else None
+        return axes if axes != Gf.Quatf(0.0) else None
 
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
@@ -2386,10 +2386,10 @@ def parse_usd(
                 continue
 
             prim = stage.GetPrimAtPath(prim_path)
-            if not prim.HasAPI(UsdPhysics.MassAPI):
+            mass_api = UsdPhysics.MassAPI(prim)
+            if not mass_api:
                 continue
 
-            mass_api = UsdPhysics.MassAPI(prim)
             has_effective_mass = _mass_api_effective_mass(mass_api) is not None
             has_effective_inertia = _mass_api_effective_diag_inertia(mass_api) is not None
             has_effective_com = _mass_api_effective_com(mass_api) is not None
@@ -2997,10 +2997,10 @@ def parse_usd(
         ``MassAPI`` mass and diagonal inertia, we convert those values into a
         ``RigidBodyAPI.MassInformation`` payload that represents unit-density collider properties.
         """
-        if not prim.HasAPI(UsdPhysics.MassAPI):
+        mass_api = UsdPhysics.MassAPI(prim)
+        if not mass_api:
             return None
 
-        mass_api = UsdPhysics.MassAPI(prim)
         mass = _mass_api_effective_mass(mass_api)
         diag_val = _mass_api_effective_diag_inertia(mass_api)
         if mass is None or diag_val is None:
@@ -3780,13 +3780,13 @@ def parse_usd(
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for path, rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
-            if not prim.HasAPI(UsdPhysics.MassAPI):
+            mass_api = UsdPhysics.MassAPI(prim)
+            if not mass_api:
                 continue
             body_path = str(path)
             body_id = path_body_map.get(body_path, -1)
             if body_id == -1:
                 continue
-            mass_api = UsdPhysics.MassAPI(prim)
             effective_mass = _mass_api_effective_mass(mass_api)
             effective_diag_inertia = _mass_api_effective_diag_inertia(mass_api)
             effective_com = _mass_api_effective_com(mass_api)
