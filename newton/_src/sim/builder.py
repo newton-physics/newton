@@ -2763,9 +2763,11 @@ class ModelBuilder:
 
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
+        attribute_specs.pop("joint_target_q")
         joint_X_p_start = len(self.joint_X_p)
         self.joint_X_p.extend(source_list("joint_X_p") * world_count)
         joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
+        joint_target_q = np.tile(np.asarray(builder.joint_target_q, dtype=np.float32), world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -2780,6 +2782,8 @@ class ModelBuilder:
 
             free_roots = np.flatnonzero((joint_parents == -1) & (joint_types == int(JointType.FREE)))
             if len(free_roots) and any(xform is not None for xform in xforms):
+                import newton  # noqa: PLC0415
+
                 # Per-joint frames are invariant across worlds; compute them once.
                 free_root_frames = []
                 for joint in free_roots.tolist():
@@ -2796,8 +2800,15 @@ class ModelBuilder:
                         transformed = transform_mul(xform_local, xform_prev)
                         target_q = coord_base + source_q
                         joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
+                        if newton.use_coord_layout_targets:
+                            target_prev = wp.transform(*builder.joint_target_q[source_q : source_q + 7])
+                            transformed_target = transform_mul(xform_local, target_prev)
+                            joint_target_q[target_q : target_q + 7] = np.asarray(
+                                transformed_target, dtype=np.float32
+                            )
 
         self.joint_q.extend(joint_q.tolist())
+        self.joint_target_q.extend(joint_target_q.tolist())
 
         for world_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[world_index])
@@ -4944,6 +4955,7 @@ class ModelBuilder:
         """Adds a free joint to the model.
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
         The positional dofs are initialized so that forward kinematics reproduces the child body's transform, accounting for the parent body and both joint anchor transforms (see :attr:`body_q` and the ``xform`` argument to :meth:`add_body`).
+        When :data:`newton.use_coord_layout_targets` is ``True``, :attr:`joint_target_q` is initialized to the same transform so a default :class:`newton.Control` starts at the authored pose.
 
         Args:
             child: The index of the child body.
@@ -4986,7 +4998,13 @@ class ModelBuilder:
         parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
         parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
         joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
-        self.joint_q[q_start : q_start + 7] = list(joint_q)
+        joint_q_values = list(joint_q)
+        self.joint_q[q_start : q_start + 7] = joint_q_values
+
+        import newton  # noqa: PLC0415
+
+        if newton.use_coord_layout_targets:
+            self.joint_target_q[q_start : q_start + 7] = joint_q_values
         return joint_id
 
     @deprecate_nonkeyword_arguments
