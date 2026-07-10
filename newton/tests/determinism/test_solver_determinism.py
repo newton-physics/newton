@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import subprocess
 import sys
 import unittest
@@ -10,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.tests.unittest_utils
 from newton._src.solvers.semi_implicit import kernels_particle as semi_implicit_particle_kernels
 from newton._src.solvers.solver import _set_module_options_if_changed
 from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
@@ -17,6 +19,33 @@ from newton._src.solvers.xpbd import kernels as xpbd_kernels
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DETERMINISTIC_MODE = wp.DeterministicMode.RUN_TO_RUN
+
+
+def _run_isolated(test, function_name, *args):
+    # Deterministic kernels and GPU runtime state persist for the life of the process.
+    call_args = ", ".join(repr(arg) for arg in args)
+    code = f"from newton.tests.determinism.test_solver_determinism import {function_name}; {function_name}({call_args})"
+
+    env = os.environ.copy()
+    env.pop("PYTHONWARNINGS", None)
+    warning_args = []
+    if newton.tests.unittest_utils.strict_warnings:
+        warning_args = ["-W", "error::DeprecationWarning"]
+        code = f"import warnings; warnings.filterwarnings('error', module=r'newton(\\.|$)'); {code}"
+
+    result = subprocess.run(
+        [sys.executable, *warning_args, "-c", code],
+        capture_output=True,
+        env=env,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    test.assertEqual(
+        result.returncode,
+        0,
+        f"{function_name} subprocess failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
 
 
 def _snapshot(state, fields):
@@ -86,11 +115,15 @@ def _run_particle_rollout(device, solver_name):
     return _snapshot(state_0, ("particle_q", "particle_qd"))
 
 
-def test_particle_determinism(test, device, solver_name):
+def _check_particle_determinism(device, solver_name):
     with wp.ScopedDevice(device):
         first = _run_particle_rollout(device, solver_name)
         second = _run_particle_rollout(device, solver_name)
     _assert_snapshots_equal(first, second)
+
+
+def test_particle_determinism(test, device, solver_name):
+    _run_isolated(test, "_check_particle_determinism", str(device), solver_name)
 
 
 def _build_branching_articulation(device):
@@ -121,7 +154,7 @@ def _build_branching_articulation(device):
     return model
 
 
-def test_mujoco_sparse_articulation_construction(test, device):
+def _check_mujoco_sparse_articulation_construction(device):
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(gravity=0.0)
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
@@ -146,7 +179,12 @@ def test_mujoco_sparse_articulation_construction(test, device):
         )
 
         solver.step(state_in, state_out, model.control(), None, 1.0 / 240.0)
-        test.assertTrue(np.isfinite(state_out.joint_q.numpy()).all())
+        if not np.isfinite(state_out.joint_q.numpy()).all():
+            raise AssertionError("MuJoCo sparse articulation produced non-finite joint coordinates")
+
+
+def test_mujoco_sparse_articulation_construction(test, device):
+    _run_isolated(test, "_check_mujoco_sparse_articulation_construction", str(device))
 
 
 def _make_articulation_solver(model, solver_name):
@@ -188,29 +226,7 @@ def _check_articulation_determinism(device, solver_name):
 
 
 def test_articulation_determinism(test, device, solver_name):
-    if solver_name != "mujoco":
-        _check_articulation_determinism(device, solver_name)
-        return
-
-    # MJWarp and Warp cache generated kernels and GPU runtime state globally.
-    # Keep this configuration-changing test isolated from unrelated simulations.
-    code = (
-        "from newton.tests.determinism.test_solver_determinism "
-        "import _check_articulation_determinism; "
-        f"_check_articulation_determinism({str(device)!r}, {solver_name!r})"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
-    test.assertEqual(
-        result.returncode,
-        0,
-        f"MuJoCo determinism subprocess failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
-    )
+    _run_isolated(test, "_check_articulation_determinism", str(device), solver_name)
 
 
 class TestSolverDeterminism(unittest.TestCase):
