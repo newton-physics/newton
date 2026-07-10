@@ -80,6 +80,7 @@
 
 ### Fixed
 
+- Tune VBD contact settings in the `basic_shapes` and `cable_bundle_hysteresis` examples for more consistent friction and recovery behavior.
 - Fix `ModelBuilder.add_usd()` to honor `ignore_paths` in the custom-frequency traversal, so prims under ignored subtrees no longer register spurious custom-frequency rows in two-pass import workflows. (#3406)
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
