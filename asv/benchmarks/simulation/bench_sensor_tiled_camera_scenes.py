@@ -46,6 +46,16 @@ from newton.sensors import SensorTiledCamera
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_SEKTION_CABINET_FOLDER = "assets/urdf/sektion_cabinet_model"
 
+# Renderer configuration applied to every scene benchmark. These are benchmark
+# settings, not library defaults: SAH builds a higher-quality shape BVH
+# (slower one-time build, faster ray traversal), and rendering uses the tiled
+# traversal order with 8x8 pixel tiles.
+BVH_CONSTRUCTOR = "sah"
+KERNEL_BLOCK_DIM = 64
+RENDER_ORDER = SensorTiledCamera.RenderOrder.TILED
+RENDER_TILE_WIDTH = 8
+RENDER_TILE_HEIGHT = 8
+
 # Arm "ready" pose facing the cabinet drawer, from Isaac Lab's
 # FrankaCabinetDirectEnvCfg (panda_joint* values mapped to the FR3 URDF names).
 _FRANKA_CABINET_ARM_POSE = {
@@ -250,6 +260,7 @@ class _TiledCameraSceneRig:
         _disable_collision_handling(world)
 
         scene = newton.ModelBuilder()
+        scene.default_bvh_cfg.mesh_constructor = "cubql"
         scene.replicate(world, world_count)
         scene.add_ground_plane(color=(0.6, 0.6, 0.6))
 
@@ -259,6 +270,9 @@ class _TiledCameraSceneRig:
 
         light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
         self.sensor = SensorTiledCamera(model=self.model)
+        self.sensor.render_config.render_order = RENDER_ORDER
+        self.sensor.render_config.tile_width = RENDER_TILE_WIDTH
+        self.sensor.render_config.tile_height = RENDER_TILE_HEIGHT
         self.sensor.utils.create_default_light(enable_shadows=True, direction=light_direction)
         self.sensor.utils.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count))
 
@@ -270,8 +284,8 @@ class _TiledCameraSceneRig:
         self.color_image = self.sensor.utils.create_color_image_output(resolution, resolution)
         self.depth_image = self.sensor.utils.create_depth_image_output(resolution, resolution)
 
-        self.model.bvh_build_shapes(self.state)
-        self.model.bvh_build_particles(self.state)
+        self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
+        self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         self.sensor.sync_transforms(self.state)
 
     def render(self, color: bool = True, depth: bool = True):
@@ -281,6 +295,7 @@ class _TiledCameraSceneRig:
             self.camera_rays,
             color_image=self.color_image if color else None,
             depth_image=self.depth_image if depth else None,
+            kernel_block_dim=KERNEL_BLOCK_DIM,
         )
 
 
