@@ -289,8 +289,13 @@ class Example:
         sphere_cfg.ke = 1.0e5
         sphere_cfg.kd = 1.0e1
         sphere_cfg.mu = 0.5
-        sphere_body = builder.add_body(xform=wp.transform(wp.vec3(x_offset, 0.0, 0.5), wp.quat_identity()))
-        builder.add_shape_sphere(sphere_body, radius=0.35, cfg=sphere_cfg)
+        builder.add_shape_sphere(
+            -1,
+            xform=wp.transform(wp.vec3(x_offset, 0.0, 0.5), wp.quat_identity()),
+            radius=0.35,
+            cfg=sphere_cfg,
+            label="cloth_obstacle",
+        )
 
         dim = 34
         cell = 0.035

@@ -37,12 +37,17 @@ class Example:
         # Static sphere for the cloth to drape over.
         sphere_radius = 0.35
         sphere_cfg = newton.ModelBuilder.ShapeConfig()
-        sphere_cfg.density = 0.0  # static (infinite mass)
+        sphere_cfg.density = 0.0
         sphere_cfg.ke = 1.0e5
         sphere_cfg.kd = 1.0e1
         sphere_cfg.mu = 0.5
-        sphere_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()))
-        builder.add_shape_sphere(sphere_body, radius=sphere_radius, cfg=sphere_cfg)
+        builder.add_shape_sphere(
+            -1,
+            xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
+            radius=sphere_radius,
+            cfg=sphere_cfg,
+            label="cloth_obstacle",
+        )
 
         # Coarse simulation cloth, released flat above the sphere so it drapes.
         dim = 40

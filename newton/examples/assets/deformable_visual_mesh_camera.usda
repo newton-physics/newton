@@ -21,14 +21,14 @@ def Xform "World"
         int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
     }
 
-    def Sphere "ClothCollider" (
+    def Sphere "ClothObstacle" (
         prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
     )
     {
         double radius = 0.35
         double3 xformOp:translate = (0, 0, 0.5)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-        rel material:binding:physics = </World/Materials/ClothColliderPhysics>
+        rel material:binding:physics = </World/Materials/ClothObstaclePhysics>
     }
 
     def Xform "Cable" (
@@ -7307,7 +7307,7 @@ def Xform "World"
             }
         }
 
-        def Material "ClothColliderPhysics" (
+        def Material "ClothObstaclePhysics" (
             prepend apiSchemas = ["PhysicsMaterialAPI", "NewtonMaterialAPI"]
         )
         {
