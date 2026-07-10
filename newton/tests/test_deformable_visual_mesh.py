@@ -16,6 +16,7 @@ import warp as wp
 import newton
 from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
 from newton._src.utils.import_usd_deformable_visual import _sim_bind_positions
+from newton.examples.sensors.example_deformable_visual_mesh_camera import Example as DeformableVisualMeshCameraExample
 from newton.sensors import SensorTiledCamera
 from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
@@ -1168,6 +1169,121 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         builder = self._import(stage, load_visual_shapes=False)
         model = builder.finalize()
         self.assertEqual(model.deformable_visual_mesh_count, 0)
+
+
+@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+class TestDeformableVisualMeshCameraParity(unittest.TestCase):
+    """The checked-in AOUSD scene matches its procedural reference scene."""
+
+    @staticmethod
+    def _build(load_from_usd: bool):
+        example = DeformableVisualMeshCameraExample.__new__(DeformableVisualMeshCameraExample)
+        return example._build_model_builder(SimpleNamespace(load_from_usd=load_from_usd))
+
+    def test_procedural_and_usd_builders_match(self):
+        procedural = self._build(False)
+        usd = self._build(True)
+
+        exact_fields = (
+            "body_q",
+            "body_com",
+            "body_inertia",
+            "body_flags",
+            "joint_type",
+            "joint_parent",
+            "joint_child",
+            "joint_X_p",
+            "joint_X_c",
+            "joint_axis",
+            "joint_q",
+            "joint_qd",
+            "joint_target_kd",
+            "joint_target_mode",
+            "tri_indices",
+            "edge_indices",
+            "edge_rest_angle",
+            "edge_bending_properties",
+            "tet_indices",
+            "tet_materials",
+            "shape_type",
+            "shape_body",
+            "shape_transform",
+            "shape_scale",
+            "shape_flags",
+            "shape_material_ke",
+            "shape_material_kd",
+            "shape_material_mu",
+        )
+        for field in exact_fields:
+            np.testing.assert_array_equal(np.asarray(getattr(procedural, field)), np.asarray(getattr(usd, field)))
+
+        close_fields = (
+            "body_mass",
+            "body_inv_mass",
+            "body_inv_inertia",
+            "joint_target_ke",
+            "particle_q",
+            "particle_qd",
+            "particle_mass",
+            "particle_radius",
+            "particle_flags",
+            "tri_areas",
+            "tri_materials",
+            "edge_rest_length",
+        )
+        for field in close_fields:
+            np.testing.assert_allclose(
+                np.asarray(getattr(procedural, field)),
+                np.asarray(getattr(usd, field)),
+                rtol=1.0e-6,
+                atol=1.0e-7,
+            )
+
+        self.assertEqual(len(procedural._deformable_visual_meshes), len(usd._deformable_visual_meshes))
+        for procedural_visual, usd_visual in zip(
+            procedural._deformable_visual_meshes, usd._deformable_visual_meshes, strict=True
+        ):
+            np.testing.assert_allclose(
+                procedural_visual["rest_vertices"], usd_visual["rest_vertices"], rtol=1.0e-6, atol=1.0e-7
+            )
+            np.testing.assert_array_equal(procedural_visual["indices"], usd_visual["indices"])
+            np.testing.assert_allclose(procedural_visual["uvs"], usd_visual["uvs"], rtol=1.0e-6, atol=1.0e-7)
+            self.assertEqual(procedural_visual["texture"], usd_visual["texture"])
+
+        procedural_model = procedural.finalize()
+        usd_model = usd.finalize()
+        final_fields = (
+            "body_q",
+            "body_mass",
+            "body_inv_mass",
+            "body_inertia",
+            "body_inv_inertia",
+            "joint_target_ke",
+            "joint_target_kd",
+            "particle_q",
+            "particle_mass",
+            "particle_radius",
+            "tri_areas",
+            "tri_materials",
+            "edge_rest_length",
+            "tet_materials",
+            "shape_transform",
+            "shape_scale",
+        )
+        for field in final_fields:
+            np.testing.assert_array_equal(
+                getattr(procedural_model, field).numpy(),
+                getattr(usd_model, field).numpy(),
+            )
+
+        for procedural_visual, usd_visual in zip(
+            procedural_model.deformable_visual_meshes, usd_model.deformable_visual_meshes, strict=True
+        ):
+            assert_np_equal(
+                _skin(procedural_model, procedural_visual, procedural_model.state()),
+                _skin(usd_model, usd_visual, usd_model.state()),
+                tol=1.0e-6,
+            )
 
 
 if __name__ == "__main__":
