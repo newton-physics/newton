@@ -192,7 +192,11 @@ class Example:
     def _build_model_builder(self, args):
         if getattr(args, "load_from_usd", False):
             builder = newton.ModelBuilder()
-            builder.add_usd(newton.examples.get_asset("deformable_visual_mesh_camera.usda"))
+            import_result = builder.add_usd(
+                newton.examples.get_asset("deformable_visual_mesh_camera.usda"),
+                return_deformable_results=True,
+            )
+            self._apply_usd_procedural_parity_overrides(builder, import_result)
             builder.color()
             return builder
 
@@ -203,6 +207,40 @@ class Example:
         self._add_volume(builder, x_offset=2.4)
         builder.color()
         return builder
+
+    @staticmethod
+    def _apply_usd_procedural_parity_overrides(builder: newton.ModelBuilder, import_result: dict):
+        """Patch values the current USD importer cannot express directly yet."""
+
+        cable_bodies, cable_joints = import_result["path_cable_map"]["/World/Cable/Sim"]
+        first_body = cable_bodies[0]
+        builder.body_mass[first_body] = 0.0
+        builder.body_inv_mass[first_body] = 0.0
+        builder.body_inertia[first_body] = wp.mat33(0.0)
+        builder.body_inv_inertia[first_body] = wp.mat33(0.0)
+
+        # Gap: AOUSD curve material import handles stiffness but not cable bend damping yet.
+        # The cable joint stores stretch first and bend/twist second, so patch only the angular slot.
+        for joint in cable_joints:
+            dof_start = builder.joint_qd_start[joint]
+            linear_dim, angular_dim = builder.joint_dof_dim[joint]
+            for dof in range(dof_start + linear_dim, dof_start + linear_dim + angular_dim):
+                builder.joint_target_kd[dof] = 1.0
+
+        cloth = import_result["path_cloth_map"]["/World/Cloth/Sim"]
+        tri_start, tri_end = cloth["tri"]
+        for tri in range(tri_start, tri_end):
+            tri_ke, _tri_ka, _tri_kd, tri_drag, tri_lift = builder.tri_materials[tri]
+            # Gap: AOUSD surface material import has no direct area stiffness or damping field.
+            builder.tri_materials[tri] = (tri_ke, 1.0e3, 2.0e1, tri_drag, tri_lift)
+
+        soft = import_result["path_soft_map"]["/World/Volume/Sim"]
+        tet_start, tet_end = soft["tet"]
+        for tet in range(tet_start, tet_end):
+            k_mu, k_lambda, _k_damp = builder.tet_materials[tet]
+            # Gap: AOUSD volume material import maps Young/Poisson to k_mu/k_lambda,
+            # but does not carry Newton's tet damping coefficient yet.
+            builder.tet_materials[tet] = (k_mu, k_lambda, 1.0e1)
 
     def _add_cable(self, builder: newton.ModelBuilder, x_offset: float):
         num_elements = 36
