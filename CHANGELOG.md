@@ -91,6 +91,7 @@
 - Refer to `kf` consistently as contact friction gain in public documentation. (#2988)
 - Fix `SolverMuJoCo` dropping the authored `actuator_ctrlrange`/`actuator_ctrllimited`/`actuator_forcerange`/`actuator_forcelimited` when rebuilding USD/MJCF position/velocity actuators imported as `JOINT_TARGET`, so the compiled `mj_model` now clamps control targets and actuator forces like native MuJoCo.
 - Fix `SolverVBD` rigid contact injecting kinetic energy for yawed finite-radius contacts (e.g. small-radius cables blowing up). The normal response now acts at the geometric skeleton point rather than the rotating surface anchor, which was non-conservative under reorientation; friction still uses the surface anchor to preserve finite-radius slip. (#3125)
+- Fix `SolverXPBD` rigid restitution activation so contact thickness is not double-counted after applying contact offsets. (#3034)
 - Fix `SolverKamino` contact filtering and constraint stabilization so gap/margin contacts are handled consistently, positive-distance contacts can be filtered as configured, and converted contact forces/wrenches populate matching Newton contact slots for `SensorContact`. (#2908)
 - Fix `SolverMuJoCo` convergence tolerance scaling for models with kinematic bodies.
 - Fix `SolverMuJoCo` inertia randomization for bodies initialized with diagonal inertia.
