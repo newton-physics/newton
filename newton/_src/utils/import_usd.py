@@ -623,6 +623,29 @@ def parse_usd(
     def _has_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         return bool(prim and prim.IsValid() and usd.has_applied_api_schema(prim, schema_name))
 
+    # UsdPhysics.MassAPI value semantics: a schema fallback value (0 mass/density, zero
+    # diagonal inertia or principal axes, non-finite center of mass) means "unspecified"
+    # even when explicitly authored, so authoredness must not be used as the override signal.
+    def _mass_api_effective_mass(mass_api: UsdPhysics.MassAPI) -> float | None:
+        mass = float(mass_api.GetMassAttr().Get())
+        return mass if math.isfinite(mass) and mass > 0.0 else None
+
+    def _mass_api_effective_density(mass_api: UsdPhysics.MassAPI) -> float | None:
+        density = float(mass_api.GetDensityAttr().Get())
+        return density if math.isfinite(density) and density > 0.0 else None
+
+    def _mass_api_effective_diag_inertia(mass_api: UsdPhysics.MassAPI):
+        diag = mass_api.GetDiagonalInertiaAttr().Get()
+        return diag if any(v != 0.0 for v in diag) else None
+
+    def _mass_api_effective_com(mass_api: UsdPhysics.MassAPI):
+        com = mass_api.GetCenterOfMassAttr().Get()
+        return com if all(math.isfinite(v) for v in com) else None
+
+    def _mass_api_effective_principal_axes(mass_api: UsdPhysics.MassAPI):
+        axes = mass_api.GetPrincipalAxesAttr().Get()
+        return axes if axes.GetLength() > 0.0 else None
+
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
 
@@ -2330,9 +2353,9 @@ def parse_usd(
                 default=builder.default_shape_cfg.mu_rolling,
                 verbose=verbose,
             ),
-            # Treat non-positive/unauthored material density as "use importer default".
-            # Authored collider/body MassAPI mass+inertia is handled later.
-            density=desc.density if desc.density > 0.0 else default_shape_density,
+            # Treat non-positive, non-finite, or unauthored material density as "use importer default".
+            # Effective collider/body MassAPI mass+inertia is handled later.
+            density=desc.density if math.isfinite(desc.density) and desc.density > 0.0 else default_shape_density,
             ke=_resolve_contact_attr("ke"),
             kd=_resolve_contact_attr("kd"),
             kf=_resolve_contact_attr("kf"),
@@ -2367,10 +2390,10 @@ def parse_usd(
                 continue
 
             mass_api = UsdPhysics.MassAPI(prim)
-            has_authored_mass = mass_api.GetMassAttr().HasAuthoredValue()
-            has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
-            has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
-            if not (has_authored_mass and has_authored_inertia and has_authored_com):
+            has_effective_mass = _mass_api_effective_mass(mass_api) is not None
+            has_effective_inertia = _mass_api_effective_diag_inertia(mass_api) is not None
+            has_effective_com = _mass_api_effective_com(mass_api) is not None
+            if not (has_effective_mass and has_effective_inertia and has_effective_com):
                 bodies_requiring_mass_properties_fallback.add(body_path)
 
     # Collect joint descriptions regardless of whether articulations are authored.
@@ -2958,7 +2981,7 @@ def parse_usd(
             if verbose:
                 print(f"Skipping joint group {joint_group}: {exc}")
 
-    def _build_mass_info_from_authored_properties(
+    def _build_mass_info_from_effective_properties(
         prim: Usd.Prim,
         local_pos,
         local_rot,
@@ -2967,10 +2990,10 @@ def parse_usd(
         shape_src: Mesh | None,
         shape_axis=None,
     ):
-        """Build unit-density collider mass information from authored collider MassAPI properties.
+        """Build unit-density collider mass information from effective collider MassAPI properties.
 
         This helper is used for rigid-body fallback mass aggregation via
-        ``UsdPhysics.RigidBodyAPI.ComputeMassProperties``. When a collider prim has authored
+        ``UsdPhysics.RigidBodyAPI.ComputeMassProperties``. When a collider prim has effective
         ``MassAPI`` mass and diagonal inertia, we convert those values into a
         ``RigidBodyAPI.MassInformation`` payload that represents unit-density collider properties.
         """
@@ -2978,17 +3001,9 @@ def parse_usd(
             return None
 
         mass_api = UsdPhysics.MassAPI(prim)
-        mass_attr = mass_api.GetMassAttr()
-        diag_attr = mass_api.GetDiagonalInertiaAttr()
-        if not (mass_attr.HasAuthoredValue() and diag_attr.HasAuthoredValue()):
-            return None
-
-        mass = float(mass_attr.Get())
-        if mass <= 0.0:
-            warnings.warn(
-                f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be > 0 to derive volume and density.",
-                stacklevel=2,
-            )
+        mass = _mass_api_effective_mass(mass_api)
+        diag_val = _mass_api_effective_diag_inertia(mass_api)
+        if mass is None or diag_val is None:
             return None
 
         shape_volume, _, _ = compute_inertia_shape(shape_geo_type, shape_scale, shape_src, density=1.0)
@@ -3006,7 +3021,7 @@ def parse_usd(
             )
             return None
 
-        diag = np.array(diag_attr.Get(), dtype=np.float32)
+        diag = np.array(diag_val, dtype=np.float32)
         if np.any(diag < 0.0):
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: authored diagonal inertia contains negative values.",
@@ -3015,13 +3030,11 @@ def parse_usd(
             return None
         inertia_diag_unit = diag / density
 
-        if mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
-            principal_axes = mass_api.GetPrincipalAxesAttr().Get()
-        else:
+        principal_axes = _mass_api_effective_principal_axes(mass_api)
+        if principal_axes is None:
             principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
-        if mass_api.GetCenterOfMassAttr().HasAuthoredValue():
-            center_of_mass = mass_api.GetCenterOfMassAttr().Get()
-        else:
+        center_of_mass = _mass_api_effective_com(mass_api)
+        if center_of_mass is None:
             center_of_mass = Gf.Vec3f(0.0, 0.0, 0.0)
 
         i_rot = usd.value_to_warp(principal_axes)
@@ -3641,7 +3654,7 @@ def parse_usd(
                     if shape_geo_type is not None:
                         expected_fallback_collider_paths.add(path)
                         shape_axis = getattr(shape_spec, "axis", None)
-                        mass_info = _build_mass_info_from_authored_properties(
+                        mass_info = _build_mass_info_from_effective_properties(
                             prim,
                             shape_spec.localPos,
                             shape_spec.localRot,
@@ -3774,9 +3787,12 @@ def parse_usd(
             if body_id == -1:
                 continue
             mass_api = UsdPhysics.MassAPI(prim)
-            has_authored_mass = mass_api.GetMassAttr().HasAuthoredValue()
-            has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
-            has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
+            effective_mass = _mass_api_effective_mass(mass_api)
+            effective_diag_inertia = _mass_api_effective_diag_inertia(mass_api)
+            effective_com = _mass_api_effective_com(mass_api)
+            has_effective_mass = effective_mass is not None
+            has_effective_inertia = effective_diag_inertia is not None
+            has_effective_com = effective_com is not None
 
             # newton:inertia (compact 6-element tensor) overrides physics:diagonalInertia + physics:principalAxes.
             inertia_tensor_val = (
@@ -3812,32 +3828,29 @@ def parse_usd(
                         )
                         has_inertia_tensor = False
                     else:
-                        has_authored_inertia = True
+                        has_effective_inertia = True
                         inertia_tensor = wp.mat33(ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz)
 
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
-            if not (has_authored_mass and has_authored_inertia and has_authored_com):
+            if not (has_effective_mass and has_effective_inertia and has_effective_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
                 cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
                     _get_collision_mass_information
                 )
-                if cmp_mass < 0.0:
+                if cmp_mass < 0.0 or not math.isfinite(cmp_mass):
                     # ComputeMassProperties failed to discover colliders (e.g. shapes
-                    # created by schema resolvers are not real USD prims). Fall back to
-                    # builder-accumulated mass properties from add_shape_*() calls.
+                    # created by schema resolvers are not real USD prims) or aggregated
+                    # non-finite authored values. Fall back to builder-accumulated mass
+                    # properties from add_shape_*() calls.
                     cmp_mass = builder.body_mass[body_id]
-                    if not has_authored_com:
+                    if not has_effective_com:
                         cmp_com = builder.body_com[body_id]
-                    # When the body has an authored density, rescale accumulated mass
+                    # When the body has an effective density, rescale accumulated mass
                     # and inertia from the builder's default shape density to the
                     # body-level density (USD body density overrides per-shape density).
-                    body_density_attr = mass_api.GetDensityAttr()
-                    if (
-                        body_density_attr.HasAuthoredValue()
-                        and float(body_density_attr.Get()) > 0.0
-                        and default_shape_density > 0.0
-                    ):
-                        density_scale = float(body_density_attr.Get()) / default_shape_density
+                    body_density = _mass_api_effective_density(mass_api)
+                    if body_density is not None and default_shape_density > 0.0:
+                        density_scale = body_density / default_shape_density
                         cmp_mass *= density_scale
                         builder.body_inertia[body_id] = wp.mat33(
                             np.array(builder.body_inertia[body_id]) * density_scale
@@ -3845,9 +3858,9 @@ def parse_usd(
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
-            if has_authored_com:
+            if has_effective_com:
                 # Match the scale/frame convention used by OpenUSD's collider and joint descriptors.
-                cmp_com = Gf.CompMult(mass_api.GetCenterOfMassAttr().Get(), rigid_body_desc.scale)
+                cmp_com = Gf.CompMult(effective_com, rigid_body_desc.scale)
 
             # Inertia: newton:inertia > physics:diagonalInertia + physics:principalAxes > mass computer.
             # When mass is authored but inertia is not, keep accumulated inertia
@@ -3855,22 +3868,22 @@ def parse_usd(
             # inertia, which may already reflect the authored mass.
             if has_inertia_tensor:
                 i_diag_np = None  # skip diagonal path; full matrix set below
-            elif has_authored_inertia:
-                i_diag_np = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
+            elif has_effective_inertia:
+                i_diag_np = np.array(effective_diag_inertia, dtype=np.float32)
                 if np.any(i_diag_np < 0.0):
                     warnings.warn(
                         f"Body {body_path}: authored diagonal inertia contains negative values. "
                         "Falling back to mass-computer result.",
                         stacklevel=2,
                     )
-                    has_authored_inertia = False
+                    has_effective_inertia = False
                     i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
                     principal_axes = cmp_principal_axes
-                elif mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
-                    principal_axes = mass_api.GetPrincipalAxesAttr().Get()
                 else:
-                    principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
-            elif not has_authored_mass:
+                    principal_axes = _mass_api_effective_principal_axes(mass_api)
+                    if principal_axes is None:
+                        principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+            elif not has_effective_mass:
                 i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
                 principal_axes = cmp_principal_axes
             else:
@@ -3894,11 +3907,11 @@ def parse_usd(
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(0.0)
 
-            # Mass: authored value takes precedence over mass computer.
-            if has_authored_mass:
-                mass = float(mass_api.GetMassAttr().Get())
+            # Mass: effective authored value takes precedence over mass computer.
+            if has_effective_mass:
+                mass = effective_mass
                 shape_accumulated_mass = builder.body_mass[body_id]
-                if not has_authored_inertia and mass_api.GetDensityAttr().HasAuthoredValue():
+                if not has_effective_inertia and _mass_api_effective_density(mass_api) is not None:
                     warnings.warn(
                         f"Body {body_path}: authored mass and density without authored diagonalInertia. "
                         f"Ignoring body-level density.",
@@ -3906,7 +3919,7 @@ def parse_usd(
                     )
                 # When mass is authored but inertia is not, scale the accumulated
                 # inertia to be consistent with the authored mass.
-                if not has_authored_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
+                if not has_effective_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
                     scale = mass / shape_accumulated_mass
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * scale)
                     builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
