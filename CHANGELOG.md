@@ -84,6 +84,7 @@
 - Fix `ModelBuilder.add_usd()` to honor `ignore_paths` in the custom-frequency traversal, so prims under ignored subtrees no longer register spurious custom-frequency rows in two-pass import workflows. (#3406)
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
+- Fix `ModelBuilder.approximate_meshes()` forwarding CoACD/V-HACD keyword arguments to the convex-hull fallback when the decomposition backend fails or is not installed, which broke the fallback and left the original mesh in place.
 - Raise an error when `SolverVBD(rigid_contact_history=True)` would allocate or grow contact-history buffers during CUDA graph capture; construct `CollisionPipeline` before `SolverVBD`, or run one uncaptured solver step before capture.
 - Fix `SensorTiledCamera.utils.convert_ray_depth_to_forward_depth()` to preserve the clear-depth sentinel for zero-direction rays and non-positive depths.
 - Fix `ViewerGL.get_frame()` crashing when a CPU model is rendered while a CUDA context is active.

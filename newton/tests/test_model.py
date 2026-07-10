@@ -798,6 +798,18 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
 
+    def test_mesh_approximation_coacd_fallback_drops_coacd_kwargs(self):
+        builder = ModelBuilder()
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with mock.patch.dict(sys.modules, {"coacd": None}), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
+        # coacd unavailable: the convex_hull fallback must not receive coacd-specific kwargs
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+
     def test_mesh_approximation_convex_decomposition_preserves_visual_properties(self):
         builder = ModelBuilder()
         builder.add_custom_attribute(

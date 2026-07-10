@@ -7184,6 +7184,8 @@ class ModelBuilder:
                         f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
                     )
                     method = "convex_hull"
+                    # kwargs were addressed to the failed decomposition method
+                    remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
