@@ -1643,8 +1643,20 @@ class ArticulationView:
     def _resolve_mask(self, mask):
         # accept 1D and 2D Boolean masks
         if isinstance(mask, wp.array):
-            if mask.dtype is wp.bool and mask.ndim < 3:
-                return mask
+            expected_shapes = {
+                (self.world_count,),
+                (self.world_count, self.count_per_world),
+            }
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape not in expected_shapes:
+                raise ValueError(
+                    f"Expected Boolean mask with shape "
+                    f"({self.world_count}, {self.count_per_world}) or ({self.world_count},), got {mask.shape}"
+                )
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
         else:
             # try interpreting as a 1D world mask
             try:
