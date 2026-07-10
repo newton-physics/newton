@@ -306,6 +306,8 @@ class ImplicitMPMModel:
 
         self.collider = Collider()
         """Collider struct"""
+        self.collider_world: wp.array[wp.int32] | None = None
+        """World index for each collider, or ``-1`` for global."""
 
         self.material_parameters = MaterialParameters()
         """Material parameters struct"""
@@ -628,6 +630,24 @@ class ImplicitMPMModel:
         else:
             flat_collider_particle_ids = np.concatenate(collider_particle_id_chunks)
 
+        body_world = model.body_world.numpy()
+        shape_world = model.shape_world.numpy()
+        particle_world = model.particle_world.numpy()
+        collider_worlds = []
+        for collider_id, body_id in enumerate(collider_body_ids):
+            if body_id is not None and body_id >= 0:
+                collider_worlds.append(int(body_world[body_id]))
+                continue
+            if body_id == -1:
+                worlds = np.unique(shape_world[body_shapes[body_id]])
+            elif collider_particle_ids[collider_id] is not None:
+                particle_ids = collider_particle_ids[collider_id]
+                particle_ids = particle_ids.numpy() if isinstance(particle_ids, wp.array) else np.asarray(particle_ids)
+                worlds = np.unique(particle_world[particle_ids])
+            else:
+                worlds = np.asarray([-1], dtype=np.int32)
+            collider_worlds.append(int(worlds[0]) if worlds.size == 1 else -1)
+
         # Create device arrays
         with wp.ScopedDevice(self.model.device):
             # Create collider meshes from bodies if necessary
@@ -652,6 +672,7 @@ class ImplicitMPMModel:
                 face_material_ids.append(mesh_face_material_ids)
 
             self.collider.collider_body_index = wp.array(collider_body_ids, dtype=int)
+            self.collider_world = wp.array(collider_worlds, dtype=int)
             self.collider.collider_particle_offsets = wp.array(collider_particle_offsets, dtype=int)
             self.collider.collider_particle_ids = wp.array(flat_collider_particle_ids, dtype=int)
             self.collider.collider_mesh = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)

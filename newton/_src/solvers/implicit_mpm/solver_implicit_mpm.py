@@ -17,11 +17,13 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
+from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
+from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
     Collider,
     build_rigidity_operator,
@@ -1419,7 +1421,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             device=state.mpm.particle_qd_grad.device,
         )
 
-    def sample_render_grains(self, state: newton.State, grains_per_particle: int) -> wp.array:
+    def sample_render_grains(self, state: newton.State, grains_per_particle: int) -> wp.array2d[wp.vec3]:
         """Generate per-particle point samples used for high-resolution rendering.
 
         Args:
@@ -1437,7 +1439,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         state_prev: newton.State,
         state: newton.State,
-        grains: wp.array,
+        grains: wp.array2d[wp.vec3],
         dt: float,
     ) -> None:
         """Advect grain samples with the grid velocity and keep them inside the deformed particle.
@@ -1450,6 +1452,96 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """
 
         return update_render_grains(state_prev, state, grains, self._mpm_model.particle_radius, dt)
+
+    def create_particle_surface(
+        self,
+        voxel_size: float | None = None,
+        *,
+        max_grid_cells: int | None = None,
+        **kwargs,
+    ) -> ParticleSurface:
+        """Create a reusable particle surface extraction context.
+
+        Args:
+            voxel_size: Voxel size for the density grid [m].
+                Defaults to ``0.45 * solver_voxel_size``.
+            max_grid_cells: Maximum active sparse-grid cell count across all
+                worlds. When set, extraction uses graph-capturable preallocated
+                buffers. When ``None``, it uses tight sparse allocations.
+            **kwargs: Forwarded to :class:`newton.geometry.ParticleSurface`.
+
+        Returns:
+            A :class:`newton.geometry.ParticleSurface` context for use with
+            :meth:`extract_particle_surface`.
+        """
+        if voxel_size is None:
+            voxel_size = self._mpm_model.voxel_size * 0.45
+        world_count = max(self.model.world_count, 1)
+        if "world_count" in kwargs and kwargs["world_count"] != world_count:
+            raise ValueError(f"world_count must match the model world count ({world_count})")
+        kwargs["world_count"] = world_count
+        return ParticleSurface(
+            voxel_size=voxel_size,
+            max_grid_cells=max_grid_cells,
+            device=self.model.device,
+            **kwargs,
+        )
+
+    def extract_particle_surface(
+        self,
+        state: newton.State,
+        surface: ParticleSurface,
+        compute_normals: bool = True,
+        extrapolate_into_colliders: bool = False,
+        collider_extrapolation_depth: float | None = None,
+        collider_extrapolation_onset: float = 0.0,
+        particle_flags: wp.array[wp.int32] | None = None,
+    ) -> ParticleSurface.ExtractionMesh:
+        """Extract a triangle mesh from the current particle state.
+
+        Args:
+            state: Current simulation state.
+            surface: Reusable extraction context from
+                :meth:`create_particle_surface`.
+            compute_normals: Whether to compute per-vertex normals.
+            extrapolate_into_colliders: Mirror-extrapolate the particle SDF
+                into collider interiors before meshing.  Requires
+                ``surface.field_mode == "sdf"``.
+            collider_extrapolation_depth: Maximum distance [m] to extrapolate
+                into colliders.  Defaults to ``4 * surface.voxel_size``.
+            collider_extrapolation_onset: Signed collider distance [m] where
+                extrapolation starts.  ``0`` starts at the collider surface.
+            particle_flags: Optional per-particle flags selecting the active
+                particles to surface.  Defaults to the model particle flags.
+
+        Returns:
+            Mesh buffers and device-resident logical counts.
+        """
+        if particle_flags is None:
+            particle_flags = self.model.particle_flags
+        if extrapolate_into_colliders and surface.field_mode != "sdf":
+            raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
+
+        mesh = surface.extract(
+            state.particle_q,
+            radii=self._mpm_model.particle_radius,
+            compute_normals=compute_normals and not extrapolate_into_colliders,
+            particle_flags=particle_flags,
+            particle_world=self.model.particle_world if surface.world_count > 1 else None,
+            compute_mesh=not extrapolate_into_colliders,
+        )
+        if not extrapolate_into_colliders:
+            return mesh
+
+        return extrapolate_surface_sdf_into_colliders(
+            surface,
+            self._mpm_model.collider,
+            self._mpm_model.collider_world,
+            state.body_q,
+            max_depth=collider_extrapolation_depth,
+            onset=collider_extrapolation_onset,
+            compute_normals=compute_normals,
+        )
 
     def _allocate_grid(
         self,

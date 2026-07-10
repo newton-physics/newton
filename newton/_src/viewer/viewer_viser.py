@@ -606,6 +606,7 @@ class ViewerViser(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
     ):
         """
         Log a mesh to viser for visualization.
@@ -625,6 +626,7 @@ class ViewerViser(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
         """
         name = self._qualify(name)
 

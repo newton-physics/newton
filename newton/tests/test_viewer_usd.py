@@ -201,6 +201,34 @@ class TestViewerUSD(unittest.TestCase):
 
         self.assertEqual(visibility, "invisible")
 
+    def test_log_mesh_dynamic_time_samples_topology(self):
+        viewer = self._make_viewer()
+
+        points0 = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices0 = wp.array([0, 1, 2], dtype=wp.int32)
+        points1 = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices1 = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/dynamic_mesh", points0, indices0, dynamic=True)
+        viewer.begin_frame(1.0 / viewer.fps)
+        viewer.log_mesh("/dynamic_mesh", points1, indices1, dynamic=True)
+
+        mesh = UsdGeom.Mesh.Get(viewer.stage, viewer._get_path("/dynamic_mesh"))
+        face_counts = mesh.GetFaceVertexCountsAttr()
+        face_indices = mesh.GetFaceVertexIndicesAttr()
+
+        self.assertEqual(list(face_counts.Get(0)), [3])
+        self.assertEqual(list(face_indices.Get(0)), [0, 1, 2])
+        self.assertEqual(list(face_counts.Get(1)), [3, 3])
+        self.assertEqual(list(face_indices.Get(1)), [0, 1, 2, 0, 2, 3])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

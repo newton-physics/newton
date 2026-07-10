@@ -849,6 +849,7 @@ class ViewerGL(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
     ):
         """
         Log a mesh for rendering.
@@ -868,6 +869,7 @@ class ViewerGL(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
         """
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -876,10 +878,22 @@ class ViewerGL(ViewerBase):
 
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
+        if name in self.objects and (
+            len(points) != self.objects[name].num_points
+            or len(indices) != self.objects[name].num_indices
+            or dynamic != self.objects[name].dynamic
+        ):
+            self.objects[name].destroy()
+            del self.objects[name]
 
         if name not in self.objects:
             self.objects[name] = MeshGL(
-                len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
+                len(points),
+                len(indices),
+                self.device,
+                hidden=hidden,
+                backface_culling=backface_culling,
+                dynamic=dynamic,
             )
 
         self.objects[name].update(points, indices, normals, uvs, texture)
@@ -1243,6 +1257,13 @@ class ViewerGL(ViewerBase):
         for owner in self._wireframe_vbo_owners.values():
             owner.destroy()
         self._wireframe_vbo_owners.clear()
+
+    @override
+    def _log_particles(self, state: nt.State):
+        if not self.show_particles or self._layer_force_hidden():
+            self.log_points(self._qualify("/model/particles"), points=None, hidden=True)
+            return
+        super()._log_particles(state)
 
     @override
     def log_points(
