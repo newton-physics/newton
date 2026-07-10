@@ -8,7 +8,6 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.types import float32
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize import (
     llt_sequential_factorize,
@@ -60,7 +59,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             dims=N,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
 
@@ -213,7 +212,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             maxdims=N_max,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
 
@@ -364,7 +363,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             dims=N,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
         msg.debug("Problem:\n%s\n", problem)
@@ -529,7 +528,7 @@ class TestLinAlgLLTSequential(unittest.TestCase):
             maxdims=N_max,
             seed=self.seed,
             np_dtype=np.float32,
-            wp_dtype=float32,
+            wp_dtype=wp.float32,
             device=self.default_device,
         )
         msg.debug("Problem:\n%s\n", problem)
