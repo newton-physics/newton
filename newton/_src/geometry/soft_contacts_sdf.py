@@ -111,12 +111,17 @@ def eval_shape_sdf(
         return d, d, g
     inv_scale = wp.vec3(1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2])
     dist, grad = texture_sample_sdf_grad(tex, wp.cw_div(x_local, scale))
+    # texture_sample_sdf_grad's gradient is not unit-normalized, so normalize it before using it as a
+    # surface normal (otherwise the stretch below is scaled by |grad|, corrupting the distance).
+    grad_norm = wp.length(grad)
+    if grad_norm > 0.0:
+        grad = grad / grad_norm
     # Convert the normalized-frame distance to the shape-local frame. Under nonuniform scale the
     # displacement to the closest surface point stretches per axis, so the accurate local distance is
-    # dist * |scale * grad| (the stretch ALONG the surface normal) -- exact for an axis-aligned face,
-    # first-order near the surface where contacts live. min|scale| is a cheap conservative lower bound
-    # for the cull/search. wp.length() / wp.min(wp.abs()) keep a mirrored (negative) scale
-    # sign-correct; the mirror itself is applied by the cw_div query and by inv_scale on the gradient.
+    # dist * |scale * grad| with grad the UNIT normal (the stretch ALONG the surface normal) -- exact
+    # for an axis-aligned face, first-order near the surface where contacts live. min|scale| is a cheap
+    # conservative lower bound for the cull/search. wp.length() / wp.min(wp.abs()) keep a mirrored
+    # (negative) scale sign-correct; the mirror itself is applied by the cw_div query and by inv_scale.
     stretch = wp.length(wp.cw_mul(scale, grad))
     min_scale = wp.min(wp.abs(scale))
     scaled_grad = wp.cw_mul(grad, inv_scale)
