@@ -154,7 +154,7 @@ def test_rebuildable_sparse_grid_excludes_inactive_particles(test, device):
 
     test.assertTrue(solver._sparse_rebuildable)
     test.assertEqual(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 1)
-    solver.check_sparse_grid_rebuild_status()
+    solver.check_status()
 
 
 def test_rebuildable_sparse_rebuild_uses_mpm_transfer_flags(test, device):
@@ -169,7 +169,7 @@ def test_rebuildable_sparse_rebuild_uses_mpm_transfer_flags(test, device):
     solver.step(state_in, state_out, None, None, 0.001)
 
     test.assertEqual(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 1)
-    solver.check_sparse_grid_rebuild_status()
+    solver.check_status()
 
 
 def test_rebuildable_sparse_grid_reserves_empty_capacity(test, device):
@@ -231,8 +231,8 @@ def _check_rebuildable_sparse_auto_gs_cuda_graph(test, device, collider_basis):
         solver="auto",
     )
     test.assertEqual(solver.solver, ("gs",))
-    test.assertTrue(solver.supports_cuda_graph_capture)
-    solver.prepare_cuda_graph_capture()
+    test.assertTrue(solver.supports_graph_capture)
+    solver.prepare_graph_capture()
 
     # Materialize persistent topology and the GS solve graph before outer capture.
     solver.step(state_0, state_1, None, None, 0.005)
@@ -254,7 +254,7 @@ def _check_rebuildable_sparse_auto_gs_cuda_graph(test, device, collider_basis):
     for _ in range(2):
         wp.capture_launch(capture.graph)
 
-    solver.check_sparse_grid_rebuild_status()
+    solver.check_status()
     test.assertEqual(solver._scratchpad.grid.cell_grid.id, cell_grid_id)
     final_cell_count = grid.cell_grid.get_active_stats().voxel_count
     final_cells = {tuple(ijk) for ijk in grid.cell_grid.get_voxels().numpy()[:final_cell_count]}
@@ -300,7 +300,7 @@ def test_rebuildable_sparse_cuda_graph_reports_overflow(test, device):
         solver.check_status()
     status = int(solver._grid_accumulated_status.numpy()[0])
     test.assertTrue(status & wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
-    solver.clear_sparse_grid_rebuild_status()
+    solver._clear_sparse_grid_rebuild_status()
     solver.check_status()
 
 

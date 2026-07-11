@@ -746,7 +746,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Maximum number of active grid cells. A positive value reserves persistent
         sparse-grid capacity and bounds active subsets of dense grids.
         ``-1`` means unlimited and retains per-step sparse-grid allocation. Call
-        :meth:`check_sparse_grid_rebuild_status` after CUDA graph replay to detect overflow."""
+        :meth:`check_status` after graph replay to detect overflow."""
         max_leaf_node_count: int = -1
         """Maximum NanoVDB leaf-node count for a rebuildable sparse grid.
 
@@ -1155,36 +1155,38 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         return self._mpm_model.voxel_size
 
     @property
-    def supports_cuda_graph_capture(self) -> bool:
-        """Return whether this solver uses a validated CUDA graph configuration."""
-        return self._cuda_graph_capture_unsupported_reason() is None
+    def supports_graph_capture(self) -> bool:
+        """Return whether this solver uses a validated graph-capture configuration."""
+        return self._graph_capture_unsupported_reason() is None
 
-    def _cuda_graph_capture_unsupported_reason(self) -> str | None:
+    def _graph_capture_unsupported_reason(self) -> str | None:
         device = self.model.device
         if not device.is_cuda:
-            return "CUDA graph capture requires a CUDA device."
+            if self.grid_type == "sparse":
+                return "Rebuildable sparse-grid graph capture currently requires CUDA."
+            return "CPU graph capture is not currently supported for SolverImplicitMPM."
         if not wp.is_mempool_enabled(device):
             return "CUDA graph capture requires the Warp memory pool to be enabled."
         if not wp.is_conditional_graph_supported():
-            return "CUDA graph capture requires Warp conditional CUDA graph support."
+            return "CUDA graph capture requires Warp conditional graph support."
         if self.enable_timers:
-            return "CUDA graph capture requires enable_timers=False."
+            return "Graph capture requires enable_timers=False."
 
         if self.grid_type == "fixed":
             if self.max_active_cell_count <= 0:
-                return "Fixed-grid CUDA graph capture requires Config.max_active_cell_count > 0."
+                return "Fixed-grid graph capture requires Config.max_active_cell_count > 0."
             return None
         if self.grid_type == "sparse":
             if not self._sparse_rebuildable:
                 return (
-                    "Sparse-grid CUDA graph capture requires a rebuildable sparse grid with positive "
+                    "Sparse-grid graph capture requires a rebuildable sparse grid with positive "
                     "Config.max_active_cell_count, Config.grid_padding=0, velocity_basis='Q1', and supported "
                     "strain and collider bases."
                 )
             return None
-        return f"CUDA graph capture does not support Config.grid_type={self.grid_type!r}."
+        return f"Graph capture does not support Config.grid_type={self.grid_type!r}."
 
-    def prepare_cuda_graph_capture(self, contacts: newton.Contacts | None = None) -> None:
+    def prepare_graph_capture(self, contacts: newton.Contacts | None = None) -> None:
         """Materialize graph-persistent MPM topology and buffers without stepping.
 
         Args:
@@ -1192,12 +1194,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         Raises:
             RuntimeError: If the resolved configuration is not supported in an
-                outer CUDA graph.
+                outer graph.
         """
         del contacts
-        unsupported_reason = self._cuda_graph_capture_unsupported_reason()
+        unsupported_reason = self._graph_capture_unsupported_reason()
         if unsupported_reason is not None:
-            raise RuntimeError(f"SolverImplicitMPM does not support outer CUDA graph capture. {unsupported_reason}")
+            raise RuntimeError(f"SolverImplicitMPM does not support outer graph capture. {unsupported_reason}")
 
         with wp.ScopedDevice(self.model.device):
             scratch = self._scratchpad
@@ -1209,17 +1211,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._require_collision_space_fields(scratch, self._last_step_data)
             self._require_strain_space_fields(scratch, self._last_step_data)
 
-    def check_sparse_grid_rebuild_status(self) -> None:
+    def _check_sparse_grid_rebuild_status(self) -> None:
         """Raise if a rebuildable sparse grid exceeded its reserved capacity.
 
         The check synchronizes the solver device and is therefore intended for
-        initialization diagnostics or calls made after CUDA graph replay, not
+        initialization diagnostics or calls made after graph replay, not
         from inside graph capture.
         """
         if self._grid_status is None:
             return
         if self.model.device.is_capturing:
-            raise RuntimeError("Cannot inspect sparse grid rebuild status during CUDA graph capture")
+            raise RuntimeError("Cannot inspect sparse grid rebuild status during graph capture")
 
         status = int(self._grid_status.numpy()[0])
         if self._grid_accumulated_status is not None:
@@ -1228,13 +1230,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             raise _sparse_grid_rebuild_error(status)
 
     def check_status(self) -> None:
-        """Raise if a prior step exceeded reserved sparse-grid capacity."""
-        self.check_sparse_grid_rebuild_status()
+        """Raise if a prior solver operation reported an asynchronous failure."""
+        self._check_sparse_grid_rebuild_status()
 
-    def clear_sparse_grid_rebuild_status(self) -> None:
+    def _clear_sparse_grid_rebuild_status(self) -> None:
         """Clear current and accumulated sparse-grid rebuild status."""
         if self.model.device.is_capturing:
-            raise RuntimeError("Cannot clear sparse grid rebuild status during CUDA graph capture")
+            raise RuntimeError("Cannot clear sparse grid rebuild status during graph capture")
         if self._grid_status is not None:
             self._grid_status.zero_()
         if self._grid_accumulated_status is not None:
@@ -1693,7 +1695,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     max_upper_node_count=self.max_upper_node_count,
                 )
                 if self._sparse_rebuildable:
-                    self.check_sparse_grid_rebuild_status()
+                    self._check_sparse_grid_rebuild_status()
                     grid = fem.Nanogrid(volume, temporary_store=temporary_store, rebuildable=True)
                 else:
                     grid = fem.Nanogrid(volume, temporary_store=temporary_store)
