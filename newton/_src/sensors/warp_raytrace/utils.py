@@ -1350,7 +1350,7 @@ class Utils:
         self.__render_context.lights_type = wp.array(
             [RenderLightType.DIRECTIONAL], dtype=wp.int32, device=self.__render_context.device
         )
-        self.__render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
+        self.__render_context.lights_cast_shadow = wp.array([enable_shadows], dtype=wp.bool, device=self.__render_context.device)
         self.__render_context.lights_position = wp.array(
             [wp.vec3f(0.0)], dtype=wp.vec3f, device=self.__render_context.device
         )
