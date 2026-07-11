@@ -121,8 +121,8 @@ class SensorTiledCamera:
                 raise TypeError("Specify only one of `default_render_config` and deprecated `config`.")
             default_render_config = config
 
-        self.default_render_config = default_render_config if default_render_config is not None else RenderConfig()
-        self.default_clear_data = ClearData()
+        self.__default_render_config = default_render_config if default_render_config is not None else RenderConfig()
+        self.__default_clear_data = ClearData()
 
         self.__render_context = RenderContext(
             world_count=self.model.world_count,
@@ -131,6 +131,24 @@ class SensorTiledCamera:
         self.__utils = Utils(self.__render_context, self.default_render_config)
 
         self.__render_context.init_from_model(self.model, load_textures)
+
+    @property
+    def default_render_config(self) -> RenderConfig:
+        """The default render config to use if none is passed to :meth:`update`.
+
+        Returns:
+            The default :class:`RenderConfig` instance.
+        """
+        return self.__default_render_config
+
+    @property
+    def default_clear_data(self) -> ClearData:
+        """The default clear data to use if none is passed to :meth:`update`.
+
+        Returns:
+            The default :class:`ClearData` instance.
+        """
+        return self.__default_clear_data
 
     def sync_transforms(self, state: State):
         """Synchronize triangle-mesh points from the simulation state.
