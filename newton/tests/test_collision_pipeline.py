@@ -3057,7 +3057,7 @@ def _eval_shape_sdf_kernel(
     out_phi: wp.array[float],
     out_grad: wp.array[wp.vec3],
 ):
-    phi, grad = eval_shape_sdf(geo, scale, x, sdf_idx, table)
+    _phi_l, phi, grad = eval_shape_sdf(geo, scale, x, sdf_idx, table)
     out_phi[0] = phi
     out_grad[0] = grad
 
@@ -3226,6 +3226,55 @@ def test_full_surface_allows_infinite_plane(test, device):
     newton.CollisionPipeline(model, broad_phase="nxn", enable_rigid_soft_full_surface_contact=True)
 
 
+def _nonuniform_box_mesh_gap_model(device, tri_x):
+    """Box MESH scaled (2, 1, 1) at the origin -> its +x face sits at body x = 0.5 * 2 = 1.0. A soft
+    triangle parallel to that face at x = ``tri_x`` (within the face's y/z extent) has a uniform gap of
+    ``tri_x - 1.0``. Used to probe the nonuniform-scale distance (E8)."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.5, 0.5, 0.5), scale=(2.0, 1.0, 1.0))
+    configure_sdf_for_collision_shapes(builder)
+    p0 = builder.add_particle(wp.vec3(tri_x, -0.2, -0.2), wp.vec3(0.0), 0.1, radius=0.0)
+    p1 = builder.add_particle(wp.vec3(tri_x, 0.2, -0.2), wp.vec3(0.0), 0.1, radius=0.0)
+    p2 = builder.add_particle(wp.vec3(tri_x, 0.0, 0.2), wp.vec3(0.0), 0.1, radius=0.0)
+    builder.add_triangle(p0, p1, p2)
+    return builder.finalize(device=device)
+
+
+def test_full_surface_nonuniform_mesh_accurate_distance(test, device):
+    """Under nonuniform mesh scale the volume-SDF distance stretches along the surface normal, not by
+    the smallest scale factor -- so full-surface keeps working (no fallback) and the distance is right:
+    a soft triangle 0.08 m outside a (2,1,1) box's +x face (0.06 m margin) yields NO ghost contact, and
+    one 0.03 m inside is caught and projected onto the true surface x=1.0, not past it. min_scale would
+    report 0.04 (ghost) and project to ~1.015 (E8)."""
+    # 0.08 m gap, 0.06 m margin -> outside -> no contact. min_scale would under-report 0.04 < 0.06.
+    model_out = _nonuniform_box_mesh_gap_model(device, tri_x=1.08)
+    pipe_out = newton.CollisionPipeline(
+        model_out, broad_phase="nxn", soft_contact_margin=0.06, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts_out = pipe_out.contacts()
+    pipe_out.collide(model_out.state(), contacts_out)
+    test.assertEqual(
+        int(contacts_out.soft_contact_count.numpy()[0]), 0, "no ghost contact 0.08 m outside a 0.06 m margin"
+    )
+
+    # 0.03 m gap -> inside the margin -> contact, projected onto the true +x surface at x = 1.0.
+    model_in = _nonuniform_box_mesh_gap_model(device, tri_x=1.03)
+    pipe_in = newton.CollisionPipeline(
+        model_in, broad_phase="nxn", soft_contact_margin=0.06, enable_rigid_soft_full_surface_contact=True
+    )
+    contacts_in = pipe_in.contacts()
+    pipe_in.collide(model_in.state(), contacts_in)
+    n_in = int(contacts_in.soft_contact_count.numpy()[0])
+    test.assertGreater(
+        n_in, 0, "a 0.03 m gap is within the 0.06 m margin -> full-surface still active for nonuniform scale"
+    )
+    body_pos_x = contacts_in.soft_contact_body_pos.numpy()[:n_in, 0]
+    test.assertTrue(
+        bool(np.all(np.abs(body_pos_x - 1.0) < 5e-3)),
+        f"contact projects onto the true surface x=1.0 (min_scale would land ~1.015), got {body_pos_x}",
+    )
+
+
 for _name, _fn in (
     ("test_soft_contact_tids_decoupled_from_capacity", test_soft_contact_tids_decoupled_from_capacity),
     ("test_full_surface_replay_spans_candidate_space", test_full_surface_replay_spans_candidate_space),
@@ -3239,6 +3288,7 @@ for _name, _fn in (
 for _name, _fn in (
     ("test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign", test_eval_shape_sdf_mirrored_mesh_scale_preserves_sign),
     ("test_full_surface_empty_sdf_descriptor_rejected", test_full_surface_empty_sdf_descriptor_rejected),
+    ("test_full_surface_nonuniform_mesh_accurate_distance", test_full_surface_nonuniform_mesh_accurate_distance),
 ):
     add_function_test(TestFullSurfaceSoftContact, _name, _fn, devices=get_cuda_test_devices())
 
@@ -3326,7 +3376,7 @@ def _brute_face_min_kernel(
         if i + j <= n_grid:
             u = float(i) / float(n_grid)
             v = float(j) / float(n_grid)
-            phi, _g = eval_shape_sdf(geo, scale, u * a + v * b + (1.0 - u - v) * c, sdf_idx, texture_sdf_table)
+            _phi_l, phi, _g = eval_shape_sdf(geo, scale, u * a + v * b + (1.0 - u - v) * c, sdf_idx, texture_sdf_table)
             m = wp.min(m, phi)
     out_min[tid] = m
 
@@ -3364,7 +3414,7 @@ def _brute_edge_min_kernel(
     m = float(1.0e10)
     for i in range(n_grid + 1):
         u = float(i) / float(n_grid)
-        phi, _g = eval_shape_sdf(geo, scale, (1.0 - u) * p + u * q, sdf_idx, texture_sdf_table)
+        _phi_l, phi, _g = eval_shape_sdf(geo, scale, (1.0 - u) * p + u * q, sdf_idx, texture_sdf_table)
         m = wp.min(m, phi)
     out_min[tid] = m
 

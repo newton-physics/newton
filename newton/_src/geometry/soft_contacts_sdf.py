@@ -66,35 +66,40 @@ def eval_shape_sdf(
     shape_sdf_index: wp.int32,
     texture_sdf_table: wp.array[TextureSDFData],
 ):
-    """Return ``(phi, grad)`` for the rigid shape at shape-local ``x_local``.
+    """Return ``(phi_lower, phi, grad)`` for the rigid shape at shape-local ``x_local``.
 
-    Analytic primitives evaluate closed-form (Z-up, matching ``create_soft_contacts``); shapes with a
-    provisioned volume SDF (``shape_sdf_index >= 0``) sample the texture SDF with query-time scaling.
-    ``grad`` is the unit outward gradient.
+    ``phi`` is the accurate shape-local signed distance -- used for the contact accept and the
+    ``x - phi * grad`` surface projection. ``phi_lower`` is a conservative *lower bound* on it, used
+    only for the candidate cull and the optimizer's internal search, so an under-estimate can never
+    drop a real contact (the reject happens in the narrow phase on ``phi``). The two coincide for
+    analytic primitives (closed form, exact) and for a uniform scale; they differ only for a
+    nonuniformly scaled volume SDF, where the local distance stretches along the surface normal
+    (``phi``) while the smallest scale magnitude is a cheap lower bound (``phi_lower``). ``grad`` is
+    the unit outward gradient. Analytic primitives evaluate closed-form (Z-up, matching
+    ``create_soft_contacts``); shapes with a provisioned volume SDF (``shape_sdf_index >= 0``) sample
+    the texture SDF with query-time scaling.
     """
     if geo == GeoType.SPHERE:
-        return sdf_sphere(x_local, scale[0]), sdf_sphere_grad(x_local, scale[0])
+        p = sdf_sphere(x_local, scale[0])
+        return p, p, sdf_sphere_grad(x_local, scale[0])
     if geo == GeoType.BOX:
-        return sdf_box(x_local, scale[0], scale[1], scale[2]), sdf_box_grad(x_local, scale[0], scale[1], scale[2])
+        p = sdf_box(x_local, scale[0], scale[1], scale[2])
+        return p, p, sdf_box_grad(x_local, scale[0], scale[1], scale[2])
     if geo == GeoType.CAPSULE:
-        return (
-            sdf_capsule(x_local, scale[0], scale[1], int(Axis.Z)),
-            sdf_capsule_grad(x_local, scale[0], scale[1], int(Axis.Z)),
-        )
+        p = sdf_capsule(x_local, scale[0], scale[1], int(Axis.Z))
+        return p, p, sdf_capsule_grad(x_local, scale[0], scale[1], int(Axis.Z))
     if geo == GeoType.CYLINDER:
-        return (
-            sdf_cylinder(x_local, scale[0], scale[1], int(Axis.Z)),
-            sdf_cylinder_grad(x_local, scale[0], scale[1], int(Axis.Z)),
-        )
+        p = sdf_cylinder(x_local, scale[0], scale[1], int(Axis.Z))
+        return p, p, sdf_cylinder_grad(x_local, scale[0], scale[1], int(Axis.Z))
     if geo == GeoType.CONE:
-        return (
-            sdf_cone(x_local, scale[0], scale[1], int(Axis.Z)),
-            sdf_cone_grad(x_local, scale[0], scale[1], int(Axis.Z)),
-        )
+        p = sdf_cone(x_local, scale[0], scale[1], int(Axis.Z))
+        return p, p, sdf_cone_grad(x_local, scale[0], scale[1], int(Axis.Z))
     if geo == GeoType.ELLIPSOID:
-        return sdf_ellipsoid(x_local, scale), sdf_ellipsoid_grad(x_local, scale)
+        p = sdf_ellipsoid(x_local, scale)
+        return p, p, sdf_ellipsoid_grad(x_local, scale)
     if geo == GeoType.PLANE:
-        return sdf_plane(x_local, scale[0] * 0.5, scale[1] * 0.5), wp.vec3(0.0, 0.0, 1.0)
+        p = sdf_plane(x_local, scale[0] * 0.5, scale[1] * 0.5)
+        return p, p, wp.vec3(0.0, 0.0, 1.0)
 
     # Volume SDF (mesh / convex / other). Honor the descriptor's scale_baked flag: if the shape
     # scale was baked into the grid (e.g. hydroelastic primitives), query directly in shape-local
@@ -102,21 +107,25 @@ def eval_shape_sdf(
     # scale_sdf_result_to_world).
     tex = texture_sdf_table[shape_sdf_index]
     if tex.scale_baked:
-        return texture_sample_sdf_grad(tex, x_local)
+        d, g = texture_sample_sdf_grad(tex, x_local)
+        return d, d, g
     inv_scale = wp.vec3(1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2])
-    # Magnitude of the smallest scale factor. Use abs() so a mirrored/negative mesh scale (e.g.
-    # (-1, 1, 1)) does not flip the SDF sign; the mirror itself is already applied by the query-time
-    # cw_div below and by inv_scale on the gradient.
-    min_scale = wp.min(wp.abs(scale))
     dist, grad = texture_sample_sdf_grad(tex, wp.cw_div(x_local, scale))
-    scaled_dist = dist * min_scale
+    # Convert the normalized-frame distance to the shape-local frame. Under nonuniform scale the
+    # displacement to the closest surface point stretches per axis, so the accurate local distance is
+    # dist * |scale * grad| (the stretch ALONG the surface normal) -- exact for an axis-aligned face,
+    # first-order near the surface where contacts live. min|scale| is a cheap conservative lower bound
+    # for the cull/search. wp.length() / wp.min(wp.abs()) keep a mirrored (negative) scale
+    # sign-correct; the mirror itself is applied by the cw_div query and by inv_scale on the gradient.
+    stretch = wp.length(wp.cw_mul(scale, grad))
+    min_scale = wp.min(wp.abs(scale))
     scaled_grad = wp.cw_mul(grad, inv_scale)
     grad_len = wp.length(scaled_grad)
     if grad_len > 0.0:
         scaled_grad = scaled_grad / grad_len
     else:
         scaled_grad = grad
-    return scaled_dist, scaled_grad
+    return dist * min_scale, dist * stretch, scaled_grad
 
 
 @wp.func
@@ -139,24 +148,24 @@ def optimize_edge_sdf(
     hi = float(1.0)
     c = hi - (hi - lo) * inv_phi
     d = lo + (hi - lo) * inv_phi
-    fc, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
-    fd, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+    fc, _fc_a, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+    fd, _fd_a, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
     for _i in range(n_iter):
         if fc < fd:
             hi = d
             d = c
             fd = fc
             c = hi - (hi - lo) * inv_phi
-            fc, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
+            fc, _fc_a, _gc = eval_shape_sdf(geo, scale, (1.0 - c) * p + c * q, shape_sdf_index, texture_sdf_table)
         else:
             lo = c
             c = d
             fc = fd
             d = lo + (hi - lo) * inv_phi
-            fd, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
+            fd, _fd_a, _gd = eval_shape_sdf(geo, scale, (1.0 - d) * p + d * q, shape_sdf_index, texture_sdf_table)
     u = 0.5 * (lo + hi)
     x = (1.0 - u) * p + u * q
-    phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
+    _phi_l, phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
     return u, x, phi, grad
 
 
@@ -185,7 +194,7 @@ def optimize_face_sdf(
 
     for _i in range(n_iter):
         x = bary[0] * a + bary[1] * b + bary[2] * c
-        _phi_x, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
+        _phi_l, _phi_x, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
         # Frank-Wolfe vertex: argmin_k grad . corner_k (Macklin eq. 4).
         da = wp.dot(grad, a)
         db = wp.dot(grad, b)
@@ -202,7 +211,7 @@ def optimize_face_sdf(
         bary = (1.0 - gamma) * bary + gamma * s
 
     x = bary[0] * a + bary[1] * b + bary[2] * c
-    phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
+    _phi_l, phi, grad = eval_shape_sdf(geo, scale, x, shape_sdf_index, texture_sdf_table)
     return bary, x, phi, grad
 
 
@@ -331,7 +340,7 @@ def create_soft_face_contacts(
     threshold = margin + s_margin + radius
 
     centroid_s = (a_s + b_s + c_s) / 3.0
-    phi_c, _grad_c = eval_shape_sdf(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
+    phi_c, _phi_c_a, _grad_c = eval_shape_sdf(geo, scale, centroid_s, sdf_idx, texture_sdf_table)
     # Conservative cull: the SDF is ~1-Lipschitz, so the triangle's minimum is >= phi_c minus the
     # farthest centroid-to-point distance, which is always a vertex. circumradius can be smaller than
     # that for non-equilateral triangles (e.g. 3-4-5: R=2.5 vs 2.85) and would drop valid contacts.
@@ -427,7 +436,7 @@ def create_soft_edge_contacts(
     threshold = margin + s_margin + radius
 
     mid_s = 0.5 * (p_s + q_s)
-    phi_m, _grad_m = eval_shape_sdf(geo, scale, mid_s, sdf_idx, texture_sdf_table)
+    phi_m, _phi_m_a, _grad_m = eval_shape_sdf(geo, scale, mid_s, sdf_idx, texture_sdf_table)
     if phi_m > threshold + 0.5 * wp.length(q_s - p_s):
         return
 
