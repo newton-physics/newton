@@ -2433,6 +2433,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_barycentric,
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
@@ -2444,6 +2446,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_body_vel,
                     filtered.soft_contact_normal,
                     filtered.soft_contact_tids,
+                    filtered.soft_contact_indices,
+                    filtered.soft_contact_barycentric,
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -3217,6 +3221,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_body_vel: wp.array[wp.vec3],
     src_normal: wp.array[wp.vec3],
     src_tids: wp.array[int],
+    src_indices: wp.array[wp.vec3i],
+    src_barycentric: wp.array[wp.vec3],
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
@@ -3228,6 +3234,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel: wp.array[wp.vec3],
     dst_normal: wp.array[wp.vec3],
     dst_tids: wp.array[int],
+    dst_indices: wp.array[wp.vec3i],
+    dst_barycentric: wp.array[wp.vec3],
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -3257,3 +3265,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
+    # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
+    # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
+    # VBD even with full-surface contact off (E7).
+    dst_indices[dst_id] = src_indices[contact_id]
+    dst_barycentric[dst_id] = src_barycentric[contact_id]
