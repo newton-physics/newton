@@ -12217,6 +12217,125 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ancestor_binding_overrides_unapplied_mesh_binding(self):
+        """An ancestor bind with strongerThanDescendants wins over a mesh's own binding.
+
+        Many assets author ``material:binding`` on meshes without applying MaterialBindingAPI;
+        resolution must still honor a stronger ancestor override (e.g. domain-randomization
+        material rebinding on the asset root).
+        """
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World/Visuals")
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Visuals/Mesh")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        def define_material(path: str, color: tuple[float, float, float]) -> UsdShade.Material:
+            material = UsdShade.Material.Define(stage, path)
+            shader = UsdShade.Shader.Define(stage, f"{path}/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            return material
+
+        original = define_material("/World/Looks/Original", (1.0, 0.0, 0.0))
+        override = define_material("/World/Looks/Override", (0.0, 1.0, 0.0))
+
+        # mesh's own binding: a bare relationship, MaterialBindingAPI deliberately NOT applied
+        mesh.GetPrim().CreateRelationship("material:binding").SetTargets([original.GetPrim().GetPath()])
+        # ancestor override with descendant-winning strength
+        ancestor_binding = UsdShade.MaterialBindingAPI.Apply(root.GetPrim())
+        ancestor_binding.Bind(override, bindingStrength=UsdShade.Tokens.strongerThanDescendants)
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+        np.testing.assert_allclose(
+            material_props["color"],
+            newton.utils.color_linear_to_srgb((0.0, 1.0, 0.0)),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ancestor_binding_overrides_applied_mesh_binding_across_depth(self):
+        """A grandparent strongerThanDescendants bind wins over a mesh's properly applied binding."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        grandparent = UsdGeom.Xform.Define(stage, "/World/Robot")
+        UsdGeom.Xform.Define(stage, "/World/Robot/link")
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Robot/link/Mesh")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        def define_material(path: str, color: tuple[float, float, float]) -> UsdShade.Material:
+            material = UsdShade.Material.Define(stage, path)
+            shader = UsdShade.Shader.Define(stage, f"{path}/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            return material
+
+        original = define_material("/World/Looks/Original", (1.0, 0.0, 0.0))
+        override = define_material("/World/Looks/Override", (0.0, 1.0, 0.0))
+
+        # mesh's own binding: MaterialBindingAPI properly applied this time
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(original)
+        # override two levels up, exercising resolution beyond the immediate parent
+        UsdShade.MaterialBindingAPI.Apply(grandparent.GetPrim()).Bind(
+            override, bindingStrength=UsdShade.Tokens.strongerThanDescendants
+        )
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+        np.testing.assert_allclose(
+            material_props["color"],
+            newton.utils.color_linear_to_srgb((0.0, 1.0, 0.0)),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collection_based_ancestor_binding_resolves(self):
+        """Collection-based ancestor rebinds resolve through canonical ComputeBoundMaterial."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World/Robot")
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Robot/Mesh")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        material = UsdShade.Material.Define(stage, "/World/Looks/CollectionBound")
+        shader = UsdShade.Shader.Define(stage, "/World/Looks/CollectionBound/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        collection = Usd.CollectionAPI.Apply(root.GetPrim(), "blueParts")
+        collection.CreateIncludesRel().AddTarget(mesh.GetPrim().GetPath())
+        UsdShade.MaterialBindingAPI.Apply(root.GetPrim()).Bind(
+            collection, material, "blueParts", bindingStrength=UsdShade.Tokens.strongerThanDescendants
+        )
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+        np.testing.assert_allclose(
+            material_props["color"],
+            newton.utils.color_linear_to_srgb((0.0, 0.0, 1.0)),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_preview_surface_color_space_api_display_color_is_not_converted(self):
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
