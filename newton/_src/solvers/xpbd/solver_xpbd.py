@@ -8,6 +8,7 @@ from ...sim import Contacts, Control, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
+from . import kernels
 from .kernels import (
     accumulate_weighted_contact_impulse,
     apply_body_delta_velocities,
@@ -111,8 +112,45 @@ class SolverXPBD(SolverBase, CouplingInterface):
         rigid_contact_con_weighting: bool = True,
         angular_damping: float = 0.0,
         enable_restitution: bool = False,
+        deterministic: wp.DeterministicMode | None = None,
     ):
+        """Initialize the XPBD solver.
+
+        Args:
+            model: Simulation model to integrate.
+            iterations: Number of constraint-solver iterations per time step. Defaults to 2.
+            soft_body_relaxation: Relaxation factor applied to tetrahedral constraint corrections
+                [dimensionless]. Defaults to 0.9.
+            soft_contact_relaxation: Relaxation factor applied to particle-particle and particle-shape contact
+                corrections [dimensionless]. Defaults to 0.9.
+            joint_linear_relaxation: Relaxation factor applied to linear joint constraint corrections
+                [dimensionless]. Defaults to 0.7.
+            joint_angular_relaxation: Relaxation factor applied to angular joint constraint corrections
+                [dimensionless]. Defaults to 0.4.
+            joint_linear_compliance: Compliance shared by linear joint constraints [m/N]. Defaults to 0.0.
+            joint_angular_compliance: Compliance shared by angular joint constraints [rad/(N·m)]. Defaults to 0.0.
+            rigid_contact_relaxation: Relaxation factor applied to rigid contact constraint corrections
+                [dimensionless]. Defaults to 0.8.
+            rigid_contact_con_weighting: Whether to divide each rigid body's contact correction by its number of
+                active contacts. Defaults to ``True``.
+            angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
+            enable_restitution: Whether to apply restitution to rigid and particle-shape contacts after the
+                positional solve. Defaults to ``False``.
+            deterministic: Opt-in determinism for this solver's atomic-emitting
+                kernel module. Pass a :class:`warp.DeterministicMode`, or
+                ``None`` (default) to inherit the current
+                ``wp.config.deterministic`` mode.
+        """
         super().__init__(model=model)
+        effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        self._set_module_options(
+            {
+                "deterministic": effective_deterministic,
+                "deterministic_max_records": 0,
+            },
+            module=kernels,
+        )
+
         self.iterations = iterations
 
         self.soft_body_relaxation = soft_body_relaxation
@@ -145,14 +183,37 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Refresh cached body data after model properties change.
+
+        Effective inverse masses and inertia tensors are refreshed when
+        :attr:`~newton.ModelFlags.BODY_PROPERTIES` or
+        :attr:`~newton.ModelFlags.BODY_INERTIAL_PROPERTIES` is set. Other flags are ignored.
+
+        Args:
+            flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which model properties
+                changed.
+        """
+        self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
+        """Return whether inertial properties can be refreshed during graph capture.
+
+        Returns:
+            ``True`` because :meth:`notify_model_changed` refreshes the derived inertial buffers with device work.
+        """
         return True
 
     def copy_kinematic_body_state(self, model: Model, state_in: State, state_out: State):
+        """Copy kinematic body poses and velocities from an input state to an output state.
+
+        Args:
+            model: Simulation model that owns the body data.
+            state_in: State containing the source kinematic body poses and velocities.
+            state_out: State that receives the kinematic body poses and velocities.
+        """
         if model.body_count == 0:
             return
         wp.launch(
@@ -266,7 +327,25 @@ class SolverXPBD(SolverBase, CouplingInterface):
         return new_body_q, new_body_qd
 
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+    def step(
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control | None,
+        contacts: Contacts | None,
+        dt: float,
+    ) -> None:
+        """Advance the simulation state by one time step using XPBD.
+
+        Args:
+            state_in: State at the beginning of the time step.
+            state_out: State that receives the simulation result.
+            control: Control inputs. If ``None``, the model's default control values are used.
+            contacts: Contact data produced by :meth:`~newton.Model.collide`. If ``None``, rigid and particle-shape
+                contact handling is skipped; particle-particle contacts and model constraints are still solved.
+            dt: Time step size [s].
+        """
+        self._apply_module_options()
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0
@@ -400,7 +479,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             particle_deltas.zero_()
 
                         # particle-rigid body contacts (besides ground plane)
-                        if model.shape_count:
+                        if model.shape_count and contacts is not None:
                             wp.launch(
                                 kernel=solve_particle_shape_contacts,
                                 dim=contacts.soft_contact_max,
@@ -757,8 +836,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
                             contacts.rigid_contact_point1,
                             contacts.rigid_contact_offset0,
                             contacts.rigid_contact_offset1,
-                            contacts.rigid_contact_margin0,
-                            contacts.rigid_contact_margin1,
                             rigid_contact_inv_weight_init,
                             model.gravity,
                             dt,
@@ -811,6 +888,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
             ValueError: If ``contacts.force`` is ``None`` (not requested), if no step has been run yet,
                 or if the contacts capacity does not match the one used in the last :meth:`step`.
         """
+        self._apply_module_options()
         if contacts.force is None:
             raise ValueError(
                 "contacts.force is not allocated. Call model.request_contact_attributes('force') "

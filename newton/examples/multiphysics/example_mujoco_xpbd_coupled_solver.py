@@ -73,7 +73,7 @@ def _rigid_solver_entry_args(
 
 
 def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, enabled: bool = True):
-    if not enabled or not model.device.is_cuda:
+    if not enabled:
         return None
 
     with wp.ScopedDevice(model.device):
@@ -81,7 +81,7 @@ def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, e
             simulate()
 
     if capture.graph is None:
-        raise RuntimeError(f"CUDA graph capture failed on device {model.device}")
+        raise RuntimeError(f"Graph capture failed on device {model.device}")
     return capture.graph
 
 
@@ -122,9 +122,8 @@ class Example:
         self.model = builder.finalize()
 
         # Contact parameters
-        # self.model.soft_contact_ke = 1.0e6
-        # self.model.soft_contact_kd = 1.03
-        # self.model.soft_contact_mu = 0.5
+        self.model.soft_contact_ke = 1.0e2
+        self.model.soft_contact_kd = 1.0
 
         xpbd_kwargs = {
             "iterations": 40,
@@ -134,7 +133,7 @@ class Example:
             # ---------- Coupled path: rigid solver + XPBD ----------
             rigid_name, rigid_solver, rigid_kwargs = _rigid_solver_entry_args(
                 self.rigid_solver,
-                mujoco_kwargs={"use_mujoco_contacts": False, "njmax": 200, "nconmax": 200},
+                mujoco_kwargs={"use_mujoco_contacts": False, "njmax": 300, "nconmax": 200},
             )
             rigid_body_indices = wp.array(list(range(rigid_body_start, rigid_body_end)), dtype=int)
             xpbd_body_indices = wp.array(
@@ -251,13 +250,13 @@ class Example:
             cell_y=1.0 / 30.0,
             mass=0.1,
             add_springs=True,
-            spring_ke=1.0e4,
+            spring_ke=1.0e2,
             spring_kd=1.0,
-            tri_ke=1.0e4,
-            tri_ka=1.0e4,
-            tri_kd=0.0,
+            tri_ke=1.0e2,
+            tri_ka=1.0e2,
+            tri_kd=1.0e-1,
             edge_ke=1.0e2,
-            edge_kd=0.0,
+            edge_kd=1.0e-1,
             particle_radius=0.01,
         )
 
