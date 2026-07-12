@@ -161,6 +161,8 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
         shape_source: wp.array[wp.uint64],
         shape_gap: wp.array[float],
         shape_flags: wp.array[wp.int32],
+        shape_sdf_index: wp.array[wp.int32],
+        shape_edge_range: wp.array[wp.vec2i],
         writer_data: Any,
         total_num_threads: int,
         # Output: pairs that need GJK/MPR processing
@@ -293,11 +295,24 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             # =====================================================================
             is_mesh_a = type_a == GeoType.MESH
             is_mesh_b = type_b == GeoType.MESH
+            is_box_a = type_a == GeoType.BOX
+            is_box_b = type_b == GeoType.BOX
             is_plane_a = type_a == GeoType.PLANE
             is_infinite_plane_a = is_plane_a and (scale_a[0] == 0.0 and scale_a[1] == 0.0)
+            has_sdf_edges_a = shape_sdf_index[shape_a] >= 0 and shape_edge_range[shape_a][1] > 0
+            has_sdf_edges_b = shape_sdf_index[shape_b] >= 0 and shape_edge_range[shape_b][1] > 0
 
-            # Mesh-mesh collision
-            if is_mesh_a and is_mesh_b:
+            # Existing mesh-mesh pairs keep their legacy SDF/BVH fallback
+            # behavior. New planar SDF cases require both shapes to have
+            # texture SDF data and edges; otherwise the old routing is cheaper.
+            # Keep box-box on its existing GJK/MPR path even when SDFs are
+            # present. The output buffer must exist for the SDF edge route.
+            if (is_mesh_a and is_mesh_b) or (
+                shape_pairs_mesh_mesh.shape[0] > 0
+                and has_sdf_edges_a
+                and has_sdf_edges_b
+                and not (is_box_a and is_box_b)
+            ):
                 idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                 if idx < shape_pairs_mesh_mesh.shape[0]:
                     shape_pairs_mesh_mesh[idx] = wp.vec2i(shape_a, shape_b)
@@ -1522,7 +1537,6 @@ class NarrowPhase:
         self.deterministic = deterministic
         self.verify_buffers = verify_buffers
         device_obj = wp.get_device(device)
-
         # Contact reduction requires either meshes or heightfields (the
         # mesh/heightfield-triangle path feeds the global reducer, so
         # heightfield-only scenes still benefit from reduction).
@@ -1814,6 +1828,8 @@ class NarrowPhase:
         """
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
+        if shape_edge_range is None:
+            shape_edge_range = self._empty_edge_range
 
         # Clear all counters with a single kernel launch (consolidated counter array)
         self._counter_array.zero_()
@@ -1833,6 +1849,8 @@ class NarrowPhase:
                 shape_source,
                 shape_gap,
                 shape_flags,
+                shape_sdf_index,
+                shape_edge_range,
                 writer_data,
                 self.total_num_threads,
             ],
@@ -2048,9 +2066,6 @@ class NarrowPhase:
                 texture_sdf_data = wp.zeros(0, dtype=TextureSDFData, device=device)
             if mesh_edge_indices is None:
                 mesh_edge_indices = self._empty_edge_indices
-            if shape_edge_range is None:
-                shape_edge_range = self._empty_edge_range
-
             if self.mesh_mesh_contacts_kernel is not None:
                 if self.reduce_contacts and self.mesh_mesh_block_offsets is not None:
                     # Mesh-mesh contacts → buffer + inline hashtable registration

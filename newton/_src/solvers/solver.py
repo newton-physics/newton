@@ -1,10 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any
+
 import warp as wp
 
 from ..geometry import ParticleFlags
 from ..sim import BodyFlags, Contacts, Control, Model, ModelBuilder, ModelFlags, State, StateFlags
+
+
+def _set_module_options_if_changed(options: dict[str, Any], module: Any) -> bool:
+    current_options = wp.get_module_options(module=module)
+    if any(current_options.get(name) != value for name, value in options.items()):
+        wp.set_module_options(options, module=module)
+        return True
+    return False
 
 
 @wp.kernel
@@ -183,8 +193,29 @@ class SolverBase:
     necessary.
     """
 
+    _module_options_revision = 0
+
     def __init__(self, model: Model):
         self.model = model
+        self._module_options: dict[Any, dict[str, Any]] = {}
+        self._applied_module_options_revision = -1
+
+    def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
+        self._module_options[module] = dict(options)
+        if _set_module_options_if_changed(options, module):
+            SolverBase._module_options_revision += 1
+        self._applied_module_options_revision = SolverBase._module_options_revision
+
+    def _apply_module_options(self) -> None:
+        if self._applied_module_options_revision == SolverBase._module_options_revision:
+            return
+
+        changed = False
+        for module, options in self._module_options.items():
+            changed |= _set_module_options_if_changed(options, module)
+        if changed:
+            SolverBase._module_options_revision += 1
+        self._applied_module_options_revision = SolverBase._module_options_revision
 
     @property
     def device(self) -> wp.Device:
@@ -233,11 +264,11 @@ class SolverBase:
         Integrate the rigid bodies of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
-            angular_damping (float, optional): The angular damping factor.
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
+            angular_damping: The angular damping factor.
                 Defaults to 0.0.
         """
         if model.body_count:
@@ -274,10 +305,10 @@ class SolverBase:
         Integrate the particles of the model.
 
         Args:
-            model (Model): The model to integrate.
-            state_in (State): The input state.
-            state_out (State): The output state.
-            dt (float): The time step (typically in seconds).
+            model: The model to integrate.
+            state_in: The input state.
+            state_out: The output state.
+            dt: The time step (typically in seconds).
         """
         if model.particle_count:
             wp.launch(
@@ -395,6 +426,6 @@ class SolverBase:
         Register custom attributes for the solver.
 
         Args:
-            builder (ModelBuilder): The model builder to register the custom attributes to.
+            builder: The model builder to register the custom attributes to.
         """
         pass

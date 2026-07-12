@@ -22,7 +22,15 @@ from newton.viewer import ViewerFile
 
 
 class TestRecorder(unittest.TestCase):
-    pass
+    def test_viewer_file_is_running_reflects_close(self):
+        """ViewerFile loop lifecycle matches interactive viewers."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=True) as tmp:
+            viewer_file = ViewerFile(tmp.name, auto_save=False)
+
+            self.assertTrue(viewer_file.is_running())
+
+            viewer_file.close()
+            self.assertFalse(viewer_file.is_running())
 
 
 def test_ringbuffer_basic(test: TestRecorder, device):
@@ -225,8 +233,9 @@ def test_viewer_file_playback(test: TestRecorder, device):
         viewer_file_record.set_model(model)
         for state in states:
             viewer_file_record.log_state(state)
-        viewer_file_record.save_recording()
+
         viewer_file_record.close()
+        test.assertFalse(viewer_file_record.is_running())
 
         # Playback via ViewerFile
         viewer_file_play = ViewerFile(file_path)
@@ -240,6 +249,11 @@ def test_viewer_file_playback(test: TestRecorder, device):
 
         test.assertEqual(restored_model.body_count, model.body_count)
         test.assertEqual(restored_model.shape_count, model.shape_count)
+        test.assertIsInstance(restored_model.attribute_specs["body_q"], newton.Model.AttributeSpec)
+        test.assertIs(
+            restored_model.attribute_specs["body_q"].frequency,
+            newton.Model.AttributeFrequency.BODY,
+        )
 
         for frame_id in range(3):
             restored_state = restored_model.state()

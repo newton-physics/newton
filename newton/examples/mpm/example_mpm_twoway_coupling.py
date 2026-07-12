@@ -128,7 +128,7 @@ class Example:
         mpm_options.max_iterations = 50
         mpm_options.critical_fraction = 0.0
 
-        self.mpm_solver = SolverImplicitMPM(self.sand_model, mpm_options)
+        self.mpm_solver = SolverImplicitMPM(self.sand_model, config=mpm_options)
         # read colliders from the RB model rather than the sand model
         self.mpm_solver.setup_collider(model=self.model)
 
@@ -178,12 +178,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):

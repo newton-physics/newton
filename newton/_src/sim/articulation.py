@@ -630,14 +630,14 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
     between a parent and child body.
 
     Args:
-        q_pc (quat): The relative rotation between the parent and child body.
-        w_err (vec3): The angular velocity between the parent and child body.
-        X_wp (transform): The transform from the parent body frame to the joint parent anchor frame.
-        axis (vec3): The joint axis in the joint parent anchor frame.
+        q_pc: The relative rotation between the parent and child body.
+        w_err: The angular velocity between the parent and child body.
+        X_wp: The transform from the parent body frame to the joint parent anchor frame.
+        axis: The joint axis in the joint parent anchor frame.
 
     Returns:
-        q (float): The joint position coordinate.
-        qd (float): The joint velocity coordinate.
+        q: The joint position coordinate.
+        qd: The joint velocity coordinate.
     """
     axis_p = wp.transform_vector(X_wp, axis)
     twist = wp.quat_twist(axis, q_pc)
@@ -961,13 +961,51 @@ def eval_ik(
 
 
 @wp.func
+def write_free_distance_motion_subspace(
+    X_pa_world: wp.transform,
+    x_child_com_world: wp.vec3,
+    qd_start: int,
+    # outputs
+    joint_S_s: wp.array[wp.spatial_vector],
+):
+    """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
+
+    Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
+    the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
+    column layout. Linear DOFs act at the child body's COM; angular DOFs are
+    world-aligned axes expressed through ``X_pa_world``.
+
+    Args:
+        X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
+            to rotate the joint's parent-anchor axes into the world frame.
+            This is *not* the classical Featherstone ``X_sc`` (spatial-to-
+            child); Newton's FREE/DISTANCE joint coordinates live in the
+            parent-anchor basis.
+        x_child_com_world: World-space position of the child body's COM.
+        qd_start: Starting velocity-DOF index for this joint.
+        joint_S_s: Output spatial-vector subspace array; six slots starting at
+            ``qd_start`` are overwritten.
+    """
+    axis_world_x = wp.transform_vector(X_pa_world, wp.vec3(1.0, 0.0, 0.0))
+    axis_world_y = wp.transform_vector(X_pa_world, wp.vec3(0.0, 1.0, 0.0))
+    axis_world_z = wp.transform_vector(X_pa_world, wp.vec3(0.0, 0.0, 1.0))
+
+    joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
+    joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
+    joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
+    joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
+    joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
+    joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
+
+
+@wp.func
 def jcalc_motion_subspace(
-    type: int,
+    joint_type_value: int,
     joint_axis: wp.array[wp.vec3],
     joint_q: wp.array[float],
     lin_axis_count: int,
     ang_axis_count: int,
-    X_sc: wp.transform,
+    X_pa_world: wp.transform,
     X_wc: wp.transform,
     body_com_child: wp.vec3,
     q_start: int,
@@ -979,6 +1017,18 @@ def jcalc_motion_subspace(
 
     This populates joint_S_s with the motion subspace vectors for each DoF,
     which represent how each joint coordinate affects the spatial velocity.
+
+    Args:
+        X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
+            to rotate the joint's parent-anchor axes into the world frame.
+            This is *not* the classical Featherstone ``X_sc`` (spatial-to-
+            child); Newton's joint axes are defined in the parent-anchor
+            basis.
+        X_wc: Child body pose in world space.
+        body_com_child: Child body's COM offset (in the child body frame).
+        qd_start: Starting velocity-DOF index for this joint.
+        joint_S_s: Output motion-subspace array; the joint's columns
+            starting at ``qd_start`` are overwritten.
 
     Note:
         For D6 joints with two or three angular DOFs the angular axes are
@@ -992,38 +1042,38 @@ def jcalc_motion_subspace(
         isotropic angular DOF) and are primarily designed for VBD solver.
         If encountered, their Jacobian columns will remain zero.
     """
-    if type == JointType.PRISMATIC:
+    if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+        S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
         joint_S_s[qd_start] = S_s
 
-    elif type == JointType.REVOLUTE:
+    elif joint_type_value == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+        S_s = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
         joint_S_s[qd_start] = S_s
 
-    elif type == JointType.D6:
+    elif joint_type_value == JointType.D6:
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 0] = S_s
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 1] = S_s
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
         if ang_axis_count == 1:
             axis = joint_axis[iqd]
-            joint_S_s[iqd] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            joint_S_s[iqd] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
         if ang_axis_count == 2:
             a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
-            joint_S_s[iqd + 0] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
         if ang_axis_count == 3:
             a0, a1, a2 = transform_3d_rotational_axes(
                 joint_axis[iqd + 0],
@@ -1032,30 +1082,21 @@ def jcalc_motion_subspace(
                 joint_q[iq + 0],
                 joint_q[iq + 1],
             )
-            joint_S_s[iqd + 0] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a1))
-            joint_S_s[iqd + 2] = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), a2))
+            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 2] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a2))
 
-    elif type == JointType.BALL:
-        S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+    elif joint_type_value == JointType.BALL:
+        S_0 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        S_1 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        S_2 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
         joint_S_s[qd_start + 0] = S_0
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
-    elif type == JointType.FREE or type == JointType.DISTANCE:
+    elif joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
-        axis_world_x = wp.transform_vector(X_sc, wp.vec3(1.0, 0.0, 0.0))
-        axis_world_y = wp.transform_vector(X_sc, wp.vec3(0.0, 1.0, 0.0))
-        axis_world_z = wp.transform_vector(X_sc, wp.vec3(0.0, 0.0, 1.0))
-
-        joint_S_s[qd_start + 0] = wp.spatial_vector(axis_world_x, wp.vec3())
-        joint_S_s[qd_start + 1] = wp.spatial_vector(axis_world_y, wp.vec3())
-        joint_S_s[qd_start + 2] = wp.spatial_vector(axis_world_z, wp.vec3())
-        joint_S_s[qd_start + 3] = wp.spatial_vector(-wp.cross(axis_world_x, x_child_com_world), axis_world_x)
-        joint_S_s[qd_start + 4] = wp.spatial_vector(-wp.cross(axis_world_y, x_child_com_world), axis_world_y)
-        joint_S_s[qd_start + 5] = wp.spatial_vector(-wp.cross(axis_world_z, x_child_com_world), axis_world_z)
+        write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
 
 @wp.kernel
@@ -1363,6 +1404,176 @@ def eval_articulation_mass_matrix(
                         sum_val += J_ik * I_s[k, l] * J_jl
 
                 H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
+
+
+@wp.kernel
+def eval_articulation_inverse_dynamics_force_kernel(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    articulation_count: int,
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    H: wp.array3d[float],
+    qddot: wp.array[float],
+    coriolis_force: wp.array[float],
+    gravity_force: wp.array[float],
+    # outputs
+    tau: wp.array[float],
+):
+    """Compute the manipulator-equation joint force per articulation.
+
+    Evaluates ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` per DOF, with the
+    ``M(q)*qddot`` term taken from ``H @ qddot`` and the bias terms from the
+    values :func:`eval_inverse_dynamics` populates into
+    :attr:`InverseDynamics.coriolis_force` and
+    :attr:`InverseDynamics.gravity_force`.
+
+    For any FREE/DISTANCE joint, ``H`` is in the joint's parent frame while the
+    bias terms are in world frame, so the six ``H @ qddot`` components are
+    rotated to world before summing.
+
+    Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
+    mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
+    internal DOFs) articulations is handled uniformly.
+    """
+    art_idx = wp.tid()
+
+    if art_idx >= articulation_count:
+        return
+
+    joint_start = articulation_start[art_idx]
+    joint_end = articulation_end[art_idx]
+    dof_start = joint_qd_start[joint_start]
+    dof_end = joint_qd_start[joint_end]
+    dof_count = dof_end - dof_start
+
+    # Mass-matrix term M(q)*qddot, stored into tau as scratch.
+    for i in range(dof_count):
+        sum_val = float(0.0)
+        for j in range(dof_count):
+            sum_val += H[art_idx, i, j] * qddot[dof_start + j]
+        tau[dof_start + i] = sum_val
+
+    # Rotate every FREE/DISTANCE wrench from parent frame to world so it
+    # matches the world-frame bias terms. H @ qddot is conjugate to the
+    # parent-frame qddot convention used internally; coriolis_force and
+    # gravity_force already use the world-frame CoM-wrench convention of
+    # Control.joint_f. Any FREE/DISTANCE joint in the articulation tree
+    # (not only the root) needs this rotation.
+    for ji in range(joint_start, joint_end):
+        jtype = joint_type[ji]
+        if jtype == JointType.FREE or jtype == JointType.DISTANCE:
+            jdof = joint_qd_start[ji]
+            X_wpj = joint_X_p[ji]
+            parent = joint_parent[ji]
+            if parent >= 0:
+                X_wpj = body_q[parent] * X_wpj
+            q_p = wp.transform_get_rotation(X_wpj)
+            f_lin = wp.quat_rotate(q_p, wp.vec3(tau[jdof + 0], tau[jdof + 1], tau[jdof + 2]))
+            f_ang = wp.quat_rotate(q_p, wp.vec3(tau[jdof + 3], tau[jdof + 4], tau[jdof + 5]))
+            tau[jdof + 0] = f_lin[0]
+            tau[jdof + 1] = f_lin[1]
+            tau[jdof + 2] = f_lin[2]
+            tau[jdof + 3] = f_ang[0]
+            tau[jdof + 4] = f_ang[1]
+            tau[jdof + 5] = f_ang[2]
+
+    # Add the world-frame bias terms.
+    for i in range(dof_count):
+        tau[dof_start + i] = tau[dof_start + i] + coriolis_force[dof_start + i] + gravity_force[dof_start + i]
+
+    # Zero loop-closure DOF slots (gap between tree-joint end and next
+    # articulation start). Non-empty when loop-closing joints carry
+    # generalized coordinates; articulation_start has a sentinel entry so
+    # art_idx + 1 is always in bounds.
+    gap_end = joint_qd_start[articulation_start[art_idx + 1]]
+    for k in range(dof_end, gap_end):
+        tau[k] = float(0.0)
+
+
+def eval_inverse_dynamics_force(
+    model: Model,
+    state: State,
+    H: wp.array3d[wp.float32],
+    qddot: wp.array[wp.float32],
+    coriolis_force: wp.array[wp.float32],
+    gravity_force: wp.array[wp.float32],
+    tau: wp.array[wp.float32],
+) -> None:
+    """Evaluate the manipulator-equation joint force ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
+
+    Combines a per-articulation mass-matrix-times-acceleration product with
+    the Coriolis and gravity forces to produce the full joint force
+    required to realize ``qddot`` at the current ``(q, q_dot)`` under
+    gravity, writing the result into ``tau`` in place. The two force
+    inputs follow the standard manipulator-equation sign convention
+    (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
+    :func:`eval_inverse_dynamics`) and are added directly. Per-articulation
+    DOF counts are recovered from :attr:`Model.joint_qd_start`, so a mix of
+    fixed-root and floating-root articulations across multiple worlds is
+    handled uniformly.
+
+    For any FREE/DISTANCE joint in the articulation tree the mass matrix ``H``
+    is expressed in the joint's parent frame while
+    ``coriolis_force``/``gravity_force`` are in the world-frame CoM-wrench
+    convention of :attr:`Control.joint_f`; each such joint's ``H @ qddot``
+    wrench is rotated to world (using ``state.body_q`` for the
+    parent-frame-in-world rotation) before the sum, so ``tau`` is entirely in
+    that world convention.
+
+    Args:
+        model: The model containing articulation definitions.
+        state: State providing ``body_q``, used to rotate the FREE/DISTANCE
+            root ``H @ qddot`` wrench into the world frame. Must be consistent
+            with the ``H`` and bias buffers (i.e. the state passed to
+            :func:`eval_inverse_dynamics`).
+        H: Joint-space mass matrix ``M(q)`` [kg, kg·m, or kg·m^2, depending
+            on the joint types of the row/column DOFs], shape
+            ``(articulation_count, max_dofs_per_articulation,
+            max_dofs_per_articulation)``, dtype float, typically produced
+            by :func:`eval_mass_matrix`.
+        qddot: Joint accelerations [m/s^2 or rad/s^2, depending on joint
+            type], shape ``(joint_dof_count,)``, dtype float.
+        coriolis_force: Coriolis force ``C(q, q_dot)*q_dot`` [N or N·m,
+            depending on joint type], shape ``(joint_dof_count,)``, dtype
+            float, e.g. :attr:`InverseDynamics.coriolis_force`.
+        gravity_force: Gravity force ``g(q) = ∂U/∂q`` [N or N·m, depending
+            on joint type], shape ``(joint_dof_count,)``, dtype float,
+            e.g. :attr:`InverseDynamics.gravity_force`.
+        tau: Output joint forces [N or N·m, depending on joint type],
+            shape ``(joint_dof_count,)``, dtype float, written in place.
+            Typically :attr:`InverseDynamics.tau`.
+    """
+    if model.articulation_count == 0:
+        return
+
+    expected_shape = (model.joint_dof_count,)
+    if tau.shape != expected_shape:
+        raise ValueError(f"tau has shape {tau.shape}, expected {expected_shape}.")
+
+    wp.launch(
+        kernel=eval_articulation_inverse_dynamics_force_kernel,
+        dim=model.articulation_count,
+        inputs=[
+            model.articulation_start,
+            model.articulation_end,
+            model.articulation_count,
+            model.joint_type,
+            model.joint_parent,
+            model.joint_qd_start,
+            model.joint_X_p,
+            state.body_q,
+            H,
+            qddot,
+            coriolis_force,
+            gravity_force,
+        ],
+        outputs=[tau],
+        device=model.device,
+    )
 
 
 def eval_mass_matrix(

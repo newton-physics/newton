@@ -179,7 +179,7 @@ class Example:
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
-            self.iterations,
+            iterations=self.iterations,
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.002,
             particle_self_contact_margin=0.0035,
@@ -224,10 +224,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         self.model.collide(self.state_0, self.contacts)
