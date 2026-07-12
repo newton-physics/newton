@@ -165,6 +165,8 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
+        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.model.contacts(collision_pipeline=pipeline)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -179,8 +181,6 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
 
         body_q = self.state_0.body_q.numpy()
         self.rest_pos = np.asarray([body_q[b][:3] for b in self.bodies], dtype=np.float64)

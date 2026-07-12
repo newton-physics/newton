@@ -161,6 +161,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         transforms must match the joint angles at solver creation time
         (see example below).
 
+        For CUDA graph capture, the recommended construction order is
+        ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
+
     Example
     -------
 
@@ -171,13 +174,15 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         model = builder.finalize()
 
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = model.contacts(collision_pipeline=collision_pipeline)
+
         solver = newton.solvers.SolverVBD(model)
 
-        # Initialize states and contacts
+        # Initialize states and control
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.contacts()
 
         # Simulation loop
         for i in range(100):
