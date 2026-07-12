@@ -1581,6 +1581,7 @@ class TestModelMesh(unittest.TestCase):
 
 class TestModelJoints(unittest.TestCase):
     def test_add_builder_xform_updates_root_free_joint_target(self):
+        """Transformed root free-joint targets preserve authored targets."""
         prev = newton.use_coord_layout_targets
         newton.use_coord_layout_targets = True
         try:

@@ -992,6 +992,7 @@ class TestImportUrdfBasic(unittest.TestCase):
 
 class TestImportUrdfBaseJoints(unittest.TestCase):
     def test_floating_true_initializes_coord_target_from_xform(self):
+        """Floating URDF root targets start from the imported root transform."""
         urdf_content = """
 <robot name="test_floating_target">
     <link name="base_link"/>
