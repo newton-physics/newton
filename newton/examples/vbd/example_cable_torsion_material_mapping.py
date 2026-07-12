@@ -169,7 +169,6 @@ class Example:
         )
 
         self.bodies = list(map(int, bodies))
-        self.cable_bodies = list(map(int, bodies))
         self.root_body = self.bodies[0]
         self.tip_body = self.bodies[-1]
 
@@ -194,7 +193,6 @@ class Example:
         self._twist_rate_wp = wp.array(self._twist_rate_np, dtype=float)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.0, -3.4, 1.15),

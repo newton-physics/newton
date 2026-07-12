@@ -76,7 +76,6 @@ class Example:
 
         self.tip_bodies: list[int] = []
         self.tip_rest_z: list[float] = []
-        self.cable_bodies: list[int] = []
 
         for i, bend_stiffness in enumerate(self.BEND_STIFFNESS_VALUES):
             y_pos = (i - (self.num_cables - 1) * 0.5) * self.Y_SEPARATION
@@ -107,8 +106,6 @@ class Example:
                 label=f"cantilever_k{int(bend_stiffness)}",
                 body_frame_origin="com",
             )
-            self.cable_bodies.extend(int(b) for b in rod_bodies)
-
             # Zero mass + zero inertia in Newton's VBD makes the root kinematic.
             root_body = rod_bodies[0]
             builder.body_mass[root_body] = 0.0
@@ -137,7 +134,6 @@ class Example:
             self.tip_rest_z.append(float(node[2]))
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.5 * self.cable_length, -3.1, 0.85),

@@ -108,7 +108,6 @@ class Example:
 
         self.bend_cases = []
         self.twist_cases = []
-        self.cable_bodies: list[int] = []
         mode = getattr(args, "cable_analytic_mode", "all")
         if mode not in ("all", "bend", "twist", "twist_max"):
             raise ValueError(f"Unknown cable_analytic_mode: {mode}")
@@ -173,7 +172,6 @@ class Example:
         self._kinematic_rot = wp.array(self._kinematic_rot_np, dtype=wp.quat)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.5 * self.cable_length + 4.2, 0.0, 1.35),
@@ -215,7 +213,6 @@ class Example:
             wrap_in_articulation=False,
             body_frame_origin="com",
         )
-        self.cable_bodies.extend(int(b) for b in bodies)
         return list(bodies), list(joints)
 
     def _make_kinematic(self, builder, body_index: int) -> None:

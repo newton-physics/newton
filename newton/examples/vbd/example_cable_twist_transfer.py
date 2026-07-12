@@ -84,7 +84,6 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.cases: list[dict] = []
-        self.cable_bodies: list[int] = []
 
         builder = newton.ModelBuilder(gravity=0.0)
 
@@ -108,8 +107,6 @@ class Example:
                 wrap_in_articulation=False,
                 body_frame_origin="com",
             )
-            self.cable_bodies.extend(int(b) for b in bodies)
-
             root_body = int(bodies[0])
             tip_body = int(bodies[-1])
             for body in (root_body, tip_body):
@@ -150,7 +147,6 @@ class Example:
         self._twist_rate_wp = wp.array(self._twist_rate_np, dtype=float)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(4.4, 0.0, 1.45),

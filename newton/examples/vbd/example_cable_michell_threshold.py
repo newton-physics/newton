@@ -90,7 +90,6 @@ class Example:
 
         builder = newton.ModelBuilder(gravity=0.0)
         self.cases = []
-        self.cable_bodies: list[int] = []
         x_offsets = self._case_offsets(len(self.TWIST_TO_BEND_RATIOS))
         for twist_to_bend, x_offset in zip(self.TWIST_TO_BEND_RATIOS, x_offsets, strict=True):
             twist_stiffness = self.BEND_STIFFNESS * float(twist_to_bend)
@@ -113,7 +112,6 @@ class Example:
                 wrap_in_articulation=True,
                 body_frame_origin="com",
             )
-            self.cable_bodies.extend(int(b) for b in bodies)
             is_dynamic = factor > 1.0
             if not is_dynamic:
                 self._make_bodies_kinematic(builder, bodies)
@@ -148,7 +146,6 @@ class Example:
 
         self._apply_initial_twist_and_seed()
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.0, -7.2, 2.35),

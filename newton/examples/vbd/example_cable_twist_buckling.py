@@ -177,7 +177,6 @@ class Example:
         )
 
         self.bodies = list(map(int, bodies))
-        self.cable_bodies = list(map(int, bodies))
         self.joints = list(map(int, joints))
         if self.contact_enabled:
             self._filter_near_rod_collision_pairs(builder, self.bodies, self.CONTACT_TOPOLOGICAL_FILTER_SPAN)
@@ -238,7 +237,6 @@ class Example:
         self.twist_angles = wp.array(self.twist_angles_np, dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.50 * self.cable_length, -6.20, 1.05),

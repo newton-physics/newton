@@ -818,7 +818,6 @@ class Example:
 
         # Viewer setup.
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
             pick_state = picking.pick_state.numpy()

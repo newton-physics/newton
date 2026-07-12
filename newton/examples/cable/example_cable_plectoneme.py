@@ -201,7 +201,6 @@ class Example:
         self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.bodies)
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
             if hasattr(self.viewer, "camera"):

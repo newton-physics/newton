@@ -101,7 +101,6 @@ class Example:
         newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
         self.cases: list[dict] = []
-        self.cable_bodies: list[int] = []
         for name, mode, has_dahl in (
             ("bend_elastic", "bend", False),
             ("bend_dahl", "bend", True),
@@ -159,7 +158,6 @@ class Example:
         self._kinematic_rot = wp.array(self._kinematic_rot_np, dtype=wp.quat)
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(self.cable_bodies)
         set_viewer_camera(
             self.viewer,
             pos=wp.vec3(0.5 * self.cable_length, -3.5, 1.05),
@@ -214,7 +212,6 @@ class Example:
             label=f"dahl_{name}",
             body_frame_origin="com",
         )
-        self.cable_bodies.extend(int(b) for b in rod_bodies)
         joint_count_after = builder.joint_count
 
         # Root is fixed for every cantilever. Twist cases also prescribe the
