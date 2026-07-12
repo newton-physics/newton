@@ -239,11 +239,14 @@ class TestUSDDeformableCable(unittest.TestCase):
             expected_stretch = stretch_mod * area / seg_len
             expected_bend = bend_mod * inertia / seg_len
 
-            # Cable joints store stretch in the linear DOF target_ke, bend in the angular.
+            # Split cable joints store target_ke as stretch, shear, bend, twist. The USD importer
+            # currently ignores authored shear/twist moduli, so those slots use the builder fallbacks.
             dof0 = builder.joint_qd_start[j0]
             ke = builder.joint_target_ke
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
-            self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 1], expected_stretch, delta=expected_stretch * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 2], expected_bend, delta=expected_bend * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 3], expected_bend, delta=expected_bend * 1e-3)
 
             # The as-authored material - including the dropped shear/twist moduli - is preserved.
             attrs = result["path_cable_attrs"]["/World/Cable"]
