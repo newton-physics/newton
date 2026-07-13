@@ -2103,7 +2103,7 @@ class DeformableView:
     ranges. Global groups (world ``-1``) cannot be mixed with per-world groups.
 
     Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
-    changes its initial arrays; writing a state changes only that state. Host group
+    changes its initial arrays; writing a state changes only that state. Host
     ``group_indices`` select flat group rows. ``world_indices`` select actual model
     worlds when every world has exactly one matching group. Host group indices are
     bounds-checked and duplicates are rejected. Device ``int32`` indices stay on the
@@ -2148,7 +2148,7 @@ class DeformableView:
         *,
         family: str,
         verbose: bool | None = None,
-    ):
+    ) -> None:
         if family not in self._FAMILY_KINDS:
             raise ValueError(f"Unknown deformable family '{family}'; expected one of {sorted(self._FAMILY_KINDS)}")
         self.model = model
@@ -2208,18 +2208,18 @@ class DeformableView:
         for count in counts_per_world:
             world_starts.append(world_starts[-1] + count)
         self._world_starts = world_starts
-        self.world_starts = wp.array(world_starts, dtype=wp.int32, device=self.device)
+        self.world_starts: wp.array[wp.int32] = wp.array(world_starts, dtype=wp.int32, device=self.device)
         """Device offsets partitioning the flat groups by world, shape ``(world_count + 1,)``."""
-        self.world_ids = wp.array(self.worlds, dtype=wp.int32, device=self.device)
+        self.world_ids: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
         """World index of each flat group, shape ``(count,)``."""
-        self.model_group_ids = [g.id for g in selected]
+        self.model_group_ids: list[int] = [g.id for g in selected]
         """Model-global identity of each selected group for this finalized model."""
 
         # Element ranges are always available; only rectangular operations require homogeneity.
-        self._all_groups: wp.array | None = None  # lazy identity indices for full-selection writes
-        self._last_group_rows = wp.empty(self.count, dtype=wp.int32, device=self.device)
+        self._all_groups: wp.array[wp.int32] | None = None  # lazy identity indices for full-selection writes
+        self._last_group_rows: wp.array[wp.int32] = wp.empty(self.count, dtype=wp.int32, device=self.device)
         self._ranges: dict[str, list[tuple[int, int]]] = {}
-        self._starts: dict[str, wp.array] = {}
+        self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
         for kind in self._FAMILY_KINDS[family]:
             kind_ranges = [g.ranges[kind] for g in selected]
@@ -2264,7 +2264,7 @@ class DeformableView:
 
         Together with :meth:`elements_per_group` this drives custom kernels over the
         selection without a host round-trip; the view's own gather/scatter kernels use
-        the same array.
+        the same array. Treat the returned internal array as read-only.
         """
         self._validate_kind(kind)
         return self._starts[kind]
@@ -2286,7 +2286,7 @@ class DeformableView:
             )
         return count
 
-    def _gather(self, kind: str, src: wp.array, kernel, dtype) -> wp.array[Any]:
+    def _gather(self, kind: str, src: wp.array[Any], kernel: Any, dtype: Any) -> wp.array[Any]:
         count = self._element_count(kind)
         out = wp.empty((self.count, count), dtype=dtype, device=self.device)
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
@@ -2325,7 +2325,7 @@ class DeformableView:
         kind: str,
         values: Any,
         kernel: Any,
-        dst: wp.array,
+        dst: wp.array[Any],
         dtype: Any,
         group_indices: Any = None,
         world_indices: Any = None,

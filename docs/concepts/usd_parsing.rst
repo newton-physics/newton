@@ -184,10 +184,14 @@ Every imported deformable can be looked up by its prim path in the mapping
 ranges. Without the flag the return shape carries no deformable entries. On the finalized
 :class:`~newton.Model`, select groups by label pattern with
 :class:`~newton.selection.DeformableView` (following
-:class:`~newton.selection.ArticulationView`): it batches each group's state as
-``(count, elements_per_group)`` arrays and exposes the raw per-group ranges
-(:meth:`~newton.selection.DeformableView.ranges`) for consumers that need each group's slice of
-the flat model arrays. The ranges stay valid through :meth:`~newton.ModelBuilder.finalize`,
+:class:`~newton.selection.ArticulationView`): it batches each group's state on one flat group
+axis as ``(group_count, elements_per_group)`` arrays. ``world_starts`` partitions that axis by
+model world, including empty worlds, and ``world_ids`` identifies the world of every group.
+Setters use ``group_indices`` for flat rows or ``world_indices`` when every world has exactly
+one match. The view also exposes raw per-group ranges
+(:meth:`~newton.selection.DeformableView.ranges`) for deformables with different element counts
+and for consumers that need slices of the flat model arrays. The ranges stay valid through
+:meth:`~newton.ModelBuilder.finalize`,
 :meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
 one group per world), and ``collapse_fixed_joints`` (cable ranges follow the renumbered bodies
 and joints).
@@ -236,6 +240,8 @@ close a loop, so they stay outside the articulation.
     # Post-finalize selection by label pattern:
     cable = newton.selection.DeformableView(model, "/World/Cable", family="curve")
     ((body_start, body_end),) = cable.ranges("body")
+    # With one matching cable per world, these are real model world IDs.
+    cable.set_body_velocities(state, reset_velocities, world_indices=environment_ids)
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly
