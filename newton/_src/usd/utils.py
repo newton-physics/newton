@@ -1571,6 +1571,11 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
 
+    Custom primvars use their authored interpolation to determine attribute
+    frequency. Other custom arrays use length-based inference; arrays whose
+    frequency is ambiguous or cannot be inferred emit a warning and are
+    omitted without preventing the TetMesh from loading.
+
     Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
     (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
     are read off any bound material, matching the pre-canonical behavior. That default is
@@ -1773,14 +1778,32 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
             except (TypeError, ValueError):
                 pass  # skip non-array attributes
 
-    return TetMesh(
+    result = TetMesh(
         vertices=vertices,
         tet_indices=tet_indices,
         k_mu=k_mu,
         k_lambda=k_lambda,
         density=density,
-        custom_attributes=custom_attributes if custom_attributes else None,
     )
+    tri_count = len(result.surface_tri_indices) // 3
+    for name, value in custom_attributes.items():
+        if name in result._RESERVED_ATTR_KEYS:
+            warnings.warn(
+                f"{prim.GetPath()}: custom attribute '{name}' uses a reserved TetMesh name; skipping the attribute.",
+                stacklevel=2,
+            )
+            continue
+        if isinstance(value, tuple):
+            arr, frequency = value
+        else:
+            arr = value
+            try:
+                frequency = result._infer_frequency(arr, result.vertex_count, result.tet_count, tri_count, name)
+            except ValueError as exc:
+                warnings.warn(f"{prim.GetPath()}: {exc}; skipping the attribute.", stacklevel=2)
+                continue
+        result.custom_attributes[name] = (np.asarray(arr), frequency)
+    return result
 
 
 def _find_physics_material_prim(prim: Usd.Prim):

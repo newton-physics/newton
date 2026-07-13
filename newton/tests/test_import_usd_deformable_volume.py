@@ -313,6 +313,44 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertEqual(group_labels(builder, "soft"), ["/World/Good"])
         self.assertEqual(builder.particle_count, 4)
 
+    def test_uninferable_custom_attribute_warns_and_keeps_tetmesh(self):
+        """An irrelevant USD array with no mesh frequency is omitted without dropping the soft body."""
+        from pxr import Sdf
+
+        cases = (
+            ("physxVolumeDeformableSim:simMeshHexCrc", list(range(16))),
+            ("deformablePose:default:omniphysics:purposes", [1]),
+        )
+        for attr_name, values in cases:
+            with self.subTest(attr_name=attr_name):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                tet.GetPrim().CreateAttribute(attr_name, Sdf.ValueTypeNames.IntArray).Set(values)
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(
+                    UserWarning, rf"/World/Soft.*{attr_name}.*length {len(values)}.*skipping the attribute"
+                ):
+                    result = builder.add_usd(stage, return_deformable_results=True)
+
+                self.assertIn("/World/Soft", result["path_soft_map"])
+
+    def test_constant_primvar_resolves_single_tet_ambiguity(self):
+        """Explicit USD interpolation preserves a constant array on a single-tetrahedron mesh."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft")
+        primvar = UsdGeom.PrimvarsAPI(tet.GetPrim()).CreatePrimvar(
+            "constantValue", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant
+        )
+        primvar.Set([42.0])
+
+        tetmesh = newton.usd.get_tetmesh(tet.GetPrim(), compat_namespaces=())
+
+        _, frequency = tetmesh.custom_attributes["constantValue"]
+        self.assertEqual(frequency, newton.Model.AttributeFrequency.ONCE)
+
     def test_resolved_density_reports_builder_default_fallback(self):
         """With no authored or material density, add_soft_mesh falls back to the builder's
         default_tet_density; path_soft_attrs must report that actually-used value, not None."""

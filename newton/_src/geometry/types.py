@@ -1855,6 +1855,11 @@ class TetMesh:
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
 
+        Custom primvars use their authored interpolation to determine attribute
+        frequency. Other custom arrays use length-based inference; arrays whose
+        frequency is ambiguous or cannot be inferred emit a warning and are
+        omitted without preventing the TetMesh from loading.
+
         Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
         (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
         are read off any bound material, matching the pre-canonical behavior. That default is

@@ -138,7 +138,7 @@
 - Fix `ModelBuilder.add_usd()` silently ignoring authored Newton USD collision schemas when `newton-usd-schemas` is unavailable. USD import now fails clearly instead of continuing without the registered schema defaults required for SDF and hydroelastic configuration.
 - Fix `cable_cross_slide_table` example stability so the cable-driven table reliably tracks its rectangular path and catches drift during regression runs.
 - Fix URDF `package://` mesh fallback resolution without `resolve-robotics-uri-py` so package names only match full path components instead of unrelated directory-name substrings
-- Fix `TetMesh._infer_frequency` failing for length-1 custom attribute arrays by inferring `AttributeFrequency.ONCE`; raises an ambiguity error when a geometry count also equals 1. (#3228)
+- Fix TetMesh USD loading to infer unambiguous length-1 custom attributes as `AttributeFrequency.ONCE` and warn and skip attributes whose frequency cannot be inferred instead of dropping the soft body. (#3228)
 - Fix `ModelBuilder.collapse_fixed_joints()` crashing with `IndexError` when a `mujoco:equality_constraint` row omits optional fields (`anchor`, `relpose`) that carry defaults. (#3054)
 - Fix `ViewerGL.set_model()` resetting headless/interactive camera and wind state when switching between models that use the same up-axis. (#2658)
 - Fix bend force calculation error in Style3D solver
