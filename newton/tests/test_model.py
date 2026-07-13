@@ -1664,7 +1664,7 @@ class TestModelJoints(unittest.TestCase):
           into the DOF slice (matching the pre-coord-layout behavior).
         - Flag=True (coord): the 3 angular scalars are interpreted as extrinsic
           ZYX Euler angles and converted to a unit quaternion via
-          :meth:`ModelBuilder._quat_from_euler_zyx`, matching kamino's
+          :meth:`ModelBuilder._quat_from_axis_targets`, matching kamino's
           DOF→coord conversion.
         """
         ang_targets = (0.1, 0.2, -0.3)
