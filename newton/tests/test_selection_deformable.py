@@ -368,6 +368,50 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         with self.assertRaises(KeyError):
             DeformableView(model, "*", family="surface")
 
+    def test_fixed_joint_collapse_preserves_labeled_curve_group(self):
+        """Collapsing fixed joints keeps bodies owned by a labeled curve group."""
+        builder = newton.ModelBuilder()
+        bodies, _joints = builder.add_rod(
+            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
+            radius=0.02,
+            label="anchored_curve",
+            body_frame_origin="com",
+        )
+        builder.add_joint_fixed(-1, bodies[0], label="anchor")
+
+        builder.collapse_fixed_joints()
+        model = builder.finalize()
+        view = DeformableView(model, "anchored_curve", family="curve")
+
+        self.assertEqual(view.ranges("body"), [(0, 2)])
+        self.assertEqual(view.get_body_transforms(model.state()).shape, (1, 2))
+
+    def test_labeled_soft_grid_is_selectable(self):
+        """A labeled soft grid records one selectable volume group."""
+        builder = newton.ModelBuilder()
+        builder.add_soft_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            cell_z=1.0,
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            label="soft_grid",
+        )
+
+        model = builder.finalize()
+        view = DeformableView(model, "soft_grid", family="volume")
+
+        self.assertEqual(view.ranges("particle"), [(0, 8)])
+        self.assertEqual(view.ranges("tetrahedron"), [(0, 5)])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

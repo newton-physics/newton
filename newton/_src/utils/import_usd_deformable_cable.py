@@ -402,7 +402,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             body_frame_origin="com",
             # The graph spans several welded curves; per-curve cable groups are recorded
             # below instead of one group for the whole component.
-            record_group=False,
+            _record_group=False,
         )
 
         # Partition graph bodies back to their owning curve, and rebuild the per-prim anchor
@@ -719,7 +719,7 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 body_frame_origin="com",
                 # One group per prim is recorded below; a multi-curve prim spans several
                 # add_rod calls, so per-call recording would split it.
-                record_group=False,
+                _record_group=False,
             )
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)

@@ -5221,6 +5221,20 @@ class ModelBuilder:
         """
         joints_to_keep = set(joints_to_keep or ())
 
+        # Recorded curve ranges must continue to identify the same segment bodies
+        # after finalization. Preserve any fixed joint whose child is one of those
+        # bodies; collapsing it would merge the segment and invalidate the range.
+        recorded_curve_bodies = {
+            body
+            for start, end in zip(self._cable_body_start, self._cable_body_end, strict=True)
+            for body in range(start, end)
+        }
+        joints_to_keep.update(
+            joint
+            for joint in range(self.joint_count)
+            if self.joint_type[joint] == JointType.FIXED and self.joint_child[joint] in recorded_curve_bodies
+        )
+
         body_data = {}
         body_children = {-1: []}
         visited = {}
@@ -7278,7 +7292,7 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
-        record_group: bool = True,
+        _record_group: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -7310,9 +7324,6 @@ class ModelBuilder:
             label: Optional label prefix for bodies, shapes, and joints. A labeled rod is also
                 recorded as a selectable cable group (see
                 :class:`~newton.selection.DeformableView`).
-            record_group: If True (default), a labeled rod is recorded as one selectable cable
-                group. Pass False when the caller records its own groups for the same bodies
-                (as :meth:`add_usd` does for multi-curve prims).
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -7418,7 +7429,7 @@ class ModelBuilder:
             body_frame_origin=body_frame_origin,
             # add_rod records its own group below, after the optional loop-closing joint,
             # so a closed rod's group covers that joint too.
-            record_group=False,
+            _record_group=False,
         )
 
         # Wrap all joints into an articulation if requested.
@@ -7475,7 +7486,7 @@ class ModelBuilder:
                 )
                 link_joints.append(j_loop)
 
-        if label is not None and record_group:
+        if label is not None and _record_group:
             self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return link_bodies, link_joints
@@ -7498,7 +7509,7 @@ class ModelBuilder:
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
-        record_group: bool = True,
+        _record_group: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -7558,9 +7569,6 @@ class ModelBuilder:
                 origin and COM coincide. If None, preserves ``"start"`` for now with a
                 :class:`DeprecationWarning` because the implicit default will change to ``"com"``;
                 pass ``"start"`` or ``"com"`` explicitly.
-            record_group: If True (default), a labeled graph is recorded as one selectable
-                cable group. Pass False when the caller records its own finer-grained groups
-                for the same bodies (as :meth:`add_usd` does for welded curves).
 
         Returns:
             A pair ``(body_indices, joint_indices)`` where bodies correspond to
@@ -7877,7 +7885,7 @@ class ModelBuilder:
                             for sj in self.body_shapes.get(bj, []):
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
 
-        if label is not None and record_group:
+        if label is not None and _record_group:
             self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return edge_bodies, all_joints
@@ -8934,7 +8942,7 @@ class ModelBuilder:
         edge_kd: float = 0.0,
         particle_radius: float | None = None,
         label: str | None = None,
-    ):
+    ) -> None:
         """Helper to create a rectangular tetrahedral FEM grid
 
         Creates a regular grid of FEM tetrahedra and surface triangles. Useful for example
@@ -8969,10 +8977,9 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
-            label: Optional name reserved for forwarding to mesh-quality
-                diagnostics. Currently unused by ``add_soft_grid`` (the
-                generated grid is degenerate-free by construction); kept
-                for signature consistency with the other ``add_*`` helpers.
+            label: Optional name for the generated volume. A labeled grid is
+                recorded as a selectable group (see
+                :class:`~newton.selection.DeformableView`).
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -8980,8 +8987,8 @@ class ModelBuilder:
             elastic forces. Set the triangle stiffness parameters above to non-zero values if you
             want the surface to behave like a thin skin.
         """
-        del label  # currently unused; kept on the signature for API parity
         start_vertex = len(self.particle_q)
+        start_tet = self.tet_count
 
         mass = cell_x * cell_y * cell_z * density
 
@@ -9074,6 +9081,9 @@ class ModelBuilder:
             # add surface mesh edges (for collision)
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
+
+        if label is not None:
+            self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     @deprecate_nonkeyword_arguments
     def add_soft_mesh(
