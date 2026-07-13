@@ -480,6 +480,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
                         # particle-rigid body contacts (besides ground plane)
                         if model.shape_count and contacts is not None:
+                            contacts._assert_particle_only_soft_contacts("SolverXPBD")
                             wp.launch(
                                 kernel=solve_particle_shape_contacts,
                                 dim=contacts.soft_contact_max,
