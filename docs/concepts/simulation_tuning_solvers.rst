@@ -157,9 +157,12 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
      - Contact history requires matched contacts, for example
-       ``CollisionPipeline(contact_matching="latest")``. Buffer sizes that are
-       too small can drop contacts; sizes that are too large cost memory and
-       performance. Examples commonly tune ``iterations``, particle
+       ``CollisionPipeline(contact_matching="latest")``. When recording VBD
+       steps in a CUDA graph, construct :class:`~newton.CollisionPipeline`
+       before :class:`~newton.solvers.SolverVBD` so contact history is
+       pre-allocated, or run one uncaptured solver step before capture. Buffer
+       sizes that are too small can drop contacts; sizes that are too large cost
+       memory and performance. Examples commonly tune ``iterations``, particle
        self-contact radius and margin, particle contact buffers and filters,
        ``particle_collision_detection_interval``, ``particle_enable_tile_solve``,
        ``rigid_body_contact_buffer_size``,

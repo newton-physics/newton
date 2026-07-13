@@ -4,6 +4,7 @@
 import math
 import os
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -103,6 +104,23 @@ class TestSensorTiledCamera(unittest.TestCase):
         return builder.finalize(device="cpu")
 
     @staticmethod
+    def _build_mixed_cloth_particle_scene() -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_cloth_grid(
+            pos=wp.vec3(2.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            fix_top=True,
+        )
+        builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
+        return builder.finalize(device="cpu")
+
+    @staticmethod
     def _unpack_rgba(packed: int) -> np.ndarray:
         value = int(packed)
         return np.array(
@@ -123,6 +141,73 @@ class TestSensorTiledCamera(unittest.TestCase):
         linear = newton.utils.color_srgb_to_linear((0.5, 0.25, 0.1))
         np.testing.assert_allclose(newton.utils.color_linear_to_srgb(linear), (0.5, 0.25, 0.1), atol=1e-6)
 
+    def test_render_config_alias_deprecated(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+
+        with self.assertWarnsRegex(DeprecationWarning, "SensorTiledCamera.render_config.*default_render_config"):
+            render_config = sensor.render_config
+
+        self.assertIs(render_config, sensor.default_render_config)
+
+    def test_constructor_config_alias_deprecated(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        config = SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)
+
+        with self.assertWarnsRegex(DeprecationWarning, r"config=.*default_render_config"):
+            sensor = SensorTiledCamera(model=model, config=config)
+
+        self.assertIs(sensor.default_render_config, config)
+
+    def test_constructor_config_none_warns_deprecated(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+
+        with self.assertWarnsRegex(DeprecationWarning, r"config=.*default_render_config"):
+            sensor = SensorTiledCamera(model=model, config=None)
+
+        self.assertIsInstance(sensor.default_render_config, SensorTiledCamera.RenderConfig)
+
+    def test_constructor_rejects_default_render_config_and_config(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+
+        with self.assertWarnsRegex(DeprecationWarning, r"config=.*default_render_config"):
+            with self.assertRaisesRegex(TypeError, "default_render_config.*config"):
+                SensorTiledCamera(
+                    model=model,
+                    default_render_config=SensorTiledCamera.RenderConfig(),
+                    config=SensorTiledCamera.RenderConfig(),
+                )
+
+    def test_utils_implicit_default_render_config_update_warns(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+
+        self.assertFalse(sensor.default_render_config.enable_shadows)
+        self.assertFalse(sensor.default_render_config.enable_textures)
+
+        with self.assertWarnsRegex(DeprecationWarning, "create_default_light.*default_render_config"):
+            sensor.utils.create_default_light(enable_shadows=True)
+        with self.assertWarnsRegex(DeprecationWarning, "assign_checkerboard_material.*default_render_config"):
+            sensor.utils.assign_checkerboard_material(shape_indices=[0])
+
+        self.assertTrue(sensor.default_render_config.enable_shadows)
+        self.assertTrue(sensor.default_render_config.enable_textures)
+
+    def test_utils_explicit_render_config_field_update_does_not_warn(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+        sensor.default_render_config.enable_shadows = True
+        sensor.default_render_config.enable_textures = True
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sensor.utils.create_default_light(enable_shadows=True)
+            sensor.utils.assign_checkerboard_material(shape_indices=[0])
+
+        self.assertFalse(any(issubclass(w.category, DeprecationWarning) for w in caught))
+        self.assertTrue(sensor.default_render_config.enable_shadows)
+        self.assertTrue(sensor.default_render_config.enable_textures)
+
     def test_albedo_output_follows_output_color_space(self) -> None:
         color = (0.25, 0.5, 0.75)
         model = self._build_single_sphere_scene(color)
@@ -136,7 +221,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         for output_color_space in (newton.utils.ColorSpace.SRGB, newton.utils.ColorSpace.LINEAR):
             sensor = SensorTiledCamera(
                 model=model,
-                config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+                default_render_config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
             )
             camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
             albedo_image = sensor.utils.create_albedo_image_output(1, 1, camera_count=1)
@@ -151,6 +236,30 @@ class TestSensorTiledCamera(unittest.TestCase):
             )
             np.testing.assert_array_equal(packed[:3], expected_rgb)
             self.assertEqual(packed[3], 255)
+
+    def test_render_context_none_config_uses_default(self) -> None:
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        sensor = SensorTiledCamera(model=model)
+        render_context = sensor._SensorTiledCamera__render_context
+
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+        depth_image = sensor.utils.create_depth_image_output(1, 1, camera_count=1)
+
+        render_context.render(
+            model,
+            model.state(),
+            camera_transforms=camera_transforms,
+            camera_rays=camera_rays,
+            depth_image=depth_image,
+            config=None,
+        )
+
+        self.assertGreater(depth_image.numpy()[0, 0, 0, 0], 0.0)
 
     def test_cloth_renders_via_triangle_mesh_construction(self) -> None:
         """wp.Mesh must be lazily constructed on the first render call for cloth models.
@@ -204,6 +313,35 @@ class TestSensorTiledCamera(unittest.TestCase):
         # Depth hits prove the mesh was passed into the render kernel, not just created.
         self.assertGreater(int(np.sum(depth_image.numpy() > 0.0)), 0)
 
+    def test_render_config_can_enable_particles_with_triangle_mesh(self) -> None:
+        model = self._build_mixed_cloth_particle_scene()
+        sensor = SensorTiledCamera(
+            model=model,
+            default_render_config=SensorTiledCamera.RenderConfig(enable_particles=False, max_distance=10.0),
+        )
+
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+        state = model.state()
+
+        disabled_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        sensor.update(state, camera_transforms, camera_rays, depth_image=disabled_depth_image)
+        self.assertEqual(disabled_depth_image.numpy()[0, 0, 0, 0], 0.0)
+
+        enabled_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        sensor.update(
+            state,
+            camera_transforms,
+            camera_rays,
+            depth_image=enabled_depth_image,
+            render_config=SensorTiledCamera.RenderConfig(enable_particles=True, max_distance=10.0),
+        )
+        self.assertGreater(enabled_depth_image.numpy()[0, 0, 0, 0], 0.0)
+
     def test_checkerboard_material_requires_keyword_arguments(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
         sensor = SensorTiledCamera(model=model)
@@ -224,6 +362,8 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
 
         tiled_camera_sensor = SensorTiledCamera(model=model)
+        tiled_camera_sensor.default_render_config.enable_shadows = True
+        tiled_camera_sensor.default_render_config.enable_textures = True
         tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
         tiled_camera_sensor.utils.assign_checkerboard_material(
             shape_indices=np.arange(model.shape_count, dtype=np.int32)

@@ -10,7 +10,9 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.flags import ParticleFlags, ShapeFlags
 from newton._src.solvers.coupled.interface import CouplingEndpointKind, CouplingInterface
+from newton._src.solvers.coupled.solver_coupled import _filter_soft_contacts_global_shape_ids_kernel
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton.solvers import (
     SolverBase,
@@ -431,6 +433,15 @@ class TestModelView(unittest.TestCase):
         self.assertIs(view.body_inv_mass, new_mass)
         # Parent unchanged
         self.assertIsNot(self.model.body_inv_mass, new_mass)
+
+    def test_override_accepts_set_subclass_parent(self):
+        """Set overrides should accept a native set when the parent uses a set subclass."""
+        view = ModelView(self.model, "test")
+        filters = set(self.model.shape_collision_filter_pairs)
+
+        view.shape_collision_filter_pairs = filters
+
+        self.assertIs(view.shape_collision_filter_pairs, filters)
 
     def test_count_override_slices_frequency_arrays(self):
         """Frequency-matched arrays should follow view-local counts."""
@@ -2776,6 +2787,62 @@ add_function_test(
     TestSolverVBDCouplingHooks,
     "test_reset_preserves_pose_history",
     _coupled_vbd_reset_preserves_pose_history,
+    devices=get_test_devices(mode="basic"),
+)
+
+
+def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
+    """The coupled per-solver soft-contact filter must copy soft_contact_indices/barycentric, not just
+    soft_contact_particle. VBD consumes the unified fields, so dropping them delivers a particle contact
+    to VBD as the (-1, -1, -1) sentinel and regresses coupled VBD even with full-surface contact off
+    (E7)."""
+    # One particle soft contact: particle 0 on shape 0, unified record (0, -1, -1) + (1, 0, 0).
+    dst_indices = wp.full(1, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
+    dst_barycentric = wp.zeros(1, dtype=wp.vec3, device=device)
+    wp.launch(
+        _filter_soft_contacts_global_shape_ids_kernel,
+        dim=1,
+        inputs=[
+            wp.array([1], dtype=wp.int32, device=device),  # update_filter (dirty)
+            wp.array([1], dtype=wp.int32, device=device),  # src_count
+            wp.array([0], dtype=wp.int32, device=device),  # src_particle
+            wp.array([0], dtype=wp.int32, device=device),  # src_shape
+            wp.array([wp.vec3(0.1, 0.2, 0.3)], dtype=wp.vec3, device=device),  # src_body_pos
+            wp.zeros(1, dtype=wp.vec3, device=device),  # src_body_vel
+            wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device),  # src_normal
+            wp.array([7], dtype=wp.int32, device=device),  # src_tids
+            wp.array([wp.vec3i(0, -1, -1)], dtype=wp.vec3i, device=device),  # src_indices
+            wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),  # src_barycentric
+            wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),  # shape_flags
+            wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),  # particle_flags
+            int(ShapeFlags.COLLIDE_PARTICLES),
+            int(ParticleFlags.ACTIVE),
+            wp.zeros(1, dtype=wp.int32, device=device),  # dst_count
+            wp.full(1, -1, dtype=wp.int32, device=device),  # dst_particle
+            wp.full(1, -1, dtype=wp.int32, device=device),  # dst_shape
+            wp.zeros(1, dtype=wp.vec3, device=device),  # dst_body_pos
+            wp.zeros(1, dtype=wp.vec3, device=device),  # dst_body_vel
+            wp.zeros(1, dtype=wp.vec3, device=device),  # dst_normal
+            wp.full(1, -1, dtype=wp.int32, device=device),  # dst_tids
+            dst_indices,
+            dst_barycentric,
+            wp.full(1, -1, dtype=wp.int32, device=device),  # src_to_dst
+        ],
+        device=device,
+    )
+    idx = dst_indices.numpy()[0]
+    test.assertEqual(
+        (int(idx[0]), int(idx[1]), int(idx[2])),
+        (0, -1, -1),
+        "unified particle record must be copied through the filter, not left at the (-1,-1,-1) sentinel",
+    )
+    np.testing.assert_allclose(dst_barycentric.numpy()[0], [1.0, 0.0, 0.0])
+
+
+add_function_test(
+    TestSolverCoupledBasic,
+    "test_soft_contact_filter_preserves_unified_fields",
+    _coupled_soft_contact_filter_preserves_unified_fields,
     devices=get_test_devices(mode="basic"),
 )
 

@@ -177,7 +177,7 @@ def joint_conversion_kernel(
     model_joint_q_start: wp.array[wp.int32],
     model_joint_qd_start: wp.array[wp.int32],
     model_joint_armature: wp.array[wp.float32],
-    model_joint_friction: wp.array[wp.float32],
+    model_joint_damping: wp.array[wp.float32],
     model_joint_target_ke: wp.array[wp.float32],
     model_joint_target_kd: wp.array[wp.float32],
     joint_limit_lower: wp.array[wp.float32],
@@ -237,7 +237,7 @@ def joint_conversion_kernel(
     # Infer if the joint requires dynamic constraints
     for dof_id in range(ndofs_j):
         a_j = model_joint_armature[dofs_start_j + dof_id]
-        b_j = model_joint_friction[dofs_start_j + dof_id]
+        b_j = model_joint_damping[dofs_start_j + dof_id]
         ke_j = model_joint_target_ke[dofs_start_j + dof_id]
         kd_j = model_joint_target_kd[dofs_start_j + dof_id]
         is_dynamic_j = is_dynamic_j or (a_j > 0.0) or (b_j > 0.0) or (ke_j > 0.0) or (kd_j > 0.0)
@@ -873,7 +873,7 @@ def convert_joints(
             model.joint_q_start,
             model.joint_qd_start,
             model.joint_armature,
-            model.joint_friction,
+            model.joint_damping,
             model.joint_target_ke,
             model.joint_target_kd,
             joint_limit_lower,
@@ -1232,7 +1232,7 @@ def convert_joints(
         dq_j_max=joint_velocity_limit,
         tau_j_max=joint_effort_limit,
         a_j=model.joint_armature,
-        b_j=model.joint_friction,  # TODO: Is this the right attribute?
+        b_j=model.joint_damping,
         k_p_j=model.joint_target_ke,
         k_d_j=model.joint_target_kd,
         q_j_0=model.joint_q,
@@ -1360,14 +1360,15 @@ def convert_geometries(
     )
 
     # Create additional collision detection meta-data
-    excluded_pairs = wp.array(sorted(model.shape_collision_filter_pairs), dtype=wp.vec2i, device=model.device)
+    sorted_excluded_pairs = model.shape_collision_filter_pairs_array()
+    excluded_pairs = wp.array(sorted_excluded_pairs, dtype=wp.vec2i, device=model.device)
 
     # Construct and return the converted geometries model
     return GeometriesModel(
         num_geoms=model.shape_count,
         num_collidable=model_num_collidable_geoms.numpy()[0],
         num_collidable_pairs=model.shape_contact_pair_count,
-        num_excluded_pairs=len(model.shape_collision_filter_pairs),
+        num_excluded_pairs=len(sorted_excluded_pairs),
         model_minimum_contacts=model_min_contacts,
         world_minimum_contacts=world_min_contacts,
         label=model.shape_label,

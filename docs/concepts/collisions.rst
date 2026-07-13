@@ -515,6 +515,12 @@ Filter pairs are automatically populated in several cases:
 The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
 ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
 
+.. deprecated:: 1.4
+   Mutating this finalized-model set is deprecated; update
+   :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
+   model instead, because the precomputed :attr:`~Model.shape_contact_pairs` array is not rebuilt by
+   post-finalize filter edits.
+
 **USD Import Example**
 
 .. code-block:: python
@@ -1320,9 +1326,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - Attribute
      - Description
    * - ``soft_contact_count``
-     - Number of active soft contacts.
+     - Total number of soft contacts (single element). With full-surface contact off, this equals the per-particle contact count and is unchanged from earlier releases.
+   * - ``soft_contact_indices``
+     - Soft-side particle ids per contact, a ``vec3i`` with ``-1`` padding: ``(p, -1, -1)`` particle, ``(v0, v1, -1)`` edge, ``(v0, v1, v2)`` face. The number of non-negative slots gives the feature kind; pair with ``soft_contact_barycentric`` to recover the contact point.
    * - ``soft_contact_particle``
-     - Particle indices.
+     - Particle id for particle contacts (``-1`` for edge/face records) — the particle-only view of ``soft_contact_indices``, for solvers that consume particle contacts exclusively.
+   * - ``soft_contact_barycentric``
+     - Barycentric weights of the contact point over the record's soft particles (``(1, 0, 0)`` for a particle contact).
    * - ``soft_contact_shape``
      - Shape indices.
    * - ``soft_contact_body_pos``, ``soft_contact_body_vel``
@@ -1666,7 +1676,7 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - :attr:`~ModelBuilder.ShapeConfig.kd`
      - :attr:`~Model.shape_material_kd`
    * - ``kf``
-     - Tangential friction response gain
+     - Contact friction gain
      - 1000.0
      - :attr:`~ModelBuilder.ShapeConfig.kf`
      - :attr:`~Model.shape_material_kf`
@@ -1981,21 +1991,20 @@ Performance
 - **Objects tunneling through each other?** Increase ``gap`` to detect contacts earlier, or increase substep count (decrease simulation ``dt``).
 - **Hydroelastic buffer overflow warnings?** Increase ``buffer_fraction`` in :class:`~geometry.HydroelasticSDF.Config`.
 
-**CUDA graph capture**
+**Graph capture**
 
-On CUDA devices, the simulation loop (including ``collide`` and ``solver.step``) can be
-captured into a CUDA graph with ``wp.ScopedCapture`` for reduced kernel launch overhead.
-Place ``collide`` inside the captured region so it is replayed each frame:
+The simulation loop (including ``collide`` and ``solver.step``) can be captured with
+``wp.ScopedCapture`` for reduced launch overhead. Place ``collide`` inside the
+captured region so it is replayed each frame:
 
 .. code-block:: python
 
-    if wp.get_device().is_cuda:
-        with wp.ScopedCapture() as capture:
-            model.collide(state_0, contacts)
-            for _ in range(sim_substeps):
-                solver.step(state_0, state_1, control, contacts, dt)
-                state_0, state_1 = state_1, state_0
-        graph = capture.graph
+    with wp.ScopedCapture() as capture:
+        model.collide(state_0, contacts)
+        for _ in range(sim_substeps):
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+    graph = capture.graph
 
     # Each frame:
     wp.capture_launch(graph)

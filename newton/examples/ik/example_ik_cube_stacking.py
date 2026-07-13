@@ -272,18 +272,16 @@ class Example:
 
     def capture_sim(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def capture_ik(self):
         self.graph_ik = None
 
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
-            self.graph_ik = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
+        self.graph_ik = capture.graph
 
     def simulate(self):
         if not self.collide_substeps:

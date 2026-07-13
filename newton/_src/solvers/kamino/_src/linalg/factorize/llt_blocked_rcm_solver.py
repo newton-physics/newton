@@ -62,7 +62,7 @@ __all__ = ["LLTBlockedRCMSolver"]
 wp.set_module_options({"enable_backward": False})
 
 
-class LLTBlockedRCMSolver(DirectSolver):
+class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
     """RCM-reordered, semi-sparse Blocked LLT (Cholesky) solver.
 
     Same public API as :class:`LLTBlockedSolver`.
@@ -94,7 +94,7 @@ class LLTBlockedRCMSolver(DirectSolver):
 
     def __init__(
         self,
-        operator: DenseLinearOperatorData | None = None,
+        operator: DenseLinearOperatorData[wp.float32, wp.int32] | None = None,
         block_size: int = 32,
         solve_block_dim: int = 256,
         factorize_block_dim: int = 128,
@@ -222,7 +222,7 @@ class LLTBlockedRCMSolver(DirectSolver):
     ###
 
     @override
-    def _allocate_impl(self, A: DenseLinearOperatorData, **kwargs: dict[str, Any]) -> None:
+    def _allocate_impl(self, A: DenseLinearOperatorData[wp.float32, wp.int32], **kwargs: dict[str, Any]) -> None:
         if A.info is None:
             raise ValueError("The provided operator does not have any associated info!")
         if not isinstance(A.info, DenseSquareMultiLinearInfo):
