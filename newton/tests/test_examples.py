@@ -500,6 +500,20 @@ add_example_test(
     test_options={"num-frames": 360},
     use_viewer=True,
 )
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_triangle",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_grid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
 
 
 class TestRobotExamples(unittest.TestCase):

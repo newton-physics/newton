@@ -120,6 +120,7 @@ def build_friction_grid(device, mus, angles_deg):
         cfg.ke = 1.0e5
         cfg.kd = 1.0e3
         cfg.kf = 0.0  # validate Coulomb friction only — disable viscous component
+        cfg.gap = 0.0
         cfg.color = _ROW_COLORS[row % len(_ROW_COLORS)]
 
         row_box_ids = []
@@ -188,7 +189,10 @@ def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box
         test.fail("\n  ".join([f"{len(failures)} friction-ramp cell(s) failed:", *failures]))
 
 
-def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds):
+def test_friction_ramp(test, device, solver_name, solver_fn, mus, angles_deg, thresholds):
+    if solver_name == "mujoco_warp" and device.is_cuda:
+        test.skipTest("Flaky on CUDA (GH-3391), pending google-deepmind/mujoco_warp#1512")
+
     model, box_ids = build_friction_grid(device, mus, angles_deg)
 
     solver = solver_fn(model)
@@ -226,6 +230,7 @@ def build_stopping_distance_scene(device):
         cfg.ke = 1.0e5
         cfg.kd = 0.0
         cfg.kf = 0.0
+        cfg.gap = 0.0
         cfg.color = _ROW_COLORS[i % len(_ROW_COLORS)]
 
         patch_y = float(i * STOPPING_BOX_PITCH_Y)
@@ -514,6 +519,7 @@ for device in devices:
             test_friction_ramp,
             devices=[device],
             check_output=False,
+            solver_name=solver_name,
             solver_fn=cfg["factory"],
             mus=cfg["mus"],
             angles_deg=cfg["angles_deg"],

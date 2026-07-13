@@ -137,6 +137,24 @@ def get_cuda_test_devices(mode=None):
     return [d for d in devices if d.is_cuda]
 
 
+def configure_sdf_for_collision_shapes(builder):
+    """Force volume-SDF construction on every mesh/convex shape that collides with particles.
+
+    Test helper for the full-surface rigid-soft path: sets ``force_sdf`` on the builder's mesh/convex
+    ``COLLIDE_PARTICLES`` shapes (regardless of whether they used the default or an explicit config), so
+    ``finalize()`` provisions their SDFs. Mirrors what a user would do with per-shape
+    ``ShapeConfig.configure_sdf(force_sdf=True)``.
+    """
+    from newton import GeoType  # noqa: PLC0415  (deferred: keep unittest_utils import-light)
+    from newton._src.geometry.flags import ShapeFlags  # noqa: PLC0415
+
+    for i in range(len(builder.shape_type)):
+        if int(builder.shape_type[i]) in (int(GeoType.MESH), int(GeoType.CONVEX_MESH)) and (
+            builder.shape_flags[i] & int(ShapeFlags.COLLIDE_PARTICLES)
+        ):
+            builder.shape_force_sdf[i] = True
+
+
 class StreamCapture:
     def __init__(self, stream_name):
         self.stream_name = stream_name  # 'stdout' or 'stderr'

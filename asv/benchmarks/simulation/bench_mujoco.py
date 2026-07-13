@@ -9,7 +9,7 @@ import warp as wp
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
-from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
+from asv_runner.benchmarks.mark import skip_benchmark_if
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -17,56 +17,6 @@ sys.path.append(parent_dir)
 from benchmark_mujoco import Example
 
 from newton.utils import EventTracer
-
-
-class _FastBenchmark:
-    """Utility base class for fast benchmarks."""
-
-    num_frames = None
-    robot = None
-    number = 1
-    rounds = 2
-    repeat = None
-    world_count = None
-    random_init = None
-    environment = "None"
-
-    def setup(self):
-        if not hasattr(self, "builder") or self.builder is None:
-            self.builder = Example.create_model_builder(
-                self.robot, self.world_count, randomize=self.random_init, seed=123
-            )
-
-        self.example = Example(
-            stage_path=None,
-            robot=self.robot,
-            randomize=self.random_init,
-            headless=True,
-            actuation="None",
-            use_cuda_graph=True,
-            builder=self.builder,
-            environment=self.environment,
-        )
-
-        wp.synchronize_device()
-
-        # Recapture the graph with control application included
-        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
-        if not cuda_graph_comp:
-            raise SkipNotImplemented
-        else:
-            self.example.init_waypoint_control()
-            with wp.ScopedCapture() as capture:
-                self.example.apply_waypoint_control()
-                self.example.simulate()
-            self.graph = capture.graph
-
-        wp.synchronize_device()
-
-    def time_simulate(self):
-        for _ in range(self.num_frames):
-            wp.capture_launch(self.graph)
-        wp.synchronize_device()
 
 
 class _KpiBenchmark:
@@ -165,16 +115,7 @@ class _NewtonOverheadBenchmark:
     track_simulate.unit = "%"
 
 
-class FastCartpole(_FastBenchmark):
-    num_frames = 50
-    robot = "cartpole"
-    repeat = 8
-    world_count = 256
-    random_init = True
-    environment = "None"
-
-
-class KpiCartpole(_KpiBenchmark):
+class FastCartpole(_KpiBenchmark):
     params = [[8192]]
     num_frames = 50
     robot = "cartpole"
@@ -184,16 +125,7 @@ class KpiCartpole(_KpiBenchmark):
     environment = "None"
 
 
-class FastG1(_FastBenchmark):
-    num_frames = 25
-    robot = "g1"
-    repeat = 2
-    world_count = 256
-    random_init = True
-    environment = "None"
-
-
-class KpiG1(_KpiBenchmark):
+class FastG1(_KpiBenchmark):
     params = [[8192]]
     num_frames = 50
     robot = "g1"
@@ -205,15 +137,6 @@ class KpiG1(_KpiBenchmark):
 
 
 class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
-    params = [[256]]
-    num_frames = 25
-    robot = "g1"
-    repeat = 2
-    samples = 1
-    random_init = True
-
-
-class KpiNewtonOverheadG1(_NewtonOverheadBenchmark):
     params = [[8192]]
     num_frames = 50
     robot = "g1"
@@ -223,16 +146,7 @@ class KpiNewtonOverheadG1(_NewtonOverheadBenchmark):
     random_init = True
 
 
-class FastHumanoid(_FastBenchmark):
-    num_frames = 50
-    robot = "humanoid"
-    repeat = 8
-    world_count = 256
-    random_init = True
-    environment = "None"
-
-
-class KpiHumanoid(_KpiBenchmark):
+class FastHumanoid(_KpiBenchmark):
     params = [[8192]]
     num_frames = 100
     robot = "humanoid"
@@ -243,15 +157,6 @@ class KpiHumanoid(_KpiBenchmark):
 
 
 class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
-    params = [[256]]
-    num_frames = 50
-    robot = "humanoid"
-    repeat = 8
-    samples = 1
-    random_init = True
-
-
-class KpiNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
     params = [[8192]]
     num_frames = 100
     robot = "humanoid"
@@ -260,35 +165,18 @@ class KpiNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
     random_init = True
 
 
-class FastAllegro(_FastBenchmark):
-    num_frames = 100
-    robot = "allegro"
-    repeat = 2
-    world_count = 256
-    random_init = False
-    environment = "None"
-
-
-class KpiAllegro(_KpiBenchmark):
+class FastAllegro(_KpiBenchmark):
     params = [[8192]]
     num_frames = 300
     robot = "allegro"
+    timeout = 900
     samples = 2
     ls_iteration = 10
     random_init = False
     environment = "None"
 
 
-class FastKitchenG1(_FastBenchmark):
-    num_frames = 25
-    robot = "g1"
-    repeat = 2
-    world_count = 32
-    random_init = True
-    environment = "kitchen"
-
-
-class KpiKitchenG1(_KpiBenchmark):
+class FastKitchenG1(_KpiBenchmark):
     params = [[512]]
     num_frames = 50
     robot = "g1"
@@ -312,13 +200,6 @@ if __name__ == "__main__":
         "FastKitchenG1": FastKitchenG1,
         "FastNewtonOverheadG1": FastNewtonOverheadG1,
         "FastNewtonOverheadHumanoid": FastNewtonOverheadHumanoid,
-        "KpiCartpole": KpiCartpole,
-        "KpiG1": KpiG1,
-        "KpiHumanoid": KpiHumanoid,
-        "KpiAllegro": KpiAllegro,
-        "KpiKitchenG1": KpiKitchenG1,
-        "KpiNewtonOverheadG1": KpiNewtonOverheadG1,
-        "KpiNewtonOverheadHumanoid": KpiNewtonOverheadHumanoid,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
