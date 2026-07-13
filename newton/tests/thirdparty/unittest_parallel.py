@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from contextlib import contextmanager
 from io import StringIO
 
@@ -40,6 +41,16 @@ except ImportError:
 
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
+
+
+def _enable_strict_warnings():
+    """Escalate DeprecationWarnings and any newton.* warning to errors.
+
+    Installed before discovery and in each worker initializer so import-time
+    warnings from test modules are escalated too, not just runtime ones.
+    """
+    warnings.filterwarnings("error", category=DeprecationWarning)
+    warnings.filterwarnings("error", module=r"newton(\.|$)")
 
 
 def main(argv=None):
@@ -92,6 +103,14 @@ def main(argv=None):
     )
     parser.add_argument(
         "--junit-report-xml", metavar="FILE", help="Generate JUnit report format XML file"
+    )  # NVIDIA Modification
+    parser.add_argument(
+        "--strict-warnings",
+        action="store_true",
+        default=False,
+        help="Treat warnings we can act on as errors: all DeprecationWarnings (from Newton or its "
+        "dependencies) and any warning attributed to a newton.* module. Off by default so verifying an "
+        "installation does not fail on warnings the user cannot act on; enabled in CI to surface warning debt.",
     )  # NVIDIA Modification
     group_parallel = parser.add_argument_group("parallelization options")
     group_parallel.add_argument(
@@ -166,6 +185,13 @@ def main(argv=None):
         help="Skip clearing the Warp kernel cache before running tests. "
         "Useful for faster iteration and avoiding interference with parallel sessions.",
     )
+    group_warp.add_argument(
+        "--warp-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Forward a warp.config override to example subprocesses (repeatable).",
+    )
     args = parser.parse_args(args=argv)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
@@ -197,6 +223,11 @@ def main(argv=None):
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
+        # Apply before discovery so import-time warnings are caught; also covers
+        # the serial-fallback path, which runs here.
+        if args.strict_warnings:
+            _enable_strict_warnings()
+
         # Discover tests
         with _coverage(args, temp_dir):
             test_loader = unittest.TestLoader()
@@ -506,6 +537,14 @@ class ParallelTestManager:
         newton.tests.unittest_utils.coverage_enabled = self.args.coverage
         newton.tests.unittest_utils.coverage_temp_dir = self.temp_dir
         newton.tests.unittest_utils.coverage_branch = self.args.coverage_branch
+        newton.tests.unittest_utils.warp_config_overrides = self.args.warp_config
+
+        # Publish the flag for subprocess-based tests (e.g. test_examples.py).
+        # Filters are applied earlier (pre-discovery and in the worker
+        # initializer); re-applying here is idempotent.
+        newton.tests.unittest_utils.strict_warnings = self.args.strict_warnings
+        if self.args.strict_warnings:
+            _enable_strict_warnings()
 
         if self.args.junit_report_xml:
             resultclass = ParallelJunitTestResult
@@ -629,6 +668,11 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
 
     It also ensures that Warp is initialized prior to running any tests.
     """
+
+    # Apply before the worker imports any test module (suites are imported on
+    # unpickle, before run_tests).
+    if args.strict_warnings:
+        _enable_strict_warnings()
 
     with lock:
         shared_index.value += 1

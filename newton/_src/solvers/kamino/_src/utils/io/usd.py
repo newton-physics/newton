@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ......core.types import Axis, AxisType, Transform
 from ......geometry.flags import ShapeFlags
 from ......usd import utils as usd_utils
 from ......utils.topology import topological_sort_undirected
@@ -33,7 +34,7 @@ from ...core.materials import (
     MaterialDescriptor,
     MaterialPairProperties,
 )
-from ...core.math import I_3, screw
+from ...core.math import I_3, axis_to_mat33, screw
 from ...core.shapes import (
     BoxShape,
     CapsuleShape,
@@ -44,7 +45,6 @@ from ...core.shapes import (
     PlaneShape,
     SphereShape,
 )
-from ...core.types import Axis, AxisType, Transform, quatf, transformf, vec3f
 from ...utils import logger as msg
 
 ###
@@ -54,15 +54,15 @@ from ...utils import logger as msg
 __axis_rotations = {}
 
 
-def quat_between_axes(*axes: AxisType) -> quatf:
+def quat_between_axes(*axes: AxisType) -> wp.quatf:
     """
     Returns a quaternion that represents the rotations between the given sequence of axes.
 
     Args:
-        axes (AxisType): The axes between to rotate.
+        axes: The axes between to rotate.
 
     Returns:
-        wp.quat: The rotation quaternion.
+        The rotation quaternion.
     """
     q = wp.quat_identity()
     for i in range(len(axes) - 1):
@@ -590,8 +590,8 @@ class USDImporter:
         # Retrieve the linear and angular velocities
         # NOTE: They are transformed to world coordinates since the
         # RigidBodyAPI specifies them in local body coordinates
-        v_i = wp.transform_vector(body_xform, distance_unit * vec3f(rigid_body_spec.linearVelocity))
-        omega_i = wp.transform_vector(body_xform, rotation_unit * vec3f(rigid_body_spec.angularVelocity))
+        v_i = wp.transform_vector(body_xform, distance_unit * wp.vec3f(rigid_body_spec.linearVelocity))
+        omega_i = wp.transform_vector(body_xform, rotation_unit * wp.vec3f(rigid_body_spec.angularVelocity))
         msg.debug(f"body_xform: {body_xform}")
         msg.debug(f"omega_i: {omega_i}")
         msg.debug(f"v_i: {v_i}")
@@ -655,11 +655,11 @@ class USDImporter:
         msg.debug(f"i_I_i:\n{i_I_i}")
 
         # Compute the center of mass in world coordinates
-        r_com_i = wp.transform_point(body_xform, vec3f(i_r_com_i))
+        r_com_i = wp.transform_point(body_xform, wp.vec3f(i_r_com_i))
         msg.debug(f"r_com_i: {r_com_i}")
 
         # Construct the initial pose and twist of the body in world coordinates
-        q_i_0 = transformf(r_com_i, body_xform.q)
+        q_i_0 = wp.transformf(r_com_i, body_xform.q)
         u_i_0 = screw(v_i, omega_i)
         msg.debug(f"q_i_0: {q_i_0}")
         msg.debug(f"u_i_0: {u_i_0}")
@@ -740,7 +740,7 @@ class USDImporter:
     ):
         dof_type = JointDoFType.REVOLUTE
         act_type = JointActuationType.PASSIVE
-        X_j = self.usd_axis_to_axis[joint_spec.axis].to_mat33()
+        X_j = axis_to_mat33(self.usd_axis_to_axis[joint_spec.axis])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         a_j, b_j, k_p_j, k_d_j = self._make_joint_default_dynamics(dof_type)
         if joint_spec.limit.enabled:
@@ -770,7 +770,7 @@ class USDImporter:
     def _parse_joint_prismatic(self, joint_spec, distance_unit: float = 1.0, load_drive_dynamics: bool = False):
         dof_type = JointDoFType.PRISMATIC
         act_type = JointActuationType.PASSIVE
-        X_j = self.usd_axis_to_axis[joint_spec.axis].to_mat33()
+        X_j = axis_to_mat33(self.usd_axis_to_axis[joint_spec.axis])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         a_j, b_j, k_p_j, k_d_j = self._make_joint_default_dynamics(dof_type)
         if joint_spec.limit.enabled:
@@ -798,7 +798,7 @@ class USDImporter:
 
     def _parse_joint_revolute_from_d6(self, name, joint_prim, joint_spec, joint_dof, rotation_unit: float = 1.0):
         dof_type = JointDoFType.REVOLUTE
-        X_j = self.usd_dofs_to_axis[joint_dof].to_mat33()
+        X_j = axis_to_mat33(self.usd_dofs_to_axis[joint_dof])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         for limit in joint_spec.jointLimits:
             dof = limit.first
@@ -822,7 +822,7 @@ class USDImporter:
 
     def _parse_joint_prismatic_from_d6(self, name, joint_prim, joint_spec, joint_dof, distance_unit: float = 1.0):
         dof_type = JointDoFType.PRISMATIC
-        X_j = self.usd_dofs_to_axis[joint_dof].to_mat33()
+        X_j = axis_to_mat33(self.usd_dofs_to_axis[joint_dof])
         q_j_min, q_j_max, tau_j_max = self._make_joint_default_limits(dof_type)
         for limit in joint_spec.jointLimits:
             dof = limit.first
@@ -1080,8 +1080,8 @@ class USDImporter:
             )
 
         # Extract the relative poses of the joint
-        B_r_Bj = distance_unit * vec3f(joint_spec.localPose0Position)
-        F_r_Fj = distance_unit * vec3f(joint_spec.localPose1Position)
+        B_r_Bj = distance_unit * wp.vec3f(joint_spec.localPose0Position)
+        F_r_Fj = distance_unit * wp.vec3f(joint_spec.localPose1Position)
         B_q_Bj = self._from_gfquat(joint_spec.localPose0Orientation)
         F_q_Fj = self._from_gfquat(joint_spec.localPose1Orientation)
         msg.debug(f"B_r_Bj (before COM correction): {B_r_Bj}")
@@ -1095,7 +1095,7 @@ class USDImporter:
             i_r_com_B = distance_unit * self._parse_vec(
                 body_B_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            B_r_Bj = B_r_Bj - vec3f(i_r_com_B)
+            B_r_Bj = B_r_Bj - wp.vec3f(i_r_com_B)
             msg.debug(f"i_r_com_B: {i_r_com_B}")
             msg.debug(f"B_r_Bj (after COM correction): {B_r_Bj}")
 
@@ -1104,7 +1104,7 @@ class USDImporter:
             i_r_com_F = distance_unit * self._parse_vec(
                 body_F_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            F_r_Fj = F_r_Fj - vec3f(i_r_com_F)
+            F_r_Fj = F_r_Fj - wp.vec3f(i_r_com_F)
             msg.debug(f"i_r_com_F: {i_r_com_F}")
             msg.debug(f"F_r_Fj (after COM correction): {F_r_Fj}")
 
@@ -1166,7 +1166,7 @@ class USDImporter:
         elif joint_type == self.UsdPhysics.ObjectType.SphericalJoint:
             dof_type = JointDoFType.SPHERICAL
             act_type = JointActuationType.PASSIVE
-            X_j = self.usd_axis_to_axis[joint_spec.axis].to_mat33()
+            X_j = axis_to_mat33(self.usd_axis_to_axis[joint_spec.axis])
 
         elif joint_type == self.UsdPhysics.ObjectType.DistanceJoint:
             raise NotImplementedError("Distance joints are not yet supported.")
@@ -1361,12 +1361,12 @@ class USDImporter:
             i_r_com = distance_unit * self._parse_vec(
                 body_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            i_r_ig = i_r_ig - vec3f(i_r_com)
+            i_r_ig = i_r_ig - wp.vec3f(i_r_com)
             msg.debug(f"[{name}]: i_r_com: {i_r_com}")
             msg.debug(f"[{name}]: i_r_ig (after COM correction): {i_r_ig}")
 
         # Construct the transform descriptor
-        i_T_ig = transformf(i_r_ig, i_q_ig)
+        i_T_ig = wp.transformf(i_r_ig, i_q_ig)
         msg.debug(f"[{name}]: i_T_ig: {i_T_ig}")
 
         ###
@@ -1385,7 +1385,7 @@ class USDImporter:
             radius = distance_unit * capsule.GetRadiusAttr().Get()
             axis = Axis.from_string(capsule.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
-            i_T_ig = transformf(i_r_ig, i_q_ig)
+            i_T_ig = wp.transformf(i_r_ig, i_q_ig)
             shape = CapsuleShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Capsule_1:
@@ -1397,7 +1397,7 @@ class USDImporter:
             radius = distance_unit * cone.GetRadiusAttr().Get()
             axis = Axis.from_string(cone.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
-            i_T_ig = transformf(i_r_ig, i_q_ig)
+            i_T_ig = wp.transformf(i_r_ig, i_q_ig)
             shape = ConeShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Cube:
@@ -1410,7 +1410,7 @@ class USDImporter:
             radius = distance_unit * cylinder.GetRadiusAttr().Get()
             axis = Axis.from_string(cylinder.GetAxisAttr().Get())
             i_q_ig = self._align_geom_to_axis(axis, i_q_ig)
-            i_T_ig = transformf(i_r_ig, i_q_ig)
+            i_T_ig = wp.transformf(i_r_ig, i_q_ig)
             shape = CylinderShape(radius=radius, half_height=0.5 * height)
 
         elif geom_type == self.UsdGeom.Cylinder_1:
@@ -1533,7 +1533,7 @@ class USDImporter:
         ###
 
         # Extract the relative poses of the geom w.r.t the rigid body frame
-        i_r_ig = distance_unit * vec3f(geom_spec.localPos)
+        i_r_ig = distance_unit * wp.vec3f(geom_spec.localPos)
         i_q_ig = self._from_gfquat(geom_spec.localRot)
         msg.debug(f"[{name}]: i_r_ig (before COM correction): {i_r_ig}")
         msg.debug(f"[{name}]: i_q_ig: {i_q_ig}")
@@ -1544,12 +1544,12 @@ class USDImporter:
             i_r_com = distance_unit * self._parse_vec(
                 body_prim, "physics:centerOfMass", default=np.zeros(3, dtype=np.float32)
             )
-            i_r_ig = i_r_ig - vec3f(i_r_com)
+            i_r_ig = i_r_ig - wp.vec3f(i_r_com)
             msg.debug(f"[{name}]: i_r_com: {i_r_com}")
             msg.debug(f"[{name}]: i_r_ig (after COM correction): {i_r_ig}")
 
         # Construct the transform descriptor
-        i_T_ig = transformf(i_r_ig, i_q_ig)
+        i_T_ig = wp.transformf(i_r_ig, i_q_ig)
 
         ###
         # PhysicsGeom Shape Properties
@@ -1581,7 +1581,7 @@ class USDImporter:
             )
 
         elif geom_type == self.UsdPhysics.ObjectType.CubeShape:
-            he = distance_unit * vec3f(geom_spec.halfExtents)
+            he = distance_unit * wp.vec3f(geom_spec.halfExtents)
             shape = BoxShape(hx=he[0], hy=he[1], hz=he[2])
 
         elif geom_type == self.UsdPhysics.ObjectType.CylinderShape:
@@ -1814,7 +1814,7 @@ class USDImporter:
 
             # Extract the world gravity from the physics scene
             gravity.acceleration = distance_unit * scene_desc.gravityMagnitude
-            gravity.direction = vec3f(scene_desc.gravityDirection)
+            gravity.direction = wp.vec3f(scene_desc.gravityDirection)
             builder.set_gravity(gravity)
             msg.debug(f"World gravity: {gravity}")
 
@@ -1830,7 +1830,7 @@ class USDImporter:
             axis_xform = wp.transform_identity()
             msg.debug(f"Using stage up axis {up_axis} as builder up axis")
         else:
-            axis_xform = wp.transform(vec3f(0.0), quat_between_axes(up_axis, builder.up_axes[0]))
+            axis_xform = wp.transform(wp.vec3f(0.0), quat_between_axes(up_axis, builder.up_axes[0]))
             msg.debug(f"Rotating stage to align its up axis {up_axis} with builder up axis {builder.up_axes[0]}")
 
         # Set the world offset transform based on the provided xform
@@ -1901,34 +1901,12 @@ class USDImporter:
         msg.debug(f"cgroup_count: {cgroup_count}")
         msg.debug(f"cgroup_index_map: {cgroup_index_map}")
 
-        ###
-        # Articulations
-        ###
-
-        # Construct a list of articulation root bodies to create FREE
-        # joints if not already defined explicitly in the USD file
-        articulation_root_body_paths = []
-        if self.UsdPhysics.ObjectType.Articulation in ret_dict:
-            paths, articulation_descs = ret_dict[self.UsdPhysics.ObjectType.Articulation]
-            for path, _desc in zip(paths, articulation_descs, strict=False):
-                articulation_prim = stage.GetPrimAtPath(path)
-                try:
-                    parent_prim = articulation_prim.GetParent()
-                except Exception:
-                    parent_prim = None
-                if articulation_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
-                    if self._prim_is_rigid_body(articulation_prim):
-                        msg.debug(f"Adding articulation_prim at '{path}' as articulation root body")
-                        articulation_root_body_paths.append(articulation_prim.GetPath())
-                elif (
-                    parent_prim is not None
-                    and parent_prim.IsValid()
-                    and parent_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI)
-                ):
-                    if self._prim_is_rigid_body(parent_prim):
-                        msg.debug(f"Adding parent_prim at '{parent_prim.GetPath()}' as articulation root body")
-                        articulation_root_body_paths.append(parent_prim.GetPath())
-        msg.debug(f"articulation_root_body_paths: {articulation_root_body_paths}")
+        # Kamino only needs articulation metadata to preserve floating-root state;
+        # authored joints are otherwise represented as maximal-coordinate constraints.
+        articulation_paths, articulation_specs = ret_dict.get(self.UsdPhysics.ObjectType.Articulation, ([], []))
+        articulation_joint_paths = {
+            str(joint_path) for spec in articulation_specs for joint_path in spec.articulatedJoints
+        }
 
         ###
         # Bodies
@@ -1937,7 +1915,6 @@ class USDImporter:
         # Define a mapping from prim paths to body indices
         # NOTE: This can be used for both rigid and flexible bodies
         body_index_map = {}
-        body_path_map = {}
 
         # Parse for and import UsdPhysicsRigidBody prims
         if self.UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1958,20 +1935,29 @@ class USDImporter:
                     msg.debug(f"Adding body '{builder.num_bodies}':\n{rigid_body_desc}\n")
                     body_index = builder.add_rigid_body_descriptor(body=rigid_body_desc)
                     body_index_map[str(prim_path)] = body_index
-                    body_path_map[body_index] = str(prim_path)
                 else:
                     msg.debug(f"Rigid body @'{prim_path}' not loaded. Will be treated as static geometry.")
                     body_index_map[str(prim_path)] = -1  # Body not loaded, is statically part of the world
         msg.debug(f"body_index_map: {body_index_map}")
-        msg.debug(f"body_path_map: {body_path_map}")
+
+        # Resolve API prims to loaded rigid bodies before constructing joint descriptors.
+        articulation_root_body_indices = []
+        for path in articulation_paths:
+            root_prim = stage.GetPrimAtPath(path)
+            if not root_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
+                root_prim = root_prim.GetParent()
+            if root_prim.IsValid() and root_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
+                root_body_index = body_index_map.get(str(root_prim.GetPath()), -1)
+                if root_body_index >= 0 and self._prim_is_rigid_body(root_prim):
+                    articulation_root_body_indices.append(root_body_index)
 
         ###
         # Joints
         ###
 
-        # Define a list to hold all joint descriptors to be added to the builder after sorting
+        # Define a list to hold all joint descriptors to be added to the builder
         joint_descriptors: list[JointDescriptor] = []
-        articulation_root_joints: list[JointDescriptor] = []
+        articulation_tree_followers = set()
 
         # If retaining joint ordering, first construct lists of joint prim paths and their
         # types that retain the order of the joints as specified in the USD file, then iterate
@@ -2011,9 +1997,8 @@ class USDImporter:
                         if joint_desc is not None:
                             msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")
                             joint_descriptors.append(joint_desc)
-                            # Check if the joint's Follower body is the articulation root
-                            if body_path_map[joint_desc.bid_F] in articulation_root_body_paths:
-                                articulation_root_joints.append(joint_desc)
+                            if str(prim_path) in articulation_joint_paths and not joint_spec.excludeFromArticulation:
+                                articulation_tree_followers.add(joint_desc.bid_F)
                         else:
                             msg.debug(f"Joint @'{prim_path}' not loaded. Will be ignored.")
                         break  # Stop after the first match
@@ -2050,66 +2035,48 @@ class USDImporter:
                 if joint_desc is not None:
                     msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")
                     joint_descriptors.append(joint_desc)
-                    # Check if the joint's Follower body is the articulation root
-                    if body_path_map[joint_desc.bid_F] in articulation_root_body_paths:
-                        articulation_root_joints.append(joint_desc)
+                    if str(prim_path) in articulation_joint_paths and not joint_spec.excludeFromArticulation:
+                        articulation_tree_followers.add(joint_desc.bid_F)
                 else:
                     msg.debug(f"Joint @'{prim_path}' not loaded. Will be ignored.")
 
-        # For each articulation root body that does not have an explicit joint
-        # defined in the USD file, add a FREE joint to attach it to the world
-        if len(articulation_root_joints) != len(articulation_root_body_paths):
-            for root_body_path in articulation_root_body_paths:
-                # Check if the root body already has a joint defined in the USD file
-                root_body_index = int(body_index_map[str(root_body_path)])
-                has_joint = False
-                for joint_desc in articulation_root_joints:
-                    if joint_desc.has_follower_body(root_body_index):
-                        has_joint = True
-                        break
-                if has_joint:
-                    msg.debug(
-                        f"Articulation root body '{root_body_path}' already has a joint defined. Skipping FREE joint."
-                    )
-                    continue
+        # Match Newton's tree-root selection: excluded loop joints do not make their
+        # follower a tree child or suppress the floating root's generalized state.
+        for root_body_index in articulation_root_body_indices:
+            if root_body_index in articulation_tree_followers:
+                continue
 
-                # If not, create a FREE joint descriptor to attach the root body to the
-                # world and insert it at the beginning of the joint descriptors list
-                root_body_name = builder.bodies[0][root_body_index].name
+            root_body = builder.bodies[0][root_body_index]
+            joint_desc = JointDescriptor(
+                name=f"world_to_{root_body.name}" if use_articulation_root_name else f"joint_{builder.num_joints + 1}",
+                dof_type=JointDoFType.FREE,
+                act_type=JointActuationType.PASSIVE,
+                bid_B=-1,
+                bid_F=root_body_index,
+                B_r_Bj=wp.transform_get_translation(root_body.q_i_0),
+                F_r_Fj=wp.vec3f(0.0),
+                X_Bj=axis_to_mat33(Axis.X),
+            )
+            joint_descriptors.insert(0, joint_desc)
 
-                joint_desc = JointDescriptor(
-                    name=f"world_to_{root_body_name}"
-                    if use_articulation_root_name
-                    else f"joint_{builder.num_joints + 1}",
-                    dof_type=JointDoFType.FREE,
-                    act_type=JointActuationType.PASSIVE,
-                    bid_B=-1,
-                    bid_F=root_body_index,
-                    B_r_Bj=wp.transform_get_translation(builder.bodies[0][root_body_index].q_i_0),
-                    F_r_Fj=vec3f(0.0),
-                    X_Bj=Axis.X.to_mat33(),
-                )
-                msg.debug(
-                    f"Adding FREE joint '{joint_desc.name}' to attach articulation "
-                    f"root body '{root_body_path}' to the world:\n{joint_desc}\n"
-                )
-                joint_descriptors.insert(0, joint_desc)
-
-        # If an articulation is present, sort joint indices according
-        # to DFS to produce a minimum-depth kinematic tree ordering
-        if len(articulation_root_body_paths) > 0 and len(joint_descriptors) > 0:
-            # Create a list of body-pair indices (B, F) for each joint
+        # Cyclic articulations retain authored order because loop joints have no tree position.
+        if articulation_root_body_indices and joint_descriptors:
             joint_body_pairs = [(joint_desc.bid_B, joint_desc.bid_F) for joint_desc in joint_descriptors]
-            # Perform a topological sort of the joints based on their body-pair indices
-            joint_indices, reversed_joints = topological_sort_undirected(joints=joint_body_pairs, use_dfs=True)
-            # Reverse the order of the joints that were reversed during the topological
-            # sort to maintain the original joint directionality as much as possible
-            for i in reversed_joints:
-                joint_desc = joint_descriptors[i]
-                joint_desc.bid_B, joint_desc.bid_F = joint_desc.bid_F, joint_desc.bid_B
-                joint_desc.B_r_Bj, joint_desc.F_r_Fj = joint_desc.F_r_Fj, joint_desc.B_r_Bj
-            # Reorder the joint descriptors based on the topological sort
-            joint_descriptors = [joint_descriptors[i] for i in joint_indices]
+            try:
+                joint_indices, reversed_joints = topological_sort_undirected(joints=joint_body_pairs, use_dfs=True)
+            except ValueError as error:
+                msg.debug(f"Keeping authored joint order for cyclic articulation: {error}")
+            else:
+                # Parallel loop edges can be omitted by an undirected traversal rather than
+                # reported as a cycle, so only accept an ordering containing every joint.
+                if len(joint_indices) == len(joint_descriptors):
+                    for index in reversed_joints:
+                        joint_desc = joint_descriptors[index]
+                        joint_desc.bid_B, joint_desc.bid_F = joint_desc.bid_F, joint_desc.bid_B
+                        joint_desc.B_r_Bj, joint_desc.F_r_Fj = joint_desc.F_r_Fj, joint_desc.B_r_Bj
+                    joint_descriptors = [joint_descriptors[index] for index in joint_indices]
+                else:
+                    msg.debug("Keeping authored joint order for articulation with parallel loop edges")
 
         # Add all descriptors to the builder
         for joint_desc in joint_descriptors:

@@ -111,7 +111,10 @@ class Example:
         for w in range(self.world_count):
             q_base[w, :3] += np.array([0.0, 0.0, 0.2]) * float(w)
         self.base_q.assign(q_base)
-        self.solver.reset(state=self.state_0, base_q=self.base_q)
+        reset_config = newton.solvers.SolverKamino.ResetConfig(
+            base_pose=newton.solvers.SolverKamino.ResetConfig.FromBaseQ(self.base_q),
+        )
+        self.solver.reset(state=self.state_0, config=reset_config)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices

@@ -11,9 +11,9 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from .....core.types import Vec2, Vec3
+from .....core.types import Vec2, Vec3, override
 from .....geometry.types import GeoType, Heightfield, Mesh
-from .types import Descriptor, override, vec3f
+from .types import Descriptor
 
 ###
 # Module interface
@@ -92,8 +92,8 @@ class ShapeDescriptor(ABC, Descriptor):
 
     @property
     @abstractmethod
-    def paramsvec(self) -> vec3f:
-        return vec3f(0.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(0.0)
 
     @property
     @abstractmethod
@@ -126,8 +126,8 @@ class EmptyShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(0.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(0.0)
 
     @property
     @override
@@ -159,8 +159,8 @@ class SphereShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(self.radius, 0.0, 0.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(self.radius, 0.0, 0.0)
 
     @property
     @override
@@ -194,8 +194,8 @@ class CylinderShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(self.radius, self.half_height, 0.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(self.radius, self.half_height, 0.0)
 
     @property
     @override
@@ -229,8 +229,8 @@ class ConeShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(self.radius, self.half_height, 0.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(self.radius, self.half_height, 0.0)
 
     @property
     @override
@@ -264,8 +264,8 @@ class CapsuleShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(self.radius, self.half_height, 0.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(self.radius, self.half_height, 0.0)
 
     @property
     @override
@@ -301,8 +301,8 @@ class BoxShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(self.hx, self.hy, self.hz)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(self.hx, self.hy, self.hz)
 
     @property
     @override
@@ -340,8 +340,8 @@ class EllipsoidShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(self.rx, self.ry, self.rz)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(self.rx, self.ry, self.rz)
 
     @property
     @override
@@ -391,8 +391,8 @@ class PlaneShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(self.width, self.length, 0.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(self.width, self.length, 0.0)
 
     @property
     @override
@@ -418,13 +418,13 @@ class MeshShape(ShapeDescriptor):
     that provides the necessary interfacing to be used with the Kamino solver.
 
     Attributes:
-        vertices (np.ndarray): The vertices of the mesh.
-        indices (np.ndarray): The triangle indices of the mesh.
-        normals (np.ndarray | None): The vertex normals of the mesh.
-        uvs (np.ndarray | None): The texture coordinates of the mesh.
-        color (Vec3 | None): The color of the mesh.
-        is_solid (bool): Whether the mesh is solid.
-        is_convex (bool): Whether the mesh is convex.
+        vertices: The vertices of the mesh.
+        indices: The triangle indices of the mesh.
+        normals: The vertex normals of the mesh.
+        uvs: The texture coordinates of the mesh.
+        color: The color of the mesh.
+        is_solid: Whether the mesh is solid.
+        is_convex: Whether the mesh is convex.
     """
 
     MAX_HULL_VERTICES = Mesh.MAX_HULL_VERTICES
@@ -448,17 +448,17 @@ class MeshShape(ShapeDescriptor):
         Initialize the mesh shape descriptor.
 
         Args:
-            vertices (Sequence[Vec3] | np.ndarray): The vertices of the mesh.
-            indices (Sequence[int] | np.ndarray): The triangle indices of the mesh.
-            normals (Sequence[Vec3] | np.ndarray | None): The vertex normals of the mesh.
-            uvs (Sequence[Vec2] | np.ndarray | None): The texture coordinates of the mesh.
-            color (Vec3 | None): The color of the mesh.
-            maxhullvert (int): The maximum number of hull vertices for convex shapes.
-            compute_inertia (bool): Whether to compute inertia for the mesh.
-            is_solid (bool): Whether the mesh is solid.
-            is_convex (bool): Whether the mesh is convex.
-            name (str): The name of the shape descriptor.
-            uid (str | None): Optional unique identifier of the shape descriptor.
+            vertices: The vertices of the mesh.
+            indices: The triangle indices of the mesh.
+            normals: The vertex normals of the mesh.
+            uvs: The texture coordinates of the mesh.
+            color: The color of the mesh.
+            maxhullvert: The maximum number of hull vertices for convex shapes.
+            compute_inertia: Whether to compute inertia for the mesh.
+            is_solid: Whether the mesh is solid.
+            is_convex: Whether the mesh is convex.
+            name: The name of the shape descriptor.
+            uid: Optional unique identifier of the shape descriptor.
         """
         # Determine the mesh shape type, and adapt default name if necessary
         if is_convex:
@@ -504,8 +504,8 @@ class MeshShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(1.0, 1.0, 1.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(1.0, 1.0, 1.0)
 
     @property
     @override
@@ -568,8 +568,8 @@ class HFieldShape(ShapeDescriptor):
 
     @property
     @override
-    def paramsvec(self) -> vec3f:
-        return vec3f(1.0, 1.0, 1.0)
+    def paramsvec(self) -> wp.vec3f:
+        return wp.vec3f(1.0, 1.0, 1.0)
 
     @property
     @override
@@ -627,7 +627,7 @@ def max_contacts_for_shape_pair(type_a: int, type_b: int) -> tuple[int, int]:
         type_b: Second shape type as :class:`GeoType` integer value.
 
     Returns:
-        tuple[int, int]: Number of contact points for collisions between A->B and B->A.
+        Number of contact points for collisions between A->B and B->A.
     """
     # Ensure the shape types are ordered canonically
     if type_a > type_b:

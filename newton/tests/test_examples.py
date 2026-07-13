@@ -3,9 +3,11 @@
 
 """Test examples in the newton.examples package.
 
-Currently, this script mainly checks that the examples can run. It also treats
-deprecation warnings as failures by default so examples do not regress onto
-deprecated APIs.
+Currently, this script mainly checks that the examples can run. When the test
+runner is invoked with ``--strict-warnings`` (as CI does), example subprocesses
+treat deprecation warnings as failures so examples do not regress onto deprecated
+APIs; otherwise deprecations are non-fatal. (The broader newton.* escalation of
+``--strict-warnings`` applies to the in-process tests, not example subprocesses.)
 
 The test parameters are typically tuned so that each test can run in 10 seconds
 or less, ignoring module compilation time. A notable exception is the robot
@@ -13,7 +15,9 @@ manipulating cloth example, which takes approximately 35 seconds to run on a
 CUDA device.
 """
 
+import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,11 +29,43 @@ import warp as wp
 import newton.tests.unittest_utils
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
+    NewtonTestCase,
     add_function_test,
     get_selected_cuda_test_devices,
     get_test_devices,
     sanitize_identifier,
 )
+
+_HAS_ONNX_RUNTIME = importlib.util.find_spec("onnx") is not None and importlib.util.find_spec("warp_nn") is not None
+_PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
+    r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
+)
+_WARP_CUDA_DRIVER_WARNING_RE = (
+    r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver\. "
+    r"GPU execution will not be available\.\n?"
+)
+_MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
+_BASIC_PLOTTING_OUTPUT_RE = (
+    r"(?:"
+    r"Diagnostics plot saved to solver_convergence\.png\n?"
+    r"|"
+    r"\n?Simulation diagnostics summary \(\d+ steps\):\n"
+    r"  Iterations \(max\):   mean=[^\n]*\n"
+    r"  Kinetic E \[J\]:    final=[^\n]*\n"
+    r"  Potential E \[J\]:  final=[^\n]*\n"
+    r"  Constraints:        mean=[^\n]*\n?"
+    r")"
+)
+_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
+    r"(?m)"
+    r"(?:^.*wp_sdf_contact_write_contact_to_reducer_[^\n]*\.cpp:\d+:\d+: warning: "
+    r"implicit conversion from 'long' to 'const wp::int32'.*\n"
+    r"^.*\n"
+    r"^.*\n"
+    r")+"
+    r"^\d+ warnings? generated\.\n?"
+)
+_OutputRegexSpec = str | tuple[str, str]
 
 
 def _build_command_line_options(test_options: dict[str, Any]) -> list:
@@ -67,8 +103,13 @@ def add_example_test(
     test_options_cuda: dict[str, Any] | None = None,
     use_viewer: bool = False,
     test_suffix: str | None = None,
+    expect_output_regexes: list[_OutputRegexSpec] | None = None,
+    allow_output_regexes: list[_OutputRegexSpec] | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
+
+    if (expect_output_regexes is not None or allow_output_regexes is not None) and not issubclass(cls, NewtonTestCase):
+        raise TypeError("Output regex expectations require a NewtonTestCase subclass")
 
     # verify the module exists (use package-relative path so this works from any CWD)
     _examples_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
@@ -88,27 +129,23 @@ def add_example_test(
         else:
             options = _merge_options(test_options, test_options_cpu)
 
-        # Mark the test as skipped if Torch is not installed but required
+        # Mark the test as skipped if ONNX policy inference is not installed but required.
+        onnx_required = options.pop("onnx_required", False)
         torch_required = options.pop("torch_required", False)
-        if torch_required:
-            try:
-                import torch
-
-                if wp.get_device(device).is_cuda and not torch.cuda.is_available():
-                    # Ensure torch has CUDA support
-                    test.skipTest("Torch not compiled with CUDA support")
-
-            except Exception as e:
-                test.skipTest(f"{e}")
+        onnx_required = onnx_required or torch_required
+        if onnx_required and not _HAS_ONNX_RUNTIME:
+            test.skipTest("onnx or warp-nn not installed")
 
         # Mark the test as skipped if USD is not installed but required
         usd_required = options.pop("usd_required", False)
         if usd_required and not USD_AVAILABLE:
             test.skipTest("Requires usd-core")
 
-        # Deprecations should fail example tests by default. Opt out only for
-        # a known third-party or asset issue that still needs follow-up.
+        # Escalate deprecations to errors in the example subprocess only when the
+        # runner was invoked with --strict-warnings (CI) and the example has not
+        # opted out.
         allow_deprecation_warnings = options.pop("allow_deprecation_warnings", False)
+        strict_warnings = newton.tests.unittest_utils.strict_warnings and not allow_deprecation_warnings
 
         # Pass the parent dir; the subprocess's init_kernel_cache appends the version.
         warp_cache_path = wp.config.kernel_cache_dir
@@ -116,10 +153,15 @@ def add_example_test(
         env_vars = os.environ.copy()
         if warp_cache_path is not None:
             env_vars["WARP_CACHE_PATH"] = os.path.dirname(warp_cache_path)
-        if not allow_deprecation_warnings:
-            env_vars["PYTHONWARNINGS"] = "error::DeprecationWarning"
-        else:
-            env_vars.pop("PYTHONWARNINGS", None)
+        # Drop any ambient PYTHONWARNINGS so a stray policy in the caller's
+        # environment cannot turn a lenient run strict; govern the policy solely
+        # through the -W flag below.
+        env_vars.pop("PYTHONWARNINGS", None)
+
+        # Escalate deprecations from interpreter startup for strict runs.
+        # newton.examples defers to any explicit -W policy (via sys.warnoptions),
+        # so this governs instead of the helper's lenient "default" filter.
+        warning_args = ["-W", "error::DeprecationWarning"] if strict_warnings else []
 
         if newton.tests.unittest_utils.coverage_enabled:
             # Generate a random coverage data file name - file is deleted along with containing directory
@@ -128,16 +170,20 @@ def add_example_test(
             ) as coverage_file:
                 pass
 
-            command = ["coverage", "run", f"--data-file={coverage_file.name}"]
+            command = [sys.executable, *warning_args, "-m", "coverage", "run", f"--data-file={coverage_file.name}"]
 
             if newton.tests.unittest_utils.coverage_branch:
                 command.append("--branch")
 
         else:
-            command = [sys.executable]
+            command = [sys.executable, *warning_args]
 
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
+
+        # Forward any --warp-config overrides from the test runner
+        for entry in newton.tests.unittest_utils.warp_config_overrides:
+            command.extend(["--warp-config", entry])
 
         if not use_viewer:
             stage_path = (
@@ -175,16 +221,24 @@ def add_example_test(
                 command, capture_output=True, text=True, env=env_vars, timeout=test_timeout, check=False
             )
 
-        # print any error messages (e.g.: module not found)
-        if result.stderr != "":
-            print(result.stderr)
+        if isinstance(test, NewtonTestCase):
+            _register_output_regexes(test, expect_output_regexes, required=True)
+            _register_output_regexes(test, allow_output_regexes, required=False)
+            test.assertSubprocessSuccess(result, command=command)
+        else:
+            # print any error messages (e.g.: module not found)
+            if result.stderr != "":
+                print(result.stderr)
 
-        # Check the return code (0 is standard for success)
-        test.assertEqual(
-            result.returncode,
-            0,
-            msg=f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\nOutput:\n{result.stdout}\n{result.stderr}",
-        )
+            # Check the return code (0 is standard for success)
+            test.assertEqual(
+                result.returncode,
+                0,
+                msg=(
+                    f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\n"
+                    f"Output:\n{result.stdout}\n{result.stderr}"
+                ),
+            )
 
         # Clean up output file for old-style examples that may have created one
         if stage_path and stage_path != "None" and result.returncode == 0:
@@ -197,18 +251,55 @@ def add_example_test(
     add_function_test(cls, test_name, run, devices=devices, check_output=False)
 
 
+def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpec] | None, *, required: bool):
+    add_regex = test.expectOutputRegex if required else test.allowOutputRegex
+    for regex_spec in regexes or ():
+        if isinstance(regex_spec, tuple):
+            regex, stream = regex_spec
+        else:
+            regex, stream = regex_spec, "any"
+        add_regex(regex, stream=stream)
+
+
+class TestExampleOutputRegexes(unittest.TestCase):
+    def test_basic_plotting_output_does_not_consume_trailing_output(self):
+        unexpected_output = "unexpected output\n"
+        output = (
+            "Simulation diagnostics summary (3 steps):\n"
+            "  Iterations (max):   mean=1.0, peak=2\n"
+            "  Kinetic E [J]:    final=2.0\n"
+            "  Potential E [J]:  final=3.0\n"
+            "  Constraints:        mean=4.0, peak=5.0\n" + unexpected_output
+        )
+
+        unmatched_output = re.sub(_BASIC_PLOTTING_OUTPUT_RE, "", output, flags=re.MULTILINE)
+
+        self.assertEqual(unmatched_output, unexpected_output)
+
+
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
 test_devices = get_test_devices(mode="basic")
 
 
-class TestBasicExamples(unittest.TestCase):
+_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
+    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
+]
+
+
+class TestBasicExamples(NewtonTestCase):
     pass
 
 
-add_example_test(TestBasicExamples, name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+def add_basic_example_test(**kwargs):
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [*_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
+    add_example_test(TestBasicExamples, allow_output_regexes=allow_output_regexes, **kwargs)
 
-add_example_test(
-    TestBasicExamples,
+
+add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+
+add_basic_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200},
@@ -217,8 +308,7 @@ add_example_test(
     use_viewer=True,
     test_suffix="xpbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200, "solver": "vbd"},
@@ -228,17 +318,15 @@ add_example_test(
     test_suffix="vbd",
 )
 
-add_example_test(TestBasicExamples, name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
+add_basic_example_test(name="basic.example_basic_viewer", devices=test_devices, use_viewer=True)
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_joints",
     devices=test_devices,
     use_viewer=True,
     test_suffix="xpbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_joints",
     devices=test_devices,
     use_viewer=True,
@@ -246,39 +334,36 @@ add_example_test(
     test_suffix="vbd",
 )
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_shapes",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 150},
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_conveyor",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 100},
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 230, "solver": "vbd"},
     test_suffix="vbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 230, "solver": "xpbd"},
     test_suffix="xpbd",
 )
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_dzhanibekov",
     devices=test_devices,
     use_viewer=True,
@@ -286,8 +371,7 @@ add_example_test(
     test_suffix="mujoco",
 )
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_multi_solver_overlay",
     devices=test_devices,
     use_viewer=True,
@@ -416,6 +500,20 @@ add_example_test(
     test_options={"num-frames": 360},
     use_viewer=True,
 )
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_triangle",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_grid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
 
 
 class TestRobotExamples(unittest.TestCase):
@@ -434,7 +532,7 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_anymal_c_walk",
     devices=cuda_test_devices,
-    test_options={"usd_required": True, "num-frames": 500, "torch_required": True},
+    test_options={"usd_required": True, "num-frames": 500, "onnx_required": True},
     use_viewer=True,
 )
 add_example_test(
@@ -491,7 +589,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_29dof"},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_29dof"},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
     test_suffix="G1_29dof",
@@ -500,7 +598,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof"},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof"},
     use_viewer=True,
     test_suffix="G1_23dof",
 )
@@ -508,7 +606,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "g1_23dof", "physx": True},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "g1_23dof", "physx": True},
     use_viewer=True,
     test_suffix="G1_23dof_Physx",
 )
@@ -516,7 +614,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal"},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal"},
     use_viewer=True,
     test_suffix="Anymal",
 )
@@ -524,7 +622,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"num-frames": 500, "torch_required": True, "robot": "anymal", "physx": True},
+    test_options={"num-frames": 500, "onnx_required": True, "robot": "anymal", "physx": True},
     use_viewer=True,
     test_suffix="Anymal_Physx",
 )
@@ -532,7 +630,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"torch_required": True},
+    test_options={"onnx_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2"},
     use_viewer=True,
     test_suffix="Go2",
@@ -541,7 +639,7 @@ add_example_test(
     TestRobotPolicyExamples,
     name="robot.example_robot_policy",
     devices=cuda_test_devices,
-    test_options={"torch_required": True},
+    test_options={"onnx_required": True},
     test_options_cuda={"num-frames": 500, "robot": "go2", "physx": True},
     use_viewer=True,
     test_suffix="Go2_Physx",
@@ -556,7 +654,7 @@ add_example_test(
     TestAdvancedRobotExamples,
     name="mpm.example_mpm_anymal",
     devices=cuda_test_devices,
-    test_options={"num-frames": 100, "torch_required": True},
+    test_options={"num-frames": 100, "onnx_required": True},
     use_viewer=True,
 )
 
@@ -767,12 +865,13 @@ add_example_test(
 )
 
 
-add_example_test(
-    TestBasicExamples,
+add_basic_example_test(
     name="basic.example_basic_plotting",
     devices=test_devices,
     test_options={"num-frames": 200},
     use_viewer=True,
+    expect_output_regexes=[(_BASIC_PLOTTING_OUTPUT_RE, "stdout")],
+    allow_output_regexes=[(_MATPLOTLIB_FONT_CACHE_OUTPUT_RE, "stderr")],
 )
 
 
@@ -837,6 +936,14 @@ add_example_test(
 )
 add_example_test(
     TestMultiphysicsExamples,
+    name="multiphysics.example_softbody_dropping_to_cloth",
+    devices=test_devices,
+    test_options={"num-frames": 2, "solver": "coupled", "vbd-iterations": 2},
+    use_viewer=True,
+    test_suffix="coupled",
+)
+add_example_test(
+    TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
     devices=cuda_test_devices,
     test_options={"num-frames": 180, "solver": "xpbd"},
@@ -858,6 +965,109 @@ add_example_test(
     test_options={"num-frames": 180, "solver": "vbd"},
     use_viewer=True,
     test_suffix="vbd",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_rigid_soft_contact",
+    devices=test_devices,
+    test_options={"num-frames": 2, "solver": "coupled", "rigid-solver": "mjc", "vbd-iterations": 1},
+    use_viewer=True,
+    test_suffix="coupled_mjc",
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_vbd_admm_solver",
+    devices=test_devices,
+    test_options={"num-frames": 30},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_admm_contact_solver",
+    devices=test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_kamino_mujoco_admm_solver",
+    devices=["cpu"],
+    test_options={"num-frames": 30, "world-count": 4},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_xpbd_vbd_coupled_solver",
+    devices=test_devices,
+    test_options={"num-frames": 5, "xpbd-iterations": 4, "vbd-iterations": 2},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_franka_vbd_cable_admm_solver",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 2,
+        "world-count": 1,
+        "substeps": 1,
+        "admm-iterations": 1,
+        "payload-segments": 3,
+        "xpbd-iterations": 2,
+        "graph-capture": False,
+    },
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_mpm_coupled_solver",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_vbd_coupled_solver",
+    devices=test_devices,
+    test_options={"num-frames": 2, "proxy-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_mujoco_xpbd_coupled_solver",
+    devices=test_devices,
+    test_options={"num-frames": 2, "proxy-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_proxy_joint_gripper",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_vbd_mpm_coupled_solver",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 2, "proxy-iterations": 1, "vbd-iterations": 2, "mpm-iterations": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_xpbd_mpm_coupled_solver",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 2,
+        "proxy-iterations": 1,
+        "xpbd-iterations": 2,
+        "xpbd-dim-x": 2,
+        "xpbd-dim-y": 2,
+        "xpbd-dim-z": 2,
+        "mpm-iterations": 1,
+        "grid-padding": 8,
+        "substeps": 1,
+    },
+    use_viewer=True,
 )
 
 

@@ -17,7 +17,6 @@ from ..core.math import (
     FLOAT32_MAX,
     TWO_PI,
     quat_log,
-    quat_to_euler_xyz,
     quat_to_vec4,
     quat_twist_angle,
     screw,
@@ -27,16 +26,7 @@ from ..core.math import (
 )
 from ..core.model import ModelKamino
 from ..core.types import (
-    float32,
-    int32,
-    mat33f,
-    quatf,
-    transformf,
     vec1f,
-    vec2f,
-    vec3f,
-    vec4f,
-    vec6f,
     vec7f,
 )
 
@@ -64,9 +54,9 @@ wp.set_module_options({"enable_backward": False})
 
 
 DEFAULT_LIMIT_V1F = vec1f(FLOAT32_MAX)
-DEFAULT_LIMIT_V2F = vec2f(FLOAT32_MAX)
-DEFAULT_LIMIT_V3F = vec3f(FLOAT32_MAX)
-DEFAULT_LIMIT_V4F = vec4f(FLOAT32_MAX)
+DEFAULT_LIMIT_V2F = wp.vec2f(FLOAT32_MAX)
+DEFAULT_LIMIT_V3F = wp.vec3f(FLOAT32_MAX)
+DEFAULT_LIMIT_V4F = wp.vec4f(FLOAT32_MAX)
 DEFAULT_LIMIT_V7F = vec7f(FLOAT32_MAX)
 
 
@@ -76,7 +66,9 @@ DEFAULT_LIMIT_V7F = vec7f(FLOAT32_MAX)
 
 
 @wp.func
-def correct_rotational_coord(q_j_in: float32, q_j_ref: float32 = 0.0, q_j_limit: float32 = FLOAT32_MAX) -> float32:
+def correct_rotational_coord(
+    q_j_in: wp.float32, q_j_ref: wp.float32 = 0.0, q_j_limit: wp.float32 = FLOAT32_MAX
+) -> wp.float32:
     """
     Corrects a rotational joint coordinate to be as close as possible to a reference coordinate.
     """
@@ -86,7 +78,7 @@ def correct_rotational_coord(q_j_in: float32, q_j_ref: float32 = 0.0, q_j_limit:
 
 
 @wp.func
-def correct_quat_vector_coord(q_j_in: vec4f, q_j_ref: vec4f) -> vec4f:
+def correct_quat_vector_coord(q_j_in: wp.vec4f, q_j_ref: wp.vec4f) -> wp.vec4f:
     """
     Corrects a quaternion joint coordinate to be as close as possible to a reference coordinate.
 
@@ -102,7 +94,7 @@ def correct_quat_vector_coord(q_j_in: vec4f, q_j_ref: vec4f) -> vec4f:
 @wp.func
 def correct_joint_coord_free(q_j_in: vec7f, q_j_ref: vec7f, q_j_limit: vec7f = DEFAULT_LIMIT_V7F) -> vec7f:
     """Corrects the orientation quaternion coordinate of a free joint."""
-    q_j_in[0:4] = correct_quat_vector_coord(q_j_in[0:4], q_j_ref[0:4])
+    q_j_in[3:] = correct_quat_vector_coord(q_j_in[3:], q_j_ref[3:])
     return q_j_in
 
 
@@ -120,14 +112,18 @@ def correct_joint_coord_prismatic(q_j_in: vec1f, q_j_ref: vec1f, q_j_limit: vec1
 
 
 @wp.func
-def correct_joint_coord_cylindrical(q_j_in: vec2f, q_j_ref: vec2f, q_j_limit: vec2f = DEFAULT_LIMIT_V2F) -> vec2f:
+def correct_joint_coord_cylindrical(
+    q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
+) -> wp.vec2f:
     """Corrects only the rotational joint coordinate."""
     q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
     return q_j_in
 
 
 @wp.func
-def correct_joint_coord_universal(q_j_in: vec2f, q_j_ref: vec2f, q_j_limit: vec2f = DEFAULT_LIMIT_V2F) -> vec2f:
+def correct_joint_coord_universal(
+    q_j_in: wp.vec2f, q_j_ref: wp.vec2f, q_j_limit: wp.vec2f = DEFAULT_LIMIT_V2F
+) -> wp.vec2f:
     """Corrects each of the two rotational joint coordinates individually."""
     q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
     q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
@@ -135,22 +131,17 @@ def correct_joint_coord_universal(q_j_in: vec2f, q_j_ref: vec2f, q_j_limit: vec2
 
 
 @wp.func
-def correct_joint_coord_spherical(q_j_in: vec4f, q_j_ref: vec4f, q_j_limit: vec4f = DEFAULT_LIMIT_V4F) -> vec4f:
+def correct_joint_coord_spherical(
+    q_j_in: wp.vec4f, q_j_ref: wp.vec4f, q_j_limit: wp.vec4f = DEFAULT_LIMIT_V4F
+) -> wp.vec4f:
     """Corrects a quaternion joint coordinate to be as close as possible to a reference."""
     return correct_quat_vector_coord(q_j_in, q_j_ref)
 
 
 @wp.func
-def correct_joint_coord_gimbal(q_j_in: vec3f, q_j_ref: vec3f, q_j_limit: vec3f = DEFAULT_LIMIT_V3F) -> vec3f:
-    """Corrects each of the XYZ Euler angles individually."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
-    q_j_in[2] = correct_rotational_coord(q_j_in[2], q_j_ref[2], q_j_limit[2])
-    return q_j_in
-
-
-@wp.func
-def correct_joint_coord_cartesian(q_j_in: vec3f, q_j_ref: vec3f, q_j_limit: vec3f = DEFAULT_LIMIT_V3F) -> vec3f:
+def correct_joint_coord_cartesian(
+    q_j_in: wp.vec3f, q_j_ref: wp.vec3f, q_j_limit: wp.vec3f = DEFAULT_LIMIT_V3F
+) -> wp.vec3f:
     """No correction needed for Cartesian coordinates."""
     return q_j_in
 
@@ -172,8 +163,6 @@ def get_joint_coord_correction_function(dof_type: JointDoFType):
         return correct_joint_coord_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return correct_joint_coord_spherical
-    elif dof_type == JointDoFType.GIMBAL:
-        return correct_joint_coord_gimbal
     elif dof_type == JointDoFType.CARTESIAN:
         return correct_joint_coord_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -188,39 +177,39 @@ def get_joint_coord_correction_function(dof_type: JointDoFType):
 
 
 @wp.func
-def map_to_joint_coords_free(j_r_j: vec3f, j_q_j: quatf) -> vec7f:
+def map_to_joint_coords_free(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> vec7f:
     """Returns the full 7D representation of joint pose (3D translation + 4D rotation)."""
     # TODO: Is there a more efficient way to construct a vec7f?
     return vec7f(j_r_j[0], j_r_j[1], j_r_j[2], j_q_j.x, j_q_j.y, j_q_j.z, j_q_j.w)
 
 
 @wp.func
-def map_to_joint_coords_revolute(j_r_j: vec3f, j_q_j: quatf) -> vec1f:
+def map_to_joint_coords_revolute(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> vec1f:
     """Returns the 1D rotation angle about the local X-axis."""
     # Measure rotation around the x-axis only
-    axis = vec3f(1.0, 0.0, 0.0)
+    axis = wp.vec3f(1.0, 0.0, 0.0)
     return vec1f(quat_twist_angle(j_q_j, axis))
 
 
 @wp.func
-def map_to_joint_coords_prismatic(j_r_j: vec3f, j_q_j: quatf) -> vec1f:
+def map_to_joint_coords_prismatic(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> vec1f:
     """Returns the 1D translation distance along the local X-axis."""
     return vec1f(j_r_j[0])
 
 
 @wp.func
-def map_to_joint_coords_cylindrical(j_r_j: vec3f, j_q_j: quatf) -> vec2f:
+def map_to_joint_coords_cylindrical(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec2f:
     """Returns the 2D vector of translation and rotation about the local X-axis."""
     j_p_j = quat_log(j_q_j)
-    return vec2f(j_r_j[0], j_p_j[0])
+    return wp.vec2f(j_r_j[0], j_p_j[0])
 
 
 @wp.func
-def map_to_joint_coords_universal(j_r_j: vec3f, j_q_j: quatf) -> vec2f:
+def map_to_joint_coords_universal(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec2f:
     """Returns the 2D vector of joint angles for the two revolute DoFs."""
     # X and Y axis in base frame
-    a_x_B = vec3f(1.0, 0.0, 0.0)
-    a_y_B = vec3f(0.0, 1.0, 0.0)
+    a_x_B = wp.vec3f(1.0, 0.0, 0.0)
+    a_y_B = wp.vec3f(0.0, 1.0, 0.0)
 
     # X and Y axis in follower frame
     a_x_F = wp.quat_rotate(j_q_j, a_x_B)
@@ -232,24 +221,17 @@ def map_to_joint_coords_universal(j_r_j: vec3f, j_q_j: quatf) -> vec2f:
     # Extract theta_y, as the angle of the rotation about a_y_F mapping a_x_B to a_x_F
     theta_y = wp.atan2(wp.dot(wp.cross(a_x_B, a_x_F), a_y_F), a_x_F[0])
 
-    return vec2f(theta_x, theta_y)
+    return wp.vec2f(theta_x, theta_y)
 
 
 @wp.func
-def map_to_joint_coords_spherical(j_r_j: vec3f, j_q_j: quatf) -> vec4f:
+def map_to_joint_coords_spherical(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec4f:
     """Returns the 4D unit-quaternion representing the joint rotation."""
     return quat_to_vec4(j_q_j)
 
 
 @wp.func
-def map_to_joint_coords_gimbal(j_r_j: vec3f, j_q_j: quatf) -> vec3f:
-    """Returns the 3D XYZ Euler angles (roll, pitch, yaw)."""
-    # How can we make this safer?
-    return quat_to_euler_xyz(j_q_j)
-
-
-@wp.func
-def map_to_joint_coords_cartesian(j_r_j: vec3f, j_q_j: quatf) -> vec3f:
+def map_to_joint_coords_cartesian(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec3f:
     """Returns the 3D translational."""
     return j_r_j
 
@@ -271,8 +253,6 @@ def get_joint_coords_mapping_function(dof_type: JointDoFType):
         return map_to_joint_coords_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return map_to_joint_coords_spherical
-    elif dof_type == JointDoFType.GIMBAL:
-        return map_to_joint_coords_gimbal
     elif dof_type == JointDoFType.CARTESIAN:
         return map_to_joint_coords_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -287,15 +267,15 @@ def get_joint_coords_mapping_function(dof_type: JointDoFType):
 
 
 @wp.func
-def joint_constraint_angular_residual_free(j_q_j: quatf) -> vec3f:
-    return vec3f(0.0, 0.0, 0.0)
+def joint_constraint_angular_residual_free(j_q_j: wp.quatf) -> wp.vec3f:
+    return wp.vec3f(0.0, 0.0, 0.0)
 
 
 @wp.func
-def joint_constraint_angular_residual_revolute(j_q_j: quatf) -> vec3f:
+def joint_constraint_angular_residual_revolute(j_q_j: wp.quatf) -> wp.vec3f:
     """Returns the joint constraint residual for a revolute joint that rotates about the local X-axis."""
     # x-axis attached to the base body
-    j_x_B = vec3f(1.0, 0.0, 0.0)
+    j_x_B = wp.vec3f(1.0, 0.0, 0.0)
 
     # x-axis attached to the follower body, expressed in the joint frame on the base body.
     j_x_F = wp.quat_rotate(j_q_j, j_x_B)
@@ -306,16 +286,16 @@ def joint_constraint_angular_residual_revolute(j_q_j: quatf) -> vec3f:
 
 
 @wp.func
-def joint_constraint_angular_residual_universal(j_q_j: quatf) -> vec3f:
+def joint_constraint_angular_residual_universal(j_q_j: wp.quatf) -> wp.vec3f:
     """Returns the joint constraint residual for a universal joint."""
-    e_y = vec3f(0.0, 1.0, 0.0)
+    e_y = wp.vec3f(0.0, 1.0, 0.0)
     a_x_dot_a_y = wp.quat_rotate(j_q_j, e_y)[0]
 
     return wp.vec3f(0.0, 0.0, -a_x_dot_a_y)
 
 
 @wp.func
-def joint_constraint_angular_residual_fixed(j_q_j: quatf) -> vec3f:
+def joint_constraint_angular_residual_fixed(j_q_j: wp.quatf) -> wp.vec3f:
     """Returns the joint constraint residual for a fixed joint."""
     return quat_log(j_q_j)
 
@@ -338,8 +318,6 @@ def get_joint_constraint_angular_residual_function(dof_type: JointDoFType):
         return joint_constraint_angular_residual_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return joint_constraint_angular_residual_free
-    elif dof_type == JointDoFType.GIMBAL:
-        return joint_constraint_angular_residual_free
     elif dof_type == JointDoFType.CARTESIAN:
         return joint_constraint_angular_residual_fixed
     elif dof_type == JointDoFType.FIXED:
@@ -349,11 +327,16 @@ def get_joint_constraint_angular_residual_function(dof_type: JointDoFType):
 
 
 @wp.func
-def joint_constraint_velocity_residual_universal(j_q_j: quatf, j_u_j: vec6f) -> vec6f:
-    """Returns the joint constraint velocity residual for a universal joint."""
+def convert_angular_vel_to_universal_joint_intermediary_frame(
+    j_q_j: wp.quatf, j_u_j: wp.spatial_vectorf
+) -> wp.spatial_vectorf:
+    """
+    Converts the angular part of a relative body velocity at a universal joint, from the
+    joint frame on the base body to the intermediary frame.
+    """
     # Compute intermediary body axes, in the joint frame on the base body
-    e_x = vec3f(1.0, 0.0, 0.0)
-    e_y = vec3f(0.0, 1.0, 0.0)
+    e_x = wp.vec3f(1.0, 0.0, 0.0)
+    e_y = wp.vec3f(0.0, 1.0, 0.0)
     a_x = e_x  # x axis on base
     a_y_raw = wp.quat_rotate(j_q_j, e_y)  #  y axis on follower (constrained to be orthogonal to a_x)
     a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
@@ -362,7 +345,7 @@ def joint_constraint_velocity_residual_universal(j_q_j: quatf, j_u_j: vec6f) -> 
 
     # Project angular velocity into intermediary body frame
     omega = screw_angular(j_u_j)
-    return screw(screw_linear(j_u_j), vec3f(wp.dot(omega, a_x), wp.dot(omega, a_y), wp.dot(omega, a_z)))
+    return screw(screw_linear(j_u_j), wp.vec3f(wp.dot(omega, a_x), wp.dot(omega, a_y), wp.dot(omega, a_z)))
 
 
 ###
@@ -395,22 +378,22 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
     @wp.func
     def _write_typed_joint_data(
         # Inputs:
-        cts_offset: int32,  # Index offset of the joint constraints
-        dofs_offset: int32,  # Index offset of the joint DoFs
-        coords_offset: int32,  # Index offset of the joint coordinates
-        j_r_j: vec3f,  # 3D vector of the joint-local relative pose
-        j_q_j: quatf,  # 4D unit-quaternion of the joint-local relative pose
-        j_u_j: vec6f,  # 6D vector of the joint-local relative twist
-        q_j_p: wp.array[float32],  # Reference joint coordinates for correction
+        cts_offset: wp.int32,  # Index offset of the joint constraints
+        dofs_offset: wp.int32,  # Index offset of the joint DoFs
+        coords_offset: wp.int32,  # Index offset of the joint coordinates
+        j_r_j: wp.vec3f,  # 3D vector of the joint-local relative pose
+        j_q_j: wp.quatf,  # 4D unit-quaternion of the joint-local relative pose
+        j_u_j: wp.spatial_vectorf,  # 6D vector of the joint-local relative twist
+        q_j_p: wp.array[wp.float32],  # Reference joint coordinates for correction
         # Outputs:
-        r_j_out: wp.array[float32],  # Flat array of joint constraint residuals
-        dr_j_out: wp.array[float32],  # Flat array of joint constraint velocities
-        q_j_out: wp.array[float32],  # Flat array of joint DoF coordinates
-        dq_j_out: wp.array[float32],  # Flat array of joint DoF velocities
+        r_j_out: wp.array[wp.float32],  # Flat array of joint constraint residuals
+        dr_j_out: wp.array[wp.float32],  # Flat array of joint constraint velocities
+        q_j_out: wp.array[wp.float32],  # Flat array of joint DoF coordinates
+        dq_j_out: wp.array[wp.float32],  # Flat array of joint DoF velocities
     ):
         # Convert angular velocity to intermediary body frame for universal joint
         if wp.static(dof_type == JointDoFType.UNIVERSAL):
-            j_u_j = joint_constraint_velocity_residual_universal(j_q_j, j_u_j)
+            j_u_j = convert_angular_vel_to_universal_joint_intermediary_frame(j_q_j, j_u_j)
 
         # Only write the constraint residual and velocity if the joint defines constraints
         # NOTE: This will be disabled for free joints
@@ -456,35 +439,35 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
     @wp.func
     def _write_joint_data(
         # Inputs:
-        dof_type: int32,
-        cts_offset: int32,
-        dofs_offset: int32,
-        coords_offset: int32,
-        j_r_j: vec3f,
-        j_q_j: quatf,
-        j_u_j: vec6f,
-        q_j_p: wp.array[float32],
+        dof_type: wp.int32,
+        cts_offset: wp.int32,
+        dofs_offset: wp.int32,
+        coords_offset: wp.int32,
+        j_r_j: wp.vec3f,
+        j_q_j: wp.quatf,
+        j_u_j: wp.spatial_vectorf,
+        q_j_p: wp.array[wp.float32],
         # Outputs:
-        data_r_j: wp.array[float32],
-        data_dr_j: wp.array[float32],
-        data_q_j: wp.array[float32],
-        data_dq_j: wp.array[float32],
+        data_r_j: wp.array[wp.float32],
+        data_dr_j: wp.array[wp.float32],
+        data_q_j: wp.array[wp.float32],
+        data_dq_j: wp.array[wp.float32],
     ):
         """
         Stores the joint constraint residuals and DoF motion based on the joint type.
 
         Args:
-            dof_type (int32): The type of joint DoF.
-            cts_offset (int32): Index offset of the joint constraints.
-            dofs_offset (int32): Index offset of the joint DoFs.
-            coords_offset (int32): Index offset of the joint coordinates.
-            j_r_j (vec3f): 3D vector of the joint-local relative translation.
-            j_q_j (quatf): 4D unit-quaternion of the joint-local relative rotation.
-            j_u_j (vec6f): 6D vector of the joint-local relative twist.
-            data_r_j (wp.array): Flat array of joint constraint residuals.
-            data_dr_j (wp.array): Flat array of joint constraint residuals.
-            data_q_j (wp.array): Flat array of joint DoF coordinates.
-            data_dq_j (wp.array): Flat array of joint DoF velocities.
+            dof_type: The type of joint DoF.
+            cts_offset: Index offset of the joint constraints.
+            dofs_offset: Index offset of the joint DoFs.
+            coords_offset: Index offset of the joint coordinates.
+            j_r_j: 3D vector of the joint-local relative translation.
+            j_q_j: 4D unit-quaternion of the joint-local relative rotation.
+            j_u_j: 6D vector of the joint-local relative twist.
+            data_r_j: Flat array of joint constraint residuals.
+            data_dr_j: Flat array of joint constraint residuals.
+            data_q_j: Flat array of joint DoF coordinates.
+            data_dq_j: Flat array of joint DoF velocities.
         """
         # TODO: Use wp.static to include conditionals at compile time based on the joint types present in the builder
 
@@ -563,21 +546,6 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
                 data_dq_j,
             )
 
-        elif dof_type == JointDoFType.GIMBAL:
-            wp.static(make_typed_write_joint_data(JointDoFType.GIMBAL, correction))(
-                cts_offset,
-                dofs_offset,
-                coords_offset,
-                j_r_j,
-                j_q_j,
-                j_u_j,
-                q_j_p,
-                data_r_j,
-                data_dr_j,
-                data_q_j,
-                data_dq_j,
-            )
-
         elif dof_type == JointDoFType.CARTESIAN:
             wp.static(make_typed_write_joint_data(JointDoFType.CARTESIAN))(
                 cts_offset,
@@ -634,30 +602,30 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
 
 @wp.func
 def compute_joint_pose_and_relative_motion(
-    T_B_j: transformf,
-    T_F_j: transformf,
-    u_B_j: vec6f,
-    u_F_j: vec6f,
-    B_r_Bj: vec3f,
-    F_r_Fj: vec3f,
-    X_Bj: mat33f,
-    X_Fj: mat33f,
-) -> tuple[transformf, vec3f, quatf, vec6f]:
+    T_B_j: wp.transformf,
+    T_F_j: wp.transformf,
+    u_B_j: wp.spatial_vectorf,
+    u_F_j: wp.spatial_vectorf,
+    B_r_Bj: wp.vec3f,
+    F_r_Fj: wp.vec3f,
+    X_Bj: wp.mat33f,
+    X_Fj: wp.mat33f,
+) -> tuple[wp.transformf, wp.vec3f, wp.quatf, wp.spatial_vectorf]:
     """
     Computes the relative motion of a joint given the states of its Base and Follower bodies.
 
     Args:
-        T_B_j (transformf): The absolute pose of the Base body, in world coordinates.
-        T_F_j (transformf): The absolute pose of the Follower body, in world coordinates.
-        u_B_j (vec6f): The absolute twist of the Base body, in world coordinates.
-        u_F_j (vec6f): The absolute twist of the Follower body, in world coordinates.
-        B_r_Bj (vec3f): The position of the joint on the Base body, in local coordinates.
-        F_r_Fj (vec3f): The position of the joint on the Follower body, in local coordinates.
-        X_Bj (mat33f): The joint frame on the Base body, in local coordinates.
-        X_Fj (mat33f): The joint frame on the Follower body, in local coordinates.
+        T_B_j: The absolute pose of the Base body, in world coordinates.
+        T_F_j: The absolute pose of the Follower body, in world coordinates.
+        u_B_j: The absolute twist of the Base body, in world coordinates.
+        u_F_j: The absolute twist of the Follower body, in world coordinates.
+        B_r_Bj: The position of the joint on the Base body, in local coordinates.
+        F_r_Fj: The position of the joint on the Follower body, in local coordinates.
+        X_Bj: The joint frame on the Base body, in local coordinates.
+        X_Fj: The joint frame on the Follower body, in local coordinates.
 
     Returns:
-        tuple[transformf, vec6f, vec6f]: The absolute pose of the joint frame in world coordinates,
+        The absolute pose of the joint frame in world coordinates,
         and two 6D vectors encoding the relative motion of the bodies in the frame of the joint.
     """
 
@@ -686,7 +654,7 @@ def compute_joint_pose_and_relative_motion(
     # Compute the pose of the joint frame via the Base body
     r_j_B = r_B_j + r_Bj
     r_j_F = r_F_j + r_Fj
-    p_j = wp.transformation(r_j_B, q_Bj, dtype=float32)
+    p_j = wp.transformation(r_j_B, q_Bj, dtype=wp.float32)
     r_j = r_j_F - r_j_B
 
     # Compute the relative pose between the representations of joint frame w.r.t. the two bodies
@@ -707,25 +675,27 @@ def compute_joint_pose_and_relative_motion(
 @wp.func
 def compute_and_write_joint_implicit_dynamics(
     # Constants:
-    dt: float32,
-    coords_offset: int32,
-    dofs_offset: int32,
-    num_dynamic_cts: int32,
-    dynamic_cts_offset: int32,
+    dt: wp.float32,
+    act_type: wp.int32,
+    coords_offset: wp.int32,
+    dofs_offset: wp.int32,
+    num_dynamic_cts: wp.int32,
+    dynamic_cts_offset: wp.int32,
     # Inputs:
-    model_joint_a_j: wp.array[float32],
-    model_joint_b_j: wp.array[float32],
-    model_joint_k_p_j: wp.array[float32],
-    model_joint_k_d_j: wp.array[float32],
-    data_joint_q_j: wp.array[float32],
-    data_joint_dq_j: wp.array[float32],
-    data_joint_q_j_ref: wp.array[float32],
-    data_joint_dq_j_ref: wp.array[float32],
-    data_joint_tau_j_ref: wp.array[float32],
+    model_joint_a_j: wp.array[wp.float32],
+    model_joint_b_j: wp.array[wp.float32],
+    model_joint_k_p_j: wp.array[wp.float32],
+    model_joint_k_d_j: wp.array[wp.float32],
+    data_joint_q_j: wp.array[wp.float32],
+    data_joint_dq_j: wp.array[wp.float32],
+    data_joint_tau_j: wp.array[wp.float32],
+    data_joint_q_j_ref: wp.array[wp.float32],
+    data_joint_dq_j_ref: wp.array[wp.float32],
+    data_joint_tau_j_ref: wp.array[wp.float32],  # Can be `None`
     # Outputs:
-    data_joint_m_j: wp.array[float32],
-    data_joint_inv_m_j: wp.array[float32],
-    data_joint_dq_b_j: wp.array[float32],
+    data_joint_m_j: wp.array[wp.float32],
+    data_joint_inv_m_j: wp.array[wp.float32],
+    data_joint_dq_b_j: wp.array[wp.float32],
 ):
     # Iterate over the dynamic constraints of the joint and
     # compute and store the implicit dynamics intermediates
@@ -748,19 +718,38 @@ def compute_and_write_joint_implicit_dynamics(
         k_p_j = model_joint_k_p_j[dofs_offset_j]
         k_d_j = model_joint_k_d_j[dofs_offset_j]
 
+        # Retrieve external load
+        tau_j = data_joint_tau_j[dofs_offset_j]
+
         # Retrieve PD control references
         pd_q_j_ref = data_joint_q_j_ref[coords_offset_j]
         pd_dq_j_ref = data_joint_dq_j_ref[dofs_offset_j]
-        pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j]
+        pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
 
-        # Compute the implicit joint dynamics intermedates
-        m_j = a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j
+        # Compute the implicit joint dynamics intermediates
+        m_j = a_j + dt * b_j
+        tau_j_tot = tau_j
+        if act_type == JointActuationType.FORCE:
+            tau_j_tot += pd_tau_j_ff
+        elif act_type == JointActuationType.POSITION:
+            m_j += dt * k_d_j + dt * dt * k_p_j
+            tau_j_tot += k_p_j * (pd_q_j_ref - q_j)
+        elif act_type == JointActuationType.VELOCITY:
+            m_j += dt * k_d_j
+            tau_j_tot += k_d_j * pd_dq_j_ref
+        elif act_type == JointActuationType.POSITION_VELOCITY:
+            m_j += dt * k_d_j + dt * dt * k_p_j
+            tau_j_tot += k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+        elif act_type == JointActuationType.POSITION_VELOCITY_FORCE:
+            m_j += dt * k_d_j + dt * dt * k_p_j
+            tau_j_tot += pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+        # Enforce minimum mass to avoid division by zero
+        m_j = wp.max(1e-6, m_j)
         inv_m_j = 1.0 / m_j
-        tau_j = pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
-        h_j = a_j * dq_j + dt * tau_j
+        h_j = a_j * dq_j + dt * tau_j_tot
         dq_b_j = inv_m_j * h_j
 
-        # Store the resulting joint dynamics intermadiates
+        # Store the resulting joint dynamics intermediates
         data_joint_m_j[dynamic_cts_offset_j] = m_j
         data_joint_inv_m_j[dynamic_cts_offset_j] = inv_m_j
         data_joint_dq_b_j[dynamic_cts_offset_j] = dq_b_j
@@ -780,38 +769,40 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
     @wp.kernel
     def _compute_joints_data(
         # Inputs:
-        model_time_dt: wp.array[float32],
-        model_joint_wid: wp.array[int32],
-        model_joint_dof_type: wp.array[int32],
-        model_joint_coords_offset: wp.array[int32],
-        model_joint_dofs_offset: wp.array[int32],
-        model_joint_dynamic_cts_offset: wp.array[int32],
-        model_joint_kinematic_cts_offset: wp.array[int32],
-        model_joint_bid_B: wp.array[int32],
-        model_joint_bid_F: wp.array[int32],
-        model_joint_B_r_Bj: wp.array[vec3f],
-        model_joint_F_r_Fj: wp.array[vec3f],
-        model_joint_X_Bj: wp.array[mat33f],
-        model_joint_X_Fj: wp.array[mat33f],
-        model_joint_a_j: wp.array[float32],
-        model_joint_b_j: wp.array[float32],
-        model_joint_k_p_j: wp.array[float32],
-        model_joint_k_d_j: wp.array[float32],
-        data_body_q_i: wp.array[transformf],
-        data_body_u_i: wp.array[vec6f],
-        data_joint_q_j_ref: wp.array[float32],
-        data_joint_dq_j_ref: wp.array[float32],
-        data_joint_tau_j_ref: wp.array[float32],
-        q_j_p: wp.array[float32],
+        model_time_dt: wp.array[wp.float32],
+        model_joint_wid: wp.array[wp.int32],
+        model_joint_dof_type: wp.array[wp.int32],
+        model_joint_act_type: wp.array[wp.int32],
+        model_joint_coords_offset: wp.array[wp.int32],
+        model_joint_dofs_offset: wp.array[wp.int32],
+        model_joint_dynamic_cts_offset: wp.array[wp.int32],
+        model_joint_kinematic_cts_offset: wp.array[wp.int32],
+        model_joint_bid_B: wp.array[wp.int32],
+        model_joint_bid_F: wp.array[wp.int32],
+        model_joint_B_r_Bj: wp.array[wp.vec3f],
+        model_joint_F_r_Fj: wp.array[wp.vec3f],
+        model_joint_X_Bj: wp.array[wp.mat33f],
+        model_joint_X_Fj: wp.array[wp.mat33f],
+        model_joint_a_j: wp.array[wp.float32],
+        model_joint_b_j: wp.array[wp.float32],
+        model_joint_k_p_j: wp.array[wp.float32],
+        model_joint_k_d_j: wp.array[wp.float32],
+        data_body_q_i: wp.array[wp.transformf],
+        data_body_u_i: wp.array[wp.spatial_vectorf],
+        data_joint_tau_j: wp.array[wp.float32],
+        data_joint_q_j_ref: wp.array[wp.float32],
+        data_joint_dq_j_ref: wp.array[wp.float32],
+        data_joint_tau_j_ref: wp.array[wp.float32],
+        q_j_p: wp.array[wp.float32],
         # Outputs:
-        data_joint_p_j: wp.array[transformf],
-        data_joint_r_j: wp.array[float32],
-        data_joint_dr_j: wp.array[float32],
-        data_joint_q_j: wp.array[float32],
-        data_joint_dq_j: wp.array[float32],
-        data_joint_m_j: wp.array[float32],
-        data_joint_inv_m_j: wp.array[float32],
-        data_joint_dq_b_j: wp.array[float32],
+        data_joint_p_j: wp.array[wp.transformf],
+        data_joint_r_j: wp.array[wp.float32],
+        data_joint_dr_j: wp.array[wp.float32],
+        data_joint_q_j: wp.array[wp.float32],
+        data_joint_dq_j: wp.array[wp.float32],
+        data_joint_m_j: wp.array[wp.float32],
+        data_joint_inv_m_j: wp.array[wp.float32],
+        data_joint_dq_b_j: wp.array[wp.float32],
     ):
         # Retrieve the thread index
         jid = wp.tid()
@@ -819,6 +810,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # Retrieve the joint model data
         wid = model_joint_wid[jid]
         dof_type = model_joint_dof_type[jid]
+        act_type = model_joint_act_type[jid]
         bid_B = model_joint_bid_B[jid]
         bid_F = model_joint_bid_F[jid]
         B_r_Bj = model_joint_B_r_Bj[jid]
@@ -838,8 +830,8 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 
         # If the Base body is the world (bid=-1), use the identity transform (frame
         # of the world's origin), otherwise retrieve the Base body's pose and twist
-        T_B_j = wp.transform_identity(dtype=float32)
-        u_B_j = vec6f(0.0)
+        T_B_j = wp.transform_identity(dtype=wp.float32)
+        u_B_j = wp.spatial_vectorf(0.0)
         if bid_B > -1:
             T_B_j = data_body_q_i[bid_B]
             u_B_j = data_body_u_i[bid_B]
@@ -876,6 +868,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # for the dynamic constraints of the joint
         compute_and_write_joint_implicit_dynamics(
             dt,
+            act_type,
             coords_offset,
             dofs_offset,
             num_dynamic_cts,
@@ -886,6 +879,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
             model_joint_k_d_j,
             data_joint_q_j,
             data_joint_dq_j,
+            data_joint_tau_j,
             data_joint_q_j_ref,
             data_joint_dq_j_ref,
             data_joint_tau_j_ref,
@@ -901,18 +895,18 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 @wp.kernel
 def _extract_actuators_state_from_joints(
     # Inputs:
-    world_mask: wp.array[bool],
-    model_joint_wid: wp.array[int32],
-    model_joint_act_type: wp.array[int32],
-    model_joint_coords_offset: wp.array[int32],
-    model_joint_dofs_offset: wp.array[int32],
-    model_joint_actuated_coords_offset: wp.array[int32],
-    model_joint_actuated_dofs_offset: wp.array[int32],
-    joint_q: wp.array[float32],
-    joint_u: wp.array[float32],
+    world_mask: wp.array[wp.bool],
+    model_joint_wid: wp.array[wp.int32],
+    model_joint_act_type: wp.array[wp.int32],
+    model_joint_coords_offset: wp.array[wp.int32],
+    model_joint_dofs_offset: wp.array[wp.int32],
+    model_joint_actuated_coords_offset: wp.array[wp.int32],
+    model_joint_actuated_dofs_offset: wp.array[wp.int32],
+    joint_q: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
     # Outputs:
-    actuator_q: wp.array[float32],
-    actuator_u: wp.array[float32],
+    actuator_q: wp.array[wp.float32],
+    actuator_u: wp.array[wp.float32],
 ):
     # Retrieve the joint index from the thread grid
     jid = wp.tid()
@@ -948,18 +942,18 @@ def _extract_actuators_state_from_joints(
 @wp.kernel
 def _extract_joints_state_from_actuators(
     # Inputs:
-    world_mask: wp.array[bool],
-    model_joint_wid: wp.array[int32],
-    model_joint_act_type: wp.array[int32],
-    model_joint_coords_offset: wp.array[int32],
-    model_joint_dofs_offset: wp.array[int32],
-    model_joint_actuated_coords_offset: wp.array[int32],
-    model_joint_actuated_dofs_offset: wp.array[int32],
-    actuator_q: wp.array[float32],
-    actuator_u: wp.array[float32],
+    world_mask: wp.array[wp.bool],
+    model_joint_wid: wp.array[wp.int32],
+    model_joint_act_type: wp.array[wp.int32],
+    model_joint_coords_offset: wp.array[wp.int32],
+    model_joint_dofs_offset: wp.array[wp.int32],
+    model_joint_actuated_coords_offset: wp.array[wp.int32],
+    model_joint_actuated_dofs_offset: wp.array[wp.int32],
+    actuator_q: wp.array[wp.float32],
+    actuator_u: wp.array[wp.float32],
     # Outputs:
-    joint_q: wp.array[float32],
-    joint_u: wp.array[float32],
+    joint_q: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
 ):
     # Retrieve the joint index from the thread grid
     jid = wp.tid()
@@ -1000,7 +994,7 @@ def _extract_joints_state_from_actuators(
 def compute_joints_data(
     model: ModelKamino,
     data: DataKamino,
-    q_j_p: wp.array,
+    q_j_p: wp.array[wp.float32],
     correction: JointCorrectionMode = JointCorrectionMode.TWOPI,
 ) -> None:
     """
@@ -1011,14 +1005,11 @@ def compute_joints_data(
     residuals and velocities of the applied bilateral constraints.
 
     Args:
-        model (`ModelKamino`):
-            The model container holding the time-invariant data of the simulation.
-        q_j_p (`wp.array`):
-            An array of previous joint DoF coordinates used for coordinate correction.\n
-            Only used for revolute DoFs of the relevant joints to enforce angle continuity.\n
-            Shape of ``(sum_of_num_joint_coords,)`` and type :class:`float`.
-        data (`DataKamino`):
-            The solver data container holding the internal time-varying state of the simulation.
+        model: The model container holding the time-invariant data of the simulation.
+        q_j_p: An array of previous joint DoF coordinates used for coordinate correction.
+            Only used for revolute DoFs of the relevant joints to enforce angle continuity.
+            Shape of ``(sum_of_num_joint_coords,)``.
+        data: The solver data container holding the internal time-varying state of the simulation.
     """
 
     # Generate the kernel to compute the joint states
@@ -1034,6 +1025,7 @@ def compute_joints_data(
             model.time.dt,
             model.joints.wid,
             model.joints.dof_type,
+            model.joints.act_type,
             model.joints.coords_offset,
             model.joints.dofs_offset,
             model.joints.dynamic_cts_offset,
@@ -1050,6 +1042,7 @@ def compute_joints_data(
             model.joints.k_d_j,
             data.bodies.q_i,
             data.bodies.u_i,
+            data.joints.tau_j,
             data.joints.q_j_ref,
             data.joints.dq_j_ref,
             data.joints.tau_j_ref,
@@ -1070,11 +1063,11 @@ def compute_joints_data(
 
 def extract_actuators_state_from_joints(
     model: ModelKamino,
-    world_mask: wp.array,
-    joint_q: wp.array,
-    joint_u: wp.array,
-    actuator_q: wp.array,
-    actuator_u: wp.array,
+    world_mask: wp.array[wp.bool],
+    joint_q: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
+    actuator_q: wp.array[wp.float32],
+    actuator_u: wp.array[wp.float32],
 ):
     """
     Extracts the states of the actuated joints from the full joint state arrays.
@@ -1083,23 +1076,17 @@ def extract_actuators_state_from_joints(
     that are not masked will have their states extracted.
 
     Args:
-        model (`ModelKamino`):
-            The model container holding the time-invariant data of the simulation.
-        joint_q (`wp.array`):
-            The full array of joint coordinates.\n
-            Shape of ``(sum_of_num_joint_coords,)`` and type :class:`float`.
-        joint_u (`wp.array`):
-            The full array of joint velocities.\n
-            Shape of ``(sum_of_num_joint_dofs,)`` and type :class:`float`.
-        actuator_q (`wp.array`):
-            The output array to store the actuated joint coordinates.\n
-            Shape of ``(sum_of_num_actuated_joint_coords,)`` and type :class:`float`.
-        actuator_u (`wp.array`):
-            The output array to store the actuated joint velocities.\n
-            Shape of ``(sum_of_actuated_joint_dofs,)`` and type :class:`float`.
-        world_mask (`wp.array`):
-            An array indicating which worlds are active (True) or skipped (False).\n
-            Shape of ``(num_worlds,)`` and type :class:`bool`.
+        model: The model container holding the time-invariant data of the simulation.
+        joint_q: The full array of joint coordinates.
+            Shape of ``(sum_of_num_joint_coords,)``.
+        joint_u: The full array of joint velocities.
+            Shape of ``(sum_of_num_joint_dofs,)``.
+        actuator_q: The output array to store the actuated joint coordinates.
+            Shape of ``(sum_of_num_actuated_joint_coords,)``.
+        actuator_u: The output array to store the actuated joint velocities.
+            Shape of ``(sum_of_actuated_joint_dofs,)``.
+        world_mask: An array indicating which worlds are active (True) or skipped (False).
+            Shape of ``(num_worlds,)``.
     """
     wp.launch(
         _extract_actuators_state_from_joints,
@@ -1125,11 +1112,11 @@ def extract_actuators_state_from_joints(
 
 def extract_joints_state_from_actuators(
     model: ModelKamino,
-    world_mask: wp.array,
-    actuator_q: wp.array,
-    actuator_u: wp.array,
-    joint_q: wp.array,
-    joint_u: wp.array,
+    world_mask: wp.array[wp.bool],
+    actuator_q: wp.array[wp.float32],
+    actuator_u: wp.array[wp.float32],
+    joint_q: wp.array[wp.float32],
+    joint_u: wp.array[wp.float32],
 ):
     """
     Extracts the states of the actuated joints from the full joint state arrays.
@@ -1138,23 +1125,17 @@ def extract_joints_state_from_actuators(
     that are not masked will have their states extracted.
 
     Args:
-        model (`ModelKamino`):
-            The model container holding the time-invariant data of the simulation.
-        joint_q (`wp.array`):
-            The full array of joint coordinates.\n
-            Shape of ``(sum_of_num_joint_coords,)`` and type :class:`float`.
-        joint_u (`wp.array`):
-            The full array of joint velocities.\n
-            Shape of ``(sum_of_num_joint_dofs,)`` and type :class:`float`.
-        actuator_q (`wp.array`):
-            The output array to store the actuated joint coordinates.\n
-            Shape of ``(sum_of_num_actuated_joint_coords,)`` and type :class:`float`.
-        actuator_u (`wp.array`):
-            The output array to store the actuated joint velocities.\n
-            Shape of ``(sum_of_actuated_joint_dofs,)`` and type :class:`float`.
-        world_mask (`wp.array`):
-            An array indicating which worlds are active (True) or skipped (False).\n
-            Shape of ``(num_worlds,)`` and type :class:`bool`.
+        model: The model container holding the time-invariant data of the simulation.
+        joint_q: The full array of joint coordinates.
+            Shape of ``(sum_of_num_joint_coords,)``.
+        joint_u: The full array of joint velocities.
+            Shape of ``(sum_of_num_joint_dofs,)``.
+        actuator_q: The output array to store the actuated joint coordinates.
+            Shape of ``(sum_of_num_actuated_joint_coords,)``.
+        actuator_u: The output array to store the actuated joint velocities.
+            Shape of ``(sum_of_actuated_joint_dofs,)``.
+        world_mask: An array indicating which worlds are active (True) or skipped (False).
+            Shape of ``(num_worlds,)``.
     """
     wp.launch(
         _extract_joints_state_from_actuators,

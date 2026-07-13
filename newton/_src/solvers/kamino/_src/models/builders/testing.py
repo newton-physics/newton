@@ -16,9 +16,10 @@ import os
 import numpy as np
 import warp as wp
 
+from ......core.types import Axis
 from ...core import ModelBuilderKamino
 from ...core.joints import JointActuationType, JointDoFType
-from ...core.math import I_3, quat_from_euler_xyz
+from ...core.math import I_3, axis_to_mat33, quat_from_euler_xyz
 from ...core.shapes import (
     BoxShape,
     CapsuleShape,
@@ -30,7 +31,6 @@ from ...core.shapes import (
     ShapeDescriptorType,
     SphereShape,
 )
-from ...core.types import Axis, mat33f, transformf, vec3f, vec6f
 from ...utils import logger as msg
 from ...utils.io.usd import USDImporter
 from . import utils
@@ -78,15 +78,15 @@ def build_free_joint_test(
     free joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        ground: Whether to include a ground plane in the world.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -103,8 +103,8 @@ def build_free_joint_test(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(0.0, 0.0, z_offset, 0.0, 0.0, 0.0, 1.0),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -113,8 +113,8 @@ def build_free_joint_test(
         act_type=JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
         X_Bj=I_3,
         q_j_min=[-2.0, -2.0, -2.0, -0.6 * math.pi, -0.6 * math.pi, -0.6 * math.pi] if limits else None,
         q_j_max=[2.0, 2.0, 2.0, 0.6 * math.pi, 0.6 * math.pi, 0.6 * math.pi] if limits else None,
@@ -133,7 +133,7 @@ def build_free_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -158,17 +158,17 @@ def build_unary_revolute_joint_test(
     revolute joint, with optional limits applied to the joint degree of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degree of freedom.
-        ground (bool): Whether to include a ground plane in the world.
-        dynamic (bool): Whether to enable dynamic properties for the joint.
-        implicit_pd (bool): Whether to enable implicit PD control for the joint.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degree of freedom.
+        ground: Whether to include a ground plane in the world.
+        dynamic: Whether to enable dynamic properties for the joint.
+        implicit_pd: Whether to enable implicit PD control for the joint.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -185,8 +185,8 @@ def build_unary_revolute_joint_test(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, -0.25, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, -0.25, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -195,9 +195,9 @@ def build_unary_revolute_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.0, -0.15, z_offset),
-        F_r_Fj=vec3f(-0.5, 0.1, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, -0.15, z_offset),
+        F_r_Fj=wp.vec3f(-0.5, 0.1, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         q_j_min=[-0.25 * math.pi] if limits else None,
         q_j_max=[0.25 * math.pi] if limits else None,
         a_j=0.1 if dynamic else None,
@@ -226,7 +226,7 @@ def build_unary_revolute_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -251,17 +251,17 @@ def build_binary_revolute_joint_test(
     joint, with optional limits applied to the joint degree of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degree of freedom.
-        ground (bool): Whether to include a ground plane in the world.
-        dynamic (bool): Whether to set the joint to be dynamic, with non-zero armature and damping.
-        implicit_pd (bool): Whether to use implicit PD control for the joint.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degree of freedom.
+        ground: Whether to include a ground plane in the world.
+        dynamic: Whether to set the joint to be dynamic, with non-zero armature and damping.
+        implicit_pd: Whether to use implicit PD control for the joint.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -278,16 +278,16 @@ def build_binary_revolute_joint_test(
         name="base",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     bid_F = _builder.add_rigid_body(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, -0.25, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, -0.25, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -296,9 +296,9 @@ def build_binary_revolute_joint_test(
         act_type=JointActuationType.PASSIVE,
         bid_B=-1,
         bid_F=bid_B,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -307,9 +307,9 @@ def build_binary_revolute_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=bid_B,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.0, -0.15, z_offset),
-        F_r_Fj=vec3f(-0.5, 0.1, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, -0.15, z_offset),
+        F_r_Fj=wp.vec3f(-0.5, 0.1, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         q_j_min=[-0.25 * math.pi] if limits else None,
         q_j_max=[0.25 * math.pi] if limits else None,
         a_j=0.1 if dynamic else None,
@@ -336,7 +336,7 @@ def build_binary_revolute_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -361,15 +361,15 @@ def build_unary_prismatic_joint_test(
     prismatic joint, with optional limits applied to the joint degree of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        ground: Whether to include a ground plane in the world.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degree of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degree of freedom.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -386,8 +386,8 @@ def build_unary_prismatic_joint_test(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -396,9 +396,9 @@ def build_unary_prismatic_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Z.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Z),
         q_j_min=[-0.5] if limits else None,
         q_j_max=[0.5] if limits else None,
         a_j=0.1 if dynamic else None,
@@ -427,7 +427,7 @@ def build_unary_prismatic_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -452,15 +452,15 @@ def build_binary_prismatic_joint_test(
     joint, with optional limits applied to the joint degree of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        ground: Whether to include a ground plane in the world.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degree of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degree of freedom.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -477,16 +477,16 @@ def build_binary_prismatic_joint_test(
         name="base",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     bid_F = _builder.add_rigid_body(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -495,9 +495,9 @@ def build_binary_prismatic_joint_test(
         act_type=JointActuationType.PASSIVE,
         bid_B=-1,
         bid_F=bid_B,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -506,9 +506,9 @@ def build_binary_prismatic_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=bid_B,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Z.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Z),
         q_j_min=[-0.5] if limits else None,
         q_j_max=[0.5] if limits else None,
         a_j=0.1 if dynamic else None,
@@ -537,7 +537,7 @@ def build_binary_prismatic_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -562,17 +562,17 @@ def build_unary_cylindrical_joint_test(
     cylindrical joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        ground (bool): Whether to include a ground plane in the world.
-        dynamic (bool): Whether to enable dynamic properties for the joint.
-        implicit_pd (bool): Whether to enable implicit PD control for the joint.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        ground: Whether to include a ground plane in the world.
+        dynamic: Whether to enable dynamic properties for the joint.
+        implicit_pd: Whether to enable implicit PD control for the joint.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -589,8 +589,8 @@ def build_unary_cylindrical_joint_test(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -599,9 +599,9 @@ def build_unary_cylindrical_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Z.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Z),
         q_j_min=[-0.5, -0.6 * math.pi] if limits else None,
         q_j_max=[0.5, 0.6 * math.pi] if limits else None,
         a_j=[0.1, 0.2] if dynamic else None,
@@ -630,7 +630,7 @@ def build_unary_cylindrical_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -655,17 +655,17 @@ def build_binary_cylindrical_joint_test(
     joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        ground (bool): Whether to include a ground plane in the world.
-        dynamic (bool): Whether to enable dynamic properties for the joint.
-        implicit_pd (bool): Whether to enable implicit PD control for the joint.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        ground: Whether to include a ground plane in the world.
+        dynamic: Whether to enable dynamic properties for the joint.
+        implicit_pd: Whether to enable implicit PD control for the joint.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -682,16 +682,16 @@ def build_binary_cylindrical_joint_test(
         name="base",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     bid_F = _builder.add_rigid_body(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -700,9 +700,9 @@ def build_binary_cylindrical_joint_test(
         act_type=JointActuationType.PASSIVE,
         bid_B=-1,
         bid_F=bid_B,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -711,9 +711,9 @@ def build_binary_cylindrical_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=bid_B,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Z.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Z),
         q_j_min=[-0.5, -0.6 * math.pi] if limits else None,
         q_j_max=[0.5, 0.6 * math.pi] if limits else None,
         a_j=[0.1, 0.2] if dynamic else None,
@@ -740,7 +740,7 @@ def build_binary_cylindrical_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -763,15 +763,15 @@ def build_unary_universal_joint_test(
     universal joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        ground: Whether to include a ground plane in the world.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -788,8 +788,8 @@ def build_unary_universal_joint_test(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -798,9 +798,9 @@ def build_unary_universal_joint_test(
         act_type=JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_Bj=Axis.X.to_mat33(),
+        B_r_Bj=wp.vec3f(0.25, -0.25, -0.25),
+        F_r_Fj=wp.vec3f(-0.25, -0.25, -0.25),
+        X_Bj=axis_to_mat33(Axis.X),
         q_j_min=[-0.6 * math.pi, -0.6 * math.pi] if limits else None,
         q_j_max=[0.6 * math.pi, 0.6 * math.pi] if limits else None,
         world_index=world_index,
@@ -825,7 +825,7 @@ def build_unary_universal_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -848,15 +848,15 @@ def build_binary_universal_joint_test(
     joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        ground: Whether to include a ground plane in the world.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -873,16 +873,16 @@ def build_binary_universal_joint_test(
         name="base",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     bid_F = _builder.add_rigid_body(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -891,9 +891,9 @@ def build_binary_universal_joint_test(
         act_type=JointActuationType.PASSIVE,
         bid_B=-1,
         bid_F=bid_B,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -902,9 +902,9 @@ def build_binary_universal_joint_test(
         act_type=JointActuationType.FORCE,
         bid_B=bid_B,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_Bj=Axis.X.to_mat33(),
+        B_r_Bj=wp.vec3f(0.25, -0.25, -0.25),
+        F_r_Fj=wp.vec3f(-0.25, -0.25, -0.25),
+        X_Bj=axis_to_mat33(Axis.X),
         q_j_min=[-0.6 * math.pi, -0.6 * math.pi] if limits else None,
         q_j_max=[0.6 * math.pi, 0.6 * math.pi] if limits else None,
         world_index=world_index,
@@ -927,7 +927,7 @@ def build_binary_universal_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -950,15 +950,15 @@ def build_unary_spherical_joint_test(
     spherical joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        ground: Whether to include a ground plane in the world.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -975,8 +975,8 @@ def build_unary_spherical_joint_test(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -985,9 +985,9 @@ def build_unary_spherical_joint_test(
         act_type=JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_Bj=Axis.X.to_mat33(),
+        B_r_Bj=wp.vec3f(0.25, -0.25, -0.25),
+        F_r_Fj=wp.vec3f(-0.25, -0.25, -0.25),
+        X_Bj=axis_to_mat33(Axis.X),
         q_j_min=[-0.6 * math.pi, -0.6 * math.pi, -0.6 * math.pi] if limits else None,
         q_j_max=[0.6 * math.pi, 0.6 * math.pi, 0.6 * math.pi] if limits else None,
         world_index=world_index,
@@ -1012,7 +1012,7 @@ def build_unary_spherical_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -1035,15 +1035,15 @@ def build_binary_spherical_joint_test(
     joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        ground (bool): Whether to include a ground plane in the world.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        ground: Whether to include a ground plane in the world.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -1060,16 +1060,16 @@ def build_binary_spherical_joint_test(
         name="base",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     bid_F = _builder.add_rigid_body(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -1078,9 +1078,9 @@ def build_binary_spherical_joint_test(
         act_type=JointActuationType.PASSIVE,
         bid_B=-1,
         bid_F=bid_B,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -1089,9 +1089,9 @@ def build_binary_spherical_joint_test(
         act_type=JointActuationType.FORCE,
         bid_B=bid_B,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_Bj=Axis.X.to_mat33(),
+        B_r_Bj=wp.vec3f(0.25, -0.25, -0.25),
+        F_r_Fj=wp.vec3f(-0.25, -0.25, -0.25),
+        X_Bj=axis_to_mat33(Axis.X),
         q_j_min=[-0.6 * math.pi, -0.6 * math.pi, -0.6 * math.pi] if limits else None,
         q_j_max=[0.6 * math.pi, 0.6 * math.pi, 0.6 * math.pi] if limits else None,
         world_index=world_index,
@@ -1114,7 +1114,7 @@ def build_binary_spherical_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -1139,17 +1139,17 @@ def build_unary_cartesian_joint_test(
     cartesian joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        ground (bool): Whether to include a ground plane in the world.
-        dynamic (bool): Whether to enable dynamic properties for the joint.
-        implicit_pd (bool): Whether to enable implicit PD control for the joint.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        ground: Whether to include a ground plane in the world.
+        dynamic: Whether to enable dynamic properties for the joint.
+        implicit_pd: Whether to enable implicit PD control for the joint.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -1166,8 +1166,8 @@ def build_unary_cartesian_joint_test(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -1176,9 +1176,9 @@ def build_unary_cartesian_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=-1,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_Bj=Axis.X.to_mat33(),
+        B_r_Bj=wp.vec3f(0.25, -0.25, -0.25),
+        F_r_Fj=wp.vec3f(-0.25, -0.25, -0.25),
+        X_Bj=axis_to_mat33(Axis.X),
         q_j_min=[-1.0, -1.0, -1.0] if limits else None,
         q_j_max=[1.0, 1.0, 1.0] if limits else None,
         a_j=[0.1, 0.2, 0.3] if dynamic else None,
@@ -1207,7 +1207,7 @@ def build_unary_cartesian_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -1232,17 +1232,17 @@ def build_binary_cartesian_joint_test(
     joint, with optional limits applied to the joint degrees of freedom.
 
     Args:
-        builder (ModelBuilderKamino | None): An optional existing ModelBuilderKamino to which the entities will be added.
-        z_offset (float): A vertical offset to apply to the rigid body position.
-        new_world (bool): Whether to create a new world in the builder, to which entities will be added.\n
-            If `False`, the contents are added to the existing world specified by `world_index`.\n
+        builder: An optional existing ModelBuilderKamino to which the entities will be added.
+        z_offset: A vertical offset to apply to the rigid body position.
+        new_world: Whether to create a new world in the builder, to which entities will be added.
+            If `False`, the contents are added to the existing world specified by `world_index`.
             If `True`, a new world is created and added to the builder. In this case the `world_index`
             argument is ignored, and the index of the newly created world will be used instead.
-        limits (bool): Whether to enable limits on the joint degrees of freedom.
-        ground (bool): Whether to include a ground plane in the world.
-        dynamic (bool): Whether to enable dynamic properties for the joint.
-        implicit_pd (bool): Whether to enable implicit PD control for the joint.
-        world_index (int): The index of the world in the builder where the test model should be added.
+        limits: Whether to enable limits on the joint degrees of freedom.
+        ground: Whether to include a ground plane in the world.
+        dynamic: Whether to enable dynamic properties for the joint.
+        implicit_pd: Whether to enable implicit PD control for the joint.
+        world_index: The index of the world in the builder where the test model should be added.
     """
     # Create a new builder if none is provided
     if builder is None:
@@ -1259,16 +1259,16 @@ def build_binary_cartesian_joint_test(
         name="base",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.0, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     bid_F = _builder.add_rigid_body(
         name="follower",
         m_i=1.0,
         i_I_i=I_3,
-        q_i_0=transformf(vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
-        u_i_0=vec6f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        q_i_0=wp.transformf(wp.vec3f(0.5, 0.0, z_offset), wp.quat_identity()),
+        u_i_0=wp.spatial_vectorf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -1277,9 +1277,9 @@ def build_binary_cartesian_joint_test(
         act_type=JointActuationType.PASSIVE,
         bid_B=-1,
         bid_F=bid_B,
-        B_r_Bj=vec3f(0.0, 0.0, z_offset),
-        F_r_Fj=vec3f(0.0, 0.0, 0.0),
-        X_Bj=Axis.Y.to_mat33(),
+        B_r_Bj=wp.vec3f(0.0, 0.0, z_offset),
+        F_r_Fj=wp.vec3f(0.0, 0.0, 0.0),
+        X_Bj=axis_to_mat33(Axis.Y),
         world_index=world_index,
     )
     _builder.add_joint(
@@ -1288,9 +1288,9 @@ def build_binary_cartesian_joint_test(
         act_type=JointActuationType.POSITION_VELOCITY if implicit_pd else JointActuationType.FORCE,
         bid_B=bid_B,
         bid_F=bid_F,
-        B_r_Bj=vec3f(0.25, -0.25, -0.25),
-        F_r_Fj=vec3f(-0.25, -0.25, -0.25),
-        X_Bj=Axis.X.to_mat33(),
+        B_r_Bj=wp.vec3f(0.25, -0.25, -0.25),
+        F_r_Fj=wp.vec3f(-0.25, -0.25, -0.25),
+        X_Bj=axis_to_mat33(Axis.X),
         q_j_min=[-1.0, -1.0, -1.0] if limits else None,
         q_j_max=[1.0, 1.0, 1.0] if limits else None,
         a_j=[0.1, 0.2, 0.3] if dynamic else None,
@@ -1317,7 +1317,7 @@ def build_binary_cartesian_joint_test(
         _builder.add_geometry(
             body=-1,
             shape=BoxShape(10.0, 10.0, 0.5),
-            offset=transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
+            offset=wp.transformf(0.0, 0.0, -1.5, 0.0, 0.0, 0.0, 1.0),
             world_index=world_index,
         )
 
@@ -1328,33 +1328,53 @@ def build_binary_cartesian_joint_test(
 def build_all_joints_test_model(
     unary_joints: bool = True,
     binary_joints: bool = True,
+    actuated: bool = False,
+    damped: bool = True,
+    floating_base: bool = False,
 ) -> ModelBuilderKamino:
     """
     Constructs a model builder containing a world for each joint type.
 
     Args:
-        unary_joints (bool): Whether to include unary joints.
-        binary_joints (bool): Whether to include binary joints.
+        unary_joints: Whether to include unary joints.
+        binary_joints: Whether to include binary joints.
+        actuated: Whether to make the joints actuated (passive otherwise).
+        damped: Whether to add slight damping to the joints to increase realism.
+        floating_base: Whether to replace the fixed with a free base joint for binary examples.
 
     Returns:
-        ModelBuilderKamino: The populated model builder.
+        The populated model builder.
     """
 
-    def make_damped(builder: ModelBuilderKamino) -> ModelBuilderKamino:
-        """Returns a version of the single-joint example with added joint damping"""
+    def alter_binary_joint(
+        builder: ModelBuilderKamino,
+        make_actuated: bool,
+        make_damped: bool,
+        make_floating_base: bool,
+    ) -> ModelBuilderKamino:
+        """
+        Returns an altered version of a single-joint example, optionally turned into an actuator,
+        and with optional added joint damping.
+        """
         assert builder.num_worlds == 1 and builder.num_bodies == 2 and builder.num_joints == 2
-        builder_damped = ModelBuilderKamino(default_world=True)
-        builder_damped.add_rigid_body_descriptor(copy.deepcopy(builder.bodies[0][0]))
-        builder_damped.add_rigid_body_descriptor(copy.deepcopy(builder.bodies[0][1]))
-        builder_damped.add_joint_descriptor(copy.deepcopy(builder.joints[0][0]))
+        builder_alt = ModelBuilderKamino(default_world=True)
+        builder_alt.add_rigid_body_descriptor(copy.deepcopy(builder.bodies[0][0]))
+        builder_alt.add_rigid_body_descriptor(copy.deepcopy(builder.bodies[0][1]))
+        base_joint = copy.deepcopy(builder.joints[0][0])
+        if make_floating_base:
+            base_joint.dof_type = JointDoFType.FREE
+        builder_alt.add_joint_descriptor(base_joint)
         joint = copy.deepcopy(builder.joints[0][1])
-        joint.b_j = joint.num_dofs * [5e-5]
-        builder_damped.add_joint_descriptor(joint)
+        if make_actuated:
+            joint.act_type = JointActuationType.FORCE
+        if make_damped:
+            joint.b_j = joint.num_dofs * [5e-5]
+        builder_alt.add_joint_descriptor(joint)
         for geom in builder.all_geoms:
             geom_ = copy.deepcopy(geom)
             geom_.shape = builder.shapes[geom.uid]
-            builder_damped.add_geometry_descriptor(geom_)
-        return builder_damped
+            builder_alt.add_geometry_descriptor(geom_)
+        return builder_alt
 
     def make_unary(builder: ModelBuilderKamino) -> ModelBuilderKamino:
         """Returns a unary version of a single-joint, single-world example"""
@@ -1385,9 +1405,12 @@ def build_all_joints_test_model(
     # Add a new world for each joint type
     folder_path = os.path.join(utils.get_testing_usd_assets_path(), "joints")
     joint_names = ["cartesian", "cylindrical", "fixed", "prismatic", "revolute", "spherical", "universal"]
+    need_alteration = actuated or damped or floating_base
     for name in joint_names:
         builder_in = USDImporter().import_from(source=os.path.join(folder_path, f"test_{name}/test_{name}.usda"))
-        builder_binary = make_damped(builder_in)  # Add slight damping to the joint to increase realism
+        builder_binary = (
+            builder_in if not need_alteration else alter_binary_joint(builder_in, actuated, damped, floating_base)
+        )
         if unary_joints:
             _builder.add_builder(make_unary(builder_binary))
         if binary_joints:
@@ -1438,7 +1461,7 @@ shape_default_dims: dict[GeoType, tuple] = {
 """Mapping from GeoType enum to default scale/dimensions (Newton convention: half-extents)."""
 
 
-def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> vec3f:
+def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> wp.vec3f:
     """
     Computes the initial position along the z-axis for a given shape.
 
@@ -1446,17 +1469,13 @@ def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> 
     (or below) the origin along the z-axis, based on its type and dimensions.
 
     Args:
-        name (str):
-            The name of the shape (e.g., "sphere", "box", "capsule", etc.).
-        dims (tuple):
-            The dimensions of the shape. The expected format depends on the shape type.
-        is_top (bool):
-            If True, computes the position for a top shape (above the origin).
+        name: The name of the shape (e.g., "sphere", "box", "capsule", etc.).
+        dims: The dimensions of the shape. The expected format depends on the shape type.
+        is_top: If True, computes the position for a top shape (above the origin).
             If False, computes the position for a bottom shape (below the origin).
 
     Returns:
-        vec3f:
-            The computed position vector along the z-axis.
+        The computed position vector along the z-axis.
     """
     # Retrieve and check the shape type
     shape_type = shape_name_to_type.get(name)
@@ -1478,19 +1497,19 @@ def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> 
     # Compute the initial position along z-axis that places the shape just above.
     # Dimensions use Newton convention (half-extents, half-heights).
     if shape_type == GeoType.SPHERE:
-        r = vec3f(0.0, 0.0, dims[0])
+        r = wp.vec3f(0.0, 0.0, dims[0])
     elif shape_type == GeoType.BOX:
-        r = vec3f(0.0, 0.0, dims[2])
+        r = wp.vec3f(0.0, 0.0, dims[2])
     elif shape_type == GeoType.CAPSULE:
-        r = vec3f(0.0, 0.0, dims[1] + dims[0])
+        r = wp.vec3f(0.0, 0.0, dims[1] + dims[0])
     elif shape_type == GeoType.CYLINDER:
-        r = vec3f(0.0, 0.0, dims[1])
+        r = wp.vec3f(0.0, 0.0, dims[1])
     elif shape_type == GeoType.CONE:
-        r = vec3f(0.0, 0.0, dims[1])
+        r = wp.vec3f(0.0, 0.0, dims[1])
     elif shape_type == GeoType.ELLIPSOID:
-        r = vec3f(0.0, 0.0, dims[2])
+        r = wp.vec3f(0.0, 0.0, dims[2])
     elif shape_type == GeoType.PLANE:
-        r = vec3f(0.0, 0.0, 0.0)
+        r = wp.vec3f(0.0, 0.0, 0.0)
     else:
         raise ValueError(f"Unsupported shape type: {shape_type}")
 
@@ -1502,35 +1521,32 @@ def make_shape_initial_position(name: str, dims: tuple, is_top: bool = True) -> 
     return r
 
 
-def get_shape_bottom_position(center: vec3f, shape: ShapeDescriptorType) -> vec3f:
+def get_shape_bottom_position(center: wp.vec3f, shape: ShapeDescriptorType) -> wp.vec3f:
     """
     Computes the position of the bottom along the z-axis for a given shape.
 
     Args:
-        center (vec3f):
-            The center position of the shape.
-        shape (ShapeDescriptorType):
-            The shape descriptor instance.
+        center: The center position of the shape.
+        shape: The shape descriptor instance.
 
     Returns:
-        vec3f:
-            The computed bottom position of the shape along the z-axis.
+        The computed bottom position of the shape along the z-axis.
     """
     # Compute and return the bottom position along z-axis.
     # Shape params use Newton convention (half-extents, half-heights).
-    r_bottom = vec3f(0.0)
+    r_bottom = wp.vec3f(0.0)
     if shape.type == GeoType.SPHERE:
-        r_bottom = center - vec3f(0.0, 0.0, shape.params)
+        r_bottom = center - wp.vec3f(0.0, 0.0, shape.params)
     elif shape.type == GeoType.BOX:
-        r_bottom = center - vec3f(0.0, 0.0, shape.params[2])
+        r_bottom = center - wp.vec3f(0.0, 0.0, shape.params[2])
     elif shape.type == GeoType.CAPSULE:
-        r_bottom = center - vec3f(0.0, 0.0, shape.params[1] + shape.params[0])
+        r_bottom = center - wp.vec3f(0.0, 0.0, shape.params[1] + shape.params[0])
     elif shape.type == GeoType.CYLINDER:
-        r_bottom = center - vec3f(0.0, 0.0, shape.params[1])
+        r_bottom = center - wp.vec3f(0.0, 0.0, shape.params[1])
     elif shape.type == GeoType.CONE:
-        r_bottom = center - vec3f(0.0, 0.0, shape.params[1])
+        r_bottom = center - wp.vec3f(0.0, 0.0, shape.params[1])
     elif shape.type == GeoType.ELLIPSOID:
-        r_bottom = center - vec3f(0.0, 0.0, shape.params[2])
+        r_bottom = center - wp.vec3f(0.0, 0.0, shape.params[2])
     elif shape.type == GeoType.PLANE:
         r_bottom = center
     else:
@@ -1560,29 +1576,20 @@ def make_single_shape_pair_builder(
     the z-axis, effectively generating a "shape[0] atop shape[1]" configuration.
 
     Args:
-        shapes (tuple[str, str]):
-            A tuple specifying the names of the bottom and top shapes (e.g., ("box", "sphere")).
-        bottom_dims (tuple | None):
-            Dimensions for the bottom shape. If None, defaults are used.
-        bottom_xyz (tuple | None):
-            Position (x, y, z) for the bottom shape. If None, defaults to (0, 0, 0).
-        bottom_rpy (tuple | None):
-            Orientation (roll, pitch, yaw) for the bottom shape. If None, defaults to (0, 0, 0).
-        top_dims (tuple | None):
-            Dimensions for the top shape. If None, defaults are used.
-        top_xyz (tuple | None):
-            Position (x, y, z) for the top shape. If None, defaults to (0, 0, 0).
-        top_rpy (tuple | None):
-            Orientation (roll, pitch, yaw) for the top shape. If None, defaults to (0, 0, 0).
-        distance (float):
-            Mutual distance along the z-axis between the two shapes.\n
-            If zero, the shapes are exactly touching.\n
-            If positive, they are separated by that distance.\n
+        shapes: A tuple specifying the names of the bottom and top shapes (e.g., ("box", "sphere")).
+        bottom_dims: Dimensions for the bottom shape. If None, defaults are used.
+        bottom_xyz: Position (x, y, z) for the bottom shape. If None, defaults to (0, 0, 0).
+        bottom_rpy: Orientation (roll, pitch, yaw) for the bottom shape. If None, defaults to (0, 0, 0).
+        top_dims: Dimensions for the top shape. If None, defaults are used.
+        top_xyz: Position (x, y, z) for the top shape. If None, defaults to (0, 0, 0).
+        top_rpy: Orientation (roll, pitch, yaw) for the top shape. If None, defaults to (0, 0, 0).
+        distance: Mutual distance along the z-axis between the two shapes.
+            If zero, the shapes are exactly touching.
+            If positive, they are separated by that distance.
             If negative, they are penetrating by that distance.
 
     Returns:
-        ModelBuilderKamino:
-            The constructed ModelBuilderKamino with the specified shape combination.
+        The constructed ModelBuilderKamino with the specified shape combination.
     """
     # Check that the shape combination is tuple of strings
     if not (isinstance(shapes, tuple) and len(shapes) == 2 and all(isinstance(s, str) for s in shapes)):
@@ -1620,15 +1627,15 @@ def make_single_shape_pair_builder(
     top_descriptor = shape_type_to_descriptor[top_type]
 
     # Define the mutual separation along z-axis
-    r_dz = vec3f(0.0, 0.0, 0.5 * distance)
+    r_dz = wp.vec3f(0.0, 0.0, 0.5 * distance)
 
     # Compute bottom box position and orientation
-    r_b = vec3f(bottom_xyz) - r_dz
-    q_b = quat_from_euler_xyz(vec3f(*bottom_rpy))
+    r_b = wp.vec3f(bottom_xyz) - r_dz
+    q_b = quat_from_euler_xyz(wp.vec3f(*bottom_rpy))
 
     # Compute top sphere position and orientation
-    r_t = vec3f(top_xyz) + r_dz
-    q_t = quat_from_euler_xyz(vec3f(*top_rpy))
+    r_t = wp.vec3f(top_xyz) + r_dz
+    q_t = quat_from_euler_xyz(wp.vec3f(*top_rpy))
 
     # Create the shape descriptors for bottom and top shapes
     # with special handling for PlaneShape
@@ -1646,14 +1653,14 @@ def make_single_shape_pair_builder(
     bid0 = builder.add_rigid_body(
         name="bottom_" + bottom,
         m_i=1.0,
-        i_I_i=mat33f(np.eye(3, dtype=np.float32)),
-        q_i_0=transformf(r_b, q_b),
+        i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+        q_i_0=wp.transformf(r_b, q_b),
     )
     bid1 = builder.add_rigid_body(
         name="top_" + top,
         m_i=1.0,
-        i_I_i=mat33f(np.eye(3, dtype=np.float32)),
-        q_i_0=transformf(r_t, q_t),
+        i_I_i=wp.mat33f(np.eye(3, dtype=np.float32)),
+        q_i_0=wp.transformf(r_t, q_t),
     )
     builder.add_geometry(body=bid0, name="bottom_" + bottom, shape=bottom_shape)
     builder.add_geometry(body=bid1, name="top_" + top, shape=top_shape)
@@ -1693,14 +1700,11 @@ def make_shape_pairs_builder(
     Generates a builder containing a world for each specified shape combination.
 
     Args:
-        shape_pairs (list[tuple[str, str]]):
-            A list of tuples specifying the names of the bottom and top shapes
+        shape_pairs: A list of tuples specifying the names of the bottom and top shapes
             for each combination (e.g., [("box", "sphere"), ("cylinder", "cone")]).
-        **kwargs:
-            Additional keyword arguments to be passed to `make_single_shape_pair_builder`.
+        **kwargs: Additional keyword arguments to be passed to `make_single_shape_pair_builder`.
     Returns:
-        ModelBuilderKamino
-            A ModelBuilderKamino containing a world for each specified shape combination.
+        A ModelBuilderKamino containing a world for each specified shape combination.
     """
     # Create an empty ModelBuilderKamino to hold all shape pair worlds
     builder = ModelBuilderKamino(default_world=False)

@@ -503,7 +503,10 @@ UsdPhysics ``physics:filteredPairs`` relationships).
 
 Filter pairs are automatically populated in several cases:
 
-- **Adjacent bodies**: Parent-child body pairs connected by joints (when ``collision_filter_parent=True``). Also applies to max-coordinate jointed bodies.
+- **Adjacent bodies**: Parent-child body pairs connected by joints (when
+  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
+  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
+  create a body-pair filter. Also applies to max-coordinate jointed bodies.
 - **Same-body shapes**: Shapes attached to the same rigid body
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
@@ -511,6 +514,12 @@ Filter pairs are automatically populated in several cases:
 
 The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
 ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
+
+.. deprecated:: 1.4
+   Mutating this finalized-model set is deprecated; update
+   :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
+   model instead, because the precomputed :attr:`~Model.shape_contact_pairs` array is not rebuilt by
+   post-finalize filter edits.
 
 **USD Import Example**
 
@@ -1059,7 +1068,9 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``is_hydroelastic``
      - Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See :ref:`Hydroelastic Contacts`. Default: False.
    * - ``kh``
-     - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
+     - Hydroelastic contact stiffness coefficient. Under the default linear
+       pressure law, pressure scales with ``kh`` and penetration depth; contact
+       force also scales with contact area. Default: 1.0e10.
 
 .. _margin-gap-semantics:
 
@@ -1315,9 +1326,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - Attribute
      - Description
    * - ``soft_contact_count``
-     - Number of active soft contacts.
+     - Total number of soft contacts (single element). With full-surface contact off, this equals the per-particle contact count and is unchanged from earlier releases.
+   * - ``soft_contact_indices``
+     - Soft-side particle ids per contact, a ``vec3i`` with ``-1`` padding: ``(p, -1, -1)`` particle, ``(v0, v1, -1)`` edge, ``(v0, v1, v2)`` face. The number of non-negative slots gives the feature kind; pair with ``soft_contact_barycentric`` to recover the contact point.
    * - ``soft_contact_particle``
-     - Particle indices.
+     - Particle id for particle contacts (``-1`` for edge/face records) — the particle-only view of ``soft_contact_indices``, for solvers that consume particle contacts exclusively.
+   * - ``soft_contact_barycentric``
+     - Barycentric weights of the contact point over the record's soft particles (``(1, 0, 0)`` for a particle contact).
    * - ``soft_contact_shape``
      - Shape indices.
    * - ``soft_contact_body_pos``, ``soft_contact_body_vel``
@@ -1638,74 +1653,68 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 
 .. list-table::
    :header-rows: 1
-   :widths: 10 25 18 9 19 19
+   :widths: 12 34 10 22 22
 
    * - Property
      - Description
-     - Solvers
      - Default
      - ShapeConfig
      - Model Array
    * - ``mu``
-     - Dynamic friction coefficient
-     - All
+     - Coefficient of friction
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
    * - ``ke``
-     - Contact elastic stiffness
-     - SemiImplicit, Featherstone, MuJoCo
+     - Normal contact stiffness
      - 2.5e3
      - :attr:`~ModelBuilder.ShapeConfig.ke`
      - :attr:`~Model.shape_material_ke`
    * - ``kd``
-     - Contact damping
-     - SemiImplicit, Featherstone, MuJoCo
+     - Normal contact damping
      - 100.0
      - :attr:`~ModelBuilder.ShapeConfig.kd`
      - :attr:`~Model.shape_material_kd`
    * - ``kf``
-     - Friction damping coefficient
-     - SemiImplicit, Featherstone
+     - Contact friction gain
      - 1000.0
      - :attr:`~ModelBuilder.ShapeConfig.kf`
      - :attr:`~Model.shape_material_kf`
    * - ``ka``
      - Adhesion distance
-     - SemiImplicit, Featherstone
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.ka`
      - :attr:`~Model.shape_material_ka`
    * - ``restitution``
-     - Bounciness (requires ``enable_restitution=True`` in solver)
-     - XPBD
+     - Bounciness
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.restitution`
      - :attr:`~Model.shape_material_restitution`
    * - ``mu_torsional``
      - Resistance to spinning at contact
-     - XPBD, MuJoCo
      - 0.005
      - :attr:`~ModelBuilder.ShapeConfig.mu_torsional`
      - :attr:`~Model.shape_material_mu_torsional`
    * - ``mu_rolling``
      - Resistance to rolling motion
-     - XPBD, MuJoCo
      - 0.0001
      - :attr:`~ModelBuilder.ShapeConfig.mu_rolling`
      - :attr:`~Model.shape_material_mu_rolling`
    * - ``kh``
-     - Hydroelastic stiffness
-     - SemiImplicit, Featherstone, MuJoCo
+     - Hydroelastic stiffness coefficient
      - 1.0e10
      - :attr:`~ModelBuilder.ShapeConfig.kh`
      - :attr:`~Model.shape_material_kh`
 
 .. note::
-   Material properties interact differently with each solver. ``ke``, ``kd``, ``kf``, and ``ka``
-   are used by force-based solvers (SemiImplicit, Featherstone, MuJoCo), while ``restitution``
-   only applies to XPBD. See the :doc:`../api/newton_solvers` API reference for solver-specific
-   behavior.
+   Material properties are generic model data. Solvers and contact backends may
+   use, combine, or ignore fields according to their formulation. See the
+   :ref:`Contact material support` reference for built-in solver behavior, and
+   external solver documentation for third-party solvers.
+
+.. note::
+   :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
+   the solver constructor before ``restitution`` takes effect.
 
 Example:
 
@@ -1716,7 +1725,7 @@ Example:
         mu=0.8,           # High friction
         ke=1.0e6,         # Stiff contact
         kd=1000.0,        # Damping
-        restitution=0.5,  # Bouncy (XPBD only)
+        restitution=0.5,  # Bouncy where supported
     )
 
 .. _USD Collision:
@@ -1982,21 +1991,20 @@ Performance
 - **Objects tunneling through each other?** Increase ``gap`` to detect contacts earlier, or increase substep count (decrease simulation ``dt``).
 - **Hydroelastic buffer overflow warnings?** Increase ``buffer_fraction`` in :class:`~geometry.HydroelasticSDF.Config`.
 
-**CUDA graph capture**
+**Graph capture**
 
-On CUDA devices, the simulation loop (including ``collide`` and ``solver.step``) can be
-captured into a CUDA graph with ``wp.ScopedCapture`` for reduced kernel launch overhead.
-Place ``collide`` inside the captured region so it is replayed each frame:
+The simulation loop (including ``collide`` and ``solver.step``) can be captured with
+``wp.ScopedCapture`` for reduced launch overhead. Place ``collide`` inside the
+captured region so it is replayed each frame:
 
 .. code-block:: python
 
-    if wp.get_device().is_cuda:
-        with wp.ScopedCapture() as capture:
-            model.collide(state_0, contacts)
-            for _ in range(sim_substeps):
-                solver.step(state_0, state_1, control, contacts, dt)
-                state_0, state_1 = state_1, state_0
-        graph = capture.graph
+    with wp.ScopedCapture() as capture:
+        model.collide(state_0, contacts)
+        for _ in range(sim_substeps):
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+    graph = capture.graph
 
     # Each frame:
     wp.capture_launch(graph)
@@ -2226,7 +2234,7 @@ See Also
 
 **Related documentation:**
 
-- :doc:`../api/newton_solvers` - Solver API reference (material property behavior per solver)
+- :ref:`Contact material support` - Material property behavior by solver
 - :doc:`custom_attributes` - USD custom attributes for collision properties
 - :doc:`usd_parsing` - USD import options including collision settings
 - :doc:`sites` - Non-colliding reference points

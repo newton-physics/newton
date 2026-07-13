@@ -294,7 +294,7 @@ class Example:
         )
 
         # Add ground plane
-        builder.add_ground_plane(-1.0)
+        builder.add_ground_plane(height=-1.0)
 
         # Color for VBD solver
         builder.color(include_bending=False)
@@ -401,12 +401,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         self.solver.rebuild_bvh(self.state_0)

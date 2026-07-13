@@ -9,7 +9,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim.enums import EqType
+from .enums import EqType
 from .equality import (
     MJC_OBJ_BODY,
     MJC_OBJ_JOINT,

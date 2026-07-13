@@ -13,7 +13,7 @@ The caller-visible API is identical to :class:`LLTBlockedSolver`:
 
 .. code-block:: python
 
-    solver = LLTBlockedRCMSolver(operator=operator, block_size=32, dtype=float32)
+    solver = LLTBlockedRCMSolver(operator=operator, block_size=32, dtype=wp.float32)
     solver.compute(A)  # factorizes; reordering is internal
     solver.solve(b, x)  # or: solver.solve_inplace(x)
 
@@ -22,11 +22,14 @@ to the factorization buffer ``L``. They are exposed as read-only properties
 for debugging/introspection.
 """
 
+from __future__ import annotations
+
 from typing import Any
 
 import warp as wp
 
-from ...core.types import FloatType, float32, int32, override, to_warp_int32_array
+from ......core.types import override
+from ...core.types import FloatType, to_warp_int32_array
 from ..core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from ..linear import DirectSolver
 from . import rcm_batch as _rcm_batch
@@ -59,7 +62,7 @@ __all__ = ["LLTBlockedRCMSolver"]
 wp.set_module_options({"enable_backward": False})
 
 
-class LLTBlockedRCMSolver(DirectSolver):
+class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
     """RCM-reordered, semi-sparse Blocked LLT (Cholesky) solver.
 
     Same public API as :class:`LLTBlockedSolver`.
@@ -67,7 +70,7 @@ class LLTBlockedRCMSolver(DirectSolver):
 
     1. ``compute(A)`` / ``_factorize_impl``:
 
-       a. Runs GPU-native batched RCM to compute per-block permutations
+       a. Runs batched GPU RCM to compute per-block permutations
           ``P_i`` (concatenated in ``self._P``) in a single set of launches.
        b. Builds ``inv_P`` from ``P``.
        c. Permutes ``A -> A_hat`` (``A_hat_i = P_i A_i P_i^T``).
@@ -91,9 +94,9 @@ class LLTBlockedRCMSolver(DirectSolver):
 
     def __init__(
         self,
-        operator: DenseLinearOperatorData | None = None,
+        operator: DenseLinearOperatorData[wp.float32, wp.int32] | None = None,
         block_size: int = 32,
-        solve_block_dim: int = 128,
+        solve_block_dim: int = 256,
         factorize_block_dim: int = 128,
         atol: float | None = None,
         rtol: float | None = None,
@@ -104,7 +107,7 @@ class LLTBlockedRCMSolver(DirectSolver):
         reorder_tol: float = 0.0,
         # Cap on BFS steps per block. None => auto (``2*ceil(sqrt(n)) + 4``).
         rcm_max_bfs_iters: int | None = None,
-        dtype: FloatType = float32,
+        dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
@@ -120,22 +123,22 @@ class LLTBlockedRCMSolver(DirectSolver):
             rcm_max_bfs_iters: BFS depth cap for the batched RCM pass.
         """
         # The underlying kernels (factorize / solve / permute / tile-pattern)
-        # are hard-coded to float32, so reject any other dtype up front
+        # are hard-coded to wp.float32, so reject any other dtype up front
         # instead of failing later at kernel launch with a shape/type error.
-        if dtype != float32:
-            raise NotImplementedError("LLTBlockedRCMSolver currently supports only float32.")
+        if dtype != wp.float32:
+            raise NotImplementedError("LLTBlockedRCMSolver currently supports only wp.float32.")
 
         # LLT-specific internal data
-        self._L: wp.array | None = None
-        self._y: wp.array | None = None
+        self._L: wp.array[dtype] | None = None
+        self._y: wp.array[dtype] | None = None
         # Reordering + semi-sparse state
-        self._A_hat: wp.array | None = None
-        self._b_hat: wp.array | None = None
-        self._x_hat: wp.array | None = None
-        self._P: wp.array | None = None
-        self._inv_P: wp.array | None = None
-        self._tile_pattern: wp.array | None = None
-        self._tpo: wp.array | None = None
+        self._A_hat: wp.array[dtype] | None = None
+        self._b_hat: wp.array[dtype] | None = None
+        self._x_hat: wp.array[dtype] | None = None
+        self._P: wp.array[wp.int32] | None = None
+        self._inv_P: wp.array[wp.int32] | None = None
+        self._tile_pattern: wp.array[wp.int32] | None = None
+        self._tpo: wp.array[wp.int32] | None = None
         # Batched-RCM scratch (owned here so the recorded launches in
         # ``_reorder_callback`` never reference buffers that outlive our
         # dict). Allocated in ``_allocate_impl`` alongside the other solver
@@ -146,7 +149,7 @@ class LLTBlockedRCMSolver(DirectSolver):
         # set over all blocks. Rebound whenever the caller-owned ``A`` buffer
         # pointer changes.
         self._reorder_callback = None
-        self._reorder_attached_to: wp.array | None = None
+        self._reorder_attached_to: wp.array[dtype] | None = None
 
         # Cache the fixed block/tile dimensions
         self._block_size: int = block_size
@@ -195,21 +198,21 @@ class LLTBlockedRCMSolver(DirectSolver):
 
     @property
     def P(self) -> wp.array:
-        """Concatenated per-block RCM permutation (int32[total_vec_size])."""
+        """Concatenated per-block RCM permutation (wp.int32[total_vec_size])."""
         if self._P is None:
             raise ValueError("Permutation array has not been allocated!")
         return self._P
 
     @property
     def inv_P(self) -> wp.array:
-        """Concatenated per-block inverse RCM permutation (int32[total_vec_size])."""
+        """Concatenated per-block inverse RCM permutation (wp.int32[total_vec_size])."""
         if self._inv_P is None:
             raise ValueError("Inverse permutation array has not been allocated!")
         return self._inv_P
 
     @property
     def tile_pattern(self) -> wp.array:
-        """Concatenated per-block tile-sparsity mask (int32, lower-tri inflated by fill-in)."""
+        """Concatenated per-block tile-sparsity mask (wp.int32, lower-tri inflated by fill-in)."""
         if self._tile_pattern is None:
             raise ValueError("Tile pattern array has not been allocated!")
         return self._tile_pattern
@@ -219,7 +222,7 @@ class LLTBlockedRCMSolver(DirectSolver):
     ###
 
     @override
-    def _allocate_impl(self, A: DenseLinearOperatorData, **kwargs: dict[str, Any]) -> None:
+    def _allocate_impl(self, A: DenseLinearOperatorData[wp.float32, wp.int32], **kwargs: dict[str, Any]) -> None:
         if A.info is None:
             raise ValueError("The provided operator does not have any associated info!")
         if not isinstance(A.info, DenseSquareMultiLinearInfo):
@@ -257,11 +260,11 @@ class LLTBlockedRCMSolver(DirectSolver):
             self._x_hat = wp.zeros(shape=(info.total_vec_size,), dtype=self._dtype)
 
             # Permutations (indexed by vio, length dim per block).
-            self._P = wp.zeros(shape=(info.total_vec_size,), dtype=int32)
-            self._inv_P = wp.zeros(shape=(info.total_vec_size,), dtype=int32)
+            self._P = wp.zeros(shape=(info.total_vec_size,), dtype=wp.int32)
+            self._inv_P = wp.zeros(shape=(info.total_vec_size,), dtype=wp.int32)
 
             # Tile-pattern flat storage + offsets.
-            self._tile_pattern = wp.zeros(shape=(total_tp_size,), dtype=int32)
+            self._tile_pattern = wp.zeros(shape=(total_tp_size,), dtype=wp.int32)
             self._tpo = to_warp_int32_array(tp_offsets[:-1])
 
             # Batched-RCM scratch. Owning these here matches how the other
@@ -292,7 +295,7 @@ class LLTBlockedRCMSolver(DirectSolver):
         self._tile_pattern.zero_()
         self._has_factors = False
 
-    def _ensure_reorder_launches_bound(self, A: wp.array) -> None:
+    def _ensure_reorder_launches_bound(self, A: wp.array[Any]) -> None:
         """(Re)build the batched-RCM launch callback bound to the current A buffer.
 
         The callback captures ``wp.array`` views of ``A`` that must stay
@@ -321,7 +324,7 @@ class LLTBlockedRCMSolver(DirectSolver):
         self._reorder_attached_to = A
 
     @override
-    def _factorize_impl(self, A: wp.array) -> None:
+    def _factorize_impl(self, A: wp.array[Any]) -> None:
         info = self._operator.info
         num_blocks = info.num_blocks
 
@@ -381,11 +384,11 @@ class LLTBlockedRCMSolver(DirectSolver):
         )
 
     @override
-    def _reconstruct_impl(self, A: wp.array) -> None:
+    def _reconstruct_impl(self, A: wp.array[Any]) -> None:
         raise NotImplementedError("LLT matrix reconstruction is not yet implemented.")
 
     @override
-    def _solve_impl(self, b: wp.array, x: wp.array) -> None:
+    def _solve_impl(self, b: wp.array[Any], x: wp.array[Any]) -> None:
         info = self._operator.info
         num_blocks = info.num_blocks
 
@@ -402,41 +405,27 @@ class LLTBlockedRCMSolver(DirectSolver):
             device=self._device,
         )
 
-        # Solve L L^T x_hat = b_hat.
+        # Solve L L^T x_hat = b_hat and scatter x_hat -> x.
         llt_blocked_rcm_solve(
             kernel=self._solve_kernel,
             dim=info.dim,
             mio=info.mio,
             vio=info.vio,
             tpo=self._tpo,
+            P=self._P,
             L=self._L,
             tile_pattern=self._tile_pattern,
             b=self._b_hat,
             y=self._y,
-            x=self._x_hat,
+            x_hat=self._x_hat,
+            x=x,
             num_blocks=num_blocks,
             block_dim=self._solve_block_dim,
             device=self._device,
         )
 
-        # Un-permute: x[P[r]] = x_hat[r]  =>  x[r] = x_hat[inv_P[r]].
-        # Our permute_vector kernel computes ``dst[r] = src[P[r]]``, so using
-        # inv_P as P and (x_hat, x) as (src, dst) yields the desired inverse
-        # permutation on x.
-        llt_blocked_rcm_permute_vector(
-            kernel=self._permute_vector_kernel,
-            dim=info.dim,
-            vio=info.vio,
-            P=self._inv_P,
-            src=self._x_hat,
-            dst=x,
-            num_blocks=num_blocks,
-            max_dim=self._max_dim,
-            device=self._device,
-        )
-
     @override
-    def _solve_inplace_impl(self, x: wp.array) -> None:
+    def _solve_inplace_impl(self, x: wp.array[Any]) -> None:
         info = self._operator.info
         num_blocks = info.num_blocks
 
