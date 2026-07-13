@@ -29,10 +29,7 @@ def _srgb_packed_rgba_to_linear(packed: int) -> int:
 
 
 def create_kernel(
-    config: RenderContext.Config,
-    state: RenderContext.State,
-    clear_data: RenderContext.ClearData,
-    block_dim: int = 64,
+    config: RenderContext.Config, state: RenderContext.State, clear_data: RenderContext.ClearData
 ) -> wp.kernel:
     compute_lighting = lighting.create_compute_lighting_function(config, state)
 
@@ -82,12 +79,7 @@ def create_kernel(
         if wp.static(state.render_shape_index):
             out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
 
-    @wp.kernel(
-        enable_backward=False,
-        module="unique",
-        module_options={"fast_math": config.enable_fast_math},
-        launch_bounds=block_dim,
-    )
+    @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
     def render_megakernel(
         # Model and Config
         world_count: wp.int32,
