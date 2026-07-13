@@ -663,9 +663,10 @@ def parse_usd(
 
     # WORKAROUND: UsdPhysicsRigidBodyAPI::ComputeMassProperties reads MassAPI attributes
     # into uninitialized locals (_ParseMassApi/_GetCoM in pxr/usd/usdPhysics/rigidBodyAPI.cpp;
-    # usd-core <= 26.3, unfixed on dev as of 2026-07). A blocked attribute makes Get() fail,
-    # leaving stack garbage that can pass the authored-value checks and yield nondeterministic
-    # mass properties. Bypass ComputeMassProperties for bodies whose traversal would see a
+    # usd-core <= 26.3, https://github.com/PixarAnimationStudios/OpenUSD/issues/4155).
+    # A blocked attribute makes Get() fail, leaving stack garbage that can pass the
+    # authored-value checks and yield nondeterministic mass properties.
+    # Bypass ComputeMassProperties for bodies whose traversal would see a
     # blocked attribute and use the accumulated-property fallback instead. Revert (delete the
     # two helpers below and the bypass at the call site) once the minimum supported usd-core
     # ships the upstream fix. Density is excluded: it is read into an initialized struct
