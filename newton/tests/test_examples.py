@@ -27,6 +27,7 @@ from typing import Any
 import warp as wp
 
 import newton.tests.unittest_utils
+from newton.examples.basic.example_recording import Example as RecordingExample
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     NewtonTestCase,
@@ -291,10 +292,55 @@ class TestBasicExamples(NewtonTestCase):
     pass
 
 
+class TestRecordingExample(NewtonTestCase):
+    pass
+
+
+def test_recording_body_stability(test, device):
+    original_quiet = wp.config.quiet
+    wp.config.quiet = True
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir, wp.ScopedDevice(device):
+            recording_path = os.path.join(temp_dir, "humanoid_recording.bin")
+            recorder = newton.viewer.ViewerFile(recording_path, auto_save=False)
+            example = RecordingExample(recorder, None)
+            for _ in range(120):
+                example.step()
+
+            example.render()
+            example.test_final()
+            recorder.save_recording(verbose=False)
+
+            replay = newton.viewer.ViewerFile(recording_path, auto_save=False)
+            replay.load_recording()
+            test.assertEqual(replay.get_frame_count(), 1)
+
+            replay_model = newton.Model()
+            replay.load_model(replay_model)
+            replay_state = replay_model.state()
+            replay.load_state(replay_state, 0)
+            newton.examples.test_body_state(
+                replay_model,
+                replay_state,
+                "recorded body origins remain above the ground",
+                lambda q, qd: q[2] > -0.1,
+            )
+    finally:
+        wp.config.quiet = original_quiet
+
+
 def add_basic_example_test(**kwargs):
     extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
     allow_output_regexes = [*_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
     add_example_test(TestBasicExamples, allow_output_regexes=allow_output_regexes, **kwargs)
+
+
+add_function_test(
+    TestRecordingExample,
+    "test_basic.example_recording_body_stability",
+    test_recording_body_stability,
+    devices=cuda_test_devices,
+)
 
 
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)

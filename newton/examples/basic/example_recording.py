@@ -42,6 +42,8 @@ class Example:
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
 
         articulation_builder = newton.ModelBuilder()
+        # Preserve MuJoCo's zero default for the unauthored geom gaps in this asset.
+        articulation_builder.default_shape_cfg.gap = 0.0
         articulation_builder.add_mjcf(
             mjcf_filename,
             ignore_names=["floor", "ground"],
@@ -52,6 +54,7 @@ class Example:
         articulation_builder.joint_q[:7] = [0.0, 0.0, 1.5, *start_rot]
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.gap = 0.0
         for _i in range(self.world_count):
             articulation_builder.joint_q[7:] = self.rng.uniform(
                 -1.0, 1.0, size=(len(articulation_builder.joint_q) - 7,)
@@ -99,7 +102,12 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "body origins remain above the ground",
+            lambda q, qd: q[2] > -0.1,
+        )
 
 
 if __name__ == "__main__":
