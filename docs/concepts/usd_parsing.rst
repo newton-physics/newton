@@ -274,9 +274,9 @@ For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inert
 (mass, inertia, center of mass) independently.  Effective attribute values take precedence;
 ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
 Per the schema's value semantics, an attribute is effective only when its value is usable:
-mass and density must be positive and finite, ``diagonalInertia`` and ``principalAxes``
-nonzero, and ``centerOfMass`` finite.  Explicitly authoring a schema fallback value is
-equivalent to leaving the attribute unauthored.
+mass and density must be positive and finite, ``diagonalInertia`` nonzero with finite,
+nonnegative components, ``principalAxes`` nonzero, and ``centerOfMass`` finite.  Explicitly
+authoring a schema fallback value is equivalent to leaving the attribute unauthored.
 
 1. ``newton:inertia`` (from ``NewtonMassAPI``) is a compact 6-element symmetric tensor
    ``[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`` already in the body frame.  When authored, it

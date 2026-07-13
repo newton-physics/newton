@@ -7214,6 +7214,91 @@ def Xform "Articulation" (
         self.assertFalse([w for w in caught if "must be positive and finite" in str(w.message)])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_diag_inertia_is_unspecified_and_warns(self):
+        """Negative or non-finite body diagonalInertia warns and falls back like unauthored."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for label, invalid_diag in (
+            ("Negative", Gf.Vec3f(-1e-6, 2e-6, 3e-6)),
+            ("Inf", Gf.Vec3f(math.inf, 2e-6, 3e-6)),
+            ("NaN", Gf.Vec3f(math.nan, 2e-6, 3e-6)),
+        ):
+            with self.subTest(value=label):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                for name, author_invalid in (("Control", False), ("Invalid", True)):
+                    body_path = f"/World/{name}"
+                    body = UsdGeom.Xform.Define(stage, body_path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                    mass_api.CreateMassAttr().Set(5.0)
+                    mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.01, 0.02, 0.03))
+                    if author_invalid:
+                        mass_api.CreateDiagonalInertiaAttr().Set(invalid_diag)
+
+                    collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                    collider.CreateSizeAttr().Set(0.2)
+                    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"diagonalInertia must have finite, nonnegative components"):
+                    result = builder.add_usd(stage)
+
+                control = result["path_body_map"]["/World/Control"]
+                invalid = result["path_body_map"]["/World/Invalid"]
+                self.assertAlmostEqual(builder.body_mass[invalid], builder.body_mass[control], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[invalid], builder.body_inertia[control], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_collider_diag_inertia_is_unspecified_and_warns(self):
+        """Negative or non-finite collider diagonalInertia warns and falls back like unauthored."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for label, invalid_diag in (
+            ("Negative", Gf.Vec3f(-1e-6, 2e-6, 3e-6)),
+            ("Inf", Gf.Vec3f(math.inf, 2e-6, 3e-6)),
+            ("NaN", Gf.Vec3f(math.nan, 2e-6, 3e-6)),
+        ):
+            with self.subTest(value=label):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                for name, author_invalid in (("Control", False), ("Invalid", True)):
+                    body_path = f"/World/{name}"
+                    body = UsdGeom.Xform.Define(stage, body_path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.MassAPI.Apply(body.GetPrim())  # incomplete -> compute fallback
+
+                    collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                    collider.CreateSizeAttr().Set(0.2)
+                    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                    collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+                    collider_mass_api.CreateMassAttr().Set(5.0)
+                    if author_invalid:
+                        collider_mass_api.CreateDiagonalInertiaAttr().Set(invalid_diag)
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"diagonalInertia must have finite, nonnegative components"):
+                    result = builder.add_usd(stage)
+
+                control = result["path_body_map"]["/World/Control"]
+                invalid = result["path_body_map"]["/World/Invalid"]
+                self.assertAlmostEqual(builder.body_mass[invalid], builder.body_mass[control], places=6)
+                invalid_inertia = np.array(builder.body_inertia[invalid])
+                self.assertTrue(np.isfinite(invalid_inertia).all())
+                if label == "Negative":
+                    # Non-finite values also reach OpenUSD's aggregation directly from the
+                    # stage and alter its result; fixing that is a deferred follow-up.
+                    np.testing.assert_allclose(invalid_inertia, builder.body_inertia[control], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_blocked_attributes_are_unspecified(self):
         """Blocked MassAPI attributes resolve to no value and behave like unauthored ones."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics

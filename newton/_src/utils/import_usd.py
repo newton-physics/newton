@@ -635,9 +635,23 @@ def parse_usd(
         density = mass_api.GetDensityAttr().Get()
         return float(density) if density is not None and math.isfinite(density) and density > 0.0 else None
 
+    warned_invalid_diag_inertia: set[str] = set()
+
     def _mass_api_effective_diag_inertia(mass_api: UsdPhysics.MassAPI):
         diag = mass_api.GetDiagonalInertiaAttr().Get()
-        return diag if diag is not None and any(v != 0.0 for v in diag) else None
+        if diag is None or all(v == 0.0 for v in diag):
+            return None
+        if all(math.isfinite(v) and v >= 0.0 for v in diag):
+            return diag
+        prim_path = str(mass_api.GetPrim().GetPath())
+        if prim_path not in warned_invalid_diag_inertia:
+            warned_invalid_diag_inertia.add(prim_path)
+            warnings.warn(
+                f"{prim_path}: authored MassAPI diagonalInertia must have finite, nonnegative components; "
+                "treating it as unspecified.",
+                stacklevel=2,
+            )
+        return None
 
     def _mass_api_effective_com(mass_api: UsdPhysics.MassAPI):
         com = mass_api.GetCenterOfMassAttr().Get()
@@ -3031,14 +3045,7 @@ def parse_usd(
             )
             return None
 
-        diag = np.array(diag_val, dtype=np.float32)
-        if np.any(diag < 0.0):
-            warnings.warn(
-                f"Skipping collider {prim.GetPath()}: authored diagonal inertia contains negative values.",
-                stacklevel=2,
-            )
-            return None
-        inertia_diag_unit = diag / density
+        inertia_diag_unit = np.array(diag_val, dtype=np.float32) / density
 
         principal_axes = _mass_api_effective_principal_axes(mass_api)
         if principal_axes is None:
@@ -3883,19 +3890,9 @@ def parse_usd(
                 i_diag_np = None  # skip diagonal path; full matrix set below
             elif has_effective_inertia:
                 i_diag_np = np.array(effective_diag_inertia, dtype=np.float32)
-                if np.any(i_diag_np < 0.0):
-                    warnings.warn(
-                        f"Body {body_path}: authored diagonal inertia contains negative values. "
-                        "Falling back to mass-computer result.",
-                        stacklevel=2,
-                    )
-                    has_effective_inertia = False
-                    i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
-                    principal_axes = cmp_principal_axes
-                else:
-                    principal_axes = _mass_api_effective_principal_axes(mass_api)
-                    if principal_axes is None:
-                        principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+                principal_axes = _mass_api_effective_principal_axes(mass_api)
+                if principal_axes is None:
+                    principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
             elif not has_effective_mass:
                 i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
                 principal_axes = cmp_principal_axes
