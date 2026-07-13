@@ -1966,14 +1966,33 @@ def _gather_group_vec3_kernel(
 
 
 @wp.kernel
+def _mark_last_group_row_kernel(
+    groups: wp.array[wp.int32],
+    group_count: int,
+    last_rows: wp.array[wp.int32],
+):
+    row = wp.tid()
+    group = groups[row]
+    if group >= 0 and group < group_count:
+        wp.atomic_max(last_rows, group, row)
+
+
+@wp.kernel
 def _scatter_group_vec3_kernel(
     values: wp.array2d[wp.vec3],
     starts: wp.array[wp.int32],
     groups: wp.array[wp.int32],
+    last_rows: wp.array[wp.int32],
+    deduplicate: bool,
     dst: wp.array[wp.vec3],
 ):
     i, j = wp.tid()
-    dst[starts[groups[i]] + j] = values[i, j]
+    group = groups[i]
+    if group < 0 or group >= starts.shape[0]:
+        return
+    if deduplicate and last_rows[group] != i:
+        return
+    dst[starts[group] + j] = values[i, j]
 
 
 @wp.kernel
@@ -1991,10 +2010,17 @@ def _scatter_group_transform_kernel(
     values: wp.array2d[wp.transform],
     starts: wp.array[wp.int32],
     groups: wp.array[wp.int32],
+    last_rows: wp.array[wp.int32],
+    deduplicate: bool,
     dst: wp.array[wp.transform],
 ):
     i, j = wp.tid()
-    dst[starts[groups[i]] + j] = values[i, j]
+    group = groups[i]
+    if group < 0 or group >= starts.shape[0]:
+        return
+    if deduplicate and last_rows[group] != i:
+        return
+    dst[starts[group] + j] = values[i, j]
 
 
 @wp.kernel
@@ -2012,10 +2038,17 @@ def _scatter_group_spatial_kernel(
     values: wp.array2d[wp.spatial_vector],
     starts: wp.array[wp.int32],
     groups: wp.array[wp.int32],
+    last_rows: wp.array[wp.int32],
+    deduplicate: bool,
     dst: wp.array[wp.spatial_vector],
 ):
     i, j = wp.tid()
-    dst[starts[groups[i]] + j] = values[i, j]
+    group = groups[i]
+    if group < 0 or group >= starts.shape[0]:
+        return
+    if deduplicate and last_rows[group] != i:
+        return
+    dst[starts[group] + j] = values[i, j]
 
 
 def _find_matching_group_ids(pattern: str | re.Pattern[str], labels, world_ids, world_count: int):
@@ -2062,14 +2095,19 @@ class DeformableView:
     :meth:`~newton.ModelBuilder.add_usd` use the same finalized group records. Native
     deformables without a label remain valid but cannot be selected by label.
 
-    :meth:`ranges` and :meth:`starts` work even when selected groups have different
-    element counts. Batched getters and setters require equal counts for the element
-    kind they use and otherwise direct callers to the raw ranges. Global groups
-    (world ``-1``) cannot be mixed with per-world groups in one view.
+    Selected groups use one flat axis. :attr:`world_starts` partitions that axis by
+    model world, including worlds without a match, and :attr:`world_ids` identifies
+    the world of each group. :meth:`ranges` and :meth:`starts` work even when selected
+    groups have different element counts. Batched getters and setters require equal
+    counts for the element kind they use and otherwise direct callers to the raw
+    ranges. Global groups (world ``-1``) cannot be mixed with per-world groups.
 
     Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
     changes its initial arrays; writing a state changes only that state. Host group
-    indices are bounds-checked. Device ``int32`` indices stay on the device.
+    ``group_indices`` select flat group rows. ``world_indices`` select actual model
+    worlds when every world has exactly one matching group. Host group indices are
+    bounds-checked and duplicates are rejected. Device ``int32`` indices stay on the
+    device: out-of-range entries are ignored and the last value wins for duplicates.
 
     Example:
 
@@ -2152,10 +2190,14 @@ class DeformableView:
 
         self.count = group_count
         """Number of selected groups across all worlds."""
+        self.group_count = group_count
+        """Number of selected groups across all worlds."""
         self.world_count = world_count
         """Number of worlds spanned by the selection."""
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
         """Number of selected groups per world, or None when the counts vary."""
+        self._groups_per_world = counts_per_world
+        self._uses_global_groups = bool(global_group_ids)
         flat_ids = [i for ids in group_ids for i in ids]
         selected = [groups[i] for i in flat_ids]
         self.labels = [g.label for g in selected]
@@ -2170,11 +2212,12 @@ class DeformableView:
         """Device offsets partitioning the flat groups by world, shape ``(world_count + 1,)``."""
         self.world_ids = wp.array(self.worlds, dtype=wp.int32, device=self.device)
         """World index of each flat group, shape ``(count,)``."""
-        self.group_ids = [g.id for g in selected]
-        """Stable finalized identity of each selected group."""
+        self.model_group_ids = [g.id for g in selected]
+        """Model-global identity of each selected group for this finalized model."""
 
         # Element ranges are always available; only rectangular operations require homogeneity.
         self._all_groups: wp.array | None = None  # lazy identity indices for full-selection writes
+        self._last_group_rows = wp.empty(self.count, dtype=wp.int32, device=self.device)
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array] = {}
         self._counts: dict[str, int | None] = {}
@@ -2249,26 +2292,47 @@ class DeformableView:
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
-    def _resolve_group_indices(self, indices) -> wp.array[wp.int32]:
-        if indices is None:
+    def _resolve_group_indices(self, group_indices: Any) -> wp.array[wp.int32]:
+        if group_indices is None:
             if self._all_groups is None:
                 self._all_groups = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
             return self._all_groups
-        if isinstance(indices, wp.array):
-            # A device-resident index array is used as-is (no host sync, so no bounds check).
-            if indices.dtype is not wp.int32:
-                raise ValueError(f"Expected indices dtype int32, got {indices.dtype.__name__}")
-            if indices.device != self.device:
-                raise ValueError(f"Expected indices on device {self.device}, got {indices.device}")
-            return indices
-        idx = [int(i) for i in indices]
+        if isinstance(group_indices, wp.array):
+            # Kernel-side checks keep this graph-safe without a host copy.
+            if group_indices.dtype is not wp.int32:
+                raise ValueError(f"Expected group_indices dtype int32, got {group_indices.dtype.__name__}")
+            if group_indices.device != self.device:
+                raise ValueError(f"Expected group_indices on device {self.device}, got {group_indices.device}")
+            return group_indices
+        idx = [int(i) for i in group_indices]
         if any(i < 0 or i >= self.count for i in idx):
             raise ValueError(f"Group indices must be in [0, {self.count}), got {idx}")
+        if len(set(idx)) != len(idx):
+            raise ValueError(f"group_indices contains duplicate entries: {idx}")
         return wp.array(idx, dtype=wp.int32, device=self.device)
 
-    def _scatter(self, kind: str, values, kernel, dst: wp.array, dtype, indices=None) -> None:
+    def _resolve_write_indices(self, group_indices: Any = None, world_indices: Any = None) -> wp.array[wp.int32]:
+        if group_indices is not None and world_indices is not None:
+            raise ValueError("Pass either group_indices or world_indices, not both")
+        if world_indices is None:
+            return self._resolve_group_indices(group_indices)
+        if self._uses_global_groups or any(count != 1 for count in self._groups_per_world):
+            raise ValueError("world_indices requires exactly one selected group in every model world")
+        return self._resolve_group_indices(world_indices)
+
+    def _scatter(
+        self,
+        kind: str,
+        values: Any,
+        kernel: Any,
+        dst: wp.array,
+        dtype: Any,
+        group_indices: Any = None,
+        world_indices: Any = None,
+    ) -> None:
         count = self._element_count(kind)
-        groups = self._resolve_group_indices(indices)
+        device_indices = isinstance(group_indices, wp.array) or isinstance(world_indices, wp.array)
+        groups = self._resolve_write_indices(group_indices, world_indices)
         rows = groups.shape[0]
         if not isinstance(values, wp.array):
             values = wp.array(values, dtype=dtype, shape=(rows, count), device=self.device, copy=False)
@@ -2280,7 +2344,20 @@ class DeformableView:
             raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
-        wp.launch(kernel, dim=(rows, count), inputs=[values, self._starts[kind], groups, dst], device=self.device)
+        if device_indices:
+            self._last_group_rows.fill_(-1)
+            wp.launch(
+                _mark_last_group_row_kernel,
+                dim=rows,
+                inputs=[groups, self.count, self._last_group_rows],
+                device=self.device,
+            )
+        wp.launch(
+            kernel,
+            dim=(rows, count),
+            inputs=[values, self._starts[kind], groups, self._last_group_rows, device_indices, dst],
+            device=self.device,
+        )
 
     # particle state (surface / volume) --------------------------------------
 
@@ -2293,27 +2370,57 @@ class DeformableView:
         """Particle positions [m] of each group, shape ``(count, particles_per_group)`` of vec3."""
         return self._gather("particle", source.particle_q, _gather_group_vec3_kernel, wp.vec3)
 
-    def set_particle_positions(self, source: Model | State, values, indices=None):
+    def set_particle_positions(
+        self,
+        source: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+        world_indices: Any = None,
+    ) -> None:
         """Write particle positions [m] from ``(rows, particles_per_group)`` vec3 values.
 
-        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
-        groups to write (remaining groups are untouched). A host index sequence is
-        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        ``rows`` is ``count``, or the number of selected groups. ``group_indices``
+        selects flat rows. ``world_indices`` selects model worlds when every world has
+        exactly one matching group. Other groups are untouched.
         """
-        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_q, wp.vec3, indices)
+        self._scatter(
+            "particle",
+            values,
+            _scatter_group_vec3_kernel,
+            source.particle_q,
+            wp.vec3,
+            group_indices,
+            world_indices,
+        )
 
     def get_particle_velocities(self, source: Model | State) -> wp.array2d[wp.vec3]:
         """Particle velocities [m/s] of each group, shape ``(count, particles_per_group)`` of vec3."""
         return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel, wp.vec3)
 
-    def set_particle_velocities(self, source: Model | State, values, indices=None):
+    def set_particle_velocities(
+        self,
+        source: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+        world_indices: Any = None,
+    ) -> None:
         """Write particle velocities [m/s] from ``(rows, particles_per_group)`` vec3 values.
 
-        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
-        groups to write (remaining groups are untouched). A host index sequence is
-        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        ``rows`` is ``count``, or the number of selected groups. ``group_indices``
+        selects flat rows. ``world_indices`` selects model worlds when every world has
+        exactly one matching group. Other groups are untouched.
         """
-        self._scatter("particle", values, _scatter_group_vec3_kernel, source.particle_qd, wp.vec3, indices)
+        self._scatter(
+            "particle",
+            values,
+            _scatter_group_vec3_kernel,
+            source.particle_qd,
+            wp.vec3,
+            group_indices,
+            world_indices,
+        )
 
     # body state (curve) --------------------------------------------------
 
@@ -2323,27 +2430,65 @@ class DeformableView:
         return self._element_count("body")
 
     def get_body_transforms(self, source: Model | State) -> wp.array2d[wp.transform]:
-        """Segment body transforms of each curve, shape ``(count, bodies_per_group)`` of transform."""
+        """Segment transforms of each curve, shape ``(count, bodies_per_group)``.
+
+        Each transform contains a world-space translation [m] and a unitless
+        quaternion.
+        """
         return self._gather("body", source.body_q, _gather_group_transform_kernel, wp.transform)
 
-    def set_body_transforms(self, source: Model | State, values, indices=None):
-        """Write segment body transforms from ``(rows, bodies_per_group)`` transform values.
+    def set_body_transforms(
+        self,
+        source: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+        world_indices: Any = None,
+    ) -> None:
+        """Write segment transforms from ``(rows, bodies_per_group)`` values.
 
-        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
-        groups to write (remaining groups are untouched). A host index sequence is
-        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        Each transform contains a world-space translation [m] and a unitless
+        quaternion. ``group_indices`` selects flat rows. ``world_indices`` selects
+        model worlds when every world has exactly one matching group.
         """
-        self._scatter("body", values, _scatter_group_transform_kernel, source.body_q, wp.transform, indices)
+        self._scatter(
+            "body",
+            values,
+            _scatter_group_transform_kernel,
+            source.body_q,
+            wp.transform,
+            group_indices,
+            world_indices,
+        )
 
     def get_body_velocities(self, source: Model | State) -> wp.array2d[wp.spatial_vector]:
-        """Segment body spatial velocities of each curve, shape ``(count, bodies_per_group)``."""
+        """Segment velocities, shape ``(count, bodies_per_group)``.
+
+        Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
+        followed by angular velocity [rad/s].
+        """
         return self._gather("body", source.body_qd, _gather_group_spatial_kernel, wp.spatial_vector)
 
-    def set_body_velocities(self, source: Model | State, values, indices=None):
-        """Write segment body spatial velocities from ``(rows, bodies_per_group)`` values.
+    def set_body_velocities(
+        self,
+        source: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+        world_indices: Any = None,
+    ) -> None:
+        """Write segment velocities from ``(rows, bodies_per_group)`` values.
 
-        ``rows`` is ``count``, or ``len(indices)`` when ``indices`` selects a subset of
-        groups to write (remaining groups are untouched). A host index sequence is
-        bounds-checked; a Warp int32 array is used as-is without a host sync.
+        Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
+        followed by angular velocity [rad/s]. ``group_indices`` selects flat rows.
+        ``world_indices`` selects model worlds when every world has exactly one match.
         """
-        self._scatter("body", values, _scatter_group_spatial_kernel, source.body_qd, wp.spatial_vector, indices)
+        self._scatter(
+            "body",
+            values,
+            _scatter_group_spatial_kernel,
+            source.body_qd,
+            wp.spatial_vector,
+            group_indices,
+            world_indices,
+        )

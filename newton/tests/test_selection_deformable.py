@@ -39,7 +39,7 @@ class TestDeformableView(unittest.TestCase):
         state = model.state()
 
         view = DeformableView(model, "/World/Cloth", family="surface")
-        self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
+        self.assertEqual((view.count, view.group_count, view.world_count, view.count_per_world), (3, 3, 3, 1))
         self.assertEqual(view.worlds, [0, 1, 2])
         self.assertEqual(view.particles_per_group, 4)
 
@@ -106,7 +106,7 @@ class TestDeformableView(unittest.TestCase):
         view = DeformableView(model, "/World/Cloth*", family="surface")
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
-        self.assertEqual(view.group_ids, [0, 1, 2, 3])
+        self.assertEqual(view.model_group_ids, [0, 1, 2, 3])
         self.assertEqual(view.ranges("triangle"), [(0, 2), (2, 4), (4, 6), (6, 8)])
 
     def test_varying_group_counts_across_worlds_remain_selectable(self):
@@ -134,6 +134,8 @@ class TestDeformableView(unittest.TestCase):
         np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1, 1])
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothA", "/World/ClothB"])
         self.assertEqual(view.get_particle_positions(view.model.state()).shape, (3, 4))
+        with self.assertRaisesRegex(ValueError, "exactly one selected group"):
+            view.set_particle_positions(view.model.state(), wp.zeros((1, 4), dtype=wp.vec3), world_indices=[0])
 
     def test_compiled_regex_pattern_selects_by_fullmatch(self):
         """A compiled regular expression selects groups by fullmatch: alternation picks
@@ -210,7 +212,7 @@ class TestDeformableView(unittest.TestCase):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
 
     def test_indexed_partial_writes_touch_only_selected_groups(self):
-        """indices= scatters into the selected groups only, from host and device index
+        """group_indices= scatters into selected groups only, from host and device index
         forms, and cable body velocities round-trip through an indexed write."""
         model = _replicated_model(3)
         state = model.state()
@@ -219,7 +221,7 @@ class TestDeformableView(unittest.TestCase):
         before = cloth.get_particle_positions(state).numpy()
         moved = before[[1]].copy()
         moved[..., 2] += 5.0
-        cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), indices=[1])
+        cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), group_indices=[1])
         after = cloth.get_particle_positions(state).numpy()
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_allclose(after[1], moved[0], atol=1e-6)
@@ -228,13 +230,74 @@ class TestDeformableView(unittest.TestCase):
         velocities = np.zeros((1, cable.bodies_per_group, 6), dtype=np.float32)
         velocities[..., 3] = 2.0
         device_indices = wp.array([2], dtype=wp.int32, device=model.device)
-        cable.set_body_velocities(state, wp.array(velocities, dtype=wp.spatial_vector), indices=device_indices)
+        cable.set_body_velocities(state, wp.array(velocities, dtype=wp.spatial_vector), group_indices=device_indices)
         out = cable.get_body_velocities(state).numpy()
         np.testing.assert_allclose(out[2], velocities[0], atol=1e-6)
         np.testing.assert_array_equal(out[:2], np.zeros_like(out[:2]))
 
         with self.assertRaisesRegex(ValueError, "must be in"):
-            cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), indices=[3])
+            cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), group_indices=[3])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            cloth.set_particle_positions(
+                state,
+                wp.array(np.repeat(moved, 2, axis=0), dtype=wp.vec3),
+                group_indices=[1, 1],
+            )
+
+    def test_invalid_device_group_index_does_not_write(self):
+        """An out-of-range device group index cannot address another group's state."""
+        model = _replicated_model(3)
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        before = cloth.get_particle_positions(state).numpy()
+        values = np.full((1, cloth.particles_per_group, 3), 17.0, dtype=np.float32)
+
+        cloth.set_particle_positions(
+            state,
+            wp.array(values, dtype=wp.vec3, device=model.device),
+            group_indices=wp.array([cloth.count], dtype=wp.int32, device=model.device),
+        )
+
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
+
+    def test_duplicate_device_group_index_uses_last_value(self):
+        """Device duplicate indices are deterministic: the last row wins."""
+        model = _replicated_model(3)
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        before = cloth.get_particle_positions(state).numpy()
+        values = np.empty((2, cloth.particles_per_group, 3), dtype=np.float32)
+        values[0].fill(3.0)
+        values[1].fill(8.0)
+
+        cloth.set_particle_positions(
+            state,
+            wp.array(values, dtype=wp.vec3, device=model.device),
+            group_indices=wp.array([1, 1], dtype=wp.int32, device=model.device),
+        )
+
+        after = cloth.get_particle_positions(state).numpy()
+        np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
+        np.testing.assert_array_equal(after[1], values[1])
+
+    def test_world_indices_write_one_group_per_world(self):
+        """World indices address actual model worlds when each world has one match."""
+        model = _replicated_model(3)
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        before = cloth.get_particle_positions(state).numpy()
+        moved = before[[2]].copy()
+        moved[..., 2] += 4.0
+
+        cloth.set_particle_positions(
+            state,
+            wp.array(moved, dtype=wp.vec3, device=model.device),
+            world_indices=wp.array([2], dtype=wp.int32, device=model.device),
+        )
+
+        after = cloth.get_particle_positions(state).numpy()
+        np.testing.assert_array_equal(after[:2], before[:2])
+        np.testing.assert_allclose(after[2], moved[0], atol=1e-6)
 
 
 class TestDeformableViewBuilderGroups(unittest.TestCase):
