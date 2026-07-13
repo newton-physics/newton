@@ -647,6 +647,31 @@ def get_custom_attribute_values(
     return out
 
 
+def _get_tetmesh_custom_attribute_values(
+    prim: Usd.Prim,
+    custom_attributes: Sequence[ModelBuilder.CustomAttribute],
+) -> dict[str, np.ndarray]:
+    """Read builder-declared TetMesh arrays without inferring their frequency."""
+    out: dict[str, np.ndarray] = {}
+    for spec in custom_attributes:
+        usd_name = spec.usd_attribute_name
+        if not usd_name or usd_name == "*":
+            continue
+        usd_attr = prim.GetAttribute(usd_name)
+        if not usd_attr or not usd_attr.HasAuthoredValue():
+            continue
+        primvar = UsdGeom.Primvar(usd_attr)
+        value = primvar.ComputeFlattened() if primvar else usd_attr.Get()
+        if value is None:
+            continue
+        if spec.usd_value_transformer is not None:
+            value = spec.usd_value_transformer(value, {"prim": prim, "attr": spec})
+            if value is None:
+                continue
+        out[spec.key] = np.asarray(value)
+    return out
+
+
 def _newell_normal(P: np.ndarray) -> np.ndarray:
     """Newell's method for polygon normal (not normalized)."""
     x = y = z = 0.0
@@ -1559,7 +1584,12 @@ def _material_authors_unscoped_canonical_attrs(prim: Usd.Prim) -> bool:
     )
 
 
-def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = None) -> TetMesh:
+def get_tetmesh(
+    prim: Usd.Prim,
+    *,
+    compat_namespaces: Sequence[str] | None = None,
+    _load_custom_attributes: bool = True,
+) -> TetMesh:
     """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
     Reads vertex positions from the ``points`` attribute and tetrahedral
@@ -1571,7 +1601,7 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
     ``k_lambda``) and density on the returned TetMesh. Material properties
     are set to ``None`` if not present.
 
-    Custom primvars use their authored interpolation to determine attribute
+    Custom primvars use their resolved interpolation to determine attribute
     frequency. Other custom arrays use length-based inference; arrays whose
     frequency is ambiguous or cannot be inferred emit a warning and are
     omitted without preventing the TetMesh from loading.
@@ -1721,6 +1751,15 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
         # density too; a plain rigid-style physics material is a valid source.
         density = _get_physics_material_density(material_prim)
 
+    if not _load_custom_attributes:
+        return TetMesh(
+            vertices=vertices,
+            tet_indices=tet_indices,
+            k_mu=k_mu,
+            k_lambda=k_lambda,
+            density=density,
+        )
+
     # Read custom primvars and attributes (per-vertex, per-tet, etc.)
     # Primvar interpolation is used to determine the attribute frequency
     # when available, falling back to length-based inference in TetMesh.__init__.
@@ -1743,7 +1782,7 @@ def get_tetmesh(prim: Usd.Prim, *, compat_namespaces: Sequence[str] | None = Non
         name = primvar.GetPrimvarName()
         if name in ("st", "normals"):
             continue  # skip well-known primvars handled elsewhere
-        val = primvar.Get()
+        val = primvar.ComputeFlattened()
         if val is not None:
             arr = np.array(val)
             interp = primvar.GetInterpolation()

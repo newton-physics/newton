@@ -1013,7 +1013,11 @@ def parse_usd(
                     stacklevel=2,
                 )
                 compat_ns = usd.DEFORMABLE_LEGACY_NAMESPACES
-            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=compat_ns)
+            tetmesh_cache[prim_path] = usd.get_tetmesh(
+                prim,
+                compat_namespaces=compat_ns,
+                _load_custom_attributes=False,
+            )
         return tetmesh_cache[prim_path]
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
