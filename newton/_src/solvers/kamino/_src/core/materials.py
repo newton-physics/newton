@@ -416,13 +416,13 @@ def material_min(
 
 
 def get_material_mixing_function(
-    muxmode: MaterialMixMode = MaterialMixMode.AVERAGE,
+    mixmode: MaterialMixMode = MaterialMixMode.AVERAGE,
 ) -> Callable[[wp.float32, wp.float32], wp.float32]:
     """
     Returns the appropriate material mix function based on the specified mixing mode.
     """
     # Select the appropriate mixing function based on the mixing mode
-    match muxmode:
+    match mixmode:
         case MaterialMixMode.AVERAGE:
             mix_func = material_average
         case MaterialMixMode.MULTIPLY:
@@ -432,25 +432,25 @@ def get_material_mixing_function(
         case MaterialMixMode.MIN:
             mix_func = material_min
         case _:
-            raise ValueError(f"Unsupported material mixing mode: {muxmode}")
+            raise ValueError(f"Unsupported material mixing mode: {mixmode}")
 
     # Return the selected mixing function
     return mix_func
 
 
-def make_get_mixed_material_pair_property(muxmode: MaterialMixMode = MaterialMixMode.AVERAGE):
+def make_get_mixed_material_pair_property(mixmode: MaterialMixMode = MaterialMixMode.AVERAGE):
     """
     Generates a Warp function to retrieve material pair
     property based on the specified mixing mode.
 
     Args:
-        muxmode: The mixing mode to use for material pair property.
+        mixmode: The mixing mode to use for material pair property.
 
     Returns:
         A Warp function that retrieves material pair property.
     """
     # Select the appropriate mixing function based on the mixing mode
-    mix_func = get_material_mixing_function(muxmode)
+    mix_func = get_material_mixing_function(mixmode)
 
     # Define the Warp function to retrieve material pair properties
     @wp.func
@@ -474,19 +474,19 @@ def make_get_mixed_material_pair_property(muxmode: MaterialMixMode = MaterialMix
     return _get_mixed_material_pair_property
 
 
-def make_get_material_pair_properties(muxmode: MaterialMixMode = MaterialMixMode.AVERAGE):
+def make_get_material_pair_properties(mixmode: MaterialMixMode = MaterialMixMode.AVERAGE):
     """
     Generates a Warp function to retrieve material pair
     properties based on the specified mixing mode.
 
     Args:
-        muxmode: The mixing mode to use for material pair properties.
+        mixmode: The mixing mode to use for material pair properties.
 
     Returns:
         A Warp function that retrieves material pair properties.
     """
     # Select the appropriate mixing function based on the mixing mode
-    mix_func = get_material_mixing_function(muxmode)
+    mix_func = get_material_mixing_function(mixmode)
 
     # Define the Warp function to retrieve material pair properties
     @wp.func
