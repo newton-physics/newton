@@ -1306,12 +1306,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
                         )
-                    ke_stretch = jtarget_ke[dof0]
-                    ke_bend = jtarget_ke[angular_dof]
-                    joint_k_max_np[c0] = ke_stretch
-                    joint_k_max_np[c0 + 1] = ke_bend
-                    joint_k_init_np[c0] = ke_stretch if lin_k_start is None else min(lin_k_start, ke_stretch)
-                    joint_k_init_np[c0 + 1] = ke_bend if ang_k_start is None else min(ang_k_start, ke_bend)
+                    stretch_ke = jtarget_ke[dof0]
+                    bend_ke = jtarget_ke[angular_dof]
+                    joint_k_max_np[c0] = stretch_ke
+                    joint_k_max_np[c0 + 1] = bend_ke
+                    joint_k_init_np[c0] = stretch_ke if lin_k_start is None else min(lin_k_start, stretch_ke)
+                    joint_k_init_np[c0 + 1] = bend_ke if ang_k_start is None else min(ang_k_start, bend_ke)
                     joint_kd_np[c0] = jtarget_kd[dof0]
                     joint_kd_np[c0 + 1] = jtarget_kd[angular_dof]
                 elif jt[j] == JointType.BALL:

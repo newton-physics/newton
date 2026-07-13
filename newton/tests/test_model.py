@@ -1656,8 +1656,8 @@ class TestModelJoints(unittest.TestCase):
             finally:
                 newton.use_coord_layout_targets = prev
 
-    def test_ball_free_per_axis_target_pos_preserved(self):
-        """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
+    def test_ball_free_cable_per_axis_target_pos_preserved(self):
+        """``JointDofConfig.target_pos`` on BALL/FREE/CABLE axes must flow
         into ``joint_target_q`` under both flag values.
 
         - Flag=False (legacy DOF): the 3 angular scalars are projected verbatim
@@ -1709,8 +1709,18 @@ class TestModelJoints(unittest.TestCase):
                     linear_axes=_make_linear_axes(),
                     angular_axes=_make_axes(),
                 )
+                # CABLE uses the same target layout as FREE.
+                b_cable = builder.add_link(mass=1.0)
+                j_cable = builder.add_joint(
+                    newton.JointType.CABLE,
+                    parent=-1,
+                    child=b_cable,
+                    linear_axes=_make_linear_axes(),
+                    angular_axes=_make_axes(),
+                )
                 builder.add_articulation([j_ball])
                 builder.add_articulation([j_free])
+                builder.add_articulation([j_cable])
                 model = builder.finalize()
 
                 target_q = model.joint_target_q.numpy()
@@ -1720,21 +1730,23 @@ class TestModelJoints(unittest.TestCase):
                     q_starts = model.joint_q_start.numpy()
                     b = int(q_starts[j_ball])
                     np.testing.assert_allclose(target_q[b : b + 4], expected_quat, rtol=0, atol=1e-6)
-                    # FREE coord slice = (px, py, pz, qx, qy, qz, qw)
-                    f = int(q_starts[j_free])
-                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-                    np.testing.assert_allclose(target_q[f + 3 : f + 7], expected_quat, rtol=0, atol=1e-6)
+                    # FREE/CABLE coord slice = (px, py, pz, qx, qy, qz, qw)
+                    for joint in (j_free, j_cable):
+                        q = int(q_starts[joint])
+                        np.testing.assert_allclose(target_q[q : q + 3], lin_targets, rtol=0, atol=1e-6)
+                        np.testing.assert_allclose(target_q[q + 3 : q + 7], expected_quat, rtol=0, atol=1e-6)
+                        self.assertAlmostEqual(float(np.linalg.norm(target_q[q + 3 : q + 7])), 1.0, places=5)
                     # Verify unit norm (would only hold post-conversion)
                     self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
-                    self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
                 else:
-                    # DOF projection: BALL → 3 raw angular floats; FREE → 3 lin + 3 raw ang
+                    # DOF projection: BALL → 3 raw angular floats; FREE/CABLE → 3 lin + 3 raw ang
                     qd_starts = model.joint_qd_start.numpy()
                     b = int(qd_starts[j_ball])
                     np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
-                    f = int(qd_starts[j_free])
-                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-                    np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
+                    for joint in (j_free, j_cable):
+                        qd = int(qd_starts[joint])
+                        np.testing.assert_allclose(target_q[qd : qd + 3], lin_targets, rtol=0, atol=1e-6)
+                        np.testing.assert_allclose(target_q[qd + 3 : qd + 6], ang_targets, rtol=0, atol=1e-6)
             finally:
                 newton.use_coord_layout_targets = prev
 

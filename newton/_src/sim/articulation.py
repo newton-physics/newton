@@ -1396,9 +1396,9 @@ def eval_articulation_inverse_dynamics_force_kernel(
     :attr:`InverseDynamics.coriolis_force` and
     :attr:`InverseDynamics.gravity_force`.
 
-    For any FREE/DISTANCE joint, ``H`` is in the joint's parent frame while the
-    bias terms are in world frame, so the six ``H @ qddot`` components are
-    rotated to world before summing.
+    For any FREE/DISTANCE/CABLE joint, ``H`` is in the joint's parent frame
+    while the bias terms are in world frame, so the six ``H @ qddot``
+    components are rotated to world before summing.
 
     Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
     mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
@@ -1422,15 +1422,15 @@ def eval_articulation_inverse_dynamics_force_kernel(
             sum_val += H[art_idx, i, j] * qddot[dof_start + j]
         tau[dof_start + i] = sum_val
 
-    # Rotate every FREE/DISTANCE wrench from parent frame to world so it
+    # Rotate every FREE/DISTANCE/CABLE wrench from parent frame to world so it
     # matches the world-frame bias terms. H @ qddot is conjugate to the
     # parent-frame qddot convention used internally; coriolis_force and
     # gravity_force already use the world-frame CoM-wrench convention of
-    # Control.joint_f. Any FREE/DISTANCE joint in the articulation tree
+    # Control.joint_f. Any FREE/DISTANCE/CABLE joint in the articulation tree
     # (not only the root) needs this rotation.
     for ji in range(joint_start, joint_end):
         jtype = joint_type[ji]
-        if jtype == JointType.FREE or jtype == JointType.DISTANCE:
+        if jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.CABLE:
             jdof = joint_qd_start[ji]
             X_wpj = joint_X_p[ji]
             parent = joint_parent[ji]
@@ -1481,18 +1481,19 @@ def eval_inverse_dynamics_force(
     fixed-root and floating-root articulations across multiple worlds is
     handled uniformly.
 
-    For any FREE/DISTANCE joint in the articulation tree the mass matrix ``H``
-    is expressed in the joint's parent frame while
+    For any FREE/DISTANCE/CABLE joint in the articulation tree the mass matrix
+    ``H`` is expressed in the joint's parent frame while
     ``coriolis_force``/``gravity_force`` are in the world-frame CoM-wrench
     convention of :attr:`Control.joint_f`; each such joint's ``H @ qddot``
     wrench is rotated to world (using ``state.body_q`` for the
     parent-frame-in-world rotation) before the sum, so ``tau`` is entirely in
-    that world convention.
+    that world convention. Full inverse-dynamics evaluation remains unsupported
+    for CABLE joints, but this helper accepts caller-supplied CABLE buffers.
 
     Args:
         model: The model containing articulation definitions.
-        state: State providing ``body_q``, used to rotate the FREE/DISTANCE
-            root ``H @ qddot`` wrench into the world frame. Must be consistent
+        state: State providing ``body_q``, used to rotate each FREE/DISTANCE/CABLE
+            ``H @ qddot`` wrench into the world frame. Must be consistent
             with the ``H`` and bias buffers (i.e. the state passed to
             :func:`eval_inverse_dynamics`).
         H: Joint-space mass matrix ``M(q)`` [kg, kg·m, or kg·m^2, depending

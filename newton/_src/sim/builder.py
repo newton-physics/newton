@@ -4377,7 +4377,12 @@ class ModelBuilder:
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
 
-        if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
+        if (
+            joint_type == JointType.BALL
+            or joint_type == JointType.FREE
+            or joint_type == JointType.DISTANCE
+            or joint_type == JointType.CABLE
+        ):
             if joint_type == JointType.BALL:
                 quat_offset = target_q_offset
             else:
@@ -4401,8 +4406,6 @@ class ModelBuilder:
                 for i, dim in enumerate(angular_axes):
                     self.joint_target_q[quat_offset + i] = dim.target_pos
                 self.joint_target_q[quat_offset + 3] = 1.0
-        elif joint_type == JointType.CABLE:
-            self.joint_target_q[target_q_offset + 6] = 1.0
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
                 self.joint_target_q[target_q_offset + i] = dim.target_pos

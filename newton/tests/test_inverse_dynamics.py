@@ -2556,6 +2556,65 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         expected = np.concatenate([m_mass * (R @ a_parent), R @ (I_local @ alpha_parent)]).astype(np.float32)
         np.testing.assert_allclose(inverse_dynamics.tau.numpy(), expected, atol=1e-5, rtol=1e-5)
 
+    def test_inverse_dynamics_force_cable_root_rotated_parent(self):
+        """The CABLE mass term is rotated from its parent frame into world coordinates."""
+        body_mass = 2.0
+        body_inertia = np.diag([0.3, 0.5, 0.4]).astype(np.float64)
+        parent_rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
+        rotation = np.array(wp.quat_to_matrix(parent_rotation), dtype=np.float64).reshape(3, 3)
+        identity = wp.transform_identity()
+
+        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        link = builder.add_link(
+            mass=body_mass,
+            com=wp.vec3(0.0, 0.0, 0.0),
+            inertia=wp.mat33(*body_inertia.flatten().tolist()),
+        )
+        joint = builder.add_joint_cable(
+            parent=-1,
+            child=link,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), parent_rotation),
+            child_xform=identity,
+        )
+        builder.add_articulation([joint])
+        q_start = builder.joint_q_start[joint]
+        builder.joint_q[q_start : q_start + 7] = list(identity)
+
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        mass_matrix = newton.eval_mass_matrix(model, state)
+
+        linear_acceleration = np.array([0.5, -0.3, 0.7], dtype=np.float64)
+        angular_acceleration = np.array([0.2, 0.4, -0.6], dtype=np.float64)
+        qddot = wp.array(
+            np.concatenate([linear_acceleration, angular_acceleration]).astype(np.float32),
+            dtype=wp.float32,
+            device=self.device,
+        )
+        zero_bias = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
+        tau = wp.zeros_like(zero_bias)
+
+        def evaluate():
+            newton.eval_inverse_dynamics_force(model, state, mass_matrix, qddot, zero_bias, zero_bias, tau)
+
+        if self.device.is_cuda:
+            evaluate()  # Compile before capture.
+            tau.zero_()
+            with wp.ScopedCapture(device=self.device) as capture:
+                evaluate()
+            wp.capture_launch(capture.graph)
+        else:
+            evaluate()
+
+        expected = np.concatenate(
+            [
+                body_mass * (rotation @ linear_acceleration),
+                rotation @ (body_inertia @ angular_acceleration),
+            ]
+        ).astype(np.float32)
+        np.testing.assert_allclose(tau.numpy(), expected, atol=1e-5, rtol=1e-5)
+
     def test_inverse_dynamics_force_non_root_free_joint_rotated_parent(self):
         """Non-root FREE or DISTANCE joint with a rotated parent frame and non-zero ``qddot``.
 
