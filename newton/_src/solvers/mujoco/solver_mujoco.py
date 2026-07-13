@@ -6558,6 +6558,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with wp.ScopedDevice(model.device):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
+            self.mjw_model.block_dim.linesearch_iterative = 32
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
