@@ -270,12 +270,8 @@ def _warp_key(x) -> int:
     return _WARP_TAG + base
 
 
-def _mesh_key_from_vertices(vertices: np.ndarray, fallback_obj=None) -> int:
-    try:
-        base = _ptr_key_from_numpy(vertices)
-    except Exception:
-        base = int(id(fallback_obj)) if fallback_obj is not None else int(id(vertices))
-    return _MESH_TAG + base
+def _mesh_key_from_object(mesh: Mesh) -> int:
+    return _MESH_TAG + int(id(mesh))
 
 
 def serialize_ndarray(arr: np.ndarray, format_type: str = "json", cache: ArrayCache | None = None) -> dict:
@@ -604,12 +600,14 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "is_solid": x.is_solid,
                 "has_inertia": x.has_inertia,
                 "maxhullvert": x.maxhullvert,
+                "color": x.color,
+                "opacity": x.opacity,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
                 "inertia": serialize_ndarray(np.array(x.inertia), format_type, cache),
             }
             if cache is not None:
-                mesh_key = _mesh_key_from_vertices(x.vertices, fallback_obj=x)
+                mesh_key = _mesh_key_from_object(x)
                 idx = cache.try_register_pointer_and_value(mesh_key, x)
                 if idx > 0:
                     return {"__type__": "newton.geometry.Mesh_ref", "cache_index": int(idx)}
@@ -1046,6 +1044,8 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                     compute_inertia=False,
                     is_solid=mesh_data["is_solid"],
                     maxhullvert=mesh_data["maxhullvert"],
+                    color=mesh_data.get("color"),
+                    opacity=mesh_data.get("opacity"),
                 )
 
                 # Restore the saved inertia properties
@@ -1060,7 +1060,7 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                 # Optimization: single dict lookup
                 cache_index = x.get("cache_index")
                 if cache is not None and cache_index is not None:
-                    mesh_key = _mesh_key_from_vertices(vertices, fallback_obj=mesh)
+                    mesh_key = _mesh_key_from_object(mesh)
                     cache.try_register_pointer_and_value_and_index(mesh_key, mesh, int(cache_index))
                 return mesh
             except Exception as e:
@@ -1330,6 +1330,7 @@ class ViewerFile(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
@@ -1345,6 +1346,7 @@ class ViewerFile(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether back-face culling is enabled.
+            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
@@ -1363,6 +1365,8 @@ class ViewerFile(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """File viewer does not render instances.
@@ -1374,6 +1378,7 @@ class ViewerFile(ViewerBase):
             scales: Optional per-instance scales.
             colors: Optional per-instance colors.
             materials: Optional per-instance material parameters.
+            opacities: Optional per-instance opacity values.
             hidden: Whether the instance batch is hidden.
         """
         pass

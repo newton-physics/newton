@@ -9704,7 +9704,7 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
     @staticmethod
-    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
+    def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, opacity=None, add_visual_sphere=False):
         """Create a stage with a rigid body containing a collision mesh with PBR material."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
@@ -9740,6 +9740,8 @@ def Xform "BodyWithoutVisuals" (
         shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set(color)
         shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
         shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+        if opacity is not None:
+            shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(opacity)
         material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
         UsdShade.MaterialBindingAPI.Apply(collision_mesh_prim).Bind(material)
 
@@ -9995,6 +9997,108 @@ def Xform "Body" (
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visible_collision_mesh_inherits_visual_material_opacity(self):
+        """Visible fallback collider meshes should carry resolved material opacity."""
+        stage = self._create_stage_with_pbr_collision_mesh(
+            color=(0.2, 0.4, 0.6), roughness=0.35, metallic=0.75, opacity=0.42
+        )
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, hide_collision_shapes=True)
+        collision_shape = result["path_shape_map"]["/Body/CollisionMesh"]
+
+        mesh = builder.shape_source[collision_shape]
+        self.assertIsNotNone(mesh)
+        self.assertAlmostEqual(mesh.opacity, 0.42, places=6)
+        self.assertAlmostEqual(builder.shape_opacity[collision_shape], 0.42, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_opacity_primvar_loads_as_mesh_opacity(self):
+        """USD displayOpacity primvars should resolve into imported mesh opacity."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+        mesh.CreatePointsAttr().Set(
+            [
+                (-0.5, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (0.0, 0.5, 0.0),
+                (0.0, 0.0, 0.5),
+            ]
+        )
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3])
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+        ).Set([0.33])
+
+        loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.33, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_color_array_does_not_create_opacity(self):
+        """RGB displayColor arrays must not be interpreted as RGBA data."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.vertex
+        ).Set([(0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9)])
+
+        loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+        self.assertIsNone(loaded_mesh.opacity)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_varying_display_opacity_uses_first_value_and_warns(self):
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+        mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr().Set([3])
+        mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
+        ).Set([0.2, 0.6, 0.8])
+
+        with self.assertWarnsRegex(UserWarning, "using the first value"):
+            loaded_mesh = usd.get_mesh(mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.2, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_opacity_primvar_loads_as_tet_mesh_opacity(self):
+        """USD displayOpacity primvars should resolve into imported TetMesh opacity."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        tet_mesh = UsdGeom.TetMesh.Define(stage, "/SoftTet")
+        tet_mesh.CreatePointsAttr().Set(
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            ]
+        )
+        tet_mesh.CreateTetVertexIndicesAttr().Set([(0, 1, 2, 3)])
+        UsdGeom.PrimvarsAPI(tet_mesh).CreatePrimvar(
+            "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
+        ).Set([0.44])
+
+        loaded_mesh = usd.get_tetmesh(tet_mesh.GetPrim())
+
+        self.assertAlmostEqual(loaded_mesh.opacity, 0.44, places=6)
+        self.assertNotIn("displayOpacity", loaded_mesh.custom_attributes)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_with_roughness_only_material_stays_hidden(self):
@@ -11470,7 +11574,7 @@ def Xform "World"
 
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
-        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, density=40.0)
+        tm = newton.TetMesh(vertices, tet_indices, k_mu=1000.0, k_lambda=2000.0, density=40.0, opacity=0.25)
 
         with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as f:
             path = f.name
@@ -11484,6 +11588,7 @@ def Xform "World"
             assert_np_equal(tm2.k_mu, tm.k_mu)
             assert_np_equal(tm2.k_lambda, tm.k_lambda)
             self.assertAlmostEqual(tm2.density, 40.0)
+            self.assertAlmostEqual(tm2.opacity, 0.25)
         finally:
             os.unlink(path)
 
@@ -11505,6 +11610,7 @@ def Xform "World"
             k_mu=1000.0,
             k_lambda=2000.0,
             density=40.0,
+            opacity=0.35,
             custom_attributes={"regionId": per_tet_region, "temperature": per_vertex_temp},
         )
 
@@ -11525,6 +11631,7 @@ def Xform "World"
             assert_np_equal(tm2.k_mu, np.array([1000.0, 1000.0], dtype=np.float32))
             assert_np_equal(tm2.k_lambda, np.array([2000.0, 2000.0], dtype=np.float32))
             self.assertAlmostEqual(tm2.density, 40.0)
+            self.assertAlmostEqual(tm2.opacity, 0.35)
 
             # Custom attributes round-trip (check values, not just keys)
             self.assertIn("regionId", tm2.custom_attributes)
@@ -11570,6 +11677,17 @@ def Xform "World"
         arr, freq = tm.custom_attributes["regionId"]
         assert_np_equal(arr, region_id)
         self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+
+    def test_tetmesh_allows_custom_opacity_attribute(self):
+        """Third-party arrays named opacity remain ordinary custom data."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+        opacity_data = np.array([0.4], dtype=np.float32)
+
+        tm = newton.TetMesh(vertices, tet_indices, opacity=0.75, custom_attributes={"opacity": opacity_data})
+
+        self.assertAlmostEqual(tm.opacity, 0.75)
+        assert_np_equal(tm.custom_attributes["opacity"][0], opacity_data)
 
     def test_tetmesh_custom_attributes_empty_by_default(self):
         """Test TetMesh has empty custom_attributes when none are provided."""

@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import unittest
 import warnings
 from unittest.mock import Mock, patch
 
 import numpy as np
+import warp as wp
 
 # ruff: noqa: PLC0415
 
@@ -23,7 +25,23 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.mock_rr.save = Mock()
         self.mock_rr.log = Mock()
         self.mock_rr.Clear = Mock(return_value=Mock())
+        mesh3d_params = [
+            "vertex_positions",
+            "triangle_indices",
+            "vertex_normals",
+            "vertex_colors",
+            "vertex_texcoords",
+            "albedo_texture",
+            "albedo_texture_buffer",
+            "albedo_texture_format",
+            "albedo_factor",
+            "class_ids",
+        ]
+        mesh3d_signature = inspect.Signature(
+            [inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default=None) for name in mesh3d_params]
+        )
         self.mock_rr.Mesh3D = Mock(return_value=Mock())
+        self.mock_rr.Mesh3D.__signature__ = mesh3d_signature
         self.mock_rr.InstancePoses3D = Mock(return_value=Mock())
 
         self.mock_rrb = Mock()
@@ -109,6 +127,87 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.assertIsNotNone(mesh_data["texture_image"])
         np.testing.assert_allclose(mesh_data["uvs"][:, 1], np.array([0.8, 0.6, 0.4], dtype=np.float32))
         self.mock_rr.log.assert_not_called()
+
+    def test_log_mesh_opacity_uses_albedo_factor_alpha(self):
+        """Rerun uses albedo_factor alpha for mesh transparency."""
+        viewer = self._create_viewer()
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("transparent_mesh", points, indices, normals=normals, opacity=0.5, color=(0.2, 0.4, 0.6))
+
+        mesh_kwargs = self.mock_rr.Mesh3D.call_args.kwargs
+        self.assertEqual(mesh_kwargs["albedo_factor"], (255, 255, 255, 128))
+        self.assertEqual(mesh_kwargs["vertex_colors"].shape, (3, 3))
+        np.testing.assert_array_equal(mesh_kwargs["vertex_colors"][0], np.array([51, 102, 153], dtype=np.uint8))
+
+    def test_log_instances_opacity_uses_albedo_factor_alpha(self):
+        """Instanced Rerun meshes bake supported batch opacity into albedo_factor."""
+        viewer = self._create_viewer()
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0]], dtype=wp.vec3)
+        opacities = wp.array([0.25], dtype=wp.float32)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("transparent_template", points, indices, normals=normals, hidden=True)
+            self.mock_rr.Mesh3D.reset_mock()
+            viewer.log_instances(
+                "transparent_instances",
+                "transparent_template",
+                xforms,
+                scales,
+                colors=None,
+                materials=None,
+                opacities=opacities,
+            )
+
+        mesh_kwargs = self.mock_rr.Mesh3D.call_args.kwargs
+        self.assertEqual(mesh_kwargs["albedo_factor"], (255, 255, 255, 64))
+        self.assertEqual(mesh_kwargs["vertex_colors"].shape, (3, 3))
+
+    def test_opacity_only_instance_update_preserves_previous_color(self):
+        viewer = self._create_viewer()
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0]], dtype=wp.vec3)
+        colors = wp.array([[0.2, 0.4, 0.6]], dtype=wp.vec3)
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("template", points, indices, normals=normals, hidden=True)
+            viewer.log_instances(
+                "instances",
+                "template",
+                xforms,
+                scales,
+                colors=colors,
+                materials=None,
+                opacities=wp.array([0.5], dtype=wp.float32),
+            )
+            previous_colors = self.mock_rr.Mesh3D.call_args.kwargs["vertex_colors"].copy()
+            self.mock_rr.Mesh3D.reset_mock()
+
+            viewer.log_instances(
+                "instances",
+                "template",
+                xforms,
+                scales,
+                colors=None,
+                materials=None,
+                opacities=wp.array([0.25], dtype=wp.float32),
+            )
+
+        mesh_kwargs = self.mock_rr.Mesh3D.call_args.kwargs
+        np.testing.assert_array_equal(mesh_kwargs["vertex_colors"], previous_colors)
+        self.assertEqual(mesh_kwargs["albedo_factor"], (255, 255, 255, 64))
 
     def test_log_instances_hidden_clears_entity(self):
         """log_instances(hidden=True) should clear a previously visible entity."""

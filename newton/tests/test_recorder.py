@@ -13,6 +13,7 @@ import newton.examples
 from newton._src.utils.import_mjcf import parse_mjcf
 from newton._src.viewer.viewer_file import (
     HAS_CBOR2,
+    ArrayCache,
     RingBuffer,
     depointer_as_key,
     pointer_as_key,
@@ -632,6 +633,28 @@ def test_warp_dtype_file_roundtrip(test: TestRecorder, device):
                     os.remove(file_path)
 
 
+def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]],
+        dtype=np.float32,
+    )
+    indices = np.array([0, 1, 2], dtype=np.int32)
+    mesh_a = newton.Mesh(vertices, indices, compute_inertia=False, color=(1.0, 0.0, 0.0), opacity=0.25)
+    mesh_b = newton.Mesh(vertices, indices, compute_inertia=False, color=(0.0, 1.0, 0.0), opacity=0.75)
+    mesh_b.vertices = mesh_a.vertices
+    mesh_b.indices = mesh_a.indices
+
+    serialized = pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())
+    restored = depointer_as_key(serialized, cache=ArrayCache())
+
+    test.assertIs(restored[0], restored[2])
+    test.assertIsNot(restored[0], restored[1])
+    test.assertEqual(restored[0].opacity, 0.25)
+    test.assertEqual(restored[1].opacity, 0.75)
+    test.assertEqual(restored[0].color, (1.0, 0.0, 0.0))
+    test.assertEqual(restored[1].color, (0.0, 1.0, 0.0))
+
+
 add_function_test(
     TestRecorder,
     "test_warp_dtype_roundtrip",
@@ -653,6 +676,13 @@ add_function_test(
     test_warp_dtype_file_roundtrip,
     devices=devices,
     check_output=False,
+)
+
+add_function_test(
+    TestRecorder,
+    "test_mesh_recording_keeps_distinct_appearance",
+    test_mesh_recording_keeps_distinct_appearance,
+    devices=devices,
 )
 
 

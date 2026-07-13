@@ -26,7 +26,7 @@ class _RecordingViewer(ViewerNull):
         self.instance_xforms: list[tuple[str, object]] = []
         self.mesh_calls: list[tuple[str, bool]] = []
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, opacities=None, hidden=False):
         self.instance_calls.append((name, hidden))
         if xforms is not None:
             self.instance_xforms.append((name, xforms.numpy().copy()))
@@ -421,6 +421,19 @@ class TestViewerLayerBackends(unittest.TestCase):
             scene.captured_calls["add_batched_meshes_simple"]["name"],
             "/layers/solverA/instances",
         )
+
+    def test_viser_warns_when_appearance_argument_is_unsupported(self):
+        def add_batched_meshes_trimesh(name):
+            return name
+
+        with self.assertWarnsRegex(UserWarning, "batched_opacities"):
+            result = ViewerViser._call_scene_method(
+                add_batched_meshes_trimesh,
+                name="instances",
+                batched_opacities=[0.5],
+            )
+
+        self.assertEqual(result, "instances")
 
 
 if __name__ == "__main__":

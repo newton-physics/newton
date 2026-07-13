@@ -502,6 +502,7 @@ class Model:
         "shape_source_ptr": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_scale": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_color": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_opacity": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_filter": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_group": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_radius": AttributeSpec(AttributeFrequency.SHAPE),
@@ -546,6 +547,7 @@ class Model:
         "tri_activations": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_materials": AttributeSpec(AttributeFrequency.TRIANGLE),
         "tri_areas": AttributeSpec(AttributeFrequency.TRIANGLE),
+        "tri_opacity": AttributeSpec(AttributeFrequency.TRIANGLE),
         "edge_indices": AttributeSpec(
             AttributeFrequency.EDGE,
             references=AttributeFrequency.PARTICLE,
@@ -846,6 +848,8 @@ class Model:
         """Shape 3D scale, shape [shape_count], vec3."""
         self.shape_color: wp.array[wp.vec3] | None = None
         """Shape display colors [0, 1], shape [shape_count], vec3."""
+        self.shape_opacity: wp.array[wp.float32] | None = None
+        """Shape display opacity [0, 1], shape [shape_count], float."""
         self.shape_filter: wp.array[wp.int32] | None = None
         """Shape filter group, shape [shape_count], int."""
 
@@ -996,6 +1000,8 @@ class Model:
         Stored per-element; kernels multiply by rest area internally."""
         self.tri_areas: wp.array[wp.float32] | None = None
         """Triangle element rest areas [m²], shape [tri_count], float."""
+        self.tri_opacity: wp.array[wp.float32] | None = None
+        """Triangle surface display opacity [0, 1], shape [tri_count], float."""
 
         self.edge_indices: wp.array[wp.int32] | None = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""

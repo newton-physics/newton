@@ -14,7 +14,7 @@ import newton
 
 from ..core.types import override
 from ..utils.mesh import compute_vertex_normals
-from ..utils.texture import load_texture, normalize_texture
+from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
 try:
@@ -36,15 +36,6 @@ class ViewerRerun(ViewerBase):
     """
 
     @staticmethod
-    def _to_numpy(x) -> np.ndarray | None:
-        """Convert warp arrays or other array-like objects to numpy arrays."""
-        if x is None:
-            return None
-        if hasattr(x, "numpy"):
-            return x.numpy()
-        return np.asarray(x)
-
-    @staticmethod
     def _call_rr_constructor(ctor, **kwargs):
         """Call a rerun constructor with only supported keyword args."""
         try:
@@ -53,16 +44,6 @@ class ViewerRerun(ViewerBase):
             return ctor(**allowed)
         except Exception:
             return ctor(**kwargs)
-
-    @staticmethod
-    def _prepare_texture(texture: np.ndarray | str | None) -> np.ndarray | None:
-        """Load and normalize texture data for rerun."""
-        return normalize_texture(
-            load_texture(texture),
-            flip_vertical=False,
-            require_channels=True,
-            scale_unit_range=True,
-        )
 
     @staticmethod
     def _flip_uvs_for_rerun(uvs: np.ndarray) -> np.ndarray:
@@ -103,6 +84,20 @@ class ViewerRerun(ViewerBase):
             channel_datatype=channel_dtype,
         )
         return texture_buffer, texture_format
+
+    @staticmethod
+    def _rgb_to_u8(color: tuple[float, float, float] | np.ndarray | None, default=(180, 180, 180)) -> np.ndarray:
+        """Convert an RGB color in 0-1 or 0-255 range to uint8."""
+        if color is None:
+            return np.asarray(default, dtype=np.uint8)
+        color_np = np.asarray(color, dtype=np.float32).reshape(3)
+        if np.max(color_np) <= 1.0:
+            color_np = color_np * 255.0
+        return np.clip(np.round(color_np), 0.0, 255.0).astype(np.uint8)
+
+    @staticmethod
+    def _opacity_to_u8(opacity: float | None) -> int:
+        return int(round(float(np.clip(1.0 if opacity is None else opacity, 0.0, 1.0)) * 255.0))
 
     def _mesh3d_supports(self, field_name: str) -> bool:
         if not self._mesh3d_params:
@@ -252,6 +247,7 @@ class ViewerRerun(ViewerBase):
         texture: np.ndarray | str | None = None,
         hidden: bool = False,
         backface_culling: bool = True,
+        opacity: float | None = None,
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
@@ -268,6 +264,7 @@ class ViewerRerun(ViewerBase):
             texture: Optional texture path/URL or image array.
             hidden: Whether the mesh is hidden.
             backface_culling: Whether to enable backface culling (unused).
+            opacity: Optional display opacity in [0, 1].
             color: Optional base color as an RGB tuple with values in
                 [0, 1]. Used when no texture is provided.
             roughness: Surface roughness in ``[0, 1]``. ``0`` is perfectly
@@ -284,8 +281,8 @@ class ViewerRerun(ViewerBase):
             assert uvs is None or isinstance(uvs, wp.array)
 
         # Convert to numpy arrays
-        points_np = self._to_numpy(points).astype(np.float32)
-        indices_np = self._to_numpy(indices).astype(np.uint32)
+        points_np = to_numpy(points).astype(np.float32)
+        indices_np = to_numpy(indices).astype(np.uint32)
 
         # Rerun expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
@@ -298,12 +295,12 @@ class ViewerRerun(ViewerBase):
                 normals_np = None
             else:
                 normals = compute_vertex_normals(points, indices, device=self.device)
-                normals_np = self._to_numpy(normals)
+                normals_np = to_numpy(normals)
         else:
-            normals_np = self._to_numpy(normals)
+            normals_np = to_numpy(normals)
 
-        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
-        texture_image = self._prepare_texture(texture)
+        uvs_np = to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        texture_image = prepare_viewer_texture(texture)
 
         if uvs_np is not None and len(uvs_np) != len(points_np):
             uvs_np = None
@@ -331,6 +328,8 @@ class ViewerRerun(ViewerBase):
             "texture_image": texture_image,
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
+            "opacity": opacity,
+            "color": color,
         }
 
         if hidden:
@@ -349,6 +348,18 @@ class ViewerRerun(ViewerBase):
         elif texture_image is not None and self._mesh3d_supports("albedo_texture"):
             mesh_kwargs["albedo_texture"] = texture_image
 
+        if opacity is not None or color is not None:
+            opacity_u8 = self._opacity_to_u8(opacity)
+            has_texture = texture_buffer is not None or texture_image is not None
+            if not has_texture:
+                vertex_color = self._rgb_to_u8(color)
+                mesh_kwargs["vertex_colors"] = np.tile(vertex_color, (len(points_np), 1))
+                if opacity is not None and self._mesh3d_supports("albedo_factor"):
+                    mesh_kwargs["albedo_factor"] = (255, 255, 255, opacity_u8)
+            elif self._mesh3d_supports("albedo_factor"):
+                base_rgb = self._rgb_to_u8(color, default=(255, 255, 255))
+                mesh_kwargs["albedo_factor"] = (*base_rgb.tolist(), opacity_u8)
+
         # Log the mesh as a static asset
         mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
 
@@ -363,6 +374,8 @@ class ViewerRerun(ViewerBase):
         scales: wp.array[wp.vec3] | None,
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
+        *,
+        opacities: wp.array[wp.float32] | None = None,
         hidden: bool = False,
     ):
         """
@@ -375,6 +388,7 @@ class ViewerRerun(ViewerBase):
             scales: Instance scales.
             colors: Instance colors.
             materials: Instance materials.
+            opacities: Instance opacities.
             hidden: Whether the instances are hidden.
         """
         name = self._qualify(name)
@@ -391,22 +405,63 @@ class ViewerRerun(ViewerBase):
             raise RuntimeError(f"Mesh {mesh} not found. Call log_mesh first.")
 
         # re-run needs to generate a new mesh for each instancer
-        if name not in self._instances:
+        appearance_changed = colors is not None or opacities is not None
+        if name not in self._instances or appearance_changed:
             mesh_data = self._meshes[mesh]
+            previous_appearance = self._instances.get(name)
+            if not isinstance(previous_appearance, dict):
+                previous_appearance = {}
             has_texture = (
                 mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None
             ) or mesh_data.get("texture_image") is not None
 
-            # Handle colors - ReRun doesn't support per-instance colors
-            # so we just use the first instance's color for all instances
+            # Rerun poses do not carry per-instance appearance, so bake one
+            # representative color/opacity into the mesh logged for this batch.
             vertex_colors = None
+            albedo_factor = None
+            first_opacity = 1.0
+            num_instances = len(xforms) if xforms is not None else 0
+            opacity_source = opacities
+            if opacity_source is None:
+                opacity_source = previous_appearance.get("opacities", mesh_data.get("opacity"))
+            opacities_np = promote_to_clamped_float_array(
+                opacity_source,
+                num_instances,
+                value_name="Opacity",
+            )
+            if opacities_np is not None and len(opacities_np) > 0:
+                first_opacity = float(opacities_np[0])
             if colors is not None and not has_texture:
-                colors_np = self._to_numpy(colors).astype(np.float32)
+                colors_np = to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
-                first_color = colors_np[0]
-                color_rgb = np.array(first_color * 255, dtype=np.uint8)
+                color_rgb = self._rgb_to_u8(colors_np[0])
                 num_vertices = len(mesh_data["points"])
                 vertex_colors = np.tile(color_rgb, (num_vertices, 1))
+                if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
+                    albedo_factor = (255, 255, 255, self._opacity_to_u8(first_opacity))
+            elif previous_appearance.get("vertex_colors") is not None and not has_texture:
+                vertex_colors = previous_appearance["vertex_colors"].copy()
+                if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
+                    previous_albedo = previous_appearance.get("albedo_factor")
+                    albedo_rgb = (255, 255, 255) if previous_albedo is None else tuple(previous_albedo[:3])
+                    albedo_factor = (*albedo_rgb, self._opacity_to_u8(first_opacity))
+            elif (opacities_np is not None or mesh_data.get("color") is not None) and not has_texture:
+                base_rgb = self._rgb_to_u8(mesh_data.get("color"))
+                num_vertices = len(mesh_data["points"])
+                vertex_colors = np.tile(base_rgb, (num_vertices, 1))
+                if opacities_np is not None and self._mesh3d_supports("albedo_factor"):
+                    albedo_factor = (255, 255, 255, self._opacity_to_u8(first_opacity))
+            elif (
+                opacities_np is not None or colors is not None or mesh_data.get("color") is not None
+            ) and self._mesh3d_supports("albedo_factor"):
+                previous_albedo = previous_appearance.get("albedo_factor")
+                if colors is not None:
+                    base_rgb = self._rgb_to_u8(to_numpy(colors)[0], default=(255, 255, 255))
+                elif previous_albedo is not None:
+                    base_rgb = np.asarray(previous_albedo[:3], dtype=np.uint8)
+                else:
+                    base_rgb = self._rgb_to_u8(mesh_data.get("color"), default=(255, 255, 255))
+                albedo_factor = (*base_rgb.tolist(), self._opacity_to_u8(first_opacity))
 
             # Log the base mesh with optional colors
             mesh_kwargs = {
@@ -416,6 +471,8 @@ class ViewerRerun(ViewerBase):
             }
             if vertex_colors is not None:
                 mesh_kwargs["vertex_colors"] = vertex_colors
+            if albedo_factor is not None:
+                mesh_kwargs["albedo_factor"] = albedo_factor
             if mesh_data.get("uvs") is not None and self._mesh3d_supports("vertex_texcoords"):
                 mesh_kwargs["vertex_texcoords"] = mesh_data["uvs"]
             if mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None:
@@ -427,8 +484,12 @@ class ViewerRerun(ViewerBase):
             mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
             rr.log(name, mesh_3d)
 
-            # save reference
-            self._instances[name] = mesh_3d
+            self._instances[name] = {
+                "mesh_3d": mesh_3d,
+                "vertex_colors": vertex_colors,
+                "albedo_factor": albedo_factor,
+                "opacities": None if opacities_np is None else opacities_np.copy(),
+            }
 
             # hide the reference mesh
             rr.log(mesh, rr.Clear(recursive=False))
@@ -436,7 +497,7 @@ class ViewerRerun(ViewerBase):
         # Convert transforms and properties to numpy
         if xforms is not None:
             # Convert warp arrays to numpy first
-            xforms_np = self._to_numpy(xforms)
+            xforms_np = to_numpy(xforms)
 
             # Extract positions and quaternions using vectorized operations
             # Warp transform format: [x, y, z, qx, qy, qz, qw]
@@ -448,7 +509,7 @@ class ViewerRerun(ViewerBase):
 
             scales_np = None
             if scales is not None:
-                scales_np = self._to_numpy(scales).astype(np.float32)
+                scales_np = to_numpy(scales).astype(np.float32)
 
             # Colors are already handled in the mesh
             # (first instance color applied to all)
@@ -567,9 +628,9 @@ class ViewerRerun(ViewerBase):
 
         # Convert inputs to numpy for rerun API compatibility
         # Expecting starts/ends as wp arrays or numpy arrays
-        starts_np = self._to_numpy(starts)
-        ends_np = self._to_numpy(ends)
-        colors_np = self._to_numpy(colors) if colors is not None else None
+        starts_np = to_numpy(starts)
+        ends_np = to_numpy(ends)
+        colors_np = to_numpy(colors) if colors is not None else None
 
         # Both starts and ends should be (N, 3)
         if starts_np is None or ends_np is None or len(starts_np) == 0:
@@ -609,7 +670,7 @@ class ViewerRerun(ViewerBase):
 
         if array is None:
             return
-        array_np = self._to_numpy(array)
+        array_np = to_numpy(array)
         rr.log(name, rr.Scalars(array_np), static=not self.keep_historical_data)
 
     @override
@@ -715,12 +776,12 @@ class ViewerRerun(ViewerBase):
             rr.log(name, rr.Clear(recursive=False))
             return
 
-        pts = self._to_numpy(points)
+        pts = to_numpy(points)
         n_points = pts.shape[0]
 
         # Handle radii (point size)
         if radii is not None:
-            size = self._to_numpy(radii)
+            size = to_numpy(radii)
             if size.ndim == 0 or size.shape == ():
                 sizes = np.full((n_points,), float(size))
             elif size.shape == (n_points,):
@@ -732,7 +793,7 @@ class ViewerRerun(ViewerBase):
 
         # Handle colors
         if colors is not None:
-            cols = self._to_numpy(colors)
+            cols = to_numpy(colors)
             if cols.shape == (n_points, 3):
                 colors_val = cols
             elif cols.shape == (3,):

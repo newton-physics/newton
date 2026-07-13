@@ -27,6 +27,8 @@ import newton.utils
 from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 
+DUCK_OPACITY = 0.55
+
 
 @wp.kernel
 def set_gripper_q(joint_q: wp.array2d[float], finger_pos: wp.array[float], idx0: int, idx1: int):
@@ -108,6 +110,7 @@ class Example:
             k_lambda=1.0e6,
             k_damp=1e0,
             particle_radius=self.particle_radius,
+            opacity=DUCK_OPACITY,
         )
 
         self.scene.color()
