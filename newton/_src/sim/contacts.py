@@ -287,17 +287,13 @@ class Contacts:
                 self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
                 """Per-contact match index from frame-to-frame matching.
 
-                Values: ``>= 0`` matched old contact index;
-                :data:`newton.geometry.MATCH_NOT_FOUND` (``-1``) new contact;
-                :data:`newton.geometry.MATCH_BROKEN` (``-2``) key matched but
-                position/normal thresholds exceeded.
                 Shape (rigid_contact_max,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
-                """Indices of new contacts in the current sorted buffer (where ``match_index < 0``).
+                """Indices of new contacts in the current sorted buffer.
 
                 Valid after the collision pipeline runs.
                 Shape (rigid_contact_max,), dtype int32."""
