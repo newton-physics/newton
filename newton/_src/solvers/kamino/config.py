@@ -959,15 +959,13 @@ class MaterialManagerConfig(ConfigBase):
     friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average"
     """
     The mixing mode to use for friction.\n
-    See :class:`MaterialMixMode` for available options.\n
-    Defaults to `MaterialMixMode.AVERAGE`.
+    Defaults to `average`.
     """
 
     restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min"
     """
     The mixing mode to use for restitution.\n
-    See :class:`MaterialMixMode` for available options.\n
-    Defaults to `MaterialMixMode.AVERAGE`.
+    Defaults to `min`.
     """
 
     @override
