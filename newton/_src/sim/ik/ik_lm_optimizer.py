@@ -80,6 +80,16 @@ def _update_lm_state(
         lambda_values[row] = wp.clamp(new_lambda, lambda_min, lambda_max)
 
 
+@wp.kernel
+def _apply_joint_dof_mask(
+    joint_dof_mask: wp.array[wp.bool],
+    jacobian: wp.array3d[wp.float32],
+):
+    row, residual, dof = wp.tid()
+    if not joint_dof_mask[dof]:
+        jacobian[row, residual, dof] = 0.0
+
+
 class IKOptimizerLM:
     """Levenberg-Marquardt optimizer for batched inverse kinematics.
 
@@ -103,6 +113,8 @@ class IKOptimizerLM:
             accept a step.
         problem_idx: Optional mapping from batch rows to base problem indices
             for per-problem objective data.
+        joint_dof_mask: Optional model-wide mask with one value per joint DOF.
+            False entries keep the corresponding DOFs fixed.
     """
 
     TILE_N_DOFS = None
@@ -142,6 +154,7 @@ class IKOptimizerLM:
         rho_min: float = 1e-3,
         *,
         problem_idx: wp.array[wp.int32] | None = None,
+        joint_dof_mask: wp.array[wp.bool] | None = None,
     ) -> None:
         self.model = model
         self.device = model.device
@@ -160,6 +173,7 @@ class IKOptimizerLM:
         self.lambda_min = lambda_min
         self.lambda_max = lambda_max
         self.rho_min = rho_min
+        self.joint_dof_mask = joint_dof_mask
 
         if self.TILE_N_DOFS is not None:
             assert self.n_dofs == self.TILE_N_DOFS
@@ -365,10 +379,12 @@ class IKOptimizerLM:
 
         if mode == IKJacobianType.AUTODIFF:
             self._jacobian_autodiff(ctx)
+            self._apply_joint_dof_mask(ctx.jacobian_out)
             return ctx.jacobian_out
 
         if mode == IKJacobianType.ANALYTIC:
             self._jacobian_analytic(ctx, accumulate=False)
+            self._apply_joint_dof_mask(ctx.jacobian_out)
             return ctx.jacobian_out
 
         # MIXED mode
@@ -380,7 +396,19 @@ class IKOptimizerLM:
         if self.has_analytic_objective:
             self._jacobian_analytic(ctx, accumulate=self.has_autodiff_objective)
 
+        self._apply_joint_dof_mask(ctx.jacobian_out)
         return ctx.jacobian_out
+
+    def _apply_joint_dof_mask(self, jacobian: wp.array3d[wp.float32]) -> None:
+        if self.joint_dof_mask is None:
+            return
+        wp.launch(
+            _apply_joint_dof_mask,
+            dim=(self.n_batch, self.n_residuals, self.n_dofs),
+            inputs=[self.joint_dof_mask],
+            outputs=[jacobian],
+            device=self.device,
+        )
 
     def _jacobian_autodiff(self, ctx: BatchCtx) -> None:
         if self.tape is None:

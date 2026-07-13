@@ -373,6 +373,76 @@ def test_convergence_mixed_d6(test, device):
     _convergence_test_d6(test, device, ik.IKJacobianType.MIXED)
 
 
+def test_joint_dof_mask(test, device, mode: ik.IKJacobianType):
+    """The LM solver must leave masked joint DOFs unchanged."""
+    with wp.ScopedDevice(device):
+        model = _build_two_link_planar(device)
+        requires_grad = mode in (ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED)
+        joint_q = wp.array([[0.4, 0.0]], dtype=wp.float32, device=device, requires_grad=requires_grad)
+        target = wp.array([[1.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
+        position_objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=target,
+        )
+        solver = ik.IKSolver(
+            model,
+            1,
+            [position_objective],
+            jacobian_mode=mode,
+            joint_dof_mask=wp.array([False, True], dtype=wp.bool, device=device),
+        )
+
+        solver.step(joint_q, joint_q, iterations=40)
+
+        result = joint_q.numpy()[0]
+        test.assertAlmostEqual(float(result[0]), 0.4, places=6)
+        test.assertGreater(abs(float(result[1])), 1.0e-3)
+
+
+def test_joint_dof_mask_validation(test, device):
+    """IKSolver must reject incompatible joint DOF masks and modes."""
+    with wp.ScopedDevice(device):
+        model = _build_two_link_planar(device)
+        target = wp.array([[1.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
+        objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=target,
+        )
+
+        with test.assertRaisesRegex(ValueError, "dtype wp.bool"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.int32, device=device),
+            )
+        with test.assertRaisesRegex(ValueError, "shape"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                joint_dof_mask=wp.ones(model.joint_dof_count + 1, dtype=wp.bool, device=device),
+            )
+        with test.assertRaisesRegex(ValueError, "LM optimizer"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                optimizer=ik.IKOptimizer.LBFGS,
+                joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device=device),
+            )
+        with test.assertRaisesRegex(ValueError, "sampler='none'"):
+            ik.IKSolver(
+                model,
+                1,
+                [objective],
+                sampler=ik.IKSampler.GAUSS,
+                joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device=device),
+            )
+
+
 def test_convergence_analytic_descendant_free_distance(test, device, joint_type):
     with wp.ScopedDevice(device):
         n_problems = 2
@@ -592,6 +662,15 @@ for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
 add_function_test(TestIKModes, "test_convergence_autodiff_d6", test_convergence_autodiff_d6, cuda_devices)
 add_function_test(TestIKModes, "test_convergence_analytic_d6", test_convergence_analytic_d6, devices)
 add_function_test(TestIKModes, "test_convergence_mixed_d6", test_convergence_mixed_d6, devices)
+for mode in ik.IKJacobianType:
+    add_function_test(
+        TestIKModes,
+        f"test_joint_dof_mask_{mode.value}",
+        test_joint_dof_mask,
+        devices,
+        mode=mode,
+    )
+add_function_test(TestIKModes, "test_joint_dof_mask_validation", test_joint_dof_mask_validation, devices)
 
 # Jacobian equality
 add_function_test(TestIKModes, "test_position_jacobian_compare", test_position_jacobian_compare, devices)

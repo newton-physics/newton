@@ -24,6 +24,7 @@
 - Add `sign_method` argument to `Mesh.build_sdf` and `SDF.create_from_mesh` support for a `"normal"` (angle-weighted pseudo-normal) sign strategy, for selecting the inside/outside sign of the baked SDF (`"auto"`, `"parity"`, `"winding"`, or `"normal"`).
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
 - Add simulation throughput, real-time factor, p95 step-time, steady-state GPU-memory, timestep, and MuJoCo solver-iteration metrics to the ASV robot-learning benchmarks.
+- Add `joint_dof_mask` to `newton.ik.IKSolver` to keep selected joint DOFs fixed during LM optimization. (#3488)
 
 ### Changed
 
