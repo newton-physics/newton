@@ -1901,34 +1901,12 @@ class USDImporter:
         msg.debug(f"cgroup_count: {cgroup_count}")
         msg.debug(f"cgroup_index_map: {cgroup_index_map}")
 
-        ###
-        # Articulations
-        ###
-
-        # Construct a list of articulation root bodies to create FREE
-        # joints if not already defined explicitly in the USD file
-        articulation_root_body_paths = []
-        if self.UsdPhysics.ObjectType.Articulation in ret_dict:
-            paths, articulation_descs = ret_dict[self.UsdPhysics.ObjectType.Articulation]
-            for path, _desc in zip(paths, articulation_descs, strict=False):
-                articulation_prim = stage.GetPrimAtPath(path)
-                try:
-                    parent_prim = articulation_prim.GetParent()
-                except Exception:
-                    parent_prim = None
-                if articulation_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
-                    if self._prim_is_rigid_body(articulation_prim):
-                        msg.debug(f"Adding articulation_prim at '{path}' as articulation root body")
-                        articulation_root_body_paths.append(articulation_prim.GetPath())
-                elif (
-                    parent_prim is not None
-                    and parent_prim.IsValid()
-                    and parent_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI)
-                ):
-                    if self._prim_is_rigid_body(parent_prim):
-                        msg.debug(f"Adding parent_prim at '{parent_prim.GetPath()}' as articulation root body")
-                        articulation_root_body_paths.append(parent_prim.GetPath())
-        msg.debug(f"articulation_root_body_paths: {articulation_root_body_paths}")
+        # Kamino only needs articulation metadata to preserve floating-root state;
+        # authored joints are otherwise represented as maximal-coordinate constraints.
+        articulation_paths, articulation_specs = ret_dict.get(self.UsdPhysics.ObjectType.Articulation, ([], []))
+        articulation_joint_paths = {
+            str(joint_path) for spec in articulation_specs for joint_path in spec.articulatedJoints
+        }
 
         ###
         # Bodies
@@ -1937,7 +1915,6 @@ class USDImporter:
         # Define a mapping from prim paths to body indices
         # NOTE: This can be used for both rigid and flexible bodies
         body_index_map = {}
-        body_path_map = {}
 
         # Parse for and import UsdPhysicsRigidBody prims
         if self.UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1958,20 +1935,29 @@ class USDImporter:
                     msg.debug(f"Adding body '{builder.num_bodies}':\n{rigid_body_desc}\n")
                     body_index = builder.add_rigid_body_descriptor(body=rigid_body_desc)
                     body_index_map[str(prim_path)] = body_index
-                    body_path_map[body_index] = str(prim_path)
                 else:
                     msg.debug(f"Rigid body @'{prim_path}' not loaded. Will be treated as static geometry.")
                     body_index_map[str(prim_path)] = -1  # Body not loaded, is statically part of the world
         msg.debug(f"body_index_map: {body_index_map}")
-        msg.debug(f"body_path_map: {body_path_map}")
+
+        # Resolve API prims to loaded rigid bodies before constructing joint descriptors.
+        articulation_root_body_indices = []
+        for path in articulation_paths:
+            root_prim = stage.GetPrimAtPath(path)
+            if not root_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
+                root_prim = root_prim.GetParent()
+            if root_prim.IsValid() and root_prim.HasAPI(self.UsdPhysics.ArticulationRootAPI):
+                root_body_index = body_index_map.get(str(root_prim.GetPath()), -1)
+                if root_body_index >= 0 and self._prim_is_rigid_body(root_prim):
+                    articulation_root_body_indices.append(root_body_index)
 
         ###
         # Joints
         ###
 
-        # Define a list to hold all joint descriptors to be added to the builder after sorting
+        # Define a list to hold all joint descriptors to be added to the builder
         joint_descriptors: list[JointDescriptor] = []
-        articulation_root_joints: list[JointDescriptor] = []
+        articulation_tree_followers = set()
 
         # If retaining joint ordering, first construct lists of joint prim paths and their
         # types that retain the order of the joints as specified in the USD file, then iterate
@@ -2011,9 +1997,8 @@ class USDImporter:
                         if joint_desc is not None:
                             msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")
                             joint_descriptors.append(joint_desc)
-                            # Check if the joint's Follower body is the articulation root
-                            if body_path_map[joint_desc.bid_F] in articulation_root_body_paths:
-                                articulation_root_joints.append(joint_desc)
+                            if str(prim_path) in articulation_joint_paths and not joint_spec.excludeFromArticulation:
+                                articulation_tree_followers.add(joint_desc.bid_F)
                         else:
                             msg.debug(f"Joint @'{prim_path}' not loaded. Will be ignored.")
                         break  # Stop after the first match
@@ -2050,66 +2035,48 @@ class USDImporter:
                 if joint_desc is not None:
                     msg.debug(f"Adding joint '{builder.num_joints}':\n{joint_desc}\n")
                     joint_descriptors.append(joint_desc)
-                    # Check if the joint's Follower body is the articulation root
-                    if body_path_map[joint_desc.bid_F] in articulation_root_body_paths:
-                        articulation_root_joints.append(joint_desc)
+                    if str(prim_path) in articulation_joint_paths and not joint_spec.excludeFromArticulation:
+                        articulation_tree_followers.add(joint_desc.bid_F)
                 else:
                     msg.debug(f"Joint @'{prim_path}' not loaded. Will be ignored.")
 
-        # For each articulation root body that does not have an explicit joint
-        # defined in the USD file, add a FREE joint to attach it to the world
-        if len(articulation_root_joints) != len(articulation_root_body_paths):
-            for root_body_path in articulation_root_body_paths:
-                # Check if the root body already has a joint defined in the USD file
-                root_body_index = int(body_index_map[str(root_body_path)])
-                has_joint = False
-                for joint_desc in articulation_root_joints:
-                    if joint_desc.has_follower_body(root_body_index):
-                        has_joint = True
-                        break
-                if has_joint:
-                    msg.debug(
-                        f"Articulation root body '{root_body_path}' already has a joint defined. Skipping FREE joint."
-                    )
-                    continue
+        # Match Newton's tree-root selection: excluded loop joints do not make their
+        # follower a tree child or suppress the floating root's generalized state.
+        for root_body_index in articulation_root_body_indices:
+            if root_body_index in articulation_tree_followers:
+                continue
 
-                # If not, create a FREE joint descriptor to attach the root body to the
-                # world and insert it at the beginning of the joint descriptors list
-                root_body_name = builder.bodies[0][root_body_index].name
+            root_body = builder.bodies[0][root_body_index]
+            joint_desc = JointDescriptor(
+                name=f"world_to_{root_body.name}" if use_articulation_root_name else f"joint_{builder.num_joints + 1}",
+                dof_type=JointDoFType.FREE,
+                act_type=JointActuationType.PASSIVE,
+                bid_B=-1,
+                bid_F=root_body_index,
+                B_r_Bj=wp.transform_get_translation(root_body.q_i_0),
+                F_r_Fj=wp.vec3f(0.0),
+                X_Bj=axis_to_mat33(Axis.X),
+            )
+            joint_descriptors.insert(0, joint_desc)
 
-                joint_desc = JointDescriptor(
-                    name=f"world_to_{root_body_name}"
-                    if use_articulation_root_name
-                    else f"joint_{builder.num_joints + 1}",
-                    dof_type=JointDoFType.FREE,
-                    act_type=JointActuationType.PASSIVE,
-                    bid_B=-1,
-                    bid_F=root_body_index,
-                    B_r_Bj=wp.transform_get_translation(builder.bodies[0][root_body_index].q_i_0),
-                    F_r_Fj=wp.vec3f(0.0),
-                    X_Bj=axis_to_mat33(Axis.X),
-                )
-                msg.debug(
-                    f"Adding FREE joint '{joint_desc.name}' to attach articulation "
-                    f"root body '{root_body_path}' to the world:\n{joint_desc}\n"
-                )
-                joint_descriptors.insert(0, joint_desc)
-
-        # If an articulation is present, sort joint indices according
-        # to DFS to produce a minimum-depth kinematic tree ordering
-        if len(articulation_root_body_paths) > 0 and len(joint_descriptors) > 0:
-            # Create a list of body-pair indices (B, F) for each joint
+        # Cyclic articulations retain authored order because loop joints have no tree position.
+        if articulation_root_body_indices and joint_descriptors:
             joint_body_pairs = [(joint_desc.bid_B, joint_desc.bid_F) for joint_desc in joint_descriptors]
-            # Perform a topological sort of the joints based on their body-pair indices
-            joint_indices, reversed_joints = topological_sort_undirected(joints=joint_body_pairs, use_dfs=True)
-            # Reverse the order of the joints that were reversed during the topological
-            # sort to maintain the original joint directionality as much as possible
-            for i in reversed_joints:
-                joint_desc = joint_descriptors[i]
-                joint_desc.bid_B, joint_desc.bid_F = joint_desc.bid_F, joint_desc.bid_B
-                joint_desc.B_r_Bj, joint_desc.F_r_Fj = joint_desc.F_r_Fj, joint_desc.B_r_Bj
-            # Reorder the joint descriptors based on the topological sort
-            joint_descriptors = [joint_descriptors[i] for i in joint_indices]
+            try:
+                joint_indices, reversed_joints = topological_sort_undirected(joints=joint_body_pairs, use_dfs=True)
+            except ValueError as error:
+                msg.debug(f"Keeping authored joint order for cyclic articulation: {error}")
+            else:
+                # Parallel loop edges can be omitted by an undirected traversal rather than
+                # reported as a cycle, so only accept an ordering containing every joint.
+                if len(joint_indices) == len(joint_descriptors):
+                    for index in reversed_joints:
+                        joint_desc = joint_descriptors[index]
+                        joint_desc.bid_B, joint_desc.bid_F = joint_desc.bid_F, joint_desc.bid_B
+                        joint_desc.B_r_Bj, joint_desc.F_r_Fj = joint_desc.F_r_Fj, joint_desc.B_r_Bj
+                    joint_descriptors = [joint_descriptors[index] for index in joint_indices]
+                else:
+                    msg.debug("Keeping authored joint order for articulation with parallel loop edges")
 
         # Add all descriptors to the builder
         for joint_desc in joint_descriptors:

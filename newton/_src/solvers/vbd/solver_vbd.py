@@ -25,7 +25,9 @@ from ...sim import (
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
+from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces
+from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -236,7 +238,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_contact_stick_freeze_angular_eps: float = 1.0e-4,  # Deadzone snap angular threshold; 0 disables snap
         rigid_contact_k_start: float = 1.0e2,  # Body-body/body-particle penalty seed when ramping is enabled
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
-        rigid_body_particle_contact_buffer_size: int = 256,  # Per-body particle-contact list capacity
+        rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
         # Rigid body - joints
         rigid_joint_linear_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural linear joint constraints
         rigid_joint_angular_ke: float = 1.0e5,  # Penalty stiffness ceiling for structural angular joint constraints
@@ -244,6 +246,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_joint_angular_k_start: float = 1.0e1,  # Angular penalty seed (used when angular beta > 0)
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-cable linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-cable angular joint constraints
+        deterministic: wp.DeterministicMode | None = None,
     ):
         """
         Args:
@@ -341,7 +344,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the contact stiffness regardless of this value.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
-            rigid_body_particle_contact_buffer_size: Max body-particle contacts tracked per rigid body.
+            rigid_body_particle_contact_buffer_size: Max body-particle soft contacts tracked per rigid
+                body, covering both particle-vs-surface and full-surface edge/face contacts.
             rigid_joint_linear_ke: Penalty stiffness ceiling for non-cable structural linear joint slots.
             rigid_joint_angular_ke: Penalty stiffness ceiling for non-cable structural angular joint slots.
             rigid_joint_linear_k_start: Linear penalty seed for AVBD ramping. Used when
@@ -354,6 +358,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Damping coefficient for non-cable angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
+            deterministic: Opt-in determinism for this solver's atomic-emitting
+                kernel modules. Pass a :class:`warp.DeterministicMode`, or
+                ``None`` (default) to inherit the current
+                ``wp.config.deterministic`` mode.
 
         Note:
             - The `integrate_with_external_rigid_solver` argument enables one-way coupling between rigid body and soft body
@@ -377,6 +385,47 @@ class SolverVBD(SolverBase, CouplingInterface):
         rigid_avbd_angular_beta = rigid_avbd_angular_beta if rigid_avbd_angular_beta is not None else rigid_avbd_beta
 
         super().__init__(model)
+
+        effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        particle_deterministic_max_records = 0
+        coupling_deterministic_max_records = 0
+        if particle_enable_self_contact and effective_deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+            edge_iterations = (
+                particle_edge_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
+            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
+            vertex_iterations = (
+                particle_vertex_contact_buffer_size + NUM_THREADS_PER_COLLISION_PRIMITIVE - 1
+            ) // NUM_THREADS_PER_COLLISION_PRIMITIVE
+            truncation_records = 4 * (edge_iterations + vertex_iterations)
+            force_records = 2 * edge_iterations + 4 * vertex_iterations
+            if model.shape_count > 0:
+                force_records += 1
+            particle_deterministic_max_records = max(truncation_records, force_records)
+            coupling_deterministic_max_records = 2 * edge_iterations + 3 * vertex_iterations
+        if model.particle_count > 0:
+            self._set_module_options(
+                {
+                    "deterministic": effective_deterministic,
+                    "deterministic_max_records": particle_deterministic_max_records,
+                },
+                module=particle_vbd_kernels,
+            )
+        self._set_module_options(
+            {
+                "deterministic": effective_deterministic,
+                "deterministic_max_records": coupling_deterministic_max_records,
+            },
+            module=vbd_coupling_kernels,
+        )
+
+        options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
+        if model.body_count > 0 and not integrate_with_external_rigid_solver:
+            self._set_module_options(options, module=rigid_vbd_kernels)
+        if model.joint_count > 0:
+            self._set_module_options(
+                {"deterministic": effective_deterministic, "deterministic_max_records": 0},
+                module=xpbd_kernels,
+            )
 
         # Common parameters
         self.iterations = iterations
@@ -469,8 +518,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         )  # per-substep previous q (for velocity)
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
 
-        # Particle adjacency info
-        self.particle_adjacency = self._compute_particle_force_element_adjacency().to(self.device)
+        # Particle adjacency info: reuse the shared device copy built once at finalize (the VBD
+        # solver and the collision pipeline both use it, so it is uploaded only once).
+        if self.model.soft_mesh_adjacency_device is None:
+            raise ValueError("model.soft_mesh_adjacency_device is missing; finalize the model with ModelBuilder.")
+        self.particle_adjacency = self.model.soft_mesh_adjacency_device
 
         # Self-contact settings
         self.particle_enable_self_contact = particle_enable_self_contact
@@ -779,6 +831,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
 
@@ -795,6 +848,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         dt: float = 0.0,
     ) -> None:
         """Convert input body pose updates into VBD-compatible history updates."""
+        self._apply_module_options()
         flags = int(flags)
 
         if (
@@ -843,6 +897,19 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts_freshly_detected: bool = False,
     ) -> Contacts | None:
         """Update rigid history cadence for proxy contacts."""
+        # Full-surface (edge/face) rigid-soft contacts are not yet harvested onto proxy particles:
+        # the proxy contact-force kernels consume only per-particle records (particle >= 0), so a soft
+        # edge/face contact's reaction on a proxy-coupled rigid body would be silently dropped. Fail
+        # loud until proxy harvesting consumes the unified records. Standalone SolverVBD (no proxy
+        # coupling) never reaches this hook and does support full-surface via the per-body path.
+        if contacts is not None and getattr(contacts, "_enable_rigid_soft_full_surface_contact", False):
+            raise NotImplementedError(
+                "Full-surface (edge/face) rigid-soft contacts are not yet supported with VBD proxy-particle "
+                "coupling (SolverCoupledProxy): the proxy contact-force harvest consumes only per-particle "
+                "records, so edge/face force feedback to proxy-coupled rigid bodies would be silently dropped. "
+                "Set enable_rigid_soft_full_surface_contact=False for the coupled proxy solve, or drive the "
+                "rigid bodies with standalone SolverVBD (which supports full-surface via the per-body path)."
+            )
         # Do not call super(); we can keep proxy-proxy collisions as we
         # are using a custom force harvesting hook
         self.set_rigid_history_update(bool(contacts_freshly_detected))
@@ -870,6 +937,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling interface, so VBD harvests explicit contact forces instead of
         inferring feedback from total proxy momentum change.
         """
+        self._apply_module_options()
         if not self._coupling_has_rigid_avbd_state:
             super().coupling_harvest_proxy_wrenches(
                 body_local_to_proxy_global,
@@ -965,6 +1033,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         coupling, but those proxy-only interactions should not appear as
         feedback forces on the source side.
         """
+        self._apply_module_options()
         del particle_qd_before
         out_particle_f.zero_()
         if self.model.particle_count == 0 or particle_local_to_proxy_global.shape[0] == 0:
@@ -1086,10 +1155,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._prev_contact_normal = wp.zeros(cap, dtype=wp.vec3, device=self.device)
 
     def _raise_if_capturing_resize(self, name: str, current: int, required: int) -> None:
-        if self.device.is_capturing and not wp.is_mempool_enabled(self.device):
+        from ...utils import is_graph_capture_allocation_enabled  # noqa: PLC0415
+
+        if self.device.is_capturing and not is_graph_capture_allocation_enabled(self.device):
             raise RuntimeError(
                 f"SolverVBD {name} buffer needs to grow from {current} to {required} "
-                "during CUDA graph capture, but Warp mempool is disabled. "
+                "during graph capture, but allocation during capture is not enabled on this device. "
                 "Pre-size before capture by constructing CollisionPipeline before SolverVBD, "
                 "passing explicit rigid_contact_max/soft_contact_max to CollisionPipeline, or running one "
                 "uncaptured step/force-collection pass."
@@ -1654,6 +1725,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
                 need to be allocated or grown during CUDA graph capture.
         """
+        self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
 
@@ -2420,14 +2492,13 @@ class SolverVBD(SolverBase, CouplingInterface):
                         # body-particle contact
                         self.friction_epsilon,
                         model.particle_radius,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_indices,
                         contacts.soft_contact_count,
                         contacts.soft_contact_max,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
-                        model.shape_material_mu,
                         model.shape_body,
                         body_q_for_particles,
                         body_q_prev_for_particles,
@@ -2438,6 +2509,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
                         model.shape_margin,
+                        contacts.soft_contact_barycentric,
                     ],
                     outputs=[
                         self.particle_forces,
@@ -2584,10 +2656,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dim=contacts.soft_contact_max,
                     inputs=[
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_indices,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_normal,
+                        contacts.soft_contact_barycentric,
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
@@ -2627,19 +2700,22 @@ class SolverVBD(SolverBase, CouplingInterface):
                         model.particle_radius,
                         self.body_q_prev,
                         state_in.body_q,
+                        state_in.body_qd,
                         model.body_com,
                         self.body_inv_mass_effective,
+                        model.shape_body,
                         self.friction_epsilon,
                         self.body_particle_contact_penalty_k,
                         self.body_particle_contact_material_ke,
                         self.body_particle_contact_material_kd,
                         self.body_particle_contact_material_mu,
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_indices,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_body_vel,
                         contacts.soft_contact_normal,
+                        contacts.soft_contact_barycentric,
                         model.shape_margin,
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
@@ -2801,10 +2877,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dim=soft_contact_launch_dim,
                     inputs=[
                         contacts.soft_contact_count,
-                        contacts.soft_contact_particle,
+                        contacts.soft_contact_indices,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
                         contacts.soft_contact_normal,
+                        contacts.soft_contact_barycentric,
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
