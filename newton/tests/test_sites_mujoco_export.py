@@ -66,6 +66,48 @@ class TestMuJoCoSiteExport(unittest.TestCase):
 
         assert_site_poses_match_model()
 
+    def test_site_size_updates_at_runtime(self):
+        """Propagate runtime shape_scale changes to MuJoCo site sizes."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, type=GeoType.BOX, scale=(0.1, 0.2, 0.3), label="box_site")
+        builder.add_site(body, type=GeoType.SPHERE, scale=(0.05, 0.05, 0.05), label="sphere_site")
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.1, 0.2, 0.3], [0.05, 0.05, 0.05]], atol=1e-6)
+
+        model.shape_scale.assign(wp.array([[0.4, 0.5, 0.6], [0.07, 0.0, 0.0]], dtype=wp.vec3, device=model.device))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        # Zero components fall back to the first nonzero one, matching export.
+        np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.4, 0.5, 0.6], [0.07, 0.07, 0.07]], atol=1e-6)
+
+    def test_site_size_updates_batched_worlds(self):
+        """Sync site sizes from uniform runtime scale updates across batched worlds."""
+        world = newton.ModelBuilder()
+        body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = world.add_joint_free(child=body)
+        world.add_articulation([joint])
+        world.add_site(body, type=GeoType.BOX, scale=(0.1, 0.2, 0.3), label="body_site")
+
+        builder = newton.ModelBuilder()
+        builder.add_world(world)
+        builder.add_world(world, xform=wp.transform(wp.vec3(4.0, 0.0, 0.0), wp.quat_identity()))
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+
+        np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.1, 0.2, 0.3]], atol=1e-6)
+
+        site_shapes = np.flatnonzero(model.shape_flags.numpy() & int(newton.ShapeFlags.SITE))
+        scales = model.shape_scale.numpy()
+        scales[site_shapes] = [0.4, 0.5, 0.6]
+        model.shape_scale.assign(scales)
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_allclose(solver.mjw_model.site_size.numpy(), [[0.4, 0.5, 0.6]], atol=1e-6)
+
     def test_export_single_site(self):
         """Test that a site is exported to both MuJoCo Warp and regular MuJoCo models."""
         builder = newton.ModelBuilder()

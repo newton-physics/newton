@@ -7889,7 +7889,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _update_site_properties(self) -> None:
-        """Update MuJoCo site poses from Newton shape transforms."""
+        """Update MuJoCo site poses and sizes from Newton shape properties.
+
+        ``site_size`` is unbatched in mujoco_warp, so sizes are synced from
+        the first world; per-world scale differences are not supported.
+        """
         if self.mj_model.nsite == 0:
             return
 
@@ -7898,6 +7902,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dim=(self.mjw_data.nworld, self.mj_model.nsite),
             inputs=[
                 self.model.shape_transform,
+                self.model.shape_scale,
                 self._mjc_site_shape_index,
                 self._mjc_site_is_global,
                 self._shapes_per_world,
@@ -7906,6 +7911,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[
                 self.mjw_model.site_pos,
                 self.mjw_model.site_quat,
+                self.mjw_model.site_size,
             ],
             device=self.model.device,
         )

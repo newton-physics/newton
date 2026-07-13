@@ -2493,14 +2493,16 @@ def update_geom_properties_kernel(
 @wp.kernel
 def update_site_properties_kernel(
     shape_transform: wp.array[wp.transform],
+    shape_scale: wp.array[wp.vec3],
     site_shape_index: wp.array[wp.int32],
     site_is_global: wp.array[bool],
     shapes_per_world: int,
     first_env_shape_base: int,
     site_pos: wp.array2d[wp.vec3],
     site_quat: wp.array2d[wp.quat],
+    site_size: wp.array[wp.vec3],
 ):
-    """Update MuJoCo site poses from Newton shape transforms."""
+    """Update MuJoCo site poses and sizes from Newton shape properties."""
     world, site = wp.tid()
     template_or_global_shape = site_shape_index[site]
     if template_or_global_shape < 0:
@@ -2513,6 +2515,27 @@ def update_site_properties_kernel(
     tf = shape_transform[shape]
     site_pos[world, site] = tf.p
     site_quat[world, site] = quat_xyzw_to_wxyz(tf.q)
+
+    # site_size has no world dimension in mujoco_warp, so world 0 is the
+    # source of truth; per-world site sizes are not representable.
+    if world == 0:
+        scale = shape_scale[shape]
+        # Mirror export: fill zero components with the first positive one.
+        nonzero = 0.0
+        if scale[0] > 0.0:
+            nonzero = scale[0]
+        elif scale[1] > 0.0:
+            nonzero = scale[1]
+        elif scale[2] > 0.0:
+            nonzero = scale[2]
+        if nonzero > 0.0:
+            site_size[site] = wp.vec3(
+                wp.where(scale[0] == 0.0, nonzero, scale[0]),
+                wp.where(scale[1] == 0.0, nonzero, scale[1]),
+                wp.where(scale[2] == 0.0, nonzero, scale[2]),
+            )
+        else:
+            site_size[site] = wp.vec3(0.01, 0.01, 0.01)
 
 
 @wp.kernel
