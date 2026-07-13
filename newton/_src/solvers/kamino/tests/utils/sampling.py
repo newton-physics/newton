@@ -29,6 +29,7 @@ def sample_world_mask(
     num_worlds: int,
     rng: np.random.Generator,
     num_samples: int = 1,
+    target_inactive_rate: float = 0.1,
 ) -> np.ndarray:
     """
     Helper sampling random non-trivial boolean world masks given the number of worlds.
@@ -38,13 +39,14 @@ def sample_world_mask(
         num_worlds: number of worlds.
         rng: Random number generator.
         num_samples: number of sample masks to generate.
+        target_inactive_rate: target rate of worlds for which the mask should be `False`
 
     Returns:
         world_masks: sampled boolean masks, with shape (num_samples, num_worlds)
     """
     # Sample ids in [0, num_worlds - 1] to set to False
-    # Target about 10% of inactive worlds, at least one, and at most num_worlds - 1
-    num_false = min(num_worlds - 1, max(1, round(0.1 * num_worlds)))
+    # Target provided rate of inactive worlds, at least one, and at most num_worlds - 1
+    num_false = min(num_worlds - 1, max(1, round(target_inactive_rate * num_worlds)))
     false_ids = rng.integers(low=0, high=num_worlds, endpoint=False, size=num_samples * num_false)
     false_ids = np.reshape(false_ids, (num_samples, num_false))
 

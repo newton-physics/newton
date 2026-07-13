@@ -415,6 +415,10 @@ class ModelBuilder:
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
         If provided (and sdf_target_voxel_size is None), enables primitive SDF
         generation. Requires GPU since wp.Volume only supports CUDA."""
+        force_sdf: bool = False
+        """If True, :meth:`ModelBuilder.finalize` builds a volume SDF for this mesh/convex shape even
+        when neither ``sdf_max_resolution`` nor ``sdf_target_voxel_size`` is set (built at the default
+        resolution). Use to provision SDFs for full-surface rigid-soft contact; see :meth:`configure_sdf`."""
         sdf_texture_format: str = "uint16"
         """Subgrid texture storage format for the SDF. ``"uint16"``
         (default) stores subgrid voxels as 16-bit normalized textures (half
@@ -458,6 +462,7 @@ class ModelBuilder:
             is_hydroelastic: bool = False,
             kh: float = 1.0e10,
             texture_format: str | None = None,
+            force_sdf: bool = False,
         ) -> None:
             """Enable SDF-based collision for this shape.
 
@@ -476,12 +481,16 @@ class ModelBuilder:
                 texture_format: Subgrid texture storage format. ``"uint16"``
                     (default) uses 16-bit normalized textures. ``"float32"``
                     uses full-precision. ``"uint8"`` uses 8-bit textures.
+                force_sdf: Build the SDF even when neither ``max_resolution`` nor
+                    ``target_voxel_size`` is given (uses the default resolution). Provisions the SDF
+                    needed for full-surface rigid-soft contact without picking a resolution.
 
             Raises:
                 ValueError: If both max_resolution and target_voxel_size are provided.
             """
             if max_resolution is not None and target_voxel_size is not None:
                 raise ValueError("configure_sdf accepts either max_resolution or target_voxel_size, not both.")
+            self.force_sdf = force_sdf
             if max_resolution is not None:
                 self.sdf_max_resolution = max_resolution
                 self.sdf_target_voxel_size = None
@@ -1134,12 +1143,13 @@ class ModelBuilder:
         """Per-shape target SDF voxel sizes retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_max_resolution: list[int | None] = []
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_force_sdf: list[bool] = []
+        """Per-shape :attr:`ShapeConfig.force_sdf` flags retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_texture_format: list[str] = []
         """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
-
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
@@ -3771,6 +3781,7 @@ class ModelBuilder:
             "shape_gap",
             "shape_sdf_narrow_band_range",
             "shape_sdf_max_resolution",
+            "shape_force_sdf",
             "shape_sdf_target_voxel_size",
             "shape_sdf_texture_format",
             "shape_sdf_padding",
@@ -6183,6 +6194,7 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
+        self.shape_force_sdf.append(cfg.force_sdf)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
         self.shape_sdf_padding.append(cfg.sdf_padding)
 
@@ -11108,6 +11120,86 @@ class ModelBuilder:
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
+            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when a
+            # per-shape SDF is requested -- ShapeConfig.configure_sdf(force_sdf=True), or an sdf
+            # resolution/voxel-size set on the shape. Built in unscaled mesh space (scale_baked=False)
+            # and cached per source mesh; eval_shape_sdf applies the shape scale at query time. Texture
+            # SDFs are CUDA-only, so on CPU (or on any build failure) the SDF is left unprovisioned; a
+            # full-surface CollisionPipeline then raises for that shape rather than silently degrading.
+            if any(
+                self.shape_force_sdf[i]
+                or self.shape_sdf_max_resolution[i] is not None
+                or self.shape_sdf_target_voxel_size[i] is not None
+                for i in range(len(self.shape_type))
+            ):
+                wt_sdf_cache = {}
+                for i in range(len(self.shape_type)):
+                    if (
+                        shape_sdf_index[i] >= 0
+                        or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
+                        or not (self.shape_flags[i] & ShapeFlags.COLLIDE_PARTICLES)
+                        or self.shape_source[i] is None
+                        or not (
+                            self.shape_force_sdf[i]
+                            or self.shape_sdf_max_resolution[i] is not None
+                            or self.shape_sdf_target_voxel_size[i] is not None
+                        )
+                    ):
+                        continue
+                    src = self.shape_source[i]
+                    sdf_padding_i = self.shape_sdf_padding[i]
+                    wt_margin = sdf_padding_i if sdf_padding_i is not None else self.shape_gap[i]
+                    # Mirror the rigid SDF cache key: shapes sharing one Mesh get distinct SDFs when any
+                    # baked generation parameter differs (margin/narrow-band/resolution/voxel/format).
+                    # scale stays out (scale_baked=False applies it at query time; the rigid path bakes it).
+                    src_key = (
+                        id(src),
+                        wt_margin,
+                        tuple(self.shape_sdf_narrow_band_range[i]),
+                        self.shape_sdf_target_voxel_size[i],
+                        self.shape_sdf_max_resolution[i],
+                        self.shape_sdf_texture_format[i],
+                    )
+                    if src_key in wt_sdf_cache:
+                        shape_sdf_index[i] = wt_sdf_cache[src_key]
+                        continue
+                    try:
+                        wt_wp_mesh = wp.Mesh(
+                            points=wp.array(
+                                np.asarray(src.vertices, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device
+                            ),
+                            indices=wp.array(
+                                np.asarray(src.indices, dtype=np.int32).reshape(-1), dtype=wp.int32, device=device
+                            ),
+                            support_winding_number=True,
+                        )
+                        wt_tex_data, wt_c_tex, wt_s_tex = create_texture_sdf_from_mesh(
+                            wt_wp_mesh,
+                            margin=wt_margin,
+                            narrow_band_range=tuple(self.shape_sdf_narrow_band_range[i]),
+                            max_resolution=(self.shape_sdf_max_resolution[i] or 64),
+                            target_voxel_size=self.shape_sdf_target_voxel_size[i],
+                            quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
+                            scale_baked=False,
+                            device=device,
+                        )
+                    except Exception as e:
+                        warnings.warn(
+                            f"Full-surface SDF construction failed for mesh shape {i} ({e}); it falls "
+                            "back to the legacy per-particle soft-contact path.",
+                            stacklevel=2,
+                        )
+                        continue
+                    wt_idx = len(compact_texture_sdf_data)
+                    wt_sdf_cache[src_key] = wt_idx
+                    shape_sdf_index[i] = wt_idx
+                    compact_texture_sdf_data.append(wt_tex_data)
+                    compact_texture_sdf_coarse_textures.append(wt_c_tex)
+                    compact_texture_sdf_subgrid_textures.append(wt_s_tex)
+                    compact_texture_sdf_subgrid_start_slots.append(
+                        wt_tex_data.subgrid_start_slots if wt_c_tex is not None else None
+                    )
+
             m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
@@ -11261,9 +11353,7 @@ class ModelBuilder:
             )
             # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
             # keep the builder's edge numbering (it stays aligned with the bending materials) and
-            # derive the edge/triangle maps against the final triangles. Vertex adjacency stays
-            # unset until the solver builds it via init_vertex_adjacency; kernels get a device copy
-            # from MeshAdjacency.to.
+            # derive the edge/triangle maps against the final triangles.
             edge_indices = (
                 np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
                 if self.edge_indices
@@ -11275,6 +11365,11 @@ class ModelBuilder:
                 spring_indices=self.spring_indices,
                 tet_indices=self.tet_indices,
             )
+            # Build the vertex adjacency (cheap) and upload one device copy here, so every consumer
+            # (VBD solver, collision pipeline) shares a single MeshAdjacencyData rather than each
+            # running init_vertex_adjacency + .to() itself.
+            m.soft_mesh_adjacency.init_vertex_adjacency(self.particle_count)
+            m.soft_mesh_adjacency_device = m.soft_mesh_adjacency.to(device)
 
             # ---------------------
             # tetrahedra
