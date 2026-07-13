@@ -386,13 +386,14 @@ class Example:
 
         self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
-            config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorTiledCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 enable_textures=True,
                 max_distance=self.camera_depth_range[1],
             ),
         )
+        self.tiled_camera_sensor.default_render_config.enable_shadows = True
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
 
         fov = math.radians(float(getattr(args, "camera_fov", 45.0)))

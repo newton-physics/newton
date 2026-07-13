@@ -95,7 +95,12 @@ class RenderContext:
         self.lights_position: wp.array[wp.vec3f] | None = None
         self.lights_orientation: wp.array[wp.vec3f] | None = None
 
-    def init_from_model(self, model: Model, load_textures: bool = True):
+    def init_from_model(
+        self,
+        model: Model,
+        load_textures: bool = True,
+        enable_simulation_triangles: bool = True,
+    ):
         """Initialize render context state from a Newton simulation model.
 
         Populates shape, triangle, and texture data from *model*. BVH
@@ -110,6 +115,8 @@ class RenderContext:
             model: Newton simulation model providing shapes and particles.
             load_textures: Load mesh textures from disk. Set False for
                 checkerboard or custom texture workflows.
+            enable_simulation_triangles: Include the model's simulation
+                triangle surface in the camera triangle mesh.
         """
 
         self.world_count = model.world_count
@@ -150,7 +157,7 @@ class RenderContext:
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
             self.state.has_particles = True
-            if model.tri_indices is not None and model.tri_indices.shape[0]:
+            if enable_simulation_triangles and model.tri_indices is not None and model.tri_indices.shape[0]:
                 if deformable_visual_meshes:
                     self.__dynamic_triangle_particle_count = model.particle_q.shape[0]
                 else:
@@ -163,7 +170,11 @@ class RenderContext:
         self.__load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
 
         if deformable_visual_meshes:
-            self.__init_deformable_visual_triangle_mesh(model, deformable_visual_meshes)
+            self.__init_deformable_visual_triangle_mesh(
+                model,
+                deformable_visual_meshes,
+                enable_simulation_triangles,
+            )
 
     def update(self, model: Model, state: State, deformable_visuals: DeformableVisuals | None = None):
         """Synchronize triangle-mesh points from the current simulation state.
@@ -571,7 +582,12 @@ class RenderContext:
         self.mesh_data = wp.array(self.__mesh_data, dtype=MeshData, device=self.device)
         self.shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
 
-    def __init_deformable_visual_triangle_mesh(self, model: Model, deformable_visual_meshes: list[object]):
+    def __init_deformable_visual_triangle_mesh(
+        self,
+        model: Model,
+        deformable_visual_meshes: list[object],
+        enable_simulation_triangles: bool,
+    ):
         """Build the static index buffer and dynamic point buffer for skinned visual meshes."""
         triangle_indices: list[np.ndarray] = []
         triangle_uvs: list[np.ndarray] = []
@@ -579,7 +595,8 @@ class RenderContext:
         vertex_offset = 0
 
         if (
-            model.particle_q is not None
+            enable_simulation_triangles
+            and model.particle_q is not None
             and model.particle_q.shape[0]
             and model.tri_indices is not None
             and model.tri_indices.shape[0]

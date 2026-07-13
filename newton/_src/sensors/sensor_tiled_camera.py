@@ -130,7 +130,11 @@ class SensorTiledCamera:
         )
         self.__utils = Utils(self.__render_context, self.default_render_config)
 
-        self.__render_context.init_from_model(self.model, load_textures)
+        self.__render_context.init_from_model(
+            self.model,
+            load_textures,
+            enable_simulation_triangles=self.default_render_config.enable_simulation_triangles,
+        )
         self.__deformable_visuals = self.model.deformable_visuals() if self.model.deformable_visual_mesh_count else None
 
     @property
