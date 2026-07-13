@@ -1291,14 +1291,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dof0 = int(jdofs[j])
                     linear_count = int(jdof_dim[j, 0])
                     angular_count = int(jdof_dim[j, 1])
-                    angular_dof = dof0 + linear_count
-                    dof_end = angular_dof + angular_count
                     if (
                         dof0 < 0
                         or linear_count != 3
                         or angular_count != 3
-                        or dof_end > len(jtarget_ke)
-                        or dof_end > len(jtarget_kd)
+                        or (dof0 + 5) >= len(jtarget_ke)
+                        or (dof0 + 5) >= len(jtarget_kd)
                     ):
                         raise RuntimeError(
                             "SolverVBD _init_joint_penalty_k: JointType.CABLE requires three linear and three "
@@ -1306,28 +1304,14 @@ class SolverVBD(SolverBase, CouplingInterface):
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
                         )
-                    linear_ke = jtarget_ke[dof0:angular_dof]
-                    linear_kd = jtarget_kd[dof0:angular_dof]
-                    angular_ke = jtarget_ke[angular_dof:dof_end]
-                    angular_kd = jtarget_kd[angular_dof:dof_end]
-                    if not (
-                        np.allclose(linear_ke, linear_ke[0])
-                        and np.allclose(linear_kd, linear_kd[0])
-                        and np.allclose(angular_ke, angular_ke[0])
-                        and np.allclose(angular_kd, angular_kd[0])
-                    ):
-                        raise ValueError(
-                            "SolverVBD currently requires isotropic CABLE material coefficients: the three "
-                            "linear joint_target_ke/kd values must match, as must the three angular values."
-                        )
-                    ke_stretch = linear_ke[0]
-                    ke_bend = angular_ke[0]
+                    ke_stretch = jtarget_ke[dof0]
+                    ke_bend = jtarget_ke[dof0 + 3]
                     joint_k_max_np[c0] = ke_stretch
                     joint_k_max_np[c0 + 1] = ke_bend
                     joint_k_init_np[c0] = ke_stretch if lin_k_start is None else min(lin_k_start, ke_stretch)
                     joint_k_init_np[c0 + 1] = ke_bend if ang_k_start is None else min(ang_k_start, ke_bend)
-                    joint_kd_np[c0] = linear_kd[0]
-                    joint_kd_np[c0 + 1] = angular_kd[0]
+                    joint_kd_np[c0] = jtarget_kd[dof0]
+                    joint_kd_np[c0 + 1] = jtarget_kd[dof0 + 3]
                 elif jt[j] == JointType.BALL:
                     c0 = int(jc_start[j])
                     joint_k_max_np[c0] = structural_linear_ke

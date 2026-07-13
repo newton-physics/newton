@@ -4368,8 +4368,10 @@ class ModelBuilder:
         for _ in range(cts_count):
             self.joint_cts.append(0.0)
 
-        if joint_type in (JointType.FREE, JointType.DISTANCE, JointType.BALL, JointType.CABLE):
+        if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
+            self.joint_q[-1] = 1.0
+        elif joint_type == JointType.CABLE:
             self.joint_q[-1] = 1.0
 
         if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
@@ -4397,9 +4399,6 @@ class ModelBuilder:
                     self.joint_target_q[quat_offset + i] = dim.target_pos
                 self.joint_target_q[quat_offset + 3] = 1.0
         elif joint_type == JointType.CABLE:
-            # CABLE's joint_q is a relative pose (like FREE); its target is the
-            # identity pose, so only the quaternion w needs setting. Cable drives
-            # use stiffness (target_ke), not a pose target.
             self.joint_target_q[target_q_offset + 6] = 1.0
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
@@ -4410,17 +4409,6 @@ class ModelBuilder:
         self.joint_q_start.append(self.joint_coord_count)
         self.joint_qd_start.append(self.joint_dof_count)
         self.joint_cts_start.append(self.joint_constraint_count)
-
-        if joint_type == JointType.CABLE:
-            # Seed joint_q with the current relative anchor pose X_j = inv(X_wpj) *
-            # X_wcj so eval_fk reconstructs the rod exactly as built. Same formula
-            # as eval_ik, and the analog of add_joint_free seeding its child pose.
-            q_start = self.joint_q_start[-1]
-            X_wp = self.body_q[parent] if parent != -1 else wp.transform_identity()
-            X_wpj = wp.transform_multiply(X_wp, parent_xform)
-            X_wcj = wp.transform_multiply(self.body_q[child], child_xform)
-            X_j = wp.transform_multiply(wp.transform_inverse(X_wpj), X_wcj)
-            self.joint_q[q_start : q_start + 7] = list(X_j)
 
         self.joint_dof_count += dof_count
         self.joint_coord_count += coord_count
@@ -4961,18 +4949,9 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
-        """Adds a cable joint to the model. Its six-dimensional relative twist is
-        acted on by an isotropic linear stretch/shear energy and an isotropic
-        angular bend/twist energy.
-
-        .. note::
-
-            Cable joints use a full relative anchor pose in ``joint_q`` and a
-            six-dimensional relative twist in ``joint_qd``. The current VBD cable
-            material is isotropic: ``stretch_stiffness`` is replicated over the
-            three linear axes and ``bend_stiffness`` over the three angular axes.
-            :class:`newton.solvers.SolverVBD` still advances maximal-coordinate
-            cable body state directly.
+        """Adds a cable joint with a relative pose in ``joint_q`` and a
+        six-dimensional relative twist in ``joint_qd``. Its material is isotropic
+        over the three linear and three angular axes.
 
         Args:
             parent: The index of the parent body.
@@ -4998,12 +4977,7 @@ class ModelBuilder:
             The index of the added joint.
 
         """
-        # Use the standard six-dimensional tangent layout. The current VBD cable
-        # model groups stretch/shear into one isotropic linear coefficient and
-        # bend/twist into one isotropic angular coefficient, so replicate those
-        # values across each three-axis block. This preserves existing dynamics
-        # while making joint_qd a physical relative twist rather than a pair of
-        # material-parameter indexing slots.
+        # Replicate the isotropic material coefficients across each three-axis block.
         se_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         se_kd = 0.0 if stretch_damping is None else stretch_damping
         bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
@@ -5018,7 +4992,7 @@ class ModelBuilder:
             for axis in (Axis.X, Axis.Y, Axis.Z)
         ]
 
-        return self.add_joint(
+        joint = self.add_joint(
             JointType.CABLE,
             parent,
             child,
@@ -5032,6 +5006,12 @@ class ModelBuilder:
             custom_attributes=custom_attributes,
             **kwargs,
         )
+        q_start = self.joint_q_start[joint]
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * self.joint_X_p[joint]
+        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint]
+        self.joint_q[q_start : q_start + 7] = list(joint_q)
+        return joint
 
     def add_constraint_mimic(
         self,

@@ -1873,11 +1873,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         FREE), so its outputs are defined. Correctness is not asserted here, but
         a NaN regression on the outputs would go uncaught otherwise.
 
-        CABLE is intentionally excluded: it is not implemented by
-        ``jcalc_motion`` / ``jcalc_motion_subspace`` and is not reconstructed by
-        ``eval_fk``, so the pipeline reads unreconstructed state for it and the
-        outputs are undefined (observed as intermittently non-finite). Asserting
-        finiteness there would test undefined behavior rather than a contract.
+        CABLE is intentionally excluded because inverse dynamics does not yet
+        implement it in ``jcalc_motion``. ``Model.inverse_dynamics()`` rejects
+        models containing cable joints.
 
         Multi-angular-DOF D6 joints are fully supported and are covered by
         analytical assertions in :meth:`test_inverse_dynamics_force_baseline`
@@ -1921,7 +1919,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
     def test_inverse_dynamics_container_rejects_cable_joint(self):
-        """Inverse dynamics rejects CABLE until its RNEA relative-pose path is enabled."""
+        """CABLE joints remain unsupported by inverse dynamics."""
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
         b = newton.ModelBuilder()
         link = b.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))

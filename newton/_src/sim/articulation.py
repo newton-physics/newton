@@ -509,14 +509,6 @@ def eval_fk(
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
-    .. note::
-
-        :attr:`~newton.JointType.CABLE` joints use the same relative-pose and
-        relative-twist layout as :attr:`~newton.JointType.FREE`, so
-        :func:`newton.eval_fk` reconstructs both their body transforms and
-        velocities. Maximal-coordinate solvers such as
-        :class:`newton.solvers.SolverVBD` still advance cable body state directly.
-
     Args:
         model: The model to evaluate.
         joint_q: Generalized joint position coordinates, shape [joint_coord_count], float
@@ -932,18 +924,19 @@ def eval_ik(
 
 
 @wp.func
-def write_relative_pose_motion_subspace(
+def write_free_distance_motion_subspace(
     X_pa_world: wp.transform,
     x_child_com_world: wp.vec3,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
-    """Write the six motion-subspace columns for a relative-pose joint.
+    """Write the 6 motion-subspace columns for a FREE/DISTANCE/CABLE joint.
 
-    FREE, DISTANCE, and CABLE share this column layout. Linear DOFs act at the
-    child body's COM; angular DOFs are world-aligned axes expressed through
-    ``X_pa_world``.
+    Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
+    the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
+    column layout. Linear DOFs act at the child body's COM; angular DOFs are
+    world-aligned axes expressed through ``X_pa_world``.
 
     Args:
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
@@ -1007,9 +1000,8 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        CABLE joints use the same six-dimensional relative-twist motion subspace
-        as FREE/DISTANCE joints. Their stretch/shear/bend/twist response is a
-        material-energy concern and does not change this kinematic tangent.
+        CABLE joints use the same six-dimensional motion subspace as
+        FREE/DISTANCE joints.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1069,7 +1061,7 @@ def jcalc_motion_subspace(
         or joint_type_value == JointType.CABLE
     ):
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
-        write_relative_pose_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
+        write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
 
 @wp.kernel

@@ -49,24 +49,15 @@ Cable joints
 ^^^^^^^^^^^^
 
 :attr:`newton.JointType.CABLE` uses the same kinematic state layout as a
-:attr:`~newton.JointType.FREE` joint: ``joint_q`` holds the full relative anchor
-pose (3 translation + 4 quaternion), and ``joint_qd`` holds the relative linear
-and angular velocity (3 + 3). Consequently, :func:`newton.eval_fk` reconstructs
-cable child body transforms and velocities, and :func:`newton.eval_ik` recovers
-the complete cable joint state.
+:attr:`~newton.JointType.FREE` joint: ``joint_q`` stores the relative pose as
+3D translation and a quaternion, while ``joint_qd`` stores the six-dimensional
+relative linear and angular velocity. :func:`newton.eval_fk` and
+:func:`newton.eval_ik` convert between this joint state and body state.
 
-The current VBD cable material groups stretch/shear into one isotropic linear
-coefficient and bend/twist into one isotropic angular coefficient. Those values
-are replicated across the corresponding three-axis blocks in
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
-they are material parameters, not the dimensionality of the cable tangent.
-
-Cable body poses and velocities remain maximal-coordinate state in
-:attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, advanced by
-:class:`newton.solvers.SolverVBD`. As with every joint under a maximal-coordinate
-solver, joint state is authoritative at construction (or after an explicit
-:func:`newton.eval_ik`), not during stepping. Call :func:`newton.eval_ik` before
-using FK on a cable advanced by a maximal-coordinate solver.
+Cable stiffness and damping are material parameters stored in
+:attr:`newton.Model.joint_target_ke` and
+:attr:`newton.Model.joint_target_kd`; they do not determine the joint-state
+dimensions.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:

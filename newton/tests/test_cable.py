@@ -3473,14 +3473,7 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
 
 
 def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
-    """eval_fk reconstructs CABLE child poses from their relative-pose joint_q.
-
-    CABLE joints carry a full relative anchor pose in ``joint_q`` (3 translation +
-    4 quaternion), so forward kinematics rebuilds the rod just like any other
-    joint. As with all joints under a maximal-coordinate solver, this is the
-    construction-time ``joint_q -> body_q`` conversion; SolverVBD owns the cable
-    dynamics afterwards.
-    """
+    """eval_fk reconstructs CABLE child state from joint_q and joint_qd."""
     builder = newton.ModelBuilder()
     rod_bodies, rod_joints = builder.add_rod_graph(
         node_positions=[
@@ -3572,6 +3565,7 @@ def _cable_eval_ik_fk_roundtrip_impl(test: unittest.TestCase, device):
         radius=0.02,
         bend_stiffness=10.0,
         label="ut_cable_roundtrip",
+        body_frame_origin="start",
     )
     test.assertEqual(len(rod_joints), num_segments - 1)
     builder.color()
