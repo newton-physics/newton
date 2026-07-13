@@ -823,6 +823,7 @@ class TestModelMesh(unittest.TestCase):
 
         # an explicit argument overrides the builder default
         captured.clear()
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
         with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
         self.assertEqual(captured["threshold"], 0.2)
