@@ -123,11 +123,15 @@ class TestDeformableView(unittest.TestCase):
         scene = newton.ModelBuilder()
         scene.add_world(first)
         scene.add_world(second)
+        scene.add_world(newton.ModelBuilder())
 
         view = DeformableView(scene.finalize(), "/World/Cloth*", family="surface")
 
-        self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 2, None))
+        self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, None))
         self.assertEqual(view.worlds, [0, 1, 1])
+        self.assertEqual(view.world_ranges(), [(0, 1), (1, 3), (3, 3)])
+        np.testing.assert_array_equal(view.world_starts.numpy(), [0, 1, 3, 3])
+        np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1, 1])
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothA", "/World/ClothB"])
         self.assertEqual(view.get_particle_positions(view.model.state()).shape, (3, 4))
 

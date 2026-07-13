@@ -2128,10 +2128,9 @@ class DeformableView:
 
         group_ids, global_group_ids = _find_matching_group_ids(pattern, labels, group_worlds, model.world_count)
 
-        # A heterogeneous scene may hold a family in only some worlds. Skip worlds
-        # without a match while preserving each remaining world in model order.
-        group_ids = [ids for ids in group_ids if ids]
-        world_count = len(group_ids)
+        # Keep every model world in the partition, including worlds without a
+        # match. Equal adjacent offsets make empty worlds explicit to consumers.
+        world_count = model.world_count
         counts_per_world = [len(ids) for ids in group_ids]
         group_count = sum(counts_per_world)
 
@@ -2163,6 +2162,14 @@ class DeformableView:
         """Label of each selected group, ordered world by world."""
         self.worlds = [g.world for g in selected]
         """World index of each selected group."""
+        world_starts = [0]
+        for count in counts_per_world:
+            world_starts.append(world_starts[-1] + count)
+        self._world_starts = world_starts
+        self.world_starts = wp.array(world_starts, dtype=wp.int32, device=self.device)
+        """Device offsets partitioning the flat groups by world, shape ``(world_count + 1,)``."""
+        self.world_ids = wp.array(self.worlds, dtype=wp.int32, device=self.device)
+        """World index of each flat group, shape ``(count,)``."""
         self.group_ids = [g.id for g in selected]
         """Stable finalized identity of each selected group."""
 
@@ -2186,6 +2193,10 @@ class DeformableView:
             print(f"DeformableView '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
 
     # raw ranges -------------------------------------------------------------
+
+    def world_ranges(self) -> list[tuple[int, int]]:
+        """Flat group ranges for every model world, including empty worlds."""
+        return [(self._world_starts[i], self._world_starts[i + 1]) for i in range(self.world_count)]
 
     def elements_per_group(self, kind: str) -> int:
         """Elements of ``kind`` in each selected group (homogeneous across the selection).
