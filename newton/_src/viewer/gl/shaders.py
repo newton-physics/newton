@@ -138,13 +138,6 @@ uniform float specular_scale;
 uniform bool spotlight_enabled;
 uniform float shadow_extents;
 uniform float exposure;
-#ifdef ENABLE_TRANSPARENCY
-uniform bool transparent_pass;
-uniform mat4 view;
-// Reciprocal of the transparent content's reference view depth [1/m]; makes
-// the OIT depth weight unit-free regardless of scene scale.
-uniform float oit_inv_depth_reference;
-#endif
 
 const float PI = 3.14159265359;
 
@@ -409,26 +402,16 @@ void main()
     color = pow(color, vec3(1.0 / 2.2));
 
 #ifdef ENABLE_TRANSPARENCY
-    if (transparent_pass)
-    {
-        float alpha = clamp(Opacity, 0.0, 1.0);
-        float view_depth = max(-(view * vec4(FragPos, 1.0)).z, 0.0);
-        // Normalize view depth by the transparent content's reference distance
-        // so d is ~1 at the content for any scene scale, then apply the
-        // McGuire-Bavoil weight curve on the unit-free depth. This keeps
-        // depth-order discrimination (nearer layers weigh more) without the
-        // meter-scale tuning of the original equation.
-        float d = view_depth * oit_inv_depth_reference;
-        float depth_weight = clamp(10.0 / (1e-5 + pow(2.0 * d, 2.0) + pow(0.6 * d, 6.0)), 0.01, 300.0);
-        float accum_weight = alpha * depth_weight;
-        FragColor = vec4(color * alpha * accum_weight, alpha * accum_weight);
-        Revealage = vec4(alpha);
-    }
-    else
-    {
-        FragColor = vec4(color, Opacity);
-        Revealage = vec4(0.0);
-    }
+    float alpha = clamp(Opacity, 0.0, 1.0);
+    float weight = clamp(
+        pow(min(1.0, alpha * 10.0) + 0.01, 3.0)
+            * 1e8
+            * pow(1.0 - gl_FragCoord.z * 0.9, 3.0),
+        1e-2,
+        3e3
+    );
+    FragColor = vec4(color * alpha, alpha) * weight;
+    Revealage = vec4(alpha);
 #else
     FragColor = vec4(color, 1.0);
 #endif
@@ -590,7 +573,6 @@ class ShaderShape(ShaderGL):
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
-        self.enable_transparency = enable_transparency
         vertex_shader = shape_vertex_shader
         fragment_shader = shape_fragment_shader
         if enable_transparency:
@@ -621,11 +603,6 @@ class ShaderShape(ShaderGL):
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
             self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
-            self.loc_transparent_pass = None
-            self.loc_oit_inv_depth_reference = None
-            if self.enable_transparency:
-                self.loc_transparent_pass = self._get_uniform_location("transparent_pass")
-                self.loc_oit_inv_depth_reference = self._get_uniform_location("oit_inv_depth_reference")
 
     def update(
         self,
@@ -649,7 +626,6 @@ class ShaderShape(ShaderGL):
         spotlight_enabled: bool = True,
         shadow_extents: float = 10.0,
         exposure: float = 1.6,
-        oit_depth_reference: float = 1.0,
     ):
         """Update all shader uniforms."""
         with self:
@@ -670,9 +646,6 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
             self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
-            if self.loc_transparent_pass is not None:
-                self._gl.glUniform1i(self.loc_transparent_pass, 0)
-                self._gl.glUniform1f(self.loc_oit_inv_depth_reference, 1.0 / max(float(oit_depth_reference), 1e-6))
 
             # Fog and rendering options
             self._gl.glUniform3f(self.loc_fog_color, *fog_color)
@@ -696,13 +669,6 @@ class ShaderShape(ShaderGL):
                 self._gl.glBindTexture(self._gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
             self._gl.glUniform1i(self.loc_env_map, 2)
             self._gl.glUniform1f(self.loc_env_intensity, float(env_intensity))
-
-    def set_transparent_pass(self, enabled: bool):
-        """Switch shader output between regular color and OIT accumulation."""
-        if self.loc_transparent_pass is None:
-            return
-        with self:
-            self._gl.glUniform1i(self.loc_transparent_pass, int(enabled))
 
 
 class ShaderSky(ShaderGL):

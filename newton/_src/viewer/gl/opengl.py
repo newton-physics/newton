@@ -177,7 +177,6 @@ class MeshGL:
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
         self.opacity = 1.0
-        self._sort_center = None
 
         # Set up vertex attributes in the packed format the shaders expect
         self.vertex_byte_size = 12 + 12 + 8
@@ -274,7 +273,6 @@ class MeshGL:
 
         self._points = points
         self.opacity = float(np.clip(1.0 if opacity is None else opacity, 0.0, 1.0))
-        self._sort_center = None
 
         # only update indices the first time (no topology changes)
         if self.indices is None:
@@ -314,15 +312,6 @@ class MeshGL:
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
         self.update_texture(texture)
-
-        if self.has_transparency() and self.indices is not None and len(points) > 0:
-            # Mean vertex position as the depth-sort key. Reduced on device so a
-            # deforming transparent mesh does not download every point per frame.
-            if isinstance(points, wp.array):
-                total = wp.utils.array_sum(points)
-            else:
-                total = np.asarray(points, dtype=np.float32).sum(axis=0)
-            self._sort_center = np.asarray(total, dtype=np.float32).reshape(3) / float(len(points))
 
     def recompute_normals(self):
         if self._points is None or self.indices is None:
@@ -390,14 +379,6 @@ class MeshGL:
     def has_transparency(self) -> bool:
         """Return True when this mesh needs transparent rendering."""
         return not self.hidden and self.opacity < OPAQUE_OPACITY_THRESHOLD
-
-    def sort_depth(self, camera_pos, camera_front) -> float:
-        """Return a camera-space depth key for back-to-front object sorting."""
-        if self._sort_center is None:
-            return -np.inf
-        camera_pos_np = np.asarray(camera_pos, dtype=np.float32).reshape(3)
-        camera_front_np = np.asarray(camera_front, dtype=np.float32).reshape(3)
-        return float((self._sort_center - camera_pos_np) @ camera_front_np)
 
 
 class LinesGL:
@@ -702,16 +683,8 @@ class MeshInstancerGL:
 
         self.instance_transform_cuda_buffer = None
 
-        self._host_transforms = None
-        self._host_colors = None
-        self._host_materials = None
-        self._host_opacities = None
         self._has_transparency = False
-        self._opacity_buffer_opaque = True
         self._opacity_attribute_enabled = False
-        # True while the GL instance buffers hold camera-sorted (not canonical)
-        # instance order, written by render_sorted().
-        self._buffers_sorted = False
 
         self.allocate(num_instances)
         self.active_instances = num_instances
@@ -749,10 +722,7 @@ class MeshInstancerGL:
         self.instance_opacity_buffer = gl.GLuint()
         self.num_instances = num_instances
 
-        self._host_transforms = np.zeros((self.num_instances, 4, 4), dtype=np.float32)
-        self._host_colors = np.tile(np.array((0.7, 0.5, 0.3), dtype=np.float32), (self.num_instances, 1))
-        self._host_materials = np.zeros((self.num_instances, 4), dtype=np.float32)
-        self._host_opacities = np.ones(self.num_instances, dtype=np.float32)
+        opaque_opacities = np.ones(self.num_instances, dtype=np.float32)
 
         gl.glGenVertexArrays(1, self.vao)
         gl.glBindVertexArray(self.vao)
@@ -849,7 +819,7 @@ class MeshInstancerGL:
         gl.glBufferData(
             gl.GL_ARRAY_BUFFER,
             self.instance_opacity_buffer_size,
-            self._host_opacities.ctypes.data,
+            opaque_opacities.ctypes.data,
             gl.GL_STATIC_DRAW,
         )
 
@@ -941,36 +911,23 @@ class MeshInstancerGL:
         gl = RendererGL.gl
         active_count = self.active_instances
 
-        needs_transform_cache = active_count > 0 and (self._has_transparency or opacities is not None)
-
         if ENABLE_CUDA_INTEROP and self.device.is_cuda:
             vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
             wp.copy(vbo_transforms, xforms)
             self._instance_transform_cuda_buffer.unmap()
-            if needs_transform_cache:
-                host_transforms = np.ascontiguousarray(xforms.numpy()[:active_count], dtype=np.float32)
-                self._host_transforms[:active_count] = host_transforms.reshape(active_count, 4, 4)
         else:
             host_transforms = xforms.numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_DYNAMIC_DRAW)
-            if needs_transform_cache:
-                self._host_transforms[:active_count] = np.ascontiguousarray(
-                    host_transforms[:active_count], dtype=np.float32
-                ).reshape(active_count, 4, 4)
 
         # update other properties through CPU for now
         if colors is not None:
             host_colors = np.ascontiguousarray(colors.numpy(), dtype=np.float32)
-            if active_count > 0:
-                self._host_colors[:active_count] = host_colors[:active_count].reshape(active_count, 3)
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_colors.nbytes, host_colors.ctypes.data, gl.GL_STATIC_DRAW)
 
         if materials is not None:
             host_materials = np.ascontiguousarray(materials.numpy(), dtype=np.float32)
-            if active_count > 0:
-                self._host_materials[:active_count] = host_materials[:active_count].reshape(active_count, 4)
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
 
@@ -994,26 +951,15 @@ class MeshInstancerGL:
             raise ValueError(f"Active instance count ({count}) exceeds allocated capacity ({self.num_instances}).")
         self.active_instances = count
         if count > 0:
-            needs_transform_cache = self._has_transparency or opacities is not None
-            if needs_transform_cache:
-                host_transforms = np.ascontiguousarray(host_transforms_np[:count], dtype=np.float32)
-                self._host_transforms[:count] = host_transforms.reshape(count, 4, 4)
-                transform_ptr = host_transforms.ctypes.data
-            else:
-                transform_ptr = host_transforms_np.ctypes.data
             nbytes = count * self.transform_byte_size
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
-            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, transform_ptr)
+            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, host_transforms_np.ctypes.data)
         if colors is not None:
             host_colors = np.ascontiguousarray(colors.numpy(), dtype=np.float32)
-            if count > 0:
-                self._host_colors[:count] = host_colors[:count].reshape(count, 3)
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_colors.nbytes, host_colors.ctypes.data, gl.GL_STATIC_DRAW)
         if materials is not None:
             host_materials = np.ascontiguousarray(materials.numpy(), dtype=np.float32)
-            if count > 0:
-                self._host_materials[:count] = host_materials[:count].reshape(count, 4)
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
         if count > 0:
@@ -1026,17 +972,14 @@ class MeshInstancerGL:
 
         if opacities is None:
             return
-        else:
-            host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
-            host_opacities = np.clip(host_opacities, 0.0, 1.0)
-            self._has_transparency = bool(np.any(host_opacities < OPAQUE_OPACITY_THRESHOLD))
-            if not self._has_transparency and self._opacity_buffer_opaque:
-                self._set_opacity_attribute_enabled(False)
-                return
 
-        self._host_opacities[:count] = host_opacities
-        self._opacity_buffer_opaque = not self._has_transparency
+        host_opacities = np.ascontiguousarray(opacities.numpy(), dtype=np.float32).reshape(-1)[:count]
+        host_opacities = np.clip(host_opacities, 0.0, 1.0)
+        self._has_transparency = bool(np.any(host_opacities < OPAQUE_OPACITY_THRESHOLD))
         self._set_opacity_attribute_enabled(self._has_transparency)
+        if not self._has_transparency:
+            return
+
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
         gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, host_opacities.nbytes, host_opacities.ctypes.data)
 
@@ -1058,82 +1001,7 @@ class MeshInstancerGL:
         """Return True when any active instance needs transparent rendering."""
         return not self.hidden and self.active_instances > 0 and self._has_transparency
 
-    def _active_depths(self, camera_pos, camera_front):
-        centers = self._host_transforms[: self.active_instances].reshape(self.active_instances, 16)[:, 12:15]
-        camera_pos_np = np.asarray(camera_pos, dtype=np.float32).reshape(3)
-        camera_front_np = np.asarray(camera_front, dtype=np.float32).reshape(3)
-        return (centers - camera_pos_np) @ camera_front_np
-
-    def sort_depth(self, camera_pos, camera_front) -> float:
-        """Return a camera-space depth key for back-to-front object sorting."""
-        if self.active_instances <= 0:
-            return -np.inf
-        depths = self._active_depths(camera_pos, camera_front)
-        return float(np.max(depths))
-
-    def render_sorted(self, camera_pos, camera_front):
-        """Render transparent instances sorted by camera-space center depth."""
-        gl = RendererGL.gl
-
-        if not self.has_transparency() or self.active_instances <= 1:
-            self.render()
-            return
-
-        depths = self._active_depths(camera_pos, camera_front)
-        order = np.argsort(depths)[::-1]
-        count = self.active_instances
-
-        sorted_transforms = np.ascontiguousarray(self._host_transforms[:count][order], dtype=np.float32)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
-        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, sorted_transforms.nbytes, sorted_transforms.ctypes.data)
-
-        sorted_colors = np.ascontiguousarray(self._host_colors[:count][order], dtype=np.float32)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
-        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, sorted_colors.nbytes, sorted_colors.ctypes.data)
-
-        sorted_materials = np.ascontiguousarray(self._host_materials[:count][order], dtype=np.float32)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
-        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, sorted_materials.nbytes, sorted_materials.ctypes.data)
-
-        sorted_opacities = np.ascontiguousarray(self._host_opacities[:count][order], dtype=np.float32)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
-        gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, sorted_opacities.nbytes, sorted_opacities.ctypes.data)
-
-        self._buffers_sorted = True
-        self._draw()
-
-    def _restore_canonical_instance_buffers(self, include_transforms: bool):
-        """Re-upload canonical-order instance data after render_sorted() reordered the GL buffers.
-
-        Without this, a batch that stops rendering through the sorted path (opacity
-        animated back to opaque, or the weighted OIT path taking over) would draw
-        freshly-uploaded canonical transforms against stale camera-sorted
-        colors/materials/opacities.
-        """
-        gl = RendererGL.gl
-        count = self.active_instances
-        if count > 0:
-            if include_transforms:
-                transforms = np.ascontiguousarray(self._host_transforms[:count], dtype=np.float32)
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
-                gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, transforms.nbytes, transforms.ctypes.data)
-            colors = np.ascontiguousarray(self._host_colors[:count], dtype=np.float32)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
-            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, colors.nbytes, colors.ctypes.data)
-            materials = np.ascontiguousarray(self._host_materials[:count], dtype=np.float32)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
-            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, materials.nbytes, materials.ctypes.data)
-            opacities = np.ascontiguousarray(self._host_opacities[:count], dtype=np.float32)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_opacity_buffer)
-            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, opacities.nbytes, opacities.ctypes.data)
-        self._buffers_sorted = False
-
     def render(self):
-        if self._buffers_sorted:
-            # Transforms in GL may still be camera-sorted from the last sorted
-            # pass (e.g. a paused viewer switching to weighted OIT), so restore
-            # them along with the appearance buffers.
-            self._restore_canonical_instance_buffers(include_transforms=True)
         self._draw()
 
     def _draw(self):
@@ -1213,7 +1081,6 @@ class RendererGL:
         self.spotlight_enabled = True
         self._shadow_extents = 10.0
         self._exposure = 1.6
-        self.enable_weighted_transparency = True
 
         # Hemispherical ambient light colors, interpolated by dot(N, up).
         # Decoupled from the sky background so the visible sky can be a
@@ -1340,7 +1207,7 @@ class RendererGL:
         self._oit_accum_texture = None
         self._oit_reveal_texture = None
         self._oit_resolve_shader = None
-        self._oit_depth_reference = 1.0
+        self._oit_supported = False
 
         self._sun_direction = None  # set on first render based on camera up_axis
 
@@ -1485,7 +1352,6 @@ class RendererGL:
         # reset viewport
         gl.glViewport(0, 0, self._screen_width, self._screen_height)
 
-        use_weighted_oit = self._can_use_weighted_transparency(scene_has_transparency)
         has_msaa = getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None
 
         # select target framebuffer (MSAA or regular) for scene rendering
@@ -1501,11 +1367,7 @@ class RendererGL:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glBindVertexArray(0)
 
-        msaa_resolved = self._render_scene(
-            objects,
-            use_weighted_oit=use_weighted_oit,
-            scene_has_transparency=scene_has_transparency,
-        )
+        msaa_resolved = self._render_scene(objects, scene_has_transparency=scene_has_transparency)
 
         # Render lines after main scene but before MSAA resolve
         if lines:
@@ -1920,6 +1782,9 @@ class RendererGL:
 
     def _setup_oit_buffer(self):
         gl = RendererGL.gl
+        self._oit_supported = False
+        if not bool(getattr(gl, "glBlendFunci", None)):
+            return
 
         if self._oit_accum_texture is None:
             self._oit_accum_texture = gl.GLuint()
@@ -1981,9 +1846,7 @@ class RendererGL:
         draw_buffers = (gl.GLenum * 2)(gl.GL_COLOR_ATTACHMENT0, gl.GL_COLOR_ATTACHMENT1)
         gl.glDrawBuffers(2, draw_buffers)
 
-        if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-            print("Warning: weighted transparency framebuffer incomplete, disabling weighted transparency.")
-            self.enable_weighted_transparency = False
+        self._oit_supported = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) == gl.GL_FRAMEBUFFER_COMPLETE
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
@@ -2131,13 +1994,11 @@ class RendererGL:
             spotlight_enabled=self.spotlight_enabled,
             shadow_extents=self.shadow_extents,
             exposure=self.exposure,
-            oit_depth_reference=self._oit_depth_reference,
         )
 
     def _render_scene(
         self,
         objects,
-        use_weighted_oit: bool = False,
         scene_has_transparency: bool = False,
     ) -> bool:
         gl = RendererGL.gl
@@ -2157,20 +2018,19 @@ class RendererGL:
             gl.glDisable(gl.GL_BLEND)
             gl.glDepthMask(True)
             gl.glVertexAttrib1f(9, 1.0)
-            self._shape_shader.set_transparent_pass(False)
             self._draw_objects(opaque_objects)
 
         if transparent_objects:
-            self._oit_depth_reference = self._compute_oit_depth_reference(transparent_objects)
+            if not self._oit_supported:
+                raise RuntimeError(
+                    "ViewerGL transparency requires OpenGL independent blending and a complete OIT framebuffer."
+                )
             self._update_shape_shader(self._shape_transparent_shader)
             with self._shape_transparent_shader:
-                if use_weighted_oit:
-                    if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
-                        self._resolve_msaa_frame()
-                        msaa_resolved = True
-                    self._render_weighted_transparent_objects(transparent_objects, self._shape_transparent_shader)
-                else:
-                    self._render_sorted_transparent_objects(transparent_objects, self._shape_transparent_shader)
+                if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
+                    self._resolve_msaa_frame()
+                    msaa_resolved = True
+                self._render_transparent_objects(transparent_objects)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
@@ -2220,54 +2080,7 @@ class RendererGL:
         )
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
 
-    def _compute_oit_depth_reference(self, transparent_objects) -> float:
-        """Return the camera-space depth [m] of the transparent content.
-
-        Used to normalize the weighted-OIT depth weight, so the weighting stays
-        scale-independent for any scene size or unit convention.
-        """
-        camera_pos = np.asarray(self.camera.pos, dtype=np.float32)
-        camera_front = np.asarray(self.camera.get_front(), dtype=np.float32)
-        depths = [self._object_sort_depth(obj, camera_pos, camera_front) for _name, obj in transparent_objects]
-        depths = [d for d in depths if np.isfinite(d) and d > 0.0]
-        if depths:
-            return float(np.mean(depths))
-        return float(self.camera.pivot_distance)
-
-    def _can_use_weighted_transparency(self, scene_has_transparency: bool) -> bool:
-        gl = RendererGL.gl
-        if not scene_has_transparency:
-            return False
-        if not self.enable_weighted_transparency:
-            return False
-        if self._oit_fbo is None or self._oit_resolve_shader is None:
-            return False
-        if not hasattr(gl, "glBlendFunci"):
-            return False
-        return True
-
-    def _render_sorted_transparent_objects(self, transparent_objects, shader):
-        gl = RendererGL.gl
-        camera_pos = np.asarray(self.camera.pos, dtype=np.float32)
-        camera_front = np.asarray(self.camera.get_front(), dtype=np.float32)
-        transparent_objects = sorted(
-            transparent_objects,
-            key=lambda item: self._object_sort_depth(item[1], camera_pos, camera_front),
-            reverse=True,
-        )
-        gl.glEnable(gl.GL_BLEND)
-        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-        gl.glDepthMask(False)
-        shader.set_transparent_pass(False)
-        for _name, obj in transparent_objects:
-            if hasattr(obj, "render_sorted"):
-                obj.render_sorted(camera_pos, camera_front)
-            elif hasattr(obj, "render"):
-                obj.render()
-        gl.glDepthMask(True)
-        gl.glDisable(gl.GL_BLEND)
-
-    def _render_weighted_transparent_objects(self, transparent_objects, shader):
+    def _render_transparent_objects(self, transparent_objects):
         gl = RendererGL.gl
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._oit_fbo)
@@ -2275,17 +2088,13 @@ class RendererGL:
         gl.glClearBufferfv(gl.GL_COLOR, 1, (gl.GLfloat * 4)(1.0, 1.0, 1.0, 1.0))
 
         gl.glEnable(gl.GL_BLEND)
-        if hasattr(gl, "glBlendEquationi"):
-            gl.glBlendEquationi(0, gl.GL_FUNC_ADD)
-            gl.glBlendEquationi(1, gl.GL_FUNC_ADD)
+        gl.glBlendEquation(gl.GL_FUNC_ADD)
         gl.glBlendFunci(0, gl.GL_ONE, gl.GL_ONE)
         gl.glBlendFunci(1, gl.GL_ZERO, gl.GL_ONE_MINUS_SRC_COLOR)
         gl.glDepthMask(False)
-        shader.set_transparent_pass(True)
         for _name, obj in transparent_objects:
             if hasattr(obj, "render"):
                 obj.render()
-        shader.set_transparent_pass(False)
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
 
@@ -2421,11 +2230,6 @@ class RendererGL:
             else:
                 opaque_objects[name] = obj
         return opaque_objects, transparent_objects
-
-    def _object_sort_depth(self, obj, camera_pos, camera_front) -> float:
-        if hasattr(obj, "sort_depth"):
-            return obj.sort_depth(camera_pos, camera_front)
-        return -np.inf
 
     def _draw_sky(self):
         gl = RendererGL.gl
