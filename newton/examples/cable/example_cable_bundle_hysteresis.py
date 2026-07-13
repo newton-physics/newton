@@ -405,23 +405,31 @@ class Example:
         if self.sim_time < self.obstacle_release_time + 0.4:
             return
 
+        rest_positions = self.model.body_q.numpy()[:, :3]
         body_positions = self.state_0.body_q.numpy()[:, :3]
+        arc_length_ratios = []
         straightness = []
         for body_ids in self.cable_body_ids:
             points = body_positions[body_ids]
+            rest_points = rest_positions[body_ids]
             arc_length = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+            rest_arc_length = float(np.linalg.norm(np.diff(rest_points, axis=0), axis=1).sum())
             end_to_end = float(np.linalg.norm(points[-1] - points[0]))
+            arc_length_ratios.append(arc_length / rest_arc_length)
             straightness.append(end_to_end / max(arc_length, 1.0e-8))
 
+        arc_length_ratios = np.asarray(arc_length_ratios)
         straightness = np.asarray(straightness)
-        if not np.all(np.isfinite(straightness)):
-            raise ValueError("Cable straightness is not finite")
+        metrics = f"arc-length ratios={arc_length_ratios.round(3)}, straightness={straightness.round(3)}"
+        if not np.all(np.isfinite(arc_length_ratios)) or not np.all(np.isfinite(straightness)):
+            raise ValueError(f"Cable bundle metrics are not finite: {metrics}")
+        if np.min(arc_length_ratios) < 0.8 or np.max(arc_length_ratios) > 1.2:
+            raise ValueError(f"Cable bundle changed length excessively: {metrics}")
 
-        mean_straightness = float(np.mean(straightness))
-        if self.with_dahl and mean_straightness > 0.9:
-            raise ValueError(f"Dahl cable bundle did not retain curvature: mean straightness={mean_straightness:.4f}")
-        if not self.with_dahl and mean_straightness < 0.95:
-            raise ValueError(f"Elastic cable bundle did not recover: mean straightness={mean_straightness:.4f}")
+        if self.with_dahl and (np.min(straightness) < 0.5 or np.max(straightness) > 0.9):
+            raise ValueError(f"Dahl cable bundle did not retain plausible curvature: {metrics}")
+        if not self.with_dahl and np.min(straightness) < 0.9:
+            raise ValueError(f"Elastic cable bundle did not recover: {metrics}")
 
     @staticmethod
     def create_parser():

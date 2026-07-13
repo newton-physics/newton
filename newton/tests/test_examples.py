@@ -418,7 +418,7 @@ add_example_test(
     name="cable.example_cable_bundle_hysteresis",
     devices=cuda_test_devices,
     use_viewer=True,
-    test_options={"num-frames": 150},
+    test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
     test_suffix="dahl_retention",
 )
 add_example_test(
