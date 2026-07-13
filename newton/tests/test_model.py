@@ -828,7 +828,7 @@ class TestModelMesh(unittest.TestCase):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
         self.assertEqual(captured["threshold"], 0.2)
 
-    def test_mesh_approximation_coacd_fallback_drops_coacd_kwargs(self):
+    def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(
             1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
@@ -837,7 +837,7 @@ class TestModelMesh(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"coacd": None}), warnings.catch_warnings():
             warnings.simplefilter("ignore")
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
-        # coacd unavailable: the convex_hull fallback must not receive coacd-specific kwargs
+        # the documented threshold migration must keep working without coacd installed
         self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
 
     def test_mesh_approximation_ignores_non_mesh_shapes(self):
@@ -868,7 +868,6 @@ class TestModelMesh(unittest.TestCase):
         ):
             warnings.simplefilter("ignore")
             builder.approximate_meshes(method="convex_hull", shape_indices=[shape])
-        # the documented fallback: a failed convex hull becomes a bounding box, not the original mesh
         self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
         self.assertIsNone(builder.shape_source[shape])
 
