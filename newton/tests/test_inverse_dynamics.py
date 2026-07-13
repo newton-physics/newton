@@ -1921,15 +1921,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
     def test_inverse_dynamics_container_rejects_cable_joint(self):
-        """CABLE joints are unsupported; ``Model.inverse_dynamics()`` must reject them.
-
-        Inverse dynamics has no motion-subspace implementation for CABLE
-        (``jcalc_motion`` / ``jcalc_motion_subspace``) and ``eval_fk`` does not
-        reconstruct it, so its outputs are undefined. The container factory
-        raises a clear ``ValueError`` up front rather than letting the
-        graph-capturable :func:`~newton.eval_inverse_dynamics` emit undefined
-        (intermittently non-finite) results.
-        """
+        """Inverse dynamics rejects CABLE until its RNEA relative-pose path is enabled."""
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
         b = newton.ModelBuilder()
         link = b.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))

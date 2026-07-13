@@ -3544,11 +3544,11 @@ def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device)
 
 
 def _cable_eval_ik_fk_roundtrip_impl(test: unittest.TestCase, device):
-    """CABLE round-trips body_q -> joint_q (eval_ik) -> body_q (eval_fk).
+    """CABLE round-trips body state through its q7/qd6 joint state.
 
     Mirrors the contract for every other joint: eval_ik recovers the relative
-    anchor pose into joint_q, and eval_fk reconstructs the rod from it. This does
-    not rely on the builder's joint_q seeding (joint_q is zeroed first).
+    anchor pose and twist, and eval_fk reconstructs the rod from them. This does
+    not rely on the builder's joint-state seeding.
     """
     # Build a curved open rod.
     num_segments = 10
@@ -3580,30 +3580,67 @@ def _cable_eval_ik_fk_roundtrip_impl(test: unittest.TestCase, device):
 
     joint_types = model.joint_type.numpy()
     test.assertTrue(np.all(joint_types == int(newton.JointType.CABLE)), msg="expected only CABLE joints")
+    np.testing.assert_array_equal(
+        np.diff(model.joint_q_start.numpy()),
+        np.full(len(rod_joints), 7, dtype=np.int32),
+        err_msg="each CABLE joint should have a seven-coordinate relative pose",
+    )
+    np.testing.assert_array_equal(
+        np.diff(model.joint_qd_start.numpy()),
+        np.full(len(rod_joints), 6, dtype=np.int32),
+        err_msg="each CABLE joint should have a six-dimensional relative twist",
+    )
+    np.testing.assert_array_equal(
+        model.joint_dof_dim.numpy(),
+        np.tile(np.array([[3, 3]], dtype=np.int32), (len(rod_joints), 1)),
+        err_msg="CABLE tangent should contain three linear and three angular axes",
+    )
+    material_ke = model.joint_target_ke.numpy().reshape(len(rod_joints), 6)
+    np.testing.assert_allclose(
+        material_ke[:, :3],
+        1.0e5,
+        rtol=0.0,
+        atol=0.0,
+        err_msg="isotropic stretch/shear stiffness should fill the linear tangent block",
+    )
+    np.testing.assert_allclose(
+        material_ke[:, 3:],
+        10.0,
+        rtol=0.0,
+        atol=0.0,
+        err_msg="isotropic bend/twist stiffness should fill the angular tangent block",
+    )
 
     built_body_q = state.body_q.numpy().copy()
+    built_body_qd = state.body_qd.numpy().copy()
+    for body_index in range(built_body_qd.shape[0]):
+        scale = float(body_index + 1)
+        built_body_qd[body_index] = np.array(
+            [0.07 * scale, -0.03 * scale, 0.02 * scale, 0.04 * scale, 0.01 * scale, -0.025 * scale],
+            dtype=built_body_qd.dtype,
+        )
+    state.body_qd.assign(built_body_qd)
 
-    # Wipe joint_q so the round-trip can't lean on the builder's seeding.
+    # Wipe joint state so the round-trip cannot lean on builder initialization.
     state.joint_q.zero_()
+    state.joint_qd.zero_()
 
-    # eval_ik: recover joint_q (relative anchor pose) from the built body_q.
-    # CABLE joint_qd must be left untouched (its DOFs are stiffness slots, not a twist).
-    joint_qd_before = state.joint_qd.numpy().copy()
+    # eval_ik: recover relative anchor poses and twists from maximal body state.
     newton.eval_ik(model, state, state.joint_q, state.joint_qd)
 
     jq = state.joint_q.numpy()
+    jqd = state.joint_qd.numpy()
     test.assertTrue(np.any(np.abs(jq) > 1.0e-6), msg="eval_ik should populate CABLE joint_q")
-    np.testing.assert_array_equal(
-        state.joint_qd.numpy(),
-        joint_qd_before,
-        err_msg="eval_ik must not modify joint_qd for CABLE joints",
-    )
+    test.assertTrue(np.any(np.abs(jqd) > 1.0e-6), msg="eval_ik should populate CABLE joint_qd")
 
-    # Scramble every non-root body, then rebuild purely from the recovered joint_q.
+    # Scramble every non-root body, then rebuild purely from recovered joint state.
     body_q = built_body_q.copy()
     body_q[1:, 0:3] += 3.0
     body_q[1:, 3:7] = np.array([0.0, 0.0, 0.0, 1.0], dtype=body_q.dtype)
     state.body_q.assign(body_q)
+    body_qd = built_body_qd.copy()
+    body_qd[1:] = 0.0
+    state.body_qd.assign(body_qd)
 
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
@@ -3622,6 +3659,117 @@ def _cable_eval_ik_fk_roundtrip_impl(test: unittest.TestCase, device):
         rtol=0.0,
         atol=1.0e-4,
         err_msg="eval_ik -> eval_fk should reproduce cable body orientations",
+    )
+    np.testing.assert_allclose(
+        state.body_qd.numpy(),
+        built_body_qd,
+        rtol=0.0,
+        atol=1.0e-4,
+        err_msg="eval_ik -> eval_fk should reproduce cable body velocities",
+    )
+
+
+def _cable_eval_jacobian_graph_impl(test: unittest.TestCase, device):
+    """CABLE exposes a six-column Jacobian through graph-capturable FK/IK."""
+    builder = newton.ModelBuilder(gravity=0.0)
+    child = builder.add_link(
+        xform=wp.transform(
+            wp.vec3(0.7, -0.2, 0.4),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.4),
+        ),
+        com=wp.vec3(0.2, -0.1, 0.05),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    joint = builder.add_joint_cable(
+        parent=-1,
+        child=child,
+        parent_xform=wp.transform(
+            wp.vec3(0.1, 0.2, -0.1),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2),
+        ),
+        child_xform=wp.transform(
+            wp.vec3(-0.15, 0.05, 0.1),
+            wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.1),
+        ),
+    )
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    qd = np.array([0.2, -0.3, 0.4, 0.5, -0.6, 0.7], dtype=np.float32)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    jacobian = wp.empty(
+        (model.articulation_count, model.max_joints_per_articulation * 6, model.max_dofs_per_articulation),
+        dtype=float,
+        device=device,
+    )
+    motion_subspace = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
+
+    def evaluate():
+        newton.eval_ik(model, state, state.joint_q, state.joint_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        newton.eval_jacobian(model, state, J=jacobian, joint_S_s=motion_subspace)
+
+    _run_sim_loop(evaluate, 2, device)
+
+    jacobian_np = jacobian.numpy()[0]
+    joint_qd_np = state.joint_qd.numpy()
+    body_qd_from_jacobian = jacobian_np @ joint_qd_np
+    np.testing.assert_allclose(
+        body_qd_from_jacobian,
+        state.body_qd.numpy()[child],
+        rtol=0.0,
+        atol=1.0e-5,
+        err_msg="CABLE Jacobian should map qd6 to the public child body twist",
+    )
+    test.assertTrue(np.isfinite(jacobian_np).all(), msg="CABLE Jacobian must remain finite under graph replay")
+
+
+def _cable_vbd_ik_fk_sync_impl(test: unittest.TestCase, device):
+    """Explicit IK synchronization preserves maximal VBD cable body state."""
+    model, state0, state1, control, _rod_bodies = _build_cable_chain(device, num_links=6)
+    contacts = model.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=5)
+
+    for _ in range(12):
+        state0.clear_forces()
+        model.collide(state0, contacts)
+        solver.step(state0, state1, control, contacts, 1.0 / 120.0)
+        state0, state1 = state1, state0
+
+    body_q_before = state0.body_q.numpy().copy()
+    body_qd_before = state0.body_qd.numpy().copy()
+    test.assertGreater(float(np.max(np.abs(body_qd_before))), 1.0e-4, msg="VBD cable should be moving before sync")
+
+    # Maximal VBD owns body state. IK explicitly synchronizes the derived cable
+    # joint state before FK is used by a reduced-coordinate consumer.
+    newton.eval_ik(model, state0, state0.joint_q, state0.joint_qd)
+    test.assertGreater(
+        float(np.max(np.abs(state0.joint_qd.numpy()))),
+        1.0e-4,
+        msg="IK should recover the moving cable's relative twists",
+    )
+    newton.eval_fk(model, state0.joint_q, state0.joint_qd, state0)
+
+    body_q_after = state0.body_q.numpy()
+    np.testing.assert_allclose(
+        body_q_after[:, :3],
+        body_q_before[:, :3],
+        rtol=0.0,
+        atol=1.0e-4,
+        err_msg="IK synchronization followed by FK must not snap a VBD cable",
+    )
+    quat_dots = np.abs(np.sum(body_q_after[:, 3:7] * body_q_before[:, 3:7], axis=1))
+    np.testing.assert_allclose(quat_dots, 1.0, rtol=0.0, atol=1.0e-4)
+    np.testing.assert_allclose(
+        state0.body_qd.numpy(),
+        body_qd_before,
+        rtol=0.0,
+        atol=1.0e-4,
+        err_msg="IK synchronization followed by FK must preserve VBD cable velocities",
     )
 
 
@@ -4517,6 +4665,18 @@ add_function_test(
     TestCable,
     "test_cable_eval_ik_fk_roundtrip",
     _cable_eval_ik_fk_roundtrip_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_eval_jacobian_graph",
+    _cable_eval_jacobian_graph_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_vbd_ik_fk_sync",
+    _cable_vbd_ik_fk_sync_impl,
     devices=devices,
 )
 add_function_test(

@@ -304,7 +304,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), r)
             v_j = wp.spatial_vector(wp.vec3(), w)
 
-        if type == JointType.FREE or type == JointType.DISTANCE:
+        if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
             t = wp.transform(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
@@ -317,15 +317,6 @@ def eval_single_articulation_fk(
 
             X_j = t
             v_j = v
-
-        if type == JointType.CABLE:
-            # CABLE stores its relative anchor pose in joint_q (like FREE), so FK
-            # rebuilds the rod. Its 2 DOFs are currently strain rates, not a body
-            # velocity, so v_j=0.
-            X_j = wp.transform(
-                wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
-                wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
-            )
 
         if type == JointType.D6:
             pos = wp.vec3(0.0)
@@ -405,8 +396,8 @@ def eval_single_articulation_fk(
         # Transform joint motion into world space.
         linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            # FREE / DISTANCE joint linear DOFs follow Newton's COM-velocity
+        if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
+            # FREE / DISTANCE / CABLE joint linear DOFs follow Newton's COM-velocity
             # convention, so convert the relative child COM twist to an
             # origin-referenced twist before the tree recurrence.
             v_joint_origin = com_twist_to_origin_twist(
@@ -520,12 +511,11 @@ def eval_fk(
 
     .. note::
 
-        :attr:`~newton.JointType.CABLE` joints store their relative anchor pose
-        (3 translation + 4 quaternion) in :attr:`~newton.Model.joint_q`, so
-        :func:`newton.eval_fk` reconstructs cable body transforms like a FREE
-        joint. Their velocity contribution is zero (the two cable DOFs are VBD
-        stretch/bend slots); cable dynamics are advanced by
-        :class:`newton.solvers.SolverVBD`.
+        :attr:`~newton.JointType.CABLE` joints use the same relative-pose and
+        relative-twist layout as :attr:`~newton.JointType.FREE`, so
+        :func:`newton.eval_fk` reconstructs both their body transforms and
+        velocities. Maximal-coordinate solvers such as
+        :class:`newton.solvers.SolverVBD` still advance cable body state directly.
 
     Args:
         model: The model to evaluate.
@@ -790,7 +780,7 @@ def eval_articulation_ik(
     if type == JointType.FIXED:
         return
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
@@ -817,25 +807,6 @@ def eval_articulation_ik(
         joint_qd[qd_start + 3] = w_err_c[0]
         joint_qd[qd_start + 4] = w_err_c[1]
         joint_qd[qd_start + 5] = w_err_c[2]
-
-        return
-
-    if type == JointType.CABLE:
-        # CABLE's joint_q is the relative anchor pose X_j = inv(X_wpj) * X_wcj,
-        # the same quantity FREE stores, so eval_fk can reconstruct the rod. Its
-        # 2 DOFs are currently strain rates, not a body velocity, so joint_qd is
-        # left untouched.
-        q_pc = wp.quat_inverse(q_p) * q_c
-        x_err_c = wp.quat_rotate_inv(q_p, x_err)
-
-        joint_q[q_start + 0] = x_err_c[0]
-        joint_q[q_start + 1] = x_err_c[1]
-        joint_q[q_start + 2] = x_err_c[2]
-
-        joint_q[q_start + 3] = q_pc[0]
-        joint_q[q_start + 4] = q_pc[1]
-        joint_q[q_start + 5] = q_pc[2]
-        joint_q[q_start + 6] = q_pc[3]
 
         return
 
@@ -961,25 +932,24 @@ def eval_ik(
 
 
 @wp.func
-def write_free_distance_motion_subspace(
+def write_relative_pose_motion_subspace(
     X_pa_world: wp.transform,
     x_child_com_world: wp.vec3,
     qd_start: int,
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
-    """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
+    """Write the six motion-subspace columns for a relative-pose joint.
 
-    Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
-    the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
-    column layout. Linear DOFs act at the child body's COM; angular DOFs are
-    world-aligned axes expressed through ``X_pa_world``.
+    FREE, DISTANCE, and CABLE share this column layout. Linear DOFs act at the
+    child body's COM; angular DOFs are world-aligned axes expressed through
+    ``X_pa_world``.
 
     Args:
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
             to rotate the joint's parent-anchor axes into the world frame.
             This is *not* the classical Featherstone ``X_sc`` (spatial-to-
-            child); Newton's FREE/DISTANCE joint coordinates live in the
+            child); Newton's FREE/DISTANCE/CABLE joint coordinates live in the
             parent-anchor basis.
         x_child_com_world: World-space position of the child body's COM.
         qd_start: Starting velocity-DOF index for this joint.
@@ -1037,10 +1007,9 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        CABLE joints are not currently supported. CABLE joints have complex,
-        configuration-dependent motion subspaces (dynamic stretch direction and
-        isotropic angular DOF) and are primarily designed for VBD solver.
-        If encountered, their Jacobian columns will remain zero.
+        CABLE joints use the same six-dimensional relative-twist motion subspace
+        as FREE/DISTANCE joints. Their stretch/shear/bend/twist response is a
+        material-energy concern and does not change this kinematic tangent.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1094,9 +1063,13 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
-    elif joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
+    elif (
+        joint_type_value == JointType.FREE
+        or joint_type_value == JointType.DISTANCE
+        or joint_type_value == JointType.CABLE
+    ):
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
-        write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
+        write_relative_pose_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
 
 @wp.kernel

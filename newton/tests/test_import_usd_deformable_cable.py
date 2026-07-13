@@ -239,11 +239,12 @@ class TestUSDDeformableCable(unittest.TestCase):
             expected_stretch = stretch_mod * area / seg_len
             expected_bend = bend_mod * inertia / seg_len
 
-            # Cable joints store stretch in the linear DOF target_ke, bend in the angular.
+            # Cable joints use three linear and three angular tangent DOFs. The
+            # current isotropic material replicates each grouped coefficient.
             dof0 = builder.joint_qd_start[j0]
             ke = builder.joint_target_ke
             self.assertAlmostEqual(ke[dof0], expected_stretch, delta=expected_stretch * 1e-3)
-            self.assertAlmostEqual(ke[dof0 + 1], expected_bend, delta=expected_bend * 1e-3)
+            self.assertAlmostEqual(ke[dof0 + 3], expected_bend, delta=expected_bend * 1e-3)
 
             # The as-authored material - including the dropped shear/twist moduli - is preserved.
             attrs = result["path_cable_attrs"]["/World/Cable"]

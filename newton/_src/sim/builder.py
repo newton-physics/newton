@@ -4950,16 +4950,18 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
-        """Adds a cable joint to the model. It has two degrees of freedom: one linear (stretch)
-        that constrains the distance between the attachment points, and one angular (bend/twist)
-        that penalizes the relative rotation of the attachment frames.
+        """Adds a cable joint to the model. Its six-dimensional relative twist is
+        acted on by an isotropic linear stretch/shear energy and an isotropic
+        angular bend/twist energy.
 
         .. note::
 
-            Cable joints have two velocity DOFs (stretch and bend/twist), while
-            ``joint_q`` stores the full relative anchor pose. This lets
-            :func:`newton.eval_fk` reconstruct cable bodies like other joints;
-            :class:`newton.solvers.SolverVBD` advances the cable dynamics.
+            Cable joints use a full relative anchor pose in ``joint_q`` and a
+            six-dimensional relative twist in ``joint_qd``. The current VBD cable
+            material is isotropic: ``stretch_stiffness`` is replicated over the
+            three linear axes and ``bend_stiffness`` over the three angular axes.
+            :class:`newton.solvers.SolverVBD` still advances maximal-coordinate
+            cable body state directly.
 
         Args:
             parent: The index of the parent body.
@@ -4985,15 +4987,25 @@ class ModelBuilder:
             The index of the added joint.
 
         """
-        # Linear DOF (stretch)
+        # Use the standard six-dimensional tangent layout. The current VBD cable
+        # model groups stretch/shear into one isotropic linear coefficient and
+        # bend/twist into one isotropic angular coefficient, so replicate those
+        # values across each three-axis block. This preserves existing dynamics
+        # while making joint_qd a physical relative twist rather than a pair of
+        # material-parameter indexing slots.
         se_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         se_kd = 0.0 if stretch_damping is None else stretch_damping
-        ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
-
-        # Angular DOF (bend/twist)
         bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
         bend_kd = 0.0 if bend_damping is None else bend_damping
-        ax_ang = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
+
+        linear_axes = [
+            ModelBuilder.JointDofConfig(axis=axis, target_ke=se_ke, target_kd=se_kd)
+            for axis in (Axis.X, Axis.Y, Axis.Z)
+        ]
+        angular_axes = [
+            ModelBuilder.JointDofConfig(axis=axis, target_ke=bend_ke, target_kd=bend_kd)
+            for axis in (Axis.X, Axis.Y, Axis.Z)
+        ]
 
         return self.add_joint(
             JointType.CABLE,
@@ -5001,8 +5013,8 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[ax_lin],
-            angular_axes=[ax_ang],
+            linear_axes=linear_axes,
+            angular_axes=angular_axes,
             label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
