@@ -966,6 +966,8 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
     return the resulting world-space contact normal (asserting a hit)."""
     count = wp.zeros(1, dtype=wp.int32, device=device)
     contact_particle = wp.empty(1, dtype=wp.int32, device=device)
+    contact_indices = wp.empty(1, dtype=wp.vec3i, device=device)
+    contact_barycentric = wp.empty(1, dtype=wp.vec3, device=device)
     contact_shape = wp.empty(1, dtype=wp.int32, device=device)
     contact_body_pos = wp.empty(1, dtype=wp.vec3, device=device)
     contact_body_vel = wp.empty(1, dtype=wp.vec3, device=device)
@@ -999,6 +1001,8 @@ def _launch_open_box_soft_contact(test, device, mesh_id, points, mesh_properties
         outputs=[
             count,
             contact_particle,
+            contact_indices,
+            contact_barycentric,
             contact_shape,
             contact_body_pos,
             contact_body_vel,
