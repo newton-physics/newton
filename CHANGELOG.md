@@ -102,7 +102,6 @@
 - Fix `SolverXPBD` rigid restitution activation so contact thickness is not double-counted after applying contact offsets. (#3034)
 - Fix `SolverKamino` contact filtering and constraint stabilization so gap/margin contacts are handled consistently, positive-distance contacts can be filtered as configured, and converted contact forces/wrenches populate matching Newton contact slots for `SensorContact`. (#2908)
 - Fix `SolverMuJoCo` convergence tolerance scaling for models with kinematic bodies.
-- Fix Style3D cloth examples intermittently producing non-finite particle state on CPU by not using graph capture, which cannot record the solver's host-side operations.
 - Fix `SolverMuJoCo` inertia randomization for bodies initialized with diagonal inertia.
 - Fix `SolverMuJoCo` static worldbody geometry poses so offset batched worlds collide with their local geometry.
 - Fix memory growth in the Style3D solver when CUDA Graph capture is disabled
