@@ -661,6 +661,41 @@ def parse_usd(
         axes = mass_api.GetPrincipalAxesAttr().Get()
         return axes if axes is not None and axes != Gf.Quatf(0.0) else None
 
+    # WORKAROUND: UsdPhysicsRigidBodyAPI::ComputeMassProperties reads MassAPI attributes
+    # into uninitialized locals (_ParseMassApi/_GetCoM in pxr/usd/usdPhysics/rigidBodyAPI.cpp;
+    # usd-core <= 26.3, unfixed on dev as of 2026-07). A blocked attribute makes Get() fail,
+    # leaving stack garbage that can pass the authored-value checks and yield nondeterministic
+    # mass properties. Bypass ComputeMassProperties for bodies whose traversal would see a
+    # blocked attribute and use the accumulated-property fallback instead. Revert (delete the
+    # two helpers below and the bypass at the call site) once the minimum supported usd-core
+    # ships the upstream fix. Density is excluded: it is read into an initialized struct
+    # member upstream and blocked density already resolves to "unspecified".
+    def _mass_api_has_blocked_attrs(prim: Usd.Prim) -> bool:
+        mass_api = UsdPhysics.MassAPI(prim)
+        if not mass_api:
+            return False
+        attrs = (
+            mass_api.GetMassAttr(),
+            mass_api.GetDiagonalInertiaAttr(),
+            mass_api.GetPrincipalAxesAttr(),
+            mass_api.GetCenterOfMassAttr(),
+        )
+        return any(attr.GetResolveInfo().ValueIsBlocked() for attr in attrs)
+
+    def _mass_computer_sees_blocked_attrs(body_prim: Usd.Prim) -> bool:
+        """Mirror ComputeMassProperties' traversal: the body prim and colliders below it,
+        pruning subtrees owned by nested rigid bodies."""
+        if _mass_api_has_blocked_attrs(body_prim):
+            return True
+        it = iter(Usd.PrimRange(body_prim))
+        for prim in it:
+            if prim != body_prim and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                it.PruneChildren()
+                continue
+            if prim.HasAPI(UsdPhysics.CollisionAPI) and _mass_api_has_blocked_attrs(prim):
+                return True
+        return False
+
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
 
@@ -3851,9 +3886,14 @@ def parse_usd(
             # Compute baseline mass properties via mass computer when at least one property needs resolving.
             if not (has_effective_mass and has_effective_inertia and has_effective_com):
                 rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
-                cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
-                    _get_collision_mass_information
-                )
+                if _mass_computer_sees_blocked_attrs(prim):
+                    # See WORKAROUND note on _mass_api_has_blocked_attrs: blocked attributes
+                    # poison ComputeMassProperties; force the accumulated-property fallback.
+                    cmp_mass = -1.0
+                else:
+                    cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
+                        _get_collision_mass_information
+                    )
                 if cmp_mass < 0.0 or not math.isfinite(cmp_mass):
                     # ComputeMassProperties failed to discover colliders (e.g. shapes
                     # created by schema resolvers are not real USD prims) or aggregated

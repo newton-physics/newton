@@ -7308,12 +7308,12 @@ def Xform "Articulation" (
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        for name in ("Unauthored", "Blocked", "BlockedCom"):
+        for name in ("Unauthored", "Blocked", "BlockedCom", "BlockedCollider"):
             body_path = f"/World/{name}"
             body = UsdGeom.Xform.Define(stage, body_path)
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
             mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
-            if name != "Unauthored":
+            if name in ("Blocked", "BlockedCom"):
                 mass_api.CreateMassAttr().Set(5.0)
                 mass_api.CreateDensityAttr().Set(2000.0)
                 mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0))
@@ -7333,22 +7333,22 @@ def Xform "Articulation" (
             collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
             collider.CreateSizeAttr().Set(0.2)
             UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            if name == "BlockedCollider":
+                collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+                collider_mass_api.CreateMassAttr().Set(5.0)
+                collider_mass_api.GetMassAttr().Block()
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
 
         unauthored = result["path_body_map"]["/World/Unauthored"]
-        blocked = result["path_body_map"]["/World/Blocked"]
-        self.assertAlmostEqual(builder.body_mass[blocked], builder.body_mass[unauthored], places=6)
-        np.testing.assert_allclose(
-            builder.body_inertia[blocked], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
-        )
-        np.testing.assert_allclose(builder.body_com[blocked], builder.body_com[unauthored], atol=1e-6, rtol=1e-6)
-        # A blocked centerOfMass must not crash the import, but inertia/COM equality cannot be
-        # asserted: OpenUSD's ComputeMassProperties reads the blocked attribute internally and
-        # aggregates with uninitialized data (pre-existing upstream behavior, same on main).
-        blocked_com = result["path_body_map"]["/World/BlockedCom"]
-        self.assertAlmostEqual(builder.body_mass[blocked_com], builder.body_mass[unauthored], places=6)
+        for name in ("Blocked", "BlockedCom", "BlockedCollider"):
+            body_idx = result["path_body_map"][f"/World/{name}"]
+            self.assertAlmostEqual(builder.body_mass[body_idx], builder.body_mass[unauthored], places=6)
+            np.testing.assert_allclose(
+                builder.body_inertia[body_idx], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
+            )
+            np.testing.assert_allclose(builder.body_com[body_idx], builder.body_com[unauthored], atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_invalid_body_values_warn(self):
