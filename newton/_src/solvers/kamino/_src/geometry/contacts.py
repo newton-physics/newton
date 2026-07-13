@@ -857,7 +857,7 @@ def make_convert_contacts_newton_to_kamino(
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
 ):
     """
-    Generates a kernel to Newton contacts to the Kamino format.
+    Generates a kernel to convert Newton contacts to the Kamino format.
 
     Args:
         friction_mix_mode: The mixing mode to use for friction.
@@ -867,7 +867,7 @@ def make_convert_contacts_newton_to_kamino(
         A kernel function that converts Newton contacts to the Kamino format.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def _convert_contacts_newton_to_kamino(
         # Inputs:
         num_worlds: wp.int32,
