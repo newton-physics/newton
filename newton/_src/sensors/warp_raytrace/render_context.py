@@ -300,10 +300,10 @@ class RenderContext:
             if hdr_color_image is not None:
                 hdr_color_image = hdr_color_image.reshape(self.world_count * camera_count * width * height)
 
-            kernel_cache_key = hash((self.config, self.state, clear_data, kernel_block_dim))
+            kernel_cache_key = hash((config, self.state, clear_data, kernel_block_dim))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
-                render_kernel = create_kernel(self.config, self.state, clear_data, block_dim=kernel_block_dim)
+                render_kernel = create_kernel(config, self.state, clear_data, block_dim=kernel_block_dim)
                 self.kernel_cache[kernel_cache_key] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
