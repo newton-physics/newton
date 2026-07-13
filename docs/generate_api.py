@@ -204,8 +204,8 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     else:
         module = importlib.import_module(mod_name)
 
-    symbols = public_symbols(module)
     deprecated_messages = dict(getattr(module, "__deprecated_symbols__", {}))
+    symbols = list(dict.fromkeys([*public_symbols(module), *deprecated_messages]))
     if uses_internal_solver_module:
         # Keep solver classes centralized in newton.solvers.
         symbols = [name for name in symbols if not name.startswith("Solver")]

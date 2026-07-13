@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
-from typing import TYPE_CHECKING
 
 from ._src.geometry import (
     BroadPhaseAllPairs,
@@ -33,12 +32,7 @@ from ._src.geometry.narrow_phase import NarrowPhase
 from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from ._src.geometry.sdf_utils import compute_offset_mesh, create_empty_sdf_data
 
-if TYPE_CHECKING:
-    from ._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND
-
 __all__ = [
-    "MATCH_BROKEN",
-    "MATCH_NOT_FOUND",
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
