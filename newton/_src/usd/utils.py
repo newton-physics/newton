@@ -2509,30 +2509,21 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
 
 
 def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
-    """Get the material bound to a prim."""
+    """Get the material bound to a prim.
+
+    Resolution is UsdShade's canonical ``ComputeBoundMaterial``: ancestor bindings, binding
+    strength, collection-based bindings, and purpose all follow the USD spec instead of a
+    partial reimplementation. Prims that author ``material:binding`` without applying
+    ``MaterialBindingAPI`` are invalid USD; resolution still tolerates them but emits one
+    ``TfWarn`` per query (there is no Python-side suppression API, and instanced prims cannot
+    be normalized in-session). Import caches material resolution per prim, so the warning
+    volume is bounded by the number of non-conformant prims — fix such assets at source with
+    ``usdchecker`` or ``usd-validation-nvidia``.
+    """
     if not target_prim or not target_prim.IsValid():
         return None
-    if target_prim.HasAPI(UsdShade.MaterialBindingAPI):
-        binding_api = UsdShade.MaterialBindingAPI(target_prim)
-        bound_material, _ = binding_api.ComputeBoundMaterial()
-        return bound_material
-
-    # Some assets author material:binding relationships without applying MaterialBindingAPI.
-    rels = [rel for rel in target_prim.GetRelationships() if rel.GetName().startswith("material:binding")]
-    if not rels:
-        return None
-    rels.sort(
-        key=lambda rel: (
-            0 if rel.GetName() == "material:binding" else 1 if rel.GetName() == "material:binding:preview" else 2
-        )
-    )
-    for rel in rels:
-        targets = rel.GetTargets()
-        if targets:
-            mat_prim = target_prim.GetStage().GetPrimAtPath(targets[0])
-            if mat_prim and mat_prim.IsValid():
-                return UsdShade.Material(mat_prim)
-    return None
+    bound_material, _ = UsdShade.MaterialBindingAPI(target_prim).ComputeBoundMaterial()
+    return bound_material if bound_material else None
 
 
 def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:

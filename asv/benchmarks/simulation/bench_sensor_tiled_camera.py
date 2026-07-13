@@ -258,11 +258,13 @@ class _TiledCameraSceneRig:
 
         light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
         self.sensor = SensorTiledCamera(model=self.model)
-        self.sensor.render_config.render_order = RENDER_ORDER
-        self.sensor.render_config.tile_width = RENDER_TILE_WIDTH
-        self.sensor.render_config.tile_height = RENDER_TILE_HEIGHT
+        self.sensor.default_render_config.render_order = RENDER_ORDER
+        self.sensor.default_render_config.tile_width = RENDER_TILE_WIDTH
+        self.sensor.default_render_config.tile_height = RENDER_TILE_HEIGHT
+        self.sensor.default_render_config.enable_shadows = True
+        self.sensor.default_render_config.enable_textures = True
         self.sensor.utils.create_default_light(enable_shadows=True, direction=light_direction)
-        self.sensor.utils.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count))
+        self.sensor.utils.assign_checkerboard_material(shape_indices=np.arange(self.model.shape_count, dtype=np.int32))
 
         camera = _look_at_transform(preset.camera_eye, preset.camera_target)
         self.camera_transforms = wp.array([[camera] * world_count], dtype=wp.transformf)
