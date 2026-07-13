@@ -3,7 +3,8 @@
 
 """Rendering benchmarks for the tiled camera sensor.
 
-``FastSensorTiledCamera`` measures Isaac Lab's Franka cabinet scene in CI. The
+``FastSensorTiledCamera`` and ``FastSensorTiledCameraPixel`` measure Isaac
+Lab's Franka cabinet scene with tiled and pixel-priority rendering in CI. The
 other scene benchmarks cover varying visual complexity and are intended for
 hill-climbing renderer performance:
 
@@ -44,6 +45,7 @@ from newton.sensors import SensorTiledCamera
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_SEKTION_CABINET_FOLDER = "assets/urdf/sektion_cabinet_model"
+ISAACGYM_ENVS_COMMIT = "aeed298638a1f7b5421b38f5f3cc2d1079b6d9c3"
 
 # Renderer configuration applied to every scene benchmark. These are benchmark
 # settings, not library defaults: SAH builds a higher-quality shape BVH
@@ -144,7 +146,9 @@ def _build_franka_cabinet() -> newton.ModelBuilder:
     Nucleus-hosted USD of the same asset).
     """
     cabinet_folder = newton.examples.download_external_git_folder(
-        ISAACGYM_ENVS_REPO_URL, ISAACGYM_SEKTION_CABINET_FOLDER
+        ISAACGYM_ENVS_REPO_URL,
+        ISAACGYM_SEKTION_CABINET_FOLDER,
+        ref=ISAACGYM_ENVS_COMMIT,
     )
     builder = newton.ModelBuilder()
     builder.add_urdf(
@@ -243,7 +247,14 @@ def _look_at_transform(
 class _TiledCameraSceneRig:
     """A scene replicated across worlds with a tiled camera sensor ready to render."""
 
-    def __init__(self, preset: ScenePreset, world_count: int, resolution: int, camera_fov_deg: float = 45.0):
+    def __init__(
+        self,
+        preset: ScenePreset,
+        world_count: int,
+        resolution: int,
+        render_order: SensorTiledCamera.RenderOrder,
+        camera_fov_deg: float = 45.0,
+    ):
         world = preset.build()
         _disable_collision_handling(world)
 
@@ -258,7 +269,7 @@ class _TiledCameraSceneRig:
 
         light_direction = wp.vec3f(*preset.light_direction) if preset.light_direction is not None else None
         self.sensor = SensorTiledCamera(model=self.model)
-        self.sensor.default_render_config.render_order = RENDER_ORDER
+        self.sensor.default_render_config.render_order = render_order
         self.sensor.default_render_config.tile_width = RENDER_TILE_WIDTH
         self.sensor.default_render_config.tile_height = RENDER_TILE_HEIGHT
         self.sensor.default_render_config.enable_shadows = True
@@ -294,9 +305,10 @@ class _SceneBenchmark:
 
     param_names = ["resolution", "world_count", "iterations"]
     scene: str
+    render_order = RENDER_ORDER
 
     def setup(self, resolution: int, world_count: int, iterations: int):
-        self.rig = _TiledCameraSceneRig(SCENES[self.scene], world_count, resolution)
+        self.rig = _TiledCameraSceneRig(SCENES[self.scene], world_count, resolution, self.render_order)
         # Compile and warm the render kernels for every output combination measured below.
         for color, depth in ((True, True), (True, False), (False, True)):
             self.rig.render(color=color, depth=depth)
@@ -331,6 +343,12 @@ class FastSensorTiledCamera(_SceneBenchmark):
     params = ([64], [4096], [50])
 
 
+class FastSensorTiledCameraPixel(_SceneBenchmark):
+    scene = "franka_cabinet"
+    render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+    params = ([64], [4096], [50])
+
+
 class TiledCameraShapes256(_SceneBenchmark):
     scene = "shapes_256"
     params = ([64], [4096], [50])
@@ -354,7 +372,7 @@ def write_preview_images(scene_names: list[str], output_dir: Path, image_size: i
     for name in scene_names:
         for world_count in PREVIEW_WORLD_COUNTS:
             worlds_per_row = math.isqrt(world_count)
-            rig = _TiledCameraSceneRig(SCENES[name], world_count, image_size // worlds_per_row)
+            rig = _TiledCameraSceneRig(SCENES[name], world_count, image_size // worlds_per_row, RENDER_ORDER)
             rig.render(color=True, depth=False)
             rgba = rig.sensor.utils.flatten_color_image_to_rgba(rig.color_image, worlds_per_row=worlds_per_row)
             path = output_dir / f"{name}_{world_count}_world{'s' if world_count > 1 else ''}.png"
@@ -392,6 +410,7 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "FastSensorTiledCamera": FastSensorTiledCamera,
+        "FastSensorTiledCameraPixel": FastSensorTiledCameraPixel,
         "TiledCameraQuadruped": TiledCameraQuadruped,
         "TiledCameraShapes256": TiledCameraShapes256,
     }
