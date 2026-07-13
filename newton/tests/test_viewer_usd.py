@@ -159,6 +159,7 @@ class TestViewerUSD(unittest.TestCase):
             points_prim.GetVisibilityAttr().Get(viewer._frame_index),
             UsdGeom.Tokens.invisible,
         )
+
     def test_log_points_renders_as_point_instancer_by_default(self):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()
