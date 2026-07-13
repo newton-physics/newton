@@ -56,25 +56,6 @@ def mesh_sdf_contact_search_precision(
 
 
 @wp.func
-def mesh_sdf_contact_inner_spatial_depth(
-    margin_sum: float,
-    gap_sum: float,
-    min_sdf_scale: float,
-    voxel_radius: float,
-    use_texture_sdf: bool,
-) -> float:
-    """Include one texture voxel of surface uncertainty in the inner tier.
-
-    Clamping the tolerance to the contact gap keeps the inner reduction depth
-    at or below the outer reduction depth. Non-texture paths remain unchanged.
-    """
-    inner_tolerance = float(0.0)
-    if use_texture_sdf:
-        inner_tolerance = voxel_radius * min_sdf_scale
-    return margin_sum + wp.min(inner_tolerance, gap_sum)
-
-
-@wp.func
 def mesh_sdf_contact_passes_inner_cull_consistency(
     distance_world: float,
     inner_contact_threshold: float,
@@ -1668,13 +1649,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
                                 margin_sum = triangle_mesh_margin + sdf_mesh_margin
-                                inner_spatial_depth = mesh_sdf_contact_inner_spatial_depth(
-                                    margin_sum,
-                                    gap_sum,
-                                    min_sdf_scale,
-                                    texture_voxel_radius,
-                                    use_texture_sdf_for_search,
-                                )
+                                inner_tolerance = float(0.0)
+                                if use_texture_sdf_for_search:
+                                    inner_tolerance = texture_voxel_radius * min_sdf_scale
+                                inner_spatial_depth = margin_sum + wp.min(inner_tolerance, gap_sum)
                                 export_and_reduce_contact_centered_two_spatial_depths(
                                     pair[0],
                                     pair[1],
