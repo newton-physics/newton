@@ -839,6 +839,22 @@ class TestModelMesh(unittest.TestCase):
         # coacd unavailable: the convex_hull fallback must not receive coacd-specific kwargs
         self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
 
+    def test_mesh_approximation_ignores_non_mesh_shapes(self):
+        builder = ModelBuilder()
+        box_prim = builder.add_shape_box(body=-1)
+        mesh = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        mesh_shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+        remeshed = builder.approximate_meshes(method="convex_hull", shape_indices=[box_prim, mesh_shape])
+        self.assertEqual(remeshed, {mesh_shape})
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.CONVEX_MESH)
+        # primitives and already-approximated convex meshes pass through any method unchanged
+        self.assertEqual(builder.approximate_meshes(method="bounding_box", shape_indices=[box_prim, mesh_shape]), set())
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.CONVEX_MESH)
+
     def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(
