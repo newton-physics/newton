@@ -174,7 +174,7 @@ class JointType(IntEnum):
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
     CABLE = 7
-    """Cable joint: relative pose (7 coordinates) and relative twist (6 DoF)."""
+    """Cable joint: 7-coordinate relative pose and 6-DoF relative twist."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -230,12 +230,10 @@ class JointType(IntEnum):
         cts_count = 6 - num_axes
         if self == JointType.BALL:
             cts_count = 3
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.CABLE:
             cts_count = 0
         elif self == JointType.FIXED:
             cts_count = 6
-        elif self == JointType.CABLE:
-            cts_count = 0
         return cts_count
 
 

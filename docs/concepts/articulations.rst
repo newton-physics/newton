@@ -27,7 +27,8 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
-of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``CABLE`` joints,
+of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``CABLE``
+joints,
 :attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
 frame: the linear slice is child-COM velocity and the angular slice is angular
 velocity in that same frame.
@@ -49,15 +50,10 @@ Cable joints
 ^^^^^^^^^^^^
 
 :attr:`newton.JointType.CABLE` uses the same kinematic state layout as a
-:attr:`~newton.JointType.FREE` joint: ``joint_q`` stores the relative pose as
-3D translation and a quaternion, while ``joint_qd`` stores the six-dimensional
-relative linear and angular velocity. :func:`newton.eval_fk` and
+:attr:`~newton.JointType.FREE` joint: ``joint_q`` stores a 7-coordinate relative
+pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
+relative twist. :func:`newton.eval_fk` and
 :func:`newton.eval_ik` convert between this joint state and body state.
-
-Cable stiffness and damping are material parameters stored in
-:attr:`newton.Model.joint_target_ke` and
-:attr:`newton.Model.joint_target_kd`; they do not determine the joint-state
-dimensions.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -319,7 +315,7 @@ Joint types
      - up to 6
      - up to 6
    * - ``JointType.CABLE``
-     - Cable joint with a full relative pose and twist; cable material energies act on its linear and angular modes
+     - Cable joint with a relative pose and twist
      - 7 (3D position + 4D quaternion)
      - 6
 

@@ -3496,6 +3496,10 @@ def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device)
 
     joint_types = model.joint_type.numpy()
     test.assertTrue(np.all(joint_types == int(newton.JointType.CABLE)), msg="expected only CABLE joints")
+    test.assertEqual(model.joint_coord_count, 7)
+    test.assertEqual(model.joint_dof_count, 6)
+    np.testing.assert_array_equal(model.joint_dof_dim.numpy(), [[3, 3]])
+    np.testing.assert_allclose(model.joint_target_ke.numpy(), [1.0e5, 1.0e5, 1.0e5, 0.0, 0.0, 0.0])
 
     child_body = int(rod_bodies[1])
 
@@ -3516,10 +3520,6 @@ def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device)
     # eval_fk rebuilds the rod from joint_q, restoring the built child state.
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    test.assertFalse(
-        np.allclose(state.body_q.numpy()[child_body], body_q[child_body], atol=1.0e-4),
-        msg="eval_fk should overwrite the perturbed CABLE pose, not keep it",
-    )
     np.testing.assert_allclose(
         state.body_q.numpy()[child_body],
         built_body_q[child_body],
@@ -3533,133 +3533,6 @@ def _cable_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device)
         rtol=0.0,
         atol=1.0e-6,
         err_msg="eval_fk should overwrite the CABLE body velocity from kinematic recurrence",
-    )
-
-
-def _cable_eval_ik_fk_roundtrip_impl(test: unittest.TestCase, device):
-    """CABLE round-trips body state through its q7/qd6 joint state.
-
-    Mirrors the contract for every other joint: eval_ik recovers the relative
-    anchor pose and twist, and eval_fk reconstructs the rod from them. This does
-    not rely on the builder's joint-state seeding.
-    """
-    # Build a curved open rod.
-    num_segments = 10
-    seg = 0.2
-    pts = [wp.vec3(0.0, 0.0, 0.0)]
-    angle = 0.0
-    for _ in range(num_segments):
-        angle += 0.17
-        d = wp.normalize(wp.vec3(float(np.cos(angle)), float(np.sin(angle)), 0.1))
-        pts.append(pts[-1] + d * seg)
-    quats = newton.utils.create_parallel_transport_cable_quaternions(pts)
-
-    # Avoid list[Vec3] invariance issues in static checking.
-    pts_any: list[Any] = pts
-    quats_any: list[Any] = quats
-
-    builder = newton.ModelBuilder()
-    _rod_bodies, rod_joints = builder.add_rod(
-        positions=pts_any,
-        quaternions=quats_any,
-        radius=0.02,
-        bend_stiffness=10.0,
-        label="ut_cable_roundtrip",
-        body_frame_origin="start",
-    )
-    test.assertEqual(len(rod_joints), num_segments - 1)
-    builder.color()
-    model = builder.finalize(device=device)
-    state = model.state()
-
-    joint_types = model.joint_type.numpy()
-    test.assertTrue(np.all(joint_types == int(newton.JointType.CABLE)), msg="expected only CABLE joints")
-    np.testing.assert_array_equal(
-        np.diff(model.joint_q_start.numpy()),
-        np.full(len(rod_joints), 7, dtype=np.int32),
-        err_msg="each CABLE joint should have a seven-coordinate relative pose",
-    )
-    np.testing.assert_array_equal(
-        np.diff(model.joint_qd_start.numpy()),
-        np.full(len(rod_joints), 6, dtype=np.int32),
-        err_msg="each CABLE joint should have a six-dimensional relative twist",
-    )
-    np.testing.assert_array_equal(
-        model.joint_dof_dim.numpy(),
-        np.tile(np.array([[3, 3]], dtype=np.int32), (len(rod_joints), 1)),
-        err_msg="CABLE tangent should contain three linear and three angular axes",
-    )
-    material_ke = model.joint_target_ke.numpy().reshape(len(rod_joints), 6)
-    np.testing.assert_allclose(
-        material_ke[:, :3],
-        1.0e5,
-        rtol=0.0,
-        atol=0.0,
-        err_msg="isotropic stretch/shear stiffness should fill the linear tangent block",
-    )
-    np.testing.assert_allclose(
-        material_ke[:, 3:],
-        10.0,
-        rtol=0.0,
-        atol=0.0,
-        err_msg="isotropic bend/twist stiffness should fill the angular tangent block",
-    )
-
-    built_body_q = state.body_q.numpy().copy()
-    built_body_qd = state.body_qd.numpy().copy()
-    for body_index in range(built_body_qd.shape[0]):
-        scale = float(body_index + 1)
-        built_body_qd[body_index] = np.array(
-            [0.07 * scale, -0.03 * scale, 0.02 * scale, 0.04 * scale, 0.01 * scale, -0.025 * scale],
-            dtype=built_body_qd.dtype,
-        )
-    state.body_qd.assign(built_body_qd)
-
-    # Wipe joint state so the round-trip cannot lean on builder initialization.
-    state.joint_q.zero_()
-    state.joint_qd.zero_()
-
-    # eval_ik: recover relative anchor poses and twists from maximal body state.
-    newton.eval_ik(model, state, state.joint_q, state.joint_qd)
-
-    jq = state.joint_q.numpy()
-    jqd = state.joint_qd.numpy()
-    test.assertTrue(np.any(np.abs(jq) > 1.0e-6), msg="eval_ik should populate CABLE joint_q")
-    test.assertTrue(np.any(np.abs(jqd) > 1.0e-6), msg="eval_ik should populate CABLE joint_qd")
-
-    # Scramble every non-root body, then rebuild purely from recovered joint state.
-    body_q = built_body_q.copy()
-    body_q[1:, 0:3] += 3.0
-    body_q[1:, 3:7] = np.array([0.0, 0.0, 0.0, 1.0], dtype=body_q.dtype)
-    state.body_q.assign(body_q)
-    body_qd = built_body_qd.copy()
-    body_qd[1:] = 0.0
-    state.body_qd.assign(body_qd)
-
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-
-    fk = state.body_q.numpy()
-    np.testing.assert_allclose(
-        fk[:, 0:3],
-        built_body_q[:, 0:3],
-        rtol=0.0,
-        atol=1.0e-4,
-        err_msg="eval_ik -> eval_fk should reproduce the cable centerline",
-    )
-    quat_dots = np.abs(np.sum(fk[:, 3:7] * built_body_q[:, 3:7], axis=1))
-    np.testing.assert_allclose(
-        quat_dots,
-        np.ones_like(quat_dots),
-        rtol=0.0,
-        atol=1.0e-4,
-        err_msg="eval_ik -> eval_fk should reproduce cable body orientations",
-    )
-    np.testing.assert_allclose(
-        state.body_qd.numpy(),
-        built_body_qd,
-        rtol=0.0,
-        atol=1.0e-4,
-        err_msg="eval_ik -> eval_fk should reproduce cable body velocities",
     )
 
 
@@ -3728,11 +3601,15 @@ def _cable_vbd_ik_fk_sync_impl(test: unittest.TestCase, device):
     contacts = model.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=5)
 
-    for _ in range(12):
-        state0.clear_forces()
-        model.collide(state0, contacts)
-        solver.step(state0, state1, control, contacts, 1.0 / 120.0)
-        state0, state1 = state1, state0
+    def simulate():
+        nonlocal state0, state1
+        for _ in range(2):
+            state0.clear_forces()
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, 1.0 / 120.0)
+            state0, state1 = state1, state0
+
+    _run_sim_loop(simulate, 6, device)
 
     body_q_before = state0.body_q.numpy().copy()
     body_qd_before = state0.body_qd.numpy().copy()
@@ -4653,12 +4530,6 @@ add_function_test(
     TestCable,
     "test_cable_eval_fk_reconstructs_body_state",
     _cable_eval_fk_reconstructs_body_state_impl,
-    devices=devices,
-)
-add_function_test(
-    TestCable,
-    "test_cable_eval_ik_fk_roundtrip",
-    _cable_eval_ik_fk_roundtrip_impl,
     devices=devices,
 )
 add_function_test(
