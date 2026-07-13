@@ -131,13 +131,16 @@ class SolverVBD(SolverBase, CouplingInterface):
     Buffer sizing:
         SolverVBD pre-allocates contact state from capacities populated by
         :class:`~newton.CollisionPipeline` when available; otherwise, the first
-        :meth:`step` lazily sizes buffers from ``Contacts``. During CUDA graph
-        recording, ordinary lazy resizing is supported only when Warp's memory pool
-        is enabled; otherwise, the solver raises with guidance to pre-size before
-        capture. Rigid contact history must be allocated before capture regardless
-        of memory-pool support. With ``rigid_contact_history=True``, construct
-        :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run one
-        uncaptured solver step before capture.
+        :meth:`step` lazily sizes buffers from ``Contacts``. During graph capture,
+        ordinary lazy resizing is supported on CPU and on CUDA with Warp's
+        stream-ordered memory pool enabled; otherwise the solver raises with
+        guidance to pre-size before capture. Rigid contact history is
+        cross-replay-persistent state, so it must always be allocated before
+        capture regardless of the device's allocation-during-capture support --
+        allocating it inside a graph records a `wp.zeros` fill that wipes the
+        warm-start buffers on every replay. With ``rigid_contact_history=True``,
+        construct :class:`~newton.CollisionPipeline` before ``SolverVBD``, or run
+        one uncaptured solver step before capture.
 
     References:
         - Anka He Chen, Ziheng Liu, Yin Yang, and Cem Yuksel. 2024. Vertex Block Descent. ACM Trans. Graph. 43, 4, Article 116 (July 2024), 16 pages.
@@ -328,7 +331,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Requires contacts with ``rigid_contact_match_index`` populated; use
                 ``CollisionPipeline(contact_matching="latest")`` for VBD warm-starting. Ignored
                 when ``integrate_with_external_rigid_solver=True`` or ``model.body_count == 0``.
-                For CUDA graph capture, construct :class:`~newton.CollisionPipeline` before
+                During graph capture, construct :class:`~newton.CollisionPipeline` before
                 ``SolverVBD`` so history is pre-allocated, or run one uncaptured solver step
                 before capture.
             rigid_contact_stick_motion_eps: Tangential contact residual threshold for marking hard
@@ -1724,7 +1727,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Raises:
             RuntimeError: If required rigid contact-matching data is unavailable, or contact-history storage would
-                need to be allocated or grown during CUDA graph capture.
+                need to be allocated or grown during graph capture.
         """
         self._apply_module_options()
         update_rigid = self._update_rigid_history
@@ -2056,11 +2059,17 @@ class SolverVBD(SolverBase, CouplingInterface):
         internal_rigid = model.body_count > 0 and not self.integrate_with_external_rigid_solver
         rigid_capacity = contacts.rigid_contact_max if contacts is not None else 0
 
+        # Rigid contact history is cross-replay-persistent state: allocating it
+        # during capture records a `wp.zeros` fill into the graph, which then
+        # re-zeros the warm-start buffers on every replay -- silently
+        # equivalent to `rigid_contact_history=False`. So this guard fires
+        # unconditionally when capturing, regardless of the device's
+        # allocation-during-capture support.
         if self.device.is_capturing and internal_rigid and self.rigid_contact_history:
             history_capacity = 0 if self._prev_contact_lambda is None else self._prev_contact_lambda.shape[0]
             if history_capacity < rigid_capacity:
                 raise RuntimeError(
-                    "SolverVBD contact history must be allocated before CUDA graph capture. "
+                    "SolverVBD contact history must be allocated before graph capture. "
                     "Construct CollisionPipeline before SolverVBD, or run one uncaptured solver step before capture."
                 )
 
