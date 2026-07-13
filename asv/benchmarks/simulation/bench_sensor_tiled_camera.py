@@ -3,14 +3,12 @@
 
 """Rendering benchmarks for the tiled camera sensor.
 
-``FastSensorTiledCamera`` measures render-order variants on a single Franka
-scene. The ``TiledCamera*`` scene benchmarks cover scenes of varying visual
-complexity, all rendered with the configuration in the constants below, and
-are intended for hill-climbing renderer performance:
+``FastSensorTiledCamera`` measures Isaac Lab's Franka cabinet scene in CI. The
+other scene benchmarks cover varying visual complexity and are intended for
+hill-climbing renderer performance:
 
-- ``franka``: a fixed-base Franka FR3 arm.
-- ``quadruped``: an ANYmal D quadruped in its nominal standing pose.
 - ``franka_cabinet``: Isaac Lab's Franka cabinet (open-drawer) scene.
+- ``quadruped``: an ANYmal D quadruped in its nominal standing pose.
 - ``shapes_256``: a grid of 256 primitive shapes.
 
 Each scene is described once as a :class:`ScenePreset` in :data:`SCENES` and is
@@ -31,7 +29,6 @@ wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
 import math
-import os
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -44,208 +41,6 @@ import newton.examples
 import newton.utils
 from newton import ShapeFlags
 from newton.sensors import SensorTiledCamera
-
-NICE_NAMES = {}
-ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR = "NEWTON_RUN_TILED_CAMERA_BENCHMARKS"
-TILED_BENCHMARK_METHODS = {
-    "time_rendering_tiled_color_depth",
-    "time_rendering_tiled_color_only",
-    "time_rendering_tiled_depth_only",
-}
-
-
-def run_tiled_camera_benchmarks():
-    return os.environ.get(ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR, "").lower() in {"1", "true", "yes", "on"}
-
-
-def nice_name(value):
-    def decorator(func):
-        func._nice_name = value
-        return func
-
-    return decorator
-
-
-def nice_name_collector():
-    def decorator(instance):
-        for name, attr in instance.__dict__.items():
-            if nice_name := getattr(attr, "_nice_name", None):
-                NICE_NAMES[name] = nice_name
-        return instance
-
-    return decorator
-
-
-@nice_name_collector()
-class FastSensorTiledCamera:
-    param_names = ["resolution", "world_count", "iterations"]
-    params = ([64], [4096], [50])
-
-    def __dir__(self):
-        names = super().__dir__()
-        if run_tiled_camera_benchmarks():
-            return names
-        return [name for name in names if name not in TILED_BENCHMARK_METHODS]
-
-    def setup(self, resolution: int, world_count: int, iterations: int):
-        self.device = wp.get_preferred_device()
-
-        franka = newton.ModelBuilder()
-        franka.add_urdf(
-            newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
-            floating=False,
-        )
-        COLLIDE = int(ShapeFlags.COLLIDE_SHAPES) | int(ShapeFlags.COLLIDE_PARTICLES)
-        franka.shape_flags = [int(f) & ~COLLIDE for f in franka.shape_flags]
-        franka.shape_collision_filter_pairs = []
-
-        scene = newton.ModelBuilder()
-        scene.replicate(franka, world_count)
-        scene.add_ground_plane()
-
-        self.model = scene.finalize()
-        self.state = self.model.state()
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
-
-        self.camera_transforms = wp.array(
-            [
-                [
-                    wp.transformf(
-                        wp.vec3f(2.4, 0.0, 0.8),
-                        wp.quatf(0.4187639653682709, 0.4224344491958618, 0.5708873867988586, 0.5659270882606506),
-                    )
-                ]
-                * world_count
-            ],
-            dtype=wp.transformf,
-        )
-
-        self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
-        self.tiled_camera_sensor.utils.create_default_light(enable_shadows=False)
-        self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
-
-        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
-            resolution, resolution, camera_fovs=math.radians(45.0)
-        )
-        self.color_image = self.tiled_camera_sensor.utils.create_color_image_output(resolution, resolution)
-        self.depth_image = self.tiled_camera_sensor.utils.create_depth_image_output(resolution, resolution)
-
-        self.model.bvh_build_shapes(self.state)
-        self.model.bvh_build_particles(self.state)
-        self.tiled_camera_sensor.sync_transforms(self.state)
-
-        # Warmup Kernels
-        if run_tiled_camera_benchmarks():
-            self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
-            self.tiled_camera_sensor.render_config.tile_width = 8
-            self.tiled_camera_sensor.render_config.tile_height = 8
-            for out_color, out_depth in [(True, True), (True, False), (False, True)]:
-                for _ in range(iterations):
-                    self.tiled_camera_sensor.update(
-                        self.state,
-                        self.camera_transforms,
-                        self.camera_rays,
-                        color_image=self.color_image if out_color else None,
-                        depth_image=self.depth_image if out_depth else None,
-                    )
-
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
-        for out_color, out_depth in [(True, True), (True, False), (False, True)]:
-            for _ in range(iterations):
-                self.tiled_camera_sensor.update(
-                    self.state,
-                    self.camera_transforms,
-                    self.camera_rays,
-                    color_image=self.color_image if out_color else None,
-                    depth_image=self.depth_image if out_depth else None,
-                )
-
-    @nice_name("Rendering (Pixel)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_pixel_priority_color_depth(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
-        for _ in range(iterations):
-            self.tiled_camera_sensor.update(
-                self.state,
-                self.camera_transforms,
-                self.camera_rays,
-                color_image=self.color_image,
-                depth_image=self.depth_image,
-            )
-        wp.synchronize()
-
-    @nice_name("Rendering (Pixel) (Color Only)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_pixel_priority_color_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
-        for _ in range(iterations):
-            self.tiled_camera_sensor.update(
-                self.state,
-                self.camera_transforms,
-                self.camera_rays,
-                color_image=self.color_image,
-            )
-        wp.synchronize()
-
-    @nice_name("Rendering (Pixel) (Depth Only)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_pixel_priority_depth_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
-        for _ in range(iterations):
-            self.tiled_camera_sensor.update(
-                self.state,
-                self.camera_transforms,
-                self.camera_rays,
-                depth_image=self.depth_image,
-            )
-        wp.synchronize()
-
-    @nice_name("Rendering (Tiled)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or not run_tiled_camera_benchmarks())
-    def time_rendering_tiled_color_depth(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_config.tile_width = 8
-        self.tiled_camera_sensor.render_config.tile_height = 8
-        for _ in range(iterations):
-            self.tiled_camera_sensor.update(
-                self.state,
-                self.camera_transforms,
-                self.camera_rays,
-                color_image=self.color_image,
-                depth_image=self.depth_image,
-            )
-        wp.synchronize()
-
-    @nice_name("Rendering (Tiled) (Color Only)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or not run_tiled_camera_benchmarks())
-    def time_rendering_tiled_color_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_config.tile_width = 8
-        self.tiled_camera_sensor.render_config.tile_height = 8
-        for _ in range(iterations):
-            self.tiled_camera_sensor.update(
-                self.state,
-                self.camera_transforms,
-                self.camera_rays,
-                color_image=self.color_image,
-            )
-        wp.synchronize()
-
-    @nice_name("Rendering (Tiled) (Depth Only)")
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0 or not run_tiled_camera_benchmarks())
-    def time_rendering_tiled_depth_only(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_config.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_config.tile_width = 8
-        self.tiled_camera_sensor.render_config.tile_height = 8
-        for _ in range(iterations):
-            self.tiled_camera_sensor.update(
-                self.state,
-                self.camera_transforms,
-                self.camera_rays,
-                depth_image=self.depth_image,
-            )
-        wp.synchronize()
-
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_SEKTION_CABINET_FOLDER = "assets/urdf/sektion_cabinet_model"
@@ -324,16 +119,6 @@ def _disable_collision_handling(builder: newton.ModelBuilder) -> None:
     collide = int(ShapeFlags.COLLIDE_SHAPES) | int(ShapeFlags.COLLIDE_PARTICLES)
     builder.shape_flags = [int(flags) & ~collide for flags in builder.shape_flags]
     builder.shape_collision_filter_pairs = []
-
-
-def _build_franka() -> newton.ModelBuilder:
-    """A fixed-base Franka FR3 arm (same content as the fast tiled camera benchmark)."""
-    builder = newton.ModelBuilder()
-    builder.add_urdf(
-        newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
-        floating=False,
-    )
-    return builder
 
 
 def _build_quadruped() -> newton.ModelBuilder:
@@ -426,7 +211,6 @@ class ScenePreset:
 
 
 SCENES: dict[str, ScenePreset] = {
-    "franka": ScenePreset(_build_franka, camera_eye=(2.4, 0.0, 0.8), camera_target=(0.0, 0.0, 0.4)),
     "quadruped": ScenePreset(_build_quadruped, camera_eye=(2.2, 2.2, 1.1), camera_target=(0.0, 0.0, 0.45)),
     # Light comes from the camera-facing upper-front octant so it lands on the
     # cabinet drawers (which face +x) and top, both visible to the camera.
@@ -535,17 +319,12 @@ class _SceneBenchmark:
         wp.synchronize()
 
 
-class TiledCameraFranka(_SceneBenchmark):
-    scene = "franka"
-    params = ([64], [4096], [50])
-
-
 class TiledCameraQuadruped(_SceneBenchmark):
     scene = "quadruped"
     params = ([64], [4096], [50])
 
 
-class TiledCameraFrankaCabinet(_SceneBenchmark):
+class FastSensorTiledCamera(_SceneBenchmark):
     scene = "franka_cabinet"
     params = ([64], [4096], [50])
 
@@ -597,11 +376,11 @@ def print_fps(name: str, duration: float, resolution: int, world_count: int, ite
 
 
 def print_fps_results(results: dict[tuple[str, tuple[int, int, int]], float]):
-    print("")
+    print()
     print("=== Benchmark Results (FPS) ===")
     for (method_name, params), avg in results.items():
-        print_fps(NICE_NAMES.get(method_name, method_name), avg, *params)
-    print("")
+        print_fps(method_name, avg, *params)
+    print()
 
 
 if __name__ == "__main__":
@@ -611,9 +390,7 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "FastSensorTiledCamera": FastSensorTiledCamera,
-        "TiledCameraFranka": TiledCameraFranka,
         "TiledCameraQuadruped": TiledCameraQuadruped,
-        "TiledCameraFrankaCabinet": TiledCameraFrankaCabinet,
         "TiledCameraShapes256": TiledCameraShapes256,
     }
 
@@ -625,11 +402,6 @@ if __name__ == "__main__":
         action="append",
         choices=benchmark_list.keys(),
         help="Run a specific benchmark; may be repeated to run multiple (e.g., --bench A --bench B).",
-    )
-    parser.add_argument(
-        "--include-tiled",
-        action="store_true",
-        help=f"Run the tiled render-order benchmarks. For ASV, set {ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR}=1.",
     )
     parser.add_argument(
         "--preview",
@@ -649,9 +421,6 @@ if __name__ == "__main__":
         help="Preview image width and height [px].",
     )
     args = parser.parse_known_args()[0]
-
-    if args.include_tiled:
-        os.environ[ASV_RUN_TILED_CAMERA_BENCHMARKS_ENV_VAR] = "1"
 
     if args.preview:
         for path in write_preview_images(sorted(SCENES), args.preview_dir, image_size=args.preview_size):
