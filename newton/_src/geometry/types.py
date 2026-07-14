@@ -1855,7 +1855,7 @@ class TetMesh:
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
 
-        Custom primvars use their authored interpolation to determine attribute
+        Custom primvars use their resolved interpolation to determine attribute
         frequency. Other custom arrays use length-based inference; arrays whose
         frequency is ambiguous or cannot be inferred emit a warning and are
         omitted without preventing the TetMesh from loading.
