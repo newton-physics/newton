@@ -295,6 +295,8 @@ class Contacts:
                 self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
                 """Per-contact match index from frame-to-frame matching.
 
+                Non-negative elements index matching contacts in the previous sorted contact buffer.
+                Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
