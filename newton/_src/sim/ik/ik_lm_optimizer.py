@@ -81,7 +81,7 @@ def _update_lm_state(
 
 
 @wp.kernel
-def _apply_joint_dof_mask(
+def _zero_masked_jacobian_columns(
     joint_dof_mask: wp.array[wp.bool],
     jacobian: wp.array3d[wp.float32],
 ):
@@ -403,7 +403,7 @@ class IKOptimizerLM:
         if self.joint_dof_mask is None:
             return
         wp.launch(
-            _apply_joint_dof_mask,
+            _zero_masked_jacobian_columns,
             dim=(self.n_batch, self.n_residuals, self.n_dofs),
             inputs=[self.joint_dof_mask],
             outputs=[jacobian],
