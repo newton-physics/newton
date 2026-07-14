@@ -882,9 +882,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._update_joint_transforms()
 
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            # Joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) are clamped
-            # clones of Newton's arrays, not references, so they must be re-copied.
-            self._update_joint_limits()
+            # Kamino's joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) reference
+            # Newton's arrays directly, so no copy needed.
+            pass
 
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             pass  # TODO: ???
@@ -1095,15 +1095,3 @@ class SolverKamino(SolverBase, CouplingInterface):
         changed at runtime (e.g. animated root transforms).
         """
         self._kamino.convert_model_joint_transforms(self.model, self._model_kamino.joints)
-
-    def _update_joint_limits(self):
-        """
-        Re-copy Kamino joint DoF limits from Newton's joint limit arrays.
-
-        Called when :data:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` is raised,
-        indicating that ``model.joint_limit_lower`` / ``joint_limit_upper`` /
-        ``joint_velocity_limit`` / ``joint_effort_limit`` may have changed at
-        runtime. The Kamino limits are clamped clones (not aliases) of Newton's
-        arrays, so they must be re-derived here.
-        """
-        self._kamino.convert_model_joint_limits(self.model, self._model_kamino.joints)

@@ -1,18 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for SolverKamino runtime model-property propagation.
-
-SolverKamino builds its internal :class:`ModelKamino` once from a Newton model.
-The joint DoF limits are *clamped clones* of Newton's arrays, so runtime changes
-require ``notify_model_changed(JOINT_DOF_PROPERTIES)`` to re-copy them. The body
-inertial arrays (``i_r_com_i`` / ``i_I_i`` / ``inv_i_I_i``, like ``m_i`` /
-``inv_m_i``) instead *reference* Newton's arrays directly, so in-place edits
-propagate without any notify call.
-
-These tests are pure white-box assertions on the internal ``_model_kamino`` --
-no ``solver.step`` / simulation is performed.
-"""
+"""Tests for SolverKamino runtime model-property propagation."""
 
 from __future__ import annotations
 
@@ -59,23 +48,19 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
 
-    def test_joint_dof_limits_propagate(self):
-        """``notify_model_changed(JOINT_DOF_PROPERTIES)`` must re-copy the DoF limits.
-
-        Pre-fix, the ``JOINT_DOF_PROPERTIES`` branch was a no-op that wrongly
-        assumed the Kamino limit arrays aliased Newton's arrays. They are clamped
-        clones, so runtime limit changes were silently dropped and the solver kept
-        enforcing the build-time limits.
-        """
+    def test_joint_dof_limits_reference_newton(self):
+        """Joint DoF limits alias Newton's arrays, so runtime changes need no notify."""
         model = _build_limited_revolute()
         solver = SolverKamino(model)
         joints = solver._model_kamino.joints
 
-        # Baseline: Kamino limits captured at construction (from limit_lower/upper=-1/1).
-        baseline_min = joints.q_j_min.numpy().copy()
-        np.testing.assert_allclose(baseline_min, -1.0)
+        # The Kamino limit arrays share storage with Newton's model arrays.
+        self.assertEqual(joints.q_j_min.ptr, model.joint_limit_lower.ptr)
+        self.assertEqual(joints.q_j_max.ptr, model.joint_limit_upper.ptr)
+        self.assertEqual(joints.dq_j_max.ptr, model.joint_velocity_limit.ptr)
+        self.assertEqual(joints.tau_j_max.ptr, model.joint_effort_limit.ptr)
 
-        # New in-range limits (no clamping applied, so propagated == assigned).
+        # In-place updates to Newton's arrays are reflected without any notify call.
         new_lower = np.full_like(model.joint_limit_lower.numpy(), -0.3)
         new_upper = np.full_like(model.joint_limit_upper.numpy(), 0.3)
         new_vel = np.full_like(model.joint_velocity_limit.numpy(), 7.0)
@@ -85,24 +70,17 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model.joint_velocity_limit.assign(new_vel)
         model.joint_effort_limit.assign(new_effort)
 
-        # Negative control: without notify, the Kamino limits are still stale.
-        np.testing.assert_allclose(joints.q_j_min.numpy(), baseline_min)
-
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-
         np.testing.assert_allclose(joints.q_j_min.numpy(), new_lower)
         np.testing.assert_allclose(joints.q_j_max.numpy(), new_upper)
         np.testing.assert_allclose(joints.dq_j_max.numpy(), new_vel)
         np.testing.assert_allclose(joints.tau_j_max.numpy(), new_effort)
 
-    def test_body_inertial_properties_reference_newton(self):
-        """Body inertial arrays alias Newton's, so runtime changes need no notify.
+        # notify_model_changed(JOINT_DOF_PROPERTIES) is a harmless no-op.
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(joints.q_j_min.numpy(), new_lower)
 
-        ``i_r_com_i`` / ``i_I_i`` / ``inv_i_I_i`` (like ``m_i`` / ``inv_m_i``)
-        reference Newton's arrays directly. Kamino never mutates them, so in-place
-        edits to the Newton model are seen by the solver without a
-        ``notify_model_changed(BODY_INERTIAL_PROPERTIES)`` call.
-        """
+    def test_body_inertial_properties_reference_newton(self):
+        """Body inertial arrays alias Newton's, so runtime changes need no notify."""
         model = _build_limited_revolute()
         solver = SolverKamino(model)
         bodies = solver._model_kamino.bodies
@@ -130,15 +108,10 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         np.testing.assert_allclose(bodies.i_I_i.numpy(), new_inertia, atol=1e-6)
 
     def test_notify_does_not_mutate_newton_arrays(self):
-        """``notify_model_changed`` must only read Newton's arrays, never write them.
-
-        The update copies Newton -> Kamino; it must never write back into Newton's
-        model arrays.
-        """
+        """``notify_model_changed`` must only read Newton's arrays, never write them."""
         model = _build_limited_revolute()
         solver = SolverKamino(model)
 
-        # Assign fresh values, then snapshot them as the expected (unchanged) state.
         model.joint_limit_lower.assign(np.full_like(model.joint_limit_lower.numpy(), -0.3))
         model.joint_limit_upper.assign(np.full_like(model.joint_limit_upper.numpy(), 0.3))
         model.body_inertia.assign(model.body_inertia.numpy() * 2.0)

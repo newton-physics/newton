@@ -20,10 +20,6 @@ from .bodies import (
 from .builder import JointActuationType
 from .geometry import GeometriesModel
 from .joints import (
-    JOINT_DQMAX,
-    JOINT_QMAX,
-    JOINT_QMIN,
-    JOINT_TAUMAX,
     JointDoFType,
     JointsModel,
 )
@@ -42,7 +38,6 @@ if TYPE_CHECKING:
 __all__ = [
     "convert_geometries",
     "convert_joints",
-    "convert_model_joint_limits",
     "convert_model_joint_transforms",
     "convert_rigid_bodies",
     "convert_target_coords_to_target_dofs",
@@ -183,8 +178,6 @@ def joint_conversion_kernel(
     model_joint_target_kd: wp.array[wp.float32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
-    joint_velocity_limit: wp.array[wp.float32],
-    joint_effort_limit: wp.array[wp.float32],
     # Outputs:
     joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
@@ -248,17 +241,6 @@ def joint_conversion_kernel(
     if is_dynamic_j:
         joint_num_dynamic_cts[joint_id] = ndofs_j
     joint_num_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
-
-    # Clip joint limits and effort/velocity limits to supported ranges
-    for i in range(qd_count_j):
-        joint_limit_lower[dofs_start_j + i] = wp.clamp(joint_limit_lower[dofs_start_j + i], JOINT_QMIN, JOINT_QMAX)
-        joint_limit_upper[dofs_start_j + i] = wp.clamp(joint_limit_upper[dofs_start_j + i], JOINT_QMIN, JOINT_QMAX)
-        joint_velocity_limit[dofs_start_j + i] = wp.clamp(
-            joint_velocity_limit[dofs_start_j + i], -JOINT_DQMAX, JOINT_DQMAX
-        )
-        joint_effort_limit[dofs_start_j + i] = wp.clamp(
-            joint_effort_limit[dofs_start_j + i], -JOINT_TAUMAX, JOINT_TAUMAX
-        )
 
 
 @wp.kernel
@@ -697,62 +679,6 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     )
 
 
-@wp.kernel
-def joint_limits_conversion_kernel(
-    # Inputs:
-    joint_limit_lower: wp.array[wp.float32],
-    joint_limit_upper: wp.array[wp.float32],
-    joint_velocity_limit: wp.array[wp.float32],
-    joint_effort_limit: wp.array[wp.float32],
-    # Outputs:
-    q_j_min: wp.array[wp.float32],
-    q_j_max: wp.array[wp.float32],
-    dq_j_max: wp.array[wp.float32],
-    tau_j_max: wp.array[wp.float32],
-):
-    i = wp.tid()
-    q_j_min[i] = wp.clamp(joint_limit_lower[i], JOINT_QMIN, JOINT_QMAX)
-    q_j_max[i] = wp.clamp(joint_limit_upper[i], JOINT_QMIN, JOINT_QMAX)
-    dq_j_max[i] = wp.clamp(joint_velocity_limit[i], -JOINT_DQMAX, JOINT_DQMAX)
-    tau_j_max[i] = wp.clamp(joint_effort_limit[i], -JOINT_TAUMAX, JOINT_TAUMAX)
-
-
-def convert_model_joint_limits(model: Model, joints: JointsModel) -> None:
-    """
-    Copies Newton's joint DoF limits into Kamino's format.
-
-    Reads Newton's ``model.joint_limit_lower`` / ``joint_limit_upper`` /
-    ``joint_velocity_limit`` / ``joint_effort_limit`` and writes clamped values
-    into :attr:`JointsModel.q_j_min`, :attr:`JointsModel.q_j_max`,
-    :attr:`JointsModel.dq_j_max` and :attr:`JointsModel.tau_j_max` in-place. The
-    Kamino limit arrays are per-DoF clones of Newton's arrays (not aliases), so
-    this must be re-run whenever the Newton limits change at runtime. Clamping to
-    Kamino's supported ranges mirrors the construction-time conversion in
-    :func:`convert_joints`.
-
-    Args:
-        model: The input Newton model whose joint limits are read (never modified).
-        joints: The output JointsModel instance to update in-place.
-    """
-    wp.launch(
-        kernel=joint_limits_conversion_kernel,
-        dim=joints.q_j_min.shape[0],
-        inputs=[
-            # Inputs:
-            model.joint_limit_lower,
-            model.joint_limit_upper,
-            model.joint_velocity_limit,
-            model.joint_effort_limit,
-            # Outputs:
-            joints.q_j_min,
-            joints.q_j_max,
-            joints.dq_j_max,
-            joints.tau_j_max,
-        ],
-        device=model.device,
-    )
-
-
 def convert_rigid_bodies(
     model: Model,
     model_size: SizeKamino,
@@ -911,12 +837,6 @@ def convert_joints(
         joint_X_B = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
         joint_X_F = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
 
-    # Copy limit arrays
-    joint_limit_lower = wp.clone(model.joint_limit_lower)
-    joint_limit_upper = wp.clone(model.joint_limit_upper)
-    joint_velocity_limit = wp.clone(model.joint_velocity_limit)
-    joint_effort_limit = wp.clone(model.joint_effort_limit)
-
     wp.launch(
         kernel=joint_conversion_kernel,
         dim=model.joint_count,
@@ -933,10 +853,8 @@ def convert_joints(
             model.joint_damping,
             model.joint_target_ke,
             model.joint_target_kd,
-            joint_limit_lower,
-            joint_limit_upper,
-            joint_velocity_limit,
-            joint_effort_limit,
+            model.joint_limit_lower,
+            model.joint_limit_upper,
             # Outputs:
             joint_jid,
             joint_dof_type,
@@ -1284,10 +1202,10 @@ def convert_joints(
         F_r_Fj=joint_F_r_F,
         X_Bj=joint_X_B,
         X_Fj=joint_X_F,
-        q_j_min=joint_limit_lower,
-        q_j_max=joint_limit_upper,
-        dq_j_max=joint_velocity_limit,
-        tau_j_max=joint_effort_limit,
+        q_j_min=model.joint_limit_lower,
+        q_j_max=model.joint_limit_upper,
+        dq_j_max=model.joint_velocity_limit,
+        tau_j_max=model.joint_effort_limit,
         a_j=model.joint_armature,
         b_j=model.joint_damping,
         k_p_j=model.joint_target_ke,
@@ -1420,7 +1338,6 @@ def convert_geometries(
     sorted_excluded_pairs = model.shape_collision_filter_pairs_array()
     excluded_pairs = wp.array(sorted_excluded_pairs, dtype=wp.vec2i, device=model.device)
 
-    # Construct and return the converted geometries model
     return GeometriesModel(
         num_geoms=model.shape_count,
         num_collidable=model_num_collidable_geoms.numpy()[0],
