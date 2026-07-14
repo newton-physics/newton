@@ -27,6 +27,7 @@ construction.
    :nosignatures:
 
    Actuator
+   ActuatorImplicitOptions
    ActuatorParsed
    Clamping
    ClampingDCMotor
@@ -39,6 +40,7 @@ construction.
    ControllerPD
    ControllerPID
    Delay
+   ResponseOracle
    SchemaNames
 
 .. rubric:: Functions

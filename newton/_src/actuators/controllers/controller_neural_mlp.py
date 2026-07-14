@@ -114,6 +114,54 @@ def _zero_masked_2d_kernel(buf: wp.array2d[float], mask: wp.array[wp.bool]):
         buf[i, j] = 0.0
 
 
+@wp.kernel(enable_backward=False)
+def _assemble_scaled_input_kernel(
+    q: wp.array[float],
+    qd: wp.array[float],
+    target_q: wp.array[float],
+    target_qd: wp.array[float],
+    pos_scale: float,
+    vel_scale: float,
+    pos_first: int,
+    net_input: wp.array2d[float],
+):
+    """Scaled (pos_error, vel_error) network input from per-slot state arrays."""
+    i = wp.tid()
+    e_q = (target_q[i] - q[i]) * pos_scale
+    e_qd = (target_qd[i] - qd[i]) * vel_scale
+    if pos_first != 0:
+        net_input[i, 0] = e_q
+        net_input[i, 1] = e_qd
+    else:
+        net_input[i, 0] = e_qd
+        net_input[i, 1] = e_q
+
+
+@wp.kernel(enable_backward=False)
+def _output_and_state_grads_kernel(
+    net_output: wp.array2d[float],
+    in_grad: wp.array2d[float],
+    pos_col: int,
+    vel_col: int,
+    pos_scale: float,
+    vel_scale: float,
+    effort_scale: float,
+    tau: wp.array[float],
+    dtau_dq: wp.array[float],
+    dtau_dqd: wp.array[float],
+):
+    """Physical effort and its state derivatives from the net output and input gradients.
+
+    The net reads scaled errors (e_q = tq - q, e_qd = tqd - qd), so the chain
+    rule gives ``d(tau)/dq = -s_t s_p d(net)/d(in_pos)`` and
+    ``d(tau)/d(qd) = -s_t s_v d(net)/d(in_vel)``.
+    """
+    i = wp.tid()
+    tau[i] = net_output[i, 0] * effort_scale
+    dtau_dq[i] = -in_grad[i, pos_col] * pos_scale * effort_scale
+    dtau_dqd[i] = -in_grad[i, vel_col] * vel_scale * effort_scale
+
+
 class ControllerNeuralMLP(Controller):
     """MLP-based neural network controller.
 
@@ -126,6 +174,16 @@ class ControllerNeuralMLP(Controller):
     ``pos_scale``, ``vel_scale``, ``effort_scale``) are read from checkpoint
     metadata, falling back to defaults when absent. ``.onnx`` checkpoints run
     through Warp-NN. ``.pt`` and ``.pth`` checkpoints keep the Torch backend.
+
+    Implicit actuation (:meth:`implicit_force_grad`) is limited to the
+    Warp-NN backend with ``history_length == 1``, and depends on a workaround
+    for warp-nn allocating its tensors without ``requires_grad`` — without it,
+    autodiff gradients through multi-layer nets (and, under CUDA graph
+    capture, even single-layer nets) are silently zero.
+
+    TODO: drop the ``requires_grad`` workaround once fixed upstream in
+    warp-nn; extend implicit support to the Torch backend and to input
+    histories (``history_length > 1``).
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}
@@ -222,6 +280,7 @@ class ControllerNeuralMLP(Controller):
         self._input_idx_wp: wp.array[int] | None = None
         self._net_output_name: str | None = None
         self._net_input_name: str | None = None
+        self._grad_seed: wp.array2d[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int) -> None:
         self._device = device
@@ -268,6 +327,75 @@ class ControllerNeuralMLP(Controller):
 
     def is_graphable(self) -> bool:
         return not self._is_torch_checkpoint
+
+    def implicit_force_grad(self):
+        """Return the force-and-gradients hook for the implicit strategy, or ``None``.
+
+        Supported for the Warp-NN (``.onnx``) backend with
+        ``history_length == 1``; other configurations return ``None``. See
+        :meth:`Controller.implicit_force_grad` for the hook contract.
+        """
+        if self._is_torch_checkpoint or self.history_length != 1 or self._network is None:
+            return None
+        if self._grad_seed is None:
+            self._net_input.requires_grad = True
+            self._grad_seed = wp.full((self._num_actuators, 1), 1.0, dtype=wp.float32, device=self._device)
+            # Workaround: warp-nn allocates its tensors without requires_grad,
+            # which silently zeroes tape gradients through intermediates and,
+            # under CUDA graph capture, even through the output. Remove once
+            # fixed upstream in warp-nn.
+            for tensor in self._network._tensors.values():
+                if isinstance(tensor, wp.array) and not tensor.requires_grad:
+                    tensor.requires_grad = True
+        return self._force_and_grad
+
+    def _force_and_grad(
+        self,
+        q: wp.array[float],
+        qd: wp.array[float],
+        target_q: wp.array[float],
+        target_qd: wp.array[float],
+        tau: wp.array[float],
+        dtau_dq: wp.array[float],
+        dtau_dqd: wp.array[float],
+    ) -> None:
+        """One network forward + autodiff backward at the given per-slot state.
+
+        Writes the physical effort and its derivatives w.r.t. position and
+        velocity; the implicit strategy's Newton loop consumes them.
+        """
+        n = self._num_actuators
+        device = self._device
+        pos_first = 1 if self.input_order == "pos_vel" else 0
+        pos_col = 0 if self.input_order == "pos_vel" else 1
+
+        wp.launch(
+            _assemble_scaled_input_kernel,
+            dim=n,
+            inputs=[q, qd, target_q, target_qd, self.pos_scale, self.vel_scale, pos_first],
+            outputs=[self._net_input],
+            device=device,
+        )
+        self._net_input.grad.zero_()
+        tape = wp.Tape()
+        with tape:
+            out = self._network({self._net_input_name: self._net_input})[self._net_output_name]
+        tape.backward(grads={out: self._grad_seed})
+        wp.launch(
+            _output_and_state_grads_kernel,
+            dim=n,
+            inputs=[
+                out,
+                self._net_input.grad,
+                pos_col,
+                1 - pos_col,
+                self.pos_scale,
+                self.vel_scale,
+                self.effort_scale,
+            ],
+            outputs=[tau, dtau_dq, dtau_dqd],
+            device=device,
+        )
 
     def state(self, num_actuators: int, device: wp.Device) -> ControllerNeuralMLP.State:
         if self._is_torch_checkpoint:

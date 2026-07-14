@@ -5,9 +5,27 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from .base import Controller
+
+
+@wp.func
+def _pd_evaluate_force(
+    q: wp.float64,
+    qd: wp.float64,
+    target_q: wp.float64,
+    target_qd: wp.float64,
+    feedforward: wp.float64,
+    params: wp.array2d[float],
+    i: wp.int32,
+) -> wp.float64:
+    """Uniform force entry point for the implicit solver (params = [kp, kd, const])."""
+    kp = wp.float64(params[i, 0])
+    kd = wp.float64(params[i, 1])
+    const = wp.float64(params[i, 2])
+    return const + feedforward + kp * (target_q - q) + kd * (target_qd - qd)
 
 
 @wp.kernel
@@ -86,6 +104,20 @@ class ControllerPD(Controller):
         self.kp = kp
         self.kd = kd
         self.const_effort = const_effort
+
+    evaluate_force = _pd_evaluate_force
+
+    def force_params(self) -> wp.array[float]:
+        kp = self.kp.numpy()
+        kd = self.kd.numpy()
+        const = self.const_effort.numpy() if self.const_effort is not None else np.zeros_like(kp)
+        pack = np.stack([kp, kd, const], axis=1).astype(np.float32)
+        return wp.array(pack, dtype=float, device=self.kp.device)
+
+    def bind_params(self, params: wp.array2d[float]) -> None:
+        self.kp = params[:, 0]
+        self.kd = params[:, 1]
+        self.const_effort = params[:, 2]
 
     def is_stateful(self) -> bool:
         return False

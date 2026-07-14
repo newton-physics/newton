@@ -53,6 +53,44 @@ def _position_based_clamp_kernel(
     dst[i] = wp.clamp(src[i], -limit, limit)
 
 
+@wp.func
+def _evaluate_position_based_clamp(
+    value: wp.float64,
+    q: wp.float64,
+    qd: wp.float64,
+    params: wp.array2d[float],
+    i: int,
+    base: int,
+) -> wp.float64:
+    """Implicit-solve entry point; params row is ``[K, positions[K], efforts[K]]``.
+
+    Inside the implicit solve ``q`` is the predicted end-of-step position, so
+    the position-dependent limit is enforced self-consistently.
+    """
+    n = int(params[i, base])
+    limit = wp.float64(0.0)
+    if n > 0:
+        first_x = wp.float64(params[i, base + 1])
+        last_x = wp.float64(params[i, base + n])
+        if q <= first_x:
+            limit = wp.float64(params[i, base + 1 + n])
+        elif q >= last_x:
+            limit = wp.float64(params[i, base + 2 * n])
+        else:
+            for k in range(n - 1):
+                x1 = wp.float64(params[i, base + 2 + k])
+                if x1 >= q:
+                    x0 = wp.float64(params[i, base + 1 + k])
+                    y0 = wp.float64(params[i, base + 1 + n + k])
+                    y1 = wp.float64(params[i, base + 2 + n + k])
+                    t = wp.float64(0.0)
+                    if x1 - x0 != wp.float64(0.0):
+                        t = (q - x0) / (x1 - x0)
+                    limit = y0 + t * (y1 - y0)
+                    break
+    return wp.clamp(value, -limit, limit)
+
+
 class ClampingPositionBased(Clamping):
     """Position-dependent effort clamping via lookup table.
 
@@ -207,6 +245,22 @@ class ClampingPositionBased(Clamping):
         self.lookup_size = len(positions)
         self.lookup_positions = wp.array(np.array(positions, dtype=np.float32), dtype=wp.float32, device=device)
         self.lookup_efforts = wp.array(np.array(efforts, dtype=np.float32), dtype=wp.float32, device=device)
+        self._num_actuators = num_actuators
+
+    evaluate_clamp = _evaluate_position_based_clamp
+
+    def clamp_params(self) -> wp.array2d[float]:
+        if self.lookup_positions is None:
+            raise RuntimeError("ClampingPositionBased.clamp_params() requires finalize() to have run")
+        row = np.concatenate(
+            [
+                np.array([float(self.lookup_size)], dtype=np.float32),
+                self.lookup_positions.numpy(),
+                self.lookup_efforts.numpy(),
+            ]
+        ).astype(np.float32)
+        pack = np.tile(row, (self._num_actuators, 1))
+        return wp.array(pack, dtype=float, device=self.lookup_positions.device)
 
     def modify_forces(
         self,

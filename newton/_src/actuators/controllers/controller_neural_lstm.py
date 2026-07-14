@@ -77,6 +77,16 @@ class ControllerNeuralLSTM(Controller):
     model must have three inputs: input, initial hidden, and initial cell. It
     must have three graph outputs: effort, hidden output, and cell output.
     Metadata properties map those names to controller roles.
+
+    Implicit actuation is not supported (:meth:`Controller.implicit_force_grad`
+    returns ``None``): the hidden/cell state makes the force law's local
+    linearization depend on gradients through the recurrent step, and the
+    Warp-NN LSTM op path additionally lacks ``requires_grad`` on its cached
+    tensors and reshaped views.
+
+    TODO: implicit support — decide how to linearize around the recurrent
+    state (freeze hidden/cell within the step?) and fix the warp-nn LSTM
+    autodiff path first.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"model_path"}

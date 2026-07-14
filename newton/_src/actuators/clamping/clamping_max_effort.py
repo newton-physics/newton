@@ -22,6 +22,20 @@ def _box_clamp_kernel(
     dst[i] = wp.clamp(src[i], -max_effort[i], max_effort[i])
 
 
+@wp.func
+def _evaluate_max_effort_clamp(
+    value: wp.float64,
+    q: wp.float64,
+    qd: wp.float64,
+    params: wp.array2d[float],
+    i: int,
+    base: int,
+) -> wp.float64:
+    """Implicit-solve entry point; params row is ``[max_effort]``."""
+    limit = wp.float64(params[i, base])
+    return wp.clamp(value, -limit, limit)
+
+
 class ClampingMaxEffort(Clamping):
     """Symmetric clamp on actuator output effort.
 
@@ -42,6 +56,14 @@ class ClampingMaxEffort(Clamping):
             max_effort: Per-actuator effort limits [N or N·m]. Shape ``(N,)``.
         """
         self.max_effort = max_effort
+
+    evaluate_clamp = _evaluate_max_effort_clamp
+
+    def clamp_params(self) -> wp.array[float]:
+        return self.max_effort
+
+    def bind_params(self, block: wp.array2d[float]) -> None:
+        self.max_effort = block[:, 0]
 
     def modify_forces(
         self,

@@ -47,6 +47,41 @@ class Clamping:
             num_actuators: Number of actuators (DOFs) this clamping manages.
         """
 
+    evaluate_clamp: ClassVar[wp.Function | None] = None
+    """``@wp.func`` evaluating this clamp inside the implicit solve kernel.
+
+    The implicit strategy composes the ``evaluate_clamp`` of every capable
+    clamp into its Newton residual, so the clamp sees the *predicted*
+    end-of-step state. Required signature, evaluated in ``float64``::
+
+        evaluate_clamp(value, q, qd, params: wp.array2d[float], i: int, base: int) -> wp.float64
+
+    where ``params[i, base:]`` holds this clamp's packed per-actuator
+    parameters (see :meth:`clamp_params`). ``None`` (the default) means the
+    clamp cannot run inside the solve; the implicit strategy rejects such
+    clamps at install time.
+    """
+
+    def clamp_params(self) -> wp.array[float] | wp.array2d[float]:
+        """Return the per-actuator parameter block for :attr:`evaluate_clamp`.
+
+        Shape ``(N,)`` or ``(N, P)``, indexed by actuator slot; the implicit
+        strategy packs the blocks of all capable clamps into one array and
+        hands each clamp its column offset.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not expose clamp_params")
+
+    def bind_params(self, block: wp.array2d[float]) -> None:
+        """Re-point parameter attributes to views into the packed block.
+
+        The implicit strategy copies :meth:`clamp_params` into one packed
+        array and passes this clamp's ``(N, P)`` slice of it here. Override
+        to replace the clamp's user-facing parameter arrays with column views
+        of *block*, so that writes to them (e.g. ``clamp.max_effort``) stay
+        visible to the solve kernel. The default keeps the original arrays:
+        the solve then reads a frozen copy of the construction-time values.
+        """
+
     def modify_forces(
         self,
         src_forces: wp.array[float],

@@ -12,6 +12,9 @@ import warp as wp
 from .clamping.base import Clamping
 from .controllers.base import Controller
 from .delay import Delay
+from .effort_explicit import _EffortExplicit
+from .implicit import ActuatorImplicitOptions, ResponseOracle, _EffortImplicit
+from .implicit_network import _EffortImplicitNetwork
 
 
 @wp.kernel
@@ -49,6 +52,17 @@ class Actuator:
         )
 
         # Simulation loop
+        actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
+
+    Effort is computed explicitly by default (control law evaluated at the
+    current state, zero-order hold over the step). For stiff gains at large
+    timesteps, switch to the implicit (Stable-PD) strategy::
+
+        oracle = ResponseOracle(model)
+        actuator.set_strategy_implicit(effective_inv_mass=oracle)
+
+        # Simulation loop
+        oracle.refresh(state)  # refresh effective masses at the current pose
         actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
     """
 
@@ -206,13 +220,57 @@ class Actuator:
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
+        self._strategy = _EffortExplicit(controller, self.clamping, self.device)
+
+    def set_strategy_implicit(
+        self,
+        effective_inv_mass: ResponseOracle,
+        options: ActuatorImplicitOptions | None = None,
+    ) -> None:
+        """Switch effort computation to the implicit (Stable-PD) strategy.
+
+        The control law is solved against the predicted end-of-step state
+        before the solver runs, keeping stiff gains stable at large
+        timesteps. The strategy is picked by what the controller provides:
+        an in-kernel force law (:attr:`Controller.evaluate_force`) is solved
+        in one fused kernel; a launch-level force-and-gradients hook
+        (:meth:`Controller.implicit_force_grad`, e.g. neural networks) is
+        driven by a fixed-count Newton loop. Requires a ``dt`` passed to
+        :meth:`step`. The prediction is contact-blind: expect transients
+        (not instability) during impacts. Strategies can be switched at any
+        time; see :meth:`set_strategy_explicit`.
+
+        Args:
+            effective_inv_mass: :class:`~newton.actuators.ResponseOracle` providing
+                the effective inverse mass [1/kg or 1/(kg·m²)] the actuator
+                works against, indexed by global DOF index. Its ``alpha``
+                buffer is read by the solve; keep it current by calling
+                ``oracle.refresh(state)`` once per step before :meth:`step`,
+                or by writing values into ``oracle.alpha`` directly.
+            options: Solver options; defaults to
+                :class:`ActuatorImplicitOptions`.
+        """
+        cls = _EffortImplicitNetwork if self.controller.implicit_force_grad() is not None else _EffortImplicit
+        self._strategy = cls(
+            self.controller,
+            self.clamping,
+            effective_inv_mass,
+            options,
+            self.num_actuators,
+            self.device,
+        )
+
+    def set_strategy_explicit(self) -> None:
+        """Switch effort computation back to the default explicit strategy."""
+        self._strategy = _EffortExplicit(self.controller, self.clamping, self.device)
+
     def is_stateful(self) -> bool:
         """Return True if delay or controller maintains internal state."""
         return self.delay is not None or self.controller.is_stateful()
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self.controller.is_graphable()
+        return self._strategy.is_graphable()
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -238,8 +296,9 @@ class Actuator:
         1. **Delay read** — read per-DOF delayed targets from
            ``current_state`` (falls back to current targets when
            the buffer is empty).
-        2. **Controller** — compute raw effort into ``_computed_forces``.
-        3. **Clamping** — clamp effort from computed → ``_applied_forces``.
+        2. **Effort strategy** — compute raw effort into ``_computed_forces``
+           (explicit control law, or the implicit end-of-step solve).
+        3. **Clamping** — the strategy clamps effort computed → ``_applied_forces``.
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
@@ -286,9 +345,10 @@ class Actuator:
             target_pos_indices = self._sequential_indices
             target_vel_indices = self._sequential_indices
 
-        # --- 2. Controller: compute raw effort ---
+        # --- 2+3. Effort strategy: compute raw effort and clamp ---
         ctrl_state = current_act_state.controller_state if current_act_state else None
-        self.controller.compute(
+        output_forces = self._strategy.compute_force(
+            sim_state,
             positions,
             velocities,
             target_pos,
@@ -299,28 +359,10 @@ class Actuator:
             target_pos_indices,
             target_vel_indices,
             self._computed_forces,
+            self._applied_forces,
             ctrl_state,
             dt,
-            device=self.device,
         )
-
-        # --- 3. Clamping: computed → applied ---
-        if self.clamping:
-            src = self._computed_forces
-            for clamp in self.clamping:
-                clamp.modify_forces(
-                    src,
-                    self._applied_forces,
-                    positions,
-                    velocities,
-                    self.pos_indices,
-                    self.indices,
-                    device=self.device,
-                )
-                src = self._applied_forces
-            output_forces = self._applied_forces
-        else:
-            output_forces = self._computed_forces
 
         # --- 4. Scatter-add to output ---
         applied_output = getattr(sim_control, self.control_output_attr)

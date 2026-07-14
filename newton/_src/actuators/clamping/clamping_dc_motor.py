@@ -58,6 +58,31 @@ def _clamp_dc_motor_kernel(
     dst[i] = wp.clamp(src[i], effort_min, effort_max)
 
 
+@wp.func
+def _evaluate_dc_motor_clamp(
+    value: wp.float64,
+    q: wp.float64,
+    qd: wp.float64,
+    params: wp.array2d[float],
+    i: int,
+    base: int,
+) -> wp.float64:
+    """Implicit-solve entry point; params row is ``[saturation, velocity_limit, max_effort, corner_velocity]``.
+
+    Inside the implicit solve ``qd`` is the predicted end-of-step velocity,
+    so the effort-speed envelope is enforced self-consistently.
+    """
+    sat = wp.float64(params[i, base])
+    vel_lim = wp.float64(params[i, base + 1])
+    max_e = wp.float64(params[i, base + 2])
+    corner = wp.float64(params[i, base + 3])
+
+    vel = wp.clamp(qd, -corner, corner)
+    effort_max = wp.min(sat * (wp.float64(1.0) - vel / vel_lim), max_e)
+    effort_min = wp.max(sat * (wp.float64(-1.0) - vel / vel_lim), -max_e)
+    return wp.clamp(value, effort_min, effort_max)
+
+
 class ClampingDCMotor(Clamping):
     r"""DC motor four-quadrant effort-speed saturation.
 
@@ -125,6 +150,28 @@ class ClampingDCMotor(Clamping):
             outputs=[self.corner_velocity],
             device=velocity_limit.device,
         )
+
+    evaluate_clamp = _evaluate_dc_motor_clamp
+
+    def clamp_params(self) -> wp.array2d[float]:
+        import numpy as np  # noqa: PLC0415
+
+        pack = np.stack(
+            [
+                self.saturation_effort.numpy(),
+                self.velocity_limit.numpy(),
+                self.max_motor_effort.numpy(),
+                self.corner_velocity.numpy(),
+            ],
+            axis=1,
+        ).astype(np.float32)
+        return wp.array(pack, dtype=float, device=self.saturation_effort.device)
+
+    def bind_params(self, block: wp.array2d[float]) -> None:
+        self.saturation_effort = block[:, 0]
+        self.velocity_limit = block[:, 1]
+        self.max_motor_effort = block[:, 2]
+        self.corner_velocity = block[:, 3]
 
     def modify_forces(
         self,

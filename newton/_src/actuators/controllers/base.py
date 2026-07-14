@@ -110,6 +110,57 @@ class Controller:
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
+    evaluate_force: ClassVar[wp.Function | None] = None
+    """``@wp.func`` form of this controller's force law, called inside the
+    implicit solve kernel (see :meth:`Actuator.set_strategy_implicit`).
+    ``None`` means the controller does not support implicit actuation.
+
+    Required signature (``float64``)::
+
+        evaluate_force(q, qd, target_q, target_qd, feedforward,
+                       params: wp.array2d[float], i: int) -> wp.float64
+
+    ``params[i]`` holds the controller's parameters for actuator slot ``i``;
+    see :meth:`force_params`.
+    """
+
+    def force_params(self) -> wp.array[float] | None:
+        """Per-actuator parameter pack for :attr:`evaluate_force`.
+
+        Shape ``(num_actuators, P)``; row ``i`` belongs to actuator slot
+        ``i``. The layout is controller-defined — the implicit solver
+        forwards the array without interpreting it. ``None`` means implicit
+        actuation is unsupported.
+        """
+        return None
+
+    def bind_params(self, params: wp.array2d[float]) -> None:
+        """Re-point parameter attributes to views into the packed pack.
+
+        The implicit strategy holds the array returned by
+        :meth:`force_params` and passes it back here. Override to replace
+        the controller's user-facing parameter arrays with column views of
+        *params*, so that writes to them (e.g. ``controller.kp``) stay
+        visible to the solve kernel. The default keeps the original arrays:
+        the solve then reads a frozen copy of the construction-time values.
+        """
+
+    def implicit_force_grad(self):
+        """Optional launch-level force law for the implicit strategy.
+
+        Controllers whose force law cannot run inside the solve kernel (e.g.
+        neural networks) return a callable
+
+            hook(q, qd, target_q, target_qd, tau, dtau_dq, dtau_dqd) -> None
+
+        taking per-slot state arrays (shape ``(N,)``) and writing the physical
+        effort and its derivatives w.r.t. position and velocity. The implicit
+        strategy's Newton loop calls it once per iteration, at the predicted
+        end-of-step state. ``None`` (the default) means the force law is
+        evaluated in-kernel via :attr:`evaluate_force` instead.
+        """
+        return None
+
     def is_stateful(self) -> bool:
         """Return True if this controller maintains internal state."""
         raise NotImplementedError(f"{type(self).__name__} must implement is_stateful")
