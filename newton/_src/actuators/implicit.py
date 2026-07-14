@@ -72,6 +72,11 @@ class ActuatorImplicitOptions:
             controllers): each iteration evaluates the network at the
             previous step's predicted end-of-step state and takes one Newton
             step. Fixed count, so CUDA-graph capture stays possible.
+        block_solve: Solve coupled DOF groups (DOFs sharing an articulation)
+            as a block instead of independent scalars, recovering the
+            inertial cross terms. Requires ``oracle.refresh(state,
+            blocks=True)`` each step. Supported for PD controllers; ignored
+            for network controllers.
     """
 
     max_iters: int = 4
@@ -81,6 +86,7 @@ class ActuatorImplicitOptions:
     derivative_floor: float = 1.0e-8
     warm_start: str = "explicit"
     newton_iters: int = 1
+    block_solve: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -266,10 +272,11 @@ class _EffortImplicit:
                 "values, write them into oracle.alpha instead of calling refresh()."
             )
         self._inv_mass = effective_inv_mass.alpha
+        self._response = effective_inv_mass  # oracle; block solves also read .inverse_blocks
         self._init_solver(controller, clamping)
 
-    def _init_solver(self, controller, clamping) -> None:
-        """Build the solver resources from the controller and clamps."""
+    def _resolve_force_law(self, controller):
+        """Validate the controller's in-kernel force law and bind its params."""
         params = controller.force_params()
         if controller.evaluate_force is None or params is None:
             raise NotImplementedError(
@@ -277,14 +284,18 @@ class _EffortImplicit:
                 "(Controller.evaluate_force / force_params() unavailable)"
             )
         self._params = params
-        # As with clamps below: the controller re-binds its parameter
-        # attributes as views into the pack, keeping user writes live.
+        # The controller re-binds its parameter attributes as views into the
+        # pack, keeping user writes live.
         controller.bind_params(self._params)
 
-        # Every clamp runs inside the solve; their parameter blocks are packed
-        # side by side into one array. Each clamp then re-binds its parameter
-        # attributes as views into its slice, so user writes to them (e.g.
-        # ``clamp.max_effort``) stay visible to the solve kernel.
+    def _pack_clamps(self, clamping):
+        """Pack every clamp's params side by side, bind views, compose one @wp.func.
+
+        Sets :attr:`_clamp_params` and returns ``(chain, entries)`` for the
+        solve-kernel cache key. Each clamp re-binds its parameter attributes as
+        views into its slice, so user writes (e.g. ``clamp.max_effort``) stay
+        visible to the solve kernel.
+        """
         entries: list[tuple[wp.Function, int]] = []
         blocks = []
         col = 0
@@ -305,11 +316,13 @@ class _EffortImplicit:
                 clamp.bind_params(self._clamp_params[:, base : base + block.shape[1]])
         else:
             self._clamp_params = wp.zeros((self._num_actuators, 1), dtype=float, device=self._device)
+        return _compose_clamps(tuple(entries)), tuple(entries)
 
-        chain = _compose_clamps(tuple(entries))
-        self._kernel = _build_solve_kernel(
-            controller.evaluate_force, chain, (controller.evaluate_force, tuple(entries))
-        )
+    def _init_solver(self, controller, clamping) -> None:
+        """Build the in-kernel scalar solve from the controller and clamps."""
+        self._resolve_force_law(controller)
+        chain, entries = self._pack_clamps(clamping)
+        self._kernel = _build_solve_kernel(controller.evaluate_force, chain, (controller.evaluate_force, entries))
 
     def is_graphable(self) -> bool:
         return True

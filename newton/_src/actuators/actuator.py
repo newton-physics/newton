@@ -14,6 +14,7 @@ from .controllers.base import Controller
 from .delay import Delay
 from .effort_explicit import _EffortExplicit
 from .implicit import ActuatorImplicitOptions, ResponseOracle, _EffortImplicit
+from .implicit_block import _EffortImplicitBlock
 from .implicit_network import _EffortImplicitNetwork
 
 
@@ -250,7 +251,12 @@ class Actuator:
             options: Solver options; defaults to
                 :class:`ActuatorImplicitOptions`.
         """
-        cls = _EffortImplicitNetwork if self.controller.implicit_force_grad() is not None else _EffortImplicit
+        if self.controller.implicit_force_grad() is not None:
+            cls = _EffortImplicitNetwork
+        elif options is not None and options.block_solve:
+            cls = _EffortImplicitBlock
+        else:
+            cls = _EffortImplicit
         self._strategy = cls(
             self.controller,
             self.clamping,

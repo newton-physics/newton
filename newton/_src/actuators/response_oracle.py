@@ -79,6 +79,59 @@ def _alpha_from_mass_matrix_kernel(
         alpha[base + j] = s
 
 
+@wp.kernel(enable_backward=False)
+def _inverse_block_from_mass_matrix_kernel(
+    H: wp.array3d[float],
+    art_dof_start: wp.array[wp.int32],
+    art_dof_count: wp.array[wp.int32],
+    L: wp.array3d[float],
+    inv_block: wp.array3d[float],
+    alpha: wp.array[float],
+):
+    """Write the full inverse block ``inv_block[a] = H_a^{-1}`` per articulation.
+
+    Cholesky ``H = L L^T``, then for each column c solve ``H x = e_c`` (forward
+    then backward substitution) and store x as column c of the inverse. The
+    diagonal is copied into ``alpha`` so scalar consumers keep working.
+    """
+    a = wp.tid()
+    n = art_dof_count[a]
+    base = art_dof_start[a]
+
+    for j in range(n):
+        s = H[a, j, j]
+        for k in range(j):
+            s -= L[a, j, k] * L[a, j, k]
+        s = wp.max(s, 1.0e-9 * wp.max(H[a, j, j], 1.0e-9))
+        d = wp.sqrt(s)
+        L[a, j, j] = d
+        for i in range(j + 1, n):
+            t = H[a, i, j]
+            for k in range(j):
+                t -= L[a, i, k] * L[a, j, k]
+            L[a, i, j] = t / d
+
+    for c in range(n):
+        # forward: L y = e_c  (y accumulated into inv_block[:, c])
+        for i in range(n):
+            t = float(0.0)
+            if i == c:
+                t = 1.0
+            for k in range(i):
+                t -= L[a, i, k] * inv_block[a, k, c]
+            inv_block[a, i, c] = t / L[a, i, i]
+        # backward: L^T x = y  (overwrite in place)
+        for ii in range(n):
+            i = n - 1 - ii
+            t = inv_block[a, i, c]
+            for k in range(i + 1, n):
+                t -= L[a, k, i] * inv_block[a, k, c]
+            inv_block[a, i, c] = t / L[a, i, i]
+
+    for j in range(n):
+        alpha[base + j] = inv_block[a, j, j]
+
+
 class ResponseOracle:
     """Per-DOF effective inverse mass, shared across consumers.
 
@@ -134,6 +187,7 @@ class ResponseOracle:
         self._joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
         self._L = wp.zeros_like(self._H)
         self._y = wp.zeros((art_count, max_dofs), dtype=float, device=device)
+        self._inv_block = None  # lazily allocated by refresh(blocks=True)
 
         # Lazily allocated scratch for refresh_from_forward_dynamics().
         self._probe_state_in = None
@@ -152,23 +206,52 @@ class ResponseOracle:
         """
         return self._alpha
 
-    def refresh(self, state) -> None:
-        """Recompute :attr:`alpha` for the pose in *state*.
+    @property
+    def inverse_blocks(self) -> wp.array | None:
+        """Per-articulation inverse mass blocks, shape [art_count, max_dofs, max_dofs].
+
+        ``inverse_blocks[a, i, j]`` is the ``(i, j)`` entry of articulation
+        ``a``'s inverse mass matrix ``H_a^{-1}`` (indices local to the
+        articulation, 0-padded beyond its DOF count). The block for a coupled
+        group of DOFs is the corresponding submatrix — the coupled response
+        ``A_g = S_g M^{-1} S_g^T`` used by a block solve. ``None`` until
+        :meth:`refresh` is called with ``blocks=True``.
+        """
+        return self._inv_block
+
+    def refresh(self, state, blocks: bool = False) -> None:
+        """Recompute :attr:`alpha` (and optionally :attr:`inverse_blocks`) for *state*.
 
         Args:
             state: Simulation state providing ``joint_q`` / ``joint_qd``.
+            blocks: Also fill :attr:`inverse_blocks` with the full
+                per-articulation inverse mass matrices (needed by a block
+                solve). Costs the back-substitution over all columns on top
+                of the diagonal-only default.
         """
         model = self.model
         eval_fk(model, state.joint_q, state.joint_qd, state)
         eval_jacobian(model, state, J=self._J, joint_S_s=self._joint_S_s)
         eval_mass_matrix(model, state, H=self._H, J=self._J, body_I_s=self._body_I_s)
-        wp.launch(
-            _alpha_from_mass_matrix_kernel,
-            dim=model.articulation_count,
-            inputs=[self._H, self._art_dof_start, self._art_dof_count, self._L, self._y],
-            outputs=[self._alpha],
-            device=model.device,
-        )
+        if blocks:
+            if self._inv_block is None:
+                self._inv_block = wp.zeros_like(self._H)
+            self._inv_block.zero_()
+            wp.launch(
+                _inverse_block_from_mass_matrix_kernel,
+                dim=model.articulation_count,
+                inputs=[self._H, self._art_dof_start, self._art_dof_count, self._L, self._inv_block],
+                outputs=[self._alpha],
+                device=model.device,
+            )
+        else:
+            wp.launch(
+                _alpha_from_mass_matrix_kernel,
+                dim=model.articulation_count,
+                inputs=[self._H, self._art_dof_start, self._art_dof_count, self._L, self._y],
+                outputs=[self._alpha],
+                device=model.device,
+            )
 
     def refresh_from_forward_dynamics(self, solver, state, probe_dt: float = 1.0e-4) -> None:
         """Recompute :attr:`alpha` by probing *solver*'s forward dynamics.

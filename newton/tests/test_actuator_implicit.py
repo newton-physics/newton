@@ -110,6 +110,28 @@ def test_provider_matches_inverse_mass(test, device):
     test.assertAlmostEqual(alpha[0], alpha_ref[0], places=5)
 
 
+def test_inverse_blocks_match_dense_inverse(test, device):
+    """refresh(blocks=True) fills the full per-articulation inverse mass block.
+
+    inverse_blocks[a] must equal inv(H_a), and its diagonal must equal alpha.
+    """
+    model = _build_two_link(device)
+    n = model.joint_dof_count
+    state = model.state()
+    state.joint_q.assign(np.array([0.3, -0.8], dtype=np.float32))
+
+    oracle = ResponseOracle(model)
+    oracle.refresh(state, blocks=True)
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    H = newton.eval_mass_matrix(model, state).numpy()[0, :n, :n]
+    Hinv = np.linalg.inv(H)
+
+    block = oracle.inverse_blocks.numpy()[0, :n, :n]
+    np.testing.assert_allclose(block, Hinv, rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(np.diag(block), oracle.alpha.numpy(), rtol=1e-5)
+
+
 def test_alpha_direct_write_from_solver(test, device):
     """Alternative to refresh(): write solver-computed inverse masses into oracle.alpha.
 
@@ -365,6 +387,114 @@ def test_full_loop_alpha_from_mujoco_matches_refresh(test, device):
     traj_ref = run(use_qm=False)
     test.assertTrue(np.all(np.isfinite(traj_qm)))
     np.testing.assert_allclose(traj_qm, traj_ref, atol=1e-4)
+
+
+def test_pd_block_solve_matches_reference(test, device):
+    """Block solve on a coupled chain matches the dense block reference, and differs from scalar.
+
+    For a PD actuator driving both DOFs of a two-link chain, the block solve
+    couples them through A = inv(H). The result must equal the numpy block
+    solution J p = h f0 (J = I + h(h Kp + Kd) A), and must differ from the
+    scalar solve, which drops the off-diagonal (M^-1)_12.
+    """
+    from newton.actuators import ActuatorImplicitOptions  # noqa: PLC0415
+
+    h = 0.01
+    kp = np.array([4000.0, 3000.0], dtype=np.float32)  # stiff, so coupling matters
+    kd = np.array([40.0, 30.0], dtype=np.float32)
+    q0 = np.array([0.3, -0.8], dtype=np.float32)
+    target = np.array([0.6, 0.4], dtype=np.float32)
+
+    model = _build_two_link(device)
+    n = model.joint_dof_count
+    state = model.state()
+    state.joint_q.assign(q0)
+    control = model.control()
+    control.joint_target_q.assign(target)
+
+    # Dense reference: full block solve with A = inv(H).
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    H = newton.eval_mass_matrix(model, state).numpy()[0, :n, :n]
+    A = np.linalg.inv(H)
+    f0 = kp * (target - q0)  # qd=0, const=0
+    J = np.eye(n) + h * np.diag(h * kp + kd) @ A
+    p_ref = np.linalg.solve(J, h * f0)
+    tau_ref = p_ref / h
+
+    oracle = ResponseOracle(model)
+    actuator = _make_actuator(
+        model,
+        device,
+        kp=wp.array(kp, dtype=float, device=device),
+        kd=wp.array(kd, dtype=float, device=device),
+        effective_inv_mass=oracle,
+        options=ActuatorImplicitOptions(block_solve=True),
+    )
+    oracle.refresh(state, blocks=True)
+    control.joint_f.zero_()
+    actuator.step(state, control, dt=h)
+    tau_block = control.joint_f.numpy()
+
+    np.testing.assert_allclose(tau_block, tau_ref, rtol=1e-3, atol=1e-3)
+
+    # Scalar solve drops the cross term → different result.
+    tau_scalar = np.array(
+        [kp[i] * (target[i] - q0[i]) / (1.0 + A[i, i] * h * kd[i] + A[i, i] * h * h * kp[i]) for i in range(n)]
+    )
+    test.assertGreater(np.max(np.abs(tau_block - tau_scalar)), 1e-2 * np.max(np.abs(tau_block)))
+
+
+def test_block_solve_clamp_in_residual(test, device):
+    """Block solve composes the clamp into the residual per DOF (generic, not PD-specific).
+
+    A tight max-effort clamp on one DOF of a coupled block must bind exactly at
+    the limit — the clamp is evaluated inside the block Newton, not applied
+    afterwards — while the coupled DOF still solves against the block.
+    """
+    from newton.actuators import ActuatorImplicitOptions  # noqa: PLC0415
+
+    h = 0.01
+    kp = np.array([4000.0, 3000.0], dtype=np.float32)
+    kd = np.array([40.0, 30.0], dtype=np.float32)
+    q0 = np.array([0.3, -0.8], dtype=np.float32)
+    target = np.array([0.6, 0.4], dtype=np.float32)
+
+    model = _build_two_link(device)
+    state = model.state()
+    state.joint_q.assign(q0)
+    control = model.control()
+    control.joint_target_q.assign(target)
+
+    # Unclamped block force to size a binding limit on DOF 0.
+    oracle = ResponseOracle(model)
+    actuator = _make_actuator(
+        model,
+        device,
+        kp=wp.array(kp, dtype=float, device=device),
+        kd=wp.array(kd, dtype=float, device=device),
+        effective_inv_mass=oracle,
+        options=ActuatorImplicitOptions(block_solve=True),
+    )
+    oracle.refresh(state, blocks=True)
+    control.joint_f.zero_()
+    actuator.step(state, control, dt=h)
+    unclamped0 = float(control.joint_f.numpy()[0])
+    limit = 0.5 * abs(unclamped0)
+
+    clamped = _make_actuator(
+        model,
+        device,
+        kp=wp.array(kp, dtype=float, device=device),
+        kd=wp.array(kd, dtype=float, device=device),
+        max_effort=np.array([limit, 1.0e6], dtype=np.float32),
+        effective_inv_mass=oracle,
+        options=ActuatorImplicitOptions(block_solve=True),
+    )
+    oracle.refresh(state, blocks=True)
+    control.joint_f.zero_()
+    clamped.step(state, control, dt=h)
+    joint_f = control.joint_f.numpy()
+    test.assertAlmostEqual(abs(joint_f[0]), limit, delta=limit * 1e-3)
 
 
 def test_pd_denominator_equivalence(test, device):
@@ -940,6 +1070,24 @@ class TestActuatorImplicit(unittest.TestCase):
 
 add_function_test(
     TestActuatorImplicit, "test_provider_matches_inverse_mass", test_provider_matches_inverse_mass, devices=devices
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_inverse_blocks_match_dense_inverse",
+    test_inverse_blocks_match_dense_inverse,
+    devices=devices,
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_pd_block_solve_matches_reference",
+    test_pd_block_solve_matches_reference,
+    devices=devices,
+)
+add_function_test(
+    TestActuatorImplicit,
+    "test_block_solve_clamp_in_residual",
+    test_block_solve_clamp_in_residual,
+    devices=devices,
 )
 add_function_test(
     TestActuatorImplicit, "test_pd_denominator_equivalence", test_pd_denominator_equivalence, devices=devices
