@@ -852,10 +852,11 @@ class TestModelMesh(unittest.TestCase):
         self.assertEqual(remeshed, {mesh_shape})
         self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
         self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.CONVEX_MESH)
-        # primitives and already-approximated convex meshes pass through any method unchanged
-        self.assertEqual(builder.approximate_meshes(method="bounding_box", shape_indices=[box_prim, mesh_shape]), set())
+        self.assertEqual(
+            builder.approximate_meshes(method="bounding_box", shape_indices=[box_prim, mesh_shape]), {mesh_shape}
+        )
         self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
-        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.CONVEX_MESH)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.BOX)
 
     def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
         builder = ModelBuilder()

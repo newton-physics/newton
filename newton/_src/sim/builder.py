@@ -7022,7 +7022,7 @@ class ModelBuilder:
 
         Args:
             method: The method to use for approximating the mesh shapes.
-            shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` shapes are ignored, including already-approximated ``CONVEX_MESH`` shapes. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
+            shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
@@ -7052,8 +7052,8 @@ class ModelBuilder:
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
         else:
-            # primitives have no mesh source and convex meshes are already approximated; pass them through
-            shape_indices = [i for i in shape_indices if self.shape_type[i] == GeoType.MESH]
+            # primitives have no mesh source; preserve explicit re-approximation of convex meshes
+            shape_indices = [i for i in shape_indices if self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)]
 
         # These methods rewrite shape_type away from MESH; any SDF/hydro state
         # would be silently dropped at finalize. The USD importer intercepts

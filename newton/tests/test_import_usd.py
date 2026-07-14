@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import functools
 import hashlib
 import math
@@ -37,6 +38,21 @@ devices = get_test_devices()
 
 
 _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
+
+
+@contextlib.contextmanager
+def _patch_sys_module(name, module):
+    """Temporarily replace one module entry without rolling back unrelated imports."""
+    missing = object()
+    original = sys.modules.get(name, missing)
+    sys.modules[name] = module
+    try:
+        yield
+    finally:
+        if original is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
 
 
 def _expect_jointless_articulation_warning(test):
@@ -2742,17 +2758,16 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         fake_coacd.run_coacd = run_coacd
 
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+        with _patch_sys_module("coacd", fake_coacd):
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
-        self.assertEqual(captured["threshold"], 0.05)
+            self.assertEqual(captured["threshold"], 0.05)
 
-        captured.clear()
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+            captured.clear()
             builder = newton.ModelBuilder()
             builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
             builder.add_usd(stage)
-        self.assertEqual(captured["threshold"], 0.5)
+            self.assertEqual(captured["threshold"], 0.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
