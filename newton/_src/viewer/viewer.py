@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import enum
+import math
 import os
 import sys
 from abc import ABC, abstractmethod
@@ -106,6 +107,7 @@ class ViewerBase(ABC):
         self.time = 0.0
         self.device = wp.get_device()
         self.picking_enabled = True
+        self._camera_speed = 4.0
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -740,6 +742,18 @@ class ViewerBase(ABC):
         )
         self._isomesh_cache[sdf_idx] = isomesh
         return isomesh
+
+    @property
+    def camera_speed(self) -> float:
+        """Keyboard camera translation speed [m/s]."""
+        return self._camera_speed
+
+    @camera_speed.setter
+    def camera_speed(self, value: float) -> None:
+        value = float(value)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError("camera_speed must be finite and nonnegative")
+        self._camera_speed = value
 
     def set_camera(self, pos: wp.vec3, pitch: float, yaw: float):
         """Set the camera position and orientation.
@@ -2718,7 +2732,9 @@ class ViewerBase(ABC):
                 # Slice to transfer only the last element instead of the full array.
                 active_count = int(offsets[-1:].numpy()[0]) + int(mask[-1:].numpy()[0])
                 if active_count == 0:
-                    self.log_points(name=self._qualify("/model/particles"), points=None, hidden=True)
+                    # None is a no-op in some backends, so use an empty array to hide stale geometry.
+                    empty_points = wp.empty(0, dtype=wp.vec3, device=self.device)
+                    self.log_points(name=self._qualify("/model/particles"), points=empty_points, hidden=True)
                     return
                 if active_count < n:
                     points_out = wp.empty(active_count, dtype=wp.vec3, device=self.device)

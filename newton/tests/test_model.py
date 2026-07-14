@@ -552,9 +552,10 @@ class TestModelMesh(unittest.TestCase):
             adjacency.edge_tri_indices,
             np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
-        # Vertex adjacency stays unset until the solver builds it via init_vertex_adjacency.
-        self.assertIsNone(adjacency.v_adj_tris)
-        self.assertIsNone(adjacency.v_adj_edges_offsets)
+        # Vertex adjacency is now built eagerly in finalize (init_vertex_adjacency), so the shared
+        # device copy is ready for every consumer.
+        self.assertIsNotNone(adjacency.v_adj_tris)
+        self.assertIsNotNone(adjacency.v_adj_edges_offsets)
 
     def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
         builder = ModelBuilder()
