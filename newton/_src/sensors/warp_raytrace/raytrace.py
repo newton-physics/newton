@@ -276,6 +276,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         world_index: wp.int32,
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        triangle_particle_mask: wp.array[wp.bool],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
@@ -289,6 +290,9 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                 si = wp.int32(0)
 
                 while wp.bvh_query_next(query, si, closest_hit.distance):
+                    if triangle_particle_mask[si]:
+                        continue
+
                     hit_distance, hit_normal = raycast.ray_intersect_particle_sphere(
                         ray_origin_world,
                         ray_dir_world,
@@ -347,6 +351,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         mesh_data: wp.array[MeshData],
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        triangle_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         gaussians_data: wp.array[Gaussian.Data],
         ray_origin_world: wp.vec3f,
@@ -388,6 +393,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                 world_index,
                 particles_position,
                 particles_radius,
+                triangle_particle_mask,
                 ray_origin_world,
                 ray_dir_world,
             )
@@ -532,6 +538,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         world_index: wp.int32,
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        triangle_particle_mask: wp.array[wp.bool],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
@@ -545,6 +552,9 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                 si = wp.int32(0)
 
                 while wp.bvh_query_next(query, si, closest_hit.distance):
+                    if triangle_particle_mask[si]:
+                        continue
+
                     hit_dist, _normal = raycast.ray_intersect_particle_sphere(
                         ray_origin_world,
                         ray_dir_world,
@@ -598,6 +608,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         mesh_data: wp.array[MeshData],
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        triangle_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         gaussians_data: wp.array[Gaussian.Data],
         ray_origin_world: wp.vec3f,
@@ -640,6 +651,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                 world_index,
                 particles_position,
                 particles_radius,
+                triangle_particle_mask,
                 ray_origin_world,
                 ray_dir_world,
             )
@@ -749,6 +761,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         world_index: wp.int32,
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        triangle_particle_mask: wp.array[wp.bool],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
         max_dist: wp.float32,
@@ -763,6 +776,9 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                 si = wp.int32(0)
 
                 while wp.bvh_query_next(query, si, max_dist):
+                    if triangle_particle_mask[si]:
+                        continue
+
                     hit_dist, _normal = raycast.ray_intersect_particle_sphere(
                         ray_origin_world,
                         ray_dir_world,
@@ -805,6 +821,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         shape_source_ptr: wp.array[wp.uint64],
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        triangle_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
@@ -837,6 +854,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                 world_index,
                 particles_position,
                 particles_radius,
+                triangle_particle_mask,
                 ray_origin_world,
                 ray_dir_world,
                 max_distance,

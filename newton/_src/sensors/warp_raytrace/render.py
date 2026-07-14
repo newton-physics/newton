@@ -110,6 +110,7 @@ def create_kernel(
         # Particles
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        triangle_particle_mask: wp.array[wp.bool],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         # Meshes
@@ -185,6 +186,7 @@ def create_kernel(
             mesh_data,
             particles_position,
             particles_radius,
+            triangle_particle_mask,
             triangle_mesh_id,
             gaussians_data,
             ray_origin_world,
@@ -293,6 +295,7 @@ def create_kernel(
                     light_orientations[light_index],
                     particles_position,
                     particles_radius,
+                    triangle_particle_mask,
                     triangle_mesh_id,
                     closest_hit.normal,
                     hit_point,

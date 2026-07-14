@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sensors.warp_raytrace.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID
 from newton.sensors import SensorTiledCamera
 
 
@@ -333,14 +334,47 @@ class TestSensorTiledCamera(unittest.TestCase):
         self.assertEqual(disabled_depth_image.numpy()[0, 0, 0, 0], 0.0)
 
         enabled_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        enabled_shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
         sensor.update(
             state,
             camera_transforms,
             camera_rays,
             depth_image=enabled_depth_image,
+            shape_index_image=enabled_shape_index_image,
             render_config=SensorTiledCamera.RenderConfig(enable_particles=True, max_distance=10.0),
         )
         self.assertGreater(enabled_depth_image.numpy()[0, 0, 0, 0], 0.0)
+        self.assertEqual(int(enabled_shape_index_image.numpy()[0, 0, 0, 0]), int(PARTICLES_SHAPE_ID))
+
+        cloth_vertex = model.particle_q.numpy()[0]
+        cloth_camera_transforms = wp.array(
+            [
+                [
+                    wp.transformf(
+                        wp.vec3f(float(cloth_vertex[0]), float(cloth_vertex[1]), float(cloth_vertex[2] + 0.5)),
+                        wp.quatf(0.0, 0.0, 0.0, 1.0),
+                    )
+                ]
+            ],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        cloth_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        cloth_shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+        sensor.update(
+            state,
+            cloth_camera_transforms,
+            camera_rays,
+            depth_image=cloth_depth_image,
+            shape_index_image=cloth_shape_index_image,
+            render_config=SensorTiledCamera.RenderConfig(
+                enable_backface_culling=False,
+                enable_particles=True,
+                max_distance=10.0,
+            ),
+        )
+        self.assertGreater(cloth_depth_image.numpy()[0, 0, 0, 0], 0.0)
+        self.assertEqual(int(cloth_shape_index_image.numpy()[0, 0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
 
     def test_checkerboard_material_requires_keyword_arguments(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
