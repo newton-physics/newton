@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 __all__ = [
     "convert_geometries",
     "convert_joints",
+    "convert_model_joint_limits",
     "convert_model_joint_transforms",
     "convert_rigid_bodies",
     "convert_target_coords_to_target_dofs",
@@ -696,6 +697,62 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     )
 
 
+@wp.kernel
+def joint_limits_conversion_kernel(
+    # Inputs:
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    joint_velocity_limit: wp.array[wp.float32],
+    joint_effort_limit: wp.array[wp.float32],
+    # Outputs:
+    q_j_min: wp.array[wp.float32],
+    q_j_max: wp.array[wp.float32],
+    dq_j_max: wp.array[wp.float32],
+    tau_j_max: wp.array[wp.float32],
+):
+    i = wp.tid()
+    q_j_min[i] = wp.clamp(joint_limit_lower[i], JOINT_QMIN, JOINT_QMAX)
+    q_j_max[i] = wp.clamp(joint_limit_upper[i], JOINT_QMIN, JOINT_QMAX)
+    dq_j_max[i] = wp.clamp(joint_velocity_limit[i], -JOINT_DQMAX, JOINT_DQMAX)
+    tau_j_max[i] = wp.clamp(joint_effort_limit[i], -JOINT_TAUMAX, JOINT_TAUMAX)
+
+
+def convert_model_joint_limits(model: Model, joints: JointsModel) -> None:
+    """
+    Copies Newton's joint DoF limits into Kamino's format.
+
+    Reads Newton's ``model.joint_limit_lower`` / ``joint_limit_upper`` /
+    ``joint_velocity_limit`` / ``joint_effort_limit`` and writes clamped values
+    into :attr:`JointsModel.q_j_min`, :attr:`JointsModel.q_j_max`,
+    :attr:`JointsModel.dq_j_max` and :attr:`JointsModel.tau_j_max` in-place. The
+    Kamino limit arrays are per-DoF clones of Newton's arrays (not aliases), so
+    this must be re-run whenever the Newton limits change at runtime. Clamping to
+    Kamino's supported ranges mirrors the construction-time conversion in
+    :func:`convert_joints`.
+
+    Args:
+        model: The input Newton model whose joint limits are read (never modified).
+        joints: The output JointsModel instance to update in-place.
+    """
+    wp.launch(
+        kernel=joint_limits_conversion_kernel,
+        dim=joints.q_j_min.shape[0],
+        inputs=[
+            # Inputs:
+            model.joint_limit_lower,
+            model.joint_limit_upper,
+            model.joint_velocity_limit,
+            model.joint_effort_limit,
+            # Outputs:
+            joints.q_j_min,
+            joints.q_j_max,
+            joints.dq_j_max,
+            joints.tau_j_max,
+        ],
+        device=model.device,
+    )
+
+
 def convert_rigid_bodies(
     model: Model,
     model_size: SizeKamino,
@@ -807,9 +864,9 @@ def convert_rigid_bodies(
         bid=body_bid,  # TODO: Remove
         m_i=model.body_mass,
         inv_m_i=model.body_inv_mass,
-        i_r_com_i=wp.clone(model.body_com, device=model.device),
-        i_I_i=wp.clone(model.body_inertia, device=model.device),
-        inv_i_I_i=wp.clone(model.body_inv_inertia, device=model.device),
+        i_r_com_i=model.body_com,
+        i_I_i=model.body_inertia,
+        inv_i_I_i=model.body_inv_inertia,
         q_i_0=q_i_0,
         u_i_0=wp.clone(model.body_qd, device=model.device),
     )
