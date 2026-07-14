@@ -300,6 +300,13 @@ def add_basic_example_test(**kwargs):
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
 
 add_basic_example_test(
+    name="basic.example_recording",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "world-count": 8},
+)
+
+add_basic_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200},
@@ -338,7 +345,16 @@ add_basic_example_test(
     name="basic.example_basic_shapes",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 150},
+    test_options={"num-frames": 150, "solver": "xpbd"},
+    test_suffix="xpbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_shapes",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "solver": "vbd"},
+    test_suffix="vbd",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
@@ -403,6 +419,22 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
+    test_suffix="dahl_retention",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "no-dahl": True},
+    test_suffix="no_dahl_recovery",
 )
 add_example_test(
     TestCableExamples,

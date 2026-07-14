@@ -7,6 +7,7 @@ import math
 import os
 import posixpath
 import tempfile
+import types
 import unittest
 import warnings
 from unittest import mock
@@ -29,7 +30,7 @@ from newton._src.solvers.mujoco.constants import (
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
 
 devices = get_test_devices()
 
@@ -2698,6 +2699,58 @@ class TestImportUsdPhysics(unittest.TestCase):
         assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-5)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mesh_approximation_cfg(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def create_collision_mesh(name, approximation_method):
+            box = newton.Mesh.create_box(
+                1.0,
+                1.0,
+                1.0,
+                duplicate_vertices=False,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in box.vertices.tolist()])
+            meshColAPI = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+            meshColAPI.GetApproximationAttr().Set(approximation_method)
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        create_collision_mesh("/meshDecomposition", UsdPhysics.Tokens.convexDecomposition)
+        create_collision_mesh("/meshConvexHull", UsdPhysics.Tokens.convexHull)
+
+        self.assertEqual(newton.ModelBuilder().default_mesh_approximation_cfg.coacd_threshold, 0.05)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.05)
+
+            captured.clear()
+            builder = newton.ModelBuilder()
+            builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
