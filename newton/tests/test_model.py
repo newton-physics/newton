@@ -5,7 +5,6 @@ import ast
 import hashlib
 import inspect
 import math
-import sys
 import textwrap
 import types
 import unittest
@@ -24,7 +23,7 @@ from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
 def _eq_set_value(builder, name, idx, value):
@@ -818,14 +817,14 @@ class TestModelMesh(unittest.TestCase):
 
         fake_coacd.run_coacd = run_coacd
 
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+        with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape])
         self.assertEqual(captured["threshold"], 0.5)
 
         # an explicit argument overrides the builder default
         captured.clear()
         shape = builder.add_shape_mesh(body=-1, mesh=box)
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+        with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
         self.assertEqual(captured["threshold"], 0.2)
 
@@ -835,7 +834,7 @@ class TestModelMesh(unittest.TestCase):
             1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
         )
         shape = builder.add_shape_mesh(body=-1, mesh=box)
-        with mock.patch.dict(sys.modules, {"coacd": None}), warnings.catch_warnings():
+        with patch_sys_module("coacd", None), warnings.catch_warnings():
             warnings.simplefilter("ignore")
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
         # the documented threshold migration must keep working without coacd installed
@@ -915,7 +914,7 @@ class TestModelMesh(unittest.TestCase):
             ],
         )
 
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+        with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], raise_on_failure=True)
 
         extra_shape = shape + 1

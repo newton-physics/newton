@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import contextlib
 import functools
 import hashlib
 import math
 import os
 import posixpath
-import sys
 import tempfile
 import types
 import unittest
@@ -32,27 +30,12 @@ from newton._src.solvers.mujoco.constants import (
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
 
 devices = get_test_devices()
 
 
 _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
-
-
-@contextlib.contextmanager
-def _patch_sys_module(name, module):
-    """Temporarily replace one module entry without rolling back unrelated imports."""
-    missing = object()
-    original = sys.modules.get(name, missing)
-    sys.modules[name] = module
-    try:
-        yield
-    finally:
-        if original is missing:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = original
 
 
 def _expect_jointless_articulation_warning(test):
@@ -2758,7 +2741,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         fake_coacd.run_coacd = run_coacd
 
-        with _patch_sys_module("coacd", fake_coacd):
+        with patch_sys_module("coacd", fake_coacd):
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.05)
