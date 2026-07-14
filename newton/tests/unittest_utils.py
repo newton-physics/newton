@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import ctypes
 import ctypes.util
 import dataclasses
@@ -42,6 +43,22 @@ strict_warnings = False
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
+
+
+@contextlib.contextmanager
+def patch_sys_module(name: str, module: Any):
+    """Temporarily replace one module entry without rolling back unrelated imports."""
+    missing = object()
+    original = sys.modules.get(name, missing)
+    sys.modules[name] = module
+    try:
+        yield
+    finally:
+        if original is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
+
 
 try:
     if sys.platform == "win32":
