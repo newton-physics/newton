@@ -16,6 +16,7 @@ import warnings
 import numpy as np
 import warp as wp
 
+from ..sim.model import Model
 from .import_usd_deformable_utils import (
     _apply_particle_masses,
     _bake_world_points,
@@ -104,16 +105,57 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             # whole import; skip the prim like other broken deformable geometry.
             warnings.warn(f"{path}: invalid TetMesh; skipping soft-body import ({exc}).", stacklevel=2)
             continue
+        supported_frequencies = {
+            Model.AttributeFrequency.PARTICLE,
+            Model.AttributeFrequency.TETRAHEDRON,
+            Model.AttributeFrequency.TRIANGLE,
+        }
+        registered_attributes = [
+            attr
+            for attr in builder.custom_attributes.values()
+            if attr.frequency in supported_frequencies and attr.usd_attribute_name != "*"
+        ]
+        registered_values = usd._get_tetmesh_custom_attribute_values(prim, registered_attributes)
+        once_attributes = [
+            attr
+            for attr in builder.custom_attributes.values()
+            if attr.frequency == Model.AttributeFrequency.ONCE and attr.usd_attribute_name != "*"
+        ]
+        once_values = usd._get_tetmesh_custom_attribute_values(prim, once_attributes)
+        for attr in once_attributes:
+            if attr.key in once_values:
+                warnings.warn(
+                    f"{path}: registered TetMesh attribute '{attr.usd_attribute_name}' has ONCE frequency, "
+                    "which cannot be attached per soft body and is not imported.",
+                    stacklevel=2,
+                )
+        frequency_counts = {
+            Model.AttributeFrequency.PARTICLE: (tetmesh.vertex_count, "particle"),
+            Model.AttributeFrequency.TETRAHEDRON: (tetmesh.tet_count, "tetrahedron"),
+            Model.AttributeFrequency.TRIANGLE: (len(tetmesh.surface_tri_indices) // 3, "triangle"),
+        }
+        imported_attributes = {}
+        for attr in registered_attributes:
+            if attr.key not in registered_values:
+                continue
+            arr = np.asarray(registered_values[attr.key])
+            actual_count = arr.shape[0] if arr.ndim >= 1 else 1
+            expected_count, frequency_name = frequency_counts[attr.frequency]
+            if arr.ndim == 0 or actual_count != expected_count:
+                warnings.warn(
+                    f"{path}: registered TetMesh attribute '{attr.usd_attribute_name}' has array length "
+                    f"{actual_count}, which does not match {frequency_name} count {expected_count}; "
+                    "skipping the attribute.",
+                    stacklevel=2,
+                )
+                continue
+            imported_attributes[attr.key] = (arr, attr.frequency)
         tetmesh_for_builder = tetmesh
-        if tetmesh.custom_attributes:
-            filtered_custom_attributes = {
-                k: v for k, v in tetmesh.custom_attributes.items() if k in builder.custom_attributes
-            }
-            if len(filtered_custom_attributes) != len(tetmesh.custom_attributes):
-                # Preserve the cached TetMesh while keeping add_usd's
-                # current behavior of dropping unregistered import attrs.
-                tetmesh_for_builder = copy.copy(tetmesh)
-                tetmesh_for_builder.custom_attributes = filtered_custom_attributes
+        if tetmesh.custom_attributes or imported_attributes:
+            # The builder declaration supplies both the USD name and authoritative frequency.
+            # Preserve the cached TetMesh because another import pass may reuse it.
+            tetmesh_for_builder = copy.copy(tetmesh)
+            tetmesh_for_builder.custom_attributes = imported_attributes
 
         soft_mesh_mat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Bake the full world affine into the tet vertices and pass an identity placement, so a
