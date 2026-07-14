@@ -5795,8 +5795,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             parent = int(joint_parent[j])
             j_type = int(joint_type[j])
             # Articulated fixed roots remain mocap bodies because Newton can
-            # update their root transform at runtime.
-            is_fixed_root = parent == -1 and j_type == JointType.FIXED
+            # update their root transform at runtime. Fully-locked D6 roots
+            # (e.g. imported from a generic USD PhysicsJoint) are equivalent;
+            # without mocap they would be baked at the template world's pose
+            # for every world.
+            is_fixed_root = parent == -1 and (
+                j_type == JointType.FIXED or (j_type == JointType.D6 and joint_dof_dim[j][0] + joint_dof_dim[j][1] == 0)
+            )
             body, parent, child, child_is_kinematic, j_type, child_xform = add_body_from_joint(
                 int(j), mocap=is_fixed_root
             )
@@ -6667,7 +6672,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index.
             # These mocap bodies are Newton roots attached to world by a
-            # FIXED joint. Static world shapes are not represented here.
+            # FIXED or fully-locked D6 joint. Static world shapes are not
+            # represented here.
             nmocap = self.mj_model.nmocap
             if nmocap > 0:
                 mjc_mocap_to_newton_jnt_np = np.full((nworld, nmocap), -1, dtype=np.int32)

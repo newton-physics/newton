@@ -119,6 +119,7 @@ class Example:
         self.payload_kind = str(args.payload_kind)
         self.payload_segments = max(2, int(args.payload_segments))
         self.payload_radius = float(args.payload_radius)
+        self.surface_z = float(PAYLOAD_CENTER[2]) - self.payload_radius
         self.grip_hold = min(GRIP_OPEN, max(GRIP_CLOSE, GRIP_HOLD_FACTOR * self.payload_radius))
 
         template = newton.ModelBuilder(gravity=-9.81)
@@ -163,14 +164,12 @@ class Example:
                     ),
                     bodies=self.franka_bodies,
                     joints=self.franka_joints,
-                    shapes=self.franka_shapes,
                 ),
                 SolverCoupled.Entry(
                     name=payload_name,
                     solver=payload_solver,
                     bodies=self.payload_bodies,
                     joints=self.payload_joints,
-                    shapes=self.payload_shapes + self.ground_shapes,
                 ),
             ],
             coupling=SolverCoupledADMM.Config(
@@ -241,7 +240,7 @@ class Example:
         franka_joint_start = builder.joint_count
         franka_shape_start = builder.shape_count
 
-        self._add_franka(builder)
+        self._add_franka(builder, self.surface_z)
         builder.joint_target_ke[:7] = [900.0] * 7
         builder.joint_target_kd[:7] = [90.0] * 7
         builder.joint_target_ke[7:9] = [GRIP_STIFFNESS, GRIP_STIFFNESS]
@@ -278,9 +277,10 @@ class Example:
         self.payload_mid_body_offset = self.payload_body_count_per_world // 2
 
     @staticmethod
-    def _add_franka(builder: newton.ModelBuilder) -> None:
+    def _add_franka(builder: newton.ModelBuilder, base_z: float) -> None:
         builder.add_urdf(
             newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
+            xform=wp.transform(wp.vec3(0.0, 0.0, base_z), wp.quat_identity()),
             floating=False,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
@@ -290,10 +290,9 @@ class Example:
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
 
     def _emit_ground_plane(self, builder: newton.ModelBuilder) -> int:
-        top_z = 0.256 - self.payload_radius
         plane_cfg = newton.ModelBuilder.ShapeConfig(ke=8.0e4, kd=2.0e1, mu=0.8, margin=0.001, gap=0.002)
         return builder.add_ground_plane(
-            height=top_z,
+            height=self.surface_z,
             cfg=plane_cfg,
             label="payload_ground_plane",
         )
@@ -442,7 +441,7 @@ class Example:
     def _build_ik(self) -> None:
         # IK runs on a Franka-only model so payload coordinates do not enter the solve.
         ik_builder = newton.ModelBuilder(gravity=-9.81)
-        self._add_franka(ik_builder)
+        self._add_franka(ik_builder, self.surface_z)
         self.ik_model = ik_builder.finalize(device=self.device)
 
         self.n_coords = self.ik_model.joint_coord_count
