@@ -499,6 +499,69 @@ for mode_name, test_func in mesh_mesh_sdf_tests:
         )
 
 
+def test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage(test, device):
+    """Texture-SDF uncertainty keeps near-margin contacts in the preferred reduction tier."""
+    vertices = np.array(
+        [
+            [-0.10, -0.10, 0.50005],
+            [0.10, -0.10, 0.50005],
+            [0.00, 0.10, 0.50005],
+            [0.15, -0.10, 0.50500],
+            [0.35, -0.10, 0.50500],
+            [0.25, 0.10, 0.50500],
+        ],
+        dtype=np.float32,
+    )
+    probe_mesh = newton.Mesh(vertices, np.arange(6, dtype=np.int32), compute_inertia=False)
+    sdf_mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    sdf_mesh.build_sdf(max_resolution=64, device=device)
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, gap=0.01, margin=0.0)
+    builder.add_shape_mesh(body, mesh=probe_mesh, cfg=cfg)
+    builder.add_shape_mesh(-1, mesh=sdf_mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        deterministic=True,
+        rigid_contact_max=128,
+        max_triangle_pairs=128,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    points = contacts.rigid_contact_point0.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    top_face_points = points[normals[:, 2] < -0.99]
+
+    # All three directional representatives from the near-margin triangle must
+    # survive. With an exact zero-width inner tier, only two survive and the
+    # positive-X representative flickers into the gap-only outer tier.
+    near_margin_points = top_face_points[top_face_points[:, 2] < 0.501]
+    test.assertEqual(len(near_margin_points), 3)
+    test.assertTrue(np.any(near_margin_points[:, 0] > 0.09))
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage",
+    test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage,
+    devices=devices,
+)
+
+
 # ============================================================================
 # Mesh sign query regressions
 # ============================================================================
