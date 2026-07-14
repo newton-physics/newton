@@ -59,6 +59,12 @@ class Control:
         components of the torque vector (angular) [N·m]. For FREE and DISTANCE joints, the wrench is applied in world
         frame with the child body's center of mass (COM) as reference point.
         """
+        self.joint_f_dq: wp.array | None = None
+        """Diagonal derivative of :attr:`joint_f` with respect to joint position, shape ``(joint_dof_count,)``."""
+
+        self.joint_f_dqd: wp.array | None = None
+        """Diagonal derivative of :attr:`joint_f` with respect to joint velocity, shape ``(joint_dof_count,)``."""
+
         self.joint_target_q: wp.array | None = None
         """Joint position targets [m or rad]. Shape is ``(joint_coord_count,)``
         when :data:`newton.use_coord_layout_targets` is ``True``, otherwise
@@ -149,6 +155,10 @@ class Control:
 
         if self.joint_f is not None:
             self.joint_f.zero_()
+        if self.joint_f_dq is not None:
+            self.joint_f_dq.zero_()
+        if self.joint_f_dqd is not None:
+            self.joint_f_dqd.zero_()
         if self.tri_activations is not None:
             self.tri_activations.zero_()
         if self.tet_activations is not None:

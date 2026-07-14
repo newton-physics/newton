@@ -30,6 +30,20 @@ def _scatter_add_kernel(
         computed_output[idx] = computed_output[idx] + computed_forces[i]
 
 
+@wp.kernel
+def _scatter_add_force_jacobian_kernel(
+    dforce_dpos: wp.array[float],
+    dforce_dvel: wp.array[float],
+    indices: wp.array[wp.uint32],
+    output_dq: wp.array[float],
+    output_dqd: wp.array[float],
+):
+    i = wp.tid()
+    idx = indices[i]
+    output_dq[idx] = output_dq[idx] + dforce_dpos[i]
+    output_dqd[idx] = output_dqd[idx] + dforce_dvel[i]
+
+
 class Actuator:
     """Composed actuator: delay → controller → clamping.
 
@@ -194,6 +208,8 @@ class Actuator:
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
+        self._computed_dforce_dpos = wp.zeros_like(self._computed_forces)
+        self._computed_dforce_dvel = wp.zeros_like(self._computed_forces)
         self._applied_forces = (
             wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
             if self.clamping
@@ -214,6 +230,10 @@ class Actuator:
         """Return True if all components can be captured in a CUDA graph."""
         return self.controller.is_graphable()
 
+    def supports_force_jacobians(self) -> bool:
+        """Return True if this actuator can provide unclamped analytic force Jacobians."""
+        return not self.clamping and self.controller.supports_force_jacobians()
+
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
         if not self.is_stateful():
@@ -225,6 +245,103 @@ class Actuator:
             ),
         )
 
+    def compute_force_jacobians(
+        self,
+        sim_state: Any,
+        sim_control: Any,
+        forces: wp.array[float],
+        dforce_dpos: wp.array[float],
+        dforce_dvel: wp.array[float],
+        current_act_state: Actuator.State | None = None,
+        dt: float | None = None,
+    ) -> bool:
+        """Compute actuator force and local state derivatives without scattering.
+
+        This path is intentionally narrow for the first linearly implicit
+        actuator integration step: only unclamped controllers with trusted
+        analytic Jacobians are supported. Clamped or unsupported actuators
+        return ``False`` so callers can keep using the explicit
+        :meth:`step`/``Control.joint_f`` path.
+
+        Args:
+            sim_state: Simulation state with position/velocity arrays.
+            sim_control: Control structure with target arrays.
+            forces: Output raw effort [N or N·m], shape ``(N,)``.
+            dforce_dpos: Output derivative with respect to local position.
+            dforce_dvel: Output derivative with respect to local velocity.
+            current_act_state: Current composed state, required when delay or
+                controller state is present.
+            dt: Timestep [s].
+
+        Returns:
+            True if force and Jacobians were written, False if this actuator
+            should use explicit-only fallback.
+        """
+        if not self.supports_force_jacobians():
+            return False
+        if self.is_stateful() and current_act_state is None:
+            raise ValueError("Stateful actuator requires current_act_state; create it via actuator.state()")
+
+        positions = getattr(sim_state, self.state_pos_attr)
+        velocities = getattr(sim_state, self.state_vel_attr)
+
+        orig_target_pos = getattr(sim_control, self.control_target_pos_attr)
+        orig_target_vel = getattr(sim_control, self.control_target_vel_attr)
+        orig_feedforward = None
+        if self.control_feedforward_attr is not None:
+            orig_feedforward = getattr(sim_control, self.control_feedforward_attr, None)
+
+        target_pos = orig_target_pos
+        target_vel = orig_target_vel
+        feedforward = orig_feedforward
+        target_pos_indices = self.target_pos_indices
+        target_vel_indices = self.indices
+
+        if self.delay is not None:
+            target_pos, target_vel, feedforward = self.delay.get_delayed_targets(
+                orig_target_pos,
+                orig_target_vel,
+                orig_feedforward,
+                self.target_pos_indices,
+                self.indices,
+                current_act_state.delay_state,
+            )
+            target_pos_indices = self._sequential_indices
+            target_vel_indices = self._sequential_indices
+
+        ctrl_state = current_act_state.controller_state if current_act_state else None
+        self.controller.compute(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            feedforward,
+            self.pos_indices,
+            self.indices,
+            target_pos_indices,
+            target_vel_indices,
+            forces,
+            ctrl_state,
+            dt,
+            device=self.device,
+        )
+        return self.controller.compute_force_jacobians(
+            positions,
+            velocities,
+            target_pos,
+            target_vel,
+            feedforward,
+            self.pos_indices,
+            self.indices,
+            target_pos_indices,
+            target_vel_indices,
+            dforce_dpos,
+            dforce_dvel,
+            ctrl_state,
+            dt,
+            device=self.device,
+        )
+
     def step(
         self,
         sim_state: Any,
@@ -232,7 +349,9 @@ class Actuator:
         current_act_state: Actuator.State | None = None,
         next_act_state: Actuator.State | None = None,
         dt: float | None = None,
-    ) -> None:
+        *,
+        write_force_jacobians: bool = False,
+    ) -> bool:
         """Execute one control step.
 
         1. **Delay read** — read per-DOF delayed targets from
@@ -252,6 +371,14 @@ class Actuator:
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
             dt: Timestep [s].
+            write_force_jacobians: If ``True``, also attempt to accumulate
+                diagonal force derivatives into ``sim_control.joint_f_dq`` and
+                ``sim_control.joint_f_dqd``.
+
+        Returns:
+            True if force Jacobians were requested and written. False means the
+            actuator still applied force through the explicit path, but no
+            Jacobians were written.
         """
         if self.is_stateful() and (current_act_state is None or next_act_state is None):
             raise ValueError(
@@ -304,6 +431,36 @@ class Actuator:
             device=self.device,
         )
 
+        wrote_force_jacobians = False
+        if write_force_jacobians and self.supports_force_jacobians():
+            output_dq = getattr(sim_control, "joint_f_dq", None)
+            output_dqd = getattr(sim_control, "joint_f_dqd", None)
+            can_write_force_jacobians = (
+                output_dq is not None
+                and output_dqd is not None
+                and not self.clamping
+                and self.pos_indices is self.indices
+                and self.target_pos_indices is self.indices
+                and self.effort_indices is self.indices
+            )
+            if can_write_force_jacobians:
+                wrote_force_jacobians = self.controller.compute_force_jacobians(
+                    positions,
+                    velocities,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    self.pos_indices,
+                    self.indices,
+                    target_pos_indices,
+                    target_vel_indices,
+                    self._computed_dforce_dpos,
+                    self._computed_dforce_dvel,
+                    ctrl_state,
+                    dt,
+                    device=self.device,
+                )
+
         # --- 3. Clamping: computed → applied ---
         if self.clamping:
             src = self._computed_forces
@@ -337,6 +494,18 @@ class Actuator:
             outputs=[applied_output, computed_output],
             device=self.device,
         )
+        if wrote_force_jacobians:
+            wp.launch(
+                kernel=_scatter_add_force_jacobian_kernel,
+                dim=self.num_actuators,
+                inputs=[
+                    self._computed_dforce_dpos,
+                    self._computed_dforce_dvel,
+                    self.effort_indices,
+                ],
+                outputs=[output_dq, output_dqd],
+                device=self.device,
+            )
 
         # --- 5. State updates (write to next_state) ---
         if self.controller.is_stateful():
@@ -354,3 +523,4 @@ class Actuator:
                 current_act_state.delay_state,
                 next_act_state.delay_state,
             )
+        return wrote_force_jacobians

@@ -48,6 +48,18 @@ def _pd_effort_kernel(
     efforts[i] = effort
 
 
+@wp.kernel
+def _pd_force_jacobian_kernel(
+    kp: wp.array[float],
+    kd: wp.array[float],
+    dforce_dpos: wp.array[float],
+    dforce_dvel: wp.array[float],
+):
+    i = wp.tid()
+    dforce_dpos[i] = -kp[i]
+    dforce_dvel[i] = -kd[i]
+
+
 class ControllerPD(Controller):
     """Stateless PD (Proportional-Derivative) controller.
 
@@ -93,6 +105,9 @@ class ControllerPD(Controller):
     def is_graphable(self) -> bool:
         return True
 
+    def supports_force_jacobians(self) -> bool:
+        return True
+
     def compute(
         self,
         positions: wp.array[float],
@@ -129,3 +144,29 @@ class ControllerPD(Controller):
             outputs=[forces],
             device=device,
         )
+
+    def compute_force_jacobians(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        dforce_dpos: wp.array[float],
+        dforce_dvel: wp.array[float],
+        state: Controller.State | None,
+        dt: float,
+        device: wp.Device | None = None,
+    ) -> bool:
+        wp.launch(
+            kernel=_pd_force_jacobian_kernel,
+            dim=len(dforce_dpos),
+            inputs=[self.kp, self.kd],
+            outputs=[dforce_dpos, dforce_dvel],
+            device=device,
+        )
+        return True

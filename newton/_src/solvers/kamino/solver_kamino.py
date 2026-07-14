@@ -50,6 +50,39 @@ __all__ = ["SolverKamino"]
 ###
 
 
+@wp.kernel
+def _apply_control_force_linearization_to_kamino(
+    joint_f: wp.array[float],
+    joint_f_dq: wp.array[float],
+    joint_f_dqd: wp.array[float],
+    positions: wp.array[float],
+    velocities: wp.array[float],
+    target_pos: wp.array[float],
+    target_vel: wp.array[float],
+    joint_f_effective: wp.array[float],
+    joint_target_ke_effective: wp.array[float],
+    joint_target_kd_effective: wp.array[float],
+    tau_j_ref: wp.array[float],
+):
+    i = wp.tid()
+
+    dforce_dpos = joint_f_dq[i]
+    dforce_dvel = joint_f_dqd[i]
+    if dforce_dpos == 0.0 and dforce_dvel == 0.0:
+        return
+
+    kp = wp.max(0.0, -dforce_dpos)
+    kd = wp.max(0.0, -dforce_dvel)
+
+    position_error = target_pos[i] - positions[i]
+    velocity_error = target_vel[i] - velocities[i]
+
+    joint_f_effective[i] = 0.0
+    joint_target_ke_effective[i] = kp
+    joint_target_kd_effective[i] = kd
+    tau_j_ref[i] = joint_f[i] - kp * position_error - kd * velocity_error
+
+
 class SolverKamino(SolverBase, CouplingInterface):
     """
     A physics solver for simulating constrained multi-body systems containing kinematic loops,
@@ -192,6 +225,16 @@ class SolverKamino(SolverBase, CouplingInterface):
         Enables/disables collection of solver convergence and performance info at each simulation step.\n
         Enabling this option as it will significantly increase the runtime of the solver.\n
         Defaults to `False`.
+        """
+
+        use_actuator_jacobians: bool = False
+        """
+        Enables linearly implicit integration of supported external actuators.\n
+
+        Currently this is a narrow, opt-in path for stateless, unclamped external
+        actuators whose local position, velocity, and effort indices use the same
+        joint-DoF layout. Unsupported actuators continue to use the existing
+        explicit ``Control.joint_f`` path.
         """
 
         compute_solution_metrics: bool = False
@@ -603,6 +646,15 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Create a Kamino model from the Newton model
         self._model_kamino = self._kamino.ModelKamino.from_newton(model)
+        self._joint_f_effective = None
+        self._joint_target_ke_effective = None
+        self._joint_target_kd_effective = None
+        if self._config.use_actuator_jacobians and model.joint_count:
+            self._joint_f_effective = wp.clone(model.joint_f)
+            self._joint_target_ke_effective = wp.clone(model.joint_target_ke)
+            self._joint_target_kd_effective = wp.clone(model.joint_target_kd)
+            self._model_kamino.joints.k_p_j = self._joint_target_ke_effective
+            self._model_kamino.joints.k_d_j = self._joint_target_kd_effective
 
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino
@@ -650,6 +702,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
         self._control_kamino.finalize(self._model_kamino)
+
+        self._actuator_jacobian_tau_j_ref = None
+        self._warned_unsupported_actuator_jacobians = False
+        self._init_control_jacobian_buffers()
 
     @override
     def reset(
@@ -798,6 +854,8 @@ class SolverKamino(SolverBase, CouplingInterface):
         if control is None:
             control = self.model.control(clone_variables=False)
         self._control_kamino.from_newton(control, self._model_kamino)
+        self._control_kamino.tau_j_ref = None
+        self._prepare_actuator_jacobians(state_in, control, dt)
 
         # If contacts are provided, use them directly, bypassing Kamino's collision detector
         if contacts is not None:
@@ -841,6 +899,75 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_q_com=state_out_kamino.q_i,
             body_q=state_out_kamino.q_i,
         )
+
+    def _init_control_jacobian_buffers(self) -> None:
+        if not self._config.use_actuator_jacobians or not self.model.joint_count:
+            return
+
+        with wp.ScopedDevice(self.model.device):
+            self._actuator_jacobian_tau_j_ref = wp.zeros(
+                self.model.joint_dof_count, dtype=wp.float32, requires_grad=self.model.requires_grad
+            )
+
+    def _warn_unsupported_actuator_jacobians(self) -> None:
+        if self._warned_unsupported_actuator_jacobians:
+            return
+        warnings.warn(
+            "SolverKamino actuator Jacobian integration currently supports only diagonal joint-DoF force "
+            "Jacobians with matching joint_q and joint_qd layouts. The solver will ignore Control.joint_f_dq "
+            "and Control.joint_f_dqd for this step and use Control.joint_f explicitly.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        self._warned_unsupported_actuator_jacobians = True
+
+    def _prepare_actuator_jacobians(self, state_in: State, control: Control, dt: float) -> None:
+        if not self._config.use_actuator_jacobians or not self.model.joint_count:
+            return
+        if (
+            self._joint_f_effective is None
+            or self._joint_target_ke_effective is None
+            or self._joint_target_kd_effective is None
+        ):
+            self._warn_unsupported_actuator_jacobians()
+            return
+
+        self._control_kamino.tau_j = self._joint_f_effective
+        wp.copy(self._joint_f_effective, control.joint_f)
+        wp.copy(self._joint_target_ke_effective, self.model.joint_target_ke)
+        wp.copy(self._joint_target_kd_effective, self.model.joint_target_kd)
+        self._actuator_jacobian_tau_j_ref.zero_()
+
+        if control.joint_f_dq is None or control.joint_f_dqd is None:
+            return
+        if (
+            state_in.joint_q.size != state_in.joint_qd.size
+            or control.joint_target_q.size != control.joint_target_qd.size
+        ):
+            self._warn_unsupported_actuator_jacobians()
+            return
+
+        wp.launch(
+            kernel=_apply_control_force_linearization_to_kamino,
+            dim=self.model.joint_dof_count,
+            inputs=[
+                control.joint_f,
+                control.joint_f_dq,
+                control.joint_f_dqd,
+                state_in.joint_q,
+                state_in.joint_qd,
+                control.joint_target_q,
+                control.joint_target_qd,
+            ],
+            outputs=[
+                self._joint_f_effective,
+                self._joint_target_ke_effective,
+                self._joint_target_kd_effective,
+                self._actuator_jacobian_tau_j_ref,
+            ],
+            device=self.model.device,
+        )
+        self._control_kamino.tau_j_ref = self._actuator_jacobian_tau_j_ref
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:

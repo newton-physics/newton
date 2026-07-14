@@ -110,6 +110,50 @@ class Controller:
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 
+    def supports_force_jacobians(self) -> bool:
+        """Return True if this controller can compute analytic force Jacobians."""
+        return False
+
+    def compute_force_jacobians(
+        self,
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float] | None,
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        dforce_dpos: wp.array[float],
+        dforce_dvel: wp.array[float],
+        state: Controller.State | None,
+        dt: float,
+        device: wp.Device | None = None,
+    ) -> bool:
+        """Compute force derivatives with respect to position and velocity.
+
+        Args:
+            positions: Joint positions [m or rad].
+            velocities: Joint velocities [m/s or rad/s].
+            target_pos: Target positions [m or rad].
+            target_vel: Target velocities [m/s or rad/s].
+            feedforward: Feedforward effort [N or N·m] (may be ``None``).
+            pos_indices: Indices into *positions* for each DOF.
+            vel_indices: Indices into *velocities* for each DOF.
+            target_pos_indices: Indices into *target_pos*.
+            target_vel_indices: Indices into *target_vel* and *feedforward*.
+            dforce_dpos: Output derivative ``d(force[i]) / d(position[pos_indices[i]])``.
+            dforce_dvel: Output derivative ``d(force[i]) / d(velocity[vel_indices[i]])``.
+            state: Controller state (``None`` if stateless).
+            dt: Timestep [s].
+            device: Warp device for kernel launches.
+
+        Returns:
+            True if Jacobians were written, False if unsupported.
+        """
+        return False
+
     def is_stateful(self) -> bool:
         """Return True if this controller maintains internal state."""
         raise NotImplementedError(f"{type(self).__name__} must implement is_stateful")
