@@ -138,6 +138,28 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.constant)
         np.testing.assert_allclose(widths, np.array([0.2], dtype=np.float32), atol=1e-6)
 
+    def test_log_points_hides_existing_prim_with_empty_points_and_hidden(self):
+        viewer = self._make_viewer()
+
+        viewer.begin_frame(0.0)
+        points = wp.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=wp.vec3)
+        path = viewer.log_points("/particles", points, radii=0.01)
+
+        points_prim = UsdGeom.Points.Get(viewer.stage, path)
+        self.assertEqual(
+            points_prim.GetVisibilityAttr().Get(viewer._frame_index),
+            UsdGeom.Tokens.inherited,
+        )
+
+        viewer.begin_frame(1.0 / 60.0)
+        empty = wp.empty(0, dtype=wp.vec3)
+        viewer.log_points("/particles", empty, hidden=True)
+
+        self.assertEqual(
+            points_prim.GetVisibilityAttr().Get(viewer._frame_index),
+            UsdGeom.Tokens.invisible,
+        )
+
     def test_log_points_renders_as_point_instancer_by_default(self):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()
