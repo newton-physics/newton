@@ -338,6 +338,84 @@ class TestDeformableView(unittest.TestCase):
 class TestDeformableAndArticulationViews(unittest.TestCase):
     """Rigid and deformable selections sharing finalized mixed models."""
 
+    def test_rigid_cable_cloth_and_volume_survive_unrelated_collapse(self):
+        """All selection families coexist after an unrelated fixed joint collapses."""
+        builder = newton.ModelBuilder()
+        collapsed_body = builder.add_link(label="collapsed_body")
+        builder.add_joint_fixed(parent=-1, child=collapsed_body, label="collapse_me")
+        _add_test_articulation(builder)
+        cable_bodies, _cable_joints = builder.add_rod(
+            positions=[(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)],
+            radius=0.02,
+            label="cable",
+            body_frame_origin="com",
+        )
+        _add_test_cloth(builder)
+        _add_test_soft_body(builder)
+
+        body_count = builder.body_count
+        joint_count = builder.joint_count
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.body_count, body_count - 1)
+        self.assertEqual(builder.joint_count, joint_count - 1)
+
+        model = builder.finalize()
+        state = model.state()
+        rigid = ArticulationView(model, "robot")
+        cable = DeformableView(model, "cable", family="curve")
+        cloth = DeformableView(model, "cloth", family="surface")
+        soft = DeformableView(model, "soft", family="volume")
+
+        self.assertEqual(rigid.get_root_transforms(state).shape, (1, 1))
+        self.assertEqual(cable.get_body_transforms(state).shape, (1, 2))
+        self.assertEqual(cloth.get_particle_positions(state).shape, (1, 4))
+        self.assertEqual(soft.get_particle_positions(state).shape, (1, 4))
+        self.assertEqual(cable.ranges("body"), [(cable_bodies[0] - 1, cable_bodies[-1])])
+
+        rigid_values = rigid.get_root_transforms(state).numpy()
+        cable_values = cable.get_body_transforms(state).numpy()
+        cloth_values = cloth.get_particle_positions(state).numpy()
+        soft_values = soft.get_particle_positions(state).numpy()
+
+        moved_rigid = rigid_values.copy()
+        moved_rigid[..., 0] += 1.0
+        rigid.set_root_transforms(state, wp.array(moved_rigid, dtype=wp.transform, device=model.device))
+        np.testing.assert_array_equal(cable.get_body_transforms(state).numpy(), cable_values)
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), cloth_values)
+        np.testing.assert_array_equal(soft.get_particle_positions(state).numpy(), soft_values)
+
+        moved_cable = cable_values.copy()
+        moved_cable[..., 1] += 1.0
+        cable.set_body_transforms(state, wp.array(moved_cable, dtype=wp.transform, device=model.device))
+        np.testing.assert_allclose(rigid.get_root_transforms(state).numpy(), moved_rigid, atol=1e-6)
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), cloth_values)
+        np.testing.assert_array_equal(soft.get_particle_positions(state).numpy(), soft_values)
+
+        moved_cloth = cloth_values.copy()
+        moved_cloth[..., 2] += 1.0
+        cloth.set_particle_positions(state, wp.array(moved_cloth, dtype=wp.vec3, device=model.device))
+        np.testing.assert_allclose(cable.get_body_transforms(state).numpy(), moved_cable, atol=1e-6)
+        np.testing.assert_array_equal(soft.get_particle_positions(state).numpy(), soft_values)
+
+        moved_soft = soft_values.copy()
+        moved_soft[..., 0] += 1.0
+        soft.set_particle_positions(state, wp.array(moved_soft, dtype=wp.vec3, device=model.device))
+        np.testing.assert_allclose(rigid.get_root_transforms(state).numpy(), moved_rigid, atol=1e-6)
+        np.testing.assert_allclose(cable.get_body_transforms(state).numpy(), moved_cable, atol=1e-6)
+        np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), moved_cloth, atol=1e-6)
+        np.testing.assert_allclose(soft.get_particle_positions(state).numpy(), moved_soft, atol=1e-6)
+
+        state_out = model.state()
+        newton.solvers.SolverXPBD(model, iterations=1).step(
+            state,
+            state_out,
+            control=None,
+            contacts=None,
+            dt=1.0 / 60.0,
+        )
+        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
+        self.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
+
     def test_views_update_disjoint_state_and_simulate(self):
         """Rigid, cloth, and volume views coexist across replicated worlds."""
         prototype = newton.ModelBuilder()
