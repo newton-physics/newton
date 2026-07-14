@@ -2095,6 +2095,13 @@ class DeformableView:
     :meth:`~newton.ModelBuilder.add_usd` use the same finalized group records. Native
     deformables without a label remain valid but cannot be selected by label.
 
+    A group is one independently addressable cable, cloth, or soft volume together
+    with the ranges of its simulation elements. Fixed-joint collapse does not preserve
+    joints merely because a curve is labeled. A curve group is omitted if collapse
+    removes any of its segment bodies or joints; pass those fixed joints through
+    :meth:`~newton.ModelBuilder.collapse_fixed_joints` using ``joints_to_keep`` when
+    complete post-collapse access is required.
+
     Selected groups use one flat axis. :attr:`world_starts` partitions that axis by
     model world, including worlds without a match, and :attr:`world_ids` identifies
     the world of each group. :meth:`ranges` and :meth:`starts` work even when selected

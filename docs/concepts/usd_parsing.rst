@@ -193,8 +193,11 @@ one match. The view also exposes raw per-group ranges
 and for consumers that need slices of the flat model arrays. The ranges stay valid through
 :meth:`~newton.ModelBuilder.finalize`,
 :meth:`~newton.ModelBuilder.replicate` (each copy is tagged with its world index and selected as
-one group per world), and ``collapse_fixed_joints`` (cable ranges follow the renumbered bodies
-and joints).
+one group per world), and ``collapse_fixed_joints`` when all of a cable's bodies and joints
+survive (its ranges follow their new indices). Deformable labels do not change which fixed
+joints collapse. If collapse removes one of a cable's simulation elements, the incomplete
+group is omitted with a warning; pass the relevant joint through
+``collapse_fixed_joints(joints_to_keep=...)`` when complete post-collapse selection is required.
 
 A ``PhysicsAttachment`` prim ties two sites together. Each side has a target relationship
 (``src0``, ``src1``) pointing at the prim it attaches to, a site ``type`` (``type0``, ``type1``)
