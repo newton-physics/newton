@@ -150,7 +150,12 @@ class TestUSDDeformableGroups(unittest.TestCase):
             j0, j1 = group_range(builder, "cable", path, "joint")
             self.assertEqual(j0, j1, "welded-graph curves own no tree joints")
             self.assertLessEqual(j1, builder.joint_count, f"{path}: empty range points past the joint array")
-        builder.finalize()
+        model = builder.finalize()
+        for path in ("/World/Trunk", "/World/Branch"):
+            view = DeformableView(model, path, family="curve")
+            ((j0, j1),) = view.ranges("joint")
+            self.assertEqual(j0, j1, "finalized welded-graph curves own no tree joints")
+            self.assertLessEqual(j1, model.joint_count, f"{path}: finalized empty range points past the joint array")
 
 
 if __name__ == "__main__":

@@ -5235,22 +5235,14 @@ class ModelBuilder:
             verbose: If True, print additional information about the collapsed joints.
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
+
+        Note:
+            Deformable labels do not change which fixed joints are collapsed. A recorded curve
+            group remains selectable only if all of its segment bodies and joints survive. Pass
+            the relevant fixed joint through ``joints_to_keep`` when complete post-collapse
+            curve access is required.
         """
         joints_to_keep = set(joints_to_keep or ())
-
-        # Recorded curve ranges must continue to identify the same segment bodies
-        # after finalization. Preserve any fixed joint whose child is one of those
-        # bodies; collapsing it would merge the segment and invalidate the range.
-        recorded_curve_bodies = {
-            body
-            for start, end in zip(self._cable_body_start, self._cable_body_end, strict=True)
-            for body in range(start, end)
-        }
-        joints_to_keep.update(
-            joint
-            for joint in range(self.joint_count)
-            if self.joint_type[joint] == JointType.FIXED and self.joint_child[joint] in recorded_curve_bodies
-        )
 
         body_data = {}
         body_children = {-1: []}
@@ -5651,36 +5643,56 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Remap cable group ranges onto the reindexed bodies/joints. Cable bodies are linked by cable
-        # joints (never fixed), so they are not collapsed and their ranges stay contiguous; only their
-        # indices shift as other bodies/joints are dropped. Cloth/volume ranges address particles and
-        # triangles/tets/edges, which fixed-joint collapse never touches, so they are left untouched.
-        def _remap_body_id(body_id: int) -> int:
-            # Cable bodies are linked only by non-fixed cable joints, so collapse must never
-            # merge or drop them; a violation would silently corrupt every recorded range.
-            assert body_id in body_remap, f"cable body {body_id} was collapsed; cable ranges would be corrupt"
-            return body_remap[body_id]
+        # Rebuild cable group ranges after reindexing. A group remains selectable only when
+        # every one of its simulation bodies and joints survived collapse; exposing a partial
+        # range would misrepresent the original curve topology.
+        cable_records = []
+        for label, world, body_start, body_end, joint_start, joint_end in zip(
+            self._cable_label,
+            self._cable_world,
+            self._cable_body_start,
+            self._cable_body_end,
+            self._cable_joint_start,
+            self._cable_joint_end,
+            strict=True,
+        ):
+            old_bodies = list(range(body_start, body_end))
+            old_joints = list(range(joint_start, joint_end))
+            new_bodies = [body_remap[body] for body in old_bodies if body in body_remap]
+            new_joints = [joint_remap[joint] for joint in old_joints if joint in joint_remap]
 
-        for i in range(len(self._cable_label)):
-            if self._cable_body_end[i] > self._cable_body_start[i]:
-                new_start = _remap_body_id(self._cable_body_start[i])
-                self._cable_body_start[i] = new_start
-                self._cable_body_end[i] = _remap_body_id(self._cable_body_end[i] - 1) + 1
-            if self._cable_joint_end[i] > self._cable_joint_start[i]:
-                first, last = self._cable_joint_start[i], self._cable_joint_end[i] - 1
-                assert first in joint_remap and last in joint_remap, (
-                    f"cable joints [{first}, {last}] were collapsed; cable ranges would be corrupt"
+            bodies_complete = len(new_bodies) == len(old_bodies) and all(
+                body == new_bodies[0] + offset for offset, body in enumerate(new_bodies)
+            )
+            joints_complete = len(new_joints) == len(old_joints) and (
+                not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
+            )
+            if not old_bodies or not bodies_complete or not joints_complete:
+                warnings.warn(
+                    f"Curve group '{label}' is unavailable after collapse_fixed_joints because one or more "
+                    "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                    "joints_to_keep to preserve the complete group.",
+                    UserWarning,
+                    stacklevel=2,
                 )
-                self._cable_joint_start[i] = joint_remap[first]
-                self._cable_joint_end[i] = joint_remap[last] + 1
+                continue
+
+            if new_joints:
+                remapped_joint_range = (new_joints[0], new_joints[-1] + 1)
             else:
-                # A welded-graph curve owns no tree joints, but its empty [b, b) boundary must
-                # still shift with the retained joints, else it can point past the collapsed
-                # joint array. Map b to the number of retained joints below it.
-                boundary = self._cable_joint_start[i]
-                new_boundary = sum(1 for old_joint in joint_remap if old_joint < boundary)
-                self._cable_joint_start[i] = new_boundary
-                self._cable_joint_end[i] = new_boundary
+                # A welded-graph curve owns no tree joints. Shift its empty insertion
+                # boundary by the number of retained joints below the old boundary.
+                new_boundary = sum(1 for old_joint in joint_remap if old_joint < joint_start)
+                remapped_joint_range = (new_boundary, new_boundary)
+
+            cable_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
+
+        self._cable_label = [record[0] for record in cable_records]
+        self._cable_world = [record[1] for record in cable_records]
+        self._cable_body_start = [record[2] for record in cable_records]
+        self._cable_body_end = [record[3] for record in cable_records]
+        self._cable_joint_start = [record[4] for record in cable_records]
+        self._cable_joint_end = [record[5] for record in cable_records]
 
         def remap_articulation_reference(value: Any) -> Any:
             if isinstance(value, bool):

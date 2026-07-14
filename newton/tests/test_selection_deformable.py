@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.selection import DeformableView
+from newton.selection import ArticulationView, DeformableView
 from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
 from newton.tests.unittest_utils import USD_AVAILABLE
 
@@ -27,6 +27,41 @@ def _replicated_model(world_count=3):
     scene = newton.ModelBuilder()
     scene.replicate(sub, world_count)
     return scene.finalize()
+
+
+def _add_test_articulation(builder):
+    root = builder.add_link(label="robot/root")
+    root_joint = builder.add_joint_free(child=root, label="robot/root_joint")
+    builder.add_articulation([root_joint], label="robot")
+
+
+def _add_test_cloth(builder):
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0, 0.0, 2.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
+        indices=[0, 1, 2, 0, 2, 3],
+        density=1.0,
+        label="cloth",
+    )
+
+
+def _add_test_soft_body(builder):
+    builder.add_soft_mesh(
+        pos=wp.vec3(0.0, 0.0, 3.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+        indices=[0, 1, 2, 3],
+        density=1.0,
+        k_mu=100.0,
+        k_lambda=100.0,
+        k_damp=0.0,
+        label="soft",
+    )
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -300,6 +335,107 @@ class TestDeformableView(unittest.TestCase):
         np.testing.assert_allclose(after[2], moved[0], atol=1e-6)
 
 
+class TestDeformableAndArticulationViews(unittest.TestCase):
+    """Rigid and deformable selections sharing finalized mixed models."""
+
+    def test_views_update_disjoint_state_and_simulate(self):
+        """Rigid, cloth, and volume views coexist across replicated worlds."""
+        prototype = newton.ModelBuilder()
+        _add_test_articulation(prototype)
+        _add_test_cloth(prototype)
+        _add_test_soft_body(prototype)
+        scene = newton.ModelBuilder()
+        scene.replicate(prototype, 2)
+        model = scene.finalize()
+        state = model.state()
+
+        rigid = ArticulationView(model, "robot")
+        cloth = DeformableView(model, "cloth", family="surface")
+        soft = DeformableView(model, "soft", family="volume")
+        self.assertEqual(rigid.get_root_transforms(state).shape, (2, 1))
+        self.assertEqual(cloth.get_particle_positions(state).shape, (2, 4))
+        self.assertEqual(soft.get_particle_positions(state).shape, (2, 4))
+
+        rigid_before = rigid.get_root_transforms(state).numpy().copy()
+        soft_before = soft.get_particle_positions(state).numpy().copy()
+        cloth_values = cloth.get_particle_positions(state).numpy()
+        cloth_values[1, :, 2] += 2.0
+        cloth.set_particle_positions(state, wp.array(cloth_values, dtype=wp.vec3, device=model.device))
+        np.testing.assert_array_equal(rigid.get_root_transforms(state).numpy(), rigid_before)
+        np.testing.assert_array_equal(soft.get_particle_positions(state).numpy(), soft_before)
+
+        rigid_values = rigid_before.copy()
+        rigid_values[0, 0, 0] += 1.0
+        rigid.set_root_transforms(state, wp.array(rigid_values, dtype=wp.transform, device=model.device))
+        np.testing.assert_allclose(rigid.get_root_transforms(state).numpy(), rigid_values, atol=1e-6)
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), cloth_values)
+
+        state_out = model.state()
+        newton.solvers.SolverXPBD(model, iterations=1).step(
+            state,
+            state_out,
+            control=None,
+            contacts=None,
+            dt=1.0 / 60.0,
+        )
+        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
+        self.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
+
+    def test_heterogeneous_deformables_keep_rigid_selection_uniform(self):
+        """Family views retain empty worlds beside one common rigid articulation."""
+        world_0 = newton.ModelBuilder()
+        _add_test_articulation(world_0)
+        _add_test_cloth(world_0)
+        world_1 = newton.ModelBuilder()
+        _add_test_articulation(world_1)
+        _add_test_soft_body(world_1)
+        world_2 = newton.ModelBuilder()
+        _add_test_articulation(world_2)
+        _add_test_cloth(world_2)
+        world_2.add_rod(
+            positions=[(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)],
+            radius=0.02,
+            label="cable",
+            body_frame_origin="com",
+        )
+        scene = newton.ModelBuilder()
+        scene.add_world(world_0)
+        scene.add_world(world_1)
+        scene.add_world(world_2)
+        model = scene.finalize()
+
+        rigid = ArticulationView(model, "robot")
+        cloth = DeformableView(model, "cloth", family="surface")
+        soft = DeformableView(model, "soft", family="volume")
+        cable = DeformableView(model, "cable", family="curve")
+        self.assertEqual((rigid.count, rigid.world_count, rigid.count_per_world), (3, 3, 1))
+        self.assertEqual(rigid.get_root_transforms(model).shape, (3, 1))
+        np.testing.assert_array_equal(cloth.world_starts.numpy(), [0, 1, 1, 2])
+        np.testing.assert_array_equal(soft.world_starts.numpy(), [0, 0, 1, 1])
+        np.testing.assert_array_equal(cable.world_starts.numpy(), [0, 0, 0, 1])
+
+    def test_rigid_view_survives_dropped_curve_group(self):
+        """Dropping an incomplete curve leaves an unrelated rigid view valid."""
+        builder = newton.ModelBuilder()
+        _add_test_articulation(builder)
+        bodies, _joints = builder.add_rod(
+            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
+            radius=0.02,
+            label="anchored_curve",
+            body_frame_origin="com",
+        )
+        builder.add_joint_fixed(-1, bodies[0], label="anchor")
+
+        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
+            builder.collapse_fixed_joints()
+        model = builder.finalize()
+
+        rigid = ArticulationView(model, "robot")
+        self.assertEqual(rigid.get_root_transforms(model).shape, (1, 1))
+        with self.assertRaisesRegex(KeyError, "anchored_curve"):
+            DeformableView(model, "anchored_curve", family="curve")
+
+
 class TestDeformableViewBuilderGroups(unittest.TestCase):
     """Groups recorded by labeled builder calls (no USD) are selectable through the view."""
 
@@ -368,8 +504,8 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         with self.assertRaises(KeyError):
             DeformableView(model, "*", family="surface")
 
-    def test_fixed_joint_collapse_preserves_labeled_curve_group(self):
-        """Collapsing fixed joints keeps bodies owned by a labeled curve group."""
+    def test_fixed_joint_collapse_drops_incomplete_curve_group(self):
+        """A label does not prevent collapse; an incomplete curve is not selectable."""
         builder = newton.ModelBuilder()
         bodies, _joints = builder.add_rod(
             positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
@@ -379,10 +515,54 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         )
         builder.add_joint_fixed(-1, bodies[0], label="anchor")
 
-        builder.collapse_fixed_joints()
+        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
+            builder.collapse_fixed_joints()
+
+        self.assertEqual((builder.body_count, builder.joint_count), (1, 1))
+        model = builder.finalize()
+
+        with self.assertRaisesRegex(KeyError, "anchored_curve"):
+            DeformableView(model, "anchored_curve", family="curve")
+
+    def test_fixed_joint_collapse_is_label_neutral(self):
+        """Otherwise identical labeled and unlabeled rods collapse identically."""
+
+        def anchored_rod(label):
+            builder = newton.ModelBuilder()
+            bodies, _joints = builder.add_rod(
+                positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
+                radius=0.02,
+                label=label,
+                body_frame_origin="com",
+            )
+            builder.add_joint_fixed(-1, bodies[0], label="anchor")
+            return builder
+
+        unlabeled = anchored_rod(None)
+        unlabeled.collapse_fixed_joints()
+        labeled = anchored_rod("anchored_curve")
+        with self.assertWarnsRegex(UserWarning, "anchored_curve.*joints_to_keep"):
+            labeled.collapse_fixed_joints()
+
+        self.assertEqual((labeled.body_count, labeled.joint_count), (unlabeled.body_count, unlabeled.joint_count))
+        self.assertEqual(labeled.joint_type, unlabeled.joint_type)
+
+    def test_fixed_joint_collapse_preserves_explicitly_kept_curve(self):
+        """joints_to_keep retains a complete curve group when requested."""
+        builder = newton.ModelBuilder()
+        bodies, _joints = builder.add_rod(
+            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)],
+            radius=0.02,
+            label="anchored_curve",
+            body_frame_origin="com",
+        )
+        builder.add_joint_fixed(-1, bodies[0], label="anchor")
+
+        builder.collapse_fixed_joints(joints_to_keep=["anchor"])
         model = builder.finalize()
         view = DeformableView(model, "anchored_curve", family="curve")
 
+        self.assertEqual((model.body_count, model.joint_count), (2, 2))
         self.assertEqual(view.ranges("body"), [(0, 2)])
         self.assertEqual(view.get_body_transforms(model.state()).shape, (1, 2))
 
