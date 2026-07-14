@@ -1019,7 +1019,7 @@ class TestModelConversions(unittest.TestCase):
         #       pair properties based on the list of materials, using the average of the material
         #       properties. The Newton-to-Kamino conversion will leave the material pair properties
         #       uninitialized, leaving the choice of how to combine materials for a pair to the
-        #       runtime material resolution system (see :class:`MaterialMuxMode`).
+        #       runtime material resolution system (see :class:`MaterialMixMode`).
         # test_util_checks.assert_model_material_pairs_equal(self, model_kamino_converted.material_pairs, model_kamino.material_pairs)
 
     def test_30_state_conversions(self):

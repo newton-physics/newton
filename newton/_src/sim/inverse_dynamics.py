@@ -240,7 +240,7 @@ def _rnea_compensation_pass(
     device = model.device
     bc = model.body_count
 
-    # ``eval_rigid_tau`` reads body_ft_s[child] before atomic-adding into
+    # ``eval_rigid_tau`` reads body_ft_s[child] before accumulating into
     # body_ft_s[parent], so this buffer must start zero on every pass. The
     # other RNEA scratch arrays are fully overwritten by their producing
     # kernels (jcalc_motion, compute_link_velocity, jcalc_tau) and don't

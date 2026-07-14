@@ -81,6 +81,7 @@ class ViewerUSD(ViewerBase):
         up_axis: str = "Z",
         num_frames: int | None = 100,
         scaling: float = 1.0,
+        points_as_spheres: bool = True,
     ):
         """
         Initialize the USD viewer backend for Newton physics simulations.
@@ -91,6 +92,10 @@ class ViewerUSD(ViewerBase):
             up_axis: USD up axis, either 'Y' or 'Z'. Default is 'Z'.
             num_frames: Maximum number of frames to record. Default is 100. If None, recording is unlimited.
             scaling: Uniform scaling applied to the scene root. Default is 1.0.
+            points_as_spheres: When True, :meth:`log_points` renders points as a
+                :class:`~pxr.UsdGeom.PointInstancer` of :class:`~pxr.UsdGeom.Sphere`
+                prototypes scaled by ``radii``, instead of flat
+                :class:`~pxr.UsdGeom.Points` splats. Default is True.
 
         Raises:
             ImportError: If the usd-core package is not installed.
@@ -105,6 +110,7 @@ class ViewerUSD(ViewerBase):
         self.up_axis = up_axis
         self.scaling = scaling
         self.num_frames = num_frames
+        self.points_as_spheres = points_as_spheres
 
         # Create USD stage. If this output path is already registered in the
         # current process, reuse and clear the existing layer instead of
@@ -670,7 +676,11 @@ class ViewerUSD(ViewerBase):
         colors: (wp.array[wp.vec3] | wp.array[wp.float32] | tuple[float, float, float] | list[float] | None) = None,
         hidden: bool = False,
     ):
-        """Log points as a USD `Points` primitive.
+        """Log points as a USD primitive.
+
+        By default, each point is an instance of a ``UsdGeom.Sphere`` prototype
+        under a ``UsdGeom.PointInstancer``. Set ``points_as_spheres=False`` to
+        write flat ``UsdGeom.Points`` splats instead.
 
         Args:
             name: Unique name for the point primitive.
@@ -680,13 +690,16 @@ class ViewerUSD(ViewerBase):
             hidden: Whether the point primitive is hidden.
 
         Returns:
-            Sdf.Path of the created/updated points primitive.
+            ``Sdf.Path`` of the created/updated primitive.
         """
         name = self._qualify(name)
 
         if points is None:
             path = self._get_path(name)
-            instancer = UsdGeom.Points.Get(self.stage, path)
+            if self.points_as_spheres:
+                instancer = UsdGeom.PointInstancer.Get(self.stage, path)
+            else:
+                instancer = UsdGeom.Points.Get(self.stage, path)
             if instancer:
                 instancer.GetVisibilityAttr().Set("invisible", self._frame_index)
                 return instancer.GetPath()
@@ -705,6 +718,45 @@ class ViewerUSD(ViewerBase):
         colors, color_interp = self._normalize_point_colors(colors, num_points)
 
         path = self._get_path(name)
+
+        if self.points_as_spheres:
+            if name not in self._instancers:
+                self._ensure_scopes_for_path(self.stage, path)
+                instancer = UsdGeom.PointInstancer.Define(self.stage, path)
+                sphere = UsdGeom.Sphere.Define(self.stage, instancer.GetPath().AppendChild("sphere"))
+                sphere.GetRadiusAttr().Set(1.0)
+                instancer.CreatePrototypesRel().SetTargets((sphere.GetPath(),))
+                if colors is not None:
+                    UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
+                        "displayColor", Sdf.ValueTypeNames.Color3fArray, color_interp, 1
+                    )
+                self._instancers[name] = instancer
+
+            instancer = self._instancers[name]
+
+            # Proto indices must be updated every frame: particle count can vary due to stream compaction.
+            instancer.GetProtoIndicesAttr().Set(Vt.IntArray([0] * num_points), self._frame_index)
+            instancer.GetPositionsAttr().Set(points.numpy(), self._frame_index)
+
+            # PointInstancer scales are vec3; broadcast scalar or per-point radius to (N, 3).
+            if np.isscalar(radii):
+                scales = np.full((num_points, 3), radii, dtype=np.float32)
+            else:
+                r = radii.numpy() if isinstance(radii, wp.array) else np.array(radii, dtype=np.float32)
+                scales = np.stack([r, r, r], axis=1)
+            instancer.GetScalesAttr().Set(scales, self._frame_index)
+
+            if colors is not None:
+                primvar = UsdGeom.PrimvarsAPI(instancer).GetPrimvar("displayColor")
+                if not primvar:
+                    primvar = UsdGeom.PrimvarsAPI(instancer).CreatePrimvar(
+                        "displayColor", Sdf.ValueTypeNames.Color3fArray, color_interp, 1
+                    )
+                primvar.Set(colors, self._frame_index)
+
+            instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
+            return instancer.GetPath()
+
         instancer = UsdGeom.Points.Get(self.stage, path)
         if not instancer:
             self._ensure_scopes_for_path(self.stage, path)
@@ -812,25 +864,25 @@ class ViewerUSD(ViewerBase):
     def _normalize_point_colors(self, colors, num_points):
         """Normalize point colors and return (values, interpolation token)."""
         if colors is None:
-            return None, "constant"
+            return None, UsdGeom.Tokens.constant
 
         if isinstance(colors, wp.array):
             colors = colors.numpy()
 
         if self._is_single_rgb_triplet(colors):
             colors_arr = np.asarray(colors, dtype=np.float32)
-            return colors_arr.reshape(1, 3), "constant"
+            return colors_arr.reshape(1, 3), UsdGeom.Tokens.constant
 
         if isinstance(colors, np.ndarray):
-            return colors, "vertex"
+            return colors, UsdGeom.Tokens.vertex
 
         if isinstance(colors, list | tuple):
             # Keep list/tuple inputs as-is for existing valid per-point color inputs.
             if len(colors) == num_points:
-                return colors, "vertex"
-            return np.asarray(colors), "vertex"
+                return colors, UsdGeom.Tokens.vertex
+            return np.asarray(colors), UsdGeom.Tokens.vertex
 
-        return np.asarray(colors), "vertex"
+        return np.asarray(colors), UsdGeom.Tokens.vertex
 
     @staticmethod
     def _ensure_scopes_for_path(stage: Usd.Stage, prim_path_str: str):
