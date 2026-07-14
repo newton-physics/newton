@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         ConstrainedDynamicsConfig,
         ConstraintStabilizationConfig,
         ForwardKinematicsSolverConfig,
+        MaterialManagerConfig,
         PADMMSolverConfig,
     )
 
@@ -166,6 +167,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         If `None`, default values will be used.
         """
 
+        materials: MaterialManagerConfig | None = None
+        """
+        Configurations for the material manager and material property mixing.
+        See :class:`MaterialManagerConfig` for more details.
+        If `None`, default values will be used.
+        """
+
         rotation_correction: Literal["twopi", "continuous", "none"] = "twopi"
         """
         The rotation correction mode to use for rotational DoFs.\n
@@ -223,6 +231,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.ConstrainedDynamicsConfig.register_custom_attributes(builder)
             config.CollisionDetectorConfig.register_custom_attributes(builder)
             config.PADMMSolverConfig.register_custom_attributes(builder)
+            config.MaterialManagerConfig.register_custom_attributes(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
             builder.add_custom_attribute(
@@ -276,6 +285,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "dynamics": config.ConstrainedDynamicsConfig,
                 "padmm": config.PADMMSolverConfig,
                 "fk": config.ForwardKinematicsSolverConfig,
+                "materials": config.MaterialManagerConfig,
             }
             for attr_name, config_cls in subconfigs.items():
                 nested_config = kwargs.get(attr_name, None)
@@ -319,6 +329,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self.constraints.validate()
             self.dynamics.validate()
             self.padmm.validate()
+            self.materials.validate()
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
@@ -354,6 +365,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 self.dynamics = config.ConstrainedDynamicsConfig()
             if self.padmm is None:
                 self.padmm = config.PADMMSolverConfig()
+            if self.materials is None:
+                self.materials = config.MaterialManagerConfig()
 
             # Validate the config values after all default-initialization is done
             # to ensure that any inter-dependent parameters are properly checked.
@@ -808,6 +821,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 contacts_in=contacts,
                 contacts_out=self._contacts_kamino,
                 convert_forces=False,
+                friction_mix_mode=self._config.materials.friction_mix_mode,
+                restitution_mix_mode=self._config.materials.restitution_mix_mode,
             )
         # Otherwise, use Kamino's internal collision detector to generate contacts
         else:

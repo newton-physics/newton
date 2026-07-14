@@ -51,10 +51,18 @@ def _enable_example_deprecation_warnings() -> None:
     _enable_example_deprecation_warnings._installed = True
 
 
-def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
+def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False, ref: str = "main"):
+    """Download a folder from a Git repository.
+
+    Args:
+        git_url: Git repository URL.
+        folder_path: Path within the repository.
+        force_refresh: Whether to refresh the cached download.
+        ref: Git branch, tag, or commit SHA to download.
+    """
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
-    return download_git_folder(git_url, folder_path, force_refresh=force_refresh)
+    return download_git_folder(git_url, folder_path, ref=ref, force_refresh=force_refresh)
 
 
 def test_body_state(
