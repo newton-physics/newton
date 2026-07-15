@@ -9,8 +9,10 @@
 # proxy particles, and the harvested proxy impulse is applied back to the VBD
 # particles on the next coupled step.
 #
-# Pass ``--solver xpbd`` to run a contact-only XPBD reference, or
-# ``--solver vbd`` to run the same particles with VBD only.
+# Pass ``--solver xpbd`` to run a monolithic XPBD reference, or``--solver vbd``
+# to run the same scene with VBD only.
+# Those baselines are provided for comparison purposes, it is expected that the
+# behavior will differ as they support different features and/or parameters.
 #
 # Command: python -m newton.examples xpbd_vbd_coupled_solver
 #          python -m newton.examples xpbd_vbd_coupled_solver --solver xpbd
