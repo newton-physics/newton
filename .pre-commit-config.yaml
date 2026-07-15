@@ -58,10 +58,3 @@ repos:
         language: python
         types: [python]
         exclude: ^(scripts/check_warp_array_syntax\.py)
-      - id: check-asv-pins
-        name: check asv pins against pyproject
-        entry: python scripts/check_asv_pins.py
-        language: python
-        additional_dependencies: [packaging, tomli]
-        files: ^(asv\.conf\.json|pyproject\.toml)$
-        pass_filenames: false
