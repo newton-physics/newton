@@ -122,6 +122,27 @@ class TestSensorTiledCamera(unittest.TestCase):
         return builder.finalize(device="cpu")
 
     @staticmethod
+    def _build_soft_grid_scene() -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_soft_grid(
+            pos=wp.vec3(-0.1, -0.1, -2.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=1000.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            particle_radius=0.25,
+        )
+        return builder.finalize(device="cpu")
+
+    @staticmethod
     def _unpack_rgba(packed: int) -> np.ndarray:
         value = int(packed)
         return np.array(
@@ -375,6 +396,35 @@ class TestSensorTiledCamera(unittest.TestCase):
         )
         self.assertGreater(cloth_depth_image.numpy()[0, 0, 0, 0], 0.0)
         self.assertEqual(int(cloth_shape_index_image.numpy()[0, 0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
+
+    def test_render_config_masks_volume_deformable_particles(self) -> None:
+        model = self._build_soft_grid_scene()
+        sensor = SensorTiledCamera(model=model)
+
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+        depth_image = sensor.utils.create_depth_image_output(1, 1)
+        shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+
+        sensor.update(
+            model.state(),
+            camera_transforms,
+            camera_rays,
+            depth_image=depth_image,
+            shape_index_image=shape_index_image,
+            render_config=SensorTiledCamera.RenderConfig(
+                enable_backface_culling=False,
+                enable_particles=True,
+                max_distance=10.0,
+            ),
+        )
+
+        self.assertGreater(depth_image.numpy()[0, 0, 0, 0], 0.0)
+        self.assertEqual(int(shape_index_image.numpy()[0, 0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
 
     def test_checkerboard_material_requires_keyword_arguments(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))

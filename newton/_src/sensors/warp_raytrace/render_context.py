@@ -56,7 +56,7 @@ class RenderContext:
 
         self.__triangle_points: wp.array[wp.vec3f] | None = None
         self.__triangle_indices: wp.array[wp.int32] | None = None
-        self.__triangle_particle_mask: wp.array[wp.bool] | None = None
+        self.__topology_particle_mask: wp.array[wp.bool] | None = None
 
         self.__gaussians_data: wp.array[Gaussian.Data] | None = None
         self.__has_particles: bool = False
@@ -100,7 +100,7 @@ class RenderContext:
         self.triangle_mesh = None
         self.__triangle_points = None
         self.__triangle_indices = None
-        self.__triangle_particle_mask = None
+        self.__topology_particle_mask = None
         self.__has_particles = False
         self.state.has_particles = False
 
@@ -126,13 +126,21 @@ class RenderContext:
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
             self.state.has_particles = True
-            triangle_particle_mask = np.zeros(model.particle_q.shape[0], dtype=bool)
+            topology_particle_mask = np.zeros(model.particle_q.shape[0], dtype=bool)
+
+            def mask_topology_particles(indices: wp.array[wp.int32] | None):
+                if indices is not None and indices.shape[0]:
+                    topology_particle_mask[indices.numpy().reshape(-1)] = True
+
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.triangle_points = model.particle_q
                 self.triangle_indices = model.tri_indices.flatten()
-                triangle_particle_mask[model.tri_indices.numpy().reshape(-1)] = True
-            self.__triangle_particle_mask = wp.array(
-                triangle_particle_mask, dtype=wp.bool, device=model.particle_q.device
+                # Deformable-owned vertices render through the triangle mesh; tet indices catch
+                # interior volume particles that are not referenced by boundary triangles.
+                mask_topology_particles(model.tri_indices)
+                mask_topology_particles(model.tet_indices)
+            self.__topology_particle_mask = wp.array(
+                topology_particle_mask, dtype=wp.bool, device=model.particle_q.device
             )
 
         self.shape_colors = model.shape_color
@@ -343,7 +351,7 @@ class RenderContext:
                     # Particles
                     state.particle_q if has_particles else None,
                     model.particle_radius if has_particles else None,
-                    self.__triangle_particle_mask if has_particles else None,
+                    self.__topology_particle_mask if has_particles else None,
                     # Triangle Mesh
                     self.triangle_mesh.id if self.triangle_mesh is not None else 0,
                     # Meshes
