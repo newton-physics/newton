@@ -379,7 +379,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
             camera_forward,
         )
 
-        if wp.static(config.enable_particles):
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
             closest_hit = closest_hit_particles(
                 closest_hit,
                 bvh_particles_size,
@@ -631,7 +631,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
             camera_forward,
         )
 
-        if wp.static(config.enable_particles):
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
             closest_hit = closest_hit_particles_depth_only(
                 closest_hit,
                 bvh_particles_size,
@@ -829,7 +829,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         ):
             return True
 
-        if wp.static(config.enable_particles):
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
             if first_hit_particles(
                 bvh_particles_size,
                 bvh_particles_id,
