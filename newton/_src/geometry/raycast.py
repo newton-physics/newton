@@ -598,40 +598,55 @@ def ray_intersect_plane(
     return t_hit, normal
 
 
-@wp.func
-def ray_intersect_mesh(
-    ray_origin: wp.vec3,
-    ray_direction: wp.vec3,
-    size: wp.vec3,
-    mesh_id: wp.uint64,
-    enable_backface_culling: bool,
-    max_t: float,
-) -> tuple[float, wp.vec3, float, float, int]:
-    """Computes ray-mesh intersection in the mesh's local frame using Warp's built-in mesh query.
-
-    Args:
-        ray_origin: The origin of the ray in the mesh's local frame.
-        ray_direction: The direction of the ray in the mesh's local frame.
-        size: The 3D scale of the mesh, used to scale-correct the returned local normal.
-        mesh_id: The Warp mesh ID for raycasting.
-        enable_backface_culling: When ``True``, reject hits whose triangle normal
-            is aligned with the ray direction (back faces).
-        max_t: Maximum parameter ``t`` along the local ray to consider.
-
-    Returns:
-        Tuple ``(distance, normal, u, v, face_index)``. The distance along the ray and the local-space normal of the intersection point, or -1.0 and a zero vector if there is no intersection; on miss, ``u`` and ``v`` are ``0.0`` and ``face_index`` is -1.
+def _make_ray_intersect_mesh(compute_normal: bool):
+    """Build a ray-mesh intersection ``@wp.func``, specialized at compile time on whether the
+    surface normal is computed. ``wp.static(compute_normal)`` folds away the normal work in the
+    depth-only / shadow variant, so no code is duplicated (see :data:`ray_intersect_mesh` and
+    :data:`ray_intersect_mesh_no_normal`).
     """
-    if mesh_id == wp.uint64(0):
+
+    @wp.func
+    def ray_intersect_mesh(
+        ray_origin: wp.vec3,
+        ray_direction: wp.vec3,
+        size: wp.vec3,
+        mesh_id: wp.uint64,
+        enable_backface_culling: bool,
+        max_t: float,
+    ) -> tuple[float, wp.vec3, float, float, int]:
+        """Computes ray-mesh intersection in the mesh's local frame using Warp's built-in mesh query.
+
+        Args:
+            ray_origin: The origin of the ray in the mesh's local frame.
+            ray_direction: The direction of the ray in the mesh's local frame.
+            size: The 3D scale of the mesh, used to scale-correct the returned local normal.
+            mesh_id: The Warp mesh ID for raycasting.
+            enable_backface_culling: When ``True``, reject hits whose triangle normal
+                is aligned with the ray direction (back faces).
+            max_t: Maximum parameter ``t`` along the local ray to consider.
+
+        Returns:
+            Tuple ``(distance, normal, u, v, face_index)``. The distance along the ray and the local-space normal of the intersection point (a zero vector in the ``no_normal`` variant), or -1.0 and a zero vector if there is no intersection; on miss, ``u`` and ``v`` are ``0.0`` and ``face_index`` is -1.
+        """
+        if mesh_id == wp.uint64(0):
+            return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
+
+        query = wp.mesh_query_ray(mesh_id, ray_origin, ray_direction, max_t)
+
+        if query.result:
+            if not enable_backface_culling or wp.dot(ray_direction, query.normal) < 0.0:
+                normal = wp.vec3(0.0)
+                if wp.static(compute_normal):
+                    normal = wp.normalize(safe_div_vec3(query.normal, size))
+                return query.t, normal, query.u, query.v, query.face
+
         return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
 
-    query = wp.mesh_query_ray(mesh_id, ray_origin, ray_direction, max_t)
+    return ray_intersect_mesh
 
-    if query.result:
-        if not enable_backface_culling or wp.dot(ray_direction, query.normal) < 0.0:
-            normal = wp.normalize(safe_div_vec3(query.normal, size))
-            return query.t, normal, query.u, query.v, query.face
 
-    return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
+ray_intersect_mesh = _make_ray_intersect_mesh(True)
+ray_intersect_mesh_no_normal = _make_ray_intersect_mesh(False)
 
 
 @wp.func
@@ -641,19 +656,20 @@ def ray_intersect_mesh_anyhit(
     mesh_id: wp.uint64,
     max_t: float,
 ) -> float:
-    """Computes ray-mesh intersection in the mesh's local frame using Warp's built-in mesh query.
+    """Tests whether a ray hits a mesh within ``max_t``, in the mesh's local frame.
+
+    Uses Warp's any-hit mesh query, which returns on the first intersection without
+    searching for the closest one -- cheaper than :func:`ray_intersect_mesh` for
+    occlusion/shadow rays that only need existence of a hit.
 
     Args:
         ray_origin: The origin of the ray in the mesh's local frame.
         ray_direction: The direction of the ray in the mesh's local frame.
-        size: The 3D scale of the mesh, used to scale-correct the returned local normal.
         mesh_id: The Warp mesh ID for raycasting.
-        enable_backface_culling: When ``True``, reject hits whose triangle normal
-            is aligned with the ray direction (back faces).
         max_t: Maximum parameter ``t`` along the local ray to consider.
 
     Returns:
-        Tuple ``(distance, normal, u, v, face_index)``. The distance along the ray and the local-space normal of the intersection point, or -1.0 and a zero vector if there is no intersection; on miss, ``u`` and ``v`` are ``0.0`` and ``face_index`` is -1.
+        ``0.0`` if the ray hits the mesh within ``max_t``, otherwise ``-1.0``.
     """
     if mesh_id == wp.uint64(0):
         return -1.0
@@ -662,61 +678,79 @@ def ray_intersect_mesh_anyhit(
 
     if hit:
         return 0.0
-    
+
     return -1.0
 
-@wp.func
-def ray_intersect_shape(
-    geom_to_world: wp.transform,
-    size: wp.vec3,
-    geomtype: int,
-    ray_origin: wp.vec3,
-    ray_direction: wp.vec3,
-    enable_backface_culling: bool,
-) -> tuple[float, wp.vec3]:
-    """Maps a world-space ray into the shape's local frame, dispatches to the matching primitive routine, and rotates the normal back to world.
 
-    Handles primitive shapes only. Mesh-backed shapes (MESH, CONVEX_MESH, HFIELD) are
-    intersected via :func:`ray_intersect_mesh`; callers dispatch on the geometry type and
-    pick the matching routine.
-
-    Args:
-        geom_to_world: The world transform of the shape.
-        size: The size of the geometry.
-        geomtype: The type of the geometry.
-        ray_origin: The origin of the ray in world space.
-        ray_direction: The direction of the ray in world space.
-        enable_backface_culling: When ``True``, reject plane hits approached from
-            behind (ray direction aligned with the plane normal).
-
-    Returns:
-        The distance and world-space normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection.
+def _make_ray_intersect_shape(compute_normal: bool):
+    """Build the primitive-dispatch ``@wp.func``, specialized at compile time on whether the
+    surface normal is computed. ``wp.static(compute_normal)`` folds away the normal transform in
+    the depth-only / shadow variant (and, being unused, the primitives' local-normal work is then
+    dead-code-eliminated), so no code is duplicated (see :data:`ray_intersect_shape` and
+    :data:`ray_intersect_shape_no_normal`).
     """
-    ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
 
-    t_hit = -1.0
-    normal_local = wp.vec3(0.0)
+    @wp.func
+    def ray_intersect_shape(
+        geom_to_world: wp.transform,
+        size: wp.vec3,
+        geomtype: int,
+        ray_origin: wp.vec3,
+        ray_direction: wp.vec3,
+        enable_backface_culling: bool,
+    ) -> tuple[float, wp.vec3]:
+        """Maps a world-space ray into the shape's local frame, dispatches to the matching primitive routine, and rotates the normal back to world.
 
-    if geomtype == GeoType.PLANE:
-        t_hit, normal_local = ray_intersect_plane(ray_origin_local, ray_direction_local, size, enable_backface_culling)
-    elif geomtype == GeoType.SPHERE:
-        t_hit, normal_local = ray_intersect_sphere(ray_origin_local, ray_direction_local, size[0])
-    elif geomtype == GeoType.BOX:
-        t_hit, normal_local = ray_intersect_box(ray_origin_local, ray_direction_local, size)
-    elif geomtype == GeoType.CAPSULE:
-        t_hit, normal_local = ray_intersect_capsule(ray_origin_local, ray_direction_local, size[0], size[1])
-    elif geomtype == GeoType.CYLINDER:
-        t_hit, normal_local = ray_intersect_cylinder(ray_origin_local, ray_direction_local, size[0], size[1])
-    elif geomtype == GeoType.CONE:
-        t_hit, normal_local = ray_intersect_cone(ray_origin_local, ray_direction_local, size[0], size[1])
-    elif geomtype == GeoType.ELLIPSOID:
-        t_hit, normal_local = ray_intersect_ellipsoid(ray_origin_local, ray_direction_local, size)
+        Handles primitive shapes only. Mesh-backed shapes (MESH, CONVEX_MESH, HFIELD) are
+        intersected via :func:`ray_intersect_mesh`; callers dispatch on the geometry type and
+        pick the matching routine.
 
-    normal = wp.vec3(0.0)
-    if t_hit >= 0.0:
-        normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+        Args:
+            geom_to_world: The world transform of the shape.
+            size: The size of the geometry.
+            geomtype: The type of the geometry.
+            ray_origin: The origin of the ray in world space.
+            ray_direction: The direction of the ray in world space.
+            enable_backface_culling: When ``True``, reject plane hits approached from
+                behind (ray direction aligned with the plane normal).
 
-    return t_hit, normal
+        Returns:
+            The distance and world-space normal of the intersection point along the ray (a zero vector in the ``no_normal`` variant), or -1.0 and a zero vector if there is no intersection.
+        """
+        ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction)
+
+        t_hit = -1.0
+        normal_local = wp.vec3(0.0)
+
+        if geomtype == GeoType.PLANE:
+            t_hit, normal_local = ray_intersect_plane(
+                ray_origin_local, ray_direction_local, size, enable_backface_culling
+            )
+        elif geomtype == GeoType.SPHERE:
+            t_hit, normal_local = ray_intersect_sphere(ray_origin_local, ray_direction_local, size[0])
+        elif geomtype == GeoType.BOX:
+            t_hit, normal_local = ray_intersect_box(ray_origin_local, ray_direction_local, size)
+        elif geomtype == GeoType.CAPSULE:
+            t_hit, normal_local = ray_intersect_capsule(ray_origin_local, ray_direction_local, size[0], size[1])
+        elif geomtype == GeoType.CYLINDER:
+            t_hit, normal_local = ray_intersect_cylinder(ray_origin_local, ray_direction_local, size[0], size[1])
+        elif geomtype == GeoType.CONE:
+            t_hit, normal_local = ray_intersect_cone(ray_origin_local, ray_direction_local, size[0], size[1])
+        elif geomtype == GeoType.ELLIPSOID:
+            t_hit, normal_local = ray_intersect_ellipsoid(ray_origin_local, ray_direction_local, size)
+
+        normal = wp.vec3(0.0)
+        if wp.static(compute_normal):
+            if t_hit >= 0.0:
+                normal = wp.normalize(wp.transform_vector(geom_to_world, normal_local))
+
+        return t_hit, normal
+
+    return ray_intersect_shape
+
+
+ray_intersect_shape = _make_ray_intersect_shape(True)
+ray_intersect_shape_no_normal = _make_ray_intersect_shape(False)
 
 
 @wp.kernel

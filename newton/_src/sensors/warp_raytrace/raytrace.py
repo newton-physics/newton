@@ -374,7 +374,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                         ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
                             shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
                         )
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
+                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh_no_normal(
                             ray_origin_local,
                             ray_direction_local,
                             shape_sizes[si],
@@ -387,7 +387,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                             gaussians_hit[num_gaussians_hit] = si
                             num_gaussians_hit += 1
                     else:
-                        hit_dist, _normal = raycast.ray_intersect_shape(
+                        hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
                             shape_transforms[si],
                             shape_sizes[si],
                             shape_type,
@@ -466,7 +466,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         if triangle_mesh_id:
             # Triangle mesh is in world space; its local frame is the world frame (see
             # closest_hit_triangle_mesh).
-            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh(
+            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_normal(
                 ray_origin_world,
                 ray_dir_world,
                 wp.vec3f(1.0),
@@ -594,7 +594,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                             max_dist,
                         )
                     else:
-                        hit_dist, _normal = raycast.ray_intersect_shape(
+                        hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
                             shape_transforms[si],
                             shape_sizes[si],
                             shape_type,
@@ -649,14 +649,9 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         max_dist: wp.float32,
     ) -> wp.bool:
         if triangle_mesh_id:
-            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh(
-                ray_origin_world,
-                ray_dir_world,
-                wp.vec3f(1.0),
-                triangle_mesh_id,
-                wp.static(config.enable_backface_culling),
-                max_dist,
-            )
+            # Triangle mesh is in world space; its local frame is the world frame (see
+            # closest_hit_triangle_mesh). Shadow rays only need any hit within ``max_dist``.
+            hit_dist = raycast.ray_intersect_mesh_anyhit(ray_origin_world, ray_dir_world, triangle_mesh_id, max_dist)
             return hit_dist >= 0.0
         return False
 
