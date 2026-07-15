@@ -85,8 +85,10 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
     np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
     solver_flags = solver._particle_flags.numpy()
     active = int(newton.ParticleFlags.ACTIVE)
+    proxy = int(newton.ParticleFlags.PROXY)
     test.assertTrue(np.all((solver_flags[:3] & active) != 0))
-    test.assertEqual(int(solver_flags[3]), 0)
+    test.assertEqual(int(solver_flags[3]) & active, 0)
+    test.assertNotEqual(int(solver_flags[3]) & proxy, 0)
 
 
 def test_solver_flags_track_runtime_model_changes(test, device):

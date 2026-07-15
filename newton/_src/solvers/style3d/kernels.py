@@ -13,7 +13,7 @@ def deactivate_zero_mass_particles_kernel(
 ):
     tid = wp.tid()
     if particle_masses[tid] <= 0.0:
-        particle_flags[tid] = 0
+        particle_flags[tid] = particle_flags[tid] & ~ParticleFlags.ACTIVE
 
 
 @wp.func
