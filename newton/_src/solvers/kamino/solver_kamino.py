@@ -874,7 +874,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._validate_structural_invariants(flags)
 
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
-            # The documentation is unclear about which flag should trigger this update, so we update both.
+            # The documentation is unclear about which flag should trigger this update, so we update on both flags.
             self._update_actuation_types()
 
         if flags & ModelFlags.MODEL_PROPERTIES:
@@ -898,12 +898,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
             pass
 
-        # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
-        # No warning is emitted for compatibility with a coupled solver environment where these flags were meant for one of the other solver.
-        if flags & ModelFlags.CONSTRAINT_PROPERTIES:
-            pass
-
-        if flags & ModelFlags.TENDON_PROPERTIES:
+        if flags & (ModelFlags.CONSTRAINT_PROPERTIES | ModelFlags.TENDON_PROPERTIES):
+            # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
+            # When using a coupled solver environment, these flags are meant for one of the other solvers.
+            # No warning is emitted for compatibility with such an environment.
             pass
 
         handled = (
