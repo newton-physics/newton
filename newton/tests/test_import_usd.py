@@ -7473,10 +7473,56 @@ def Xform "Articulation" (
         body_idx = result["path_body_map"]["/World/Body"]
         self.assertGreater(builder.body_mass[body_idx], 0.0)
 
-        with self.assertWarnsRegex(UserWarning, r"Ignoring body-level density"):
-            newton.ModelBuilder().add_usd(
-                make_stage(lambda api: (api.CreateMassAttr().Set(5.0), api.CreateDensityAttr().Set(math.inf)))
-            )
+        control_builder = newton.ModelBuilder()
+        control_result = control_builder.add_usd(make_stage(lambda api: None))
+        control_idx = control_result["path_body_map"]["/World/Body"]
+        for invalid_density in (-1.0, math.inf, math.nan):
+            with self.subTest(density=invalid_density):
+                with self.assertWarnsRegex(UserWarning, r"MassAPI density must be positive and finite"):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        make_stage(lambda api, value=invalid_density: api.CreateDensityAttr().Set(value))
+                    )
+                body_idx = result["path_body_map"]["/World/Body"]
+                self.assertAlmostEqual(builder.body_mass[body_idx], control_builder.body_mass[control_idx], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[body_idx], control_builder.body_inertia[control_idx], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_collider_density_warns(self):
+        """Invalid collider density warns and falls back like an unspecified value."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        for invalid_density in (-1.0, math.inf, math.nan):
+            with self.subTest(density=invalid_density):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                for name, density in (("Control", None), ("Invalid", invalid_density)):
+                    body_path = f"/World/{name}"
+                    body = UsdGeom.Xform.Define(stage, body_path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.MassAPI.Apply(body.GetPrim())
+
+                    collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                    collider.CreateSizeAttr().Set(0.2)
+                    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                    if density is not None:
+                        UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateDensityAttr().Set(density)
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"MassAPI density must be positive and finite"):
+                    result = builder.add_usd(stage)
+
+                control = result["path_body_map"]["/World/Control"]
+                invalid = result["path_body_map"]["/World/Invalid"]
+                self.assertAlmostEqual(builder.body_mass[invalid], builder.body_mass[control], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[invalid], builder.body_inertia[control], atol=1e-6, rtol=1e-6
+                )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_density_rescale_keeps_inverse_inertia_consistent(self):

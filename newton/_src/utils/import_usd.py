@@ -631,9 +631,20 @@ def parse_usd(
         mass = mass_api.GetMassAttr().Get()
         return float(mass) if mass is not None and math.isfinite(mass) and mass > 0.0 else None
 
-    def _mass_api_effective_density(mass_api: UsdPhysics.MassAPI) -> float | None:
-        density = mass_api.GetDensityAttr().Get()
-        return float(density) if density is not None and math.isfinite(density) and density > 0.0 else None
+    warned_invalid_density: set[str] = set()
+
+    def _mass_api_effective_density(mass_api: UsdPhysics.MassAPI, *, warn_invalid: bool = False) -> float | None:
+        raw_density = mass_api.GetDensityAttr().Get()
+        if raw_density is not None and math.isfinite(raw_density) and raw_density > 0.0:
+            return float(raw_density)
+        prim_path = str(mass_api.GetPrim().GetPath())
+        if warn_invalid and raw_density is not None and raw_density != 0.0 and prim_path not in warned_invalid_density:
+            warned_invalid_density.add(prim_path)
+            warnings.warn(
+                f"{prim_path}: authored MassAPI density must be positive and finite; treating it as unspecified.",
+                stacklevel=2,
+            )
+        return None
 
     warned_invalid_diag_inertia: set[str] = set()
 
@@ -3056,6 +3067,7 @@ def parse_usd(
         if not mass_api:
             return None
 
+        _mass_api_effective_density(mass_api, warn_invalid=True)
         mass = _mass_api_effective_mass(mass_api)
         diag_val = _mass_api_effective_diag_inertia(mass_api)
         if mass is None or diag_val is None:
@@ -3845,6 +3857,7 @@ def parse_usd(
             if body_id == -1:
                 continue
             effective_mass = _mass_api_effective_mass(mass_api)
+            effective_density = _mass_api_effective_density(mass_api, warn_invalid=True)
             effective_diag_inertia = _mass_api_effective_diag_inertia(mass_api)
             effective_com = _mass_api_effective_com(mass_api)
             has_effective_mass = effective_mass is not None
@@ -3910,7 +3923,7 @@ def parse_usd(
                     # When the body has an effective density, rescale accumulated mass
                     # and inertia from the builder's default shape density to the
                     # body-level density (USD body density overrides per-shape density).
-                    body_density = _mass_api_effective_density(mass_api)
+                    body_density = effective_density
                     if body_density is not None and not has_effective_mass and default_shape_density > 0.0:
                         density_scale = body_density / default_shape_density
                         cmp_mass *= density_scale
@@ -3966,8 +3979,7 @@ def parse_usd(
             if has_effective_mass:
                 mass = effective_mass
                 shape_accumulated_mass = builder.body_mass[body_id]
-                raw_density = mass_api.GetDensityAttr().Get()
-                if not has_effective_inertia and raw_density is not None and raw_density != 0.0:
+                if not has_effective_inertia and effective_density is not None:
                     warnings.warn(
                         f"Body {body_path}: authored mass and density without authored diagonalInertia. "
                         f"Ignoring body-level density.",
