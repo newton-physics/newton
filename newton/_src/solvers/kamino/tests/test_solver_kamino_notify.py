@@ -16,8 +16,13 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 
-def _build_limited_revolute() -> newton.Model:
-    """Build a tiny model: world to a single body via a limited revolute joint."""
+def _build_revolute(
+    *,
+    dynamic: bool = False,
+    limited: bool = False,
+    actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
+) -> newton.Model:
+    """Build a tiny world-to-body revolute model for notify tests."""
     builder = newton.ModelBuilder()
     SolverKamino.register_custom_attributes(builder)
 
@@ -29,13 +34,20 @@ def _build_limited_revolute() -> newton.Model:
         lock_inertia=True,
     )
     builder.add_shape_box(label="box", body=bid, hx=0.1, hy=0.1, hz=0.1)
+
     jid = builder.add_joint_revolute(
         label="world_to_link",
         parent=-1,
         child=bid,
         axis=newton.Axis.Y,
-        limit_lower=-1.0,
-        limit_upper=1.0,
+        # None falls back to the builder default (unlimited) for the non-limited case.
+        limit_lower=-1.0 if limited else None,
+        limit_upper=1.0 if limited else None,
+        armature=1.0 if dynamic else 0.0,
+        damping=0.0,
+        target_ke=0.0,
+        target_kd=0.0,
+        actuator_mode=actuator_mode,
     )
     builder.add_articulation([jid])
     builder.end_world()
@@ -66,7 +78,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_noop_flags_are_silent_and_do_not_mutate_newton_arrays(self):
         """No-op notifications are silent and leave Newton arrays untouched."""
-        model = _build_limited_revolute()
+        model = _build_revolute(limited=True)
         solver = SolverKamino(model)
         snapshot = _snapshot_model_arrays(model)
         noop_flags = (
@@ -89,7 +101,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_unknown_flags_warn_without_raising(self):
         """Unknown flags warn while leaving Newton arrays untouched."""
-        model = _build_limited_revolute()
+        model = _build_revolute(limited=True)
         solver = SolverKamino(model)
         snapshot = _snapshot_model_arrays(model)
         warning_message = "SolverKamino.notify_model_changed: flags 0x%x not yet supported"
@@ -110,7 +122,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_aliased_properties_reference_newton(self):
         """Every aliased Newton array shares storage with Kamino, so in-place edits need no notify."""
-        model = _build_limited_revolute()
+        model = _build_revolute(limited=True)
         solver = SolverKamino(model)
         bodies = solver._model_kamino.bodies
         joints = solver._model_kamino.joints
@@ -154,7 +166,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_gravity_update(self):
         """Model-property notifications refresh Kamino's gravity representation."""
-        model = _build_limited_revolute()
+        model = _build_revolute(limited=True)
         solver = SolverKamino(model)
         gravity = np.tile(np.array([1.0, -2.0, 3.0], dtype=np.float32), (model.world_count, 1))
         acceleration = np.linalg.norm(gravity, axis=1)
@@ -169,7 +181,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_joint_transform_update(self):
         """Joint-property notifications recompute Kamino's parent and child frames."""
-        model = _build_limited_revolute()
+        model = _build_revolute(limited=True)
         solver = SolverKamino(model)
         joints = solver._model_kamino.joints
 
@@ -204,6 +216,98 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             atol=1e-6,
             err_msg="X_Fj first column must equal R(q_cj) * joint axis",
         )
+
+    def test_dynamic_constraint_toggle_raises(self):
+        """Adding or removing a joint's dynamic constraints requires solver recreation."""
+        for built_dynamic in (False, True):
+            with self.subTest(built_dynamic=built_dynamic):
+                model = _build_revolute(dynamic=built_dynamic)
+                solver = SolverKamino(model)
+                built = solver._model_kamino.joints.num_dynamic_cts.numpy()[0] > 0
+                self.assertEqual(built, built_dynamic)
+
+                value = np.float32(0.0 if built_dynamic else 1.0)
+                model.joint_armature.assign([value])
+                model.joint_damping.assign([value])
+                model.joint_target_ke.assign([value])
+                model.joint_target_kd.assign([value])
+
+                with self.assertRaisesRegex(RuntimeError, "recreate"):
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_dynamic_coefficient_edit_is_allowed(self):
+        """Dynamic coefficient edits are allowed while the dynamic predicate stays true."""
+        model = _build_revolute(dynamic=True)
+        solver = SolverKamino(model)
+        model.joint_target_ke.assign([np.float32(2.0)])
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_limit_finiteness_change_raises(self):
+        """Limit capacity changes require solver recreation."""
+        for built_limited in (False, True):
+            with self.subTest(built_limited=built_limited):
+                model = _build_revolute(limited=built_limited)
+                solver = SolverKamino(model)
+                if built_limited:
+                    model.joint_limit_lower.assign([solver._kamino.JOINT_QMIN])
+                    model.joint_limit_upper.assign([solver._kamino.JOINT_QMAX])
+                else:
+                    model.joint_limit_lower.assign([np.float32(-1.0)])
+
+                with self.assertRaisesRegex(RuntimeError, "recreate"):
+                    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_limit_value_edit_is_allowed(self):
+        """Finite limit value edits are allowed while limit capacity stays unchanged."""
+        model = _build_revolute(limited=True)
+        solver = SolverKamino(model)
+        model.joint_limit_lower.assign([np.float32(-0.5)])
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    def test_actuation_mode_change_raises(self):
+        """Actuation type changes between active and passive raise under either relevant model flag."""
+        modes = (
+            (newton.JointTargetMode.NONE, newton.JointTargetMode.POSITION),
+            (newton.JointTargetMode.POSITION, newton.JointTargetMode.NONE),
+        )
+        flags = (
+            newton.ModelFlags.ACTUATOR_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_PROPERTIES,
+        )
+        for built_mode, changed_mode in modes:
+            for flag in flags:
+                with self.subTest(built_mode=built_mode, changed_mode=changed_mode, flag=flag.name):
+                    model = _build_revolute(actuator_mode=built_mode)
+                    solver = SolverKamino(model)
+                    model.joint_target_mode.assign([int(changed_mode)])
+
+                    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+                    with self.assertRaisesRegex(RuntimeError, "recreate"):
+                        solver.notify_model_changed(flag)
+
+    def test_active_actuation_mode_change_is_allowed(self):
+        """Active mode changes propagate when the actuation partition is unchanged."""
+        modes = (
+            (newton.JointTargetMode.POSITION, newton.JointTargetMode.VELOCITY),
+            (newton.JointTargetMode.VELOCITY, newton.JointTargetMode.POSITION),
+        )
+        flags = (
+            newton.ModelFlags.ACTUATOR_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_PROPERTIES,
+        )
+        for built_mode, changed_mode in modes:
+            for flag in flags:
+                with self.subTest(built_mode=built_mode, changed_mode=changed_mode, flag=flag.name):
+                    model = _build_revolute(dynamic=True, actuator_mode=built_mode)
+                    solver = SolverKamino(model)
+                    model.joint_target_mode.assign([int(changed_mode)])
+
+                    solver.notify_model_changed(flag)
+
+                    expected = solver._kamino.JointActuationType.from_newton(changed_mode)
+                    self.assertEqual(solver._model_kamino.joints.act_type.numpy()[0], expected)
 
 
 if __name__ == "__main__":
