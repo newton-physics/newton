@@ -282,10 +282,6 @@ class RenderContext:
                     f"hdr_color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
 
-            if config.render_order == RenderOrder.TILED:
-                assert width % config.tile_width == 0, "render width must be a multiple of tile_width"
-                assert height % config.tile_height == 0, "render height must be a multiple of tile_height"
-
             # Reshaping output images to one dimension, slightly improves performance in the Kernel.
             if color_image is not None:
                 color_image = color_image.reshape(self.world_count * camera_count * width * height)
@@ -308,9 +304,15 @@ class RenderContext:
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
 
+            pixels_per_view = width * height
+            if config.render_order == RenderOrder.TILED:
+                tiles_x = (width + config.tile_width - 1) // config.tile_width
+                tiles_y = (height + config.tile_height - 1) // config.tile_height
+                pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
+
             wp.launch(
                 kernel=render_kernel,
-                dim=(self.world_count * camera_count * width * height),
+                dim=(self.world_count * camera_count * pixels_per_view),
                 inputs=[
                     # Model and config
                     self.world_count,
