@@ -2616,7 +2616,7 @@ class ModelBuilder:
         )
         identity_rotation = np.asarray(wp.quat_identity(), dtype=np.float32)
         translations_only = all(
-            xform is not None and np.array_equal(np.asarray(xform.q), identity_rotation) for xform in xforms
+            xform is None or np.array_equal(np.asarray(xform.q), identity_rotation) for xform in xforms
         )
 
         transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
@@ -2734,9 +2734,7 @@ class ModelBuilder:
 
         attribute_specs.pop("body_q")
         if counts["body"]:
-            if all(xform is None for xform in xforms):
-                self.body_q.extend(builder.body_q * world_count)
-            elif translations_only:
+            if translations_only:
                 body_q = np.tile(np.asarray(builder.body_q, dtype=np.float32).reshape((-1, 7)), (world_count, 1))
                 if np.any(offsets):
                     body_q[:, :3] += np.repeat(offsets, counts["body"], axis=0)
@@ -2745,7 +2743,7 @@ class ModelBuilder:
             else:
                 for xform in xforms:
                     if xform is None:
-                        self.body_q.extend(builder.body_q)
+                        self.body_q.extend(wp.transform(*body_q) for body_q in builder.body_q)
                     else:
                         self.body_q.extend(transform_mul(xform, body_q) for body_q in builder.body_q)
 

@@ -8,8 +8,8 @@ import numpy as np
 import warp as wp
 
 from newton import Model, ModelBuilder
-from newton._src.utils import compute_world_offsets
 from newton.actuators import ControllerPD
+from newton.utils import compute_world_offsets
 
 
 class TestModelBuilderReplicate(unittest.TestCase):
@@ -128,6 +128,10 @@ class TestModelBuilderReplicate(unittest.TestCase):
             elif isinstance(expected_value, (bool, float, int, str, tuple, set, frozenset)) or expected_value is None:
                 with self.subTest(attribute=name):
                     self.assertEqual(expected_value, actual_value)
+            else:
+                # Catch-all so attributes of unhandled types surface here instead of being skipped.
+                with self.subTest(attribute=name):
+                    self.assertEqual(type(expected_value), type(actual_value))
 
         self.assertEqual(expected.body_shapes, actual.body_shapes)
         self.assertEqual(expected.joint_parents, actual.joint_parents)
@@ -212,6 +216,10 @@ class TestModelBuilderReplicate(unittest.TestCase):
         merged = ModelBuilder()
         merged.add_builder(source, xform=wp.transform_identity())
         self.assertIsNot(merged.body_q[0], source.body_q[0])
+
+        merged_no_xform = ModelBuilder()
+        merged_no_xform.add_builder(source)
+        self.assertIsNot(merged_no_xform.body_q[0], source.body_q[0])
 
     def test_validation_failure_does_not_mutate_destination(self):
         def make_builder(default: int, value: int) -> ModelBuilder:
