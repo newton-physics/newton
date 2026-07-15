@@ -38,14 +38,11 @@ from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
 from ..solvers.mujoco.constants import (
-    MJC_ACTUATOR_BIAS_TYPES,
-    MJC_ACTUATOR_DYNAMICS_TYPES,
-    MJC_ACTUATOR_GAIN_TYPES,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from ..solvers.mujoco.enums import EqType
+from ..solvers.mujoco.enums import EqType, _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from ..solvers.mujoco.equality import _add_equality_constraint, _register_equality_constraint_attributes
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
@@ -4738,9 +4735,6 @@ def parse_usd(
     if mjc_actuator_count > 0:
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
-        biastype_affine = MJC_ACTUATOR_BIAS_TYPES["affine"]
-        dyntype_none = MJC_ACTUATOR_DYNAMICS_TYPES["none"]
-        gaintype_fixed = MJC_ACTUATOR_GAIN_TYPES["fixed"]
         ctrl_source_joint_target = int(SolverMuJoCo.CtrlSource.JOINT_TARGET)
 
         def _row(key: str, row: int) -> Any:
@@ -4766,9 +4760,9 @@ def parse_usd(
             # (see joint_target_ranges in _init_actuators). Effort limit
             # (jnt_actfrcrange) comes from the joint, not the actuator.
             if (
-                int(_row("mujoco:actuator_biastype", row)) != biastype_affine
-                or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
-                or int(_row("mujoco:actuator_gaintype", row)) != gaintype_fixed
+                int(_row("mujoco:actuator_biastype", row)) != _ActuatorBiasType.AFFINE
+                or int(_row("mujoco:actuator_dyntype", row)) != _ActuatorDynamicsType.NONE
+                or int(_row("mujoco:actuator_gaintype", row)) != _ActuatorGainType.FIXED
             ):
                 continue
             gear = list(_row("mujoco:actuator_gear", row))

@@ -5,17 +5,6 @@
 
 from __future__ import annotations
 
-MJC_ACTUATOR_BIAS_TYPES = {"none": 0, "affine": 1, "muscle": 2, "user": 3}
-MJC_ACTUATOR_DYNAMICS_TYPES = {
-    "none": 0,
-    "integrator": 1,
-    "filter": 2,
-    "filterexact": 3,
-    "muscle": 4,
-    "user": 5,
-}
-MJC_ACTUATOR_GAIN_TYPES = {"fixed": 0, "affine": 1, "muscle": 2, "user": 3}
-
 DEFAULT_LIMIT_GAIN_RTOL = 1.0e-5
 """Relative tolerance for detecting imported MuJoCo default joint-limit gains.
 

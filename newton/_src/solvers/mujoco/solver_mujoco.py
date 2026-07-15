@@ -48,14 +48,12 @@ from .constants import (
     HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
     MJ_MINVAL,
-    MJC_ACTUATOR_BIAS_TYPES,
-    MJC_ACTUATOR_DYNAMICS_TYPES,
-    MJC_ACTUATOR_GAIN_TYPES,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
 from .enums import EqType as _EqType
+from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
@@ -1404,7 +1402,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
         def parse_actuator_enum(value: Any, mapping: dict[str, int]) -> int:
             """Parse actuator enum values, defaulting to 0 for unknown strings."""
-            return SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0)
+            return int(SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0))
 
         actuator_transmission_types = {
             "joint": int(SolverMuJoCo.TrnType.JOINT),
@@ -1414,18 +1412,38 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "body": int(SolverMuJoCo.TrnType.BODY),
             "slidercrank": int(SolverMuJoCo.TrnType.SLIDERCRANK),
         }
+        actuator_dynamics_types = {
+            "none": _ActuatorDynamicsType.NONE,
+            "integrator": _ActuatorDynamicsType.INTEGRATOR,
+            "filter": _ActuatorDynamicsType.FILTER,
+            "filterexact": _ActuatorDynamicsType.FILTER_EXACT,
+            "muscle": _ActuatorDynamicsType.MUSCLE,
+            "user": _ActuatorDynamicsType.USER,
+        }
+        actuator_gain_types = {
+            "fixed": _ActuatorGainType.FIXED,
+            "affine": _ActuatorGainType.AFFINE,
+            "muscle": _ActuatorGainType.MUSCLE,
+            "user": _ActuatorGainType.USER,
+        }
+        actuator_bias_types = {
+            "none": _ActuatorBiasType.NONE,
+            "affine": _ActuatorBiasType.AFFINE,
+            "muscle": _ActuatorBiasType.MUSCLE,
+            "user": _ActuatorBiasType.USER,
+        }
 
         def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
             return parse_actuator_enum(s, actuator_transmission_types)
 
         def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, MJC_ACTUATOR_DYNAMICS_TYPES)
+            return parse_actuator_enum(s, actuator_dynamics_types)
 
         def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, MJC_ACTUATOR_GAIN_TYPES)
+            return parse_actuator_enum(s, actuator_gain_types)
 
         def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, MJC_ACTUATOR_BIAS_TYPES)
+            return parse_actuator_enum(s, actuator_bias_types)
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -1791,7 +1809,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=MJC_ACTUATOR_DYNAMICS_TYPES["none"],
+                default=int(_ActuatorDynamicsType.NONE),
                 namespace="mujoco",
                 mjcf_attribute_name="dyntype",
                 mjcf_value_transformer=parse_dyntype,
@@ -1805,7 +1823,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=MJC_ACTUATOR_GAIN_TYPES["fixed"],
+                default=int(_ActuatorGainType.FIXED),
                 namespace="mujoco",
                 mjcf_attribute_name="gaintype",
                 mjcf_value_transformer=parse_gaintype,
@@ -1819,7 +1837,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=MJC_ACTUATOR_BIAS_TYPES["none"],
+                default=int(_ActuatorBiasType.NONE),
                 namespace="mujoco",
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
