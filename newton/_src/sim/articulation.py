@@ -13,7 +13,7 @@ from .model import Model
 from .state import State
 
 if TYPE_CHECKING:
-    from .inverse_dynamics import InverseDynamicsOutputs
+    from .inverse_dynamics import InverseDynamicsBuffers
 
 
 @wp.func
@@ -1406,8 +1406,8 @@ def eval_articulation_inverse_dynamics_force_kernel(
     Evaluates ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` per DOF, with the
     ``M(q)*qddot`` term taken from ``H @ qddot`` and the bias terms from the
     values :func:`eval_inverse_dynamics` populates into
-    :attr:`~newton.InverseDynamicsOutputs.coriolis_force` and
-    :attr:`~newton.InverseDynamicsOutputs.gravity_force`.
+    :attr:`~newton.InverseDynamicsBuffers.coriolis_force` and
+    :attr:`~newton.InverseDynamicsBuffers.gravity_force`.
 
     For any FREE/DISTANCE joint, ``H`` is in the joint's parent frame while the
     bias terms are in world frame, so the six ``H @ qddot`` components are
@@ -1481,7 +1481,7 @@ def eval_articulation_inverse_dynamics_force_kernel(
 def eval_inverse_dynamics_force(
     model: Model,
     state: State,
-    outputs: InverseDynamicsOutputs,
+    inverse_dynamics_buffers: InverseDynamicsBuffers,
     qddot: wp.array[wp.float32],
     mask: wp.array[bool] | None = None,
 ) -> None:
@@ -1491,7 +1491,7 @@ def eval_inverse_dynamics_force(
     the Coriolis and gravity forces to produce the full joint force
     required to realize ``qddot`` at the current ``(q, q_dot)`` under
     gravity, writing the result to
-    :attr:`~newton.InverseDynamicsOutputs.tau` in place. The two force
+    :attr:`~newton.InverseDynamicsBuffers.tau` in place. The two force
     inputs follow the standard manipulator-equation sign convention
     (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
     :func:`eval_inverse_dynamics`) and are added directly. Per-articulation
@@ -1500,12 +1500,12 @@ def eval_inverse_dynamics_force(
     handled uniformly.
 
     For any FREE/DISTANCE joint in the articulation tree, the mass matrix in
-    ``outputs.mass_matrix`` is expressed in the joint's parent frame while the
-    bias forces are in the world-frame CoM-wrench convention of
-    :attr:`Control.joint_f`. Each such joint's mass-matrix-times-acceleration
-    wrench is rotated to world (using ``state.body_q`` for the
-    parent-frame-in-world rotation) before the sum, so ``outputs.tau`` is
-    entirely in that world convention.
+    ``inverse_dynamics_buffers.mass_matrix`` is expressed in the joint's parent
+    frame while the bias forces are in the world-frame CoM-wrench convention
+    of :attr:`Control.joint_f`. Each such joint's
+    mass-matrix-times-acceleration wrench is rotated to world (using
+    ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
+    ``inverse_dynamics_buffers.tau`` is entirely in that world convention.
 
     .. experimental::
 
@@ -1514,10 +1514,11 @@ def eval_inverse_dynamics_force(
         state: State providing ``body_q``, used to rotate the FREE/DISTANCE
             root mass-matrix-times-acceleration wrench into the world frame.
             Must be consistent with the mass-matrix and bias-force buffers in
-            ``outputs`` (i.e. the state passed to :func:`eval_inverse_dynamics`).
-        outputs: Inverse-dynamics output buffers. The mass matrix and bias
-            forces are read from this container and the result is written to
-            :attr:`~newton.InverseDynamicsOutputs.tau`.
+            ``inverse_dynamics_buffers`` (i.e. the state passed to
+            :func:`eval_inverse_dynamics`).
+        inverse_dynamics_buffers: Inverse-dynamics buffers. The mass matrix and
+            bias forces are read from this container and the result is written
+            to :attr:`~newton.InverseDynamicsBuffers.tau`.
         qddot: Joint accelerations [m/s^2 or rad/s^2, depending on joint
             type], shape ``(joint_dof_count,)``, dtype float.
         mask: Optional ``wp.array[bool]`` of shape
@@ -1534,15 +1535,16 @@ def eval_inverse_dynamics_force(
         model.max_dofs_per_articulation,
         model.max_dofs_per_articulation,
     )
-    if outputs.mass_matrix.shape != expected_mass_matrix_shape:
+    if inverse_dynamics_buffers.mass_matrix.shape != expected_mass_matrix_shape:
         raise ValueError(
-            f"outputs.mass_matrix has shape {outputs.mass_matrix.shape}, expected {expected_mass_matrix_shape}."
+            f"inverse_dynamics_buffers.mass_matrix has shape {inverse_dynamics_buffers.mass_matrix.shape}, "
+            f"expected {expected_mass_matrix_shape}."
         )
     for name, array in (
         ("qddot", qddot),
-        ("outputs.coriolis_force", outputs.coriolis_force),
-        ("outputs.gravity_force", outputs.gravity_force),
-        ("outputs.tau", outputs.tau),
+        ("inverse_dynamics_buffers.coriolis_force", inverse_dynamics_buffers.coriolis_force),
+        ("inverse_dynamics_buffers.gravity_force", inverse_dynamics_buffers.gravity_force),
+        ("inverse_dynamics_buffers.tau", inverse_dynamics_buffers.tau),
     ):
         if array.shape != expected_dof_shape:
             raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
@@ -1560,12 +1562,12 @@ def eval_inverse_dynamics_force(
             model.joint_qd_start,
             model.joint_X_p,
             state.body_q,
-            outputs.mass_matrix,
+            inverse_dynamics_buffers.mass_matrix,
             qddot,
-            outputs.coriolis_force,
-            outputs.gravity_force,
+            inverse_dynamics_buffers.coriolis_force,
+            inverse_dynamics_buffers.gravity_force,
         ],
-        outputs=[outputs.tau],
+        outputs=[inverse_dynamics_buffers.tau],
         device=model.device,
     )
 

@@ -40,7 +40,7 @@ class _InverseDynamicsBenchmark:
         self.state = self.model.state()
         set_default_pose(self.model, self.state)
 
-        self.inverse_dynamics = self.model.inverse_dynamics_outputs()
+        self.inverse_dynamics_buffers = self.model.inverse_dynamics_buffers()
 
         # Capture one full M(q) + g(q) + C(q, q_dot)*q_dot evaluation into a
         # CUDA graph so the timed inner loop is just graph replays.
@@ -48,8 +48,8 @@ class _InverseDynamicsBenchmark:
             newton.eval_inverse_dynamics(
                 self.model,
                 self.state,
-                newton.InverseDynamicsOutputs.EvalType.ALL,
-                self.inverse_dynamics,
+                newton.InverseDynamicsBuffers.EvalType.ALL,
+                self.inverse_dynamics_buffers,
             )
         self.eval_graph = cap.graph
 
@@ -75,7 +75,7 @@ class _InverseDynamicsBenchmark:
             newton.eval_inverse_dynamics_force(
                 self.model,
                 self.state,
-                self.inverse_dynamics,
+                self.inverse_dynamics_buffers,
                 self.qddot,
             )
         self.force_graph = cap_force.graph
@@ -93,10 +93,10 @@ class _InverseDynamicsBenchmark:
         wp.synchronize_device()
 
     def teardown(self):
-        H = self.inverse_dynamics.mass_matrix.numpy()
-        g = self.inverse_dynamics.gravity_force.numpy()
-        c = self.inverse_dynamics.coriolis_force.numpy()
-        tau = self.inverse_dynamics.tau.numpy()
+        H = self.inverse_dynamics_buffers.mass_matrix.numpy()
+        g = self.inverse_dynamics_buffers.gravity_force.numpy()
+        c = self.inverse_dynamics_buffers.coriolis_force.numpy()
+        tau = self.inverse_dynamics_buffers.tau.numpy()
         finite = (
             np.all(np.isfinite(H)) and np.all(np.isfinite(g)) and np.all(np.isfinite(c)) and np.all(np.isfinite(tau))
         )

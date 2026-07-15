@@ -744,8 +744,8 @@ Newton can evaluate the **manipulator equation** for an articulated rigid-body s
 
 :func:`newton.eval_inverse_dynamics` populates any combination of
 :math:`M(q)`, :math:`g(q)`, and :math:`C(q, \dot{q})\, \dot{q}` into an
-:class:`~newton.InverseDynamicsOutputs` container. The desired combination is selected via
-:class:`~newton.InverseDynamicsOutputs.EvalType` flags.
+:class:`~newton.InverseDynamicsBuffers` container. The desired combination is selected via
+:class:`~newton.InverseDynamicsBuffers.EvalType` flags.
 :func:`newton.eval_inverse_dynamics_force` then combines them with a
 user-supplied :math:`\ddot{q}` to produce :math:`\tau`.
 
@@ -753,10 +753,10 @@ Both functions require ``state.body_q`` to be consistent with
 ``state.joint_q``: callers must invoke :func:`newton.eval_fk` (or
 otherwise update ``state.body_q``) first.
 
-The inverse-dynamics output container :class:`~newton.InverseDynamicsOutputs`
-is allocated using :meth:`newton.Model.inverse_dynamics_outputs`. It holds the
-public output buffers and owns the internal RNEA/Jacobian scratch privately, so
-callers manage only one object.
+The inverse-dynamics buffer container :class:`~newton.InverseDynamicsBuffers`
+is allocated using :meth:`newton.Model.inverse_dynamics_buffers`. It holds the
+public buffers and owns the internal RNEA/Jacobian scratch privately, so callers
+manage only one object.
 
 .. code-block:: python
 
@@ -764,21 +764,21 @@ callers manage only one object.
     # eval_inverse_dynamics)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    # allocate the output container, sized to the model
-    inverse_dynamics_outputs = model.inverse_dynamics_outputs()
+    # allocate the reusable buffers, sized to the model
+    inverse_dynamics_buffers = model.inverse_dynamics_buffers()
 
     # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
     newton.eval_inverse_dynamics(
-        model, state, newton.InverseDynamicsOutputs.EvalType.ALL, inverse_dynamics_outputs,
+        model, state, newton.InverseDynamicsBuffers.EvalType.ALL, inverse_dynamics_buffers,
     )
-    M = inverse_dynamics_outputs.mass_matrix     # (articulation_count, max_dofs, max_dofs)
-    g = inverse_dynamics_outputs.gravity_force   # (joint_dof_count,)
-    c = inverse_dynamics_outputs.coriolis_force  # (joint_dof_count,)
+    M = inverse_dynamics_buffers.mass_matrix     # (articulation_count, max_dofs, max_dofs)
+    g = inverse_dynamics_buffers.gravity_force   # (joint_dof_count,)
+    c = inverse_dynamics_buffers.coriolis_force  # (joint_dof_count,)
 
     # combine into tau = M*qddot + C*qdot + g for a user-supplied qddot
     qddot = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
-    newton.eval_inverse_dynamics_force(model, state, inverse_dynamics_outputs, qddot)
-    tau = inverse_dynamics_outputs.tau
+    newton.eval_inverse_dynamics_force(model, state, inverse_dynamics_buffers, qddot)
+    tau = inverse_dynamics_buffers.tau
 
 Combine flags with bitwise-or to compute only what you need. For
 example, ``EvalType.GRAVITY_FORCE | EvalType.CORIOLIS_FORCE`` skips
@@ -800,22 +800,22 @@ own ``mask=`` argument.
     # only compute M(q), g(q), and C*q_dot for articulations labelled "arm"
     view = newton.selection.ArticulationView(model, pattern="arm")
     view.eval_inverse_dynamics(
-        state, newton.InverseDynamicsOutputs.EvalType.ALL, inverse_dynamics_outputs,
+        state, newton.InverseDynamicsBuffers.EvalType.ALL, inverse_dynamics_buffers,
     )
 
     # optionally narrow further with a per-world submask (shape [world_count])
     per_world_mask = wp.array([True], dtype=bool, device=model.device)
     view.eval_inverse_dynamics(
-        state, newton.InverseDynamicsOutputs.EvalType.ALL,
-        inverse_dynamics_outputs, mask=per_world_mask,
+        state, newton.InverseDynamicsBuffers.EvalType.ALL,
+        inverse_dynamics_buffers, mask=per_world_mask,
     )
 
-The view also applies the same selection when combining the output buffers
+The view also applies the same selection when combining the populated buffers
 with a desired acceleration:
 
 .. code-block:: python
 
-    view.eval_inverse_dynamics_force(state, inverse_dynamics_outputs, qddot, mask=per_world_mask)
+    view.eval_inverse_dynamics_force(state, inverse_dynamics_buffers, qddot, mask=per_world_mask)
 
 
 .. autofunction:: newton.eval_inverse_dynamics
@@ -824,7 +824,7 @@ with a desired acceleration:
 .. autofunction:: newton.eval_inverse_dynamics_force
    :noindex:
 
-.. autoclass:: newton.InverseDynamicsOutputs
+.. autoclass:: newton.InverseDynamicsBuffers
    :members:
    :noindex:
 

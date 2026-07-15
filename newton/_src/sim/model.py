@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
-    from .inverse_dynamics import InverseDynamicsOutputs
+    from .inverse_dynamics import InverseDynamicsBuffers
 
 
 _HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
@@ -2180,18 +2180,18 @@ class Model:
         )
         return c
 
-    def inverse_dynamics_outputs(self) -> InverseDynamicsOutputs:
-        """Create inverse-dynamics output buffers sized for this model's topology.
+    def inverse_dynamics_buffers(self) -> InverseDynamicsBuffers:
+        """Create inverse-dynamics buffers sized for this model's topology.
 
-        The container holds the public output buffers (mass matrix,
-        compensation forces, and :attr:`~newton.InverseDynamicsOutputs.tau`) and owns
-        the internal RNEA/Jacobian scratch privately, so callers only manage the
-        one object.
+        The container holds the public buffers (mass matrix, compensation
+        forces, and :attr:`~newton.InverseDynamicsBuffers.tau`) and owns the
+        internal RNEA/Jacobian scratch privately, so callers only manage one
+        object.
 
         .. experimental::
 
         Returns:
-            An :class:`~newton.InverseDynamicsOutputs` to pass to
+            An :class:`~newton.InverseDynamicsBuffers` to pass to
             :func:`~newton.eval_inverse_dynamics`.
 
         Raises:
@@ -2204,15 +2204,15 @@ class Model:
                 :func:`~newton.eval_inverse_dynamics`.
         """
         from .enums import JointType  # noqa: PLC0415
-        from .inverse_dynamics import InverseDynamicsOutputs  # noqa: PLC0415
+        from .inverse_dynamics import InverseDynamicsBuffers  # noqa: PLC0415
 
         if self.joint_count > 0 and np.any(self.joint_type.numpy() == int(JointType.CABLE)):
             raise ValueError(
                 "Inverse dynamics does not support JointType.CABLE joints. Remove "
-                "them from the model before calling Model.inverse_dynamics_outputs()."
+                "them from the model before calling Model.inverse_dynamics_buffers()."
             )
 
-        return InverseDynamicsOutputs(
+        return InverseDynamicsBuffers(
             articulation_count=self.articulation_count,
             joint_dof_count=self.joint_dof_count,
             max_dofs_per_articulation=self.max_dofs_per_articulation,
