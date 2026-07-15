@@ -79,7 +79,7 @@ def create_kernel(
         if wp.static(state.render_shape_index):
             out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
     def render_megakernel(
         # Model and Config
         world_count: wp.int32,
@@ -159,7 +159,9 @@ def create_kernel(
         camera_transform = camera_transforms[camera_index, world_index]
         ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_index, py, px, 0])
         ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
-        camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
+        camera_forward = wp.vec3f(0.0)
+        if wp.static(state.num_gaussians > 0):
+            camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
             write_clear_outputs(out_index, out_color, out_depth, out_shape_index, out_normal, out_albedo, out_hdr_color)
@@ -211,9 +213,10 @@ def create_kernel(
             return
 
         is_gaussian = wp.bool(False)
-        if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-            if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
-                is_gaussian = wp.bool(True)
+        if wp.static(state.num_gaussians > 0):
+            if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
+                if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
+                    is_gaussian = wp.bool(True)
 
         albedo_color = wp.vec3f(0.0)
 

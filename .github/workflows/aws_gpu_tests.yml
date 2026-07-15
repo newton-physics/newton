@@ -18,7 +18,6 @@ env:
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
   AWS_ROLE_DURATION: 7200
   AWS_RUNNER_RESOURCE_TAG: newton-github-runner
-  HOME: /actions-runner
 
 on:
   workflow_call:
@@ -128,6 +127,7 @@ jobs:
     permissions:
       contents: read
     env:
+      HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
     steps:
       - name: Checkout repository
@@ -228,9 +228,6 @@ jobs:
     runs-on: ubuntu-latest
     # Same-run artifact downloads use the runtime token, not GITHUB_TOKEN.
     permissions: {}
-    env:
-      # The workflow-level HOME targets the EC2 runner filesystem.
-      HOME: /home/runner
     steps:
       # *.blob.core.windows.net is intentionally broad: GitHub artifact storage
       # uses rotating productionresultssaN hosts and harden-runner only supports
