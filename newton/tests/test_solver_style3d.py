@@ -106,10 +106,10 @@ def test_solver_flags_track_runtime_model_changes(test, device):
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
 
-    masses = model.particle_mass.numpy()
+    masses = model.particle_mass.numpy().copy()
     masses[0] = 0.0
     model.particle_mass.assign(masses)
-    model_flags = model.particle_flags.numpy()
+    model_flags = model.particle_flags.numpy().copy()
     model_flags[1] = 0
     model.particle_flags.assign(model_flags)
 
