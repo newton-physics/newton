@@ -1406,8 +1406,8 @@ def eval_articulation_inverse_dynamics_force_kernel(
     Evaluates ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` per DOF, with the
     ``M(q)*qddot`` term taken from ``H @ qddot`` and the bias terms from the
     values :func:`eval_inverse_dynamics` populates into
-    :attr:`InverseDynamicsOutputs.coriolis_force` and
-    :attr:`InverseDynamicsOutputs.gravity_force`.
+    :attr:`~newton.InverseDynamicsOutputs.coriolis_force` and
+    :attr:`~newton.InverseDynamicsOutputs.gravity_force`.
 
     For any FREE/DISTANCE joint, ``H`` is in the joint's parent frame while the
     bias terms are in world frame, so the six ``H @ qddot`` components are
@@ -1490,7 +1490,8 @@ def eval_inverse_dynamics_force(
     Combines a per-articulation mass-matrix-times-acceleration product with
     the Coriolis and gravity forces to produce the full joint force
     required to realize ``qddot`` at the current ``(q, q_dot)`` under
-    gravity, writing the result into ``tau`` in place. The two force
+    gravity, writing the result to
+    :attr:`~newton.InverseDynamicsOutputs.tau` in place. The two force
     inputs follow the standard manipulator-equation sign convention
     (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
     :func:`eval_inverse_dynamics`) and are added directly. Per-articulation
@@ -1498,25 +1499,25 @@ def eval_inverse_dynamics_force(
     fixed-root and floating-root articulations across multiple worlds is
     handled uniformly.
 
-    For any FREE/DISTANCE joint in the articulation tree the mass matrix ``H``
-    is expressed in the joint's parent frame while
-    ``coriolis_force``/``gravity_force`` are in the world-frame CoM-wrench
-    convention of :attr:`Control.joint_f`; each such joint's ``H @ qddot``
+    For any FREE/DISTANCE joint in the articulation tree, the mass matrix in
+    ``outputs.mass_matrix`` is expressed in the joint's parent frame while the
+    bias forces are in the world-frame CoM-wrench convention of
+    :attr:`Control.joint_f`. Each such joint's mass-matrix-times-acceleration
     wrench is rotated to world (using ``state.body_q`` for the
-    parent-frame-in-world rotation) before the sum, so ``tau`` is entirely in
-    that world convention.
+    parent-frame-in-world rotation) before the sum, so ``outputs.tau`` is
+    entirely in that world convention.
 
     .. experimental::
 
     Args:
         model: The model containing articulation definitions.
         state: State providing ``body_q``, used to rotate the FREE/DISTANCE
-            root ``H @ qddot`` wrench into the world frame. Must be consistent
-            with the ``H`` and bias buffers (i.e. the state passed to
-            :func:`eval_inverse_dynamics`).
+            root mass-matrix-times-acceleration wrench into the world frame.
+            Must be consistent with the mass-matrix and bias-force buffers in
+            ``outputs`` (i.e. the state passed to :func:`eval_inverse_dynamics`).
         outputs: Inverse-dynamics output buffers. The mass matrix and bias
             forces are read from this container and the result is written to
-            :attr:`InverseDynamicsOutputs.tau`.
+            :attr:`~newton.InverseDynamicsOutputs.tau`.
         qddot: Joint accelerations [m/s^2 or rad/s^2, depending on joint
             type], shape ``(joint_dof_count,)``, dtype float.
         mask: Optional ``wp.array[bool]`` of shape

@@ -1802,7 +1802,7 @@ class ArticulationView:
         """Compute inverse-dynamics joint forces for articulations in this view.
 
         The mass matrix and bias forces are read from ``outputs`` and the
-        resulting joint forces are written to :attr:`InverseDynamicsOutputs.tau`.
+        resulting joint forces are written to :attr:`~newton.InverseDynamicsOutputs.tau`.
         Entries outside this view or the optional sub-selection are zeroed.
 
         .. experimental::
