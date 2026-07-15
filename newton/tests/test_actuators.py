@@ -8,8 +8,6 @@ import json
 import math
 import os
 import shutil
-import subprocess
-import sys
 import tempfile
 import types
 import unittest
@@ -1797,31 +1795,16 @@ class TestStateReset(unittest.TestCase):
         self.assertTrue(all(v > 0 for v in integral_before), "integrals should have accumulated")
 
         mask = wp.array([True, False, True], dtype=wp.bool, device=device)
-        state_0.reset(mask)
+        with patch("newton._src.actuators.controllers.controller_pid.wp.launch", wraps=wp.launch) as launch:
+            state_0.reset(mask)
+
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.kwargs["device"], state_0.integral.device)
 
         integral_after = state_0.integral.numpy()
         self.assertAlmostEqual(integral_after[0], 0.0, places=6, msg="DOF 0 should be reset")
         self.assertAlmostEqual(integral_after[1], integral_before[1], places=6, msg="DOF 1 should be untouched")
         self.assertAlmostEqual(integral_after[2], 0.0, places=6, msg="DOF 2 should be reset")
-
-    @unittest.skipUnless(wp.get_cuda_device_count() > 0, "CUDA device required")
-    def test_pid_masked_reset_uses_integral_device(self):
-        script = """
-import warp as wp
-from newton.actuators import ControllerPID
-
-device = wp.get_device("cuda:0")
-integral = wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=device)
-mask = wp.array([True, False, True], dtype=wp.bool, device=device)
-state = ControllerPID.State(integral=integral)
-wp.set_device("cpu")
-state.reset(mask)
-values = integral.numpy().tolist()
-if values != [0.0, 2.0, 0.0]:
-    raise RuntimeError(f"Unexpected integral state: {values}")
-"""
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False, timeout=60)
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
 
     def test_pid_masked_reset_rejects_invalid_mask(self):
         state = ControllerPID.State(integral=wp.zeros(3, dtype=wp.float32, device="cpu"))
