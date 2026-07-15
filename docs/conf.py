@@ -193,7 +193,9 @@ intersphinx_mapping = {
     "jax": ("https://docs.jax.dev/en/latest", None),
     "pytorch": ("https://pytorch.org/docs/stable", None),
     "warp": ("https://nvidia.github.io/warp/stable", None),
-    "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
+    # Disabled because objects.inv currently returns "Access Denied".
+    # Restore this mapping if NVIDIA makes the inventory available again.
+    # "usd": ("https://docs.omniverse.nvidia.com/kit/docs/pxr-usd-api/latest", None),
 }
 
 # Map short USD type names (from ``from pxr import Usd``) to their fully-qualified
