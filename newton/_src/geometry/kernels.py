@@ -1,33 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import enum
-
 import warp as wp
 
 from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield
 from .broad_phase_common import binary_search
-from .flags import ParticleFlags, ShapeFlags
+from .flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from .types import (
     Axis,
     GeoType,
 )
-
-
-class MeshSignMethod(enum.IntEnum):
-    """Method used to determine the inside/outside sign of a mesh point query."""
-
-    NORMAL = 0
-    """Angle-weighted closest-face pseudo-normal; robust for open surfaces."""
-    PARITY = 1
-    """Ray-crossing parity; correct and cheap for watertight (closed) meshes."""
-
-
-class MeshProperties(enum.IntFlag):
-    """Per-shape mesh properties consumed by the collision kernels."""
-
-    WATERTIGHT = 1 << 0
-    """The source mesh is closed (every edge shared by exactly two triangles)."""
 
 
 @wp.func

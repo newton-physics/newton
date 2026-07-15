@@ -12,10 +12,8 @@ import warp.examples
 import newton
 from newton import GeoType
 from newton._src.geometry import create_mesh_terrain
-from newton._src.geometry.flags import ParticleFlags, ShapeFlags
+from newton._src.geometry.flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from newton._src.geometry.kernels import (
-    MeshProperties,
-    MeshSignMethod,
     create_soft_contacts,
     mesh_sdf,
     resolve_mesh_sign_method,

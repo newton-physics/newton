@@ -19,7 +19,8 @@ from .contact_reduction_global import (
     GlobalContactReducerData,
     export_and_reduce_contact_centered_two_spatial_depths,
 )
-from .kernels import MeshSignMethod, mesh_query_point_sign, resolve_mesh_sign_method
+from .flags import MeshSignMethod
+from .kernels import mesh_query_point_sign, resolve_mesh_sign_method
 
 # Upper bound (mesh-local units) on the closest-point search for the mesh sign
 # queries below. It is not a physical contact range: culling uses the tight

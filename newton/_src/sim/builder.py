@@ -43,8 +43,8 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
-from ..geometry.kernels import MeshProperties
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
