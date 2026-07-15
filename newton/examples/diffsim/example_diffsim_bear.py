@@ -168,6 +168,8 @@ class Example:
         self.collision_pipeline.collide(self.states[0], self.contacts)
 
         # initialize the solver.
+        # Particle-particle contacts do not support correct gradients in SolverSemiImplicit.
+        self.model.particle_grid = None
         self.solver = newton.solvers.SolverSemiImplicit(self.model, enable_tri_contact=False)
 
         # model input
