@@ -44,36 +44,29 @@ def _ray_intersect_mesh_smooth(
     enable_backface_culling: wp.bool,
     max_t: wp.float32,
 ) -> tuple[wp.float32, wp.vec3f, wp.float32, wp.float32, wp.int32]:
-    """Ray-mesh intersection with optional per-vertex normal interpolation.
+    """Ray-mesh intersection (world-space normal) with optional per-vertex normal interpolation.
 
-    When ``shape_mesh_data_id`` is non-negative and the referenced ``mesh_data`` entry
-    supplies per-vertex normals, the returned normal is the barycentric interpolation
-    of those vertex normals (for smooth shading); otherwise the triangle's face normal
-    is used.
+    Wraps :func:`~newton._src.geometry.raycast.ray_intersect_mesh`, then when ``shape_mesh_data_id``
+    is non-negative and the referenced ``mesh_data`` entry supplies per-vertex normals, replaces the
+    triangle face normal with the barycentric interpolation of those vertex normals (smooth shading).
     """
     ray_origin_local, ray_direction_local = raycast.map_ray_to_local(transform, ray_origin, ray_direction, scale)
+    t, normal_local, u, v, face = raycast.ray_intersect_mesh(
+        ray_origin_local, ray_direction_local, scale, mesh_id, enable_backface_culling, max_t
+    )
+    if t < 0.0:
+        return t, normal_local, u, v, face
 
-    query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
+    if shape_mesh_data_id > -1:
+        normals = mesh_data[shape_mesh_data_id].normals
+        if normals.shape[0] > 0:
+            n0 = wp.mesh_get_index(mesh_id, face * 3 + 0)
+            n1 = wp.mesh_get_index(mesh_id, face * 3 + 1)
+            n2 = wp.mesh_get_index(mesh_id, face * 3 + 2)
+            vertex_normal = normals[n0] * u + normals[n1] * v + normals[n2] * (1.0 - u - v)
+            normal_local = raycast.safe_div_vec3(vertex_normal, scale)
 
-    if query.result:
-        if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
-            normal_local = query.normal
-
-            if shape_mesh_data_id > -1:
-                normals = mesh_data[shape_mesh_data_id].normals
-                if normals.shape[0] > 0:
-                    n0 = wp.mesh_get_index(mesh_id, query.face * 3 + 0)
-                    n1 = wp.mesh_get_index(mesh_id, query.face * 3 + 1)
-                    n2 = wp.mesh_get_index(mesh_id, query.face * 3 + 2)
-                    normal_local = (
-                        normals[n0] * query.u + normals[n1] * query.v + normals[n2] * (1.0 - query.u - query.v)
-                    )
-
-            normal_world = wp.transform_vector(transform, raycast.safe_div_vec3(normal_local, scale))
-            normal_world = wp.normalize(normal_world)
-            return query.t, normal_world, query.u, query.v, query.face
-
-    return wp.float32(-1.0), wp.vec3f(0.0), wp.float32(0.0), wp.float32(0.0), wp.int32(-1)
+    return t, wp.normalize(wp.transform_vector(transform, normal_local)), u, v, face
 
 
 @wp.func
