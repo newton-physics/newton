@@ -172,36 +172,38 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         model = _build_limited_revolute()
         solver = SolverKamino(model)
         joints = solver._model_kamino.joints
-        old_X_Bj = joints.X_Bj.numpy().copy()
-        old_X_Fj = joints.X_Fj.numpy().copy()
 
         parent_position = np.array([0.2, -0.1, 0.3], dtype=np.float32)
         child_position = np.array([-0.4, 0.5, 0.6], dtype=np.float32)
-        parent_angle = 0.4
-        child_angle = -0.35
-        parent_rotation = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), parent_angle)
-        child_rotation = wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), child_angle)
+        parent_rotation = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), 0.4)
+        child_rotation = wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), -0.35)
         model.joint_X_p.assign([wp.transformf(wp.vec3f(*parent_position), parent_rotation)])
         model.joint_X_c.assign([wp.transformf(wp.vec3f(*child_position), child_rotation)])
 
         solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
 
-        parent_cos, parent_sin = np.cos(parent_angle), np.sin(parent_angle)
-        child_cos, child_sin = np.cos(child_angle), np.sin(child_angle)
-        parent_rotation_matrix = np.array(
-            [[parent_cos, -parent_sin, 0.0], [parent_sin, parent_cos, 0.0], [0.0, 0.0, 1.0]],
-            dtype=np.float32,
-        )
-        child_rotation_matrix = np.array(
-            [[1.0, 0.0, 0.0], [0.0, child_cos, -child_sin], [0.0, child_sin, child_cos]],
-            dtype=np.float32,
-        )
         body_com = model.body_com.numpy()[0]
+        dof_start = model.joint_qd_start.numpy()[0]
+        axis = model.joint_axis.numpy()[dof_start].astype(np.float32)
+        R_parent = np.array(wp.quat_to_matrix(parent_rotation)).reshape(3, 3)
+        R_child = np.array(wp.quat_to_matrix(child_rotation)).reshape(3, 3)
+        X_Bj = joints.X_Bj.numpy()[0]
+        X_Fj = joints.X_Fj.numpy()[0]
 
         np.testing.assert_allclose(joints.B_r_Bj.numpy()[0], parent_position, atol=1e-6)
         np.testing.assert_allclose(joints.F_r_Fj.numpy()[0], child_position - body_com, atol=1e-6)
-        np.testing.assert_allclose(joints.X_Bj.numpy()[0], parent_rotation_matrix @ old_X_Bj[0], atol=1e-6)
-        np.testing.assert_allclose(joints.X_Fj.numpy()[0], child_rotation_matrix @ old_X_Fj[0], atol=1e-6)
+        np.testing.assert_allclose(
+            X_Bj[:, 0],
+            R_parent @ axis,
+            atol=1e-6,
+            err_msg="X_Bj first column must equal R(q_pj) * joint axis",
+        )
+        np.testing.assert_allclose(
+            X_Fj[:, 0],
+            R_child @ axis,
+            atol=1e-6,
+            err_msg="X_Fj first column must equal R(q_cj) * joint axis",
+        )
 
 
 if __name__ == "__main__":
