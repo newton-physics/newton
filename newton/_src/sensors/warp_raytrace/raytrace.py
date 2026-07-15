@@ -594,12 +594,10 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                         ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
                             shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
                         )
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
+                        hit_dist = raycast.ray_intersect_mesh_anyhit(
                             ray_origin_local,
                             ray_direction_local,
-                            shape_sizes[si],
                             shape_source_ptr[si],
-                            False,
                             max_dist,
                         )
                     else:

@@ -635,6 +635,37 @@ def ray_intersect_mesh(
 
 
 @wp.func
+def ray_intersect_mesh_anyhit(
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+    mesh_id: wp.uint64,
+    max_t: float,
+) -> float:
+    """Computes ray-mesh intersection in the mesh's local frame using Warp's built-in mesh query.
+
+    Args:
+        ray_origin: The origin of the ray in the mesh's local frame.
+        ray_direction: The direction of the ray in the mesh's local frame.
+        size: The 3D scale of the mesh, used to scale-correct the returned local normal.
+        mesh_id: The Warp mesh ID for raycasting.
+        enable_backface_culling: When ``True``, reject hits whose triangle normal
+            is aligned with the ray direction (back faces).
+        max_t: Maximum parameter ``t`` along the local ray to consider.
+
+    Returns:
+        Tuple ``(distance, normal, u, v, face_index)``. The distance along the ray and the local-space normal of the intersection point, or -1.0 and a zero vector if there is no intersection; on miss, ``u`` and ``v`` are ``0.0`` and ``face_index`` is -1.
+    """
+    if mesh_id == wp.uint64(0):
+        return -1.0
+
+    hit = wp.mesh_query_ray_anyhit(mesh_id, ray_origin, ray_direction, max_t)
+
+    if hit:
+        return 0.0
+    
+    return -1.0
+
+@wp.func
 def ray_intersect_shape(
     geom_to_world: wp.transform,
     size: wp.vec3,
