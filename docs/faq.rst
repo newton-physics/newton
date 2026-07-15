@@ -28,7 +28,12 @@ What is the difference between ``warp.sim`` and Newton?
 Does Newton support coupling of solvers for multiphysics or co-simulation?
 --------------------------------------------------------------------------
 
-Yes, Newton is explicitly designed to be extensible with multiple solver implementations for rich multiphysics scenarios. Newton provides APIs for users to implement coupling between solvers, and we have successfully demonstrated one-way coupling in examples such as cloth manipulation by a robotic arm and a quadruped walking through non-rigid terrain. Two-way coupling and implicit coupling between select solvers are on the Newton roadmap.
+Yes. Newton provides an experimental coupled-solver framework for partitioning a
+shared :class:`Model` across multiple solver backends. It supports two-way proxy
+coupling through virtual bodies or particles, and symmetric ADMM coupling for
+joints, body-particle attachments, and frictional contacts. See
+:doc:`Coupled Solvers <concepts/coupling>` for the architecture, examples,
+solver-specific behavior, and current limitations.
 
 Does Newton support MuJoCo simulation?
 --------------------------------------
