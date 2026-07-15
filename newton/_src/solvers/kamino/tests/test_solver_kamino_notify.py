@@ -108,56 +108,49 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         self.assertEqual(warning.call_count, 2)
         _assert_model_arrays_unchanged(model, snapshot)
 
-    def test_joint_dof_limits_reference_newton(self):
-        """Joint DoF limits alias Newton's arrays, so runtime changes need no notify."""
-        model = _build_limited_revolute()
-        solver = SolverKamino(model)
-        joints = solver._model_kamino.joints
-
-        # The Kamino limit arrays share storage with Newton's model arrays.
-        self.assertEqual(joints.q_j_min.ptr, model.joint_limit_lower.ptr)
-        self.assertEqual(joints.q_j_max.ptr, model.joint_limit_upper.ptr)
-        self.assertEqual(joints.dq_j_max.ptr, model.joint_velocity_limit.ptr)
-        self.assertEqual(joints.tau_j_max.ptr, model.joint_effort_limit.ptr)
-
-        # In-place updates to Newton's arrays are reflected without any notify call.
-        new_lower = np.full_like(model.joint_limit_lower.numpy(), -0.3)
-        new_upper = np.full_like(model.joint_limit_upper.numpy(), 0.3)
-        new_vel = np.full_like(model.joint_velocity_limit.numpy(), 7.0)
-        new_effort = np.full_like(model.joint_effort_limit.numpy(), 70.0)
-        model.joint_limit_lower.assign(new_lower)
-        model.joint_limit_upper.assign(new_upper)
-        model.joint_velocity_limit.assign(new_vel)
-        model.joint_effort_limit.assign(new_effort)
-
-        np.testing.assert_allclose(joints.q_j_min.numpy(), new_lower)
-        np.testing.assert_allclose(joints.q_j_max.numpy(), new_upper)
-        np.testing.assert_allclose(joints.dq_j_max.numpy(), new_vel)
-        np.testing.assert_allclose(joints.tau_j_max.numpy(), new_effort)
-
-    def test_body_inertial_properties_reference_newton(self):
-        """Body inertial arrays alias Newton's, so runtime changes need no notify."""
+    def test_aliased_properties_reference_newton(self):
+        """Every aliased Newton array shares storage with Kamino, so in-place edits need no notify."""
         model = _build_limited_revolute()
         solver = SolverKamino(model)
         bodies = solver._model_kamino.bodies
+        joints = solver._model_kamino.joints
+        geoms = solver._model_kamino.geoms
 
-        # The Kamino arrays share storage with Newton's model arrays.
-        self.assertEqual(bodies.i_r_com_i.ptr, model.body_com.ptr)
-        self.assertEqual(bodies.i_I_i.ptr, model.body_inertia.ptr)
-        self.assertEqual(bodies.inv_i_I_i.ptr, model.body_inv_inertia.ptr)
-        self.assertEqual(bodies.m_i.ptr, model.body_mass.ptr)
+        # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
+        aliased_properties = [
+            ("body_mass", bodies, "m_i"),
+            ("body_inv_mass", bodies, "inv_m_i"),
+            ("body_com", bodies, "i_r_com_i"),
+            ("body_inertia", bodies, "i_I_i"),
+            ("body_inv_inertia", bodies, "inv_i_I_i"),
+            ("joint_q", joints, "q_j_0"),
+            ("joint_qd", joints, "dq_j_0"),
+            ("joint_limit_lower", joints, "q_j_min"),
+            ("joint_limit_upper", joints, "q_j_max"),
+            ("joint_velocity_limit", joints, "dq_j_max"),
+            ("joint_effort_limit", joints, "tau_j_max"),
+            ("joint_armature", joints, "a_j"),
+            ("joint_damping", joints, "b_j"),
+            ("joint_target_ke", joints, "k_p_j"),
+            ("joint_target_kd", joints, "k_d_j"),
+            ("shape_scale", geoms, "params"),
+            ("shape_collision_radius", geoms, "collision_radius"),
+            ("shape_gap", geoms, "gap"),
+            ("shape_margin", geoms, "margin"),
+        ]
 
-        # In-place updates to Newton's arrays are reflected without any notify call.
-        new_com = model.body_com.numpy() + np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        new_inertia = model.body_inertia.numpy() * 2.0
-        new_inv_inertia = model.body_inv_inertia.numpy() * 0.5
-        model.body_com.assign(new_com)
-        model.body_inertia.assign(new_inertia)
-        model.body_inv_inertia.assign(new_inv_inertia)
+        for newton_name, container, kamino_name in aliased_properties:
+            with self.subTest(property=newton_name):
+                newton_array = getattr(model, newton_name)
+                kamino_array = getattr(container, kamino_name)
 
-        np.testing.assert_allclose(bodies.i_r_com_i.numpy(), new_com, atol=1e-6)
-        np.testing.assert_allclose(bodies.i_I_i.numpy(), new_inertia, atol=1e-6)
-        np.testing.assert_allclose(bodies.inv_i_I_i.numpy(), new_inv_inertia, atol=1e-6)
+                # Kamino references the exact same storage as Newton's array.
+                self.assertEqual(kamino_array.ptr, newton_array.ptr)
+
+                # In-place Newton edits are visible on the Kamino side without any notify call.
+                perturbed = newton_array.numpy() + np.float32(1.0)
+                newton_array.assign(perturbed)
+                np.testing.assert_array_equal(kamino_array.numpy(), perturbed)
 
     def test_gravity_update(self):
         """Model-property notifications refresh Kamino's gravity representation."""
