@@ -6,6 +6,16 @@ import warp as wp
 from ...geometry import ParticleFlags
 
 
+@wp.kernel
+def deactivate_zero_mass_particles_kernel(
+    particle_masses: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    if particle_masses[tid] <= 0.0:
+        particle_flags[tid] = particle_flags[tid] & ~ParticleFlags.ACTIVE
+
+
 @wp.func
 def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm: wp.mat22):
     x01, x02 = x1 - x0, x2 - x0
