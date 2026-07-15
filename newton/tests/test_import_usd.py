@@ -7404,6 +7404,44 @@ def Xform "Articulation" (
             np.testing.assert_allclose(builder.body_com[body_idx], builder.body_com[unauthored], atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_blocked_attribute_preserves_mass_precedence(self):
+        """A blocked fallback must not let density rescale inertia when mass wins."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        for name, block_principal_axes in (("Control", False), ("Blocked", True)):
+            body_path = f"/World/{name}"
+            body = UsdGeom.Xform.Define(stage, body_path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass_api.CreateMassAttr().Set(5.0)
+            mass_api.CreateDensityAttr().Set(2000.0)
+            if block_principal_axes:
+                mass_api.CreatePrincipalAxesAttr().Block()
+
+            collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Body /World/(Control|Blocked): authored mass and density without authored diagonalInertia",
+                category=UserWarning,
+            )
+            result = builder.add_usd(stage)
+
+        control = result["path_body_map"]["/World/Control"]
+        blocked = result["path_body_map"]["/World/Blocked"]
+        self.assertAlmostEqual(builder.body_mass[blocked], builder.body_mass[control], places=6)
+        np.testing.assert_allclose(builder.body_inertia[blocked], builder.body_inertia[control], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_invalid_body_values_warn(self):
         """Invalid non-fallback body mass/density warn when the authored override is dropped."""
         from pxr import Usd, UsdGeom, UsdPhysics

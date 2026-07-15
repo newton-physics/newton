@@ -3911,7 +3911,7 @@ def parse_usd(
                     # and inertia from the builder's default shape density to the
                     # body-level density (USD body density overrides per-shape density).
                     body_density = _mass_api_effective_density(mass_api)
-                    if body_density is not None and default_shape_density > 0.0:
+                    if body_density is not None and not has_effective_mass and default_shape_density > 0.0:
                         density_scale = body_density / default_shape_density
                         cmp_mass *= density_scale
                         scaled_inertia = np.array(builder.body_inertia[body_id]) * density_scale
