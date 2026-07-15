@@ -99,9 +99,7 @@ def ray_gsplat_hit_response(
     camera_forward: wp.vec3f,
     max_distance: wp.float32,
 ) -> tuple[wp.float32, wp.float32]:
-    ray_origin_local, ray_direction_local = map_ray_to_local(
-        transform, ray_origin_world, ray_direction_world, scale
-    )
+    ray_origin_local, ray_direction_local = map_ray_to_local(transform, ray_origin_world, ray_direction_world, scale)
 
     hit_distance = 0.0
     if sorting_mode == wp.static(Gaussian.SortingMode.CAMERA_DISTANCE):
