@@ -283,7 +283,7 @@ def test_proxy_particle_gravity_is_not_coupling_feedback(test, device):
     gravity = -9.81
     dt = 1.0 / 60.0
 
-    builder = newton.ModelBuilder(gravity=gravity)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, gravity))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.03)
     builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.03)
