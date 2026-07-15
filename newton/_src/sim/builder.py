@@ -350,6 +350,19 @@ class ModelBuilder:
         shape_constructor: str | None = None
         """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
 
+    @dataclass
+    class MeshApproximationConfig:
+        """Default settings for mesh approximation.
+
+        :attr:`ModelBuilder.default_mesh_approximation_cfg` supplies defaults for
+        settings not passed to :meth:`ModelBuilder.approximate_meshes` explicitly,
+        including approximation triggered by :meth:`ModelBuilder.add_usd` via the
+        authored ``physics:approximation`` attribute.
+        """
+
+        coacd_threshold: float = 0.05
+        """CoACD concavity threshold. Lower values produce finer convex decompositions with more parts."""
+
     @dataclass(kw_only=True)
     class ShapeConfig:
         """
@@ -992,6 +1005,10 @@ class ModelBuilder:
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
         """Default BVH construction configuration used during model finalization."""
+
+        self.default_mesh_approximation_cfg = ModelBuilder.MeshApproximationConfig()
+        """Default mesh approximation settings used by :meth:`approximate_meshes` when not
+        passed explicitly, including USD-triggered approximation in :meth:`add_usd`."""
 
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
@@ -2930,7 +2947,7 @@ class ModelBuilder:
             root_path: The USD path to import, defaults to "/".
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
-            skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+            skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
@@ -7005,7 +7022,7 @@ class ModelBuilder:
 
         Args:
             method: The method to use for approximating the mesh shapes.
-            shape_indices: The indices of the shapes to simplify. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
+            shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
@@ -7034,6 +7051,9 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+        else:
+            # primitives have no mesh source; preserve explicit re-approximation of convex meshes
+            shape_indices = [i for i in shape_indices if self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)]
 
         # These methods rewrite shape_type away from MESH; any SDF/hydro state
         # would be silently dropped at finalize. The USD importer intercepts
@@ -7111,7 +7131,7 @@ class ModelBuilder:
                         if method == "coacd":
                             cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
-                                "threshold": 0.05,
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
                                 "mcts_nodes": 20,
                                 "mcts_iterations": 5,
                                 "mcts_max_depth": 1,
@@ -7180,10 +7200,13 @@ class ModelBuilder:
                         f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
                     )
                     method = "convex_hull"
+                    # kwargs were addressed to the failed decomposition method
+                    remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            remesh_failed = False
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
@@ -7203,6 +7226,7 @@ class ModelBuilder:
                                 f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
                                 stacklevel=2,
                             )
+                            remesh_failed = True
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
@@ -7210,6 +7234,9 @@ class ModelBuilder:
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
+            if remesh_failed:
+                # route the shapes that failed (not in remeshed_shapes) into the fallback below
+                method = "bounding_box"
 
         if method == "bounding_box":
             for shape in shape_indices:

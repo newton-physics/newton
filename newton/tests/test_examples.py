@@ -300,6 +300,13 @@ def add_basic_example_test(**kwargs):
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
 
 add_basic_example_test(
+    name="basic.example_recording",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "world-count": 8},
+)
+
+add_basic_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200},
