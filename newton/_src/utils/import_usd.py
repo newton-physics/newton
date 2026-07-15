@@ -289,7 +289,7 @@ def parse_usd(
         root_path: The USD path to import, defaults to "/".
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
-        skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+        skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
@@ -1087,7 +1087,11 @@ def parse_usd(
                     stacklevel=2,
                 )
                 compat_ns = usd.DEFORMABLE_LEGACY_NAMESPACES
-            tetmesh_cache[prim_path] = usd.get_tetmesh(prim, compat_namespaces=compat_ns)
+            tetmesh_cache[prim_path] = usd.get_tetmesh(
+                prim,
+                compat_namespaces=compat_ns,
+                _load_custom_attributes=False,
+            )
         return tetmesh_cache[prim_path]
 
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:

@@ -253,6 +253,7 @@ class Example:
         builder.default_shape_cfg.kd = 5.0e2
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
+        builder.rigid_gap = 0.0
 
         builder.add_usd(
             newton.examples.get_asset(asset_directory + "/" + robot_config.asset_path),
