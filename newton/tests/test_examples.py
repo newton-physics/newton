@@ -65,6 +65,10 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
     r")+"
     r"^\d+ warnings? generated\.\n?"
 )
+_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
+    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
+]
 _OutputRegexSpec = str | tuple[str, str]
 
 
@@ -223,6 +227,7 @@ def add_example_test(
 
         if isinstance(test, NewtonTestCase):
             _register_output_regexes(test, expect_output_regexes, required=True)
+            _register_output_regexes(test, _EXAMPLE_ALLOW_OUTPUT_REGEXES, required=False)
             _register_output_regexes(test, allow_output_regexes, required=False)
             test.assertSubprocessSuccess(result, command=command)
         else:
@@ -281,20 +286,12 @@ cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test o
 test_devices = get_test_devices(mode="basic")
 
 
-_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
-    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
-]
-
-
 class TestBasicExamples(NewtonTestCase):
     pass
 
 
 def add_basic_example_test(**kwargs):
-    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
-    allow_output_regexes = [*_BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
-    add_example_test(TestBasicExamples, allow_output_regexes=allow_output_regexes, **kwargs)
+    add_example_test(TestBasicExamples, **kwargs)
 
 
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
@@ -395,7 +392,7 @@ add_basic_example_test(
 )
 
 
-class TestCableExamples(unittest.TestCase):
+class TestCableExamples(NewtonTestCase):
     pass
 
 
@@ -678,7 +675,7 @@ add_example_test(
 )
 
 
-class TestAdvancedRobotExamples(unittest.TestCase):
+class TestAdvancedRobotExamples(NewtonTestCase):
     pass
 
 
@@ -941,7 +938,7 @@ add_example_test(
 )
 
 
-class TestMultiphysicsExamples(unittest.TestCase):
+class TestMultiphysicsExamples(NewtonTestCase):
     pass
 
 
@@ -1103,7 +1100,7 @@ add_example_test(
 )
 
 
-class TestSoftbodyExamples(unittest.TestCase):
+class TestSoftbodyExamples(NewtonTestCase):
     pass
 
 
