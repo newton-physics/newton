@@ -221,6 +221,58 @@ class TestModelBuilderReplicate(unittest.TestCase):
         merged_no_xform.add_builder(source)
         self.assertIsNot(merged_no_xform.body_q[0], source.body_q[0])
 
+    def test_merge_ignores_unknown_builder_attributes(self):
+        class AnnotatedBuilder(ModelBuilder):
+            def __init__(self):
+                super().__init__()
+                self.annotations = []
+
+        source = AnnotatedBuilder()
+        source.add_body()
+        source.annotations.append("note")
+        source.ad_hoc_tags = ["tag"]
+
+        destination = ModelBuilder()
+        destination.add_builder(source)
+        destination.replicate(source, 2)
+        self.assertEqual(destination.body_count, 3)
+
+    def test_merge_accepts_array_valued_fields(self):
+        source = self._make_source()
+        joint_q = list(source.joint_q)
+        particle_qd = [tuple(qd) for qd in source.particle_qd]
+        source.joint_q = np.asarray(source.joint_q)
+        source.particle_qd = np.asarray(source.particle_qd)
+
+        destination = ModelBuilder()
+        destination.add_builder(source)
+
+        self.assertEqual(destination.joint_q, joint_q)
+        self.assertEqual([tuple(qd) for qd in destination.particle_qd], particle_qd)
+
+    def test_merge_preserves_exact_coordinate_values(self):
+        source = ModelBuilder()
+        body = source.add_body()
+        source.add_joint_free(
+            parent=-1, child=body, parent_xform=wp.transform((0.2, 0.3, 0.4), wp.quat_rpy(0.2, 0.1, 0.0))
+        )
+        source.add_particle(wp.vec3(), wp.vec3(), 1.0)
+        source.joint_q[0] = 0.1
+        source.particle_q[0] = (0.1, 0.2, 0.3)
+
+        def assert_exact(actual, expected):
+            np.testing.assert_array_equal(np.asarray(actual, dtype=np.float64), np.asarray(expected, dtype=np.float64))
+
+        merged = ModelBuilder()
+        merged.add_builder(source)
+        assert_exact(merged.joint_q, source.joint_q)
+        assert_exact(merged.particle_q, source.particle_q)
+
+        replicated = ModelBuilder()
+        replicated.replicate(source, 2)
+        assert_exact(replicated.joint_q, source.joint_q * 2)
+        assert_exact(replicated.particle_q, source.particle_q * 2)
+
     def test_validation_failure_does_not_mutate_destination(self):
         def make_builder(default: int, value: int) -> ModelBuilder:
             builder = ModelBuilder()
@@ -362,25 +414,32 @@ class TestModelBuilderReplicate(unittest.TestCase):
         np.testing.assert_array_equal(scene.body_color_groups[0], np.asarray([0, 1, 2, 3]))
 
     def test_all_builder_lists_have_merge_metadata(self):
-        builder = ModelBuilder()
-        list_attributes = {name for name, value in vars(builder).items() if isinstance(value, list)}
-        specs = builder._builder_merge_attribute_specs(builder)
+        list_attributes = {name for name, value in vars(ModelBuilder()).items() if isinstance(value, list)}
+        specs = ModelBuilder._builder_merge_attribute_specs()
         self.assertEqual(set(specs), list_attributes)
         self.assertIs(specs["shape_body"], Model._CORE_ATTRIBUTE_SPECS["shape_body"])
 
-        builder._missing_merge_metadata = []
-        with self.assertRaisesRegex(RuntimeError, "_missing_merge_metadata"):
-            builder._builder_merge_attribute_specs(builder)
+        base_attributes, base_lists = ModelBuilder._base_builder_attributes()
 
-        builder = ModelBuilder()
-        del builder.body_lock_inertia
-        with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-            builder._builder_merge_attribute_specs(builder)
+        added = {"_missing_merge_metadata"}
+        with (
+            mock.patch.object(ModelBuilder, "_BASE_ATTRIBUTES", base_attributes | added),
+            mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists | added),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "_missing_merge_metadata"):
+                ModelBuilder._builder_merge_attribute_specs()
 
-        builder = ModelBuilder()
-        builder.body_lock_inertia = ()
-        with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-            builder._builder_merge_attribute_specs(builder)
+        removed = {"body_lock_inertia"}
+        with (
+            mock.patch.object(ModelBuilder, "_BASE_ATTRIBUTES", base_attributes - removed),
+            mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
+                ModelBuilder._builder_merge_attribute_specs()
+
+        with mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed):
+            with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
+                ModelBuilder._builder_merge_attribute_specs()
 
 
 if __name__ == "__main__":

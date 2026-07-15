@@ -326,6 +326,10 @@ class ModelBuilder:
         },
     }
 
+    # Lazy snapshots of a plain ModelBuilder's attribute names; see _base_builder_attributes().
+    _BASE_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
+    _BASE_LIST_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
+
     @staticmethod
     def _shape_palette_color(index: int) -> tuple[float, float, float]:
         color = ModelBuilder._SHAPE_COLOR_PALETTE[index % len(ModelBuilder._SHAPE_COLOR_PALETTE)]
@@ -2558,6 +2562,9 @@ class ModelBuilder:
         arranged in a regular grid or along a line. Each copy is offset in space by a multiple of the
         specified spacing vector, and all entities from each copy are assigned to a new world.
 
+        All copies are merged in a single batched pass; subclass overrides of
+        :meth:`add_world` or :meth:`add_builder` are not invoked during replication.
+
         Note:
             For visual separation of worlds, it is recommended to use the viewer's
             `set_world_offsets()` method instead of physical spacing. This improves numerical
@@ -2610,7 +2617,17 @@ class ModelBuilder:
             raise ValueError("worlds, xforms, and label_prefixes must have the same length")
 
         worlds = np.asarray(worlds, dtype=np.int64)
-        xforms = [None if xform is None else wp.transform(*xform) for xform in xforms]
+        identity_transform = np.asarray(wp.transform_identity(), dtype=np.float32)
+
+        def normalize_xform(xform: Transform | None) -> wp.transform | None:
+            if xform is None:
+                return None
+            xform = wp.transform(*xform)
+            # Identity behaves as None: skips the per-world transform loops and keeps copies
+            # bit-exact (identity transform_mul round-trips are not exact for free-root joint_q).
+            return None if np.array_equal(np.asarray(xform), identity_transform) else xform
+
+        xforms = [normalize_xform(xform) for xform in xforms]
         offsets = np.asarray(
             [np.zeros(3, dtype=np.float32) if xform is None else xform.p for xform in xforms], dtype=np.float32
         )
@@ -2618,6 +2635,12 @@ class ModelBuilder:
         translations_only = all(
             xform is None or np.array_equal(np.asarray(xform.q), identity_rotation) for xform in xforms
         )
+
+        def source_list(attr: str) -> list:
+            values = getattr(builder, attr)
+            # Tolerate array-valued fields assigned in place of lists (list-repeat and
+            # extend would silently misbehave on ndarrays).
+            return values if isinstance(values, list) else list(values)
 
         transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
 
@@ -2628,7 +2651,7 @@ class ModelBuilder:
 
         counts = self._builder_merge_counts(builder)
         self._validate_builder_merge(builder, set(counts))
-        attribute_specs = self._builder_merge_attribute_specs(builder)
+        attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
         start_arrays = {
@@ -2657,8 +2680,10 @@ class ModelBuilder:
         attribute_specs.pop("particle_q")
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
-            particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
-            particle_q += np.repeat(offsets, counts["particle"], axis=0)
+            # float64 keeps builder-level coordinates exact; finalize() narrows to float32.
+            particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float64), (world_count, 1))
+            if np.any(offsets):
+                particle_q += np.repeat(offsets, counts["particle"], axis=0)
             self.particle_q.extend(particle_q.tolist())
 
         shape_starts = starts("shape")
@@ -2666,7 +2691,7 @@ class ModelBuilder:
 
         attribute_specs.pop("shape_transform")
         shape_transform_start = len(self.shape_transform)
-        self.shape_transform.extend(builder.shape_transform * world_count)
+        self.shape_transform.extend(source_list("shape_transform") * world_count)
         if counts["shape"]:
             static_shapes = np.flatnonzero(np.asarray(builder.shape_body, dtype=np.int64) == -1)
             for world_index, xform in enumerate(xforms):
@@ -2692,8 +2717,8 @@ class ModelBuilder:
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
         joint_X_p_start = len(self.joint_X_p)
-        self.joint_X_p.extend(builder.joint_X_p * world_count)
-        joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
+        self.joint_X_p.extend(source_list("joint_X_p") * world_count)
+        joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float64), world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -2768,7 +2793,7 @@ class ModelBuilder:
                     )
 
         for attr, spec in attribute_specs.items():
-            source = getattr(builder, attr)
+            source = source_list(attr)
             destination = getattr(self, attr)
             if spec.compaction_policy in {"world_start", "passthrough"}:
                 continue
@@ -2822,10 +2847,24 @@ class ModelBuilder:
                 counts[key] = len(builder.constraint_mimic_joint0)
         return counts
 
+    @staticmethod
+    def _base_builder_attributes() -> tuple[frozenset[str], frozenset[str]]:
+        """(all, list-valued) attribute names of a plain ModelBuilder.
+
+        Merge metadata is checked against this class-level snapshot so instance
+        or subclass extras cannot change the merge schema.
+        """
+        if ModelBuilder._BASE_ATTRIBUTES is None:
+            base = vars(ModelBuilder())
+            ModelBuilder._BASE_ATTRIBUTES = frozenset(base)
+            ModelBuilder._BASE_LIST_ATTRIBUTES = frozenset(
+                name for name, value in base.items() if isinstance(value, list)
+            )
+        return ModelBuilder._BASE_ATTRIBUTES, ModelBuilder._BASE_LIST_ATTRIBUTES
+
     @classmethod
-    def _builder_merge_attribute_specs(cls, builder: ModelBuilder) -> dict[str, Model.AttributeSpec]:
-        builder_attributes = vars(builder)
-        list_attributes = {name for name, value in builder_attributes.items() if isinstance(value, list)}
+    def _builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
+        base_attributes, list_attributes = cls._base_builder_attributes()
         specs = {name: spec for name, spec in Model._CORE_ATTRIBUTE_SPECS.items() if name in list_attributes}
         specs.update(cls._BUILDER_ATTRIBUTE_SPECS)
         declared_builder_attributes = set(cls._BUILDER_ATTRIBUTE_SPECS)
@@ -2852,14 +2891,14 @@ class ModelBuilder:
                 )
                 declared_builder_attributes.add(name)
 
-        stale = declared_builder_attributes.difference(builder_attributes)
+        stale = declared_builder_attributes.difference(base_attributes)
         if stale:
             raise RuntimeError(f"ModelBuilder merge metadata references missing attributes: {sorted(stale)}")
 
         non_lists = {
             name
             for name in declared_builder_attributes
-            if name != "_shape_collision_filter_pairs" and not isinstance(builder_attributes[name], list)
+            if name != "_shape_collision_filter_pairs" and name not in list_attributes
         }
         if non_lists:
             raise RuntimeError(f"ModelBuilder merge attributes must remain lists: {sorted(non_lists)}")
@@ -3849,6 +3888,8 @@ class ModelBuilder:
             raise ValueError("Cannot add a builder with a different up axis.")
 
         xform = None if xform is None else wp.transform(*xform)
+        # Resolve merge metadata before begin_world() so a failure cannot leave a world context open.
+        self._builder_merge_attribute_specs()
         self._validate_builder_merge(builder, set(self._builder_merge_counts(builder)))
 
         self.begin_world()
