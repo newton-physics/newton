@@ -1649,6 +1649,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
                                 margin_sum = triangle_mesh_margin + sdf_mesh_margin
+                                inner_spatial_depth = margin_sum
+                                if use_texture_sdf_for_search:
+                                    inner_spatial_depth += wp.min(texture_voxel_radius * min_sdf_scale, gap_sum)
                                 export_and_reduce_contact_centered_two_spatial_depths(
                                     pair[0],
                                     pair[1],
@@ -1657,7 +1660,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     dist,
                                     (my_edge_idx << 2) | (mode << 1),
                                     point_world - midpoint,
-                                    margin_sum,
+                                    inner_spatial_depth,
                                     margin_sum + gap_sum,
                                     X_ws_tri,
                                     aabb_lower_tri,

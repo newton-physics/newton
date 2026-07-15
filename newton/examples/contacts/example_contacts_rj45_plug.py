@@ -386,8 +386,7 @@ class Example:
             pitch=-10.0,
             yaw=180.0,
         )
-        if hasattr(self.viewer, "_cam_speed"):
-            self.viewer._cam_speed = 0.2
+        self.viewer.camera_speed = 0.2
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -413,11 +412,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):

@@ -190,9 +190,7 @@ def _build_two_particle_contact_scene(
     builder.add_particle(pos=(gap, 0.0, 0.0), vel=vel_a, mass=1.0, radius=radius)
     builder.add_particle(pos=(0.0, 0.0, 0.0), vel=vel_b, mass=1.0, radius=radius)
     builder.color()
-    model = builder.finalize(device="cpu")
-    model.particle_grid = None
-    return model
+    return builder.finalize(device="cpu")
 
 
 def _run_particles(solver, model: newton.Model, n_steps: int = 5, dt: float = 1.0 / 60.0):
@@ -1141,6 +1139,32 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
         self.assertGreater(solver.collision_contact_count_max, 0)
         self.assertGreater(q_contact[1, 0] - q_contact[0, 0], 0.08 + 1.0e-3)
+
+    def test_collision_particle_particle_contacts_respect_disabled_model_particle_grid(self):
+        model = _build_two_particle_contact_scene(gap=-0.08)
+        model.particle_grid = None
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="a",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    particles=[0],
+                ),
+                SolverCoupled.Entry(
+                    name="b",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    particles=[1],
+                ),
+            ],
+            coupling=SolverCoupledADMM.Config(
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
+            ),
+        )
+
+        _run_particles(solver, model, n_steps=1)
+
+        self.assertEqual(solver.collision_contact_count_max, 0)
 
     def test_collision_frictional_contact_matches_inclined_plane_box_motion(self):
         friction = 0.4

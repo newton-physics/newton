@@ -39,9 +39,9 @@ class Example:
         builder.default_shape_cfg.mu = 0.5  # Friction coefficient
 
         if self.solver_type == "vbd":
-            # VBD: Higher stiffness for stable rigid body contacts
-            builder.default_shape_cfg.ke = 1.0e6  # Contact stiffness
-            builder.default_shape_cfg.kd = 1.0e7  # Contact damping
+            # Stiff, undamped contacts give VBD stable resting poses.
+            builder.default_shape_cfg.ke = 1.0e8
+            builder.default_shape_cfg.kd = 0.0
         else:
             builder.default_shape_cfg.mu_torsional = 0.01  # Contact stiffness
             builder.default_shape_cfg.mu_rolling = 3e-3  # Contact stiffness
@@ -130,12 +130,9 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         for _ in range(self.sim_substeps):

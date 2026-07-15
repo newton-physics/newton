@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import hashlib
 import inspect
 import math
-import sys
 import textwrap
+import types
 import unittest
 import warnings
+from collections.abc import Mapping
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import numpy as np
@@ -19,7 +22,8 @@ import newton.utils
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
-from newton.tests.unittest_utils import assert_np_equal
+from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
+from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
 def _eq_set_value(builder, name, idx, value):
@@ -257,6 +261,156 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    def test_empty_numeric_custom_attribute_uses_wp_full_default(self):
+        attr = ModelBuilder.CustomAttribute(
+            name="default_shape_attr",
+            frequency=newton.Model.AttributeFrequency.SHAPE,
+            dtype=wp.float32,
+            default=3.5,
+        )
+
+        with mock.patch.object(wp, "full", wraps=wp.full) as full_mock:
+            values = attr.build_array(4, device="cpu")
+
+        full_mock.assert_called_once_with(
+            4,
+            3.5,
+            dtype=wp.float32,
+            requires_grad=False,
+            device="cpu",
+        )
+        np.testing.assert_allclose(values.numpy(), np.full(4, 3.5, dtype=np.float32))
+
+    def test_empty_vector_custom_attribute_uses_wp_full_default(self):
+        attr = ModelBuilder.CustomAttribute(
+            name="default_vector_shape_attr",
+            frequency=newton.Model.AttributeFrequency.SHAPE,
+            dtype=wp.vec2,
+            default=wp.vec2(1.25, -2.5),
+        )
+
+        with mock.patch.object(wp, "full", wraps=wp.full) as full_mock:
+            values = attr.build_array(3, device="cpu")
+
+        full_mock.assert_called_once_with(
+            3,
+            wp.vec2(1.25, -2.5),
+            dtype=wp.vec2,
+            requires_grad=False,
+            device="cpu",
+        )
+        np.testing.assert_allclose(values.numpy(), np.array([[1.25, -2.5]] * 3, dtype=np.float32))
+
+    def test_empty_sequence_custom_attribute_materializes_default_values(self):
+        attr = ModelBuilder.CustomAttribute(
+            name="default_table_shape_attr",
+            frequency=newton.Model.AttributeFrequency.SHAPE,
+            dtype=wp.float32,
+            default=[0.0, 1.0, 2.0],
+        )
+
+        with mock.patch.object(wp, "full", wraps=wp.full) as full_mock:
+            values = attr.build_array(2, device="cpu")
+
+        full_mock.assert_not_called()
+        np.testing.assert_allclose(values.numpy(), np.array([[0.0, 1.0, 2.0]] * 2, dtype=np.float32))
+
+    def test_mesh_hash_uses_cached_sha_digest(self):
+        mesh = newton.Mesh.create_box(
+            1.0,
+            0.5,
+            0.25,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+
+        with mock.patch("newton._src.geometry.types.hashlib.sha256", wraps=hashlib.sha256) as sha256_mock:
+            first_hash = hash(mesh)
+            second_hash = hash(mesh)
+
+            self.assertEqual(first_hash, second_hash)
+            sha256_mock.assert_called_once()
+
+            mesh.vertices = mesh.vertices.copy()
+            self.assertEqual(hash(mesh), first_hash)
+            self.assertEqual(sha256_mock.call_count, 2)
+
+    def test_finalize_deduplicates_equal_mesh_content(self):
+        mesh_a = newton.Mesh.create_box(
+            1.0,
+            0.5,
+            0.25,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        mesh_b = newton.Mesh.create_box(
+            1.0,
+            0.5,
+            0.25,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        self.assertIsNot(mesh_a, mesh_b)
+        self.assertEqual(hash(mesh_a), hash(mesh_b))
+
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=mesh_a)
+        builder.add_shape_mesh(body=-1, mesh=mesh_b)
+
+        with (
+            mock.patch.object(mesh_a, "finalize", wraps=mesh_a.finalize) as finalize_a,
+            mock.patch.object(mesh_b, "finalize", wraps=mesh_b.finalize) as finalize_b,
+        ):
+            model = builder.finalize(device="cpu")
+
+        finalize_a.assert_called_once()
+        finalize_b.assert_not_called()
+        shape_source_ptr = model.shape_source_ptr.numpy()
+        self.assertEqual(shape_source_ptr[0], shape_source_ptr[1])
+
+    def test_finalize_does_not_deduplicate_different_mesh_layouts(self):
+        vertices_a = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        indices_a = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+
+        # Reinterpret one triangle as an additional vertex. The unframed byte
+        # streams are identical even though the resulting meshes are different.
+        vertices_b = np.concatenate((vertices_a, indices_a[:3].view(np.float32).reshape(1, 3)))
+        indices_b = indices_a[3:]
+        self.assertEqual(vertices_a.tobytes() + indices_a.tobytes(), vertices_b.tobytes() + indices_b.tobytes())
+
+        mesh_a = newton.Mesh(vertices_a, indices_a, compute_inertia=False)
+        mesh_b = newton.Mesh(vertices_b, indices_b, compute_inertia=False)
+        self.assertNotEqual(hash(mesh_a), hash(mesh_b))
+
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=mesh_a)
+        builder.add_shape_mesh(body=-1, mesh=mesh_b)
+
+        with (
+            mock.patch.object(mesh_a, "finalize", wraps=mesh_a.finalize) as finalize_a,
+            mock.patch.object(mesh_b, "finalize", wraps=mesh_b.finalize) as finalize_b,
+        ):
+            model = builder.finalize(device="cpu")
+
+        finalize_a.assert_called_once()
+        finalize_b.assert_called_once()
+        shape_source_ptr = model.shape_source_ptr.numpy()
+        self.assertNotEqual(shape_source_ptr[0], shape_source_ptr[1])
+
     def test_add_triangles(self):
         rng = np.random.default_rng(123)
 
@@ -398,9 +552,10 @@ class TestModelMesh(unittest.TestCase):
             adjacency.edge_tri_indices,
             np.array([[0, -1], [0, -1], [0, 1], [1, -1], [1, -1]], dtype=np.int32),
         )
-        # Vertex adjacency stays unset until the solver builds it via init_vertex_adjacency.
-        self.assertIsNone(adjacency.v_adj_tris)
-        self.assertIsNone(adjacency.v_adj_edges_offsets)
+        # Vertex adjacency is now built eagerly in finalize (init_vertex_adjacency), so the shared
+        # device copy is ready for every consumer.
+        self.assertIsNotNone(adjacency.v_adj_tris)
+        self.assertIsNotNone(adjacency.v_adj_edges_offsets)
 
     def test_manual_soft_mesh_adjacency_placeholders_finalize(self):
         builder = ModelBuilder()
@@ -644,6 +799,79 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
 
+    def test_mesh_approximation_coacd_uses_builder_default_cfg(self):
+        builder = ModelBuilder()
+        builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape])
+        self.assertEqual(captured["threshold"], 0.5)
+
+        # an explicit argument overrides the builder default
+        captured.clear()
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
+        self.assertEqual(captured["threshold"], 0.2)
+
+    def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
+        builder = ModelBuilder()
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with patch_sys_module("coacd", None), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
+        # the documented threshold migration must keep working without coacd installed
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+
+    def test_mesh_approximation_ignores_non_mesh_shapes(self):
+        builder = ModelBuilder()
+        box_prim = builder.add_shape_box(body=-1)
+        mesh = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        mesh_shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+        remeshed = builder.approximate_meshes(method="convex_hull", shape_indices=[box_prim, mesh_shape])
+        self.assertEqual(remeshed, {mesh_shape})
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.CONVEX_MESH)
+        self.assertEqual(
+            builder.approximate_meshes(method="bounding_box", shape_indices=[box_prim, mesh_shape]), {mesh_shape}
+        )
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.BOX)
+
+    def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
+        builder = ModelBuilder()
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with (
+            mock.patch("newton._src.sim.builder.remesh_mesh", side_effect=RuntimeError("qhull failed")),
+            warnings.catch_warnings(),
+        ):
+            warnings.simplefilter("ignore")
+            builder.approximate_meshes(method="convex_hull", shape_indices=[shape])
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
+        self.assertIsNone(builder.shape_source[shape])
+
     def test_mesh_approximation_convex_decomposition_preserves_visual_properties(self):
         builder = ModelBuilder()
         builder.add_custom_attribute(
@@ -686,7 +914,7 @@ class TestModelMesh(unittest.TestCase):
             ],
         )
 
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+        with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], raise_on_failure=True)
 
         extra_shape = shape + 1
@@ -871,6 +1099,365 @@ class TestModelMesh(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
+    def test_large_replicated_collision_filter_pairs_deprecate_mutation_and_preserve_contacts(self):
+        """Large replicated filters should stay compact while finalized-model mutation warns."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 3)
+
+        builder_filters = builder._shape_collision_filter_pairs  # pyright: ignore[reportPrivateUsage]
+        self.assertNotIsInstance(builder_filters, list)
+        self.assertEqual(list(builder_filters), [(1, 2), (3, 4), (5, 6)])
+
+        model = builder.finalize()
+
+        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
+        self.assertFalse(internal_filters.is_materialized)
+        self.assertTrue(internal_filters.contains_pair(1, 2))
+        self.assertFalse(internal_filters.is_materialized)
+
+        filters = model.shape_collision_filter_pairs
+        self.assertIsInstance(filters, set)
+        self.assertTrue(internal_filters.is_materialized)
+        self.assertIn((1, 2), filters)
+        self.assertIn((3, 4), filters)
+        self.assertIn((5, 6), filters)
+        expected_filters = {(1, 2), (3, 4), (5, 6)}
+        self.assertEqual(filters, expected_filters)
+        self.assertEqual(filters | {(ground, 1)}, expected_filters | {(ground, 1)})
+        with self.assertWarns(DeprecationWarning):
+            filters.add((ground, 1))
+        self.assertIn((ground, 1), model.shape_collision_filter_pairs)
+        with self.assertWarns(DeprecationWarning):
+            model.shape_collision_filter_pairs = set()
+        self.assertEqual(model.shape_collision_filter_pairs, set())
+
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
+        self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
+
+    def test_collision_filter_in_place_mutation_warns_at_call_site(self):
+        def union(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs |= {(0, 1)}
+
+        def intersection(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs &= {(0, 1)}
+
+        def difference(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs -= {(0, 1)}
+
+        def symmetric_difference(model: newton.Model) -> None:
+            model.shape_collision_filter_pairs ^= {(0, 1)}
+
+        for mutation in (union, intersection, difference, symmetric_difference):
+            with self.subTest(mutation=mutation.__name__):
+                model = ModelBuilder().finalize(device="cpu")
+                filters = model.shape_collision_filter_pairs
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    mutation(model)
+
+                self.assertEqual(len(caught), 1)
+                self.assertEqual(caught[0].filename, __file__)
+                self.assertEqual(caught[0].lineno, mutation.__code__.co_firstlineno + 1)
+                self.assertIs(model.shape_collision_filter_pairs, filters)
+
+    def test_builder_collision_filter_pairs_preserve_list_api(self):
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.add_shape_collision_filter_pair(shape0, shape1)
+
+        builder = ModelBuilder()
+        builder.replicate(robot, 2)
+        builder.add_shape_collision_filter_pair(0, 2)
+
+        filters = builder.shape_collision_filter_pairs
+        self.assertIsInstance(filters, list)
+        self.assertEqual(filters, [(0, 1), (2, 3), (0, 2)])
+        self.assertEqual(filters.copy(), filters)
+        self.assertEqual(filters + [(1, 3)], [(0, 1), (2, 3), (0, 2), (1, 3)])  # noqa: RUF005
+
+    def test_builder_collision_filter_pairs_accept_reassigned_lists(self):
+        source = ModelBuilder()
+        body0 = source.add_body()
+        shape0 = source.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = source.add_body()
+        shape1 = source.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        source_filters = [(shape0, shape1)]
+        source.shape_collision_filter_pairs = source_filters
+        self.assertIs(source.shape_collision_filter_pairs, source_filters)
+
+        builder = ModelBuilder()
+        destination_filters: list[tuple[int, int]] = []
+        builder.shape_collision_filter_pairs = destination_filters
+        builder.add_builder(source)
+        self.assertIs(builder.shape_collision_filter_pairs, destination_filters)
+        self.assertEqual(destination_filters, [(shape0, shape1)])
+
+        model = builder.finalize()
+        self.assertEqual(model.shape_collision_filter_pairs, {(shape0, shape1)})
+
+    def test_add_builder_collision_filter_template_cache_tracks_mutations(self):
+        """Source-builder filter cache should invalidate when pair contents change."""
+
+        source = ModelBuilder()
+        body0 = source.add_body()
+        shape0 = source.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = source.add_body()
+        shape1 = source.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        body2 = source.add_body()
+        shape2 = source.add_shape_box(body=body2, hx=0.5, hy=0.5, hz=0.5)
+        source.add_shape_collision_filter_pair(shape0, shape1)
+
+        builder = ModelBuilder()
+        builder.add_builder(source)
+        source.add_shape_collision_filter_pair(shape0, shape2)
+        builder.add_builder(source)
+
+        self.assertIn((0, 1), builder.shape_collision_filter_pairs)
+        self.assertIn((3, 4), builder.shape_collision_filter_pairs)
+        self.assertIn((3, 5), builder.shape_collision_filter_pairs)
+
+    def test_compact_replicated_collision_filters_allow_residual_filters(self):
+        """Residual global filters should work with compact contact-pair generation."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 3)
+
+        # Match robot examples that add one non-block global/local filter per
+        # replicated world. The compact block path should handle these residual
+        # filters while generating contact pairs.
+        builder.add_shape_collision_filter_pair(ground, 1)
+        builder.add_shape_collision_filter_pair(ground, 3)
+        builder.add_shape_collision_filter_pair(ground, 5)
+
+        with mock.patch.object(
+            builder,
+            "_build_shape_collision_filter_packed",
+            wraps=builder._build_shape_collision_filter_packed,  # pyright: ignore[reportPrivateUsage]
+        ) as build_filters:
+            model = builder.finalize()
+        build_filters.assert_called_once()
+
+        filters = model.shape_collision_filter_pairs
+        self.assertIsInstance(filters, set)
+        self.assertIn((1, 2), filters)
+        self.assertIn((ground, 1), filters)
+
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
+        self.assertEqual(contact_pairs, {(ground, 2), (ground, 4), (ground, 6)})
+
+        builder.shape_collision_filter_pairs.append((ground, 2))
+        self.assertNotIn((ground, 2), filters)
+
+    def test_compact_replicated_collision_filters_roundtrip_viewer_file(self):
+        """ViewerFile should restore compact filters through a native public set."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 2)
+        builder.add_shape_collision_filter_pair(ground, 1)
+
+        model = builder.finalize(device="cpu")
+        expected_filters = {(1, 2), (3, 4), (ground, 1)}
+        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
+        self.assertFalse(internal_filters.is_materialized)
+
+        serialized = cast(Mapping[str, Any], pointer_as_key({"model": model}, format_type="json"))
+        self.assertTrue(internal_filters.is_materialized)
+        deserialized = depointer_as_key(serialized, format_type="json")
+        deserialized_model = cast(Mapping[str, Any], cast(Mapping[str, Any], deserialized)["model"])
+        restored_model = newton.Model(device="cpu")
+        transfer_to_model(deserialized_model, restored_model)
+
+        self.assertIsInstance(restored_model.shape_collision_filter_pairs, set)
+        self.assertEqual(restored_model.shape_collision_filter_pairs, expected_filters)
+
+    def test_collision_filter_array_queries_match_set(self):
+        """Packed-array membership and broad-phase pairs must match the public set."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.add_shape_collision_filter_pair(shape0, shape1)
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 4)
+        builder.add_shape_collision_filter_pair(ground, 1)
+
+        model = builder.finalize()
+
+        broad_phase_pairs = model.shape_collision_filter_pairs_array()
+        self.assertEqual(broad_phase_pairs.shape, (5, 2))
+        pair_list = [tuple(pair) for pair in broad_phase_pairs.tolist()]
+        self.assertEqual(pair_list, sorted(pair_list))
+
+        internal_filters = model._shape_collision_filter_store()  # pyright: ignore[reportPrivateUsage]
+        assert internal_filters is not None
+        self.assertFalse(internal_filters.is_materialized)
+
+        self.assertTrue(model.shape_collision_filter_contains(1, 2))
+        self.assertTrue(model.shape_collision_filter_contains(2, 1))
+        self.assertTrue(model.shape_collision_filter_contains(ground, 1))
+        self.assertFalse(model.shape_collision_filter_contains(ground, 2))
+        # NumPy integer indices (e.g. from .numpy() arrays) must not overflow
+        # the packed pair code.
+        self.assertTrue(model.shape_collision_filter_contains(np.int32(1), np.int32(2)))
+        self.assertTrue(model.shape_collision_filter_contains(1, np.int32(2)))
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_contains("1", 2)  # pyright: ignore[reportArgumentType]
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_contains(1.0, 2)  # pyright: ignore[reportArgumentType]
+        self.assertFalse(internal_filters.is_materialized)
+
+        # The canonical array aliases internal state and must be read-only.
+        with self.assertRaises(ValueError):
+            broad_phase_pairs[0, 0] = 5
+
+        candidates = np.array([[1, 2], [2, 1], [ground, 1], [ground, 2], [3, 4]], dtype=np.int32)
+        mask = model.shape_collision_filter_mask(candidates)
+        self.assertEqual(mask.tolist(), [True, True, True, False, True])
+        unsigned_mask = model.shape_collision_filter_mask(np.array([[1, 2], [ground, 2]], dtype=np.uint32))
+        self.assertEqual(unsigned_mask.tolist(), [True, False])
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_mask(candidates.astype(np.float64))
+        with self.assertRaises(TypeError):
+            model.shape_collision_filter_mask(candidates.astype(str))
+
+        self.assertEqual(set(pair_list), set(model.shape_collision_filter_pairs))
+
+        # Rebuilding through the public method must use the model as the filter
+        # source even if this builder has changed since finalization.
+        builder.add_shape_collision_filter_pair(ground, 2)
+        with self.assertWarnsRegex(DeprecationWarning, "generated automatically"):
+            builder.find_shape_contact_pairs(model)
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
+        self.assertIn((ground, 2), contact_pairs)
+
+        # After deprecated mutation, queries fall back to native set semantics.
+        with self.assertWarns(DeprecationWarning):
+            model.shape_collision_filter_pairs.add((ground, 2))
+        self.assertTrue(model.shape_collision_filter_contains(ground, 2))
+        mask = model.shape_collision_filter_mask(candidates)
+        self.assertEqual(mask.tolist(), [True, True, True, True, True])
+        self.assertEqual(len(model.shape_collision_filter_pairs_array()), 6)
+
+        # Rebuilding contact pairs after a (deprecated) mutation must honor
+        # the mutated model store rather than replaying stale builder filters.
+        with self.assertWarnsRegex(DeprecationWarning, "generated automatically"):
+            builder.find_shape_contact_pairs(model)
+        shape_contact_pairs = model.shape_contact_pairs
+        assert shape_contact_pairs is not None
+        contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
+        self.assertNotIn((ground, 2), contact_pairs)
+
+    def test_mixed_replicated_and_global_builder_filters_preserve_contacts(self):
+        """Blocks without a world (global add_builder) must not disable the fast path."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.add_shape_collision_filter_pair(shape0, shape1)
+
+        builder = ModelBuilder()
+        builder.add_builder(robot)  # global world: filter block without world assignment
+        builder.replicate(robot, 2)
+
+        model = builder.finalize()
+
+        self.assertEqual(set(model.shape_collision_filter_pairs), {(0, 1), (2, 3), (4, 5)})
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        expected = {(g, s) for g in (0, 1) for s in (2, 3, 4, 5)}
+        self.assertEqual(contact_pairs, expected)
+
+    def test_collision_filter_pairs_reject_invalid_shape_indices(self):
+        """Invalid filters should fail consistently before contact generation."""
+
+        builder = ModelBuilder()
+        body = builder.add_body()
+        shape = builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
+        builder.shape_collision_filter_pairs.append((shape, builder.shape_count))
+
+        with self.assertRaisesRegex(ValueError, "shape_collision_filter_pairs contains invalid pair"):
+            builder.finalize()
+
+    def test_compact_collision_filter_residuals_reject_invalid_shape_indices(self):
+        """Compact residual filters should raise ValueError instead of raw IndexError."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        ground = builder.add_ground_plane()
+        builder.replicate(robot, 3)
+        builder.add_shape_collision_filter_pair(ground, builder.shape_count)
+
+        with self.assertRaisesRegex(ValueError, "shape_collision_filter_pairs contains invalid pair"):
+            builder.finalize()
+
+    def test_compact_collision_filter_blocks_materialize_before_mutation(self):
+        """Public list mutation should not retain stale compact block metadata."""
+
+        robot = ModelBuilder()
+        body0 = robot.add_body()
+        shape0 = robot.add_shape_box(body=body0, hx=0.5, hy=0.5, hz=0.5)
+        body1 = robot.add_body()
+        shape1 = robot.add_shape_box(body=body1, hx=0.5, hy=0.5, hz=0.5)
+        robot.shape_collision_filter_pairs.append((shape0, shape1))
+
+        builder = ModelBuilder()
+        builder.add_ground_plane()
+        builder.replicate(robot, 3)
+        builder.shape_collision_filter_pairs[0] = (1, 3)
+
+        model = builder.finalize()
+
+        self.assertIsInstance(model.shape_collision_filter_pairs, set)
+
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
+        self.assertIn((1, 2), contact_pairs)
+        self.assertEqual(len(contact_pairs), 7)
+
     def test_collision_filter_fixed_to_world(self):
         """Bodies fixed to world via add_joint_fixed(parent=-1) should auto-filter
         their shapes against world-static shapes regardless of construction order
@@ -993,6 +1580,106 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestModelJoints(unittest.TestCase):
+    def test_add_builder_xform_updates_root_free_joint_coordinates(self):
+        parent_xform = wp.transform(wp.vec3(0.4, -0.2, 0.1), wp.quat_rpy(0.3, -0.4, 0.2))
+        child_xform = wp.transform(wp.vec3(-0.1, 0.3, 0.2), wp.quat_rpy(-0.2, 0.1, 0.4))
+        body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.1, 0.2, -0.3))
+        offset = wp.transform(wp.vec3(-0.5, 0.7, 1.2), wp.quat_rpy(-0.3, 0.2, 0.1))
+
+        source = ModelBuilder()
+        body = source.add_link(xform=body_xform)
+        joint = source.add_joint_free(
+            child=body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        source.add_articulation([joint])
+
+        builder = ModelBuilder()
+        builder.add_builder(source, xform=offset)
+
+        expected_body_xform = offset * body_xform
+        expected_joint_q = wp.transform_inverse(parent_xform) * expected_body_xform * child_xform
+        q_start = builder.joint_q_start[joint]
+        assert_np_equal(np.array(builder.joint_X_p[joint]), np.array(parent_xform), tol=1.0e-6)
+        assert_np_equal(
+            np.array(builder.joint_q[q_start : q_start + 7]),
+            np.array(expected_joint_q),
+            tol=1.0e-6,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[body], np.array(expected_body_xform), tol=1.0e-5)
+
+    def test_add_builder_xform_preserves_parented_free_joint_coordinates(self):
+        parent_body_xform = wp.transform(wp.vec3(0.5, -0.4, 0.2), wp.quat_rpy(0.2, -0.1, 0.3))
+        child_body_xform = wp.transform(wp.vec3(-0.6, 0.8, 1.1), wp.quat_rpy(-0.3, 0.4, -0.2))
+        root_parent_xform = wp.transform(wp.vec3(0.1, 0.2, -0.3), wp.quat_rpy(0.1, 0.3, -0.2))
+        parent_xform = wp.transform(wp.vec3(-0.2, 0.5, 0.1), wp.quat_rpy(-0.2, 0.1, 0.4))
+        child_xform = wp.transform(wp.vec3(0.3, -0.1, 0.2), wp.quat_rpy(0.3, -0.4, 0.1))
+        offset = wp.transform(wp.vec3(1.0, -0.5, 0.7), wp.quat_rpy(0.4, 0.2, -0.3))
+
+        source = ModelBuilder()
+        parent = source.add_link(xform=parent_body_xform)
+        child = source.add_link(xform=child_body_xform)
+        root_joint = source.add_joint_free(child=parent, parent_xform=root_parent_xform)
+        child_joint = source.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        source.add_articulation([root_joint, child_joint])
+
+        q_start = source.joint_q_start[child_joint]
+        expected_joint_q = np.array(source.joint_q[q_start : q_start + 7])
+
+        builder = ModelBuilder()
+        builder.add_builder(source, xform=offset)
+
+        q_start = builder.joint_q_start[child_joint]
+        assert_np_equal(np.array(builder.joint_X_p[child_joint]), np.array(parent_xform), tol=1.0e-6)
+        assert_np_equal(np.array(builder.joint_q[q_start : q_start + 7]), expected_joint_q, tol=1.0e-6)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[parent], np.array(offset * parent_body_xform), tol=1.0e-5)
+        assert_np_equal(state.body_q.numpy()[child], np.array(offset * child_body_xform), tol=1.0e-5)
+
+    def test_add_joint_free_initializes_relative_transform(self):
+        parent_body_xform = wp.transform(wp.vec3(1.0, -2.0, 0.5), wp.quat_rpy(0.2, -0.3, 0.4))
+        child_body_xform = wp.transform(wp.vec3(-0.5, 1.5, 2.0), wp.quat_rpy(-0.4, 0.1, 0.3))
+        parent_xform = wp.transform(wp.vec3(0.3, -0.2, 0.1), wp.quat_rpy(0.1, 0.2, -0.1))
+        child_xform = wp.transform(wp.vec3(-0.1, 0.4, 0.2), wp.quat_rpy(-0.2, 0.3, 0.1))
+
+        builder = ModelBuilder()
+        parent = builder.add_link(xform=parent_body_xform)
+        child = builder.add_link(xform=child_body_xform)
+        joint = builder.add_joint_free(
+            parent=parent,
+            child=child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+        builder.add_articulation([joint])
+
+        parent_anchor_world = parent_body_xform * parent_xform
+        expected_joint_q = wp.transform_inverse(parent_anchor_world) * child_body_xform * child_xform
+        q_start = builder.joint_q_start[joint]
+        assert_np_equal(
+            np.array(builder.joint_q[q_start : q_start + 7]),
+            np.array(expected_joint_q),
+            tol=1.0e-6,
+        )
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
+
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
         """``joint_target_q`` follows ``joint_q`` (coord) under
         ``use_coord_layout_targets``; ``joint_target_qd`` always follows
@@ -1124,6 +1811,97 @@ class TestModelJoints(unittest.TestCase):
             finally:
                 newton.use_coord_layout_targets = prev
 
+    def test_collapse_keeps_attachment_anchored_rod_joints(self):
+        """collapse_fixed_joints must not delete non-fixed joints: a rod anchored
+        mid-chain by a ball joint (the USD attachment pattern) keeps every cable
+        joint even though the anchor makes the chain a loop."""
+        builder = newton.ModelBuilder()
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, _joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att")
+        labels_before = sorted(builder.joint_label)
+        builder.collapse_fixed_joints()
+        self.assertEqual(sorted(builder.joint_label), labels_before)
+        # Topological joint ordering survives: every joint's parent index is below its child.
+        for j in range(builder.joint_count):
+            parent, child = builder.joint_parent[j], builder.joint_child[j]
+            if parent >= 0:
+                self.assertLess(parent, child, builder.joint_label[j])
+
+    def test_collapse_keeps_parallel_joints(self):
+        """Two joints between the same body pair (e.g. an attachment with two point
+        sites) both survive collapse."""
+        builder = newton.ModelBuilder()
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, _joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
+        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
+        count_before = builder.joint_count
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.joint_count, count_before)
+
+    def test_collapse_parallel_joints_with_fixed_ordering(self):
+        """Parallel joints between one body pair survive collapse regardless of which
+        joint comes first; a fixed joint among them still merges the pair, and the
+        surviving non-fixed joint is remapped onto the merged body."""
+        for order in ("fixed_first", "fixed_second", "fixed_kept_first"):
+            with self.subTest(order=order):
+                builder = newton.ModelBuilder()
+                p = builder.add_body(label="parent")
+                c = builder.add_body(label="child")
+                builder.add_shape_sphere(p, radius=0.1)
+                builder.add_shape_sphere(c, radius=0.1)
+                if order == "fixed_second":
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                else:
+                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                keep = ["fix"] if order == "fixed_kept_first" else []
+                builder.collapse_fixed_joints(joints_to_keep=keep)
+                labels = list(builder.joint_label)
+                # add_body() gives each body a free joint; only assert on ours.
+                if order == "fixed_kept_first":
+                    # Nothing merged: both parallel joints survive.
+                    self.assertIn("fix", labels)
+                    self.assertIn("ball", labels)
+                    self.assertEqual(builder.body_count, 2)
+                else:
+                    # The fixed pair merged (or the redundant fixed loop joint dropped);
+                    # the ball joint survives with valid endpoints.
+                    self.assertIn("ball", labels)
+                for j in range(builder.joint_count):
+                    self.assertLess(builder.joint_child[j], builder.body_count)
+
+    def test_collapse_reindexes_bodies_in_original_order(self):
+        """Retained bodies keep their original relative order after collapse, so an
+        anchor joint reaching a rod mid-chain cannot scramble recorded body ranges."""
+        builder = newton.ModelBuilder()
+        # A rigid pair joined by a fixed joint: something real to collapse.
+        b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
+        b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
+        builder.add_shape_sphere(b0, radius=0.1)
+        builder.add_shape_sphere(b1, radius=0.1)
+        builder.add_joint_free(b0)
+        builder.add_joint_fixed(b0, b1)
+        pts = [wp.vec3(0.1 * i, 0.0, 1.0) for i in range(4)]
+        bodies, joints = builder.add_rod(
+            positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
+        )
+        # Record the group the way the USD importer does, so the range remap is exercised.
+        builder._record_cable_group("cable", (bodies[0], bodies[-1] + 1), (joints[0], joints[-1] + 1))
+        builder.add_joint_ball(parent=-1, child=bodies[-1], label="att")
+        cable_labels_before = [builder.body_label[b] for b in bodies]
+        builder.collapse_fixed_joints()
+        # The fixed pair merged into one body; the cable bodies stay contiguous and ordered.
+        start, end = builder._cable_body_start[0], builder._cable_body_end[0]
+        self.assertEqual(end - start, len(bodies))
+        self.assertEqual([builder.body_label[b] for b in range(start, end)], cable_labels_before)
+
     def test_collapse_fixed_joints(self):
         shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
 
@@ -1168,11 +1946,13 @@ class TestModelJoints(unittest.TestCase):
 
         # a non-fixed joint followed by fixed joints
         free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
+        free_parent_xform = wp.transform(wp.vec3(0.0, -1.0, 0.0))
         b4 = builder.add_link(xform=free_xform)
         builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
-        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=free_parent_xform)
         assert_np_equal(builder.body_q[b4], np.array(free_xform))
-        assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
+        expected_joint_q = wp.transform_inverse(free_parent_xform) * free_xform
+        assert_np_equal(builder.joint_q[-7:], np.array(expected_joint_q))
         assert builder.joint_count == 8
         assert builder.body_count == 8
         _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)

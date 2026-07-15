@@ -185,6 +185,13 @@ def main(argv=None):
         help="Skip clearing the Warp kernel cache before running tests. "
         "Useful for faster iteration and avoiding interference with parallel sessions.",
     )
+    group_warp.add_argument(
+        "--warp-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Forward a warp.config override to example subprocesses (repeatable).",
+    )
     args = parser.parse_args(args=argv)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
@@ -530,6 +537,7 @@ class ParallelTestManager:
         newton.tests.unittest_utils.coverage_enabled = self.args.coverage
         newton.tests.unittest_utils.coverage_temp_dir = self.temp_dir
         newton.tests.unittest_utils.coverage_branch = self.args.coverage_branch
+        newton.tests.unittest_utils.warp_config_overrides = self.args.warp_config
 
         # Publish the flag for subprocess-based tests (e.g. test_examples.py).
         # Filters are applied earlier (pre-discovery and in the worker
