@@ -7,10 +7,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.style3d.kernels import (
-    accumulate_dragging_pd_diag_kernel,
-    prepare_jacobi_preconditioner_kernel,
-)
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -68,49 +64,31 @@ def test_zero_mass_isolated_particle_remains_finite(test, device):
     np.testing.assert_allclose(velocities[3], 0.0)
 
 
-def test_zero_mass_particle_excluded_from_optional_diagonals(test, device):
+def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_mesh(
+        builder,
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        vertices=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (2.0, 2.0, 0.0)),
+        indices=(0, 1, 2),
+        density=1.0,
+    )
+    builder.particle_flags[3] |= newton.ParticleFlags.PROXY
+    model = builder.finalize(device=device)
+    model_flags = model.particle_flags.numpy().copy()
+
+    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+
+    np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
+    solver_flags = solver._particle_flags.numpy()
     active = int(newton.ParticleFlags.ACTIVE)
-    masses = wp.array([0.0, 1.0, 1.0], dtype=float, device=device)
-    flags = wp.array([active, active, active], dtype=wp.int32, device=device)
-
-    dragging_diags = wp.zeros(3, dtype=float, device=device)
-    drag_face = wp.array([0], dtype=int, device=device)
-    drag_coords = wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device)
-    faces = wp.array([[0, 1, 2]], dtype=wp.int32, device=device)
-    wp.launch(
-        accumulate_dragging_pd_diag_kernel,
-        dim=1,
-        inputs=[
-            3.0,
-            drag_face,
-            drag_coords,
-            faces,
-            masses,
-            flags,
-        ],
-        outputs=[dragging_diags],
-        device=device,
-    )
-    np.testing.assert_allclose(dragging_diags.numpy(), [0.0, 3.0, 3.0])
-
-    identity = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-    inverse_diags = wp.empty(3, dtype=wp.mat33, device=device)
-    static_diags = wp.ones(3, dtype=float, device=device)
-    contact_diags = wp.array([identity, identity, identity], dtype=wp.mat33, device=device)
-    wp.launch(
-        prepare_jacobi_preconditioner_kernel,
-        dim=3,
-        inputs=[
-            static_diags,
-            contact_diags,
-            masses,
-            flags,
-        ],
-        outputs=[inverse_diags],
-        device=device,
-    )
-    expected = np.stack((np.eye(3), np.eye(3) * 0.5, np.eye(3) * 0.5))
-    np.testing.assert_allclose(inverse_diags.numpy(), expected)
+    proxy = int(newton.ParticleFlags.PROXY)
+    test.assertTrue(np.all((solver_flags[:3] & active) != 0))
+    test.assertEqual(int(solver_flags[3]) & active, 0)
+    test.assertNotEqual(int(solver_flags[3]) & proxy, 0)
 
 
 devices = get_test_devices()
@@ -138,12 +116,11 @@ add_function_test(
 
 add_function_test(
     TestSolverStyle3D,
-    "test_zero_mass_particle_excluded_from_optional_diagonals",
-    test_zero_mass_particle_excluded_from_optional_diagonals,
+    "test_solver_flags_deactivate_zero_mass_without_mutating_model",
+    test_solver_flags_deactivate_zero_mass_without_mutating_model,
     devices=devices,
     check_output=False,
 )
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)

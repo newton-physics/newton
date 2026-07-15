@@ -6,6 +6,16 @@ import warp as wp
 from ...geometry import ParticleFlags
 
 
+@wp.kernel
+def deactivate_zero_mass_particles_kernel(
+    particle_masses: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    if particle_masses[tid] <= 0.0:
+        particle_flags[tid] = particle_flags[tid] & ~ParticleFlags.ACTIVE
+
+
 @wp.func
 def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm: wp.mat22):
     x01, x02 = x1 - x0, x2 - x0
@@ -141,7 +151,6 @@ def accumulate_dragging_pd_diag_kernel(
     face_index: wp.array[int],
     drag_bary_coord: wp.array[wp.vec3],
     faces: wp.array2d[wp.int32],
-    particle_masses: wp.array[float],
     particle_flags: wp.array[wp.int32],
     # outputs
     pd_diags: wp.array[float],
@@ -151,13 +160,13 @@ def accumulate_dragging_pd_diag_kernel(
         coord = drag_bary_coord[0]
         face = wp.vec3i(faces[fid, 0], faces[fid, 1], faces[fid, 2])
 
-        if particle_flags[face[0]] & ParticleFlags.ACTIVE and particle_masses[face[0]] > 0.0:
+        if particle_flags[face[0]] & ParticleFlags.ACTIVE:
             pd_diags[face[0]] += spring_stiff * coord[0]
 
-        if particle_flags[face[1]] & ParticleFlags.ACTIVE and particle_masses[face[1]] > 0.0:
+        if particle_flags[face[1]] & ParticleFlags.ACTIVE:
             pd_diags[face[1]] += spring_stiff * coord[1]
 
-        if particle_flags[face[2]] & ParticleFlags.ACTIVE and particle_masses[face[2]] > 0.0:
+        if particle_flags[face[2]] & ParticleFlags.ACTIVE:
             pd_diags[face[2]] += spring_stiff * coord[2]
 
 
@@ -181,14 +190,14 @@ def init_step_kernel(
     tid = wp.tid()
     x_last = x_curr[tid]
     x_prev[tid] = x_last
-    mass = particle_masses[tid]
 
-    if not particle_flags[tid] & ParticleFlags.ACTIVE or mass <= 0.0:
+    if not particle_flags[tid] & ParticleFlags.ACTIVE:
         x_inertia[tid] = x_prev[tid]
         static_A_diags[tid] = 0.0
         dx[tid] = wp.vec3(0.0)
     else:
         v_prev = v_curr[tid]
+        mass = particle_masses[tid]
         static_A_diags[tid] = pd_diags[tid] + mass / (dt * dt)
         world_idx = particle_world[tid]
         world_g = gravity[wp.max(world_idx, 0)]
@@ -216,14 +225,13 @@ def init_rhs_kernel(
 def prepare_jacobi_preconditioner_kernel(
     static_A_diags: wp.array[float],
     contact_hessian_diags: wp.array[wp.mat33],
-    particle_masses: wp.array[float],
     particle_flags: wp.array[wp.int32],
     # outputs
     inv_A_diags: wp.array[wp.mat33],
 ):
     tid = wp.tid()
     diag = wp.identity(3, float) * static_A_diags[tid]
-    if particle_flags[tid] & ParticleFlags.ACTIVE and particle_masses[tid] > 0.0:
+    if particle_flags[tid] & ParticleFlags.ACTIVE:
         diag += contact_hessian_diags[tid]
     inv_A_diags[tid] = wp.inverse(diag) if static_A_diags[tid] > 0.0 else wp.identity(3, float) * 0.0
 
