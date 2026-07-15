@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -42,11 +43,70 @@ def _build_limited_revolute() -> newton.Model:
     return builder.finalize()
 
 
+def _snapshot_model_arrays(model: newton.Model) -> dict[str, np.ndarray]:
+    """Copy every allocated top-level Warp array on a model."""
+    return {name: value.numpy().copy() for name, value in vars(model).items() if isinstance(value, wp.array)}
+
+
+def _assert_model_arrays_unchanged(
+    model: newton.Model,
+    snapshot: dict[str, np.ndarray],
+) -> None:
+    """Assert that model arrays still match a previous snapshot."""
+    for name, before in snapshot.items():
+        after = getattr(model, name).numpy()
+        np.testing.assert_array_equal(after, before, err_msg=f"notify_model_changed mutated model.{name}")
+
+
 class TestKaminoNotifyModelChanged(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
+
+    def test_noop_flags_are_silent_and_do_not_mutate_newton_arrays(self):
+        """No-op notifications are silent and leave Newton arrays untouched."""
+        model = _build_limited_revolute()
+        solver = SolverKamino(model)
+        snapshot = _snapshot_model_arrays(model)
+        noop_flags = (
+            newton.ModelFlags.BODY_PROPERTIES,
+            newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
+            newton.ModelFlags.SHAPE_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_PROPERTIES,
+            newton.ModelFlags.ACTUATOR_PROPERTIES,
+            newton.ModelFlags.CONSTRAINT_PROPERTIES,
+            newton.ModelFlags.TENDON_PROPERTIES,
+        )
+
+        with mock.patch.object(solver._kamino.msg, "warning") as warning:
+            for flag in noop_flags:
+                with self.subTest(flag=flag.name):
+                    warning.reset_mock()
+                    solver.notify_model_changed(flag)
+                    warning.assert_not_called()
+                    _assert_model_arrays_unchanged(model, snapshot)
+
+    def test_unknown_flags_warn_without_raising(self):
+        """Unknown flags warn while leaving Newton arrays untouched."""
+        model = _build_limited_revolute()
+        solver = SolverKamino(model)
+        snapshot = _snapshot_model_arrays(model)
+        warning_message = "SolverKamino.notify_model_changed: flags 0x%x not yet supported"
+        custom_flag = 1 << 20
+
+        with mock.patch.object(solver._kamino.msg, "warning") as warning:
+            solver.notify_model_changed(custom_flag)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | custom_flag)
+
+        warning.assert_has_calls(
+            [
+                mock.call(warning_message, custom_flag),
+                mock.call(warning_message, custom_flag),
+            ]
+        )
+        self.assertEqual(warning.call_count, 2)
+        _assert_model_arrays_unchanged(model, snapshot)
 
     def test_joint_dof_limits_reference_newton(self):
         """Joint DoF limits alias Newton's arrays, so runtime changes need no notify."""
@@ -75,10 +135,6 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         np.testing.assert_allclose(joints.dq_j_max.numpy(), new_vel)
         np.testing.assert_allclose(joints.tau_j_max.numpy(), new_effort)
 
-        # notify_model_changed(JOINT_DOF_PROPERTIES) is a harmless no-op.
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        np.testing.assert_allclose(joints.q_j_min.numpy(), new_lower)
-
     def test_body_inertial_properties_reference_newton(self):
         """Body inertial arrays alias Newton's, so runtime changes need no notify."""
         model = _build_limited_revolute()
@@ -103,34 +159,56 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         np.testing.assert_allclose(bodies.i_I_i.numpy(), new_inertia, atol=1e-6)
         np.testing.assert_allclose(bodies.inv_i_I_i.numpy(), new_inv_inertia, atol=1e-6)
 
-        # notify_model_changed(BODY_INERTIAL_PROPERTIES) is a harmless no-op.
-        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
-        np.testing.assert_allclose(bodies.i_I_i.numpy(), new_inertia, atol=1e-6)
-
-    def test_notify_does_not_mutate_newton_arrays(self):
-        """``notify_model_changed`` must only read Newton's arrays, never write them."""
+    def test_gravity_update(self):
+        """Model-property notifications refresh Kamino's gravity representation."""
         model = _build_limited_revolute()
         solver = SolverKamino(model)
+        gravity = np.tile(np.array([1.0, -2.0, 3.0], dtype=np.float32), (model.world_count, 1))
+        acceleration = np.linalg.norm(gravity, axis=1)
 
-        model.joint_limit_lower.assign(np.full_like(model.joint_limit_lower.numpy(), -0.3))
-        model.joint_limit_upper.assign(np.full_like(model.joint_limit_upper.numpy(), 0.3))
-        model.body_inertia.assign(model.body_inertia.numpy() * 2.0)
+        model.gravity.assign(gravity)
+        solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
-        snapshot = {
-            "joint_limit_lower": model.joint_limit_lower.numpy().copy(),
-            "joint_limit_upper": model.joint_limit_upper.numpy().copy(),
-            "joint_velocity_limit": model.joint_velocity_limit.numpy().copy(),
-            "joint_effort_limit": model.joint_effort_limit.numpy().copy(),
-            "body_com": model.body_com.numpy().copy(),
-            "body_inertia": model.body_inertia.numpy().copy(),
-            "body_inv_inertia": model.body_inv_inertia.numpy().copy(),
-        }
+        expected_g_dir_acc = np.column_stack((gravity / acceleration[:, None], acceleration))
+        expected_vector = np.column_stack((gravity, np.ones(model.world_count, dtype=np.float32)))
+        np.testing.assert_allclose(solver._model_kamino.gravity.g_dir_acc.numpy(), expected_g_dir_acc, atol=1e-6)
+        np.testing.assert_allclose(solver._model_kamino.gravity.vector.numpy(), expected_vector, atol=1e-6)
 
-        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    def test_joint_transform_update(self):
+        """Joint-property notifications recompute Kamino's parent and child frames."""
+        model = _build_limited_revolute()
+        solver = SolverKamino(model)
+        joints = solver._model_kamino.joints
+        old_X_Bj = joints.X_Bj.numpy().copy()
+        old_X_Fj = joints.X_Fj.numpy().copy()
 
-        for name, before in snapshot.items():
-            after = getattr(model, name).numpy()
-            np.testing.assert_array_equal(after, before, err_msg=f"notify_model_changed mutated model.{name}")
+        parent_position = np.array([0.2, -0.1, 0.3], dtype=np.float32)
+        child_position = np.array([-0.4, 0.5, 0.6], dtype=np.float32)
+        parent_angle = 0.4
+        child_angle = -0.35
+        parent_rotation = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), parent_angle)
+        child_rotation = wp.quat_from_axis_angle(wp.vec3f(1.0, 0.0, 0.0), child_angle)
+        model.joint_X_p.assign([wp.transformf(wp.vec3f(*parent_position), parent_rotation)])
+        model.joint_X_c.assign([wp.transformf(wp.vec3f(*child_position), child_rotation)])
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+
+        parent_cos, parent_sin = np.cos(parent_angle), np.sin(parent_angle)
+        child_cos, child_sin = np.cos(child_angle), np.sin(child_angle)
+        parent_rotation_matrix = np.array(
+            [[parent_cos, -parent_sin, 0.0], [parent_sin, parent_cos, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        child_rotation_matrix = np.array(
+            [[1.0, 0.0, 0.0], [0.0, child_cos, -child_sin], [0.0, child_sin, child_cos]],
+            dtype=np.float32,
+        )
+        body_com = model.body_com.numpy()[0]
+
+        np.testing.assert_allclose(joints.B_r_Bj.numpy()[0], parent_position, atol=1e-6)
+        np.testing.assert_allclose(joints.F_r_Fj.numpy()[0], child_position - body_com, atol=1e-6)
+        np.testing.assert_allclose(joints.X_Bj.numpy()[0], parent_rotation_matrix @ old_X_Bj[0], atol=1e-6)
+        np.testing.assert_allclose(joints.X_Fj.numpy()[0], child_rotation_matrix @ old_X_Fj[0], atol=1e-6)
 
 
 if __name__ == "__main__":

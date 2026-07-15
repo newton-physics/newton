@@ -871,33 +871,40 @@ class SolverKamino(SolverBase, CouplingInterface):
             pass  # TODO: convert to CoM-frame if body_q_i_0 is changed at runtime?
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-            # Kamino's RigidBodiesModel references Newton's arrays directly
-            # (m_i, inv_m_i, i_I_i, inv_i_I_i, i_r_com_i), so no copy needed.
-            pass
+            pass  # TODO: refresh CoM-derived joint frames + geom offsets.
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
-            pass  # TODO: ???
+            pass  # TODO: geom offsets + contact materials.
 
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_transforms()
 
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            # Kamino's joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) reference
-            # Newton's arrays directly, so no copy needed.
             pass
 
         if flags & ModelFlags.ACTUATOR_PROPERTIES:
-            pass  # TODO: ???
+            pass
 
+        # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
+        # No warning is emitted for compatibility with a coupled solver environment where these flags were meant for one of the other solver.
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
-            pass  # TODO: ???
+            pass
 
-        unsupported = flags & ~(
+        if flags & ModelFlags.TENDON_PROPERTIES:
+            pass
+
+        handled = (
             ModelFlags.MODEL_PROPERTIES
+            | ModelFlags.BODY_PROPERTIES
             | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.SHAPE_PROPERTIES
             | ModelFlags.JOINT_PROPERTIES
             | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.ACTUATOR_PROPERTIES
+            | ModelFlags.CONSTRAINT_PROPERTIES
+            | ModelFlags.TENDON_PROPERTIES
         )
+        unsupported = int(flags) & ~int(handled)
         if unsupported:
             self._kamino.msg.warning(
                 "SolverKamino.notify_model_changed: flags 0x%x not yet supported",
