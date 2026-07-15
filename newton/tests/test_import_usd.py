@@ -4422,7 +4422,7 @@ def Xform "Root" (
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
     """Verify model based on the UsdPhysics Parsing Utils"""
     # [1] https://openusd.org/release/api/usd_physics_page_front.html
-    from pxr import Sdf, Usd, UsdPhysics
+    from pxr import Gf, Sdf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(file)
     parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
@@ -4455,17 +4455,25 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
         prim = stage.GetPrimAtPath(body_path)
         if prim.HasAPI(UsdPhysics.MassAPI):
             mass_api = UsdPhysics.MassAPI(prim)
-            # Parents' explicit total masses override any mass properties specified further down in the subtree. [1]
-            if mass_api.GetMassAttr().HasAuthoredValue():
-                mass = mass_api.GetMassAttr().Get()
+            # Parents' effective total masses override mass properties further down the subtree. [1]
+            mass = mass_api.GetMassAttr().Get()
+            if mass is not None and math.isfinite(mass) and mass > 0.0:
                 test.assertAlmostEqual(body_mass[body_idx], mass, places=5)
-            if mass_api.GetDiagonalInertiaAttr().HasAuthoredValue():
-                diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
-                principal_axes = mass_api.GetPrincipalAxesAttr().Get().Normalize()
+            diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
+            if (
+                diag_inertia is not None
+                and any(v != 0.0 for v in diag_inertia)
+                and all(math.isfinite(v) and v >= 0.0 for v in diag_inertia)
+            ):
+                principal_axes = mass_api.GetPrincipalAxesAttr().Get()
+                if principal_axes is None or principal_axes == Gf.Quatf(0.0):
+                    principal_axes = Gf.Quatf(1.0)
+                else:
+                    principal_axes = principal_axes.GetNormalized()
                 p = np.array(wp.quat_to_matrix(wp.quat(*principal_axes.imaginary, principal_axes.real))).reshape((3, 3))
                 inertia = p @ np.diag(diag_inertia) @ p.T
                 assert_np_equal(body_inertia[body_idx], inertia, tol=1e-5)
-    # Rigid bodies that don't have mass and inertia parameters authored will not be checked
+    # Rigid bodies without effective mass and inertia values will not be checked.
     # TODO: check bodies with CollisionAPI children that have MassAPI specified
 
     joint_mapping = {
