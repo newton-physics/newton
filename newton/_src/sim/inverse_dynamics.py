@@ -112,7 +112,7 @@ class InverseDynamicsOutputs:
     """
 
     class EvalType(IntFlag):
-        """Bitmask flags selecting which quantities :class:`~newton.InverseDynamicsOutputs` should compute.
+        """Bitmask flags selecting which quantities :func:`~newton.eval_inverse_dynamics` should compute.
 
         Flags can be combined with bitwise-or to request multiple quantities
         simultaneously; :attr:`ALL` is the union of all individual flags.

@@ -765,20 +765,20 @@ callers manage only one object.
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
     # allocate the output container, sized to the model
-    outputs = model.inverse_dynamics_outputs()
+    inverse_dynamics_outputs = model.inverse_dynamics_outputs()
 
     # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
     newton.eval_inverse_dynamics(
-        model, state, newton.InverseDynamicsOutputs.EvalType.ALL, outputs,
+        model, state, newton.InverseDynamicsOutputs.EvalType.ALL, inverse_dynamics_outputs,
     )
-    M = outputs.mass_matrix     # (articulation_count, max_dofs, max_dofs)
-    g = outputs.gravity_force   # (joint_dof_count,)
-    c = outputs.coriolis_force  # (joint_dof_count,)
+    M = inverse_dynamics_outputs.mass_matrix     # (articulation_count, max_dofs, max_dofs)
+    g = inverse_dynamics_outputs.gravity_force   # (joint_dof_count,)
+    c = inverse_dynamics_outputs.coriolis_force  # (joint_dof_count,)
 
     # combine into tau = M*qddot + C*qdot + g for a user-supplied qddot
     qddot = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
-    newton.eval_inverse_dynamics_force(model, state, outputs, qddot)
-    tau = outputs.tau
+    newton.eval_inverse_dynamics_force(model, state, inverse_dynamics_outputs, qddot)
+    tau = inverse_dynamics_outputs.tau
 
 Combine flags with bitwise-or to compute only what you need. For
 example, ``EvalType.GRAVITY_FORCE | EvalType.CORIOLIS_FORCE`` skips
@@ -800,14 +800,14 @@ own ``mask=`` argument.
     # only compute M(q), g(q), and C*q_dot for articulations labelled "arm"
     view = newton.selection.ArticulationView(model, pattern="arm")
     view.eval_inverse_dynamics(
-        state, newton.InverseDynamicsOutputs.EvalType.ALL, outputs,
+        state, newton.InverseDynamicsOutputs.EvalType.ALL, inverse_dynamics_outputs,
     )
 
     # optionally narrow further with a per-world submask (shape [world_count])
     per_world_mask = wp.array([True], dtype=bool, device=model.device)
     view.eval_inverse_dynamics(
         state, newton.InverseDynamicsOutputs.EvalType.ALL,
-        outputs, mask=per_world_mask,
+        inverse_dynamics_outputs, mask=per_world_mask,
     )
 
 The view also applies the same selection when combining the output buffers
@@ -815,7 +815,7 @@ with a desired acceleration:
 
 .. code-block:: python
 
-    view.eval_inverse_dynamics_force(state, outputs, qddot, mask=per_world_mask)
+    view.eval_inverse_dynamics_force(state, inverse_dynamics_outputs, qddot, mask=per_world_mask)
 
 
 .. autofunction:: newton.eval_inverse_dynamics
