@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import builtins
 import functools
 import hashlib
 import math
@@ -5886,6 +5887,52 @@ def Xform "Body" (
 
 
 class TestImportSampleAssetsParsing(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_mjc_schemas_without_mujoco(self):
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "mjc_schema_import.usda")
+        original_import = builtins.__import__
+        optional_runtime_imports = []
+
+        def track_optional_runtime_imports(name, *args, **kwargs):
+            if name.partition(".")[0] in {"mujoco", "mujoco_warp"}:
+                optional_runtime_imports.append(name)
+            return original_import(name, *args, **kwargs)
+
+        for register_mujoco, convert_equalities in (
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ):
+            with self.subTest(register_mujoco=register_mujoco, convert_equalities=convert_equalities):
+                builder = newton.ModelBuilder()
+                if register_mujoco:
+                    SolverMuJoCo.register_custom_attributes(builder)
+
+                optional_runtime_imports.clear()
+                with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
+                    builder.add_usd(
+                        asset_path,
+                        convert_mjc_equality_constraints=convert_equalities,
+                        schema_resolvers=[usd.SchemaResolverMjc()],
+                    )
+                self.assertEqual(optional_runtime_imports, [])
+
+                model = builder.finalize()
+                self.assertEqual(model.mujoco.equality_constraint_count, 3)
+                self.assertEqual(model.constraint_mimic_count, int(convert_equalities))
+                self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), int(register_mujoco))
+
+                if register_mujoco:
+                    np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [1])
+                    self.assertIn(int(newton.JointTargetMode.POSITION), builder.joint_target_mode)
+                    self.assertEqual(
+                        set(model.mujoco.solreflimit_mode.numpy().tolist()),
+                        {SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT},
+                    )
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_jnt_actgravcomp_parsing(self):
         """Test that jnt_actgravcomp attribute is parsed correctly from USD."""

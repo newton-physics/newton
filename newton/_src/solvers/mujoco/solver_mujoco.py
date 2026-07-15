@@ -48,6 +48,9 @@ from .constants import (
     HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
     MJ_MINVAL,
+    MJC_ACTUATOR_BIAS_TYPES,
+    MJC_ACTUATOR_DYNAMICS_TYPES,
+    MJC_ACTUATOR_GAIN_TYPES,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
@@ -1403,22 +1406,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             """Parse actuator enum values, defaulting to 0 for unknown strings."""
             return SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0)
 
+        actuator_transmission_types = {
+            "joint": int(SolverMuJoCo.TrnType.JOINT),
+            "jointinparent": int(SolverMuJoCo.TrnType.JOINT_IN_PARENT),
+            "tendon": int(SolverMuJoCo.TrnType.TENDON),
+            "site": int(SolverMuJoCo.TrnType.SITE),
+            "body": int(SolverMuJoCo.TrnType.BODY),
+            "slidercrank": int(SolverMuJoCo.TrnType.SLIDERCRANK),
+        }
+
         def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(
-                s,
-                {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5},
-            )
+            return parse_actuator_enum(s, actuator_transmission_types)
 
         def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(
-                s, {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4, "user": 5}
-            )
+            return parse_actuator_enum(s, MJC_ACTUATOR_DYNAMICS_TYPES)
 
         def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, {"fixed": 0, "affine": 1, "muscle": 2, "user": 3})
+            return parse_actuator_enum(s, MJC_ACTUATOR_GAIN_TYPES)
 
         def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, {"none": 0, "affine": 1, "muscle": 2, "user": 3})
+            return parse_actuator_enum(s, MJC_ACTUATOR_BIAS_TYPES)
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -1769,7 +1776,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # TrnType.JOINT
+                default=int(SolverMuJoCo.TrnType.JOINT),
                 namespace="mujoco",
                 mjcf_attribute_name="trntype",
                 mjcf_value_transformer=parse_trntype,
@@ -1784,7 +1791,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # DynType.NONE
+                default=MJC_ACTUATOR_DYNAMICS_TYPES["none"],
                 namespace="mujoco",
                 mjcf_attribute_name="dyntype",
                 mjcf_value_transformer=parse_dyntype,
@@ -1798,7 +1805,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # GainType.FIXED
+                default=MJC_ACTUATOR_GAIN_TYPES["fixed"],
                 namespace="mujoco",
                 mjcf_attribute_name="gaintype",
                 mjcf_value_transformer=parse_gaintype,
@@ -1812,7 +1819,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # BiasType.NONE
+                default=MJC_ACTUATOR_BIAS_TYPES["none"],
                 namespace="mujoco",
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
@@ -3237,12 +3244,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # Map trntype integer to MuJoCo enum and override default in general_args
             trntype_enum = {
-                0: mujoco.mjtTrn.mjTRN_JOINT,
-                1: mujoco.mjtTrn.mjTRN_JOINTINPARENT,
-                2: mujoco.mjtTrn.mjTRN_TENDON,
-                3: mujoco.mjtTrn.mjTRN_SITE,
-                4: mujoco.mjtTrn.mjTRN_BODY,
-                5: mujoco.mjtTrn.mjTRN_SLIDERCRANK,
+                int(SolverMuJoCo.TrnType.JOINT): mujoco.mjtTrn.mjTRN_JOINT,
+                int(SolverMuJoCo.TrnType.JOINT_IN_PARENT): mujoco.mjtTrn.mjTRN_JOINTINPARENT,
+                int(SolverMuJoCo.TrnType.TENDON): mujoco.mjtTrn.mjTRN_TENDON,
+                int(SolverMuJoCo.TrnType.SITE): mujoco.mjtTrn.mjTRN_SITE,
+                int(SolverMuJoCo.TrnType.BODY): mujoco.mjtTrn.mjTRN_BODY,
+                int(SolverMuJoCo.TrnType.SLIDERCRANK): mujoco.mjtTrn.mjTRN_SLIDERCRANK,
             }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
             general_args["trntype"] = trntype_enum
             act = spec.add_actuator(target=target_name, **general_args)
