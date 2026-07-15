@@ -386,8 +386,7 @@ class Example:
             pitch=-10.0,
             yaw=180.0,
         )
-        if hasattr(self.viewer, "_cam_speed"):
-            self.viewer._cam_speed = 0.2
+        self.viewer.camera_speed = 0.2
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
