@@ -457,6 +457,34 @@ class TestBuilderIntegration(unittest.TestCase):
         quality_warnings = [wi for wi in w if "Tet mesh quality" in str(wi.message)]
         self.assertEqual(len(quality_warnings), 1)
 
+    def test_add_soft_mesh_reorients_inverted_tets(self):
+        """Inverted input tets are made dynamic without mutating the source mesh."""
+        verts, inds = _regular_tet(scale=0.1)
+        inds[0, 2], inds[0, 3] = inds[0, 3], inds[0, 2]
+        tet_mesh = newton.TetMesh(verts, inds)
+        source_indices = tet_mesh.tet_indices.copy()
+
+        builder = newton.ModelBuilder()
+        builder.add_soft_mesh(
+            pos=wp.vec3(0, 0, 0),
+            rot=wp.quat_identity(),
+            scale=1.0,
+            vel=wp.vec3(0, 0, 0),
+            mesh=tet_mesh,
+            density=1000.0,
+        )
+
+        self.assertEqual(len(builder.tet_indices), 1)
+        self.assertTrue(np.all(np.asarray(builder.particle_mass) > 0.0))
+        np.testing.assert_array_equal(tet_mesh.tet_indices, source_indices)
+        expected_surface = newton.TetMesh.compute_surface_triangles(np.asarray(builder.tet_indices)).reshape(-1, 3)
+        expected_by_face = {tuple(sorted(face)): face for face in expected_surface}
+        source_face_keys = [tuple(sorted(face)) for face in tet_mesh.surface_tri_indices.reshape(-1, 3)]
+        builder_face_keys = [tuple(sorted(face)) for face in np.asarray(builder.tri_indices)]
+        self.assertEqual(builder_face_keys, source_face_keys)
+        for face in np.asarray(builder.tri_indices):
+            np.testing.assert_array_equal(face, expected_by_face[tuple(sorted(face))])
+
     def test_add_soft_mesh_validate_good_mesh(self):
         builder = newton.ModelBuilder()
         verts, inds = _regular_tet(scale=0.1)

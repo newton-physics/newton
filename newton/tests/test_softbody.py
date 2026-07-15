@@ -14,6 +14,7 @@ from newton._src.solvers.vbd.particle_vbd_kernels import (
     vec9,
 )
 from newton._src.solvers.vbd.solver_vbd import SolverVBD
+from newton.solvers import SolverFeatherstone
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -384,6 +385,24 @@ def test_tet_graph_coloring_is_valid(test, device):
     _assert_tet_graph_coloring(test, PYRAMID_TET_INDICES, colors)
 
 
+def test_featherstone_can_skip_particle_dynamics(test, device):
+    """Featherstone can leave VBD-owned particles unchanged in a shared state."""
+    builder = ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    builder.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.1, -0.2, 0.3), mass=1.0, radius=0.1)
+    model = builder.finalize(device=device)
+
+    state_in = model.state()
+    state_out = model.state()
+    particle_q = state_in.particle_q.numpy().copy()
+    particle_qd = state_in.particle_qd.numpy().copy()
+
+    solver = SolverFeatherstone(model, simulate_particles=False)
+    solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+
+    np.testing.assert_array_equal(state_out.particle_q.numpy(), particle_q)
+    np.testing.assert_array_equal(state_out.particle_qd.numpy(), particle_qd)
+
+
 def test_tet_energy(test, device):
     rng = np.random.default_rng(seed=42)
 
@@ -535,6 +554,12 @@ add_function_test(
     TestSoftBody, "test_tet_adjacency_complex_pyramid", test_tet_adjacency_complex_pyramid, devices=devices
 )
 add_function_test(TestSoftBody, "test_tet_graph_coloring_is_valid", test_tet_graph_coloring_is_valid, devices=devices)
+add_function_test(
+    TestSoftBody,
+    "test_featherstone_can_skip_particle_dynamics",
+    test_featherstone_can_skip_particle_dynamics,
+    devices=devices,
+)
 add_function_test(TestSoftBody, "test_tet_energy", test_tet_energy, devices=devices)
 
 if __name__ == "__main__":

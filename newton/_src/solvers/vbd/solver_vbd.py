@@ -368,6 +368,8 @@ class SolverVBD(SolverBase, CouplingInterface):
               solvers. If set to True, the rigid states should be integrated externally, with `state_in` passed to `step`
               representing the previous rigid state and `state_out` representing the current one. Frictional forces are
               computed accordingly.
+            - When using :class:`~newton.solvers.SolverFeatherstone` as the external rigid solver, construct it with
+              ``simulate_particles=False`` so that only VBD advances particle, cloth, and soft-body state.
             - `particle_vertex_contact_buffer_size`, `particle_edge_contact_buffer_size`, `rigid_body_contact_buffer_size`,
               and `rigid_body_particle_contact_buffer_size` are fixed and will not be dynamically resized during runtime.
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body

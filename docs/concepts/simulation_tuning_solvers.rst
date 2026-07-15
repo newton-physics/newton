@@ -169,13 +169,15 @@ repository examples spend tuning effort, not a shared solver API.
        ``rigid_body_particle_contact_buffer_size``, ``rigid_contact_hard``,
        ``rigid_contact_history``, and ``rigid_avbd_contact_alpha``.
    * - :class:`~newton.solvers.SolverFeatherstone`
-     - ``angular_damping``, ``friction_smoothing``,
+     - ``angular_damping``, ``friction_smoothing``, ``simulate_particles``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.
      - This semi-implicit articulated solver is tuned mainly through ``dt``,
        contact materials, drive gains, joint limits, and armature. Large stiffness
        generally requires smaller ``dt``. Examples use
        ``update_mass_matrix_interval`` when articulation dynamics are coupled
-       with cloth or soft-body work.
+       with cloth or soft-body work. Set ``simulate_particles=False`` when a
+       separate solver such as :class:`~newton.solvers.SolverVBD` owns particle
+       dynamics.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
