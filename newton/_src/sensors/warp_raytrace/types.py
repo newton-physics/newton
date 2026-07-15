@@ -62,6 +62,9 @@ class RenderConfig:
     enable_backface_culling: bool = True
     """Cull back-facing triangles."""
 
+    enable_fast_math: bool = True
+    """Compile render kernels with CUDA fast math."""
+
     output_color_space: ColorSpace = ColorSpace.SRGB
     """Color space for packed color and albedo outputs.
 

@@ -108,6 +108,7 @@ class Example:
         self.surface_z = float(CABLE_CENTER[2]) - self.payload_radius
 
         self._build_scene()
+        self.use_graph = self.use_graph and self.device.is_cuda
         self.control = self.model.control()
         self._build_solvers(args)
         self._build_ik()
@@ -117,7 +118,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="explicit",
-            shape_pairs_filtered=self._payload_ground_shape_pairs(),
+            shape_pairs_filtered=self._ground_shape_pairs(),
         )
         self.contacts = self.collision_pipeline.contacts()
         self.solver.prepare_contacts(self.contacts)
@@ -306,7 +307,6 @@ class Example:
                     ),
                     bodies=self.franka_bodies,
                     joints=self.franka_joints,
-                    shapes=self.franka_shapes,
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
@@ -319,7 +319,6 @@ class Example:
                     ),
                     bodies=self.payload_bodies,
                     joints=self.payload_joints,
-                    shapes=self.payload_shapes + self.ground_shapes,
                 ),
             ],
             coupling=SolverCoupledProxy.Config(
@@ -340,16 +339,16 @@ class Example:
             ),
         )
 
-    def _payload_ground_shape_pairs(self) -> wp.array:
-        payload_shapes = set(self.payload_shapes)
+    def _ground_shape_pairs(self) -> wp.array:
+        dynamic_shapes = set(self.franka_shapes) | set(self.payload_shapes)
         ground_shapes = set(self.ground_shapes)
         pairs = [
             (int(a), int(b))
             for a, b in self.model.shape_contact_pairs.numpy()
-            if ({int(a), int(b)} & payload_shapes) and ({int(a), int(b)} & ground_shapes)
+            if ({int(a), int(b)} & dynamic_shapes) and ({int(a), int(b)} & ground_shapes)
         ]
         if not pairs:
-            raise RuntimeError("No cable-ground contact pairs were generated")
+            raise RuntimeError("No robot- or cable-ground contact pairs were generated")
         return wp.array(np.asarray(pairs, dtype=np.int32), dtype=wp.vec2i, device=self.model.device)
 
     # ------------------------------------------------------------------
@@ -465,9 +464,11 @@ class Example:
     # ------------------------------------------------------------------
     def capture(self):
         self.graph = None
-        if self.use_graph and self.device.is_cuda:
+        if self.use_graph:
             with wp.ScopedDevice(self.device), wp.ScopedCapture() as capture:
                 self.simulate()
+            if capture.graph is None:
+                raise RuntimeError(f"Graph capture failed on device {self.device}")
             self.graph = capture.graph
 
     def simulate(self):
@@ -504,6 +505,9 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        if self.use_graph:
+            assert self.graph is not None, "Graph capture was requested but no graph was captured"
+
         body_q = self.state_0.body_q.numpy()
         body_qd = self.state_0.body_qd.numpy()
         assert np.all(np.isfinite(body_q)), "Body positions contain NaN or inf values"
@@ -559,7 +563,7 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 

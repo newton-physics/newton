@@ -20,10 +20,6 @@ from .bodies import (
 from .builder import JointActuationType
 from .geometry import GeometriesModel
 from .joints import (
-    JOINT_DQMAX,
-    JOINT_QMAX,
-    JOINT_QMIN,
-    JOINT_TAUMAX,
     JointDoFType,
     JointsModel,
 )
@@ -177,13 +173,11 @@ def joint_conversion_kernel(
     model_joint_q_start: wp.array[wp.int32],
     model_joint_qd_start: wp.array[wp.int32],
     model_joint_armature: wp.array[wp.float32],
-    model_joint_friction: wp.array[wp.float32],
+    model_joint_damping: wp.array[wp.float32],
     model_joint_target_ke: wp.array[wp.float32],
     model_joint_target_kd: wp.array[wp.float32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
-    joint_velocity_limit: wp.array[wp.float32],
-    joint_effort_limit: wp.array[wp.float32],
     # Outputs:
     joint_jid: wp.array[wp.int32],
     joint_dof_type: wp.array[wp.int32],
@@ -237,7 +231,7 @@ def joint_conversion_kernel(
     # Infer if the joint requires dynamic constraints
     for dof_id in range(ndofs_j):
         a_j = model_joint_armature[dofs_start_j + dof_id]
-        b_j = model_joint_friction[dofs_start_j + dof_id]
+        b_j = model_joint_damping[dofs_start_j + dof_id]
         ke_j = model_joint_target_ke[dofs_start_j + dof_id]
         kd_j = model_joint_target_kd[dofs_start_j + dof_id]
         is_dynamic_j = is_dynamic_j or (a_j > 0.0) or (b_j > 0.0) or (ke_j > 0.0) or (kd_j > 0.0)
@@ -247,17 +241,6 @@ def joint_conversion_kernel(
     if is_dynamic_j:
         joint_num_dynamic_cts[joint_id] = ndofs_j
     joint_num_cts[joint_id] = joint_num_dynamic_cts[joint_id] + joint_num_kinematic_cts[joint_id]
-
-    # Clip joint limits and effort/velocity limits to supported ranges
-    for i in range(qd_count_j):
-        joint_limit_lower[dofs_start_j + i] = wp.clamp(joint_limit_lower[dofs_start_j + i], JOINT_QMIN, JOINT_QMAX)
-        joint_limit_upper[dofs_start_j + i] = wp.clamp(joint_limit_upper[dofs_start_j + i], JOINT_QMIN, JOINT_QMAX)
-        joint_velocity_limit[dofs_start_j + i] = wp.clamp(
-            joint_velocity_limit[dofs_start_j + i], -JOINT_DQMAX, JOINT_DQMAX
-        )
-        joint_effort_limit[dofs_start_j + i] = wp.clamp(
-            joint_effort_limit[dofs_start_j + i], -JOINT_TAUMAX, JOINT_TAUMAX
-        )
 
 
 @wp.kernel
@@ -807,9 +790,9 @@ def convert_rigid_bodies(
         bid=body_bid,  # TODO: Remove
         m_i=model.body_mass,
         inv_m_i=model.body_inv_mass,
-        i_r_com_i=wp.clone(model.body_com, device=model.device),
-        i_I_i=wp.clone(model.body_inertia, device=model.device),
-        inv_i_I_i=wp.clone(model.body_inv_inertia, device=model.device),
+        i_r_com_i=model.body_com,
+        i_I_i=model.body_inertia,
+        inv_i_I_i=model.body_inv_inertia,
         q_i_0=q_i_0,
         u_i_0=wp.clone(model.body_qd, device=model.device),
     )
@@ -854,12 +837,6 @@ def convert_joints(
         joint_X_B = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
         joint_X_F = wp.empty(shape=(model.joint_count,), dtype=wp.mat33f)
 
-    # Copy limit arrays
-    joint_limit_lower = wp.clone(model.joint_limit_lower)
-    joint_limit_upper = wp.clone(model.joint_limit_upper)
-    joint_velocity_limit = wp.clone(model.joint_velocity_limit)
-    joint_effort_limit = wp.clone(model.joint_effort_limit)
-
     wp.launch(
         kernel=joint_conversion_kernel,
         dim=model.joint_count,
@@ -873,13 +850,11 @@ def convert_joints(
             model.joint_q_start,
             model.joint_qd_start,
             model.joint_armature,
-            model.joint_friction,
+            model.joint_damping,
             model.joint_target_ke,
             model.joint_target_kd,
-            joint_limit_lower,
-            joint_limit_upper,
-            joint_velocity_limit,
-            joint_effort_limit,
+            model.joint_limit_lower,
+            model.joint_limit_upper,
             # Outputs:
             joint_jid,
             joint_dof_type,
@@ -1227,12 +1202,12 @@ def convert_joints(
         F_r_Fj=joint_F_r_F,
         X_Bj=joint_X_B,
         X_Fj=joint_X_F,
-        q_j_min=joint_limit_lower,
-        q_j_max=joint_limit_upper,
-        dq_j_max=joint_velocity_limit,
-        tau_j_max=joint_effort_limit,
+        q_j_min=model.joint_limit_lower,
+        q_j_max=model.joint_limit_upper,
+        dq_j_max=model.joint_velocity_limit,
+        tau_j_max=model.joint_effort_limit,
         a_j=model.joint_armature,
-        b_j=model.joint_friction,  # TODO: Is this the right attribute?
+        b_j=model.joint_damping,
         k_p_j=model.joint_target_ke,
         k_d_j=model.joint_target_kd,
         q_j_0=model.joint_q,
@@ -1360,14 +1335,14 @@ def convert_geometries(
     )
 
     # Create additional collision detection meta-data
-    excluded_pairs = wp.array(sorted(model.shape_collision_filter_pairs), dtype=wp.vec2i, device=model.device)
+    sorted_excluded_pairs = model.shape_collision_filter_pairs_array()
+    excluded_pairs = wp.array(sorted_excluded_pairs, dtype=wp.vec2i, device=model.device)
 
-    # Construct and return the converted geometries model
     return GeometriesModel(
         num_geoms=model.shape_count,
         num_collidable=model_num_collidable_geoms.numpy()[0],
         num_collidable_pairs=model.shape_contact_pair_count,
-        num_excluded_pairs=len(model.shape_collision_filter_pairs),
+        num_excluded_pairs=len(sorted_excluded_pairs),
         model_minimum_contacts=model_min_contacts,
         world_minimum_contacts=world_min_contacts,
         label=model.shape_label,

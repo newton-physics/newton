@@ -181,6 +181,10 @@ def add_example_test(
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
 
+        # Forward any --warp-config overrides from the test runner
+        for entry in newton.tests.unittest_utils.warp_config_overrides:
+            command.extend(["--warp-config", entry])
+
         if not use_viewer:
             stage_path = (
                 options.pop(
@@ -296,6 +300,13 @@ def add_basic_example_test(**kwargs):
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
 
 add_basic_example_test(
+    name="basic.example_recording",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "world-count": 8},
+)
+
+add_basic_example_test(
     name="basic.example_basic_urdf",
     devices=test_devices,
     test_options={"num-frames": 200},
@@ -334,7 +345,16 @@ add_basic_example_test(
     name="basic.example_basic_shapes",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 150},
+    test_options={"num-frames": 150, "solver": "xpbd"},
+    test_suffix="xpbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_shapes",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "solver": "vbd"},
+    test_suffix="vbd",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
@@ -399,6 +419,22 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
+    test_suffix="dahl_retention",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "no-dahl": True},
+    test_suffix="no_dahl_recovery",
 )
 add_example_test(
     TestCableExamples,
@@ -492,6 +528,20 @@ add_example_test(
 add_example_test(
     TestClothExamples,
     name="vbd.example_cloth_stiff_material_stretch",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_triangle",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_grid",
     devices=cuda_test_devices,
     test_options={"num-frames": 360},
     use_viewer=True,
@@ -959,7 +1009,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_vbd_admm_solver",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 30},
     use_viewer=True,
 )
@@ -974,7 +1024,7 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_kamino_mujoco_admm_solver",
     devices=["cpu"],
-    test_options={"num-frames": 30, "world-count": 4, "graph-capture": False},
+    test_options={"num-frames": 30, "world-count": 4},
     use_viewer=True,
 )
 add_example_test(

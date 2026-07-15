@@ -75,6 +75,62 @@ class RigidContactHistory:
 
 
 @wp.func
+def _world_selected(world: int, mask: wp.array[wp.bool]):
+    """Query an internal world mask whose final entry selects global entities."""
+    mask_index = world
+    if world < 0:
+        mask_index = mask.shape[0] - 1
+    return mask[mask_index]
+
+
+@wp.func
+def _reset_world_selected(
+    world: int,
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+):
+    """Query a public reset mask whose optional final entry selects unassigned entities."""
+    if reset_all:
+        return True
+    if world < 0:
+        if world_mask.shape[0] == world_count:
+            return False
+        world = world_count
+    return world_mask[world]
+
+
+@wp.func
+def _shape_world_selected(
+    shape: int,
+    shape_world: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+):
+    """Return whether a shape's world (its own, or its attached body's) is selected by ``mask``."""
+    if _world_selected(shape_world[shape], mask):
+        return True
+    body = shape_body[shape]
+    return body >= 0 and _world_selected(body_world[body], mask)
+
+
+@wp.func
+def _contact_world_selected(
+    shape0: int,
+    shape1: int,
+    shape_world: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+):
+    """Return whether either contact endpoint's world is selected by ``mask``."""
+    if _shape_world_selected(shape0, shape_world, shape_body, body_world, mask):
+        return True
+    return _shape_world_selected(shape1, shape_world, shape_body, body_world, mask)
+
+
+@wp.func
 def ldlt6_solve(h_ll: wp.mat33, h_aa: wp.mat33, h_al: wp.mat33, rhs_lin: wp.vec3, rhs_ang: wp.vec3):
     """Solve the 6x6 SPD block system via direct LDL^T factorization.
 
@@ -848,6 +904,111 @@ def _eval_body_particle_contact(
         )
     else:
         return wp.vec3(0.0), wp.mat33(0.0)
+
+
+@wp.func
+def _eval_soft_ef_contact(
+    contact_index: int,
+    corners: wp.vec3i,
+    bary: wp.vec3,
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    particle_radius: wp.array[float],
+    contact_ke: float,
+    contact_kd: float,
+    contact_mu: float,
+    friction_epsilon: float,
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    contact_shape: wp.array[int],
+    contact_body_pos: wp.array[wp.vec3],
+    contact_body_vel: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    shape_margin: wp.array[float],
+    dt: float,
+):
+    """Soft-contact force/Hessian at a barycentric contact point over a record's soft particles.
+
+    The contact point is ``x = sum_i bary[i] * pos[corners[i]]`` over the -1-padded ``corners``:
+    a particle record ``(p, -1, -1)`` with ``bary = (1, 0, 0)`` reduces to the single-vertex
+    particle-vs-surface case, an edge ``(v0, v1, -1)`` uses two corners, a face all three. Geometry
+    and body kinematics are resolved as in :func:`_eval_body_particle_contact`, then the shared force
+    law :func:`_compute_body_particle_contact_force` is applied. Returns the contact force and Hessian
+    *at the contact point* (the caller distributes them by barycentric weight) and the world-space
+    rigid contact point ``bx`` for the body-side reaction. Force/Hessian are zero without penetration.
+    """
+    v0 = corners[0]  # corner 0 is always valid; corners 1/2 are -1 for edge/particle records
+    c1 = corners[1]
+    c2 = corners[2]
+
+    x = bary[0] * pos[v0]
+    x_prev = bary[0] * pos_prev[v0]
+    radius = particle_radius[v0]
+    if c1 >= 0:
+        x += bary[1] * pos[c1]
+        x_prev += bary[1] * pos_prev[c1]
+        radius = wp.max(radius, particle_radius[c1])
+    if c2 >= 0:
+        x += bary[2] * pos[c2]
+        x_prev += bary[2] * pos_prev[c2]
+        radius = wp.max(radius, particle_radius[c2])
+
+    shape_index = contact_shape[contact_index]
+    body_index = shape_body[shape_index]
+
+    X_wb = wp.transform_identity()
+    X_com = wp.vec3()
+    if body_index >= 0:
+        X_wb = body_q[body_index]
+        X_com = body_com[body_index]
+
+    bx = wp.transform_point(X_wb, contact_body_pos[contact_index])
+    n = contact_normal[contact_index]
+
+    # per-shape contact margin (#2994), applied the same way as the particle-vs-surface path
+    margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+
+    force = wp.vec3(0.0)
+    hessian = wp.mat33(0.0)
+
+    penetration_depth = -(wp.dot(n, x - bx) - radius - margin)
+    if penetration_depth > 0.0:
+        dx = x - x_prev
+
+        if body_q_prev:
+            X_wb_prev = wp.transform_identity()
+            if body_index >= 0:
+                X_wb_prev = body_q_prev[body_index]
+            bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[contact_index])
+            bv = (bx - bx_prev) / dt + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+        else:
+            r = bx - wp.transform_point(X_wb, X_com)
+            body_v_s = wp.spatial_vector()
+            if body_index >= 0:
+                body_v_s = body_qd[body_index]
+            body_w = wp.spatial_bottom(body_v_s)
+            body_v = wp.spatial_top(body_v_s)
+            bv = body_v + wp.cross(body_w, r) + wp.transform_vector(X_wb, contact_body_vel[contact_index])
+
+        relative_translation = dx - bv * dt
+
+        # contact_ke/kd/mu are the per-contact AVBD values (ramped penalty + pre-mixed material,
+        # cached by init_body_particle_contacts) -- the same source the particle path uses.
+        force, hessian = _compute_body_particle_contact_force(
+            penetration_depth,
+            n,
+            relative_translation,
+            contact_ke,
+            contact_kd,
+            contact_mu,
+            friction_epsilon,
+            dt,
+        )
+
+    return force, hessian, bx
 
 
 @wp.func
@@ -1781,6 +1942,103 @@ def evaluate_joint_force_hessian(
 # -----------------------------
 # Utility kernels
 # -----------------------------
+@wp.func
+def _reset_joint_history(
+    joint: int,
+    joint_constraint_start: wp.array[wp.int32],
+    joint_constraint_dim: wp.array[wp.int32],
+    joint_penalty_k_min: wp.array[float],
+    joint_penalty_k: wp.array[float],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+):
+    """Reset immediately available joint solver history.
+
+    The cable Dahl friction state (kappa/sigma/increment: curvature, hysteretic
+    stress, and increment) is left untouched here: an enabled cable rebaselines it
+    from the next pre-step pose, while a disabled cable refreshes it in the
+    end-of-step finalizer.
+    """
+    constraint_start = joint_constraint_start[joint]
+    constraint_dim = joint_constraint_dim[joint]
+    for slot in range(constraint_dim):
+        constraint = constraint_start + slot
+        joint_penalty_k[constraint] = joint_penalty_k_min[constraint]
+    joint_C0_lin[joint] = wp.vec3(0.0)
+    joint_C0_ang[joint] = wp.vec3(0.0)
+    joint_lambda_lin[joint] = wp.vec3(0.0)
+    joint_lambda_ang[joint] = wp.vec3(0.0)
+
+
+@wp.kernel(enable_backward=False)
+def reset_rigid_state(
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+    body_world: wp.array[wp.int32],
+    joint_world: wp.array[wp.int32],
+    joint_constraint_start: wp.array[wp.int32],
+    joint_constraint_dim: wp.array[wp.int32],
+    model_body_q: wp.array[wp.transform],
+    model_body_qd: wp.array[wp.spatial_vector],
+    joint_penalty_k_min: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    joint_penalty_k: wp.array[float],
+    joint_C0_lin: wp.array[wp.vec3],
+    joint_C0_ang: wp.array[wp.vec3],
+    joint_lambda_lin: wp.array[wp.vec3],
+    joint_lambda_ang: wp.array[wp.vec3],
+    rigid_pose_rebaseline_mask: wp.array[wp.bool],
+    contact_history_reset_mask: wp.array[wp.bool],
+    contact_history_reset_pending: wp.array[wp.int32],
+):
+    """Apply rigid resets in parallel by mask slot, body, and joint."""
+    tid = wp.tid()
+
+    if tid < world_count + 1:
+        world = tid
+        if tid == world_count:
+            world = -1
+        select_slot = _reset_world_selected(world, world_mask, reset_all, world_count)
+        if select_slot:
+            rigid_pose_rebaseline_mask[tid] = True
+            # Contact-reset state is allocated only with contact warm-starting on.
+            if contact_history_reset_mask:
+                contact_history_reset_mask[tid] = True
+                if reset_all:
+                    if tid == world_count:
+                        contact_history_reset_pending[0] = 1
+                else:
+                    wp.atomic_max(contact_history_reset_pending, 0, 1)
+
+    # A non-null output is the caller's request to reset that field.
+    if (body_q or body_qd) and tid < body_world.shape[0]:
+        body_selected = _reset_world_selected(body_world[tid], world_mask, reset_all, world_count)
+        if body_selected:
+            if body_q:
+                body_q[tid] = model_body_q[tid]
+            if body_qd:
+                body_qd[tid] = model_body_qd[tid]
+
+    if tid < joint_world.shape[0]:
+        joint_selected = _reset_world_selected(joint_world[tid], world_mask, reset_all, world_count)
+        if joint_selected:
+            _reset_joint_history(
+                tid,
+                joint_constraint_start,
+                joint_constraint_dim,
+                joint_penalty_k_min,
+                joint_penalty_k,
+                joint_C0_lin,
+                joint_C0_ang,
+                joint_lambda_lin,
+                joint_lambda_ang,
+            )
+
+
 @wp.kernel
 def _count_num_adjacent_joints(
     joint_parent: wp.array[wp.int32],
@@ -1836,6 +2094,7 @@ def forward_step_rigid_bodies(
     dt: float,
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
     body_f: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     body_inertia: wp.array[wp.mat33],
@@ -1843,6 +2102,7 @@ def forward_step_rigid_bodies(
     body_inv_inertia: wp.array[wp.mat33],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
     body_inertia_q: wp.array[wp.transform],
 ):
     """
@@ -1852,6 +2112,7 @@ def forward_step_rigid_bodies(
         dt: Time step [s].
         gravity: Gravity vector array (world frame).
         body_world: World index for each body.
+        pose_rebaseline_mask: Per-world flags for the ``body_q_prev`` rebaseline below.
         body_f: External forces on bodies (spatial wrenches, world frame).
         body_com: Centers of mass (local body frame).
         body_inertia: Inertia tensors (local body frame).
@@ -1859,11 +2120,18 @@ def forward_step_rigid_bodies(
         body_inv_inertia: Inverse inertia tensors (local body frame).
         body_q: Body transforms (input: start-of-step pose, output: integrated pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
+        body_q_prev: Previous body transforms (output). Rebaselined to the current
+            pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
+            after construction or reset); left unchanged otherwise.
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
     """
     tid = wp.tid()
 
+    world_idx = body_world[tid]
     q_current = body_q[tid]
+    if _world_selected(world_idx, pose_rebaseline_mask):
+        # The constructor or reset() may precede state pose preparation.
+        body_q_prev[tid] = q_current
 
     # Early exit for kinematic bodies (inv_mass == 0).
     inv_m = body_inv_mass[tid]
@@ -1877,7 +2145,6 @@ def forward_step_rigid_bodies(
     com_local = body_com[tid]
     I_local = body_inertia[tid]
     inv_I = body_inv_inertia[tid]
-    world_idx = body_world[tid]
     world_g = gravity[wp.max(world_idx, 0)]
 
     # Integrate rigid body motion (semi-implicit Euler, no angular damping)
@@ -1962,6 +2229,8 @@ def build_body_particle_contact_lists(
     Overflow is tracked in body_particle_contact_overflow_max for diagnostics.
     """
     tid = wp.tid()
+    # Bucket every soft contact (particle + edge + face; single total count) by its rigid body, so
+    # the per-body kernel drives all reactions from one adjacency list.
     if tid >= body_particle_contact_count[0]:
         return
 
@@ -2150,6 +2419,12 @@ def init_body_body_contacts_avbd(
     # Pipeline-owned correspondence and VBD-owned cross-step state
     match_index: wp.array[wp.int32],
     history: RigidContactHistory,
+    # Optional reset context; a null pending array disables masked invalidation.
+    contact_history_reset_pending: wp.array[wp.int32],
+    contact_history_reset_mask: wp.array[wp.bool],
+    shape_world: wp.array[wp.int32],
+    shape_body: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
     # Scalar parameters
     k_start: float,
     # In/out: replayed only for matched hard contacts that were sticking.
@@ -2176,6 +2451,7 @@ def init_body_body_contacts_avbd(
 
     match_index[i] addresses saved contact rows from the last snapshot.
     Negative values (-1 unmatched, -2 broken) cold-start identically.
+    Contacts in pending reset worlds are also treated as unmatched.
     """
     i = wp.tid()
     if i >= rigid_contact_count[0]:
@@ -2198,6 +2474,12 @@ def init_body_body_contacts_avbd(
 
     k_floor = avg_ke if k_start < 0.0 else wp.min(k_start, avg_ke)
     slot = match_index[i]
+    # Drop the saved match for reset-selected worlds so they cold-start instead
+    # of warm-starting from pre-reset history.
+    if slot >= 0 and contact_history_reset_pending:
+        if contact_history_reset_pending[0] != 0:
+            if _contact_world_selected(s0, s1, shape_world, shape_body, body_world, contact_history_reset_mask):
+                slot = -1
 
     if slot >= 0:
         contact_penalty_k[i] = wp.clamp(history.penalty_k[slot], k_floor, avg_ke)
@@ -2237,7 +2519,7 @@ def snapshot_body_body_contact_history(
     contact_lambda: wp.array[wp.vec3],
     contact_stick_flag: wp.array[wp.int32],
     contact_penalty_k: wp.array[float],
-    # Outputs, same order as RigidContactHistory
+    # Persistent outputs, in RigidContactHistory order
     prev_lambda: wp.array[wp.vec3],
     prev_stick_flag: wp.array[wp.int32],
     prev_penalty_k: wp.array[float],
@@ -2355,6 +2637,8 @@ def init_body_particle_contacts(
     ramping (k_start >= 0) or at ``avg_ke`` when fixed-k (k_start < 0).
     """
     i = wp.tid()
+    # Process every soft contact (single total count) so edge/face records get the same pre-mixed
+    # material and seeded penalty as particle contacts.
     if i >= body_particle_contact_count[0]:
         return
 
@@ -2382,6 +2666,8 @@ def compute_cable_dahl_parameters(
     # Inputs
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
+    joint_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_X_p: wp.array[wp.transform],
@@ -2399,23 +2685,26 @@ def compute_cable_dahl_parameters(
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
 ):
-    """
-    Compute Dahl hysteresis parameters (sigma0, C_fric) for cable bending,
-    given the current curvature state and the stored previous Dahl state.
+    """Compute per-step Dahl friction parameters for cable bending.
 
-    The outputs are:
-      - sigma0: linearized friction stress at the start of the step (per component)
-      - C_fric: tangent stiffness d(sigma)/d(kappa) (per component)
+    ``joint_sigma_start`` is the linearized friction stress at step start;
+    ``joint_C_fric`` is d(sigma) / d(kappa). On a selected first/reset step,
+    curvature is based on the current start-of-step pose and the stored stress
+    and curvature increment are cleared. This pre-solve rebaseline covers enabled
+    cables; a disabled cable refreshes its history in ``update_cable_dahl_state``
+    (the end-of-step finalizer) instead, so a reset while disabled is applied there.
     """
     j = wp.tid()
 
-    if not joint_enabled[j]:
+    # Only cable joints own Dahl state.
+    if joint_type[j] != JointType.CABLE:
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
         return
 
-    # Only process cable joints
-    if joint_type[j] != JointType.CABLE:
+    # Disabled cables are not solved, and the finalizer refreshes their Dahl
+    # history every step, so they need no begin-of-step rebaseline.
+    if not joint_enabled[j]:
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
         return
@@ -2428,6 +2717,8 @@ def compute_cable_dahl_parameters(
         joint_sigma_start[j] = wp.vec3(0.0)
         joint_C_fric[j] = wp.vec3(0.0)
         return
+
+    rebaseline = _world_selected(joint_world[j], pose_rebaseline_mask)
 
     # Compute joint frames in world space (current and rest only)
     if parent >= 0:
@@ -2446,13 +2737,20 @@ def compute_cable_dahl_parameters(
     q_wp_rest = wp.transform_get_rotation(X_wp_rest)
     q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
-    # Compute current curvature vector at beginning-of-step (predicted state)
+    # Compute curvature at the start-of-step pose.
     kappa_now = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
     # Read previous state (from last converged timestep)
     kappa_prev = joint_kappa_prev[j]
     d_kappa_prev = joint_dkappa_prev[j]
     sigma_prev = joint_sigma_prev[j]
+    if rebaseline:
+        kappa_prev = kappa_now
+        d_kappa_prev = wp.vec3(0.0)
+        sigma_prev = wp.vec3(0.0)
+        joint_kappa_prev[j] = kappa_prev
+        joint_dkappa_prev[j] = d_kappa_prev
+        joint_sigma_prev[j] = sigma_prev
 
     # Read per-joint Dahl parameters (isotropic)
     eps_max = joint_eps_max[j]
@@ -2843,8 +3141,10 @@ def accumulate_body_particle_contacts_per_body(
     # Rigid body state
     body_q_prev: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
+    shape_body: wp.array[int],
     # AVBD body-particle soft contact penalties and material properties
     friction_epsilon: float,
     body_particle_contact_penalty_k: wp.array[float],
@@ -2853,11 +3153,13 @@ def accumulate_body_particle_contacts_per_body(
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
-    body_particle_contact_particle: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_body_vel: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
+    # Barycentric weights on each record's soft particles; (1, 0, 0) for a particle contact.
+    soft_contact_barycentric: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     # Per-body soft-contact adjacency (body-particle)
     body_particle_contact_buffer_pre_alloc: int,
@@ -2871,12 +3173,14 @@ def accumulate_body_particle_contacts_per_body(
     body_hessian_aa: wp.array[wp.mat33],
 ):
     """
-    Per-body accumulation of body-particle (particle-rigid) soft contact forces and
-    Hessians on rigid bodies.
+    Per-body accumulation of body-particle soft contact forces and Hessians on rigid bodies.
 
-    This kernel resolves contact geometry and relative displacement inline, then
-    calls ``_compute_body_particle_contact_force`` for the pure force law.
-    Body surface velocity uses the displacement-based path (body_q_prev).
+    Handles both contact kinds from one per-body adjacency list, dispatching on each record's
+    -1-padded ``soft_contact_indices``: a particle record ``(p, -1, -1)`` resolves single-particle
+    geometry inline; an edge/face record evaluates the barycentric contact point over its 2-3 soft
+    particles via ``_eval_soft_ef_contact``. Both apply the shared force law
+    ``_compute_body_particle_contact_force`` and the equal-and-opposite body reaction. Body surface
+    velocity uses the displacement-based path (body_q_prev).
 
     Notes:
       - Only dynamic bodies (inv_mass > 0) are updated.
@@ -2898,7 +3202,7 @@ def accumulate_body_particle_contacts_per_body(
     if num_contacts > body_particle_contact_buffer_pre_alloc:
         num_contacts = body_particle_contact_buffer_pre_alloc
 
-    max_contacts = body_particle_contact_count[0]
+    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
 
     X_wb = body_q[body_id]
     X_wb_prev = body_q_prev[body_id]
@@ -2913,59 +3217,88 @@ def accumulate_body_particle_contacts_per_body(
     i = thread_id_within_body
     while i < num_contacts:
         contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
+        i += _NUM_CONTACT_THREADS_PER_BODY
         if contact_idx >= max_contacts:
-            i += _NUM_CONTACT_THREADS_PER_BODY
             continue
 
-        particle_idx = body_particle_contact_particle[contact_idx]
-        if particle_idx < 0:
-            i += _NUM_CONTACT_THREADS_PER_BODY
-            continue
+        f_soft = wp.vec3(0.0)
+        h_soft = wp.mat33(0.0)
+        cp_world = wp.vec3(0.0)
 
-        particle_pos = particle_q[particle_idx]
-        cp_local = body_particle_contact_body_pos[contact_idx]
-        cp_world = wp.transform_point(X_wb, cp_local)
-        n = body_particle_contact_normal[contact_idx]
-        radius = particle_radius[particle_idx]
-        s_idx = body_particle_contact_shape[contact_idx]
-        margin = shape_margin[s_idx] if s_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
-        penetration_depth = -(wp.dot(n, particle_pos - cp_world) - radius - margin)
+        corners = soft_contact_indices[contact_idx]
 
-        if penetration_depth <= 0.0:
-            i += _NUM_CONTACT_THREADS_PER_BODY
-            continue
+        if corners[1] < 0:
+            # Particle-vs-surface (p, -1, -1): single-particle geometry, resolved inline.
+            particle_idx = corners[0]
+            if particle_idx < 0:
+                continue
 
-        bx_prev = wp.transform_point(X_wb_prev, cp_local)
-        bv = (cp_world - bx_prev) / dt + wp.transform_vector(X_wb, body_particle_contact_body_vel[contact_idx])
-        dx = particle_pos - particle_q_prev[particle_idx]
-        relative_translation = dx - bv * dt
+            particle_pos = particle_q[particle_idx]
+            cp_local = body_particle_contact_body_pos[contact_idx]
+            cp_world = wp.transform_point(X_wb, cp_local)
+            n = body_particle_contact_normal[contact_idx]
+            radius = particle_radius[particle_idx]
+            s_idx = body_particle_contact_shape[contact_idx]
+            margin = shape_margin[s_idx] if s_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
+            penetration_depth = -(wp.dot(n, particle_pos - cp_world) - radius - margin)
+            if penetration_depth <= 0.0:
+                continue
 
-        force_on_particle, hessian_particle = _compute_body_particle_contact_force(
-            penetration_depth,
-            n,
-            relative_translation,
-            body_particle_contact_penalty_k[contact_idx],
-            body_particle_contact_material_kd[contact_idx],
-            body_particle_contact_material_mu[contact_idx],
-            friction_epsilon,
-            dt,
-        )
+            bx_prev = wp.transform_point(X_wb_prev, cp_local)
+            bv = (cp_world - bx_prev) / dt + wp.transform_vector(X_wb, body_particle_contact_body_vel[contact_idx])
+            dx = particle_pos - particle_q_prev[particle_idx]
+            relative_translation = dx - bv * dt
 
-        f_body = -force_on_particle
+            f_soft, h_soft = _compute_body_particle_contact_force(
+                penetration_depth,
+                n,
+                relative_translation,
+                body_particle_contact_penalty_k[contact_idx],
+                body_particle_contact_material_kd[contact_idx],
+                body_particle_contact_material_mu[contact_idx],
+                friction_epsilon,
+                dt,
+            )
+        else:
+            # Edge/face: barycentric contact point over the record's 2-3 soft particles. Uses the
+            # shared force law via _eval_soft_ef_contact -- the same evaluation as the particle side.
+            bary = soft_contact_barycentric[contact_idx]
+            f_soft, h_soft, cp_world = _eval_soft_ef_contact(
+                contact_idx,
+                corners,
+                bary,
+                particle_q,
+                particle_q_prev,
+                particle_radius,
+                body_particle_contact_penalty_k[contact_idx],
+                body_particle_contact_material_kd[contact_idx],
+                body_particle_contact_material_mu[contact_idx],
+                friction_epsilon,
+                shape_body,
+                body_q,
+                body_q_prev,
+                body_qd,
+                body_com,
+                body_particle_contact_shape,
+                body_particle_contact_body_pos,
+                body_particle_contact_body_vel,
+                body_particle_contact_normal,
+                shape_margin,
+                dt,
+            )
 
+        # Equal-and-opposite reaction on the body at the rigid contact point (shared by both kinds).
+        f_body = -f_soft
         r = cp_world - com_world
         tau_body = wp.cross(r, f_body)
-
         r_skew = wp.skew(r)
-        r_skew_T_K = wp.transpose(r_skew) * hessian_particle
+        r_skew_T_K = wp.transpose(r_skew) * h_soft
 
         force_acc += f_body
         torque_acc += tau_body
-        h_ll_acc += hessian_particle
+        h_ll_acc += h_soft
         h_al_acc += -r_skew_T_K
         h_aa_acc += r_skew_T_K * r_skew
-
-        i += _NUM_CONTACT_THREADS_PER_BODY
 
     wp.atomic_add(body_forces, body_id, force_acc)
     wp.atomic_add(body_torques, body_id, torque_acc)
@@ -3778,10 +4111,11 @@ def update_duals_body_body_contacts(
 @wp.kernel
 def update_duals_body_particle_contacts(
     body_particle_contact_count: wp.array[int],
-    body_particle_contact_particle: wp.array[int],
+    soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
     body_particle_contact_normal: wp.array[wp.vec3],
+    soft_contact_barycentric: wp.array[wp.vec3],
     particle_q: wp.array[wp.vec3],
     particle_radius: wp.array[float],
     shape_body: wp.array[int],
@@ -3794,14 +4128,16 @@ def update_duals_body_particle_contacts(
     """
     Update AVBD penalty parameters for body-particle soft contacts (per-iteration).
 
-    Ramps each contact's penalty by beta * penetration, clamped to the
-    per-contact material stiffness ceiling.
+    Ramps each contact's penalty by beta * penetration, clamped to the per-contact material
+    stiffness ceiling. Covers all soft contacts via the record's -1-padded corners: a particle
+    record uses the particle position; an edge/face record uses the barycentric point over its
+    2-3 soft particles -- matching _eval_soft_ef_contact.
     """
     idx = wp.tid()
     if idx >= body_particle_contact_count[0]:
         return
 
-    particle_idx = body_particle_contact_particle[idx]
+    corners = soft_contact_indices[idx]
     shape_idx = body_particle_contact_shape[idx]
     body_idx = shape_body[shape_idx] if shape_idx >= 0 else -1
 
@@ -3812,12 +4148,30 @@ def update_duals_body_particle_contacts(
         X_wb = body_q[body_idx]
 
     cp_world = wp.transform_point(X_wb, body_particle_contact_body_pos[idx])
-    particle_pos = particle_q[particle_idx]
-    radius = particle_radius[particle_idx]
     margin = shape_margin[shape_idx] if shape_idx >= 0 and shape_margin.shape[0] > 0 else 0.0
     n = body_particle_contact_normal[idx]
 
-    penetration = -(wp.dot(n, particle_pos - cp_world) - radius - margin)
+    if corners[1] < 0:
+        # Particle contact (p, -1, -1).
+        p = corners[0]
+        contact_pos = particle_q[p]
+        radius = particle_radius[p]
+    else:
+        # Edge/face: barycentric point + max radius over the record's valid corners.
+        bary = soft_contact_barycentric[idx]
+        v0 = corners[0]
+        c1 = corners[1]
+        c2 = corners[2]
+        contact_pos = bary[0] * particle_q[v0]
+        radius = particle_radius[v0]
+        if c1 >= 0:
+            contact_pos += bary[1] * particle_q[c1]
+            radius = wp.max(radius, particle_radius[c1])
+        if c2 >= 0:
+            contact_pos += bary[2] * particle_q[c2]
+            radius = wp.max(radius, particle_radius[c2])
+
+    penetration = -(wp.dot(n, contact_pos - cp_world) - radius - margin)
     penetration = wp.max(0.0, penetration)
 
     k = body_particle_contact_penalty_k[idx]
@@ -3869,9 +4223,9 @@ def update_body_velocity(
             contacts carry DEADZONE but not ANCHOR.
         stick_freeze_translation_eps: Translation deadzone [m] for anti-creep snapping.
         stick_freeze_angular_eps: Angular deadzone [rad] for anti-creep snapping.
-        body_q_prev: Previous body transforms (input/output, advanced to current
-            pose for next step). For kinematic bodies set body_q. For dynamic
-            teleportation also set body_q_prev and body_qd.
+        body_q_prev: Previous body transforms (input/output), advanced to the
+            current pose for the next step. ``SolverVBD.reset()`` is the supported
+            way to establish a new baseline after a discontinuous pose change.
         body_qd: Output body velocities (spatial vectors, world frame), bound to state_out.
         body_qd_mirror: Output body velocities, bound to state_in. Mirrors body_qd so the
             next step's forward integrator sees the finalized velocity even when the

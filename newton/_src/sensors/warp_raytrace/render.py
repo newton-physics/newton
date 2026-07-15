@@ -52,7 +52,34 @@ def create_kernel(
             clear_albedo=_srgb_packed_rgba_to_linear(clear_data.clear_albedo),
         )
 
-    @wp.kernel(enable_backward=False)
+    @wp.func
+    def write_clear_outputs(
+        out_index: wp.int32,
+        out_color: wp.array[wp.uint32],
+        out_depth: wp.array[wp.float32],
+        out_shape_index: wp.array[wp.uint32],
+        out_normal: wp.array[wp.vec3f],
+        out_albedo: wp.array[wp.uint32],
+        out_hdr_color: wp.array[wp.vec3f],
+    ):
+        if wp.static(state.render_color):
+            out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
+        if wp.static(state.render_albedo):
+            out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
+        if wp.static(state.render_hdr_color):
+            out_hdr_color[out_index] = wp.vec3f(0.0)
+        if wp.static(state.render_depth):
+            out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
+        if wp.static(state.render_normal):
+            out_normal[out_index] = wp.vec3f(
+                wp.static(clear_data.clear_normal[0]),
+                wp.static(clear_data.clear_normal[1]),
+                wp.static(clear_data.clear_normal[2]),
+            )
+        if wp.static(state.render_shape_index):
+            out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
+
+    @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
     def render_megakernel(
         # Model and Config
         world_count: wp.int32,
@@ -132,7 +159,13 @@ def create_kernel(
         camera_transform = camera_transforms[camera_index, world_index]
         ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_index, py, px, 0])
         ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
-        camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
+        camera_forward = wp.vec3f(0.0)
+        if wp.static(state.num_gaussians > 0):
+            camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
+
+        if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
+            write_clear_outputs(out_index, out_color, out_depth, out_shape_index, out_normal, out_albedo, out_hdr_color)
+            return
 
         closest_hit = raytrace_closest_hit(
             bvh_shapes_size,
@@ -160,22 +193,7 @@ def create_kernel(
         )
 
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
-            if wp.static(state.render_color):
-                out_color[out_index] = wp.uint32(wp.static(clear_data.clear_color))
-            if wp.static(state.render_albedo):
-                out_albedo[out_index] = wp.uint32(wp.static(clear_data.clear_albedo))
-            if wp.static(state.render_hdr_color):
-                out_hdr_color[out_index] = wp.vec3f(0.0)
-            if wp.static(state.render_depth):
-                out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
-            if wp.static(state.render_normal):
-                out_normal[out_index] = wp.vec3f(
-                    wp.static(clear_data.clear_normal[0]),
-                    wp.static(clear_data.clear_normal[1]),
-                    wp.static(clear_data.clear_normal[2]),
-                )
-            if wp.static(state.render_shape_index):
-                out_shape_index[out_index] = wp.uint32(wp.static(clear_data.clear_shape_index))
+            write_clear_outputs(out_index, out_color, out_depth, out_shape_index, out_normal, out_albedo, out_hdr_color)
             return
 
         if wp.static(state.render_depth):
@@ -195,9 +213,10 @@ def create_kernel(
             return
 
         is_gaussian = wp.bool(False)
-        if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-            if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
-                is_gaussian = wp.bool(True)
+        if wp.static(state.num_gaussians > 0):
+            if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
+                if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
+                    is_gaussian = wp.bool(True)
 
         albedo_color = wp.vec3f(0.0)
 

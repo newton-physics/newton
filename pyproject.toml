@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.4.0.dev0"
+version = "1.5.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -36,7 +36,7 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp~=3.10.0,>=3.10.0.1",  # MuJoCo, warp-accelerated
+    "mujoco-warp~=3.10.0,>=3.10.0.2",  # MuJoCo, warp-accelerated
     "mujoco~=3.10.0",       # MuJoCo physics engine
 ]
 
@@ -66,7 +66,7 @@ importers = [
     "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.3.1",
+    "newton-usd-schemas>=0.4.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
