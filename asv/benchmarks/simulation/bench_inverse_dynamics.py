@@ -40,7 +40,7 @@ class _InverseDynamicsBenchmark:
         self.state = self.model.state()
         set_default_pose(self.model, self.state)
 
-        self.inverse_dynamics = self.model.inverse_dynamics()
+        self.inverse_dynamics = self.model.inverse_dynamics_outputs()
 
         # Capture one full M(q) + g(q) + C(q, q_dot)*q_dot evaluation into a
         # CUDA graph so the timed inner loop is just graph replays.
@@ -48,7 +48,7 @@ class _InverseDynamicsBenchmark:
             newton.eval_inverse_dynamics(
                 self.model,
                 self.state,
-                newton.InverseDynamics.EvalType.ALL,
+                newton.InverseDynamicsOutputs.EvalType.ALL,
                 self.inverse_dynamics,
             )
         self.eval_graph = cap.graph
@@ -75,11 +75,8 @@ class _InverseDynamicsBenchmark:
             newton.eval_inverse_dynamics_force(
                 self.model,
                 self.state,
-                self.inverse_dynamics.mass_matrix,
+                self.inverse_dynamics,
                 self.qddot,
-                self.inverse_dynamics.coriolis_force,
-                self.inverse_dynamics.gravity_force,
-                self.inverse_dynamics.tau,
             )
         self.force_graph = cap_force.graph
 

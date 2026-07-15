@@ -14,12 +14,13 @@ from warp.types import is_array
 
 from ..sim import (
     Control,
-    InverseDynamics,
+    InverseDynamicsOutputs,
     JointType,
     Model,
     State,
     eval_fk,
     eval_inverse_dynamics,
+    eval_inverse_dynamics_force,
     eval_jacobian,
     eval_mass_matrix,
 )
@@ -1759,8 +1760,8 @@ class ArticulationView:
     def eval_inverse_dynamics(
         self,
         state: State,
-        eval_type: InverseDynamics.EvalType,
-        inverse_dynamics: InverseDynamics,
+        eval_type: InverseDynamicsOutputs.EvalType,
+        outputs: InverseDynamicsOutputs,
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
         """Compute inverse-dynamics quantities for articulations in this view.
@@ -1768,17 +1769,19 @@ class ArticulationView:
         Forwards to :func:`~newton.eval_inverse_dynamics` with an
         articulation mask derived from this view (combined with the
         optional view-local ``mask``). Output buffers in
-        ``inverse_dynamics`` are sized for the whole model: entries
+        ``outputs`` are sized for the whole model: entries
         belonging to articulations outside the view (or outside the
         sub-selection) are written as zero, matching the convention
         used by :meth:`eval_mass_matrix`.
+
+        .. experimental::
 
         Args:
             state: The state containing the current generalized
                 coordinates and velocities. ``state.body_q`` must
                 already reflect ``state.joint_q``.
             eval_type: Bitmask selecting which quantities to compute.
-            inverse_dynamics: Output container whose buffers are
+            outputs: Output container whose buffers are
                 written in place; also holds the internal scratch.
             mask: Optional mask of articulations in this
                 ArticulationView (all by default). Either 1-D
@@ -1787,7 +1790,36 @@ class ArticulationView:
                 articulations per world.
         """
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        eval_inverse_dynamics(self.model, state, eval_type, inverse_dynamics, mask=articulation_mask)
+        eval_inverse_dynamics(self.model, state, eval_type, outputs, mask=articulation_mask)
+
+    def eval_inverse_dynamics_force(
+        self,
+        state: State,
+        outputs: InverseDynamicsOutputs,
+        qddot: wp.array[wp.float32],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Compute inverse-dynamics joint forces for articulations in this view.
+
+        The mass matrix and bias forces are read from ``outputs`` and the
+        resulting joint forces are written to :attr:`InverseDynamicsOutputs.tau`.
+        Entries outside this view or the optional sub-selection are zeroed.
+
+        .. experimental::
+
+        Args:
+            state: State providing body transforms consistent with the values
+                stored in ``outputs``.
+            outputs: Inverse-dynamics output buffers populated by
+                :meth:`eval_inverse_dynamics`.
+            qddot: Joint accelerations [m/s^2 or rad/s^2], shape
+                ``(joint_dof_count,)``, dtype float.
+            mask: Optional mask of articulations in this ArticulationView.
+                Either 1-D ``[world_count]`` or 2-D
+                ``[world_count, count_per_world]``.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        eval_inverse_dynamics_force(self.model, state, outputs, qddot, mask=articulation_mask)
 
     # ========================================================================================
     # Actuator parameter access

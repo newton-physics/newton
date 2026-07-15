@@ -35,7 +35,7 @@ newton
    Gaussian
    GeoType
    Heightfield
-   InverseDynamics
+   InverseDynamicsOutputs
    JointTargetMode
    JointType
    Mesh
