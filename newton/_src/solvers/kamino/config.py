@@ -948,3 +948,69 @@ class ForwardKinematicsSolverConfig:
     def __post_init__(self):
         """Post-initialization to validate configurations."""
         self.validate()
+
+
+@dataclass
+class MaterialManagerConfig(ConfigBase):
+    """
+    A container to hold configurations for the internal material manager and material property mixing.
+    """
+
+    friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average"
+    """
+    The mixing mode to use for friction.\n
+    Defaults to `average`.
+    """
+
+    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min"
+    """
+    The mixing mode to use for restitution.\n
+    Defaults to `min`.
+    """
+
+    @override
+    @staticmethod
+    def register_custom_attributes(builder: ModelBuilder) -> None:
+        """
+        Registers custom attributes for the MaterialManagerConfig with the given builder.
+
+        Note: Currently, this class does not have any custom attributes registered,
+        as only those supported by the Kamino USD scene API have been included. More
+        will be added in the future as latter is being developed.
+
+        Args:
+            builder: The model builder instance with which to register the custom attributes.
+        """
+        pass  # TODO: Add custom attributes for the MaterialManager when supported by the Kamino USD scene API
+
+    @override
+    @staticmethod
+    def from_model(model: Model, **kwargs: dict[str, Any]) -> MaterialManagerConfig:
+        """
+        Creates a :class:`MaterialManagerConfig` by attempting to
+        parse custom attributes from a :class:`Model` if available.
+
+        Args:
+            model: The Newton model from which to parse configurations.
+        """
+        # Return the fully constructed config with configurations
+        # parsed from the model's custom attributes if available,
+        # otherwise using defaults or provided kwargs.
+        return MaterialManagerConfig(**kwargs)
+
+    @override
+    def validate(self) -> None:
+        """
+        Validates the current values held by the :class:`MaterialManagerConfig` instance.
+        """
+        # Import here to avoid module-level imports and circular dependencies
+        from ._src.core.materials import MaterialMixMode  # noqa: PLC0415
+
+        # Ensure that the enum-valued parameters are valid options
+        MaterialMixMode.from_string(self.friction_mix_mode)
+        MaterialMixMode.from_string(self.restitution_mix_mode)
+
+    @override
+    def __post_init__(self):
+        """Post-initialization to validate configurations."""
+        self.validate()

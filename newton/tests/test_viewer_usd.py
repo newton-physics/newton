@@ -40,7 +40,7 @@ class TestViewerUSD(unittest.TestCase):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()
         self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
-        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=False)
         self.addCleanup(viewer.close)
         self.addCleanup(lambda: setattr(viewer, "output_path", ""))
         return viewer
@@ -73,7 +73,7 @@ class TestViewerUSD(unittest.TestCase):
         self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
 
         # Create first viewer and write some data into the stage.
-        viewer1 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        viewer1 = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=False)
         self.addCleanup(viewer1.close)
         self.addCleanup(lambda: setattr(viewer1, "output_path", ""))
 
@@ -88,7 +88,7 @@ class TestViewerUSD(unittest.TestCase):
 
         # Create second viewer for the same output path; this should reuse the same
         # underlying layer and clear any previous contents.
-        viewer2 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        viewer2 = ViewerUSD(output_path=temp_file.name, num_frames=1, points_as_spheres=False)
         self.addCleanup(viewer2.close)
         self.addCleanup(lambda: setattr(viewer2, "output_path", ""))
 
@@ -137,6 +137,57 @@ class TestViewerUSD(unittest.TestCase):
 
         self.assertEqual(interpolation, UsdGeom.Tokens.constant)
         np.testing.assert_allclose(widths, np.array([0.2], dtype=np.float32), atol=1e-6)
+
+    def test_log_points_hides_existing_prim_with_empty_points_and_hidden(self):
+        viewer = self._make_viewer()
+
+        viewer.begin_frame(0.0)
+        points = wp.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=wp.vec3)
+        path = viewer.log_points("/particles", points, radii=0.01)
+
+        points_prim = UsdGeom.Points.Get(viewer.stage, path)
+        self.assertEqual(
+            points_prim.GetVisibilityAttr().Get(viewer._frame_index),
+            UsdGeom.Tokens.inherited,
+        )
+
+        viewer.begin_frame(1.0 / 60.0)
+        empty = wp.empty(0, dtype=wp.vec3)
+        viewer.log_points("/particles", empty, hidden=True)
+
+        self.assertEqual(
+            points_prim.GetVisibilityAttr().Get(viewer._frame_index),
+            UsdGeom.Tokens.invisible,
+        )
+
+    def test_log_points_renders_as_point_instancer_by_default(self):
+        temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
+        temp_file.close()
+        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
+        viewer = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        self.addCleanup(viewer.close)
+        self.addCleanup(lambda: setattr(viewer, "output_path", ""))
+
+        viewer.begin_frame(0.0)
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        path = viewer.log_points("/spheres", points, radii=0.05)
+
+        instancer = UsdGeom.PointInstancer.Get(viewer.stage, path)
+        self.assertTrue(instancer)
+        self.assertFalse(UsdGeom.Points.Get(viewer.stage, path))
+        sphere = UsdGeom.Sphere.Get(viewer.stage, path.AppendChild("sphere"))
+        self.assertTrue(sphere)
+        self.assertEqual(sphere.GetRadiusAttr().Get(), 1.0)
+
+        scales = np.asarray(instancer.GetScalesAttr().Get(viewer._frame_index), dtype=np.float32)
+        np.testing.assert_allclose(scales, np.full((3, 3), 0.05, dtype=np.float32), atol=1e-6)
+
+        hidden_path = viewer.log_points("/spheres", None)
+        self.assertEqual(hidden_path, path)
+        self.assertEqual(instancer.GetVisibilityAttr().Get(viewer._frame_index), UsdGeom.Tokens.invisible)
 
     def test_named_layers_write_distinct_prim_namespaces(self):
         viewer = self._make_viewer()

@@ -118,7 +118,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase="explicit",
-            shape_pairs_filtered=self._payload_ground_shape_pairs(),
+            shape_pairs_filtered=self._ground_shape_pairs(),
         )
         self.contacts = self.collision_pipeline.contacts()
         self.solver.prepare_contacts(self.contacts)
@@ -307,7 +307,6 @@ class Example:
                     ),
                     bodies=self.franka_bodies,
                     joints=self.franka_joints,
-                    shapes=self.franka_shapes,
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
@@ -320,7 +319,6 @@ class Example:
                     ),
                     bodies=self.payload_bodies,
                     joints=self.payload_joints,
-                    shapes=self.payload_shapes + self.ground_shapes,
                 ),
             ],
             coupling=SolverCoupledProxy.Config(
@@ -341,16 +339,16 @@ class Example:
             ),
         )
 
-    def _payload_ground_shape_pairs(self) -> wp.array:
-        payload_shapes = set(self.payload_shapes)
+    def _ground_shape_pairs(self) -> wp.array:
+        dynamic_shapes = set(self.franka_shapes) | set(self.payload_shapes)
         ground_shapes = set(self.ground_shapes)
         pairs = [
             (int(a), int(b))
             for a, b in self.model.shape_contact_pairs.numpy()
-            if ({int(a), int(b)} & payload_shapes) and ({int(a), int(b)} & ground_shapes)
+            if ({int(a), int(b)} & dynamic_shapes) and ({int(a), int(b)} & ground_shapes)
         ]
         if not pairs:
-            raise RuntimeError("No cable-ground contact pairs were generated")
+            raise RuntimeError("No robot- or cable-ground contact pairs were generated")
         return wp.array(np.asarray(pairs, dtype=np.int32), dtype=wp.vec2i, device=self.model.device)
 
     # ------------------------------------------------------------------

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import math
 import os
 import tempfile
@@ -2238,8 +2239,8 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         self._assert_armature_matches_flags(model, solver)
 
     def test_fixed_root_attached_to_world_uses_mocap_and_tracks_pose(self):
-        for is_kinematic in (False, True):
-            with self.subTest(is_kinematic=is_kinematic):
+        for root_joint_kind, is_kinematic in itertools.product(("fixed", "locked_d6"), (False, True)):
+            with self.subTest(root_joint_kind=root_joint_kind, is_kinematic=is_kinematic):
                 builder = newton.ModelBuilder()
                 root = builder.add_link(
                     mass=1.0,
@@ -2248,7 +2249,11 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     is_kinematic=is_kinematic,
                     label="fixed_root",
                 )
-                root_joint = builder.add_joint_fixed(parent=-1, child=root)
+                if root_joint_kind == "fixed":
+                    root_joint = builder.add_joint_fixed(parent=-1, child=root)
+                else:
+                    # zero-DOF D6, as imported from a generic USD PhysicsJoint
+                    root_joint = builder.add_joint_d6(parent=-1, child=root)
                 builder.add_articulation([root_joint])
 
                 model = builder.finalize(requires_grad=False)
@@ -2323,6 +2328,64 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     atol=1e-6,
                     err_msg=f"xquat should track the fixed-root {body_kind} transform",
                 )
+
+    def test_world_attached_root_multi_world_placement(self):
+        """Replicated world-attached roots must sit at each world's own root transform."""
+        world_count = 3
+        for root_joint_kind in ("fixed", "locked_d6"):
+            with self.subTest(root_joint_kind=root_joint_kind):
+                template = newton.ModelBuilder()
+                root = template.add_link(
+                    mass=1.0,
+                    com=wp.vec3(0.0, 0.0, 0.0),
+                    inertia=wp.mat33(np.eye(3)),
+                    label="root",
+                )
+                root_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
+                if root_joint_kind == "fixed":
+                    root_joint = template.add_joint_fixed(parent=-1, child=root, parent_xform=root_xform)
+                else:
+                    # zero-DOF D6, as imported from a generic USD PhysicsJoint
+                    root_joint = template.add_joint_d6(parent=-1, child=root, parent_xform=root_xform)
+                link = template.add_link(
+                    mass=1.0,
+                    com=wp.vec3(0.0, 0.0, 0.0),
+                    inertia=wp.mat33(np.eye(3)),
+                    label="link",
+                )
+                hinge = template.add_joint_revolute(root, link, axis=wp.vec3(0.0, 1.0, 0.0))
+                template.add_articulation([root_joint, hinge])
+
+                builder = newton.ModelBuilder()
+                builder.replicate(template, world_count, spacing=(2.0, 0.0, 0.0))
+                model = builder.finalize(requires_grad=False)
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+                self.assertEqual(solver.mj_model.nmocap, 1, "World-attached root should be exported as mocap")
+
+                # Refresh derived poses from the per-world root placement.
+                solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+
+                joint_parent = model.joint_parent.numpy()
+                joint_world = model.joint_world.numpy()
+                joint_child = model.joint_child.numpy()
+                joint_X_p = model.joint_X_p.numpy()
+                mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+                xpos = solver.mjw_data.xpos.numpy()
+
+                root_joints = np.where(joint_parent == -1)[0]
+                self.assertEqual(len(root_joints), world_count)
+                for j in root_joints:
+                    world = int(joint_world[j])
+                    newton_root = int(joint_child[j])
+                    matching = np.where(mjc_body_to_newton[world] == newton_root)[0]
+                    self.assertEqual(len(matching), 1, "Expected a unique MuJoCo body for the root")
+                    np.testing.assert_allclose(
+                        xpos[world, matching[0]],
+                        joint_X_p[j][:3],
+                        atol=1e-6,
+                        err_msg=f"world {world} root must sit at its own joint_X_p, not the template world's",
+                    )
 
 
 class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
