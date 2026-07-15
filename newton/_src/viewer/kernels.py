@@ -93,9 +93,7 @@ def apply_picking_force_kernel(
     pick_vel = velocity_at_point(body_qd[pick_body], offset)
 
     # Command an acceleration of the pick point so gains are mass-independent,
-    # then scale by the effective mass (total articulation mass for linked
-    # bodies, own mass for free bodies) so picking a light robot link still
-    # allows enough force to move the whole chain.
+    # then scale by the body's effective mass.
     pick_accel = pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (
         pick_state[0].pick_damping * pick_vel
     )

@@ -32,7 +32,7 @@ class Picking:
         world_offsets: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
-        Initializes the picking system.
+        Initializes the picking system. All parameters are fixed at construction.
 
         Args:
             model: The model to pick from.
@@ -77,39 +77,7 @@ class Picking:
         self.pick_dist = 0.0
         self.picking_active = False
 
-        # Pre-compute effective mass per body for picking force clamping.
-        # For articulated bodies, use the total articulation mass so that
-        # picking a light link (e.g. fingertip) still allows enough force
-        # to move the whole chain. Free bodies use their own mass.
         self._pick_effective_mass = self._compute_effective_mass(model)
-
-    # Gains live in the device-side pick state so they can be tuned at runtime
-    # without recapturing CUDA graphs; these properties are the single source of truth.
-    def _get_pick_state_field(self, field: str) -> float:
-        return float(self.pick_state.numpy()[0][field])
-
-    def _set_pick_state_field(self, field: str, value: float) -> None:
-        pick_state_np = self.pick_state.numpy()
-        pick_state_np[0][field] = value
-        self.pick_state.assign(pick_state_np)
-
-    @property
-    def pick_stiffness(self) -> float:
-        """Stiffness of the picking spring, in acceleration per unit displacement [1/s^2]."""
-        return self._get_pick_state_field("pick_stiffness")
-
-    @pick_stiffness.setter
-    def pick_stiffness(self, value: float) -> None:
-        self._set_pick_state_field("pick_stiffness", value)
-
-    @property
-    def pick_damping(self) -> float:
-        """Damping of the picking spring, in acceleration per unit pick-point velocity [1/s]."""
-        return self._get_pick_state_field("pick_damping")
-
-    @pick_damping.setter
-    def pick_damping(self, value: float) -> None:
-        self._set_pick_state_field("pick_damping", value)
 
     def _apply_picking_force(self, state: newton.State) -> None:
         """
