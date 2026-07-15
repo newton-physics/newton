@@ -2680,10 +2680,8 @@ class ModelBuilder:
         attribute_specs.pop("particle_q")
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
-            # float64 keeps builder-level coordinates exact; finalize() narrows to float32.
-            particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float64), (world_count, 1))
-            if np.any(offsets):
-                particle_q += np.repeat(offsets, counts["particle"], axis=0)
+            particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
+            particle_q += np.repeat(offsets, counts["particle"], axis=0)
             self.particle_q.extend(particle_q.tolist())
 
         shape_starts = starts("shape")
@@ -2718,7 +2716,7 @@ class ModelBuilder:
         attribute_specs.pop("joint_q")
         joint_X_p_start = len(self.joint_X_p)
         self.joint_X_p.extend(source_list("joint_X_p") * world_count)
-        joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float64), world_count)
+        joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)

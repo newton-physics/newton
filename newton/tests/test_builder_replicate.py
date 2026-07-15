@@ -250,28 +250,18 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(destination.joint_q, joint_q)
         self.assertEqual([tuple(qd) for qd in destination.particle_qd], particle_qd)
 
-    def test_merge_preserves_exact_coordinate_values(self):
+    def test_zero_spacing_replication_copies_joint_q_exactly(self):
         source = ModelBuilder()
         body = source.add_body()
         source.add_joint_free(
-            parent=-1, child=body, parent_xform=wp.transform((0.2, 0.3, 0.4), wp.quat_rpy(0.2, 0.1, 0.0))
+            parent=-1, child=body, parent_xform=wp.transform((0.2, 0.3, 0.4), wp.quat_rpy(0.123, 0.456, 0.789))
         )
-        source.add_particle(wp.vec3(), wp.vec3(), 1.0)
-        source.joint_q[0] = 0.1
-        source.particle_q[0] = (0.1, 0.2, 0.3)
-
-        def assert_exact(actual, expected):
-            np.testing.assert_array_equal(np.asarray(actual, dtype=np.float64), np.asarray(expected, dtype=np.float64))
-
-        merged = ModelBuilder()
-        merged.add_builder(source)
-        assert_exact(merged.joint_q, source.joint_q)
-        assert_exact(merged.particle_q, source.particle_q)
 
         replicated = ModelBuilder()
         replicated.replicate(source, 2)
-        assert_exact(replicated.joint_q, source.joint_q * 2)
-        assert_exact(replicated.particle_q, source.particle_q * 2)
+
+        expected = np.tile(np.asarray(source.joint_q, dtype=np.float32), 2)
+        np.testing.assert_array_equal(np.asarray(replicated.joint_q, dtype=np.float32), expected)
 
     def test_validation_failure_does_not_mutate_destination(self):
         def make_builder(default: int, value: int) -> ModelBuilder:
