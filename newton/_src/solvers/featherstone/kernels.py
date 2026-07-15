@@ -1409,9 +1409,11 @@ def eval_rigid_tau(
             tau,
         )
 
-        # update parent forces, todo: check that this is valid for the backwards pass
+        # Each articulation is traversed serially by one thread, so an ordinary
+        # read-modify-write keeps the accumulated wrench visible to the next
+        # iteration of the backward pass.
         if parent >= 0:
-            wp.atomic_add(body_ft_s, parent, f_s)
+            body_ft_s[parent] = body_ft_s[parent] + f_s
 
 
 # builds spatial Jacobian J which is an (joint_count*6)x(dof_count) matrix

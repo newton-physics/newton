@@ -30,7 +30,7 @@ from ..core.data import DataKamino
 from ..core.math import contact_wrench_matrix_from_points
 from ..core.model import ModelKamino
 from ..geometry.contacts import ContactsKamino, ContactsKaminoData
-from ..geometry.keying import KeySorter, binary_search_find_range_start, make_bitmask
+from ..geometry.keying import KeySorter, binary_search_find_range_start, make_bitmask, uint64_sentinel_value
 from ..kinematics.limits import LimitsKamino, LimitsKaminoData
 from ..solvers.padmm.math import project_to_coulomb_cone
 
@@ -55,6 +55,19 @@ wp.set_module_options({"enable_backward": False})
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def _invalidate_keys_from_select_worlds(
+    world_id: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    world_mask: wp.array[wp.bool],
+):
+    """Reset contact/limit keys to the sentinel value in select worlds."""
+    tid = wp.tid()  # Contact or limit id
+    wid = world_id[tid]
+    if world_mask[wid]:
+        keys[tid] = uint64_sentinel_value()
 
 
 @wp.kernel
@@ -786,6 +799,7 @@ class WarmstarterLimits:
                 key=wp.zeros_like(limits.key),
                 velocity=wp.zeros_like(limits.velocity),
                 reaction=wp.zeros_like(limits.reaction),
+                wid=wp.zeros_like(limits.wid),
             )
 
         # Create a key sorter that can handle the maximum number of contacts
@@ -843,17 +857,31 @@ class WarmstarterLimits:
         wp.copy(self._cache.key, limits.key)
         wp.copy(self._cache.velocity, limits.velocity)
         wp.copy(self._cache.reaction, limits.reaction)
+        wp.copy(self._cache.wid, limits.wid)
 
-    def reset(self):
+    def reset(self, world_mask: wp.array[wp.bool] | None = None):
         """
-        Resets the warmstarter's internal cache by zeroing out all data.
+        Resets the warmstarter's internal cache, for all or a subset of the worlds.
+
+        Args:
+            world_mask: If provided, cached data is invalidated for designated worlds (`True` in the mask),
+                so that new active limits in these worlds won't match any cached active limit.
+                Otherwise, the entire cache is zeroed out.
         """
         if self._cache is None:
             return
-        self._cache.model_active_limits.zero_()
-        self._cache.key.fill_(make_bitmask(63))
-        self._cache.reaction.zero_()
-        self._cache.velocity.zero_()
+        if world_mask is not None:
+            wp.launch(
+                _invalidate_keys_from_select_worlds,
+                dim=self._cache.model_max_limits_host,
+                inputs=[self._cache.wid, self._cache.key, world_mask],
+                device=self.device,
+            )
+        else:
+            self._cache.model_active_limits.zero_()
+            self._cache.key.fill_(make_bitmask(63))
+            self._cache.reaction.zero_()
+            self._cache.velocity.zero_()
 
 
 class WarmstarterContacts:
@@ -972,6 +1000,7 @@ class WarmstarterContacts:
                 key=wp.zeros_like(contacts.key),
                 velocity=wp.zeros_like(contacts.velocity),
                 reaction=wp.zeros_like(contacts.reaction),
+                wid=wp.zeros_like(contacts.wid),
             )
 
         # Create a key sorter that can handle the maximum number of contacts
@@ -1077,18 +1106,32 @@ class WarmstarterContacts:
         wp.copy(self._cache.key, contacts.key)
         wp.copy(self._cache.velocity, contacts.velocity)
         wp.copy(self._cache.reaction, contacts.reaction)
+        wp.copy(self._cache.wid, contacts.wid)
 
-    def reset(self):
+    def reset(self, world_mask: wp.array[wp.bool] | None = None):
         """
-        Resets the warmstarter's internal cache by zeroing out all data.
+        Resets the warmstarter's internal cache, for all or a subset of the worlds.
+
+        Args:
+            world_mask: If provided, cached data is invalidated for designated worlds (`True` in the mask),
+                so that new contacts in these worlds won't match any cached contact.
+                Otherwise, the entire cache is zeroed out.
         """
         if self._cache is None or self._cache.model_active_contacts is None:
             return
-        self._cache.model_active_contacts.zero_()
-        self._cache.bid_AB.fill_(wp.vec2i(-1, -1))
-        self._cache.position_A.zero_()
-        self._cache.position_B.zero_()
-        self._cache.frame.zero_()
-        self._cache.key.fill_(make_bitmask(63))
-        self._cache.reaction.zero_()
-        self._cache.velocity.zero_()
+        if world_mask is not None:
+            wp.launch(
+                _invalidate_keys_from_select_worlds,
+                dim=self._cache.model_max_contacts_host,
+                inputs=[self._cache.wid, self._cache.key, world_mask],
+                device=self.device,
+            )
+        else:
+            self._cache.model_active_contacts.zero_()
+            self._cache.bid_AB.fill_(wp.vec2i(-1, -1))
+            self._cache.position_A.zero_()
+            self._cache.position_B.zero_()
+            self._cache.frame.zero_()
+            self._cache.key.fill_(make_bitmask(63))
+            self._cache.reaction.zero_()
+            self._cache.velocity.zero_()
