@@ -181,6 +181,17 @@ class SolverStyle3D(SolverBase):
             contacts: :class:`newton.Contacts` used for collision response.
             dt: Time step in seconds.
         """
+        # Model masses and flags may change between solver steps.
+        wp.copy(self._particle_flags, self.model.particle_flags)
+        if self.model.particle_count > 0:
+            wp.launch(
+                deactivate_zero_mass_particles_kernel,
+                dim=self.model.particle_count,
+                inputs=[self.model.particle_mass],
+                outputs=[self._particle_flags],
+                device=self.device,
+            )
+
         if self.collision is not None:
             self.collision.frame_begin(state_in.particle_q, state_in.particle_qd, dt)
 

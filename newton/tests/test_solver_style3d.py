@@ -85,10 +85,44 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
     np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
     solver_flags = solver._particle_flags.numpy()
     active = int(newton.ParticleFlags.ACTIVE)
-    proxy = int(newton.ParticleFlags.PROXY)
     test.assertTrue(np.all((solver_flags[:3] & active) != 0))
-    test.assertEqual(int(solver_flags[3]) & active, 0)
-    test.assertNotEqual(int(solver_flags[3]) & proxy, 0)
+    test.assertEqual(int(solver_flags[3]), 0)
+
+
+def test_solver_flags_track_runtime_model_changes(test, device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+
+    masses = model.particle_mass.numpy()
+    masses[0] = 0.0
+    model.particle_mass.assign(masses)
+    model_flags = model.particle_flags.numpy()
+    model_flags[1] = 0
+    model.particle_flags.assign(model_flags)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    solver.step(state_0, state_1, model.control(), model.contacts(), 0.01)
+
+    solver_flags = solver._particle_flags.numpy()
+    active = int(newton.ParticleFlags.ACTIVE)
+    test.assertEqual(int(solver_flags[0]), 0)
+    test.assertEqual(int(solver_flags[1]), 0)
+    test.assertNotEqual(int(solver_flags[2]) & active, 0)
+    np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
 
 
 devices = get_test_devices()
@@ -118,6 +152,14 @@ add_function_test(
     TestSolverStyle3D,
     "test_solver_flags_deactivate_zero_mass_without_mutating_model",
     test_solver_flags_deactivate_zero_mass_without_mutating_model,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_solver_flags_track_runtime_model_changes",
+    test_solver_flags_track_runtime_model_changes,
     devices=devices,
     check_output=False,
 )
