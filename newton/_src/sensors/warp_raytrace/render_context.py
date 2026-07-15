@@ -14,7 +14,6 @@ from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
 from .types import ClearData, MeshData, RenderConfig, RenderOrder, TextureData
-from .utils import Utils
 
 
 class RenderContext:
@@ -26,6 +25,7 @@ class RenderContext:
         """Mutable flags tracking which render outputs are active."""
 
         num_gaussians: int = 0
+        has_particles: bool = False
         render_color: bool = False
         render_depth: bool = False
         render_shape_index: bool = False
@@ -34,20 +34,17 @@ class RenderContext:
         render_hdr_color: bool = False
 
     DEFAULT_CLEAR_DATA = ClearData()
+    DEFAULT_RENDER_CONFIG = Config()
 
-    def __init__(self, world_count: int = 1, config: Config | None = None, device: str | None = None):
+    def __init__(self, world_count: int = 1, device: str | None = None):
         """Create a new render context.
 
         Args:
             world_count: Number of simulation worlds to render.
-            config: Render configuration. If ``None``, uses default
-                :class:`Config` settings.
             device: Warp device string (e.g. ``"cuda:0"``). If ``None``,
                 the default Warp device is used.
         """
         self.device: str | None = device
-        self.utils = Utils(self)
-        self.config = config if config else RenderContext.Config()
         self.state = RenderContext.State()
 
         self.kernel_cache: dict[int, wp.Kernel] = {}
@@ -103,6 +100,7 @@ class RenderContext:
         self.__triangle_points = None
         self.__triangle_indices = None
         self.__has_particles = False
+        self.state.has_particles = False
 
         self.shape_count_total = model.shape_count
         self.shape_world_index = model.shape_world
@@ -125,10 +123,10 @@ class RenderContext:
 
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
+            self.state.has_particles = True
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.triangle_points = model.particle_q
                 self.triangle_indices = model.tri_indices.flatten()
-                self.config.enable_particles = False
 
         self.shape_colors = model.shape_color
         self.gaussians_data = model.gaussians_data
@@ -154,15 +152,17 @@ class RenderContext:
         self,
         model: Model,
         state: State,
+        *,
         camera_transforms: wp.array2d[wp.transformf],
         camera_rays: wp.array4d[wp.vec3f],
         color_image: wp.array4d[wp.uint32] | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         depth_image: wp.array4d[wp.float32] | None = None,
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
         clear_data: RenderContext.ClearData | None = DEFAULT_CLEAR_DATA,
-        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
+        config: RenderContext.Config | None = DEFAULT_RENDER_CONFIG,
         kernel_block_dim: int = 64,
     ):
         """Raytrace the scene into the provided output images.
@@ -193,9 +193,14 @@ class RenderContext:
             clear_data: Values used to clear output images before
                 rendering. Pass ``None`` to use :attr:`DEFAULT_CLEAR_DATA`.
             hdr_color_image: Output linear HDR color buffer.
+            config: Render settings for this render call. If ``None``, uses
+                default :class:`Config` settings.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
+        if config is None:
+            config = RenderContext.DEFAULT_RENDER_CONFIG
+
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError(
                 "Shape BVH is missing. ModelBuilder.finalize() builds it for finalized models; "
@@ -207,7 +212,8 @@ class RenderContext:
             raise RuntimeError("Shape BVH is incomplete; rebuild it with model.bvh_build_shapes(state).")
 
         has_particles = (
-            self.config.enable_particles
+            config.enable_particles
+            and self.state.has_particles
             and self.__has_particles
             and state.particle_q is not None
             and state.particle_q.shape[0] > 0
@@ -276,9 +282,9 @@ class RenderContext:
                     f"hdr_color_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
 
-            if self.config.render_order == RenderOrder.TILED:
-                assert width % self.config.tile_width == 0, "render width must be a multiple of tile_width"
-                assert height % self.config.tile_height == 0, "render height must be a multiple of tile_height"
+            if config.render_order == RenderOrder.TILED:
+                assert width % config.tile_width == 0, "render width must be a multiple of tile_width"
+                assert height % config.tile_height == 0, "render height must be a multiple of tile_height"
 
             # Reshaping output images to one dimension, slightly improves performance in the Kernel.
             if color_image is not None:
@@ -294,10 +300,10 @@ class RenderContext:
             if hdr_color_image is not None:
                 hdr_color_image = hdr_color_image.reshape(self.world_count * camera_count * width * height)
 
-            kernel_cache_key = hash((self.config, self.state, clear_data))
+            kernel_cache_key = hash((config, self.state, clear_data))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
-                render_kernel = create_kernel(self.config, self.state, clear_data)
+                render_kernel = create_kernel(config, self.state, clear_data)
                 self.kernel_cache[kernel_cache_key] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
@@ -360,12 +366,6 @@ class RenderContext:
                 device=self.device,
                 block_dim=kernel_block_dim,
             )
-
-    @property
-    def world_count_total(self) -> int:
-        if self.config.enable_global_world:
-            return self.world_count + 1
-        return self.world_count
 
     @property
     def light_count(self) -> int:

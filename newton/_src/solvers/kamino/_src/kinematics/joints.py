@@ -732,7 +732,7 @@ def compute_and_write_joint_implicit_dynamics(
         if act_type == JointActuationType.FORCE:
             tau_j_tot += pd_tau_j_ff
         elif act_type == JointActuationType.POSITION:
-            m_j += dt * dt * k_p_j
+            m_j += dt * k_d_j + dt * dt * k_p_j
             tau_j_tot += k_p_j * (pd_q_j_ref - q_j)
         elif act_type == JointActuationType.VELOCITY:
             m_j += dt * k_d_j

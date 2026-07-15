@@ -53,14 +53,14 @@ newton.geometry
    sdf_sphere
    transform_inertia
 
-.. rubric:: Constants
+.. rubric:: Deprecated
 
 .. list-table::
    :header-rows: 1
 
    * - Name
-     - Value
+     - Guidance
    * - ``MATCH_BROKEN``
-     - ``-2``
+     - Do not rely on this value.
    * - ``MATCH_NOT_FOUND``
-     - ``-1``
+     - Do not rely on this value.

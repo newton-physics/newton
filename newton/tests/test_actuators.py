@@ -376,6 +376,48 @@ class TestControllerNeuralMLP(unittest.TestCase):
             msg="history should contain pos error from current step",
         )
 
+    def test_velocity_input_is_raw_joint_velocity(self):
+        """Network receives raw joint velocity, not velocity error (target_vel must not affect it)."""
+        weights = np.array([[0.0, 1.0]], dtype=np.float32)  # output = velocity feature
+        bias = np.zeros((1,), dtype=np.float32)
+        path = self._save_mlp(weights, bias)
+        n = 1
+        ctrl = ControllerNeuralMLP(model_path=path)
+        ctrl.finalize(self.device, n)
+        state_a = ctrl.state(n, self.device)
+        state_b = ctrl.state(n, self.device)
+
+        q, qd = 0.5, 2.0
+        target_q, target_qd = q, 5.0  # zero pos error; target_qd must not enter the network input
+        expected = weights[0, 0] * (target_q - q) + weights[0, 1] * qd + bias[0]
+
+        indices = wp.array([0], dtype=wp.uint32, device=self.device)
+        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+        ctrl.compute(
+            wp.array([q], dtype=wp.float32, device=self.device),
+            wp.array([qd], dtype=wp.float32, device=self.device),
+            wp.array([target_q], dtype=wp.float32, device=self.device),
+            wp.array([target_qd], dtype=wp.float32, device=self.device),
+            None,
+            indices,
+            indices,
+            indices,
+            indices,
+            forces,
+            state_a,
+            0.01,
+            self.device,
+        )
+        self.assertAlmostEqual(forces.numpy()[0], expected, places=3, msg="input must be joint velocity, not vel error")
+
+        ctrl.update_state(state_a, state_b)
+        self.assertAlmostEqual(
+            float(state_b.vel_history.numpy()[0, 0]),
+            qd,
+            places=4,
+            msg="history should contain raw joint velocity from current step",
+        )
+
     def test_metadata_scales(self):
         """Metadata effort_scale is applied to the network output."""
         weights = np.zeros((1, 2), dtype=np.float32)

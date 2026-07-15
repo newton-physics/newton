@@ -2,12 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import functools
+import hashlib
 import math
 import os
+import posixpath
 import tempfile
+import types
 import unittest
 import warnings
 from unittest import mock
+from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
@@ -26,7 +30,7 @@ from newton._src.solvers.mujoco.constants import (
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
 
 devices = get_test_devices()
 
@@ -2786,6 +2790,58 @@ class TestImportUsdPhysics(unittest.TestCase):
         assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-5)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mesh_approximation_cfg(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def create_collision_mesh(name, approximation_method):
+            box = newton.Mesh.create_box(
+                1.0,
+                1.0,
+                1.0,
+                duplicate_vertices=False,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in box.vertices.tolist()])
+            meshColAPI = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+            meshColAPI.GetApproximationAttr().Set(approximation_method)
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        create_collision_mesh("/meshDecomposition", UsdPhysics.Tokens.convexDecomposition)
+        create_collision_mesh("/meshConvexHull", UsdPhysics.Tokens.convexHull)
+
+        self.assertEqual(newton.ModelBuilder().default_mesh_approximation_cfg.coacd_threshold, 0.05)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.05)
+
+            captured.clear()
+            builder = newton.ModelBuilder()
+            builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
@@ -11640,13 +11696,14 @@ def Xform "World"
         temperature = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
         region_id = np.array([7], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 
@@ -11658,6 +11715,37 @@ def Xform "World"
         arr, freq = tm.custom_attributes["regionId"]
         assert_np_equal(arr, region_id)
         self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+
+    def test_tetmesh_custom_attributes_infer_once(self):
+        """Test that length-1 arrays are inferred as ONCE when unambiguous."""
+        vertices = np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0.5]],
+            dtype=np.float32,
+        )
+        tet_indices = np.array([0, 1, 2, 3, 0, 1, 2, 4], dtype=np.int32)
+        constant = np.array([42.0], dtype=np.float32)
+
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={"constant": constant},
+        )
+
+        arr, freq = tm.custom_attributes["constant"]
+        assert_np_equal(arr, constant)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.ONCE)
+
+    def test_tetmesh_custom_attributes_ambiguous_once(self):
+        """Test that length-1 arrays raise when tet_count is also 1."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+
+        with self.assertRaisesRegex(ValueError, "ONCE"):
+            newton.TetMesh(
+                vertices,
+                tet_indices,
+                custom_attributes={"ambig": np.array([1.0], dtype=np.float32)},
+            )
 
     def test_tetmesh_custom_attributes_empty_by_default(self):
         """Test TetMesh has empty custom_attributes when none are provided."""
@@ -11704,13 +11792,14 @@ def Xform "World"
         temperature = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
         region_id = np.array([3], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 
@@ -12023,6 +12112,14 @@ def Xform "World"
 class TestResolveUsdFromUrl(unittest.TestCase):
     """Tests for recursive USD reference resolution in :func:`resolve_usd_from_url`."""
 
+    @staticmethod
+    def _cache_path_for_absolute_reference(url: str) -> str:
+        """Return the expected safe cache-relative path for an absolute URL."""
+        parsed = urlparse(url)
+        basename = posixpath.basename(parsed.path) or "reference.usd"
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        return posixpath.join("_external_usd", digest, basename)
+
     def _run_resolve(self, url_to_layer, base_url="https://example.com/assets/scene.usd"):
         """Run resolve_usd_from_url with mocked network and USD stage I/O.
 
@@ -12038,7 +12135,14 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         def fake_get(url, **_kwargs):
             downloaded_urls.append(url)
             resp = mock.MagicMock()
+            resp.url = url
+            resp.headers = {}
             layer = url_to_layer.get(url)
+            if isinstance(layer, tuple) and layer[0] == "redirect":
+                resp.status_code = 302
+                resp.headers = {"Location": layer[1]}
+                resp.content = b""
+                return resp
             if layer is None:
                 resp.status_code = 404
                 return resp
@@ -12053,9 +12157,12 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         # Precompute exact local-key -> layer mapping from URLs.
         base_url_dir = base_url.rsplit("/", 1)[0]
         local_key_to_layer = {}
+
         for url, layer in url_to_layer.items():
-            if url.startswith(base_url_dir + "/"):
+            if isinstance(layer, str) and url.startswith(base_url_dir + "/"):
                 local_key_to_layer[url[len(base_url_dir) + 1 :]] = layer
+            if isinstance(layer, str) and url.startswith("https://"):
+                local_key_to_layer[self._cache_path_for_absolute_reference(url)] = layer
 
         def _local_key(path):
             return os.path.relpath(path, tmpdir).replace(os.sep, "/")
@@ -12187,6 +12294,56 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         self.assertEqual(len(escaped_urls), 0)
         self.assertFalse(os.path.exists(os.path.join(tmpdir, "..", "secret.usd")))
 
+    def test_cleartext_top_level_url_rejected(self):
+        """Top-level USD downloads must use HTTPS."""
+        with self.assertRaisesRegex(ValueError, "USD URL downloads require HTTPS"):
+            self._run_resolve({}, base_url="http://example.com/assets/scene.usd")
+
+    def test_cleartext_reference_url_rejected(self):
+        """Absolute HTTP references are rejected before download."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": "references = @http://example.com/assets/child.usd@",
+        }
+        with self.assertRaisesRegex(ValueError, "USD URL downloads require HTTPS"):
+            self._run_resolve(url_to_layer)
+
+    def test_absolute_https_reference_cached_safely(self):
+        """Absolute HTTPS references are cached under a relative path."""
+        child_url = "https://cdn.example.com/assets/child.usd"
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": f"references = @{child_url}@",
+            child_url: "",
+        }
+        result, tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        local_ref = self._cache_path_for_absolute_reference(child_url)
+
+        self.assertIn(child_url, downloaded_urls)
+        self.assertTrue(os.path.exists(os.path.join(tmpdir, local_ref)))
+        with open(result) as f:
+            rewritten_layer = f.read()
+        self.assertIn(f"@{local_ref}@", rewritten_layer)
+        self.assertNotIn(child_url, rewritten_layer)
+
+    def test_cleartext_redirect_url_rejected(self):
+        """Redirects to HTTP targets are rejected before following them."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": ("redirect", "http://example.com/assets/scene.usd"),
+        }
+        with self.assertRaisesRegex(ValueError, "USD URL downloads require HTTPS"):
+            self._run_resolve(url_to_layer)
+
+    def test_https_redirect_url_followed(self):
+        """Redirects to HTTPS targets are followed."""
+        url_to_layer = {
+            "https://example.com/assets/scene.usd": ("redirect", "https://cdn.example.com/assets/scene.usd"),
+            "https://cdn.example.com/assets/scene.usd": "",
+        }
+        _result, _tmpdir, downloaded_urls = self._run_resolve(url_to_layer)
+        self.assertEqual(
+            downloaded_urls,
+            ["https://example.com/assets/scene.usd", "https://cdn.example.com/assets/scene.usd"],
+        )
+
 
 class TestUsdMaterialColorSpaces(unittest.TestCase):
     def test_texture_color_space_auto_uses_file_attribute_fallback(self):
@@ -12233,6 +12390,125 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         np.testing.assert_allclose(
             material_props["color"],
             newton.utils.color_linear_to_srgb(linear_color),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ancestor_binding_overrides_unapplied_mesh_binding(self):
+        """An ancestor bind with strongerThanDescendants wins over a mesh's own binding.
+
+        Many assets author ``material:binding`` on meshes without applying MaterialBindingAPI;
+        resolution must still honor a stronger ancestor override (e.g. domain-randomization
+        material rebinding on the asset root).
+        """
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World/Visuals")
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Visuals/Mesh")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        def define_material(path: str, color: tuple[float, float, float]) -> UsdShade.Material:
+            material = UsdShade.Material.Define(stage, path)
+            shader = UsdShade.Shader.Define(stage, f"{path}/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            return material
+
+        original = define_material("/World/Looks/Original", (1.0, 0.0, 0.0))
+        override = define_material("/World/Looks/Override", (0.0, 1.0, 0.0))
+
+        # mesh's own binding: a bare relationship, MaterialBindingAPI deliberately NOT applied
+        mesh.GetPrim().CreateRelationship("material:binding").SetTargets([original.GetPrim().GetPath()])
+        # ancestor override with descendant-winning strength
+        ancestor_binding = UsdShade.MaterialBindingAPI.Apply(root.GetPrim())
+        ancestor_binding.Bind(override, bindingStrength=UsdShade.Tokens.strongerThanDescendants)
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+        np.testing.assert_allclose(
+            material_props["color"],
+            newton.utils.color_linear_to_srgb((0.0, 1.0, 0.0)),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_ancestor_binding_overrides_applied_mesh_binding_across_depth(self):
+        """A grandparent strongerThanDescendants bind wins over a mesh's properly applied binding."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        grandparent = UsdGeom.Xform.Define(stage, "/World/Robot")
+        UsdGeom.Xform.Define(stage, "/World/Robot/link")
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Robot/link/Mesh")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        def define_material(path: str, color: tuple[float, float, float]) -> UsdShade.Material:
+            material = UsdShade.Material.Define(stage, path)
+            shader = UsdShade.Shader.Define(stage, f"{path}/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            return material
+
+        original = define_material("/World/Looks/Original", (1.0, 0.0, 0.0))
+        override = define_material("/World/Looks/Override", (0.0, 1.0, 0.0))
+
+        # mesh's own binding: MaterialBindingAPI properly applied this time
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(original)
+        # override two levels up, exercising resolution beyond the immediate parent
+        UsdShade.MaterialBindingAPI.Apply(grandparent.GetPrim()).Bind(
+            override, bindingStrength=UsdShade.Tokens.strongerThanDescendants
+        )
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+        np.testing.assert_allclose(
+            material_props["color"],
+            newton.utils.color_linear_to_srgb((0.0, 1.0, 0.0)),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collection_based_ancestor_binding_resolves(self):
+        """Collection-based ancestor rebinds resolve through canonical ComputeBoundMaterial."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World/Robot")
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Robot/Mesh")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        material = UsdShade.Material.Define(stage, "/World/Looks/CollectionBound")
+        shader = UsdShade.Shader.Define(stage, "/World/Looks/CollectionBound/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        collection = Usd.CollectionAPI.Apply(root.GetPrim(), "blueParts")
+        collection.CreateIncludesRel().AddTarget(mesh.GetPrim().GetPath())
+        UsdShade.MaterialBindingAPI.Apply(root.GetPrim()).Bind(
+            collection, material, "blueParts", bindingStrength=UsdShade.Tokens.strongerThanDescendants
+        )
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        material_props = resolve_material_properties_for_prim(mesh.GetPrim())
+
+        np.testing.assert_allclose(
+            material_props["color"],
+            newton.utils.color_linear_to_srgb((0.0, 0.0, 1.0)),
             atol=1e-6,
         )
 
