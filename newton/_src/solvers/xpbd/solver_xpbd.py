@@ -459,10 +459,15 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
             spring_constraint_lambdas = None
             if model.spring_count:
-                spring_constraint_lambdas = wp.empty_like(model.spring_rest_length)
+                spring_constraint_lambdas = wp.zeros_like(model.spring_rest_length)
             edge_constraint_lambdas = None
             if model.edge_count:
-                edge_constraint_lambdas = wp.empty_like(model.edge_rest_angle)
+                edge_constraint_lambdas = wp.zeros_like(model.edge_rest_angle)
+            tet_constraint_lambdas = None
+            if model.tet_count:
+                tet_constraint_lambdas = wp.zeros(
+                    model.tet_count * 2, dtype=float, device=model.device, requires_grad=requires_grad
+                )
 
             for i in range(self.iterations):
                 with wp.ScopedTimer(f"iteration_{i}", False):
@@ -540,7 +545,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
                         # distance constraints
                         if model.spring_count:
-                            spring_constraint_lambdas.zero_()
                             wp.launch(
                                 kernel=solve_springs,
                                 dim=model.spring_count,
@@ -561,7 +565,6 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
                         # bending constraints
                         if model.edge_count:
-                            edge_constraint_lambdas.zero_()
                             wp.launch(
                                 kernel=bending_constraint,
                                 dim=model.edge_count,
@@ -594,6 +597,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                     model.tet_materials,
                                     dt,
                                     self.soft_body_relaxation,
+                                    tet_constraint_lambdas,
                                 ],
                                 outputs=[particle_deltas],
                                 device=model.device,
