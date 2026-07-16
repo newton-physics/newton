@@ -51,7 +51,7 @@ class _InverseDynamicsBenchmark:
         )
         self.gravity_force = wp.empty_like(self.state.joint_qd)
         self.coriolis_force = wp.empty_like(self.state.joint_qd)
-        self.tau = wp.zeros_like(self.state.joint_qd)
+        self.joint_f = wp.zeros_like(self.state.joint_qd)
 
         # Capture one full M(q) + g(q) + C(q, q_dot)*q_dot evaluation into a
         # CUDA graph so the timed inner loop is just graph replays.
@@ -91,7 +91,7 @@ class _InverseDynamicsBenchmark:
                 joint_qdd=self.joint_qdd,
                 coriolis_force=self.coriolis_force,
                 gravity_force=self.gravity_force,
-                tau=self.tau,
+                joint_f=self.joint_f,
             )
         self.force_graph = cap_force.graph
 
@@ -111,9 +111,12 @@ class _InverseDynamicsBenchmark:
         H = self.mass_matrix.numpy()
         g = self.gravity_force.numpy()
         c = self.coriolis_force.numpy()
-        tau = self.tau.numpy()
+        joint_f = self.joint_f.numpy()
         finite = (
-            np.all(np.isfinite(H)) and np.all(np.isfinite(g)) and np.all(np.isfinite(c)) and np.all(np.isfinite(tau))
+            np.all(np.isfinite(H))
+            and np.all(np.isfinite(g))
+            and np.all(np.isfinite(c))
+            and np.all(np.isfinite(joint_f))
         )
         if not finite:
             raise RuntimeError("Inverse-dynamics output contains non-finite values.")

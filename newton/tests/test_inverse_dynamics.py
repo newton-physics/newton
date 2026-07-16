@@ -39,7 +39,7 @@ class _InverseDynamicsArrays:
         )
         self.gravity_force = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
         self.coriolis_force = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
-        self.tau = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        self.joint_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
 
 
 def _eval_inverse_dynamics_passive(
@@ -75,7 +75,7 @@ def _eval_inverse_dynamics_force(
         joint_qdd=joint_qdd,
         coriolis_force=arrays.coriolis_force,
         gravity_force=arrays.gravity_force,
-        tau=arrays.tau,
+        joint_f=arrays.joint_f,
         mask=mask,
     )
 
@@ -1776,7 +1776,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                     inverse_dynamics,
                     joint_qdd_arr,
                 )
-                M_joint_qdd = inverse_dynamics.tau.numpy()
+                M_joint_qdd = inverse_dynamics.joint_f.numpy()
 
                 np.testing.assert_allclose(-coriolis_comp, M_joint_qdd, atol=2e-3, rtol=2e-3)
 
@@ -1993,7 +1993,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 joint_qdd=wp.zeros_like(state.joint_qd),
                 coriolis_force=arrays.coriolis_force,
                 gravity_force=arrays.gravity_force,
-                tau=arrays.tau,
+                joint_f=arrays.joint_f,
             )
 
     def test_eval_inverse_dynamics_force_hand_crafted_inputs(self):
@@ -2072,7 +2072,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
 
         _eval_inverse_dynamics_force(model, model.state(), inverse_dynamics, joint_qdd)
 
-        np.testing.assert_allclose(inverse_dynamics.tau.numpy(), tau_expected, atol=1e-6)
+        np.testing.assert_allclose(inverse_dynamics.joint_f.numpy(), tau_expected, atol=1e-6)
 
     def test_combined_passive_outputs_match_individual_calls(self):
         """A combined request must match three isolated output requests.
@@ -2530,7 +2530,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                     joint_qdd,
                 )
 
-                control.joint_f.assign(inverse_dynamics.tau)
+                control.joint_f.assign(inverse_dynamics.joint_f)
 
                 # The same tau must round-trip through both solvers. Each steps
                 # from the same input ``state`` (neither mutates it) into
@@ -2614,7 +2614,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
 
         # World-frame wrench at the COM: force = m*R*a, torque = R*I_local*alpha.
         expected = np.concatenate([m_mass * (R @ a_parent), R @ (I_local @ alpha_parent)]).astype(np.float32)
-        np.testing.assert_allclose(inverse_dynamics.tau.numpy(), expected, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(inverse_dynamics.joint_f.numpy(), expected, atol=1e-5, rtol=1e-5)
 
     def test_inverse_dynamics_force_non_root_free_joint_rotated_parent(self):
         """Non-root FREE or DISTANCE joint with a rotated parent frame and non-zero ``joint_qdd``.
@@ -2689,7 +2689,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                     joint_qdd,
                 )
 
-                tau = inverse_dynamics.tau.numpy()
+                tau = inverse_dynamics.joint_f.numpy()
                 np.testing.assert_allclose(tau[0:3], f_expected, atol=1e-5, rtol=1e-5)
                 np.testing.assert_allclose(tau[3:6], torque_expected, atol=1e-5, rtol=1e-5)
 
@@ -2819,7 +2819,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             joint_qdd,
         )
 
-        tau = inverse_dynamics.tau.numpy()
+        tau = inverse_dynamics.joint_f.numpy()
         np.testing.assert_allclose(
             tau[0:2],
             tau[2:4],
@@ -2952,7 +2952,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             "joint_qdd": joint_qdd,
             "coriolis_force": inverse_dynamics.coriolis_force,
             "gravity_force": inverse_dynamics.gravity_force,
-            "tau": inverse_dynamics.tau,
+            "joint_f": inverse_dynamics.joint_f,
         }
         force_cases = [
             (
@@ -2966,7 +2966,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             ("joint_qdd", (model.joint_dof_count + 1,)),
             ("coriolis_force", (model.joint_dof_count + 1,)),
             ("gravity_force", (model.joint_dof_count + 1,)),
-            ("tau", (model.joint_dof_count + 1,)),
+            ("joint_f", (model.joint_dof_count + 1,)),
         ]
         for name, wrong_shape in force_cases:
             with self.subTest(force_array=name):
@@ -3045,7 +3045,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                 wp.zeros_like(state.joint_qd),
                 arrays.coriolis_force,
                 arrays.gravity_force,
-                arrays.tau,
+                arrays.joint_f,
             )
 
     def test_eval_inverse_dynamics_passive_cuda_graph_capture(self):
@@ -3085,12 +3085,12 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(arrays.gravity_force.numpy())))
         self.assertTrue(np.all(np.isfinite(arrays.coriolis_force.numpy())))
 
-    def test_eval_inverse_dynamics_force_zero_articulations_preserves_tau(self):
+    def test_eval_inverse_dynamics_force_zero_articulations_preserves_joint_f(self):
         """``eval_inverse_dynamics_force`` short-circuits on a model with
-        zero articulations without touching ``tau``.
+        zero articulations without touching ``joint_f``.
 
         The ``articulation_count == 0`` guard returns before the in-place
-        ``tau.zero_()``, so a sentinel previously written into ``tau`` must
+        ``joint_f.zero_()``, so a sentinel previously written into ``joint_f`` must
         be preserved -- a regression check that the early return stays in
         place ahead of the zero pass.
         """
@@ -3100,7 +3100,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
 
         n = 4
         sentinel = np.array([7.0, -2.5, 0.1, 99.0], dtype=np.float32)
-        tau = wp.array(sentinel, dtype=wp.float32, device=self.device)
+        joint_f = wp.array(sentinel, dtype=wp.float32, device=self.device)
         # Buffer sizes here are otherwise irrelevant: the kernel never runs.
         H = wp.zeros((1, 1, 1), dtype=wp.float32, device=self.device)
         joint_qdd = wp.zeros(n, dtype=wp.float32, device=self.device)
@@ -3109,11 +3109,11 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         inverse_dynamics.mass_matrix = H
         inverse_dynamics.coriolis_force = zero_bias
         inverse_dynamics.gravity_force = zero_bias
-        inverse_dynamics.tau = tau
+        inverse_dynamics.joint_f = joint_f
 
         _eval_inverse_dynamics_force(model, model.state(), inverse_dynamics, joint_qdd)
 
-        np.testing.assert_array_equal(tau.numpy(), sentinel)
+        np.testing.assert_array_equal(joint_f.numpy(), sentinel)
 
     def test_eval_inverse_dynamics_passive_zero_articulations_no_error(self):
         """Requesting every output on an empty model leaves consistent arrays."""
@@ -3218,7 +3218,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         c_ref = reference_id.coriolis_force.numpy()
         joint_qdd = wp.array(np.linspace(0.1, 0.8, model.joint_dof_count), dtype=wp.float32, device=self.device)
         _eval_inverse_dynamics_force(model, state, reference_id, joint_qdd)
-        tau_ref = reference_id.tau.numpy()
+        tau_ref = reference_id.joint_f.numpy()
 
         # Ensure no entry in H_ref / g_ref / c_ref is (numerically) zero
         # — we use zero later as the signal that a slot was masked out, so
@@ -3293,12 +3293,12 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                 joint_qdd=joint_qdd_nan,
                 coriolis_force=inverse_dynamics.coriolis_force,
                 gravity_force=inverse_dynamics.gravity_force,
-                tau=inverse_dynamics.tau,
+                joint_f=inverse_dynamics.joint_f,
                 mask=all_false_mask,
             )
             np.testing.assert_array_equal(
-                inverse_dynamics.tau.numpy(),
-                np.zeros_like(inverse_dynamics.tau.numpy()),
+                inverse_dynamics.joint_f.numpy(),
+                np.zeros_like(inverse_dynamics.joint_f.numpy()),
             )
 
         for case_idx in range(len(per_world_masks)):
@@ -3321,10 +3321,10 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                     joint_qdd=joint_qdd,
                     coriolis_force=inverse_dynamics.coriolis_force,
                     gravity_force=inverse_dynamics.gravity_force,
-                    tau=inverse_dynamics.tau,
+                    joint_f=inverse_dynamics.joint_f,
                     mask=per_world_masks[case_idx],
                 )
-                tau = inverse_dynamics.tau.numpy()
+                tau = inverse_dynamics.joint_f.numpy()
 
                 # Mass matrix: selected articulations match reference; the rest are zero.
                 for art_id in range(model.articulation_count):
@@ -3411,7 +3411,7 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         c_ref = reference_id.coriolis_force.numpy()
         joint_qdd = wp.array(np.linspace(0.1, 0.8, model.joint_dof_count), dtype=wp.float32, device=self.device)
         _eval_inverse_dynamics_force(model, state, reference_id, joint_qdd)
-        tau_ref = reference_id.tau.numpy()
+        tau_ref = reference_id.joint_f.numpy()
 
         # View covers all four articulations (A and B in both worlds),
         # giving count_per_world=2.  The fnmatch pattern "[AB]" matches
@@ -3480,14 +3480,14 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             joint_qdd=joint_qdd,
             coriolis_force=inverse_dynamics.coriolis_force,
             gravity_force=inverse_dynamics.gravity_force,
-            tau=inverse_dynamics.tau,
+            joint_f=inverse_dynamics.joint_f,
             mask=mask2d,
         )
 
         H = inverse_dynamics.mass_matrix.numpy()
         g = inverse_dynamics.gravity_force.numpy()
         c = inverse_dynamics.coriolis_force.numpy()
-        tau = inverse_dynamics.tau.numpy()
+        tau = inverse_dynamics.joint_f.numpy()
 
         # art 0 = A0 (selected), art 1 = B0 (not), art 2 = A1 (not), art 3 = B1 (selected)
         articulation_selected_2d = [True, False, False, True]

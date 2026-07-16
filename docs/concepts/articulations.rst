@@ -771,7 +771,7 @@ otherwise update ``state.body_q``) first.
     )
     gravity_force = wp.empty_like(state.joint_qd)
     coriolis_force = wp.empty_like(state.joint_qd)
-    tau = wp.empty_like(state.joint_qd)
+    joint_f = wp.empty_like(state.joint_qd)
 
     # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
     newton.eval_inverse_dynamics_passive(
@@ -782,7 +782,7 @@ otherwise update ``state.body_q``) first.
         coriolis_force=coriolis_force,
     )
 
-    # combine into tau = M*joint_qdd + C*qdot + g
+    # combine into the generalized joint force tau = M*joint_qdd + C*qdot + g
     joint_qdd = wp.zeros_like(state.joint_qd)
     newton.eval_inverse_dynamics_force(
         model,
@@ -791,7 +791,7 @@ otherwise update ``state.body_q``) first.
         joint_qdd=joint_qdd,
         coriolis_force=coriolis_force,
         gravity_force=gravity_force,
-        tau=tau,
+        joint_f=joint_f,
     )
 
 Pass only the output arrays you need. For example, supplying
@@ -841,7 +841,7 @@ with a desired acceleration:
         joint_qdd=joint_qdd,
         coriolis_force=coriolis_force,
         gravity_force=gravity_force,
-        tau=tau,
+        joint_f=joint_f,
         mask=per_world_mask,
     )
 

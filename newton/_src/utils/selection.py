@@ -1814,7 +1814,7 @@ class ArticulationView:
         joint_qdd: wp.array[wp.float32],
         coriolis_force: wp.array[wp.float32],
         gravity_force: wp.array[wp.float32],
-        tau: wp.array[wp.float32],
+        joint_f: wp.array[wp.float32],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
         """Compute inverse-dynamics joint forces for articulations in this view.
@@ -1840,8 +1840,10 @@ class ArticulationView:
                 on joint type], shape ``(model.joint_dof_count,)``, dtype float.
             gravity_force: Gravity force [N or N·m, depending on joint type],
                 shape ``(model.joint_dof_count,)``, dtype float.
-            tau: Output joint force [N or N·m, depending on joint type], shape
-                ``(model.joint_dof_count,)``, dtype float.
+            joint_f: Output generalized joint force :math:`\tau` [N or N·m,
+                depending on joint type], shape ``(model.joint_dof_count,)``,
+                dtype float. Uses the same layout and convention as
+                :attr:`~newton.Control.joint_f`.
             mask: Optional mask of articulations in this ArticulationView.
                 Either 1-D ``[world_count]`` or 2-D
                 ``[world_count, count_per_world]``.
@@ -1854,7 +1856,7 @@ class ArticulationView:
             joint_qdd=joint_qdd,
             coriolis_force=coriolis_force,
             gravity_force=gravity_force,
-            tau=tau,
+            joint_f=joint_f,
             mask=articulation_mask,
         )
 

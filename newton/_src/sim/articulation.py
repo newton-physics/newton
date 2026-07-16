@@ -1478,7 +1478,7 @@ def eval_inverse_dynamics_force(
     joint_qdd: wp.array[wp.float32],
     coriolis_force: wp.array[wp.float32],
     gravity_force: wp.array[wp.float32],
-    tau: wp.array[wp.float32],
+    joint_f: wp.array[wp.float32],
     mask: wp.array[bool] | None = None,
 ) -> None:
     """Evaluate ``tau = M(q)*joint_qdd + C(q,q_dot)*q_dot + g(q)``.
@@ -1486,7 +1486,7 @@ def eval_inverse_dynamics_force(
     Combines a per-articulation mass-matrix-times-acceleration product with
     the Coriolis and gravity forces to produce the full joint force
     required to realize ``joint_qdd`` at the current ``(q, q_dot)`` under
-    gravity, writing the result to ``tau`` in place. The two force inputs
+    gravity, writing the result to ``joint_f`` in place. The two force inputs
     follow the standard manipulator-equation sign convention
     (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
     :func:`~newton.eval_inverse_dynamics_passive`) and are added directly.
@@ -1500,7 +1500,7 @@ def eval_inverse_dynamics_force(
     :attr:`~newton.Control.joint_f`. Each such joint's
     mass-matrix-times-acceleration wrench is rotated to world (using
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
-    ``tau`` is entirely in that world convention.
+    ``joint_f`` is entirely in that world convention.
 
     :attr:`~newton.JointType.CABLE` joints are not supported because their DOF
     slots are constraints rather than generalized coordinates for this
@@ -1529,8 +1529,10 @@ def eval_inverse_dynamics_force(
             ``(model.joint_dof_count,)``, dtype float.
         gravity_force: Gravity force ``g(q) = ∂U/∂q`` [N or N·m, depending
             on joint type], shape ``(model.joint_dof_count,)``, dtype float.
-        tau: Output joint force [N or N·m, depending on joint type], shape
-            ``(model.joint_dof_count,)``, dtype float.
+        joint_f: Output generalized joint force :math:`\tau` [N or N·m,
+            depending on joint type], shape ``(model.joint_dof_count,)``,
+            dtype float. Uses the same layout and convention as
+            :attr:`~newton.Control.joint_f`.
         mask: Optional ``wp.array[bool]`` of shape
             ``(articulation_count,)`` selecting which articulations to
             compute. Unselected joint-force entries are zeroed without
@@ -1558,7 +1560,7 @@ def eval_inverse_dynamics_force(
         ("joint_qdd", joint_qdd),
         ("coriolis_force", coriolis_force),
         ("gravity_force", gravity_force),
-        ("tau", tau),
+        ("joint_f", joint_f),
     ):
         if array.shape != expected_dof_shape:
             raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
@@ -1585,7 +1587,7 @@ def eval_inverse_dynamics_force(
             coriolis_force,
             gravity_force,
         ],
-        outputs=[tau],
+        outputs=[joint_f],
         device=model.device,
     )
 
