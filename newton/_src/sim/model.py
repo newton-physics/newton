@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
-    from .inverse_dynamics import InverseDynamicsBuffers
 
 
 _HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
@@ -2179,48 +2178,6 @@ class Model:
             c, Model.AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
         return c
-
-    def inverse_dynamics_buffers(self) -> InverseDynamicsBuffers:
-        """Create inverse-dynamics buffers sized for this model's topology.
-
-        The container holds the public buffers (mass matrix, compensation
-        forces, and :attr:`~newton.InverseDynamicsBuffers.tau`) and owns the
-        internal RNEA/Jacobian scratch privately, so callers only manage one
-        object.
-
-        .. experimental::
-
-        Returns:
-            An :class:`~newton.InverseDynamicsBuffers` to pass to
-            :func:`~newton.eval_inverse_dynamics`.
-
-        Raises:
-            ValueError: If the model contains a ``JointType.CABLE`` joint.
-                Inverse dynamics has no motion-subspace implementation for
-                CABLE (``jcalc_motion`` / ``jcalc_motion_subspace``) and
-                ``eval_fk`` does not reconstruct it, so its results would be
-                undefined. The check runs here, at container-creation time,
-                rather than in the graph-capturable
-                :func:`~newton.eval_inverse_dynamics`.
-        """
-        from .enums import JointType  # noqa: PLC0415
-        from .inverse_dynamics import InverseDynamicsBuffers  # noqa: PLC0415
-
-        if self.joint_count > 0 and np.any(self.joint_type.numpy() == int(JointType.CABLE)):
-            raise ValueError(
-                "Inverse dynamics does not support JointType.CABLE joints. Remove "
-                "them from the model before calling Model.inverse_dynamics_buffers()."
-            )
-
-        return InverseDynamicsBuffers(
-            articulation_count=self.articulation_count,
-            joint_dof_count=self.joint_dof_count,
-            max_dofs_per_articulation=self.max_dofs_per_articulation,
-            body_count=self.body_count,
-            max_joints_per_articulation=self.max_joints_per_articulation,
-            world_count=self.world_count,
-            device=self.device,
-        )
 
     def set_gravity(
         self,

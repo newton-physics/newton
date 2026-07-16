@@ -30,7 +30,7 @@
 - Add a `deterministic` constructor argument to `SolverXPBD`, `SolverSemiImplicit`, `SolverFeatherstone`, `SolverVBD`, and `SolverMuJoCo` to opt into deterministic solver execution.
 - Add `--render-fps` to cap example rendering rate without changing simulation frame timing
 - Add `basic_dzhanibekov` example demonstrating free rigid-body intermediate-axis instability across VBD, XPBD, and MuJoCo solvers
-- Add experimental inverse-dynamics evaluation for articulated systems: `Model.inverse_dynamics_buffers()` returns `InverseDynamicsBuffers`, which `eval_inverse_dynamics` populates with the joint-space mass matrix `M(q)`, gravity bias `g(q)`, and Coriolis bias `C(q, q_dot)*q_dot`; `eval_inverse_dynamics_force` reads the populated buffers and combines them with a user-supplied `qddot` into `tau = M*qddot + C*q_dot + g`; both operations support articulation masks directly and through `ArticulationView`
+- Add experimental inverse-dynamics evaluation for articulated systems: `eval_inverse_dynamics_passive` writes requested passive terms into caller-allocated arrays, while `eval_inverse_dynamics_force` combines them with a user-supplied `joint_qdd`; both operations support articulation masks directly and through `ArticulationView`
 - Expose `MeshAdjacencyData` (the device-resident soft-mesh adjacency struct returned by `MeshAdjacency.to()`) as public API for use in custom Warp kernels
 - Add `Model.AttributeSpec` and `Model.attribute_specs` for declaring model-attribute indexing, references, and view/compaction behavior in one metadata registry.
 - Add `ModelBuilder.BvhConfig` for selecting Warp BVH constructors during model finalization for mesh, Gaussian, and shape BVHs.
@@ -105,7 +105,7 @@
 - Fix `ViewerGL.get_frame()` crashing when a CPU model is rendered while a CUDA context is active.
 - Fix `ModelBuilder.approximate_meshes()` leaving the original mesh in place when remeshing fails, despite warning that it falls back to a bounding box; failed shapes now receive the documented bounding-box approximation.
 - Fix `ViewerUSD` leaving stale particle geometry visible when the active particle count drops to zero.
-- Fix `eval_inverse_dynamics()` and `SolverFeatherstone` intermittently dropping descendant wrench contributions during the articulated-body backward pass on CUDA.
+- Fix `eval_inverse_dynamics_passive()` and `SolverFeatherstone` intermittently dropping descendant wrench contributions during the articulated-body backward pass on CUDA.
 - Fix XPBD particle-particle contacts to avoid non-finite particle state for exact-overlap contacts. (#1562)
 - Refer to `kf` consistently as contact friction gain in public documentation. (#2988)
 - Fix `SolverMuJoCo` dropping the authored `actuator_ctrlrange`/`actuator_ctrllimited`/`actuator_forcerange`/`actuator_forcelimited` when rebuilding USD/MJCF position/velocity actuators imported as `JOINT_TARGET`, so the compiled `mj_model` now clamps control targets and actuator forces like native MuJoCo.

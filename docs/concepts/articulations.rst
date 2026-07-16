@@ -732,7 +732,7 @@ Newton can evaluate the **manipulator equation** for an articulated rigid-body s
    * - :math:`\dot{q}`
      - Generalized joint velocities (:attr:`State.joint_qd`).
    * - :math:`\ddot{q}`
-     - Generalized joint accelerations (user-supplied ``qddot``).
+     - Generalized joint accelerations (user-supplied ``joint_qdd``).
    * - :math:`\tau`
      - Generalized joint forces / torques, same layout as :attr:`Control.joint_f`.
    * - :math:`M(q)`
@@ -742,10 +742,10 @@ Newton can evaluate the **manipulator equation** for an articulated rigid-body s
    * - :math:`C(q, \dot{q})\, \dot{q}`
      - Coriolis + centrifugal force.
 
-:func:`newton.eval_inverse_dynamics` populates any combination of
-:math:`M(q)`, :math:`g(q)`, and :math:`C(q, \dot{q})\, \dot{q}` into an
-:class:`~newton.InverseDynamicsBuffers` container. The desired combination is selected via
-:class:`~newton.InverseDynamicsBuffers.EvalType` flags.
+:func:`newton.eval_inverse_dynamics_passive` populates any requested
+combination of :math:`M(q)`, :math:`g(q)`, and
+:math:`C(q, \dot{q})\, \dot{q}` into caller-allocated arrays. An output set to
+``None`` is not computed.
 :func:`newton.eval_inverse_dynamics_force` then combines them with a
 user-supplied :math:`\ddot{q}` to produce :math:`\tau`.
 
@@ -753,42 +753,56 @@ Both functions require ``state.body_q`` to be consistent with
 ``state.joint_q``: callers must invoke :func:`newton.eval_fk` (or
 otherwise update ``state.body_q``) first.
 
-The inverse-dynamics buffer container :class:`~newton.InverseDynamicsBuffers`
-is allocated using :meth:`newton.Model.inverse_dynamics_buffers`. It holds the
-public buffers and owns the internal RNEA/Jacobian scratch privately, so callers
-manage only one object.
-
 .. code-block:: python
 
     # bring state.body_q in sync with state.joint_q (precondition of
-    # eval_inverse_dynamics)
+    # eval_inverse_dynamics_passive)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-    # allocate the reusable buffers, sized to the model
-    inverse_dynamics_buffers = model.inverse_dynamics_buffers()
+    # allocate the requested outputs
+    mass_matrix = wp.empty(
+        (
+            model.articulation_count,
+            model.max_dofs_per_articulation,
+            model.max_dofs_per_articulation,
+        ),
+        dtype=wp.float32,
+        device=model.device,
+    )
+    gravity_force = wp.empty_like(state.joint_qd)
+    coriolis_force = wp.empty_like(state.joint_qd)
+    tau = wp.empty_like(state.joint_qd)
 
     # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
-    newton.eval_inverse_dynamics(
-        model, state, newton.InverseDynamicsBuffers.EvalType.ALL, inverse_dynamics_buffers,
+    newton.eval_inverse_dynamics_passive(
+        model,
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
     )
-    M = inverse_dynamics_buffers.mass_matrix     # (articulation_count, max_dofs, max_dofs)
-    g = inverse_dynamics_buffers.gravity_force   # (joint_dof_count,)
-    c = inverse_dynamics_buffers.coriolis_force  # (joint_dof_count,)
 
-    # combine into tau = M*qddot + C*qdot + g for a user-supplied qddot
-    qddot = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
-    newton.eval_inverse_dynamics_force(model, state, inverse_dynamics_buffers, qddot)
-    tau = inverse_dynamics_buffers.tau
+    # combine into tau = M*joint_qdd + C*qdot + g
+    joint_qdd = wp.zeros_like(state.joint_qd)
+    newton.eval_inverse_dynamics_force(
+        model,
+        state,
+        mass_matrix=mass_matrix,
+        joint_qdd=joint_qdd,
+        coriolis_force=coriolis_force,
+        gravity_force=gravity_force,
+        tau=tau,
+    )
 
-Combine flags with bitwise-or to compute only what you need. For
-example, ``EvalType.GRAVITY_FORCE | EvalType.CORIOLIS_FORCE`` skips
-the mass-matrix Jacobian pass when only the bias terms are needed.
+Pass only the output arrays you need. For example, supplying
+``gravity_force=`` and ``coriolis_force=`` while leaving ``mass_matrix=None``
+skips the mass-matrix Jacobian pass.
 
 Restricting evaluation with the selection API
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 :class:`newton.selection.ArticulationView` exposes
-:meth:`~newton.selection.ArticulationView.eval_inverse_dynamics`, which
+:meth:`~newton.selection.ArticulationView.eval_inverse_dynamics_passive`, which
 masks the computation to a label-matched (and optionally per-world)
 subset of articulations. Output buffers stay sized for the whole model;
 slots belonging to unselected articulations and DOFs come back as zero,
@@ -799,35 +813,44 @@ own ``mask=`` argument.
 
     # only compute M(q), g(q), and C*q_dot for articulations labelled "arm"
     view = newton.selection.ArticulationView(model, pattern="arm")
-    view.eval_inverse_dynamics(
-        state, newton.InverseDynamicsBuffers.EvalType.ALL, inverse_dynamics_buffers,
+    view.eval_inverse_dynamics_passive(
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
     )
 
     # optionally narrow further with a per-world submask (shape [world_count])
     per_world_mask = wp.array([True], dtype=bool, device=model.device)
-    view.eval_inverse_dynamics(
-        state, newton.InverseDynamicsBuffers.EvalType.ALL,
-        inverse_dynamics_buffers, mask=per_world_mask,
+    view.eval_inverse_dynamics_passive(
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
+        mask=per_world_mask,
     )
 
-The view also applies the same selection when combining the populated buffers
+The view also applies the same selection when combining the populated arrays
 with a desired acceleration:
 
 .. code-block:: python
 
-    view.eval_inverse_dynamics_force(state, inverse_dynamics_buffers, qddot, mask=per_world_mask)
+    view.eval_inverse_dynamics_force(
+        state,
+        mass_matrix=mass_matrix,
+        joint_qdd=joint_qdd,
+        coriolis_force=coriolis_force,
+        gravity_force=gravity_force,
+        tau=tau,
+        mask=per_world_mask,
+    )
 
 
-.. autofunction:: newton.eval_inverse_dynamics
+.. autofunction:: newton.eval_inverse_dynamics_passive
    :noindex:
 
 .. autofunction:: newton.eval_inverse_dynamics_force
    :noindex:
-
-.. autoclass:: newton.InverseDynamicsBuffers
-   :members:
-   :noindex:
-
 
 .. _Orphan joints:
 
