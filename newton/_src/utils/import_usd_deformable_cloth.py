@@ -45,6 +45,8 @@ def _cloth_rest_data(points: np.ndarray, triangles: np.ndarray) -> tuple[np.ndar
     normals = np.cross(qp, rp)
     normal_lengths = np.linalg.norm(normals, axis=1)
     edge_lengths = np.linalg.norm(qp, axis=1)
+    if not np.all(np.isfinite(normal_lengths)) or not np.all(np.isfinite(edge_lengths)):
+        raise ValueError("rest shape contains non-finite triangle geometry")
     if np.any(normal_lengths <= 1.0e-12) or np.any(edge_lengths <= 1.0e-12):
         raise ValueError("rest shape contains a degenerate triangle")
     normals /= normal_lengths[:, None]
@@ -52,6 +54,8 @@ def _cloth_rest_data(points: np.ndarray, triangles: np.ndarray) -> tuple[np.ndar
     e2 = np.cross(normals, e1)
     rest_basis = np.stack((e1, e2), axis=1) @ np.stack((qp, rp), axis=2)
     areas = np.linalg.det(rest_basis) * 0.5
+    if not np.all(np.isfinite(areas)):
+        raise ValueError("rest shape contains non-finite triangle areas")
     if np.any(areas <= 1.0e-12):
         raise ValueError("rest shape contains an inverted or degenerate triangle")
     return np.linalg.inv(rest_basis), areas

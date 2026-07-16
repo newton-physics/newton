@@ -48,6 +48,8 @@ def _tet_rest_data(points: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray,
         axis=2,
     )
     volumes = np.linalg.det(matrices) / 6.0
+    if not np.all(np.isfinite(volumes)):
+        raise ValueError("rest shape contains non-finite tetrahedron volumes")
     if np.any(volumes <= 1.0e-12):
         raise ValueError("rest shape contains an inverted or degenerate tetrahedron")
     return np.linalg.inv(matrices), volumes
