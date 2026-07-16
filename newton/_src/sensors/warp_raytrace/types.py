@@ -57,7 +57,12 @@ class RenderConfig:
     """Enable ambient lighting for the scene."""
 
     enable_particles: bool = True
-    """Enable particle rendering."""
+    """Enable standalone particle rendering.
+
+    Particles referenced by rendered triangle or tetrahedral deformable topology
+    are rendered by the triangle mesh path and are not emitted as particle
+    spheres.
+    """
 
     enable_backface_culling: bool = True
     """Cull back-facing triangles."""
