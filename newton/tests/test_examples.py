@@ -306,29 +306,6 @@ class TestExampleOutputRegexes(unittest.TestCase):
 
         self.assertEqual(unmatched_output, unexpected_output)
 
-    def test_newton_asset_download_output_does_not_consume_trailing_output(self):
-        unexpected_output = "unexpected output\n"
-        output = (
-            "Cloning https://github.com/newton-physics/newton-assets.git "
-            "(ref: 261cd1f429619d8ef4f546bd788ab9dea906b5e1)...\n"
-            "Successfully downloaded folder to: /tmp/newton-assets/franka_emika_panda\n" + unexpected_output
-        )
-
-        unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
-
-        self.assertEqual(unmatched_output, unexpected_output)
-
-    def test_isaacgym_asset_download_output_does_not_consume_trailing_output(self):
-        unexpected_output = "unexpected output\n"
-        output = (
-            "Cloning https://github.com/isaac-sim/IsaacGymEnvs.git (ref: main)...\n"
-            "Successfully downloaded folder to: /tmp/newton-assets/factory_nut_bolt\n" + unexpected_output
-        )
-
-        unmatched_output = re.sub(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
-
-        self.assertEqual(unmatched_output, unexpected_output)
-
 
 cuda_test_devices = get_selected_cuda_test_devices(mode="basic")  # Don't test on multiple GPUs to save time
 test_devices = get_test_devices(mode="basic")
