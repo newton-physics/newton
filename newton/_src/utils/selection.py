@@ -2439,7 +2439,7 @@ class DeformableView:
 
     def set_particle_positions(
         self,
-        source: Model | State,
+        target: Model | State,
         values: Any,
         *,
         group_indices: Any = None,
@@ -2452,7 +2452,7 @@ class DeformableView:
         exactly one matching group. Other groups are untouched.
 
         Args:
-            source: Model initial state or simulation state to update.
+            target: Model initial state or simulation state to update.
             values: Particle positions [m] with shape ``(rows, particles_per_group)``.
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
@@ -2472,7 +2472,7 @@ class DeformableView:
             "particle",
             values,
             _scatter_group_vec3_kernel,
-            source.particle_q,
+            target.particle_q,
             wp.vec3,
             group_indices,
             world_indices,
@@ -2495,7 +2495,7 @@ class DeformableView:
 
     def set_particle_velocities(
         self,
-        source: Model | State,
+        target: Model | State,
         values: Any,
         *,
         group_indices: Any = None,
@@ -2508,7 +2508,7 @@ class DeformableView:
         exactly one matching group. Other groups are untouched.
 
         Args:
-            source: Model initial state or simulation state to update.
+            target: Model initial state or simulation state to update.
             values: Particle velocities [m/s] with shape
                 ``(rows, particles_per_group)``.
             group_indices: Optional flat group rows. Host entries must be integers;
@@ -2529,7 +2529,7 @@ class DeformableView:
             "particle",
             values,
             _scatter_group_vec3_kernel,
-            source.particle_qd,
+            target.particle_qd,
             wp.vec3,
             group_indices,
             world_indices,
@@ -2562,7 +2562,7 @@ class DeformableView:
 
     def set_body_transforms(
         self,
-        source: Model | State,
+        target: Model | State,
         values: Any,
         *,
         group_indices: Any = None,
@@ -2575,7 +2575,7 @@ class DeformableView:
         model worlds when every world has exactly one matching group.
 
         Args:
-            source: Model initial state or simulation state to update.
+            target: Model initial state or simulation state to update.
             values: Segment transforms with shape ``(rows, bodies_per_group)``;
                 translations are in meters and quaternions are unitless.
             group_indices: Optional flat group rows. Host entries must be integers;
@@ -2596,7 +2596,7 @@ class DeformableView:
             "body",
             values,
             _scatter_group_transform_kernel,
-            source.body_q,
+            target.body_q,
             wp.transform,
             group_indices,
             world_indices,
@@ -2622,7 +2622,7 @@ class DeformableView:
 
     def set_body_velocities(
         self,
-        source: Model | State,
+        target: Model | State,
         values: Any,
         *,
         group_indices: Any = None,
@@ -2635,7 +2635,7 @@ class DeformableView:
         ``world_indices`` selects model worlds when every world has exactly one match.
 
         Args:
-            source: Model initial state or simulation state to update.
+            target: Model initial state or simulation state to update.
             values: Segment velocities with shape ``(rows, bodies_per_group)``;
                 linear components are in meters per second and angular components are
                 in radians per second.
@@ -2657,7 +2657,7 @@ class DeformableView:
             "body",
             values,
             _scatter_group_spatial_kernel,
-            source.body_qd,
+            target.body_qd,
             wp.spatial_vector,
             group_indices,
             world_indices,
