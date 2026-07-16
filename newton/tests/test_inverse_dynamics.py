@@ -1961,11 +1961,40 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.gravity_force.numpy())))
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
-    def test_model_has_no_inverse_dynamics_allocator(self):
-        """Inverse-dynamics arrays are caller-owned, not allocated by Model."""
-        model = newton.ModelBuilder().finalize(device=self.device)
-        self.assertFalse(hasattr(model, "inverse_dynamics_buffers"))
-        self.assertFalse(hasattr(newton, "InverseDynamicsBuffers"))
+    def test_inverse_dynamics_rejects_cable_joint(self):
+        """Both inverse-dynamics entrypoints reject CABLE joints eagerly."""
+        identity_xform = wp.transform_identity()
+        builder = newton.ModelBuilder()
+        link = builder.add_link(
+            xform=identity_xform,
+            mass=1.0,
+            inertia=self.I_UNIT,
+            com=wp.vec3(0.0),
+        )
+        joint = builder.add_joint_cable(
+            parent=-1,
+            child=link,
+            parent_xform=identity_xform,
+            child_xform=identity_xform,
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        arrays = _InverseDynamicsArrays(model)
+
+        with self.assertRaisesRegex(ValueError, "JointType.CABLE"):
+            newton.eval_inverse_dynamics_passive(model, state, mass_matrix=arrays.mass_matrix)
+
+        with self.assertRaisesRegex(ValueError, "JointType.CABLE"):
+            newton.eval_inverse_dynamics_force(
+                model,
+                state,
+                mass_matrix=arrays.mass_matrix,
+                joint_qdd=wp.zeros_like(state.joint_qd),
+                coriolis_force=arrays.coriolis_force,
+                gravity_force=arrays.gravity_force,
+                tau=arrays.tau,
+            )
 
     def test_eval_inverse_dynamics_force_hand_crafted_inputs(self):
         """White-box test of ``eval_inverse_dynamics_force`` with hand-chosen inputs.
@@ -2858,10 +2887,9 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertGreater(float(np.max(np.abs(g))), 1e-6)
         self.assertGreater(float(np.max(np.abs(c))), 1e-6)
 
-    def test_eval_inverse_dynamics_passive_raises_on_buffer_shape_mismatch(self):
+    def test_inverse_dynamics_raises_on_shape_mismatch(self):
         """``eval_inverse_dynamics_passive`` and ``eval_inverse_dynamics_force`` raise
-        ``ValueError`` when any output buffer's shape disagrees with the
-        model's expected shape.
+        ``ValueError`` when any array's shape disagrees with the model.
         """
         builder = self._build_two_link_articulation(
             gravity=wp.vec3(0.0, 0.0, 0.0),
@@ -2917,20 +2945,59 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                 self.assertIn(expected_substr, msg)
                 self.assertIn(str(wrong_shape), msg)
 
-        with self.subTest(flag="tau"):
-            inverse_dynamics = _InverseDynamicsArrays(model)
-            wrong_shape = (model.joint_dof_count + 1,)
-            inverse_dynamics.tau = wp.zeros(wrong_shape, dtype=wp.float32, device=self.device)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        joint_qdd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
+        force_args = {
+            "mass_matrix": inverse_dynamics.mass_matrix,
+            "joint_qdd": joint_qdd,
+            "coriolis_force": inverse_dynamics.coriolis_force,
+            "gravity_force": inverse_dynamics.gravity_force,
+            "tau": inverse_dynamics.tau,
+        }
+        force_cases = [
+            (
+                "mass_matrix",
+                (
+                    model.articulation_count,
+                    model.max_dofs_per_articulation + 1,
+                    model.max_dofs_per_articulation + 1,
+                ),
+            ),
+            ("joint_qdd", (model.joint_dof_count + 1,)),
+            ("coriolis_force", (model.joint_dof_count + 1,)),
+            ("gravity_force", (model.joint_dof_count + 1,)),
+            ("tau", (model.joint_dof_count + 1,)),
+        ]
+        for name, wrong_shape in force_cases:
+            with self.subTest(force_array=name):
+                args = force_args.copy()
+                args[name] = wp.zeros(wrong_shape, dtype=wp.float32, device=self.device)
+                with self.assertRaises(ValueError) as ctx:
+                    newton.eval_inverse_dynamics_force(model, state, **args)
+                msg = str(ctx.exception)
+                self.assertIn(name, msg)
+                self.assertIn(str(wrong_shape), msg)
+
+        wrong_mask_shape = (model.articulation_count + 1,)
+        wrong_mask = wp.zeros(wrong_mask_shape, dtype=bool, device=self.device)
+        with self.subTest(passive_array="mask"):
             with self.assertRaises(ValueError) as ctx:
-                _eval_inverse_dynamics_force(
+                newton.eval_inverse_dynamics_passive(
                     model,
                     state,
-                    inverse_dynamics,
-                    wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device),
+                    gravity_force=inverse_dynamics.gravity_force,
+                    mask=wrong_mask,
                 )
             msg = str(ctx.exception)
-            self.assertIn("tau", msg)
-            self.assertIn(str(wrong_shape), msg)
+            self.assertIn("mask", msg)
+            self.assertIn(str(wrong_mask_shape), msg)
+
+        with self.subTest(force_array="mask"):
+            with self.assertRaises(ValueError) as ctx:
+                newton.eval_inverse_dynamics_force(model, state, **force_args, mask=wrong_mask)
+            msg = str(ctx.exception)
+            self.assertIn("mask", msg)
+            self.assertIn(str(wrong_mask_shape), msg)
 
     def test_eval_inverse_dynamics_passive_raises_without_outputs(self):
         """The passive evaluator rejects a call that requests no outputs."""

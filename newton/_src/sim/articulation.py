@@ -1502,6 +1502,10 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``tau`` is entirely in that world convention.
 
+    :attr:`~newton.JointType.CABLE` joints are not supported because their DOF
+    slots are constraints rather than generalized coordinates for this
+    inverse-dynamics formulation.
+
     .. experimental::
 
     Args:
@@ -1513,8 +1517,11 @@ def eval_inverse_dynamics_force(
             :func:`~newton.eval_inverse_dynamics_passive`).
         mass_matrix: Joint-space mass matrix, shape
             ``(model.articulation_count, model.max_dofs_per_articulation,
-            model.max_dofs_per_articulation)``, dtype float.
-        joint_qdd: Generalized joint accelerations [m/s^2 or rad/s^2,
+            model.max_dofs_per_articulation)``, dtype float. Entry units depend
+            on the row and column DOF types: [kg] for two translational DOFs,
+            [kg·m] for mixed translational/rotational DOFs, and [kg·m²] for two
+            rotational DOFs.
+        joint_qdd: Generalized joint accelerations [m/s² or rad/s²,
             depending on joint type], shape ``(model.joint_dof_count,)``,
             dtype float.
         coriolis_force: Coriolis + centrifugal force
@@ -1528,7 +1535,14 @@ def eval_inverse_dynamics_force(
             ``(articulation_count,)`` selecting which articulations to
             compute. Unselected joint-force entries are zeroed without
             reading their mass-matrix, acceleration, or bias-force inputs.
+
+    Raises:
+        ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
+            joint or an input, output, or mask has an unexpected shape.
     """
+    if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
+        raise ValueError("eval_inverse_dynamics_force() does not support JointType.CABLE joints.")
+
     if model.articulation_count == 0:
         return
 
@@ -1548,6 +1562,10 @@ def eval_inverse_dynamics_force(
     ):
         if array.shape != expected_dof_shape:
             raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
+
+    expected_mask_shape = (model.articulation_count,)
+    if mask is not None and mask.shape != expected_mask_shape:
+        raise ValueError(f"mask has shape {mask.shape}, expected {expected_mask_shape}.")
 
     wp.launch(
         kernel=eval_articulation_inverse_dynamics_force_kernel,

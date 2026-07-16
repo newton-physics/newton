@@ -387,6 +387,10 @@ def eval_inverse_dynamics_passive(
         loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
         play no role in the inverse dynamics evaluation.
 
+        :attr:`~newton.JointType.CABLE` joints are not supported because they
+        do not define generalized coordinates or a motion subspace for this
+        inverse-dynamics formulation.
+
     .. experimental::
 
     Args:
@@ -409,7 +413,15 @@ def eval_inverse_dynamics_passive(
             zero in the output buffers (mirroring
             :func:`~newton.eval_mass_matrix`'s mask convention). If
             ``None``, all articulations are computed.
+
+    Raises:
+        ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
+            joint, no outputs are requested, or an output or mask has an
+            unexpected shape.
     """
+    if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
+        raise ValueError("eval_inverse_dynamics_passive() does not support JointType.CABLE joints.")
+
     if mass_matrix is None and gravity_force is None and coriolis_force is None:
         raise ValueError("At least one inverse-dynamics output must be provided.")
 
@@ -422,6 +434,10 @@ def eval_inverse_dynamics_passive(
     for name, array in (("gravity_force", gravity_force), ("coriolis_force", coriolis_force)):
         if array is not None and array.shape != expected_dof_shape:
             raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
+
+    expected_mask_shape = (model.articulation_count,)
+    if mask is not None and mask.shape != expected_mask_shape:
+        raise ValueError(f"mask has shape {mask.shape}, expected {expected_mask_shape}.")
 
     scratch = _InverseDynamicsScratchBuffer(
         body_count=model.body_count,

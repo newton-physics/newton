@@ -1781,10 +1781,14 @@ class ArticulationView:
             mass_matrix: Optional output, shape
                 ``(model.articulation_count,
                 model.max_dofs_per_articulation,
-                model.max_dofs_per_articulation)``, dtype float.
-            gravity_force: Optional output, shape
-                ``(model.joint_dof_count,)``, dtype float.
-            coriolis_force: Optional output, shape
+                model.max_dofs_per_articulation)``, dtype float. Entry units
+                depend on the row and column DOF types: [kg] for two
+                translational DOFs, [kg·m] for mixed translational/rotational
+                DOFs, and [kg·m²] for two rotational DOFs.
+            gravity_force: Optional gravity-force output [N or N·m, depending
+                on joint type], shape ``(model.joint_dof_count,)``, dtype float.
+            coriolis_force: Optional Coriolis + centrifugal-force output [N or
+                N·m, depending on joint type], shape
                 ``(model.joint_dof_count,)``, dtype float.
             mask: Optional mask of articulations in this
                 ArticulationView (all by default). Either 1-D
@@ -1825,15 +1829,19 @@ class ArticulationView:
             mass_matrix: Joint-space mass matrix, shape
                 ``(model.articulation_count,
                 model.max_dofs_per_articulation,
-                model.max_dofs_per_articulation)``, dtype float.
-            joint_qdd: Generalized joint accelerations [m/s^2 or rad/s^2],
+                model.max_dofs_per_articulation)``, dtype float. Entry units
+                depend on the row and column DOF types: [kg] for two
+                translational DOFs, [kg·m] for mixed translational/rotational
+                DOFs, and [kg·m²] for two rotational DOFs.
+            joint_qdd: Generalized joint accelerations [m/s² or rad/s²,
+                depending on joint type], shape
+                ``(model.joint_dof_count,)``, dtype float.
+            coriolis_force: Coriolis + centrifugal force [N or N·m, depending
+                on joint type], shape ``(model.joint_dof_count,)``, dtype float.
+            gravity_force: Gravity force [N or N·m, depending on joint type],
                 shape ``(model.joint_dof_count,)``, dtype float.
-            coriolis_force: Coriolis + centrifugal force, shape
+            tau: Output joint force [N or N·m, depending on joint type], shape
                 ``(model.joint_dof_count,)``, dtype float.
-            gravity_force: Gravity force, shape
-                ``(model.joint_dof_count,)``, dtype float.
-            tau: Output joint force, shape ``(model.joint_dof_count,)``,
-                dtype float.
             mask: Optional mask of articulations in this ArticulationView.
                 Either 1-D ``[world_count]`` or 2-D
                 ``[world_count, count_per_world]``.

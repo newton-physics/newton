@@ -753,7 +753,7 @@ Both functions require ``state.body_q`` to be consistent with
 ``state.joint_q``: callers must invoke :func:`newton.eval_fk` (or
 otherwise update ``state.body_q``) first.
 
-.. code-block:: python
+.. testcode:: articulation-view
 
     # bring state.body_q in sync with state.joint_q (precondition of
     # eval_inverse_dynamics_passive)
@@ -809,10 +809,10 @@ slots belonging to unselected articulations and DOFs come back as zero,
 mirroring the convention :func:`newton.eval_mass_matrix` uses for its
 own ``mask=`` argument.
 
-.. code-block:: python
+.. testcode:: articulation-view
 
-    # only compute M(q), g(q), and C*q_dot for articulations labelled "arm"
-    view = newton.selection.ArticulationView(model, pattern="arm")
+    # only compute M(q), g(q), and C*q_dot for selected articulations
+    view = newton.selection.ArticulationView(model, pattern="robot*")
     view.eval_inverse_dynamics_passive(
         state,
         mass_matrix=mass_matrix,
@@ -833,7 +833,7 @@ own ``mask=`` argument.
 The view also applies the same selection when combining the populated arrays
 with a desired acceleration:
 
-.. code-block:: python
+.. testcode:: articulation-view
 
     view.eval_inverse_dynamics_force(
         state,

@@ -51,7 +51,7 @@ class _InverseDynamicsBenchmark:
         )
         self.gravity_force = wp.empty_like(self.state.joint_qd)
         self.coriolis_force = wp.empty_like(self.state.joint_qd)
-        self.tau = wp.empty_like(self.state.joint_qd)
+        self.tau = wp.zeros_like(self.state.joint_qd)
 
         # Capture one full M(q) + g(q) + C(q, q_dot)*q_dot evaluation into a
         # CUDA graph so the timed inner loop is just graph replays.
