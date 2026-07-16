@@ -31,6 +31,7 @@ def _build_revolute(
     bid = builder.add_link(
         label="link",
         mass=1.0,
+        inertia=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
         xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
         com=body_com,
         lock_inertia=True,
