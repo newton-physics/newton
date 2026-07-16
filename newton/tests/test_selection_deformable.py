@@ -372,6 +372,54 @@ class TestDeformableView(unittest.TestCase):
                 wp.capture_launch(capture.graph)
                 np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before_invalid)
 
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_cable_device_writes_capture_and_replay(self):
+        """Captured cable setters replay transform and spatial-vector device writes."""
+        device = wp.get_device("cuda:0")
+        model = _replicated_model(3, device=device)
+        cable = DeformableView(model, "/World/Cable", family="curve")
+
+        for name, getter, setter, dtype in (
+            ("transforms", cable.get_body_transforms, cable.set_body_transforms, wp.transform),
+            ("velocities", cable.get_body_velocities, cable.set_body_velocities, wp.spatial_vector),
+        ):
+            with self.subTest(values=name):
+                state = model.state()
+                initial = getter(state).numpy().copy()
+                first = initial[[0]].copy()
+                second = initial[[0]].copy()
+                if dtype is wp.transform:
+                    first[..., 0] += 1.25
+                    second[..., 1] -= 2.5
+                else:
+                    first.fill(0.0)
+                    first[..., 0] = 1.25
+                    first[..., 3] = 2.5
+                    second.fill(0.0)
+                    second[..., 1] = -3.0
+                    second[..., 4] = 4.0
+
+                values = wp.array(first, dtype=dtype, device=device)
+                indices = wp.array([cable.count], dtype=wp.int32, device=device)
+
+                # Warm the captured operations with an ignored index.
+                setter(state, values, group_indices=indices)
+
+                indices.assign(np.array([1], dtype=np.int32))
+                with wp.ScopedCapture(device) as capture:
+                    setter(state, values, group_indices=indices)
+
+                wp.capture_launch(capture.graph)
+                expected = initial.copy()
+                expected[1] = first[0]
+                np.testing.assert_allclose(getter(state).numpy(), expected, atol=1e-6)
+
+                indices.assign(np.array([2], dtype=np.int32))
+                values.assign(second)
+                wp.capture_launch(capture.graph)
+                expected[2] = second[0]
+                np.testing.assert_allclose(getter(state).numpy(), expected, atol=1e-6)
+
     def test_duplicate_device_group_index_uses_last_value(self):
         """Device duplicate indices are deterministic: the last row wins."""
         model = _replicated_model(3)
