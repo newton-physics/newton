@@ -279,6 +279,36 @@ class TestDeformableView(unittest.TestCase):
                 group_indices=[1, 1],
             )
 
+    def test_host_indices_require_integral_values(self):
+        """Host selectors reject lossy coercions before they can write another group."""
+        model = _replicated_model(3, device="cpu")
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        values = wp.full((1, cloth.particles_per_group), 9.0, dtype=wp.vec3, device="cpu")
+
+        for index_argument in ("group_indices", "world_indices"):
+            for invalid_indices in ([-0.2], [1.9], ["1"], [False], [True]):
+                with self.subTest(index_argument=index_argument, invalid_indices=invalid_indices):
+                    state = model.state()
+                    before = cloth.get_particle_positions(state).numpy()
+                    with self.assertRaisesRegex(TypeError, index_argument):
+                        cloth.set_particle_positions(state, values, **{index_argument: invalid_indices})
+                    np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
+
+            with self.subTest(index_argument=index_argument, valid_indices="numpy integer"):
+                state = model.state()
+                before = cloth.get_particle_positions(state).numpy()
+                cloth.set_particle_positions(state, values, **{index_argument: [np.int64(1)]})
+                after = cloth.get_particle_positions(state).numpy()
+                np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
+                np.testing.assert_array_equal(after[1], np.full_like(after[1], 9.0))
+
+            with self.subTest(index_argument=index_argument, valid_indices="empty"):
+                state = model.state()
+                before = cloth.get_particle_positions(state).numpy()
+                empty_values = wp.empty((0, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
+                cloth.set_particle_positions(state, empty_values, **{index_argument: []})
+                np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
+
     def test_invalid_device_group_index_does_not_write(self):
         """An out-of-range device group index cannot address another group's state."""
         model = _replicated_model(3)

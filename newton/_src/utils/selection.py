@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import functools
+import operator
 import re
 import warnings
 from fnmatch import fnmatch
@@ -2299,7 +2300,11 @@ class DeformableView:
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
-    def _resolve_group_indices(self, group_indices: Any) -> wp.array[wp.int32]:
+    def _resolve_group_indices(
+        self,
+        group_indices: Any,
+        argument_name: str = "group_indices",
+    ) -> wp.array[wp.int32]:
         if group_indices is None:
             if self._all_groups is None:
                 self._all_groups = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
@@ -2307,17 +2312,24 @@ class DeformableView:
         if isinstance(group_indices, wp.array):
             # Kernel-side checks keep this graph-safe without a host copy.
             if group_indices.ndim != 1:
-                raise ValueError(f"Expected group_indices to be one-dimensional, got {group_indices.ndim} dimensions")
+                raise ValueError(f"Expected {argument_name} to be one-dimensional, got {group_indices.ndim} dimensions")
             if group_indices.dtype is not wp.int32:
-                raise ValueError(f"Expected group_indices dtype int32, got {group_indices.dtype.__name__}")
+                raise ValueError(f"Expected {argument_name} dtype int32, got {group_indices.dtype.__name__}")
             if group_indices.device != self.device:
-                raise ValueError(f"Expected group_indices on device {self.device}, got {group_indices.device}")
+                raise ValueError(f"Expected {argument_name} on device {self.device}, got {group_indices.device}")
             return group_indices
-        idx = [int(i) for i in group_indices]
+        idx = []
+        for value in group_indices:
+            if isinstance(value, bool):
+                raise TypeError(f"{argument_name} entries must be integers, got {value!r}")
+            try:
+                idx.append(operator.index(value))
+            except TypeError as error:
+                raise TypeError(f"{argument_name} entries must be integers, got {value!r}") from error
         if any(i < 0 or i >= self.count for i in idx):
-            raise ValueError(f"Group indices must be in [0, {self.count}), got {idx}")
+            raise ValueError(f"{argument_name} entries must be in [0, {self.count}), got {idx}")
         if len(set(idx)) != len(idx):
-            raise ValueError(f"group_indices contains duplicate entries: {idx}")
+            raise ValueError(f"{argument_name} contains duplicate entries: {idx}")
         return wp.array(idx, dtype=wp.int32, device=self.device)
 
     def _resolve_write_indices(self, group_indices: Any = None, world_indices: Any = None) -> wp.array[wp.int32]:
@@ -2327,7 +2339,7 @@ class DeformableView:
             return self._resolve_group_indices(group_indices)
         if self._uses_global_groups or any(count != 1 for count in self._groups_per_world):
             raise ValueError("world_indices requires exactly one selected group in every model world")
-        return self._resolve_group_indices(world_indices)
+        return self._resolve_group_indices(world_indices, "world_indices")
 
     def _scatter(
         self,
