@@ -2201,8 +2201,6 @@ class DeformableView:
 
         self.count = group_count
         """Number of selected groups across all worlds."""
-        self.group_count = group_count
-        """Number of selected groups across all worlds."""
         self.world_count = world_count
         """Number of worlds spanned by the selection."""
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None

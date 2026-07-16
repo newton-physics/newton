@@ -82,7 +82,7 @@ class TestDeformableView(unittest.TestCase):
         state = model.state()
 
         view = DeformableView(model, "/World/Cloth", family="surface")
-        self.assertEqual((view.count, view.group_count, view.world_count, view.count_per_world), (3, 3, 3, 1))
+        self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
         self.assertEqual(view.worlds, [0, 1, 2])
         self.assertEqual(view.particles_per_group, 4)
 
