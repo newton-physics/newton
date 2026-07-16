@@ -310,7 +310,8 @@ class SchemaResolverNewton(SchemaResolver):
                 usd_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
             ),
             # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
-            # "unset" sentinel (same convention as gap / shell_thickness above).
+            # unset sentinel for narrow-band, voxel-size, and padding fields;
+            # the other fields use concrete schema defaults.
             "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", 64),
             "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),

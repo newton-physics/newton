@@ -130,7 +130,14 @@ class SchemaResolver:
                 return spec.usd_value_transformer(v) if spec.usd_value_transformer is not None else v
         return None
 
-    def _is_applicable(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> bool:
+    def _is_applicable(
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        applied_schemas: frozenset[str],
+        prim_type_name: str,
+    ) -> bool:
         """Return whether this resolver's schema default applies to a prim and key."""
         api_names = self._applicable_api_schemas_by_key.get(prim_type, {}).get(
             key, self._applicable_api_schemas.get(prim_type, ())
@@ -144,14 +151,9 @@ class SchemaResolver:
             )
         if prim is None:
             return False
-        try:
-            applied = {str(name).split(":", 1)[0] for name in prim.GetAppliedSchemas()}
-            if any(name in applied or usd.has_applied_api_schema(prim, name) for name in api_names):
-                return True
-            type_name = str(prim.GetTypeName())
-            return any(type_name.startswith(name) for name in prim_type_names)
-        except (AttributeError, RuntimeError):
-            return False
+        if any(name in applied_schemas for name in api_names):
+            return True
+        return any(prim_type_name.startswith(name) for name in prim_type_names)
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> dict[str, Any]:
         """Collect all resolver-relevant attributes for a prim.
@@ -253,6 +255,25 @@ class SchemaResolverManager:
         # Dictionary to accumulate schema attributes as prims are encountered
         # Pre-initialize maps for each configured resolver
         self._schema_attrs: dict[str, dict[str, dict[str, Any]]] = {r.name: {} for r in self.resolvers}
+        self._prim_applicability_cache: dict[tuple[int, str], tuple[str, frozenset[str], str]] = {}
+
+    def _get_prim_applicability(self, prim: Usd.Prim) -> tuple[frozenset[str], str]:
+        """Return cached applied-schema and typed-prim information."""
+        if prim is None:
+            return frozenset(), ""
+        try:
+            cache_key = (id(prim.GetStage()), str(prim.GetPath()))
+            prim_type_name = str(prim.GetTypeName())
+            schema_signature = str(prim.GetMetadata("apiSchemas"))
+            cached = self._prim_applicability_cache.get(cache_key)
+            if cached is not None and cached[0] == schema_signature and cached[2] == prim_type_name:
+                return cached[1], cached[2]
+            schema_names = (*prim.GetAppliedSchemas(), *usd._get_raw_api_schemas(prim))
+            applied_schemas = frozenset(str(name).split(":", 1)[0] for name in schema_names)
+            self._prim_applicability_cache[cache_key] = (schema_signature, applied_schemas, prim_type_name)
+            return applied_schemas, prim_type_name
+        except (AttributeError, RuntimeError):
+            return frozenset(), ""
 
     def _collect_on_first_use(self, resolver: SchemaResolver, prim: Usd.Prim) -> None:
         """Collect and store attributes for this resolver/prim on first use."""
@@ -299,9 +320,14 @@ class SchemaResolverManager:
         if default is not None:
             return self.Resolution(default, None, self.Source.IMPORTER_DEFAULT)
 
+        applied_schemas, prim_type_name = self._get_prim_applicability(prim)
         for resolver in self.resolvers:
             spec = resolver.mapping.get(prim_type, {}).get(key) if hasattr(resolver, "mapping") else None
-            if spec is None or spec.default is None or not resolver._is_applicable(prim, prim_type, key):
+            if (
+                spec is None
+                or spec.default is None
+                or not resolver._is_applicable(prim, prim_type, key, applied_schemas, prim_type_name)
+            ):
                 continue
             transformer = spec.usd_value_transformer
             value = transformer(spec.default) if transformer is not None else spec.default
