@@ -17,7 +17,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
 
 
-def _replicated_model(world_count=3):
+def _replicated_model(world_count=3, device=None):
     """One cloth + one cable per world, replicated."""
     stage = _deformable_stage()
     _add_cloth_mesh(stage, "/World/Cloth")
@@ -26,7 +26,7 @@ def _replicated_model(world_count=3):
     sub.add_usd(stage)
     scene = newton.ModelBuilder()
     scene.replicate(sub, world_count)
-    return scene.finalize()
+    return scene.finalize() if device is None else scene.finalize(device=device)
 
 
 def _add_test_articulation(builder):
@@ -294,6 +294,63 @@ class TestDeformableView(unittest.TestCase):
         )
 
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
+
+    def test_device_group_indices_must_be_one_dimensional(self):
+        """Device index arrays fail clearly before reaching a one-dimensional kernel input."""
+        model = _replicated_model(3)
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device=model.device)
+        indices = wp.zeros((1, 2), dtype=wp.int32, device=model.device)
+
+        with self.assertRaisesRegex(ValueError, "one-dimensional"):
+            cloth.set_particle_positions(state, values, group_indices=indices)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_device_index_writes_capture_and_replay(self):
+        """Captured indexed setters reuse changing device values without unsafe writes."""
+        device = wp.get_device("cuda:0")
+        model = _replicated_model(3, device=device)
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+
+        for index_argument in ("group_indices", "world_indices"):
+            with self.subTest(index_argument=index_argument):
+                state = model.state()
+                initial = cloth.get_particle_positions(state).numpy().copy()
+                values_np = np.zeros((2, cloth.particles_per_group, 3), dtype=np.float32)
+                values = wp.array(values_np, dtype=wp.vec3, device=device)
+                indices = wp.array([cloth.count, cloth.count], dtype=wp.int32, device=device)
+
+                # Compile every captured operation without changing state.
+                cloth.set_particle_positions(state, values, **{index_argument: indices})
+
+                indices.assign(np.array([1, 1], dtype=np.int32))
+                values_np[0].fill(3.0)
+                values_np[1].fill(8.0)
+                values.assign(values_np)
+                with wp.ScopedCapture(device) as capture:
+                    cloth.set_particle_positions(state, values, **{index_argument: indices})
+
+                wp.capture_launch(capture.graph)
+                expected = initial.copy()
+                expected[1].fill(8.0)
+                np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), expected, atol=1e-6)
+
+                indices.assign(np.array([0, 2], dtype=np.int32))
+                values_np[0].fill(4.0)
+                values_np[1].fill(9.0)
+                values.assign(values_np)
+                wp.capture_launch(capture.graph)
+                expected[0].fill(4.0)
+                expected[2].fill(9.0)
+                np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), expected, atol=1e-6)
+
+                before_invalid = cloth.get_particle_positions(state).numpy().copy()
+                indices.assign(np.array([-1, cloth.count], dtype=np.int32))
+                values_np.fill(12.0)
+                values.assign(values_np)
+                wp.capture_launch(capture.graph)
+                np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before_invalid)
 
     def test_duplicate_device_group_index_uses_last_value(self):
         """Device duplicate indices are deterministic: the last row wins."""

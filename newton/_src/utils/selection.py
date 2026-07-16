@@ -2306,6 +2306,8 @@ class DeformableView:
             return self._all_groups
         if isinstance(group_indices, wp.array):
             # Kernel-side checks keep this graph-safe without a host copy.
+            if group_indices.ndim != 1:
+                raise ValueError(f"Expected group_indices to be one-dimensional, got {group_indices.ndim} dimensions")
             if group_indices.dtype is not wp.int32:
                 raise ValueError(f"Expected group_indices dtype int32, got {group_indices.dtype.__name__}")
             if group_indices.device != self.device:
