@@ -52,7 +52,7 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
-_DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}(?:(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{170}})?"
+_DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}"
 _BASIC_PLOTTING_OUTPUT_RE = (
     r"(?:"
     r"Diagnostics plot saved to solver_convergence\.png\n?"
@@ -772,11 +772,11 @@ class TestDiffSimExamples(NewtonTestCase):
     pass
 
 
-def add_diffsim_example_test(**kwargs):
+def add_diffsim_example_test(**kwargs: Any) -> None:
     extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
     allow_output_regexes = [
         (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-        (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
+        (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
         *extra_allow_output_regexes,
     ]
     add_example_test(TestDiffSimExamples, allow_output_regexes=allow_output_regexes, **kwargs)
