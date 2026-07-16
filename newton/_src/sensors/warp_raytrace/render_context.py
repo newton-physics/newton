@@ -28,6 +28,7 @@ class RenderContext:
         has_particles: bool = False
         render_color: bool = False
         render_depth: bool = False
+        render_forward_depth: bool = False
         render_shape_index: bool = False
         render_normal: bool = False
         render_albedo: bool = False
@@ -181,6 +182,7 @@ class RenderContext:
         color_image: wp.array4d[wp.uint32] | None = None,
         hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         depth_image: wp.array4d[wp.float32] | None = None,
+        forward_depth_image: wp.array4d[wp.float32] | None = None,
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
@@ -210,6 +212,7 @@ class RenderContext:
                 ``(camera_count, height, width, 2)``.
             color_image: Output RGBA color buffer (packed ``uint32``).
             depth_image: Output depth buffer [m].
+            forward_depth_image: Output forward-depth buffer [m].
             shape_index_image: Output shape-index buffer.
             normal_image: Output world-space surface normals.
             albedo_image: Output albedo buffer (packed ``uint32``).
@@ -257,6 +260,7 @@ class RenderContext:
 
             self.state.render_color = color_image is not None
             self.state.render_depth = depth_image is not None
+            self.state.render_forward_depth = forward_depth_image is not None
             self.state.render_shape_index = shape_index_image is not None
             self.state.render_normal = normal_image is not None
             self.state.render_albedo = albedo_image is not None
@@ -278,6 +282,11 @@ class RenderContext:
             if depth_image is not None:
                 assert depth_image.shape == (self.world_count, camera_count, height, width), (
                     f"depth_image size must match {self.world_count} x {camera_count} x {height} x {width}"
+                )
+
+            if forward_depth_image is not None:
+                assert forward_depth_image.shape == (self.world_count, camera_count, height, width), (
+                    f"forward_depth_image size must match {self.world_count} x {camera_count} x {height} x {width}"
                 )
 
             if shape_index_image is not None:
@@ -308,6 +317,8 @@ class RenderContext:
                 color_image = color_image.reshape(self.world_count * camera_count * width * height)
             if depth_image is not None:
                 depth_image = depth_image.reshape(self.world_count * camera_count * width * height)
+            if forward_depth_image is not None:
+                forward_depth_image = forward_depth_image.reshape(self.world_count * camera_count * width * height)
             if shape_index_image is not None:
                 shape_index_image = shape_index_image.reshape(self.world_count * camera_count * width * height)
             if normal_image is not None:
@@ -377,6 +388,7 @@ class RenderContext:
                     # Outputs
                     color_image,
                     depth_image,
+                    forward_depth_image,
                     shape_index_image,
                     normal_image,
                     albedo_image,
