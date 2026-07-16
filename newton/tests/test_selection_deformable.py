@@ -325,6 +325,35 @@ class TestDeformableView(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one-dimensional"):
             cloth.set_particle_positions(state, values, group_indices=indices)
 
+    def test_indexed_writes_accept_only_one_selector(self):
+        """An indexed write cannot mix flat group rows with model-world rows."""
+        model = _replicated_model(3, device="cpu")
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "either group_indices or world_indices"):
+            cloth.set_particle_positions(state, values, group_indices=[0], world_indices=[0])
+
+    def test_device_selectors_validate_dtype_and_device(self):
+        """Warp selectors must be int32 arrays on the view's device."""
+        model = _replicated_model(3, device="cpu")
+        state = model.state()
+        cloth = DeformableView(model, "/World/Cloth", family="surface")
+        values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
+
+        for index_argument in ("group_indices", "world_indices"):
+            with self.subTest(index_argument=index_argument, mismatch="dtype"):
+                indices = wp.array([0], dtype=wp.int64, device="cpu")
+                with self.assertRaisesRegex(ValueError, rf"{index_argument} dtype int32"):
+                    cloth.set_particle_positions(state, values, **{index_argument: indices})
+
+            if wp.is_cuda_available():
+                with self.subTest(index_argument=index_argument, mismatch="device"):
+                    indices = wp.array([0], dtype=wp.int32, device="cuda:0")
+                    with self.assertRaisesRegex(ValueError, rf"{index_argument} on device cpu"):
+                        cloth.set_particle_positions(state, values, **{index_argument: indices})
+
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
     def test_device_index_writes_capture_and_replay(self):
         """Captured indexed setters reuse changing device values without unsafe writes."""
