@@ -141,7 +141,6 @@ class TestDeformableView(unittest.TestCase):
         view = DeformableView(model, "/World/Cloth*", family="surface")
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
-        self.assertEqual(view.model_group_ids, [0, 1, 2, 3])
         self.assertEqual(view.ranges("triangle"), [(0, 2), (2, 4), (4, 6), (6, 8)])
 
     def test_varying_group_counts_across_worlds_remain_selectable(self):

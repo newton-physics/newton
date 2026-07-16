@@ -2221,8 +2221,7 @@ class DeformableView:
         """Device offsets partitioning the flat groups by world, shape ``(world_count + 1,)``."""
         self.world_ids: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
         """World index of each flat group, shape ``(count,)``."""
-        self.model_group_ids: list[int] = [g.id for g in selected]
-        """Model-global identity of each selected group for this finalized model."""
+        self._model_group_ids: list[int] = [g.id for g in selected]
 
         # Element ranges are always available; only rectangular operations require homogeneity.
         self._all_groups: wp.array[wp.int32] | None = None  # lazy identity indices for full-selection writes
