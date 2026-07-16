@@ -895,9 +895,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
             pass
 
-        if flags & ModelFlags.ACTUATOR_PROPERTIES:
-            pass
-
         if flags & (ModelFlags.CONSTRAINT_PROPERTIES | ModelFlags.TENDON_PROPERTIES):
             # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
             # When using a coupled solver environment, these flags are meant for one of the other solvers.
@@ -1142,6 +1139,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             raise RuntimeError(
                 f"Changing dynamic constraint topology for joint {joint} "
                 f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
+                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver."
+                "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
             )
 
     def _check_actuation_types(self) -> None:
