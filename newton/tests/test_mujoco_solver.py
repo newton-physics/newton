@@ -7488,6 +7488,49 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # (only CONNECT entries are tracked) so the mapping should be all -1
         assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), np.full_like(solver.mjc_eq_to_newton_jnt.numpy(), -1))
 
+    def test_loop_joint_warns_for_ignored_properties(self):
+        """Configured joint properties report what equality conversion drops."""
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        j0 = builder.add_joint_revolute(-1, b0)
+        j1 = builder.add_joint_revolute(b0, b1)
+        builder.add_articulation([j0, j1])
+        builder.add_joint_revolute(
+            b1,
+            b0,
+            label="closing_hinge",
+            limit_lower=-0.5,
+            limit_upper=0.5,
+            target_ke=10.0,
+            target_kd=1.0,
+            damping=0.2,
+            armature=0.3,
+            effort_limit=4.0,
+            velocity_limit=5.0,
+            friction=0.6,
+            enabled=False,
+        )
+        model = builder.finalize()
+
+        with self.assertWarnsRegex(UserWarning, "closing_hinge") as caught:
+            SolverMuJoCo(model, disable_contacts=True)
+
+        message = str(caught.warning)
+        for property_name in (
+            "limits",
+            "drive",
+            "damping",
+            "armature",
+            "effort limit",
+            "velocity limit",
+            "friction",
+            "enabled=False",
+            "joint_q",
+            "joint_qd",
+        ):
+            self.assertIn(property_name, message)
+
     def test_mixed_loop_joints_and_equality_constraints(self):
         """Testing that loop joints and regular equality constraints are converted to equality constraints."""
         builder = newton.ModelBuilder()

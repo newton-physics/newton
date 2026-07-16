@@ -74,6 +74,28 @@ Joint types
      - *unsupported*
      - Not forwarded to MuJoCo.
 
+Loop-closing joints
+~~~~~~~~~~~~~~~~~~~
+
+MuJoCo requires a tree topology. :class:`~newton.solvers.SolverMuJoCo`
+therefore converts Newton joints outside an articulation that close a
+kinematic loop into MuJoCo equality constraints: ``WELD`` for a fixed joint,
+two ``CONNECT`` constraints for a revolute joint, or one ``CONNECT`` for a
+ball joint. Equality constraints do not have MuJoCo joint coordinates or
+joint properties. Consequently, limits, drives, damping, passive stiffness,
+armature, friction, effort/velocity limits, and ``joint_enabled`` configured
+on a loop-closing joint are ignored. The solver emits one warning per affected
+loop joint and names the configured properties it cannot represent.
+
+The corresponding entries in :attr:`~newton.State.joint_q` and
+:attr:`~newton.State.joint_qd` remain in Newton's shape-stable arrays, but the
+MuJoCo push/pull path does not read or write them. Setting those entries,
+:attr:`~newton.Control.joint_target_q`,
+:attr:`~newton.Control.joint_target_qd`, or
+:attr:`~newton.Control.joint_f` has no effect on the equality constraint, and
+their values must not be used as measured loop-joint state. Use the relative
+poses and velocities of the connected bodies when loop state is needed.
+
 
 Geometry types
 --------------

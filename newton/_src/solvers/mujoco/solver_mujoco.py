@@ -436,6 +436,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`,
           :attr:`~newton.Model.joint_target_mode`, and :attr:`~newton.Control.joint_f` are supported.
         - Equality constraints (CONNECT, WELD, JOINT) and mimic constraints (REVOLUTE and PRISMATIC only) are supported.
+          Loop-closing Newton joints are lowered to equality constraints, so their limits, drives,
+          passive properties, controls, and ``joint_q``/``joint_qd`` entries are not supported.
         - :attr:`~newton.Model.joint_velocity_limit` and :attr:`~newton.Model.joint_enabled`
           are not supported.
 
@@ -5029,6 +5031,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_q_start = model.joint_q_start.numpy()
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
+        joint_velocity_limit = model.joint_velocity_limit.numpy()
+        joint_enabled = model.joint_enabled.numpy()
         # Per-DOF actuator arrays
         joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
@@ -5258,6 +5262,49 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joints_loop = np.asarray(
             [joint for joint in joints_unassigned if joint not in standalone_root_set], dtype=np.int32
         )
+
+        def warn_ignored_loop_joint_properties(joint: int) -> None:
+            dof_start = int(joint_qd_start[joint])
+            dof_end = int(joint_qd_start[joint + 1])
+            ignored = []
+
+            if not bool(joint_enabled[joint]):
+                ignored.append("enabled=False")
+            if dof_end > dof_start:
+                dofs = slice(dof_start, dof_end)
+                if np.any(joint_limit_lower[dofs] > -MAXVAL) or np.any(joint_limit_upper[dofs] < MAXVAL):
+                    ignored.append("limits (including limit stiffness/damping)")
+                if (
+                    np.any(joint_target_mode[dofs] != int(JointTargetMode.NONE))
+                    or np.any(joint_target_ke[dofs] != 0.0)
+                    or np.any(joint_target_kd[dofs] != 0.0)
+                ):
+                    ignored.append("drive")
+                if joint_damping is not None and np.any(joint_damping[dofs] != 0.0):
+                    ignored.append("damping")
+                if joint_stiffness is not None and np.any(joint_stiffness[dofs] != 0.0):
+                    ignored.append("passive stiffness")
+                if np.any(joint_armature[dofs] != 0.0):
+                    ignored.append("armature")
+                if np.any(joint_friction[dofs] != 0.0):
+                    ignored.append("friction")
+                if np.any(joint_effort_limit[dofs] != 1.0e6):
+                    ignored.append("effort limit")
+                if np.any(joint_velocity_limit[dofs] != 1.0e6):
+                    ignored.append("velocity limit")
+                if joint_springref is not None and np.any(joint_springref[dofs] != 0.0):
+                    ignored.append("spring reference")
+                if joint_ref is not None and np.any(joint_ref[dofs] != 0.0):
+                    ignored.append("reference position")
+
+            if ignored:
+                label = model.joint_label[joint]
+                warnings.warn(
+                    f"SolverMuJoCo converts loop joint '{label}' to MuJoCo equality constraints, which ignore "
+                    f"these configured joint properties: {', '.join(ignored)}. Loop-joint joint_q and joint_qd "
+                    "entries are also not synchronized, and Control targets/joint_f have no effect.",
+                    stacklevel=2,
+                )
 
         # Every selected body needs exactly one creation path before its shapes and state can be converted.
         instantiated_bodies = articulated_bodies | standalone_root_bodies
@@ -6299,6 +6346,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         for j in joints_loop:
             if int(j) in converted_loop_joint_targets:
                 continue
+
+            warn_ignored_loop_joint_properties(int(j))
 
             j_type = int(joint_type[j])
             parent_name = get_body_name(joint_parent[j])
