@@ -32,9 +32,25 @@ from .import_usd_deformable_utils import (
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_subset_material_bindings,
-    _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+
+
+def _tet_rest_data(points: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute inverse rest matrices and positive volumes for ordered tetrahedra."""
+    rest_tets = points[indices]
+    matrices = np.stack(
+        (
+            rest_tets[:, 1] - rest_tets[:, 0],
+            rest_tets[:, 2] - rest_tets[:, 0],
+            rest_tets[:, 3] - rest_tets[:, 0],
+        ),
+        axis=2,
+    )
+    volumes = np.linalg.det(matrices) / 6.0
+    if np.any(volumes <= 1.0e-12):
+        raise ValueError("rest shape contains an inverted or degenerate tetrahedron")
+    return np.linalg.inv(matrices), volumes
 
 
 def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
@@ -90,7 +106,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         if is_volume_deformable and _skip_for_deformable_body_owner(ctx, prim, path):
             continue
         if is_volume_deformable:
-            _warn_unsupported_rest_fields(prim, path, ("restShapePoints",), deformable_read)
             _warn_dropped_velocities(prim, path)
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI", deformable_read)
             _warn_subset_material_bindings(prim, path)
@@ -186,6 +201,39 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             flipped = np.asarray(tetmesh_for_builder.tet_indices).reshape(-1, 4).copy()
             flipped[:, [1, 2]] = flipped[:, [2, 1]]
             add_soft_mesh_kwargs["indices"] = flipped.reshape(-1)
+
+        rest_data = None
+        if is_volume_deformable:
+            rest_points_value = deformable_read(prim, "restShapePoints")
+            rest_indices_value = deformable_read(prim, "restTetVertexIndices")
+            if rest_points_value is not None:
+                try:
+                    rest_points = np.asarray(_bake_world_points(rest_points_value, soft_mesh_mat), dtype=np.float64)
+                    if rest_indices_value is None or len(rest_indices_value) == 0:
+                        if len(rest_points) != tetmesh_for_builder.vertex_count:
+                            raise ValueError("restShapePoints must match points when restTetVertexIndices is omitted")
+                        rest_indices = np.asarray(tetmesh_for_builder.tet_indices, dtype=np.int64).reshape(-1, 4)
+                    else:
+                        rest_indices = np.asarray(rest_indices_value, dtype=np.int64).reshape(-1, 4)
+                        if len(rest_indices) != tetmesh_for_builder.tet_count:
+                            raise ValueError(
+                                "restTetVertexIndices must contain one tetrahedron per simulation tetrahedron"
+                            )
+                        if np.any(rest_indices < 0) or np.any(rest_indices >= len(rest_points)):
+                            raise ValueError("restTetVertexIndices contains an out-of-range point index")
+                    if _world_matrix_reflects(soft_mesh_mat):
+                        rest_indices = rest_indices.copy()
+                        rest_indices[:, [1, 2]] = rest_indices[:, [2, 1]]
+                    rest_data = _tet_rest_data(rest_points, rest_indices)
+                except (TypeError, ValueError) as exc:
+                    warnings.warn(
+                        f"{path}: invalid volume rest shape ({exc}); using the simulation shape.", stacklevel=2
+                    )
+            elif rest_indices_value is not None and len(rest_indices_value):
+                warnings.warn(
+                    f"{path}: restTetVertexIndices is authored without restShapePoints; using the simulation shape.",
+                    stacklevel=2,
+                )
         # Body density overrides the TetMesh's material density.
         neutral_weight = False
         if is_volume_deformable:
@@ -208,6 +256,21 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
+        if rest_data is not None:
+            rest_poses, rest_volumes = rest_data
+            for local_tet, pose in enumerate(rest_poses):
+                builder.tet_poses[soft_t0 + local_tet] = pose.tolist()
+            for particle in range(soft_p0, builder.particle_count):
+                builder.particle_mass[particle] = 0.0
+            simulation_indices = np.asarray(
+                add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
+            ).reshape(-1, 4)
+            mass_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)
+            if mass_density is None:
+                mass_density = builder.default_tet_density
+            for local_tet, volume in enumerate(rest_volumes):
+                for vertex in simulation_indices[local_tet]:
+                    builder.particle_mass[soft_p0 + int(vertex)] += float(mass_density) * float(volume) / 4.0
         if is_volume_deformable:
             _apply_particle_masses(builder, prim, soft_p0, builder.particle_count, deformable_read)
         path_soft_map[path] = {

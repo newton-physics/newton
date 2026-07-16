@@ -98,6 +98,30 @@ class TestUSDDeformableVolume(unittest.TestCase):
         result = builder.add_usd(stage, return_deformable_results=True)
         return builder, result
 
+    def test_volume_rest_shape_drives_material_state(self):
+        """Rest points set tet pose and mass while live points remain the initial state."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)])
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)]
+        )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set([(0, 1, 2, 3)])
+        _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=6.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        np.testing.assert_allclose(
+            np.asarray(builder.particle_q),
+            [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(np.asarray(builder.tet_poses[0]), np.eye(3), atol=1.0e-6)
+        self.assertAlmostEqual(sum(builder.particle_mass), 1.0, places=6)
+
     def test_volume_mass_precedence(self):
         """Per-prim mass sources resolve in precedence order: physics:masses on the simulation
         geometry beats a body-mass override; a body-mass override rescales the density-derived

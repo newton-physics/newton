@@ -36,7 +36,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         """A quad-faced cloth mesh is fan-triangulated on import (n-gons are supported)."""
         from pxr import UsdGeom
 
-        stage = _deformable_stage(up_axis="y")
+        stage = _deformable_stage()
         mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
         mesh.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)])
         mesh.CreateFaceVertexCountsAttr([4])  # single quad face
@@ -51,6 +51,45 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The quad fan-triangulates to 2 triangles.
         self.assertEqual(group_range(builder, "cloth", "/World/Cloth", "tri"), (0, 2))
         self.assertEqual(builder.particle_count, 4)
+
+    def test_cloth_rest_shape_drives_material_state(self):
+        """Disjoint rest topology sets FEM poses, mass, and authored bend angles."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+        live_points = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 2.0, 0.0), (0.0, 1.0, 0.0)]
+        mesh.CreatePointsAttr(live_points)
+        mesh.CreateFaceVertexCountsAttr([3, 3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
+        mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        mesh.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+            ]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.Int3Array).Set(
+            [(0, 1, 2), (3, 4, 5)]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set("flat")
+        mesh.GetPrim().CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set([(0, 1)])
+        mesh.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set([0.4])
+        _bind_deformable_material(stage, mesh.GetPrim(), "/World/Mat", density=1.0, thickness=1.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        np.testing.assert_allclose(np.asarray(builder.particle_q), live_points, atol=1.0e-6)
+        self.assertAlmostEqual(sum(builder.tri_areas), 1.0, places=6)
+        self.assertAlmostEqual(sum(builder.particle_mass), 1.0, places=6)
+        interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
+        self.assertAlmostEqual(builder.edge_rest_angle[interior_edge], 0.4, places=6)
 
     def test_cloth_left_handed_orientation_flips_winding(self):
         """A left-handed cloth mesh flips triangle winding, matching the rigid mesh path."""

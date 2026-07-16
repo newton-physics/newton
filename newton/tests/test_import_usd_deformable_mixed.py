@@ -297,8 +297,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertNotIn("/World/SoftOff/sim", result["path_shape_map"])
         builder.finalize()
 
-    def test_unsupported_rest_and_velocity_fields_warn(self):
-        """Authored rest state and velocities warn per prim but do not block the import."""
+    def test_invalid_rest_and_velocity_fields_warn(self):
+        """Unsupported cable and malformed cloth/volume rest state warn without blocking import."""
         from pxr import Sdf, UsdGeom
 
         stage = _deformable_stage()
@@ -321,15 +321,12 @@ class TestUSDDeformableMixed(unittest.TestCase):
             builder.add_usd(stage)
         messages = [str(w.message) for w in caught]
 
-        for field, path in (
-            ("restNormals", "/World/Cable"),
-            ("restBendAngles", "/World/Cloth"),
-            ("restShapePoints", "/World/Soft"),
-        ):
-            self.assertTrue(any(path in m and field in m and "not yet supported" in m for m in messages), field)
+        self.assertTrue(any("/World/Cable" in m and "restNormals" in m and "not yet supported" in m for m in messages))
+        self.assertTrue(any("/World/Cloth" in m and "invalid authored rest bend angles" in m for m in messages))
+        self.assertTrue(any("/World/Soft" in m and "invalid volume rest shape" in m for m in messages))
         for path in ("/World/Cable", "/World/Cloth"):
             self.assertTrue(any(path in m and "velocities are not imported" in m for m in messages), path)
-        # The unsupported fields are dropped, not the deformables.
+        # Invalid or unsupported rest fields fall back; they do not drop the deformables.
         self.assertEqual(group_labels(builder, "cable"), ["/World/Cable"])
         self.assertEqual(group_labels(builder, "cloth"), ["/World/Cloth"])
         self.assertEqual(group_labels(builder, "soft"), ["/World/Soft"])
