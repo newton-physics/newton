@@ -311,24 +311,32 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
     def closest_hit_triangle_mesh(
         closest_hit: ClosestHit,
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
+        world_index: wp.int32,
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
         if triangle_mesh_id:
-            hit_distance, hit_normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh_no_transform(
-                triangle_mesh_id,
-                ray_origin_world,
-                ray_dir_world,
-                wp.static(config.enable_backface_culling),
-                closest_hit.distance,
-            )
-            if hit_distance >= 0.0:
-                closest_hit.distance = hit_distance
-                closest_hit.normal = hit_normal
-                closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
-                closest_hit.bary_u = bary_u
-                closest_hit.bary_v = bary_v
-                closest_hit.face_idx = face_idx
+            for i in range(wp.static(2 if config.enable_global_world else 1)):
+                group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
+                if group_root < 0:
+                    continue
+
+                hit_distance, hit_normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh_no_transform(
+                    triangle_mesh_id,
+                    ray_origin_world,
+                    ray_dir_world,
+                    wp.static(config.enable_backface_culling),
+                    closest_hit.distance,
+                    group_root,
+                )
+                if hit_distance >= 0.0:
+                    closest_hit.distance = hit_distance
+                    closest_hit.normal = hit_normal
+                    closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
+                    closest_hit.bary_u = bary_u
+                    closest_hit.bary_v = bary_v
+                    closest_hit.face_idx = face_idx
 
         return closest_hit
 
@@ -353,6 +361,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         particles_radius: wp.array[wp.float32],
         topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
         gaussians_data: wp.array[Gaussian.Data],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
@@ -363,7 +372,9 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         closest_hit.shape_index = NO_HIT_SHAPE_ID
         closest_hit.color = wp.vec3f(0.0)
 
-        closest_hit = closest_hit_triangle_mesh(closest_hit, triangle_mesh_id, ray_origin_world, ray_dir_world)
+        closest_hit = closest_hit_triangle_mesh(
+            closest_hit, triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world
+        )
 
         closest_hit = closest_hit_shape(
             closest_hit,
@@ -572,20 +583,28 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
     def closest_hit_triangle_mesh_depth_only(
         closest_hit: ClosestHit,
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
+        world_index: wp.int32,
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
         if triangle_mesh_id:
-            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_transform(
-                triangle_mesh_id,
-                ray_origin_world,
-                ray_dir_world,
-                wp.static(config.enable_backface_culling),
-                closest_hit.distance,
-            )
-            if hit_dist >= 0.0:
-                closest_hit.distance = hit_dist
-                closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
+            for i in range(wp.static(2 if config.enable_global_world else 1)):
+                group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
+                if group_root < 0:
+                    continue
+
+                hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_transform(
+                    triangle_mesh_id,
+                    ray_origin_world,
+                    ray_dir_world,
+                    wp.static(config.enable_backface_culling),
+                    closest_hit.distance,
+                    group_root,
+                )
+                if hit_dist >= 0.0:
+                    closest_hit.distance = hit_dist
+                    closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
 
         return closest_hit
 
@@ -610,6 +629,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         particles_radius: wp.array[wp.float32],
         topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
         gaussians_data: wp.array[Gaussian.Data],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
@@ -620,7 +640,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         closest_hit.shape_index = NO_HIT_SHAPE_ID
 
         closest_hit = closest_hit_triangle_mesh_depth_only(
-            closest_hit, triangle_mesh_id, ray_origin_world, ray_dir_world
+            closest_hit, triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world
         )
 
         closest_hit = closest_hit_shape_depth_only(
@@ -794,15 +814,28 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
     @wp.func
     def first_hit_triangle_mesh(
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
+        world_index: wp.int32,
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
         max_dist: wp.float32,
     ) -> wp.bool:
         if triangle_mesh_id:
-            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_transform(
-                triangle_mesh_id, ray_origin_world, ray_dir_world, wp.static(config.enable_backface_culling), max_dist
-            )
-            return hit_dist >= 0.0
+            for i in range(wp.static(2 if config.enable_global_world else 1)):
+                group_root = get_group_roots(triangle_mesh_group_roots, world_index, i)
+                if group_root < 0:
+                    continue
+
+                hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_transform(
+                    triangle_mesh_id,
+                    ray_origin_world,
+                    ray_dir_world,
+                    wp.static(config.enable_backface_culling),
+                    max_dist,
+                    group_root,
+                )
+                if hit_dist >= 0.0:
+                    return True
         return False
 
     @wp.func
@@ -823,11 +856,14 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         particles_radius: wp.array[wp.float32],
         topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
         max_distance: wp.float32,
     ) -> wp.bool:
-        if first_hit_triangle_mesh(triangle_mesh_id, ray_origin_world, ray_dir_world, max_distance):
+        if first_hit_triangle_mesh(
+            triangle_mesh_id, triangle_mesh_group_roots, world_index, ray_origin_world, ray_dir_world, max_distance
+        ):
             return True
 
         if first_hit_shape(

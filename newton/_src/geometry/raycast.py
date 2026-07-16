@@ -669,6 +669,7 @@ def ray_intersect_mesh_no_transform(
     ray_direction: wp.vec3,
     enable_backface_culling: bool,
     max_t: float,
+    root: int,
 ) -> tuple[float, wp.vec3, float, float, int]:
     """Ray-mesh intersection when the mesh is already expressed in world space.
 
@@ -681,6 +682,7 @@ def ray_intersect_mesh_no_transform(
         enable_backface_culling: When ``True``, reject hits whose triangle normal
             is aligned with the ray direction (back faces).
         max_t: Maximum parameter ``t`` along the ray to consider.
+        root: Root node index for grouped mesh traversal, or ``-1`` for the global root.
 
     Returns:
         Tuple ``(distance, normal, u, v, face_index)``. The distance and normal of the intersection point along the ray, or -1.0 and a zero vector if there is no intersection; on miss, ``u`` and ``v`` are ``0.0`` and ``face_index`` is -1.
@@ -688,7 +690,7 @@ def ray_intersect_mesh_no_transform(
     if mesh_id == wp.uint64(0):
         return -1.0, wp.vec3(0.0), 0.0, 0.0, -1
 
-    query = wp.mesh_query_ray(mesh_id, ray_origin, ray_direction, max_t)
+    query = wp.mesh_query_ray(mesh_id, ray_origin, ray_direction, max_t, root)
     if query.result:
         if not enable_backface_culling or wp.dot(ray_direction, query.normal) < 0.0:
             return query.t, wp.normalize(query.normal), query.u, query.v, query.face

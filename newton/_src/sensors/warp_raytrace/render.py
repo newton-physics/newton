@@ -113,6 +113,7 @@ def create_kernel(
         topology_particle_mask: wp.array[wp.bool],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
         # Meshes
         mesh_data: wp.array[MeshData],
         # Gaussians
@@ -188,6 +189,7 @@ def create_kernel(
             particles_radius,
             topology_particle_mask,
             triangle_mesh_id,
+            triangle_mesh_group_roots,
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
@@ -297,6 +299,7 @@ def create_kernel(
                     particles_radius,
                     topology_particle_mask,
                     triangle_mesh_id,
+                    triangle_mesh_group_roots,
                     closest_hit.normal,
                     hit_point,
                 )
