@@ -696,6 +696,67 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         self.assertEqual((graph.count, graph.elements_per_group("body")), (1, 3))
         self.assertEqual(graph.elements_per_group("joint"), 2)
 
+    def test_mixed_native_deformables_replicate_with_offset_ranges(self):
+        """Curve, surface, and volume groups retain disjoint ranges after replication."""
+        prototype = newton.ModelBuilder()
+
+        # Curve first: three segment bodies connected by two graph joints.
+        prototype.add_rod_graph(
+            node_positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)],
+            edges=[(0, 1), (1, 2), (1, 3)],
+            radius=0.02,
+            label="curve",
+            body_frame_origin="com",
+        )
+
+        # Surface second: four particles, two triangles, and five cloth edges.
+        _add_test_cloth(prototype, label="surface")
+
+        # Volume last: eight particles and five tetrahedra.
+        prototype.add_soft_grid(
+            pos=wp.vec3(0.0, 0.0, 3.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            cell_z=1.0,
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            label="volume",
+        )
+
+        scene = newton.ModelBuilder()
+        scene.replicate(prototype, 2)
+        model = scene.finalize(device="cpu")
+        state = model.state()
+
+        curve = DeformableView(model, "curve", family="curve")
+        self.assertEqual((curve.count, curve.worlds, curve.count_per_world), (2, [0, 1], 1))
+        np.testing.assert_array_equal(curve.world_starts.numpy(), [0, 1, 2])
+        self.assertEqual(curve.ranges("body"), [(0, 3), (3, 6)])
+        self.assertEqual(curve.ranges("joint"), [(0, 2), (2, 4)])
+        self.assertEqual(curve.get_body_transforms(state).shape, (2, 3))
+
+        surface = DeformableView(model, "surface", family="surface")
+        self.assertEqual((surface.count, surface.worlds, surface.count_per_world), (2, [0, 1], 1))
+        np.testing.assert_array_equal(surface.world_starts.numpy(), [0, 1, 2])
+        self.assertEqual(surface.ranges("particle"), [(0, 4), (12, 16)])
+        self.assertEqual(surface.ranges("triangle"), [(0, 2), (14, 16)])
+        self.assertEqual(surface.ranges("edge"), [(0, 5), (23, 28)])
+        self.assertEqual(surface.get_particle_positions(state).shape, (2, 4))
+
+        volume = DeformableView(model, "volume", family="volume")
+        self.assertEqual((volume.count, volume.worlds, volume.count_per_world), (2, [0, 1], 1))
+        np.testing.assert_array_equal(volume.world_starts.numpy(), [0, 1, 2])
+        self.assertEqual(volume.ranges("particle"), [(4, 12), (16, 24)])
+        self.assertEqual(volume.ranges("tetrahedron"), [(0, 5), (5, 10)])
+        self.assertEqual(volume.get_particle_positions(state).shape, (2, 8))
+
     def test_builder_built_prototype_clones_select_per_world(self):
         """A labeled soft body and rod built in a prototype and cloned per world with
         add_world stay selectable, with correctly offset ranges (the Isaac Lab pattern
