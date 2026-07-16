@@ -9,7 +9,7 @@ import re
 import warnings
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import warp as wp
 from warp.types import is_array
@@ -2157,7 +2157,7 @@ class DeformableView:
         model: Model,
         pattern: str | re.Pattern[str],
         *,
-        family: str,
+        family: Literal["curve", "surface", "volume"],
         verbose: bool | None = None,
     ) -> None:
         if family not in self._FAMILY_KINDS:
