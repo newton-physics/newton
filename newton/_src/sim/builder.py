@@ -3918,21 +3918,16 @@ class ModelBuilder:
             for i in range(3):
                 scene.add_world(robot)  # Each robot is a separate world
         """
-        if self.current_world != -1:
-            raise RuntimeError(
-                f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
-                "Call end_world() first to close the current world context."
-            )
-        if builder.up_axis != self.up_axis:
-            raise ValueError("Cannot add a builder with a different up axis.")
-
         xform = None if xform is None else wp.transform(*xform)
-        # Resolve merge metadata before begin_world() so a failure cannot leave a world context open.
-        self._builder_merge_attribute_specs()
-        self._validate_builder_merge(builder, set(self._builder_merge_counts(builder)))
-
         self.begin_world()
-        self.add_builder(builder, xform=xform, label_prefix=label_prefix)
+        try:
+            self.add_builder(builder, xform=xform, label_prefix=label_prefix)
+        except BaseException:
+            # Roll back begin_world() so a failed merge cannot leave a world context open.
+            self._current_world = -1
+            self.world_count -= 1
+            self.world_gravity.pop()
+            raise
         self.end_world()
 
     # endregion
