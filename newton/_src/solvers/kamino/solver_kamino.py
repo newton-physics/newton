@@ -407,7 +407,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 solver.reset(state=state, config=reset_config)
 
                 # Advanced reset with custom configuration
-                # E.g. here, set custom actuator coords and base pose, and reset velocities to default (=zero)
+                # E.g. here, set custom actuator coords and base pose, and reset velocities to their defaults
                 reset_config = newton.solvers.SolverKamino.ResetConfig(
                     body_poses=newton.solvers.SolverKamino.ResetConfig.FromActuatorQ(new_actuator_coords),
                     body_velocities=newton.solvers.SolverKamino.ResetConfig.ToDefault(),
@@ -419,7 +419,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         @dataclass(frozen=True)
         class ToDefault:
-            """Reset option, to reset to default values (e.g., initial pose and zero velocity)."""
+            """Reset option, to reset to initial pose and velocity values."""
 
         @dataclass(frozen=True)
         class Preserve:
@@ -509,7 +509,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         Reset option for body velocities:
 
-        - ToDefault: reset velocities to zero.
+        - ToDefault: reset velocities to their initial values.
         - Preserve: if body poses are preserved, preserve velocities in the state container, assuming
           they are consistent. Otherwise, behaves like FromJointU, transferring current joint velocities
           in the state container, to the extent possible, to the new body poses.
@@ -880,17 +880,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._update_gravity()
 
-        if flags & ModelFlags.BODY_PROPERTIES:
-            pass  # TODO: convert to CoM-frame if body_q_i_0 is changed at runtime?
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            # q_i_0 is derived from both model.body_q and model.body_com.
+            self._update_body_initial_pose()
 
-        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-            pass  # TODO: refresh CoM-derived joint frames + geom offsets.
+        if flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.JOINT_PROPERTIES):
+            # Joint transforms are derived from body_com and joint_X_p / joint_X_c.
+            self._update_joint_transforms()
+
+        if flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.SHAPE_PROPERTIES):
+            # Geom offsets are derived from body_com and shape_transform.
+            self._update_geom_offsets()
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
-            pass  # TODO: geom offsets + contact materials.
-
-        if flags & ModelFlags.JOINT_PROPERTIES:
-            self._update_joint_transforms()
+            pass  # TODO: contact materials.
 
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
             pass
@@ -1196,20 +1199,26 @@ class SolverKamino(SolverBase, CouplingInterface):
             )
 
     def _update_gravity(self):
-        """
-        Updates Kamino's :class:`GravityModel` from Newton's model.gravity.
-
-        Called when :data:`~newton.ModelFlags.MODEL_PROPERTIES` is raised,
-        indicating that ``model.gravity`` may have changed at runtime.
-        """
+        """Update Kamino's :class:`GravityModel` from Newton's ``model.gravity``."""
         self._kamino.convert_model_gravity(self.model, self._model_kamino.gravity)
 
-    def _update_joint_transforms(self):
-        """
-        Re-derive Kamino joint anchors and axes from Newton's joint_X_p / joint_X_c.
+    def _update_body_initial_pose(self):
+        """Recompute Kamino's CoM-frame initial body poses."""
+        self._kamino.convert_body_origin_to_com(
+            body_com=self._model_kamino.bodies.i_r_com_i,
+            body_q=self.model.body_q,
+            body_q_com=self._model_kamino.bodies.q_i_0,
+        )
 
-        Called when :data:`~newton.ModelFlags.JOINT_PROPERTIES` is raised,
-        indicating that ``model.joint_X_p`` or ``model.joint_X_c`` may have
-        changed at runtime (e.g. animated root transforms).
-        """
+    def _update_geom_offsets(self):
+        """Recompute Kamino's CoM-relative geom offsets."""
+        self._kamino.convert_geom_offset_origin_to_com(
+            body_com=self._model_kamino.bodies.i_r_com_i,
+            geom_bid=self._model_kamino.geoms.bid,
+            geom_offset=self.model.shape_transform,
+            geom_offset_com=self._model_kamino.geoms.offset,
+        )
+
+    def _update_joint_transforms(self):
+        """Re-derive Kamino joint anchors and axes from Newton's joint transforms."""
         self._kamino.convert_model_joint_transforms(self.model, self._model_kamino.joints)

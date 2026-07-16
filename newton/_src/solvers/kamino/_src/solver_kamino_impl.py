@@ -538,9 +538,15 @@ class SolverKaminoImpl(SolverBase):
         base_u = None
         relative_base_u = False
         if isinstance(config.base_velocity, SolverKamino.ResetConfig.ToDefault):
-            # Set base velocity to zero if body velocities are not already reset to zero
+            # Set base velocity to its default if body velocities are not already reset to defaults.
             if not isinstance(config.body_velocities, SolverKamino.ResetConfig.ToDefault):
-                self._base_u.zero_()
+                get_base_u_from_joint_u_and_body_u(
+                    model=self._model,
+                    joint_u=self._model.joints.dq_j_0,
+                    body_u=self._model.bodies.u_i_0,
+                    base_u=self._base_u,
+                    world_mask=world_mask,
+                )
                 base_u = self._base_u
         elif isinstance(config.base_velocity, SolverKamino.ResetConfig.Preserve):
             # Extract current base velocity if body poses/velocities are modified but base velocity should be preserved

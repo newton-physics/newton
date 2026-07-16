@@ -21,6 +21,7 @@ def _build_revolute(
     dynamic: bool = False,
     limited: bool = False,
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
+    body_com: wp.vec3f | None = None,
 ) -> newton.Model:
     """Build a tiny world-to-body revolute model for notify tests."""
     builder = newton.ModelBuilder()
@@ -31,6 +32,7 @@ def _build_revolute(
         label="link",
         mass=1.0,
         xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
+        com=body_com,
         lock_inertia=True,
     )
     builder.add_shape_box(label="box", body=bid, hx=0.1, hy=0.1, hz=0.1)
@@ -135,6 +137,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             ("body_com", bodies, "i_r_com_i"),
             ("body_inertia", bodies, "i_I_i"),
             ("body_inv_inertia", bodies, "inv_i_I_i"),
+            ("body_qd", bodies, "u_i_0"),
             ("joint_q", joints, "q_j_0"),
             ("joint_qd", joints, "dq_j_0"),
             ("joint_limit_lower", joints, "q_j_min"),
@@ -216,6 +219,80 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             atol=1e-6,
             err_msg="X_Fj first column must equal R(q_cj) * joint axis",
         )
+
+    def test_shape_transform_propagates(self):
+        """Shape-property notifications refresh CoM-relative geometry offsets."""
+        model = _build_revolute(body_com=wp.vec3f(0.1, -0.2, 0.3))
+        solver = SolverKamino(model)
+        geoms = solver._model_kamino.geoms
+        shape_position = np.array([0.6, 0.4, -0.2], dtype=np.float32)
+        shape_rotation = wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.35)
+        model.shape_transform.assign([wp.transformf(wp.vec3f(*shape_position), shape_rotation)])
+
+        expected_offset = np.concatenate((shape_position - model.body_com.numpy()[0], np.array(shape_rotation)))
+
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_allclose(geoms.offset.numpy()[0], expected_offset, atol=1e-6)
+
+    def test_body_initial_state_propagates(self):
+        """Body-property notifications refresh reset defaults without changing existing states."""
+        model = _build_revolute(body_com=wp.vec3f(0.2, -0.1, 0.3))
+        solver = SolverKamino(model)
+        bodies = solver._model_kamino.bodies
+        state = model.state()
+        body_position = np.array([1.2, -0.4, 0.8], dtype=np.float32)
+        body_rotation = wp.quat_from_axis_angle(wp.vec3f(0.0, 0.0, 1.0), 0.5)
+        body_velocity = np.array([[1.0, 2.0, 3.0, -0.5, 0.25, 0.75]], dtype=np.float32)
+        model.body_q.assign([wp.transformf(wp.vec3f(*body_position), body_rotation)])
+        model.body_qd.assign(body_velocity)
+
+        expected_com_position = body_position + np.array(
+            wp.quat_rotate(body_rotation, wp.vec3f(*model.body_com.numpy()[0]))
+        )
+        expected_com_pose = np.concatenate((expected_com_position, np.array(body_rotation)))
+
+        # Check Kamino's internal initial CoM states are updated.
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+        np.testing.assert_allclose(bodies.q_i_0.numpy()[0], expected_com_pose, atol=1e-6)
+        np.testing.assert_array_equal(bodies.u_i_0.numpy(), body_velocity)
+
+        # Check that the reset operation correctly uses the new initial CoM states and converts back to body-origin frame.
+        solver.reset(state)
+        np.testing.assert_allclose(state.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
+        np.testing.assert_allclose(state.body_qd.numpy(), model.body_qd.numpy(), atol=1e-6)
+
+    def test_body_com_refreshes_derived_quantities(self):
+        """Inertial-property notifications refresh all CoM-derived data."""
+        model = _build_revolute(body_com=wp.vec3f(0.1, 0.2, -0.1))
+        solver = SolverKamino(model)
+        bodies = solver._model_kamino.bodies
+        joints = solver._model_kamino.joints
+        geoms = solver._model_kamino.geoms
+        state = model.state()
+        new_com = np.array([0.4, -0.3, 0.25], dtype=np.float32)
+        model.body_com.assign([new_com])
+
+        body_pose = model.body_q.numpy()[0]
+        expected_com_position = body_pose[:3] + new_com
+        expected_child_frame = model.joint_X_c.numpy()[0, :3] - new_com
+        expected_geom_offset = model.shape_transform.numpy()[0, :3] - new_com
+
+        # Check Kamino's internal initial CoM derived quantities are updated.
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        np.testing.assert_allclose(bodies.q_i_0.numpy()[0, :3], expected_com_position, atol=1e-6)
+        # The parent frame is the world frame, so there is no position update
+        np.testing.assert_allclose(joints.B_r_Bj.numpy()[0], model.joint_X_p.numpy()[0, :3], atol=1e-6)
+        np.testing.assert_allclose(joints.F_r_Fj.numpy()[0], expected_child_frame, atol=1e-6)
+        np.testing.assert_allclose(
+            geoms.offset.numpy()[0, :3],
+            expected_geom_offset,
+            atol=1e-6,
+        )
+
+        # Reset goes through a body pose -> com pose -> body pose conversion. Check that the conversion is correct.
+        solver.reset(state)
+        np.testing.assert_allclose(state.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
 
     def test_dynamic_constraint_toggle_raises(self):
         """Adding or removing a joint's dynamic constraints requires solver recreation."""
