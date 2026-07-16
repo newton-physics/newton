@@ -2947,6 +2947,11 @@ class ModelBuilder:
         return {name: specs[name] for name in list_attributes}
 
     @staticmethod
+    def _is_integer_scalar(value: Any) -> bool:
+        """True for Python, NumPy, and Warp integer scalars (index-like values)."""
+        return isinstance(value, (int, np.integer)) or wp.types.type_is_int(type(value))
+
+    @staticmethod
     def _custom_attribute_defaults_match(existing: Any, incoming: Any) -> bool:
         try:
             matches = existing == incoming
@@ -4013,10 +4018,12 @@ class ModelBuilder:
                     return world
                 if offset == 0:
                     return value
-                if isinstance(value, int):
+                if self._is_integer_scalar(value):
                     return value + offset if value >= 0 else value
                 if isinstance(value, (list, tuple)):
-                    transformed = [item + offset if isinstance(item, int) and item >= 0 else item for item in value]
+                    transformed = [
+                        item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
+                    ]
                     return type(value)(transformed)
                 try:
                     return value + offset

@@ -345,6 +345,34 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(destination.current_world, -1)
         self.assertIs(destination.custom_frequencies["probe"].usd_prim_filter, filter_a)
 
+    def test_custom_reference_values_preserve_scalar_integer_sentinels(self):
+        def make_builder() -> ModelBuilder:
+            builder = ModelBuilder()
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="ref_body",
+                    frequency=Model.AttributeFrequency.BODY,
+                    dtype=wp.int32,
+                    references="body",
+                    default=-1,
+                )
+            )
+            return builder
+
+        source = make_builder()
+        source.add_body(custom_attributes={"ref_body": np.int32(1)})
+        source.add_body(custom_attributes={"ref_body": np.int32(-1)})
+        source.add_body(custom_attributes={"ref_body": wp.int32(-1)})
+
+        destination = make_builder()
+        destination.add_body()
+        destination.add_builder(source)
+
+        values = destination.custom_attributes["ref_body"].values
+        self.assertEqual(int(values[1]), 2)
+        self.assertEqual(int(values[2]), -1)
+        self.assertEqual(int(values[3]), -1)
+
     def test_replicate_has_explicit_finalized_semantics(self):
         source = ModelBuilder()
         body = source.add_body(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()), label="body")
