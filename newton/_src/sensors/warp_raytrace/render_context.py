@@ -450,7 +450,9 @@ class RenderContext:
             triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
             triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
 
-            self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices, groups=triangle_groups)
+            self.triangle_mesh = wp.Mesh(
+                self.triangle_points, self.triangle_indices, groups=triangle_groups, bvh_constructor="sah"
+            )
             self.triangle_mesh_group_roots = wp.full(self.world_count + 1, value=-1, dtype=wp.int32, device=self.device)
 
             wp.launch(
