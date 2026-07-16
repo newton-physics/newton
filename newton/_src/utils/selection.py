@@ -2116,6 +2116,9 @@ class DeformableView:
     worlds when every world has exactly one matching group. Host group indices are
     bounds-checked and duplicates are rejected. Device ``int32`` indices stay on the
     device: out-of-range entries are ignored and the last value wins for duplicates.
+    Indexed setters using preallocated device values and indices can be captured after
+    view construction and kernel warm-up. View construction, getters, and allocations
+    are outside the captured region.
 
     Example:
 
@@ -2246,7 +2249,11 @@ class DeformableView:
     # raw ranges -------------------------------------------------------------
 
     def world_ranges(self) -> list[tuple[int, int]]:
-        """Flat group ranges for every model world, including empty worlds."""
+        """Return flat group ranges for every model world, including empty worlds.
+
+        Returns:
+            ``[start, end)`` group ranges in model-world order.
+        """
         return [(self._world_starts[i], self._world_starts[i + 1]) for i in range(self.world_count)]
 
     def elements_per_group(self, kind: str) -> int:
@@ -2254,6 +2261,16 @@ class DeformableView:
 
         ``kind`` is ``body``/``joint`` for curves, ``particle``/``triangle``/``edge`` for
         surfaces, and ``particle``/``tetrahedron`` for volumes.
+
+        Args:
+            kind: Element kind belonging to this view's family.
+
+        Returns:
+            Common number of elements in every selected group.
+
+        Raises:
+            AttributeError: If ``kind`` does not belong to this view's family.
+            ValueError: If the selected groups have different element counts.
         """
         return self._element_count(kind)
 
@@ -2263,6 +2280,15 @@ class DeformableView:
         For consumers that need each group's raw slice of the flat model arrays, e.g. to
         hand per-instance offsets to a renderer sync or to custom kernels. See
         :meth:`elements_per_group` for the valid ``kind`` values.
+
+        Args:
+            kind: Element kind belonging to this view's family.
+
+        Returns:
+            One ``[start, end)`` range per selected group.
+
+        Raises:
+            AttributeError: If ``kind`` does not belong to this view's family.
         """
         self._validate_kind(kind)
         return list(self._ranges[kind])
@@ -2273,6 +2299,15 @@ class DeformableView:
         Together with :meth:`elements_per_group` this drives custom kernels over the
         selection without a host round-trip; the view's own gather/scatter kernels use
         the same array. Treat the returned internal array as read-only.
+
+        Args:
+            kind: Element kind belonging to this view's family.
+
+        Returns:
+            Device array containing one start index per selected group.
+
+        Raises:
+            AttributeError: If ``kind`` does not belong to this view's family.
         """
         self._validate_kind(kind)
         return self._starts[kind]
@@ -2388,7 +2423,18 @@ class DeformableView:
         return self._element_count("particle")
 
     def get_particle_positions(self, source: Model | State) -> wp.array2d[wp.vec3]:
-        """Particle positions [m] of each group, shape ``(count, particles_per_group)`` of vec3."""
+        """Return particle positions [m] for the selected surface or volume groups.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Particle positions with shape ``(count, particles_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            ValueError: If the selected groups have different particle counts.
+        """
         return self._gather("particle", source.particle_q, _gather_group_vec3_kernel, wp.vec3)
 
     def set_particle_positions(
@@ -2404,6 +2450,23 @@ class DeformableView:
         ``rows`` is ``count``, or the number of selected groups. ``group_indices``
         selects flat rows. ``world_indices`` selects model worlds when every world has
         exactly one matching group. Other groups are untouched.
+
+        Args:
+            source: Model initial state or simulation state to update.
+            values: Particle positions [m] with shape ``(rows, particles_per_group)``.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+            world_indices: Optional model-world rows, accepted only when every model
+                world has exactly one matching group. Uses the same host/device forms
+                as ``group_indices``.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness, or world-selection requirements are invalid, or
+                if both selector arguments are provided.
         """
         self._scatter(
             "particle",
@@ -2416,7 +2479,18 @@ class DeformableView:
         )
 
     def get_particle_velocities(self, source: Model | State) -> wp.array2d[wp.vec3]:
-        """Particle velocities [m/s] of each group, shape ``(count, particles_per_group)`` of vec3."""
+        """Return particle velocities [m/s] for the selected surface or volume groups.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Particle velocities with shape ``(count, particles_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            ValueError: If the selected groups have different particle counts.
+        """
         return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel, wp.vec3)
 
     def set_particle_velocities(
@@ -2432,6 +2506,24 @@ class DeformableView:
         ``rows`` is ``count``, or the number of selected groups. ``group_indices``
         selects flat rows. ``world_indices`` selects model worlds when every world has
         exactly one matching group. Other groups are untouched.
+
+        Args:
+            source: Model initial state or simulation state to update.
+            values: Particle velocities [m/s] with shape
+                ``(rows, particles_per_group)``.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+            world_indices: Optional model-world rows, accepted only when every model
+                world has exactly one matching group. Uses the same host/device forms
+                as ``group_indices``.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness, or world-selection requirements are invalid, or
+                if both selector arguments are provided.
         """
         self._scatter(
             "particle",
@@ -2455,6 +2547,16 @@ class DeformableView:
 
         Each transform contains a world-space translation [m] and a unitless
         quaternion.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Segment transforms with shape ``(count, bodies_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            ValueError: If the selected groups have different body counts.
         """
         return self._gather("body", source.body_q, _gather_group_transform_kernel, wp.transform)
 
@@ -2471,6 +2573,24 @@ class DeformableView:
         Each transform contains a world-space translation [m] and a unitless
         quaternion. ``group_indices`` selects flat rows. ``world_indices`` selects
         model worlds when every world has exactly one matching group.
+
+        Args:
+            source: Model initial state or simulation state to update.
+            values: Segment transforms with shape ``(rows, bodies_per_group)``;
+                translations are in meters and quaternions are unitless.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+            world_indices: Optional model-world rows, accepted only when every model
+                world has exactly one matching group. Uses the same host/device forms
+                as ``group_indices``.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness, or world-selection requirements are invalid, or
+                if both selector arguments are provided.
         """
         self._scatter(
             "body",
@@ -2487,6 +2607,16 @@ class DeformableView:
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
         followed by angular velocity [rad/s].
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Segment velocities with shape ``(count, bodies_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            ValueError: If the selected groups have different body counts.
         """
         return self._gather("body", source.body_qd, _gather_group_spatial_kernel, wp.spatial_vector)
 
@@ -2503,6 +2633,25 @@ class DeformableView:
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
         followed by angular velocity [rad/s]. ``group_indices`` selects flat rows.
         ``world_indices`` selects model worlds when every world has exactly one match.
+
+        Args:
+            source: Model initial state or simulation state to update.
+            values: Segment velocities with shape ``(rows, bodies_per_group)``;
+                linear components are in meters per second and angular components are
+                in radians per second.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+            world_indices: Optional model-world rows, accepted only when every model
+                world has exactly one matching group. Uses the same host/device forms
+                as ``group_indices``.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness, or world-selection requirements are invalid, or
+                if both selector arguments are provided.
         """
         self._scatter(
             "body",
