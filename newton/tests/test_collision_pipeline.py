@@ -95,7 +95,7 @@ class CollisionSetup:
         self.sdf_max_resolution_b = sdf_max_resolution_b
         self._device = device
 
-        self.builder = newton.ModelBuilder(gravity=0.0)
+        self.builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Set contact margin to match previous test expectations
         # Note: margins are now summed (margin_a + margin_b), so we use half the previous value
         self.builder.rigid_gap = 0.005
@@ -240,7 +240,7 @@ devices = get_cuda_test_devices(mode="basic")
 
 class TestCollisionPipeline(unittest.TestCase):
     def test_soft_contact_max_zero_disables_soft_contact_generation(self):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
         builder.add_particle(pos=(0.0, 0.0, 0.025), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
         model = builder.finalize(device="cpu")
@@ -497,6 +497,69 @@ for mode_name, test_func in mesh_mesh_sdf_tests:
             broad_phase=broad_phase,
             check_output=False,  # Disable output checking due to Warp module loading messages
         )
+
+
+def test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage(test, device):
+    """Texture-SDF uncertainty keeps near-margin contacts in the preferred reduction tier."""
+    vertices = np.array(
+        [
+            [-0.10, -0.10, 0.50005],
+            [0.10, -0.10, 0.50005],
+            [0.00, 0.10, 0.50005],
+            [0.15, -0.10, 0.50500],
+            [0.35, -0.10, 0.50500],
+            [0.25, 0.10, 0.50500],
+        ],
+        dtype=np.float32,
+    )
+    probe_mesh = newton.Mesh(vertices, np.arange(6, dtype=np.int32), compute_inertia=False)
+    sdf_mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    sdf_mesh.build_sdf(max_resolution=64, device=device)
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0, gap=0.01, margin=0.0)
+    builder.add_shape_mesh(body, mesh=probe_mesh, cfg=cfg)
+    builder.add_shape_mesh(-1, mesh=sdf_mesh, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        deterministic=True,
+        rigid_contact_max=128,
+        max_triangle_pairs=128,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    points = contacts.rigid_contact_point0.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    top_face_points = points[normals[:, 2] < -0.99]
+
+    # All three directional representatives from the near-margin triangle must
+    # survive. With an exact zero-width inner tier, only two survive and the
+    # positive-X representative flickers into the gap-only outer tier.
+    near_margin_points = top_face_points[top_face_points[:, 2] < 0.501]
+    test.assertEqual(len(near_margin_points), 3)
+    test.assertTrue(np.any(near_margin_points[:, 0] > 0.09))
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage",
+    test_mesh_sdf_voxel_tolerance_preserves_inner_contact_coverage,
+    devices=devices,
+)
 
 
 # ============================================================================
@@ -851,7 +914,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         broad_phase: Broad phase algorithm to test (NXN or SAP).
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
         # Two overlapping spheres (same position so they definitely overlap)
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
@@ -903,7 +966,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
     EXPLICIT, NXN, and SAP all report exactly the same set of contacting shape pairs.
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
 
         # Three overlapping spheres at the same position
@@ -998,7 +1061,7 @@ def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
         y_offsets = [0.0, 3.0, 6.0, 9.0]
         expect_contact = [True, True, True, False]
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = gap
 
         positions = []

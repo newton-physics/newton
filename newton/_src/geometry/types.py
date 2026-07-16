@@ -1718,11 +1718,15 @@ class TetMesh:
         first_dim = arr.shape[0] if arr.ndim >= 1 else 1
         counts = {"vertex_count": vertex_count, "tet_count": tet_count, "tri_count": tri_count}
         matches = [label for label, c in counts.items() if first_dim == c and c > 0]
+        if first_dim == 1:
+            matches.append("ONCE")
         if len(matches) > 1:
             raise ValueError(
                 f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches "
                 f"{', '.join(matches)}. Pass an explicit (array, frequency) tuple instead."
             )
+        if "ONCE" in matches:
+            return Model.AttributeFrequency.ONCE
         if first_dim == vertex_count and vertex_count > 0:
             return Model.AttributeFrequency.PARTICLE
         if first_dim == tet_count and tet_count > 0:
@@ -1850,6 +1854,11 @@ class TetMesh:
         those values are read and converted to Lame parameters (``k_mu``,
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
+
+        Custom primvars use their resolved interpolation to determine attribute
+        frequency. Other custom arrays use length-based inference; arrays whose
+        frequency is ambiguous or cannot be inferred emit a warning and are
+        omitted without preventing the TetMesh from loading.
 
         Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
         (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)

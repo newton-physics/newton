@@ -42,7 +42,7 @@ PARAMS = {
     "container_ke": 1e3,
     "container_kd": 0,
     "container_mu": 0.8,
-    "gravity": -9.8,
+    "gravity": (0.0, 0.0, -9.8),
     "initial_paused": True,
     "body_drop_offset_scale": 4.0,
     "body_drop_spacing_scale": 3.0,

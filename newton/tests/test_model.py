@@ -5,8 +5,8 @@ import ast
 import hashlib
 import inspect
 import math
-import sys
 import textwrap
+import types
 import unittest
 import warnings
 from collections.abc import Mapping
@@ -23,7 +23,7 @@ from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
 def _eq_set_value(builder, name, idx, value):
@@ -799,6 +799,79 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
 
+    def test_mesh_approximation_coacd_uses_builder_default_cfg(self):
+        builder = ModelBuilder()
+        builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape])
+        self.assertEqual(captured["threshold"], 0.5)
+
+        # an explicit argument overrides the builder default
+        captured.clear()
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
+        self.assertEqual(captured["threshold"], 0.2)
+
+    def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
+        builder = ModelBuilder()
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with patch_sys_module("coacd", None), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
+        # the documented threshold migration must keep working without coacd installed
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+
+    def test_mesh_approximation_ignores_non_mesh_shapes(self):
+        builder = ModelBuilder()
+        box_prim = builder.add_shape_box(body=-1)
+        mesh = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        mesh_shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+        remeshed = builder.approximate_meshes(method="convex_hull", shape_indices=[box_prim, mesh_shape])
+        self.assertEqual(remeshed, {mesh_shape})
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.CONVEX_MESH)
+        self.assertEqual(
+            builder.approximate_meshes(method="bounding_box", shape_indices=[box_prim, mesh_shape]), {mesh_shape}
+        )
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.BOX)
+
+    def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
+        builder = ModelBuilder()
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with (
+            mock.patch("newton._src.sim.builder.remesh_mesh", side_effect=RuntimeError("qhull failed")),
+            warnings.catch_warnings(),
+        ):
+            warnings.simplefilter("ignore")
+            builder.approximate_meshes(method="convex_hull", shape_indices=[shape])
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
+        self.assertIsNone(builder.shape_source[shape])
+
     def test_mesh_approximation_convex_decomposition_preserves_visual_properties(self):
         builder = ModelBuilder()
         builder.add_custom_attribute(
@@ -841,7 +914,7 @@ class TestModelMesh(unittest.TestCase):
             ],
         )
 
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+        with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], raise_on_failure=True)
 
         extra_shape = shape + 1
