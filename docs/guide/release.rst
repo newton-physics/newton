@@ -215,31 +215,14 @@ otherwise.
      - Go/no-go approval obtained from maintainers.
    * - ☐
      - Finalize ``CHANGELOG.md`` in a fresh worktree based on the current
-       ``release-X.Y`` branch, then open a dedicated pull request targeting
-       ``release-X.Y``.  Run the ``.claude/skills/release-changelog`` skill
-       and provide the latest ``release-audit`` report as an input.  The
-       final review must:
-
-       - Rename ``[Unreleased]`` to ``[X.Y.Z] - YYYY-MM-DD``, using the
-         actual GA date.  Update the date before merging if the release date
-         changes.
-       - Cross-check merged changes from the previous release through the
-         final release candidate for missing entries, including fixes merged
-         during RC stabilization.
-       - Remove exact and semantic duplicates.  Consolidate related entries
-         when that makes the user impact clearer, including a fix for a
-         feature added during the same release cycle.
-       - Preserve user-relevant behavior, limitations, changed defaults, and
-         compatibility details while editing.  Verify each entry's category,
-         and keep migration or retesting guidance in the affected
-         ``Changed``, ``Deprecated``, or ``Removed`` item rather than adding a
-         separate upgrade-notes section.
-       - Check referenced pull requests selectively and perform a second
-         editorial pass for scanability and facts lost while grouping.
-
-       Merge this changelog pull request into ``release-X.Y`` before the
-       final version and tag are created; do not merge it to ``main`` first
-       and cherry-pick it back.
+       ``release-X.Y`` branch.  Run the
+       ``.claude/skills/release-changelog`` skill with the previous GA or
+       micro-release tag, the current release branch, and the latest
+       ``release-audit`` report as inputs.  Rename ``[Unreleased]`` to
+       ``[X.Y.Z] - YYYY-MM-DD`` using the actual GA date, updating the date if
+       the schedule changes.  Open a dedicated pull request targeting
+       ``release-X.Y`` and merge it before creating the final version and tag;
+       do not merge it to ``main`` first and cherry-pick it back.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
@@ -287,17 +270,11 @@ Post-release
    * - ☐
      - Reconcile the released changelog back to ``main`` in a dedicated
        changelog-only pull request.  Start from the current ``main`` branch
-       and bring in the dated ``[X.Y.Z] - YYYY-MM-DD`` section from
-       ``release-X.Y``; do not replace ``main``'s changelog wholesale.
-
-       - Keep a fresh ``[Unreleased]`` section at the top of ``main``.
-       - Move entries added to ``main`` after the release branch was cut, but
-         not shipped in ``X.Y.Z``, into that new ``[Unreleased]`` section
-         under the correct categories.
-       - Keep shipped entries only in the dated ``[X.Y.Z]`` section.  Resolve
-         semantic overlap between that section and ``[Unreleased]`` so the
-         same user-facing change is not recorded twice.
-       - Verify that older released sections remain unchanged.
+       and run the ``.claude/skills/release-changelog`` skill using the dated
+       ``[X.Y.Z] - YYYY-MM-DD`` section from ``release-X.Y`` and the current
+       ``main`` changelog as inputs.  Preserve a fresh ``[Unreleased]`` section
+       for changes not shipped in ``X.Y.Z``; do not replace ``main``'s
+       changelog wholesale.  Target this pull request to ``main``.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐
