@@ -544,9 +544,9 @@ def create_test_func(func, device, check_output, **kwargs):
     return test_func
 
 
+@unittest.skip("No suitable devices to run the test.")
 def skip_test_func(self):
-    # A function to use so we can tell unittest that the test was skipped.
-    self.skipTest("No suitable devices to run the test.")
+    pass
 
 
 def sanitize_identifier(s):
