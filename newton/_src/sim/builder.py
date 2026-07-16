@@ -2626,7 +2626,6 @@ class ModelBuilder:
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
         """
-        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
         if world_count <= 0:
             return
         if self.current_world != -1:
@@ -2634,6 +2633,7 @@ class ModelBuilder:
                 f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
                 "Call end_world() first to close the current world context."
             )
+        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
         base_world = self.world_count
         worlds = list(range(base_world, base_world + world_count))
         xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]

@@ -112,34 +112,29 @@ class TestModelBuilderReplicate(unittest.TestCase):
         return builder
 
     def assert_builder_merge_state_equal(self, expected: ModelBuilder, actual: ModelBuilder) -> None:
+        manually_verified = ("_shape_collision_filter_pairs", "actuator_entries", "custom_attributes")
         for name in sorted(set(vars(expected)) | set(vars(actual))):
+            if name in manually_verified:
+                continue
             expected_value = getattr(expected, name)
             actual_value = getattr(actual, name)
-            if isinstance(expected_value, list):
-                with self.subTest(attribute=name):
+            with self.subTest(attribute=name):
+                if isinstance(expected_value, list) or wp.types.type_is_vector(type(expected_value)):
                     np.testing.assert_array_equal(np.asarray(expected_value), np.asarray(actual_value))
-            elif isinstance(expected_value, dict) and name not in (
-                "actuator_entries",
-                "custom_attributes",
-                "custom_frequencies",
-            ):
-                with self.subTest(attribute=name):
+                elif (
+                    isinstance(expected_value, (bool, float, int, str, tuple, set, frozenset, dict))
+                    or expected_value is None
+                ):
                     self.assertEqual(expected_value, actual_value)
-            elif isinstance(expected_value, (bool, float, int, str, tuple, set, frozenset)) or expected_value is None:
-                with self.subTest(attribute=name):
-                    self.assertEqual(expected_value, actual_value)
-            else:
-                # Catch-all so attributes of unhandled types surface here instead of being skipped.
-                with self.subTest(attribute=name):
-                    self.assertEqual(type(expected_value), type(actual_value))
+                elif hasattr(expected_value, "__dict__"):
+                    self.assertEqual(vars(expected_value), vars(actual_value))
+                else:
+                    self.fail(f"unhandled attribute type {type(expected_value).__name__}; add an explicit comparison")
 
         self.assertEqual(expected.body_shapes, actual.body_shapes)
         self.assertEqual(expected.joint_parents, actual.joint_parents)
         self.assertEqual(expected.joint_children, actual.joint_children)
         self.assertEqual(tuple(expected.shape_collision_filter_pairs), tuple(actual.shape_collision_filter_pairs))
-        self.assertEqual(expected.world_count, actual.world_count)
-        self.assertEqual(expected.world_gravity, actual.world_gravity)
-        self.assertEqual(expected._custom_frequency_counts, actual._custom_frequency_counts)
 
         self.assertEqual(set(expected.custom_attributes), set(actual.custom_attributes))
         for name, expected_attr in expected.custom_attributes.items():
