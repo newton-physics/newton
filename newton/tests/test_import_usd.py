@@ -7207,32 +7207,35 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_non_finite_material_density_uses_default(self):
-        """A non-finite physics material density falls back to the importer default."""
+        """A non-finite physics material density warns and falls back to the importer default."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        for invalid_density in (math.inf, math.nan):
+            with self.subTest(density=invalid_density):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        body = UsdGeom.Xform.Define(stage, "/World/Body")
-        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
 
-        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
-        collider.CreateSizeAttr().Set(2.0)  # side length = 2.0 -> volume = 8.0
-        collider_prim = collider.GetPrim()
-        UsdPhysics.CollisionAPI.Apply(collider_prim)
+                collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+                collider.CreateSizeAttr().Set(2.0)  # side length = 2.0 -> volume = 8.0
+                collider_prim = collider.GetPrim()
+                UsdPhysics.CollisionAPI.Apply(collider_prim)
 
-        material = UsdShade.Material.Define(stage, "/World/Materials/Invalid")
-        UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDensityAttr().Set(math.inf)
-        UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, materialPurpose="physics")
+                material = UsdShade.Material.Define(stage, "/World/Materials/Invalid")
+                UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDensityAttr().Set(invalid_density)
+                UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, materialPurpose="physics")
 
-        builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"material density must be finite"):
+                    result = builder.add_usd(stage)
 
-        body_idx = result["path_body_map"]["/World/Body"]
-        expected_mass = builder.default_shape_cfg.density * 8.0
-        self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+                body_idx = result["path_body_map"]["/World/Body"]
+                expected_mass = builder.default_shape_cfg.density * 8.0
+                self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collider_massapi_invalid_mass_warns_and_uses_geometry(self):
@@ -7257,13 +7260,15 @@ def Xform "Articulation" (
             collider_mass_api.CreateDiagonalInertiaAttr().Set(collider_diag)
             return stage
 
-        with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
-            builder = newton.ModelBuilder()
-            result = builder.add_usd(make_stage(-1.0, Gf.Vec3f(0.1)))
-        # The collider falls back to geometry-derived mass information.
-        body_idx = result["path_body_map"]["/World/Body"]
-        expected_mass = builder.default_shape_cfg.density * 0.2**3
-        self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+        for invalid_mass in (-1.0, math.inf, math.nan):
+            with self.subTest(mass=invalid_mass):
+                with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(make_stage(invalid_mass, Gf.Vec3f(0.1)))
+                # The collider falls back to geometry-derived mass information.
+                body_idx = result["path_body_map"]["/World/Body"]
+                expected_mass = builder.default_shape_cfg.density * 0.2**3
+                self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
 
         # Invalid mass warns even when the authored diagonal inertia is the zero fallback.
         with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
@@ -7467,11 +7472,15 @@ def Xform "Articulation" (
             UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
             return stage
 
-        with self.assertWarnsRegex(UserWarning, r"authored mass is not positive and finite"):
-            builder = newton.ModelBuilder()
-            result = builder.add_usd(make_stage(lambda api: api.CreateMassAttr().Set(-5.0)))
-        body_idx = result["path_body_map"]["/World/Body"]
-        self.assertGreater(builder.body_mass[body_idx], 0.0)
+        for invalid_mass in (-5.0, math.inf, math.nan):
+            with self.subTest(mass=invalid_mass):
+                with self.assertWarnsRegex(UserWarning, r"authored mass is not positive and finite"):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        make_stage(lambda api, value=invalid_mass: api.CreateMassAttr().Set(value))
+                    )
+                body_idx = result["path_body_map"]["/World/Body"]
+                self.assertGreater(builder.body_mass[body_idx], 0.0)
 
         control_builder = newton.ModelBuilder()
         control_result = control_builder.add_usd(make_stage(lambda api: None))

@@ -2401,6 +2401,12 @@ def parse_usd(
                 return None
             return float(val)
 
+        if not math.isfinite(desc.density):
+            warnings.warn(
+                f"{sdf_path}: authored material density must be finite; treating it as unspecified.",
+                stacklevel=2,
+            )
+
         material_specs[str(sdf_path)] = PhysicsMaterial(
             staticFriction=desc.staticFriction,
             dynamicFriction=desc.dynamicFriction,
