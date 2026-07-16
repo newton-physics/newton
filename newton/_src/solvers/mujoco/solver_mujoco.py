@@ -5037,8 +5037,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
-        # MoJoCo doesn't have velocity limit
-        # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
         joint_world = model.joint_world.numpy()
         body_flags = model.body_flags.numpy()
