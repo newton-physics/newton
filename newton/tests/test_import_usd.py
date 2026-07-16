@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import builtins
 import functools
 import hashlib
 import math
@@ -5887,6 +5888,52 @@ def Xform "Body" (
 
 class TestImportSampleAssetsParsing(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_mjc_schemas_without_mujoco(self):
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "mjc_schema_import.usda")
+        original_import = builtins.__import__
+        optional_runtime_imports = []
+
+        def track_optional_runtime_imports(name, *args, **kwargs):
+            if name.partition(".")[0] in {"mujoco", "mujoco_warp"}:
+                optional_runtime_imports.append(name)
+            return original_import(name, *args, **kwargs)
+
+        for register_mujoco, convert_equalities in (
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ):
+            with self.subTest(register_mujoco=register_mujoco, convert_equalities=convert_equalities):
+                builder = newton.ModelBuilder()
+                if register_mujoco:
+                    SolverMuJoCo.register_custom_attributes(builder)
+
+                optional_runtime_imports.clear()
+                with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
+                    builder.add_usd(
+                        asset_path,
+                        convert_mjc_equality_constraints=convert_equalities,
+                        schema_resolvers=[usd.SchemaResolverMjc()],
+                    )
+                self.assertEqual(optional_runtime_imports, [])
+
+                model = builder.finalize()
+                self.assertEqual(model.mujoco.equality_constraint_count, 3)
+                self.assertEqual(model.constraint_mimic_count, int(convert_equalities))
+                self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), int(register_mujoco))
+
+                if register_mujoco:
+                    np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [1])
+                    self.assertIn(int(newton.JointTargetMode.POSITION), builder.joint_target_mode)
+                    self.assertEqual(
+                        set(model.mujoco.solreflimit_mode.numpy().tolist()),
+                        {SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT},
+                    )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_jnt_actgravcomp_parsing(self):
         """Test that jnt_actgravcomp attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -8223,7 +8270,7 @@ def Xform "Articulation" (
         builder.add_usd(stage)
 
         # Gravity should be enabled (non-zero)
-        self.assertNotEqual(builder.gravity, 0.0)
+        self.assertGreater(np.linalg.norm(np.asarray(builder.gravity)), 0.0)
 
         # Test with gravity disabled via newton:gravityEnabled
         stage2 = Usd.Stage.CreateInMemory()
@@ -8242,7 +8289,7 @@ def Xform "Articulation" (
         builder2.add_usd(stage2)
 
         # Gravity should be disabled (zero)
-        self.assertEqual(builder2.gravity, 0.0)
+        np.testing.assert_allclose(builder2.gravity, (0.0, 0.0, 0.0))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_non_unit_linear_unit(self):
@@ -8264,7 +8311,59 @@ def Xform "Articulation" (
         with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
             builder.add_usd(stage)
 
-        self.assertAlmostEqual(builder.gravity, -12.34, places=6)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -12.34), atol=1.0e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_gravity_direction(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(3.0, 4.0, 0.0))
+        scene.CreateGravityMagnitudeAttr().Set(10.0)
+
+        body = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-6)
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.begin_world()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+        )
+        np.testing.assert_allclose(builder.world_gravity[0], (-8.0, 6.0, 0.0), atol=1.0e-5)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+            override_root_xform=True,
+        )
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-5)
+
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        scene.GetGravityDirectionAttr().Set(Gf.Vec3f(0.0, -1.0, 0.0))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -10.0), atol=1.0e-5)
+
+        # Unauthored direction/magnitude sentinels resolve to standard gravity along -up_axis
+        stage2 = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage2, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage2, 1.0)
+        UsdPhysics.Scene.Define(stage2, "/physicsScene")
+        body2 = UsdGeom.Cube.Define(stage2, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body2.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body2.GetPrim())
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage2)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -9.81), atol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_time_steps_per_second_parsing(self):

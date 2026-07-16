@@ -22,6 +22,10 @@ class _StubViewer:
 
     def __init__(self):
         self.cleared = 0
+        self.cleared_all_layers = 0
+
+    def clear_all_layers(self):
+        self.cleared_all_layers += 1
 
     def clear_model(self):
         self.cleared += 1
@@ -70,7 +74,8 @@ class TestExampleBrowserReset(unittest.TestCase):
 
         self.assertIsNotNone(new_example)
         self.assertEqual(new_example.args.world_count, 2)
-        self.assertEqual(viewer.cleared, 1)
+        self.assertEqual(viewer.cleared_all_layers, 1)
+        self.assertEqual(viewer.cleared, 0)
 
     def test_reset_falls_back_to_defaults_when_no_args(self):
         viewer = _StubViewer()
@@ -102,7 +107,8 @@ class TestExampleBrowserReset(unittest.TestCase):
     def test_reset_after_switch_uses_new_example_args(self):
         # Original launch: _StubExample with --world-count 2.
         args = _StubExample.create_parser().parse_args(["--world-count", "2"])
-        browser = _ExampleBrowser(_StubViewer(), args)
+        viewer = _StubViewer()
+        browser = _ExampleBrowser(viewer, args)
 
         # Simulate the user picking _OtherStubExample from the browser tree.
         browser.switch_target = "fake.module.path"
@@ -112,6 +118,8 @@ class TestExampleBrowserReset(unittest.TestCase):
 
         self.assertIs(new_class, _OtherStubExample)
         self.assertEqual(new_example.args.world_count, 7)
+        self.assertEqual(viewer.cleared_all_layers, 1)
+        self.assertEqual(viewer.cleared, 0)
 
         # Reset after switch must use the new example's args (its parser
         # defaults), not the originally launched _StubExample's args.
