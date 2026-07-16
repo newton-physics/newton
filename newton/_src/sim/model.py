@@ -2194,11 +2194,8 @@ class Model:
 
         Raises:
             ValueError: If the model contains a ``JointType.CABLE`` joint.
-                Inverse dynamics has no motion-subspace implementation for
-                CABLE (``jcalc_motion`` / ``jcalc_motion_subspace``) and
-                ``eval_fk`` does not reconstruct it, so its results would be
-                undefined. The check runs here, at container-creation time,
-                rather than in the graph-capturable
+                Inverse dynamics does not support CABLE. The check runs here,
+                at container-creation time, rather than in the graph-capturable
                 :func:`~newton.eval_inverse_dynamics`.
         """
         from .enums import JointType  # noqa: PLC0415

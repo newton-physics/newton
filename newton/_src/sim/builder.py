@@ -2447,7 +2447,7 @@ class ModelBuilder:
         self.joint_target_qd = values
 
     def _project_target_q_to_dof(self) -> list[float]:
-        """Drop the quat-w padding slot for FREE/BALL/DISTANCE joints to turn
+        """Drop the quat-w padding slot for FREE/BALL/DISTANCE/CABLE joints to turn
         the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped list.
 
         Under :data:`newton.use_coord_layout_targets` ``False`` the builder
@@ -2460,7 +2460,7 @@ class ModelBuilder:
             q_start = self.joint_q_start[j]
             if jtype == JointType.BALL:
                 result.extend(self.joint_target_q[q_start : q_start + 3])
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.CABLE:
                 result.extend(self.joint_target_q[q_start : q_start + 6])
             elif jtype == JointType.FIXED:
                 pass
@@ -2482,7 +2482,7 @@ class ModelBuilder:
                 self.joint_target_q[q_start : q_start + 3] = values[value_start : value_start + 3]
                 self.joint_target_q[q_start + 3] = 1.0
                 value_start += 3
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE:
+            elif jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.CABLE:
                 self.joint_target_q[q_start : q_start + 6] = values[value_start : value_start + 6]
                 self.joint_target_q[q_start + 6] = 1.0
                 value_start += 6
@@ -4418,11 +4418,21 @@ class ModelBuilder:
         for _ in range(cts_count):
             self.joint_cts.append(0.0)
 
-        if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
+        if (
+            joint_type == JointType.FREE
+            or joint_type == JointType.DISTANCE
+            or joint_type == JointType.BALL
+            or joint_type == JointType.CABLE
+        ):
             # ensure that a valid quaternion is used for the angular dofs
             self.joint_q[-1] = 1.0
 
-        if joint_type == JointType.BALL or joint_type == JointType.FREE or joint_type == JointType.DISTANCE:
+        if (
+            joint_type == JointType.BALL
+            or joint_type == JointType.FREE
+            or joint_type == JointType.DISTANCE
+            or joint_type == JointType.CABLE
+        ):
             if joint_type == JointType.BALL:
                 quat_offset = target_q_offset
             else:
@@ -4995,17 +5005,10 @@ class ModelBuilder:
         custom_attributes: dict[str, Any] | None = None,
         **kwargs,
     ) -> int:
-        """Adds a cable joint to the model. It has two degrees of freedom: one linear (stretch)
-        that constrains the distance between the attachment points, and one angular (bend/twist)
-        that penalizes the relative rotation of the attachment frames.
+        """Adds a cable joint to the model.
 
-        .. note::
-
-            Cable joints are represented in the joint data model, but their two entries
-            are VBD stretch and bend/twist constraint slots rather than
-            ``joint_q`` coordinates. Cable body transforms are integrated directly by
-            :class:`newton.solvers.SolverVBD`; they are not reconstructed by
-            :func:`newton.eval_fk`.
+        Its kinematic state uses a 7-coordinate relative pose in ``joint_q`` and
+        a 6-DoF relative twist in ``joint_qd``.
 
         Args:
             parent: The index of the parent body.
@@ -5031,30 +5034,42 @@ class ModelBuilder:
             The index of the added joint.
 
         """
-        # Linear DOF (stretch)
+        # Preserve the scalar material API across the 6-DoF tangent layout.
         se_ke = 1.0e5 if stretch_stiffness is None else stretch_stiffness
         se_kd = 0.0 if stretch_damping is None else stretch_damping
-        ax_lin = ModelBuilder.JointDofConfig(target_ke=se_ke, target_kd=se_kd)
-
-        # Angular DOF (bend/twist)
         bend_ke = 0.0 if bend_stiffness is None else bend_stiffness
         bend_kd = 0.0 if bend_damping is None else bend_damping
-        ax_ang = ModelBuilder.JointDofConfig(target_ke=bend_ke, target_kd=bend_kd)
 
-        return self.add_joint(
+        linear_axes = [
+            ModelBuilder.JointDofConfig(axis=axis, target_ke=se_ke, target_kd=se_kd)
+            for axis in (Axis.X, Axis.Y, Axis.Z)
+        ]
+        angular_axes = [
+            ModelBuilder.JointDofConfig(axis=axis, target_ke=bend_ke, target_kd=bend_kd)
+            for axis in (Axis.X, Axis.Y, Axis.Z)
+        ]
+
+        joint_id = self.add_joint(
             JointType.CABLE,
             parent,
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            linear_axes=[ax_lin],
-            angular_axes=[ax_ang],
+            linear_axes=linear_axes,
+            angular_axes=angular_axes,
             label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             custom_attributes=custom_attributes,
             **kwargs,
         )
+        q_start = self.joint_q_start[joint_id]
+        # Initialize the coordinates so FK preserves the authored child pose.
+        parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
+        parent_anchor_world = parent_body_xform * self.joint_X_p[joint_id]
+        joint_q = wp.transform_inverse(parent_anchor_world) * self.body_q[child] * self.joint_X_c[joint_id]
+        self.joint_q[q_start : q_start + 7] = list(joint_q)
+        return joint_id
 
     def add_constraint_mimic(
         self,
@@ -7343,8 +7358,7 @@ class ModelBuilder:
 
         Constructs a chain of capsule bodies from the given centerline points and orientations.
         Each segment is a capsule aligned by the corresponding quaternion, and adjacent capsules
-        are connected by cable joints providing one linear (stretch) and one angular (bend/twist)
-        degree of freedom.
+        are connected by cable joints with a relative pose and twist.
 
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the

@@ -174,7 +174,7 @@ class JointType(IntEnum):
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
     CABLE = 7
-    """Cable joint: two DOF slots for linear stretch and angular bend/twist."""
+    """Cable joint: 7-coordinate relative pose and 6-DoF relative twist."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -194,6 +194,7 @@ class JointType(IntEnum):
             - For BALL joints, dof_count is 3 (angular velocity), coord_count is 4 (quaternion).
             - For FREE and DISTANCE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
             - For FIXED joints, both values are 0.
+            - For CABLE joints, dof_count is 6 and coord_count is 7.
         """
         dof_count = num_axes
         coord_count = num_axes
@@ -206,6 +207,9 @@ class JointType(IntEnum):
         elif self == JointType.FIXED:
             dof_count = 0
             coord_count = 0
+        elif self == JointType.CABLE:
+            dof_count = 6
+            coord_count = 7
         return dof_count, coord_count
 
     def constraint_count(self, num_axes: int) -> int:
@@ -220,13 +224,13 @@ class JointType(IntEnum):
 
         Notes:
             - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
-            - For FREE and DISTANCE joints, `cts_count = 0` since it yields no constraints.
+            - For FREE, DISTANCE, and CABLE joints, `cts_count = 0` since they yield no constraints.
             - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
         """
         cts_count = 6 - num_axes
         if self == JointType.BALL:
             cts_count = 3
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.CABLE:
             cts_count = 0
         elif self == JointType.FIXED:
             cts_count = 6

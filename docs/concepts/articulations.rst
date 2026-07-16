@@ -27,7 +27,8 @@ Maximal coordinates describe the configuration of an articulation in terms of th
 Each rigid body's pose is represented by 7 parameters (3D position and XYZW quaternion) in :attr:`newton.State.body_q`,
 and its velocity by 6 parameters (3D linear and 3D angular) in :attr:`newton.State.body_qd`.
 The linear component of :attr:`newton.State.body_qd` is the world-frame velocity
-of the body's center of mass. For public ``FREE`` and ``DISTANCE`` joints,
+of the body's center of mass. For public ``FREE``, ``DISTANCE``, and ``CABLE``
+joints,
 :attr:`newton.State.joint_qd` stores the child-COM twist in the joint parent
 frame: the linear slice is child-COM velocity and the angular slice is angular
 velocity in that same frame.
@@ -48,18 +49,11 @@ Note that collision detection, e.g., via :meth:`newton.Model.collide` requires t
 Cable joints
 ^^^^^^^^^^^^
 
-:attr:`newton.JointType.CABLE` is represented in Newton's joint data model, but
-it is not a conventional generalized-coordinate joint. Its two entries are
-VBD constraint/material slots: one linear slot for stretch and one angular slot
-for bend/twist. These slots store per-cable stiffness and damping through
-:attr:`newton.Model.joint_target_ke` and :attr:`newton.Model.joint_target_kd`;
-they are not ``joint_q`` coordinates that uniquely reconstruct the child body
-pose.
-
-Cable body poses and velocities are maximal-coordinate state stored in
-:attr:`newton.State.body_q` and :attr:`newton.State.body_qd`, and are advanced by
-:class:`newton.solvers.SolverVBD`. Therefore :func:`newton.eval_fk` does not
-update cable child body transforms from ``joint_q`` / ``joint_qd``.
+:attr:`newton.JointType.CABLE` uses the same kinematic state layout as a
+:attr:`~newton.JointType.FREE` joint: ``joint_q`` stores a 7-coordinate relative
+pose (3D translation and a quaternion), while ``joint_qd`` stores the 6-DoF
+relative twist. :func:`newton.eval_fk` and
+:func:`newton.eval_ik` convert between this joint state and body state.
 
 To showcase how an articulation state is initialized using reduced coordinates, let's consider an example where we create an articulation with a single revolute joint and initialize
 its joint angle to 0.5 and joint velocity to 10.0:
@@ -321,9 +315,9 @@ Joint types
      - up to 6
      - up to 6
    * - ``JointType.CABLE``
-     - Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom
-     - 2
-     - 2
+     - Cable joint with a relative pose and twist
+     - 7 (3D position + 4D quaternion)
+     - 6
 
 D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
 Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.

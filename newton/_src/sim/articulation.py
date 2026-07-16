@@ -266,9 +266,6 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
-        if type == JointType.CABLE:
-            # CABLE joints are skipped by generic forward kinematics.
-            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -307,7 +304,7 @@ def eval_single_articulation_fk(
             X_j = wp.transform(wp.vec3(), r)
             v_j = wp.spatial_vector(wp.vec3(), w)
 
-        if type == JointType.FREE or type == JointType.DISTANCE:
+        if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
             t = wp.transform(
                 wp.vec3(joint_q[q_start + 0], joint_q[q_start + 1], joint_q[q_start + 2]),
                 wp.quat(joint_q[q_start + 3], joint_q[q_start + 4], joint_q[q_start + 5], joint_q[q_start + 6]),
@@ -399,8 +396,8 @@ def eval_single_articulation_fk(
         # Transform joint motion into world space.
         linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
         angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-        if type == JointType.FREE or type == JointType.DISTANCE:
-            # FREE / DISTANCE joint linear DOFs follow Newton's COM-velocity
+        if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
+            # FREE / DISTANCE / CABLE joint linear DOFs follow Newton's COM-velocity
             # convention, so convert the relative child COM twist to an
             # origin-referenced twist before the tree recurrence.
             v_joint_origin = com_twist_to_origin_twist(
@@ -511,12 +508,6 @@ def eval_fk(
 
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
-
-    .. note::
-
-        :attr:`~newton.JointType.CABLE` body transforms are not changed by
-        :func:`newton.eval_fk`; they are advanced directly by
-        :class:`newton.solvers.SolverVBD`.
 
     Args:
         model: The model to evaluate.
@@ -781,7 +772,7 @@ def eval_articulation_ik(
     if type == JointType.FIXED:
         return
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.CABLE:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
@@ -940,7 +931,7 @@ def write_free_distance_motion_subspace(
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
-    """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
+    """Write the 6 motion-subspace columns for a FREE/DISTANCE/CABLE joint.
 
     Used by both the Featherstone inverse-dynamics path (``jcalc_motion``) and
     the IK/Jacobian path (``jcalc_motion_subspace``) so they agree on the exact
@@ -951,7 +942,7 @@ def write_free_distance_motion_subspace(
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
             to rotate the joint's parent-anchor axes into the world frame.
             This is *not* the classical Featherstone ``X_sc`` (spatial-to-
-            child); Newton's FREE/DISTANCE joint coordinates live in the
+            child); Newton's FREE/DISTANCE/CABLE joint coordinates live in the
             parent-anchor basis.
         x_child_com_world: World-space position of the child body's COM.
         qd_start: Starting velocity-DOF index for this joint.
@@ -1009,10 +1000,8 @@ def jcalc_motion_subspace(
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
 
-        CABLE joints are not currently supported. CABLE joints have complex,
-        configuration-dependent motion subspaces (dynamic stretch direction and
-        isotropic angular DOF) and are primarily designed for VBD solver.
-        If encountered, their Jacobian columns will remain zero.
+        CABLE joints use the same six-dimensional motion subspace as
+        FREE/DISTANCE joints.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1066,7 +1055,11 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
-    elif joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
+    elif (
+        joint_type_value == JointType.FREE
+        or joint_type_value == JointType.DISTANCE
+        or joint_type_value == JointType.CABLE
+    ):
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
         write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
@@ -1403,9 +1396,9 @@ def eval_articulation_inverse_dynamics_force_kernel(
     :attr:`InverseDynamics.coriolis_force` and
     :attr:`InverseDynamics.gravity_force`.
 
-    For any FREE/DISTANCE joint, ``H`` is in the joint's parent frame while the
-    bias terms are in world frame, so the six ``H @ qddot`` components are
-    rotated to world before summing.
+    For any FREE/DISTANCE/CABLE joint, ``H`` is in the joint's parent frame
+    while the bias terms are in world frame, so the six ``H @ qddot``
+    components are rotated to world before summing.
 
     Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
     mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
@@ -1429,15 +1422,15 @@ def eval_articulation_inverse_dynamics_force_kernel(
             sum_val += H[art_idx, i, j] * qddot[dof_start + j]
         tau[dof_start + i] = sum_val
 
-    # Rotate every FREE/DISTANCE wrench from parent frame to world so it
+    # Rotate every FREE/DISTANCE/CABLE wrench from parent frame to world so it
     # matches the world-frame bias terms. H @ qddot is conjugate to the
     # parent-frame qddot convention used internally; coriolis_force and
     # gravity_force already use the world-frame CoM-wrench convention of
-    # Control.joint_f. Any FREE/DISTANCE joint in the articulation tree
+    # Control.joint_f. Any FREE/DISTANCE/CABLE joint in the articulation tree
     # (not only the root) needs this rotation.
     for ji in range(joint_start, joint_end):
         jtype = joint_type[ji]
-        if jtype == JointType.FREE or jtype == JointType.DISTANCE:
+        if jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.CABLE:
             jdof = joint_qd_start[ji]
             X_wpj = joint_X_p[ji]
             parent = joint_parent[ji]
@@ -1488,18 +1481,19 @@ def eval_inverse_dynamics_force(
     fixed-root and floating-root articulations across multiple worlds is
     handled uniformly.
 
-    For any FREE/DISTANCE joint in the articulation tree the mass matrix ``H``
-    is expressed in the joint's parent frame while
+    For any FREE/DISTANCE/CABLE joint in the articulation tree the mass matrix
+    ``H`` is expressed in the joint's parent frame while
     ``coriolis_force``/``gravity_force`` are in the world-frame CoM-wrench
     convention of :attr:`Control.joint_f`; each such joint's ``H @ qddot``
     wrench is rotated to world (using ``state.body_q`` for the
     parent-frame-in-world rotation) before the sum, so ``tau`` is entirely in
-    that world convention.
+    that world convention. Full inverse-dynamics evaluation remains unsupported
+    for CABLE joints, but this helper accepts caller-supplied CABLE buffers.
 
     Args:
         model: The model containing articulation definitions.
-        state: State providing ``body_q``, used to rotate the FREE/DISTANCE
-            root ``H @ qddot`` wrench into the world frame. Must be consistent
+        state: State providing ``body_q``, used to rotate each FREE/DISTANCE/CABLE
+            ``H @ qddot`` wrench into the world frame. Must be consistent
             with the ``H`` and bias buffers (i.e. the state passed to
             :func:`eval_inverse_dynamics`).
         H: Joint-space mass matrix ``M(q)`` [kg, kg·m, or kg·m^2, depending
