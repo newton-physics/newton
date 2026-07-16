@@ -546,19 +546,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     )
 
             if self.simulate_particles:
-                # damped springs
                 eval_spring_forces(model, state_in, particle_f)
 
-                # triangle elastic and lift/drag forces
                 eval_triangle_forces(model, state_in, control, particle_f)
 
-                # triangle bending
                 eval_bending_forces(model, state_in, particle_f)
 
-                # tetrahedral FEM
                 eval_tetrahedra_forces(model, state_in, control, particle_f)
 
-                # particle-particle interactions
                 eval_particle_contact_forces(model, state_in, particle_f)
 
                 # Particle shape contact for non-articulated models; articulated models run this after ID
