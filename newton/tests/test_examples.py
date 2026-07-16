@@ -49,6 +49,11 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
+_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
+    r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
+    r"Successfully downloaded folder to: [^\n]+\n?"
+)
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _BASIC_PLOTTING_OUTPUT_RE = (
     r"(?:"
@@ -73,6 +78,7 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
     (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
+    (_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
 
