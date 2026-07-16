@@ -12,6 +12,7 @@ import warp as wp
 
 from .....geometry import ShapeFlags
 from .....sim.model import Model
+from ..utils import logger as msg
 from .bodies import (
     RigidBodiesModel,
     convert_body_origin_to_com,
@@ -308,6 +309,7 @@ def joint_indexing_kernel(
     joint_num_dofs: wp.array[wp.int32],
     joint_num_kinematic_cts: wp.array[wp.int32],
     joint_num_dynamic_cts: wp.array[wp.int32],
+    model_fk_act_flag: wp.array[wp.int32],
     # Outputs:
     num_passive_joints: wp.array[wp.int32],
     num_actuated_joints: wp.array[wp.int32],
@@ -317,7 +319,9 @@ def joint_indexing_kernel(
     num_joint_passive_coords: wp.array[wp.int32],
     num_joint_passive_dofs: wp.array[wp.int32],
     num_joint_actuated_coords: wp.array[wp.int32],
+    num_joint_fk_actuated_coords: wp.array[wp.int32],
     num_joint_actuated_dofs: wp.array[wp.int32],
+    num_joint_fk_actuated_dofs: wp.array[wp.int32],
     num_joint_cts: wp.array[wp.int32],
     num_joint_dynamic_cts: wp.array[wp.int32],
     num_joint_kinematic_cts: wp.array[wp.int32],
@@ -343,7 +347,9 @@ def joint_indexing_kernel(
     num_coords = int(0)
     num_dofs = int(0)
     num_actuated_coords = int(0)
+    num_fk_actuated_coords = int(0)
     num_actuated_dofs = int(0)
+    num_fk_actuated_dofs = int(0)
     num_passive_coords = int(0)
     num_passive_dofs = int(0)
     num_cts = int(0)
@@ -382,10 +388,16 @@ def joint_indexing_kernel(
             num_actuated_j += 1
             num_actuated_coords += ncoords_j
             num_actuated_dofs += ndofs_j
+            if not model_fk_act_flag or model_fk_act_flag[joint_id] == -1:
+                num_fk_actuated_coords += ncoords_j
+                num_fk_actuated_dofs += ndofs_j
         else:
             num_passive_j += 1
             num_passive_coords += ncoords_j
             num_passive_dofs += ndofs_j
+        if model_fk_act_flag and model_fk_act_flag[joint_id] == 1:
+            num_fk_actuated_coords += ncoords_j
+            num_fk_actuated_dofs += ndofs_j
 
         # Update sizes based on whether joint is dynamic
         if n_dyn_cts_j > 0:
@@ -403,7 +415,9 @@ def joint_indexing_kernel(
     num_joint_kinematic_cts[world_id] = num_kinematic_cts
     num_joint_dynamic_cts[world_id] = num_dynamic_cts
     num_joint_actuated_coords[world_id] = num_actuated_coords
+    num_joint_fk_actuated_coords[world_id] = num_fk_actuated_coords
     num_joint_actuated_dofs[world_id] = num_actuated_dofs
+    num_joint_fk_actuated_dofs[world_id] = num_fk_actuated_dofs
     num_joint_passive_coords[world_id] = num_passive_coords
     num_joint_passive_dofs[world_id] = num_passive_dofs
 
@@ -901,7 +915,9 @@ def convert_joints(
         num_joint_passive_coords = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_passive_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_actuated_coords = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_fk_actuated_coords = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_actuated_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
+        num_joint_fk_actuated_dofs = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_dynamic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
         num_joint_kinematic_cts = wp.zeros(shape=(model.world_count,), dtype=wp.int32)
@@ -925,6 +941,7 @@ def convert_joints(
             joint_num_dofs,
             joint_num_kinematic_cts,
             joint_num_dynamic_cts,
+            model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         ],
         outputs=[
             num_passive_joints,
@@ -935,7 +952,9 @@ def convert_joints(
             num_joint_passive_coords,
             num_joint_passive_dofs,
             num_joint_actuated_coords,
+            num_joint_fk_actuated_coords,
             num_joint_actuated_dofs,
+            num_joint_fk_actuated_dofs,
             num_joint_cts,
             num_joint_dynamic_cts,
             num_joint_kinematic_cts,
@@ -961,7 +980,9 @@ def convert_joints(
     num_joint_passive_coords_np = num_joint_passive_coords.numpy()
     num_joint_passive_dofs_np = num_joint_passive_dofs.numpy()
     num_joint_actuated_coords_np = num_joint_actuated_coords.numpy()
+    num_joint_fk_actuated_coords_np = num_joint_fk_actuated_coords.numpy()
     num_joint_actuated_dofs_np = num_joint_actuated_dofs.numpy()
+    num_joint_fk_actuated_dofs_np = num_joint_fk_actuated_dofs.numpy()
     num_joint_cts_np = num_joint_cts.numpy()
     num_joint_dynamic_cts_np = num_joint_dynamic_cts.numpy()
     num_joint_kinematic_cts_np = num_joint_kinematic_cts.numpy()
@@ -1014,35 +1035,45 @@ def convert_joints(
     if model.articulation_count > 0:
         articulation_start_np = model.articulation_start.numpy()
         articulation_world_np = model.articulation_world.numpy()
-        # For each articulation, assign its base body and joint to the corresponding world
+        # For each articulation, assign its base body and joint to the corresponding world,
+        # if the base joint is a unary free joint.
         # NOTE: We only assign the first articulation found in each world
+        has_non_free_root = False
         for aid in range(model.articulation_count):
             wid = articulation_world_np[aid]
             base_joint = articulation_start_np[aid]
             base_body = joint_child_np[base_joint]
             if base_body_idx_np[wid] == -1 and base_joint_idx_np[wid] == -1:
-                if joint_dof_type_np[base_joint] == JointDoFType.UNIVERSAL:
-                    raise RuntimeError(
-                        "Universal joint as the base joint of an articulation isn't supported in Kamino."
-                    )
+                if joint_dof_type_np[base_joint] != JointDoFType.FREE:
+                    has_non_free_root = True
+                    continue
                 base_body_idx_np[wid] = base_body
                 base_joint_idx_np[wid] = base_joint
+        if has_non_free_root:
+            msg.warning(
+                "Model has articulations with a non-free joint as root, disabling floating base resets for those worlds."
+            )
 
-    # For worlds without articulations, look for a unary joint, or else use the first body
+    # For worlds without articulations, look for a unary free joint, or use the first body
     for wid in range(model.world_count):
         if base_body_idx_np[wid] != -1:  # World already has a base body
             continue
-        # Look for a unary non-universal joint connecting the world to a follower body
+        # Look for a unary joint, and use it as base joint if it is a free joint
+        has_unary_joint = False
         for jid in range(joint_world_start_np[wid], joint_world_start_np[wid + 1]):
-            if joint_parent_np[jid] == -1 and joint_dof_type_np[jid] != JointDoFType.UNIVERSAL:
-                base_joint_idx_np[wid] = jid
-                base_body_idx_np[wid] = int(joint_child_np[jid])
-                break
-        # As a last fallback, set first body in that world as base body (no base joint)
-        if base_body_idx_np[wid] == -1:
-            base_body_idx_np[wid] = body_world_start_np[wid]
+            if joint_parent_np[jid] == -1:
+                has_unary_joint = True
+                if joint_dof_type_np[jid] == JointDoFType.FREE:
+                    base_joint_idx_np[wid] = jid
+                    base_body_idx_np[wid] = int(joint_child_np[jid])
+                    break
+        # As a last fallback, set first body in that world as base body (no base joint), if no unary
+        # joints were found (else this is not a floating-base model and we assign no base body).
+        if base_body_idx_np[wid] == -1 and not has_unary_joint:
             if body_world_start_np[wid] == body_world_start_np[wid + 1]:
-                raise RuntimeError(f"Zero bodies in world {wid}, cannot set base body.")
+                msg.warning(f"Zero bodies in world {wid}, no base body assigned.")
+                continue
+            base_body_idx_np[wid] = body_world_start_np[wid]
 
     # Update size object
     model_size.sum_of_num_joints = int(num_joints_np.sum())
@@ -1063,8 +1094,12 @@ def convert_joints(
     model_size.max_of_num_passive_joint_dofs = int(num_joint_passive_dofs_np.max())
     model_size.sum_of_num_actuated_joint_coords = int(num_joint_actuated_coords_np.sum())
     model_size.max_of_num_actuated_joint_coords = int(num_joint_actuated_coords_np.max())
+    model_size.sum_of_num_fk_actuated_joint_coords = int(num_joint_fk_actuated_coords_np.sum())
+    model_size.max_of_num_fk_actuated_joint_coords = int(num_joint_fk_actuated_coords_np.max())
     model_size.sum_of_num_actuated_joint_dofs = int(num_joint_actuated_dofs_np.sum())
     model_size.max_of_num_actuated_joint_dofs = int(num_joint_actuated_dofs_np.max())
+    model_size.sum_of_num_fk_actuated_joint_dofs = int(num_joint_fk_actuated_dofs_np.sum())
+    model_size.max_of_num_fk_actuated_joint_dofs = int(num_joint_fk_actuated_dofs_np.max())
     model_size.sum_of_num_joint_cts = int(num_joint_cts_np.sum())
     model_size.max_of_num_joint_cts = int(num_joint_cts_np.max())
     model_size.sum_of_num_dynamic_joint_cts = int(num_joint_dynamic_cts_np.sum())
@@ -1196,6 +1231,7 @@ def convert_joints(
         jid=joint_jid,  # TODO: Remove
         dof_type=joint_dof_type,
         act_type=joint_act_type,
+        fk_act_flag=model.fk_actuation_flag if hasattr(model, "fk_actuation_flag") else None,
         bid_B=model.joint_parent,
         bid_F=model.joint_child,
         B_r_Bj=joint_B_r_B,

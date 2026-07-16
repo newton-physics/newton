@@ -11584,6 +11584,7 @@ class ModelBuilder:
                 m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
+            m._has_cable_joints = JointType.CABLE in self.joint_type  # pyright: ignore[reportPrivateUsage]
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)

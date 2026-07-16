@@ -50,6 +50,9 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r")\n?"
 )
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
+_DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
+_DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
+_DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}"
 _BASIC_PLOTTING_OUTPUT_RE = (
     r"(?:"
     r"Diagnostics plot saved to solver_convergence\.png\n?"
@@ -765,21 +768,30 @@ add_example_test(
 )
 
 
-class TestDiffSimExamples(unittest.TestCase):
+class TestDiffSimExamples(NewtonTestCase):
     pass
 
 
-add_example_test(
-    TestDiffSimExamples,
+def add_diffsim_example_test(**kwargs: Any) -> None:
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [
+        (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+        (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
+        *extra_allow_output_regexes,
+    ]
+    add_example_test(TestDiffSimExamples, allow_output_regexes=allow_output_regexes, **kwargs)
+
+
+add_diffsim_example_test(
     name="diffsim.example_diffsim_ball",
     devices=test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 36},
     use_viewer=True,
+    expect_output_regexes=[(_DIFFSIM_BALL_GRADIENT_OUTPUT_RE, "stdout")],
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_cloth",
     devices=test_devices,
     test_options={"num-frames": 4 * 120},  # train_iters * sim_steps
@@ -787,17 +799,16 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_drone",
     devices=test_devices,
     test_options={"num-frames": 180},  # sim_steps
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expect_output_regexes=[(_DIFFSIM_DRONE_LOSS_OUTPUT_RE, "stdout")],
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_spring_cage",
     devices=test_devices,
     test_options={"num-frames": 4 * 30},  # train_iters * sim_steps
@@ -805,8 +816,7 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_soft_body",
     devices=test_devices,
     test_options={"num-frames": 4 * 60},  # train_iters * sim_steps
@@ -814,11 +824,10 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_bear",
     devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 4 * 60},  # train_iters * sim_steps
+    test_options={"usd_required": True, "num-frames": 4 * 120, "sim-steps": 120},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2, "sim-steps": 10},
     use_viewer=True,
 )
