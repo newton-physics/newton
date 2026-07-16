@@ -321,10 +321,12 @@ def solve_springs(
     spring_stiffness: wp.array[float],
     spring_damping: wp.array[float],
     dt: float,
-    lambdas: wp.array[float],
+    lambda_in: wp.array[float],
+    lambda_out: wp.array[float],
     delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
+    lambda_out[tid] = lambda_in[tid]
 
     i = spring_indices[tid * 2 + 0]
     j = spring_indices[tid * 2 + 1]
@@ -366,12 +368,13 @@ def solve_springs(
     gamma = kd / (ke * dt)
 
     grad_c_dot_v = dt * wp.dot(grad_c_xi, vij)  # Note: dt because from the paper we want x_i - x^n, not v...
-    dlambda = -1.0 * (c + alpha * lambdas[tid] + gamma * grad_c_dot_v) / ((1.0 + gamma) * denom + alpha)
+    lambda_prev = lambda_in[tid]
+    dlambda = -1.0 * (c + alpha * lambda_prev + gamma * grad_c_dot_v) / ((1.0 + gamma) * denom + alpha)
 
     dxi = wi * dlambda * grad_c_xi
     dxj = wj * dlambda * grad_c_xj
 
-    lambdas[tid] = lambdas[tid] + dlambda
+    lambda_out[tid] = lambda_prev + dlambda
 
     wp.atomic_add(delta, i, dxi)
     wp.atomic_add(delta, j, dxj)
@@ -386,10 +389,12 @@ def bending_constraint(
     rest: wp.array[float],
     bending_properties: wp.array2d[float],
     dt: float,
-    lambdas: wp.array[float],
+    lambda_in: wp.array[float],
+    lambda_out: wp.array[float],
     delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
+    lambda_out[tid] = lambda_in[tid]
     eps = 1.0e-6
 
     ke = bending_properties[tid, 0]
@@ -463,14 +468,15 @@ def bending_constraint(
 
     grad_dot_v = dt * (wp.dot(grad_x1, v1) + wp.dot(grad_x2, v2) + wp.dot(grad_x3, v3) + wp.dot(grad_x4, v4))
 
-    dlambda = -1.0 * (c + alpha * lambdas[tid] + gamma * grad_dot_v) / ((1.0 + gamma) * denominator + alpha)
+    lambda_prev = lambda_in[tid]
+    dlambda = -1.0 * (c + alpha * lambda_prev + gamma * grad_dot_v) / ((1.0 + gamma) * denominator + alpha)
 
     delta0 = w1 * dlambda * grad_x1
     delta1 = w2 * dlambda * grad_x2
     delta2 = w3 * dlambda * grad_x3
     delta3 = w4 * dlambda * grad_x4
 
-    lambdas[tid] = lambdas[tid] + dlambda
+    lambda_out[tid] = lambda_prev + dlambda
 
     wp.atomic_add(delta, i, delta0)
     wp.atomic_add(delta, j, delta1)
@@ -489,7 +495,8 @@ def solve_tetrahedra(
     materials: wp.array2d[float],
     dt: float,
     relaxation: float,
-    lambdas: wp.array[float],
+    lambda_in: wp.array[float],
+    lambda_out: wp.array[float],
     delta: wp.array[wp.vec3],
 ):
     # Tetrahedral XPBD constraint solve.
@@ -526,6 +533,8 @@ def solve_tetrahedra(
     # They persist across nonlinear iterations within the time step so finite
     # compliance does not harden as the iteration count increases.
     tid = wp.tid()
+    lambda_out[tid * 2] = lambda_in[tid * 2]
+    lambda_out[tid * 2 + 1] = lambda_in[tid * 2 + 1]
 
     i = indices[tid, 0]
     j = indices[tid, 1]
@@ -615,9 +624,10 @@ def solve_tetrahedra(
                 gamma = k_damp / (stiffness * dt)
                 grad_dot_v = dt * (wp.dot(grad0, v0) + wp.dot(grad1, v1) + wp.dot(grad2, v2) + wp.dot(grad3, v3))
             lambda_index = tid * num_terms + term
-            dlambda = -1.0 * (C + alpha * lambdas[lambda_index] + gamma * grad_dot_v) / ((1.0 + gamma) * w + alpha)
+            lambda_prev = lambda_in[lambda_index]
+            dlambda = -1.0 * (C + alpha * lambda_prev + gamma * grad_dot_v) / ((1.0 + gamma) * w + alpha)
             dlambda *= relaxation
-            lambdas[lambda_index] = lambdas[lambda_index] + dlambda
+            lambda_out[lambda_index] = lambda_prev + dlambda
 
             wp.atomic_add(delta, i, w0 * dlambda * grad0)
             wp.atomic_add(delta, j, w1 * dlambda * grad1)
