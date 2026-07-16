@@ -105,6 +105,9 @@ what users should know. Do not reproduce the full changelog; link to it.
 - For patch releases, say whether the release is intended to be API-compatible
   with the previous patch/minor when that is true.
 - Avoid em dashes in rendered prose.
+- Keep raw Markdown soft-wrapped: use one physical line per paragraph and per
+  list item. Do not hard-wrap prose at a fixed column; let GitHub, gist, and
+  local viewers wrap it to their window width.
 
 ## Dependency Updates
 
