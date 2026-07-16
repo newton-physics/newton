@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for DeformableView: batched selection over imported deformable groups."""
+"""Tests for DeformableView batched selection over finalized deformable groups."""
 
 import re
 import unittest
@@ -11,19 +11,15 @@ import warp as wp
 
 import newton
 from newton.selection import ArticulationView, DeformableView
-from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
-from newton.tests.unittest_utils import USD_AVAILABLE
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
 
 
 def _replicated_model(world_count=3, device=None):
     """One cloth + one cable per world, replicated."""
-    stage = _deformable_stage()
-    _add_cloth_mesh(stage, "/World/Cloth")
-    _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
     sub = newton.ModelBuilder()
-    sub.add_usd(stage)
+    _add_test_cloth(sub, label="/World/Cloth")
+    _add_test_cable(sub, label="/World/Cable")
     scene = newton.ModelBuilder()
     scene.replicate(sub, world_count)
     return scene.finalize() if device is None else scene.finalize(device=device)
@@ -35,20 +31,33 @@ def _add_test_articulation(builder):
     builder.add_articulation([root_joint], label="robot")
 
 
-def _add_test_cloth(builder):
+def _add_test_cable(builder, label="cable"):
+    builder.add_rod(
+        positions=_CABLE_PTS,
+        radius=0.02,
+        label=label,
+        body_frame_origin="com",
+    )
+
+
+def _add_test_cloth(builder, label="cloth", vertices=None, indices=None):
+    if vertices is None:
+        vertices = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)]
+    if indices is None:
+        indices = [0, 1, 2, 0, 2, 3]
     builder.add_cloth_mesh(
         pos=wp.vec3(0.0, 0.0, 2.0),
         rot=wp.quat_identity(),
         scale=1.0,
         vel=wp.vec3(0.0),
-        vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
-        indices=[0, 1, 2, 0, 2, 3],
+        vertices=vertices,
+        indices=indices,
         density=1.0,
-        label="cloth",
+        label=label,
     )
 
 
-def _add_test_soft_body(builder):
+def _add_test_soft_body(builder, label="soft"):
     builder.add_soft_mesh(
         pos=wp.vec3(0.0, 0.0, 3.0),
         rot=wp.quat_identity(),
@@ -60,11 +69,10 @@ def _add_test_soft_body(builder):
         k_mu=100.0,
         k_lambda=100.0,
         k_damp=0.0,
-        label="soft",
+        label=label,
     )
 
 
-@unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestDeformableView(unittest.TestCase):
     """Label-pattern selection and batched state access over deformable groups."""
 
@@ -113,14 +121,8 @@ class TestDeformableView(unittest.TestCase):
 
     def test_soft_view_over_global_groups(self):
         """Groups outside any world (world -1) are selectable as a single-world view."""
-        from pxr import UsdGeom
-
-        stage = _deformable_stage()
-        tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-        tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        _add_test_soft_body(builder, label="/World/Soft")
         model = builder.finalize()
 
         view = DeformableView(model, "/World/Soft", family="volume")
@@ -129,11 +131,9 @@ class TestDeformableView(unittest.TestCase):
 
     def test_pattern_matches_multiple_groups_per_world(self):
         """A wildcard pattern selects several groups per world when counts stay equal."""
-        stage = _deformable_stage()
-        _add_cloth_mesh(stage, "/World/ClothA")
-        _add_cloth_mesh(stage, "/World/ClothB")
         sub = newton.ModelBuilder()
-        sub.add_usd(stage)
+        _add_test_cloth(sub, label="/World/ClothA")
+        _add_test_cloth(sub, label="/World/ClothB")
         scene = newton.ModelBuilder()
         scene.replicate(sub, 2)
         model = scene.finalize()
@@ -146,15 +146,11 @@ class TestDeformableView(unittest.TestCase):
 
     def test_varying_group_counts_across_worlds_remain_selectable(self):
         """Worlds may contribute different group counts while retaining stable order."""
-        stage_a = _deformable_stage()
-        _add_cloth_mesh(stage_a, "/World/ClothA")
-        stage_b = _deformable_stage()
-        _add_cloth_mesh(stage_b, "/World/ClothA")
-        _add_cloth_mesh(stage_b, "/World/ClothB")
         first = newton.ModelBuilder()
-        first.add_usd(stage_a)
+        _add_test_cloth(first, label="/World/ClothA")
         second = newton.ModelBuilder()
-        second.add_usd(stage_b)
+        _add_test_cloth(second, label="/World/ClothA")
+        _add_test_cloth(second, label="/World/ClothB")
         scene = newton.ModelBuilder()
         scene.add_world(first)
         scene.add_world(second)
@@ -175,11 +171,9 @@ class TestDeformableView(unittest.TestCase):
     def test_compiled_regex_pattern_selects_by_fullmatch(self):
         """A compiled regular expression selects groups by fullmatch: alternation picks
         two labels per replicated world, and a partial match selects nothing."""
-        stage = _deformable_stage()
-        _add_cloth_mesh(stage, "/World/ClothA")
-        _add_cloth_mesh(stage, "/World/ClothB")
         sub = newton.ModelBuilder()
-        sub.add_usd(stage)
+        _add_test_cloth(sub, label="/World/ClothA")
+        _add_test_cloth(sub, label="/World/ClothB")
         scene = newton.ModelBuilder()
         scene.replicate(sub, 2)
         model = scene.finalize()
@@ -194,13 +188,7 @@ class TestDeformableView(unittest.TestCase):
 
     def test_view_round_trip_on_cpu(self):
         """The gather/scatter path works on a CPU-finalized model, not just CUDA."""
-        stage = _deformable_stage()
-        _add_cloth_mesh(stage, "/World/Cloth")
-        sub = newton.ModelBuilder()
-        sub.add_usd(stage)
-        scene = newton.ModelBuilder()
-        scene.replicate(sub, 2)
-        model = scene.finalize(device="cpu")
+        model = _replicated_model(2, device="cpu")
         state = model.state()
 
         view = DeformableView(model, "/World/Cloth", family="surface")
@@ -213,18 +201,20 @@ class TestDeformableView(unittest.TestCase):
 
     def test_selection_errors(self):
         """No match raises KeyError; ragged element counts and bad families raise ValueError."""
-        from pxr import UsdGeom
-
-        stage = _deformable_stage()
-        _add_cloth_mesh(stage, "/World/ClothA")  # 4 particles
-        big = UsdGeom.Mesh.Define(stage, "/World/ClothB")  # 5 particles -> ragged with A
-        big.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0), (2.0, 0.0, 1.0)])
-        big.CreateFaceVertexCountsAttr([3, 3, 3])
-        big.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3, 1, 4, 2])
-        big.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
-        big.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")  # match the fixture: no gating warning
         builder = newton.ModelBuilder()
-        builder.add_usd(stage)
+        _add_test_cloth(builder, label="/World/ClothA")  # 4 particles
+        _add_test_cloth(
+            builder,
+            label="/World/ClothB",
+            vertices=[
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (2.0, 0.0, 0.0),
+            ],
+            indices=[0, 1, 2, 0, 2, 3, 1, 4, 2],
+        )
         model = builder.finalize()
 
         with self.assertRaises(KeyError):
