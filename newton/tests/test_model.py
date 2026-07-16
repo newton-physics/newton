@@ -220,7 +220,7 @@ class TestParallelJointWarning(unittest.TestCase):
         link = builder.add_link(mass=1.0)
         builder.add_joint_revolute(parent=-1, child=link)
 
-        with self.assertWarnsRegex(UserWarning, "undefined"):
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_prismatic(parent=-1, child=link)
 
     def test_reversed_parent_child_warns_undefined(self):
@@ -229,7 +229,7 @@ class TestParallelJointWarning(unittest.TestCase):
         body_b = builder.add_link(mass=1.0, label="B")
         builder.add_joint_revolute(parent=body_a, child=body_b)
 
-        with self.assertWarnsRegex(UserWarning, "undefined"):
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
             builder.add_joint_prismatic(parent=body_b, child=body_a)
 
 
@@ -1280,7 +1280,8 @@ class TestModelJoints(unittest.TestCase):
             positions=pts, radius=0.02, label="cable", wrap_in_articulation=True, body_frame_origin="com"
         )
         builder.add_joint_ball(parent=-1, child=bodies[1], label="att_a")
-        builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
+        with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+            builder.add_joint_ball(parent=-1, child=bodies[1], label="att_b")
         count_before = builder.joint_count
         builder.collapse_fixed_joints()
         self.assertEqual(builder.joint_count, count_before)
@@ -1298,10 +1299,12 @@ class TestModelJoints(unittest.TestCase):
                 builder.add_shape_sphere(c, radius=0.1)
                 if order == "fixed_second":
                     builder.add_joint_ball(parent=p, child=c, label="ball")
-                    builder.add_joint_fixed(parent=p, child=c, label="fix")
+                    with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+                        builder.add_joint_fixed(parent=p, child=c, label="fix")
                 else:
                     builder.add_joint_fixed(parent=p, child=c, label="fix")
-                    builder.add_joint_ball(parent=p, child=c, label="ball")
+                    with self.assertWarnsRegex(UserWarning, "undefined semantics"):
+                        builder.add_joint_ball(parent=p, child=c, label="ball")
                 keep = ["fix"] if order == "fixed_kept_first" else []
                 builder.collapse_fixed_joints(joints_to_keep=keep)
                 labels = list(builder.joint_label)
@@ -1323,8 +1326,8 @@ class TestModelJoints(unittest.TestCase):
         anchor joint reaching a rod mid-chain cannot scramble recorded body ranges."""
         builder = newton.ModelBuilder()
         # A rigid pair joined by a fixed joint: something real to collapse.
-        b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
-        b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
+        b0 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), label="base")
+        b1 = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), label="tool")
         builder.add_shape_sphere(b0, radius=0.1)
         builder.add_shape_sphere(b1, radius=0.1)
         builder.add_joint_free(b0)

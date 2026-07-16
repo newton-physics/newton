@@ -4,8 +4,6 @@
 """Tests for joint equality constraints verified with simulation steps."""
 
 import unittest
-import warnings
-
 import numpy as np
 import warp as wp
 
@@ -1286,9 +1284,9 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
         """Build a model with a revolute loop joint and a FIXED loop joint.
 
         Topology per world:
-            Articulation: world -> fixed -> root_body -> rev_joint -> body_a -> rev_joint2 -> body_b
-            Revolute loop joint: body_b (parent) -> root_body (child), not in articulation
-            Fixed loop joint: body_a (parent) -> root_body (child), not in articulation
+            Articulation: world -> root_body -> body_a -> body_b -> body_c
+            Revolute loop joint: body_c (parent) -> root_body (child), not in articulation
+            Fixed loop joint: body_b (parent) -> root_body (child), not in articulation
 
         The revolute loop joint creates 2 CONNECT constraints.
         The fixed loop joint creates 1 WELD constraint.
@@ -1347,27 +1345,34 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
                 custom_attributes={"mujoco:dof_ref": -0.3},
             )
 
-            builder.add_articulation(joints=[root_joint, joint0, joint1])
+            # body_c (body 3), connected to body_b via revolute joint
+            body_c = builder.add_link(mass=body_inertia, inertia=inertia_mat)
+            joint2 = builder.add_joint_revolute(
+                parent=body_b,
+                child=body_c,
+                axis=2,  # Z axis
+                armature=1000000000000.0,
+            )
 
-            # Revolute loop joint: body_b (parent) -> root_body (child)
+            builder.add_articulation(joints=[root_joint, joint0, joint1, joint2])
+
+            # Revolute loop joint: body_c (parent) -> root_body (child)
             # Creates 2 CONNECT constraints
             builder.add_joint_revolute(
-                parent=body_b,
+                parent=body_c,
                 child=root_body,
                 axis=2,  # Z axis
                 armature=0.0,
             )
 
-            # FIXED loop joint: body_a (parent) -> root_body (child)
+            # FIXED loop joint: body_b (parent) -> root_body (child)
             # Creates 1 WELD constraint
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*undefined semantics.*", category=UserWarning)
-                builder.add_joint_fixed(
-                    parent=body_a,
-                    child=root_body,
-                    parent_xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()),
-                    child_xform=wp.transform(wp.vec3(0.0, 0.1, 0.0), wp.quat_identity()),
-                )
+            builder.add_joint_fixed(
+                parent=body_b,
+                child=root_body,
+                parent_xform=wp.transform(wp.vec3(0.0, 0.2, 0.0), wp.quat_identity()),
+                child_xform=wp.transform(wp.vec3(0.0, 0.1, 0.0), wp.quat_identity()),
+            )
 
             all_worlds_builder.add_world(builder)
 
