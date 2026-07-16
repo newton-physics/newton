@@ -2253,7 +2253,10 @@ class DeformableView:
         """
         return [(self._world_starts[i], self._world_starts[i + 1]) for i in range(self.world_count)]
 
-    def elements_per_group(self, kind: str) -> int:
+    def elements_per_group(
+        self,
+        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> int:
         """Elements of ``kind`` in each selected group (homogeneous across the selection).
 
         ``kind`` is ``body``/``joint`` for curves, ``particle``/``triangle``/``edge`` for
@@ -2271,7 +2274,10 @@ class DeformableView:
         """
         return self._element_count(kind)
 
-    def ranges(self, kind: str) -> list[tuple[int, int]]:
+    def ranges(
+        self,
+        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> list[tuple[int, int]]:
         """``[start, end)`` element ranges of the selected groups, in selection order.
 
         For consumers that need each group's raw slice of the flat model arrays, e.g. to
@@ -2290,7 +2296,10 @@ class DeformableView:
         self._validate_kind(kind)
         return list(self._ranges[kind])
 
-    def starts(self, kind: str) -> wp.array[wp.int32]:
+    def starts(
+        self,
+        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> wp.array[wp.int32]:
         """Device-side element-range starts of the selected groups, shape ``(count,)``.
 
         Together with :meth:`elements_per_group` this drives custom kernels over the
