@@ -703,10 +703,10 @@ class TestSchemaResolver(unittest.TestCase):
 
     def test_layered_fallback_behavior(self):
         """
-        Test three-layer attribute resolution fallback mechanism.
+        Test layered attribute resolution fallback mechanism.
 
         Uses ant_mixed.usda to test the complete fallback hierarchy: authored USD values →
-        explicit default parameters → solver mapping defaults. Validates each layer works
+        explicit default parameters → applicable schema defaults. Validates each layer works
         correctly by testing scenarios with authored PhysX values, explicit defaults,
         and solver-specific mapping defaults across different plugin priority orders.
         """
@@ -741,19 +741,19 @@ class TestSchemaResolver(unittest.TestCase):
         val2 = resolver_newton_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=0.99)
         self.assertAlmostEqual(val2, 0.99, places=6)
 
-        # Test 3: No authored value, no explicit default, use Newton mapping default
+        # Test 3: Newton's schema is not applied, so its mapping default does not leak in
         val3 = resolver_newton_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=None)
-        self.assertAlmostEqual(val3, 0.0, places=6)
+        self.assertIsNone(val3)
 
-        # Test 3b: Use SchemaResolverMjc only - should return SchemaResolverMjc armature default (0.0)
+        # Test 3b: MuJoCo's schema is not applied either
         resolver_mjc_only = SchemaResolverManager([SchemaResolverMjc()])
         val3b = resolver_mjc_only.get_value(joint_with_physx_armature, PrimType.JOINT, "armature", default=None)
-        self.assertAlmostEqual(val3b, 0.0, places=6)
+        self.assertIsNone(val3b)
 
-        # Test 4: Test priority order - PhysX first should use PhysX mapping default when no authored value
+        # Test 4: Resolver order cannot inject a PhysX default on a Newton-only scene
         resolver_physx_first = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
         val4 = resolver_physx_first.get_value(scene_prim, PrimType.SCENE, "max_solver_iterations", default=None)
-        self.assertAlmostEqual(val4, 255, places=6)
+        self.assertEqual(val4, -1)
 
         # Test same attribute with Newton first priority
         resolver_newton_first = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
@@ -1424,23 +1424,23 @@ class TestSchemaResolver(unittest.TestCase):
 
         resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
 
-        # PhysX only restOffset (no contactOffset) -> getter returns None -> default -inf
+        # PhysX only restOffset (no contactOffset) -> no complete authored value or applicable default
         collider_b.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.01)
         gap = resolver.get_value(collider_b, PrimType.SHAPE, "gap")
-        self.assertEqual(gap, float("-inf"))
+        self.assertIsNone(gap)
 
         # PhysX both -> 0.04 - 0.01 = 0.03
         collider_b.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.04)
         gap = resolver.get_value(collider_b, PrimType.SHAPE, "gap")
         self.assertAlmostEqual(gap, 0.03)
 
-        # --- Collider C: PhysX -inf values ---
+        # --- Collider C: unusable PhysX -inf values do not activate another schema ---
         collider_c = UsdGeom.Cube.Define(stage, "/xform/collider_c").GetPrim()
         UsdPhysics.CollisionAPI.Apply(collider_c)
         collider_c.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(float("-inf"))
         collider_c.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.05)
         gap = resolver.get_value(collider_c, PrimType.SHAPE, "gap")
-        self.assertEqual(gap, float("-inf"))
+        self.assertIsNone(gap)
 
         # --- Mjc ---
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
@@ -1556,9 +1556,9 @@ class TestSchemaResolver(unittest.TestCase):
         # Create resolver
         resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
 
-        # there is no authored max_hull_vertices in the asset, so it should be the physx default (64)
+        # Only Newton's collision schemas are applied, so its default wins even with PhysX first
         max_hull_vertices = resolver.get_value(collider, PrimType.SHAPE, "max_hull_vertices")
-        self.assertEqual(max_hull_vertices, 64)
+        self.assertEqual(max_hull_vertices, -1)
 
         # an explicit newton value should be used
         collider.GetAttribute("newton:maxHullVertices").Set(32)
@@ -1645,10 +1645,10 @@ class TestSchemaResolver(unittest.TestCase):
         collider = UsdGeom.Sphere.Define(stage, "/xform/collider").GetPrim()
         UsdPhysics.CollisionAPI.Apply(collider)
 
-        # No authored value → default "solid"
+        # No NewtonMassAPI or authored value means there is no applicable schema default
         resolver = SchemaResolverManager([SchemaResolverNewton()])
         mass_model = resolver.get_value(collider, PrimType.SHAPE, "mass_model")
-        self.assertEqual(mass_model, "solid")
+        self.assertIsNone(mass_model)
 
         # newton:massModel authored
         collider.CreateAttribute("newton:massModel", Sdf.ValueTypeNames.Token).Set("shell")
@@ -1830,6 +1830,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
 
         # --- Mapping defaults when nothing is authored ---
         resolver_n = SchemaResolverManager([N])
@@ -1841,6 +1842,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIsNone(resolver_n.get_value(joint, PrimType.JOINT, "limit_ke", default=None))
         self.assertIsNone(resolver_n.get_value(joint, PrimType.JOINT, "limit_kd", default=None))
         self.assertEqual(resolver_n.get_value(joint, PrimType.JOINT, "velocity_limit", default=None), float("inf"))
+        self.assertIsNone(resolver_n.get_value(joint, PrimType.JOINT, "angular_position", default=None))
 
         # --- All 6 Newton attrs authored ---
         joint.CreateAttribute("newton:armature", Sdf.ValueTypeNames.Float).Set(0.1)
@@ -1995,6 +1997,56 @@ class TestSchemaResolver(unittest.TestCase):
             val = resolver_p.get_value(joint, PrimType.JOINT, "angular_position")
         self.assertAlmostEqual(val, 0.7)
         self.assertEqual(len([x for x in w if issubclass(x.category, DeprecationWarning)]), 0)
+
+    def test_resolution_provenance_and_schema_applicability(self):
+        """Schema defaults require their API while authored and importer sources remain explicit."""
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        mjc = SchemaResolverMjc()
+        resolver = SchemaResolverManager([mjc])
+
+        unresolved = resolver.resolve(joint, PrimType.JOINT, "limit_linear_ke")
+        self.assertEqual(unresolved.source, SchemaResolverManager.Source.UNRESOLVED)
+        self.assertIsNone(unresolved.value)
+        self.assertIsNone(unresolved.resolver)
+
+        importer_default = resolver.resolve(joint, PrimType.JOINT, "limit_linear_ke", default=123.0)
+        self.assertEqual(importer_default.source, SchemaResolverManager.Source.IMPORTER_DEFAULT)
+        self.assertEqual(importer_default.value, 123.0)
+        self.assertIsNone(importer_default.resolver)
+
+        joint.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["MjcJointAPI"]))
+        schema_default = resolver.resolve(joint, PrimType.JOINT, "limit_linear_ke")
+        self.assertEqual(schema_default.source, SchemaResolverManager.Source.SCHEMA_DEFAULT)
+        self.assertEqual(schema_default.value, 2500.0)
+        self.assertIs(schema_default.resolver, mjc)
+
+        joint.CreateAttribute("mjc:solreflimit", Sdf.ValueTypeNames.Double2).Set((0.1, 1.0))
+        authored = resolver.resolve(joint, PrimType.JOINT, "limit_linear_ke")
+        self.assertEqual(authored.source, SchemaResolverManager.Source.AUTHORED)
+        self.assertAlmostEqual(authored.value, 100.0)
+        self.assertIs(authored.resolver, mjc)
+
+        collider = UsdGeom.Mesh.Define(stage, "/collider").GetPrim()
+        collider.ApplyAPI("NewtonCollisionAPI")
+        newton_resolver = SchemaResolverManager([SchemaResolverNewton()])
+        self.assertEqual(
+            newton_resolver.resolve(collider, PrimType.SHAPE, "gap").source,
+            SchemaResolverManager.Source.SCHEMA_DEFAULT,
+        )
+        self.assertEqual(
+            newton_resolver.resolve(collider, PrimType.SHAPE, "mass_model").source,
+            SchemaResolverManager.Source.UNRESOLVED,
+        )
+        collider.ApplyAPI("NewtonMassAPI")
+        self.assertEqual(newton_resolver.get_value(collider, PrimType.SHAPE, "mass_model"), "solid")
+
+        collider.ApplyAPI("NewtonSDFCollisionAPI")
+        sdf_resolution = newton_resolver.resolve(collider, PrimType.SHAPE, "sdf_max_resolution")
+        self.assertEqual(sdf_resolution.source, SchemaResolverManager.Source.SCHEMA_DEFAULT)
+        self.assertEqual(sdf_resolution.value, 64)
+        self.assertFalse(newton_resolver.get_value(collider, PrimType.SHAPE, "hydroelastic_enabled"))
+        self.assertEqual(newton_resolver.get_value(collider, PrimType.SHAPE, "kh"), 1.0e10)
 
     def test_newton_joint_limit_attrs_deprecated(self):
         """Legacy per-DOF newton limit attrs emit DeprecationWarning pointing to schema attrs."""

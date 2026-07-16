@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from . import utils as usd
@@ -81,6 +81,13 @@ class SchemaResolver:
     # namespaces are never read as deformable attributes.
     deformable_attr_namespaces: ClassVar[list[str]] = []
 
+    # Applied API schemas and typed prim names that make this resolver's mapping defaults
+    # applicable. Resolvers that leave both maps empty retain the legacy always-applicable
+    # behavior, which keeps third-party resolver subclasses backward compatible.
+    _applicable_api_schemas: ClassVar[dict[PrimType, tuple[str, ...]]] = {}
+    _applicable_api_schemas_by_key: ClassVar[dict[PrimType, dict[str, tuple[str, ...]]]] = {}
+    _applicable_prim_type_names: ClassVar[dict[PrimType, tuple[str, ...]]] = {}
+
     def __init__(self) -> None:
         # Precompute the full set of USD attribute names referenced by this resolver's mapping.
         names: set[str] = set()
@@ -122,6 +129,29 @@ class SchemaResolver:
             if v is not None:
                 return spec.usd_value_transformer(v) if spec.usd_value_transformer is not None else v
         return None
+
+    def _is_applicable(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> bool:
+        """Return whether this resolver's schema default applies to a prim and key."""
+        api_names = self._applicable_api_schemas_by_key.get(prim_type, {}).get(
+            key, self._applicable_api_schemas.get(prim_type, ())
+        )
+        prim_type_names = self._applicable_prim_type_names.get(prim_type, ())
+        if not api_names and not prim_type_names:
+            return (
+                not self._applicable_api_schemas
+                and not self._applicable_api_schemas_by_key
+                and not self._applicable_prim_type_names
+            )
+        if prim is None:
+            return False
+        try:
+            applied = {str(name).split(":", 1)[0] for name in prim.GetAppliedSchemas()}
+            if any(name in applied or usd.has_applied_api_schema(prim, name) for name in api_names):
+                return True
+            type_name = str(prim.GetTypeName())
+            return any(type_name.startswith(name) for name in prim_type_names)
+        except (AttributeError, RuntimeError):
+            return False
 
     def collect_prim_attrs(self, prim: Usd.Prim) -> dict[str, Any]:
         """Collect all resolver-relevant attributes for a prim.
@@ -194,6 +224,22 @@ class SchemaResolverManager:
     Manager for resolving multiple USD schemas in a priority order.
     """
 
+    class Source(Enum):
+        """Origin of a resolved value."""
+
+        AUTHORED = "authored"
+        IMPORTER_DEFAULT = "importer_default"
+        SCHEMA_DEFAULT = "schema_default"
+        UNRESOLVED = "unresolved"
+
+    @dataclass(frozen=True)
+    class Resolution:
+        """Resolved value together with its schema and source provenance."""
+
+        value: Any
+        resolver: SchemaResolver | None
+        source: SchemaResolverManager.Source
+
     def __init__(self, resolvers: Sequence[SchemaResolver]):
         """
         Initialize resolver manager with resolver instances in priority order.
@@ -221,11 +267,11 @@ class SchemaResolverManager:
         self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
     ) -> Any:
         """
-        Resolve value using schema priority, with layered fallbacks:
+        Resolve a value using schema priority, with layered fallbacks:
 
         1) First authored value found in resolver order (highest priority first)
         2) If none authored, use the provided 'default' argument if not None
-        3) If no default provided, use the first non-None mapping default from resolvers in priority order
+        3) If no default is provided, use the first mapping default whose schema applies to the prim
         4) If no mapping default found, return None
 
         Args:
@@ -237,46 +283,48 @@ class SchemaResolverManager:
         Returns:
             Resolved value according to the precedence above.
         """
-        value, _ = self.get_value_with_resolver(prim, prim_type, key, default, verbose)
-        return value
+        return self.resolve(prim, prim_type, key, default, verbose).value
 
-    def get_value_with_resolver(
+    def resolve(
         self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
-    ) -> tuple[Any, SchemaResolver | None]:
-        """Resolve a value and return the resolver that supplied an authored value."""
-        # 1) Authored value by schema priority
-        for r in self.resolvers:
-            val = r.get_value(prim, prim_type, key)
-            if val is None:
+    ) -> Resolution:
+        """Resolve a value and preserve its winning resolver and source."""
+        for resolver in self.resolvers:
+            value = resolver.get_value(prim, prim_type, key)
+            if value is None:
                 continue
-            self._collect_on_first_use(r, prim)
-            return val, r
+            self._collect_on_first_use(resolver, prim)
+            return self.Resolution(value, resolver, self.Source.AUTHORED)
 
-        # 2) Caller-provided default, if any
         if default is not None:
-            return default, None
+            return self.Resolution(default, None, self.Source.IMPORTER_DEFAULT)
 
-        # 3) Resolver mapping defaults in priority order
         for resolver in self.resolvers:
             spec = resolver.mapping.get(prim_type, {}).get(key) if hasattr(resolver, "mapping") else None
-            if spec is not None:
-                d = getattr(spec, "default", None)
-                if d is not None:
-                    transformer = getattr(spec, "usd_value_transformer", None)
-                    return (transformer(d) if transformer is not None else d), None
+            if spec is None or spec.default is None or not resolver._is_applicable(prim, prim_type, key):
+                continue
+            transformer = spec.usd_value_transformer
+            value = transformer(spec.default) if transformer is not None else spec.default
+            if value is not None:
+                return self.Resolution(value, resolver, self.Source.SCHEMA_DEFAULT)
 
-        # Nothing found
         try:
             prim_path = str(prim.GetPath()) if prim is not None else "<None>"
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
         if verbose:
-            error_message = (
+            print(
                 f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-                + "no authored value, no explicit default, and no solver mapping default."
+                "no authored value, no explicit default, and no applicable schema mapping default."
             )
-            print(error_message)
-        return None, None
+        return self.Resolution(None, None, self.Source.UNRESOLVED)
+
+    def get_value_with_resolver(
+        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
+    ) -> tuple[Any, SchemaResolver | None]:
+        """Resolve a value and return the resolver that supplied it, if any."""
+        resolution = self.resolve(prim, prim_type, key, default, verbose)
+        return resolution.value, resolution.resolver
 
     def deformable_compat_namespaces(self) -> list[str]:
         """Deformable vendor attribute namespaces declared by the active resolvers.

@@ -628,50 +628,20 @@ def parse_usd(
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
 
-    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
-    def _get_mjc_joint_limit_default(prim: Usd.Prim, key: str) -> float | None:
-        if mjc_resolver is None or not _has_api_schema(prim, "MjcJointAPI"):
-            return None
-        spec = mjc_resolver.mapping.get(PrimType.JOINT, {}).get(key)
-        if spec is None or spec.default is None:
-            return None
-        if spec.usd_value_transformer is not None:
-            return spec.usd_value_transformer(spec.default)
-        return spec.default
-
     def _resolve_joint_limit_gain(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
-        for resolver in R.resolvers:
-            spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
-            if spec is None:
-                continue
-
-            if resolver.name == "mjc":
-                raw_value = usd.get_attribute(prim, spec.name)
-                if raw_value is None:
-                    continue
-                R._collect_on_first_use(resolver, prim)
-                authored_value = (
-                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
-                )
-                if authored_value is not None:
-                    return authored_value, "mjc_authored"
-                mjc_default = _get_mjc_joint_limit_default(prim, key)
-                if mjc_default is not None:
-                    return mjc_default, "mjc_authored"
-                return builder_default, "mjc_authored"
-
-            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
-            if authored_value is not None:
-                R._collect_on_first_use(resolver, prim)
-                return authored_value, "force"
-
-        if mjc_resolver is not None:
-            mjc_default = _get_mjc_joint_limit_default(prim, key)
-            if mjc_default is not None:
-                return mjc_default, "mjc_default"
+        resolution = R.resolve(prim, PrimType.JOINT, key)
+        if resolution.source == SchemaResolverManager.Source.AUTHORED:
+            source = "mjc_authored" if resolution.resolver and resolution.resolver.name == "mjc" else "force"
+            return resolution.value, source
+        if (
+            resolution.source == SchemaResolverManager.Source.SCHEMA_DEFAULT
+            and resolution.resolver
+            and resolution.resolver.name == "mjc"
+        ):
+            return resolution.value, "mjc_default"
         return builder_default, "force"
 
     def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
@@ -3308,9 +3278,10 @@ def parse_usd(
                 # Resolve target_voxel_size first because it overrides
                 # sdf_max_resolution and the two are mutually exclusive in
                 # ShapeConfig.validate().
-                sdf_target_voxel_size = R.get_value(
+                sdf_target_voxel_size_resolution = R.resolve(
                     prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
                 )
+                sdf_target_voxel_size = sdf_target_voxel_size_resolution.value
                 if sdf_target_voxel_size == float("-inf"):
                     sdf_target_voxel_size = None
                 elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
@@ -3323,9 +3294,10 @@ def parse_usd(
                 if sdf_target_voxel_size is None:
                     sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
 
-                sdf_max_resolution = R.get_value(
+                sdf_max_resolution_resolution = R.resolve(
                     prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
                 )
+                sdf_max_resolution = sdf_max_resolution_resolution.value
                 if sdf_max_resolution == float("-inf"):
                     sdf_max_resolution = None
                 elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
@@ -3343,17 +3315,17 @@ def parse_usd(
                     )
                     sdf_max_resolution = None
                 if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
-                    warnings.warn(
-                        f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
-                        f"are set; sdfTargetVoxelSize takes precedence.",
-                        stacklevel=2,
-                    )
+                    if sdf_max_resolution_resolution.source != SchemaResolverManager.Source.SCHEMA_DEFAULT:
+                        warnings.warn(
+                            f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
+                            f"are set; sdfTargetVoxelSize takes precedence.",
+                            stacklevel=2,
+                        )
                     sdf_max_resolution = None
                 if sdf_max_resolution is None:
-                    # When the API is applied but neither attribute is authored,
-                    # fall back to the schema default (64). When target voxel
-                    # size already drives the resolution, leave max_resolution
-                    # unset so the two don't conflict in ShapeConfig.validate().
+                    # Invalid authored values fall back to the applicable schema
+                    # default. A target voxel size suppresses max resolution so
+                    # the mutually exclusive ShapeConfig fields remain valid.
                     if has_sdf_api and sdf_target_voxel_size is None:
                         sdf_max_resolution = 64
                     else:
@@ -3400,10 +3372,12 @@ def parse_usd(
                     )
                     sdf_padding = None
 
-                hydroelastic_enabled = R.get_value(
+                hydroelastic_enabled_resolution = R.resolve(
                     prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
                 )
-                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                hydroelastic_enabled = hydroelastic_enabled_resolution.value
+                kh_resolution = R.resolve(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                kh = kh_resolution.value
                 if kh == float("-inf"):
                     kh = None
                 elif kh is not None and kh <= 0:
@@ -3413,17 +3387,12 @@ def parse_usd(
                         stacklevel=2,
                     )
                     kh = None
-                if hydroelastic_enabled is True:
-                    is_hydroelastic = True
-                elif hydroelastic_enabled is False:
-                    is_hydroelastic = False
-                elif has_sdf_api:
-                    # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
-                    is_hydroelastic = False
-                else:
+                if hydroelastic_enabled_resolution.source == SchemaResolverManager.Source.UNRESOLVED:
                     is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+                else:
+                    is_hydroelastic = bool(hydroelastic_enabled)
                 if kh is None:
-                    kh = builder.default_shape_cfg.kh
+                    kh = 1.0e10 if has_sdf_api else builder.default_shape_cfg.kh
 
                 # Hydroelastic meshes need an SDF source. For primitives, a texture
                 # SDF is generated from a synthesized watertight mesh at finalize(),

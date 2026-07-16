@@ -470,7 +470,11 @@ The attribute resolution process follows a three-layer fallback hierarchy to det
 
 1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
-3. **Approximated Schema Defaults**: If neither an authored value nor an importer default is available, Newton falls back to a hardcoded approximation of each solver's schema default, defined in Newton's resolver mapping. These approximations will be replaced by actual USD schema defaults in a future release.
+3. **Applicable Schema Defaults**: If neither an authored value nor an importer default is
+   available, Newton uses the first mapping default whose corresponding API schema applies to
+   the prim (or whose typed prim matches). A configured resolver does not inject its defaults
+   into unrelated prims. Resolver results retain whether the winner was authored, an importer
+   default, or a schema default so importer-specific semantics can use the same resolution path.
 
 **Configuring Resolver Priority:**
 

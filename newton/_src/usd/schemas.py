@@ -120,6 +120,48 @@ class SchemaResolverNewton(SchemaResolver):
     """
 
     name: ClassVar[str] = "newton"
+    _applicable_api_schemas: ClassVar[dict[PrimType, tuple[str, ...]]] = {
+        PrimType.SCENE: ("NewtonSceneAPI",),
+        PrimType.JOINT: ("NewtonJointAPI",),
+        PrimType.ARTICULATION: ("NewtonArticulationRootAPI",),
+        PrimType.MATERIAL: ("NewtonMaterialAPI",),
+    }
+    _applicable_api_schemas_by_key: ClassVar[dict[PrimType, dict[str, tuple[str, ...]]]] = {
+        PrimType.JOINT: dict.fromkeys(
+            (
+                "angular_position",
+                "linear_position",
+                "rotX_position",
+                "rotY_position",
+                "rotZ_position",
+                "angular_velocity",
+                "linear_velocity",
+                "rotX_velocity",
+                "rotY_velocity",
+                "rotZ_velocity",
+            ),
+            (),
+        ),
+        PrimType.SHAPE: {
+            "max_hull_vertices": ("NewtonMeshCollisionAPI",),
+            "margin": ("NewtonCollisionAPI",),
+            "gap": ("NewtonCollisionAPI",),
+            "ke": ("NewtonCollisionAPI",),
+            "kd": ("NewtonCollisionAPI",),
+            "kf": ("NewtonCollisionAPI",),
+            "ka": ("NewtonCollisionAPI",),
+            "sdf_max_resolution": ("NewtonSDFCollisionAPI",),
+            "sdf_narrow_band_inner": ("NewtonSDFCollisionAPI",),
+            "sdf_narrow_band_outer": ("NewtonSDFCollisionAPI",),
+            "sdf_target_voxel_size": ("NewtonSDFCollisionAPI",),
+            "sdf_texture_format": ("NewtonSDFCollisionAPI",),
+            "sdf_padding": ("NewtonSDFCollisionAPI",),
+            "hydroelastic_enabled": ("NewtonSDFCollisionAPI",),
+            "kh": ("NewtonSDFCollisionAPI",),
+            "mass_model": ("NewtonMassAPI",),
+            "shell_thickness": ("NewtonMassAPI",),
+        },
+    }
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {
             "max_solver_iterations": SchemaAttribute("newton:maxSolverIterations", -1),
@@ -269,15 +311,15 @@ class SchemaResolverNewton(SchemaResolver):
             ),
             # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
             # "unset" sentinel (same convention as gap / shell_thickness above).
-            "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
+            "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", 64),
             "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),
             "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", float("-inf")),
-            "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", None),
+            "sdf_texture_format": SchemaAttribute("newton:sdfTextureFormat", "uint16"),
             "sdf_padding": SchemaAttribute("newton:sdfPadding", float("-inf")),
             # Hydroelastic contacts — folded into NewtonSDFCollisionAPI
-            "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", None),
-            "kh": SchemaAttribute("newton:hydroelasticStiffness", float("-inf")),
+            "hydroelastic_enabled": SchemaAttribute("newton:hydroelasticEnabled", False),
+            "kh": SchemaAttribute("newton:hydroelasticStiffness", 1.0e10),
             # Mass model
             "mass_model": SchemaAttribute("newton:massModel", "solid"),
             "shell_thickness": SchemaAttribute("newton:shellThickness", float("-inf")),
@@ -308,6 +350,59 @@ class SchemaResolverPhysx(SchemaResolver):
     """
 
     name: ClassVar[str] = "physx"
+    _applicable_api_schemas: ClassVar[dict[PrimType, tuple[str, ...]]] = {
+        PrimType.SCENE: ("PhysxSceneAPI",),
+        PrimType.BODY: ("PhysxRigidBodyAPI",),
+        PrimType.MATERIAL: ("PhysxMaterialAPI",),
+        PrimType.ARTICULATION: ("PhysxArticulationAPI",),
+    }
+    _applicable_api_schemas_by_key: ClassVar[dict[PrimType, dict[str, tuple[str, ...]]]] = {
+        PrimType.JOINT: {
+            "armature": ("PhysxJointAPI",),
+            "velocity_limit": ("PhysxJointAPI",),
+            **dict.fromkeys(
+                (
+                    "limit_transX_ke",
+                    "limit_transY_ke",
+                    "limit_transZ_ke",
+                    "limit_transX_kd",
+                    "limit_transY_kd",
+                    "limit_transZ_kd",
+                    "limit_linear_ke",
+                    "limit_angular_ke",
+                    "limit_rotX_ke",
+                    "limit_rotY_ke",
+                    "limit_rotZ_ke",
+                    "limit_linear_kd",
+                    "limit_angular_kd",
+                    "limit_rotX_kd",
+                    "limit_rotY_kd",
+                    "limit_rotZ_kd",
+                ),
+                ("PhysxLimitAPI",),
+            ),
+            **dict.fromkeys(
+                (
+                    "angular_position",
+                    "linear_position",
+                    "rotX_position",
+                    "rotY_position",
+                    "rotZ_position",
+                    "angular_velocity",
+                    "linear_velocity",
+                    "rotX_velocity",
+                    "rotY_velocity",
+                    "rotZ_velocity",
+                ),
+                ("PhysicsJointStateAPI",),
+            ),
+        },
+        PrimType.SHAPE: {
+            "max_hull_vertices": ("PhysxConvexHullCollisionAPI",),
+            "margin": ("PhysxCollisionAPI",),
+            "gap": ("PhysxCollisionAPI",),
+        },
+    }
     # Deformable material/geometry vendor namespaces (AOUSD proposal). The public
     # schema authors under ``physics:``; these carry the same parameters in existing
     # content. Kept separate from extra_attr_namespaces so they are only consulted
@@ -484,6 +579,15 @@ class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
+    _applicable_api_schemas: ClassVar[dict[PrimType, tuple[str, ...]]] = {
+        PrimType.SCENE: ("MjcSceneAPI",),
+        PrimType.JOINT: ("MjcJointAPI",),
+        PrimType.SHAPE: ("MjcGeomAPI", "MjcCollisionAPI"),
+        PrimType.MATERIAL: ("MjcMaterialAPI",),
+    }
+    _applicable_prim_type_names: ClassVar[dict[PrimType, tuple[str, ...]]] = {
+        PrimType.ACTUATOR: ("MjcActuator",),
+    }
 
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {
