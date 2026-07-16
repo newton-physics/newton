@@ -963,7 +963,7 @@ def test_model_mesh_properties_track_watertight(test, device):
     open_mesh = newton.Mesh(open_vertices, open_faces, compute_inertia=False)
     closed_mesh = _CountingMesh(closed_vertices, closed_faces, compute_inertia=False)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     open_shape = builder.add_shape_mesh(body=-1, mesh=open_mesh)
     closed_shape = builder.add_shape_mesh(body=-1, mesh=closed_mesh)
     model = builder.finalize(device=device)
@@ -988,7 +988,7 @@ def test_visual_only_mesh_properties_skip_watertight_query(test, device):
         is_visible=True,
     )
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     shape = builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
     model = builder.finalize(device=device)
 
