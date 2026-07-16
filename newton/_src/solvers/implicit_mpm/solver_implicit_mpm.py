@@ -988,6 +988,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def setup_collider(
         self,
+        *,
         collider_meshes: list[wp.Mesh] | None = None,
         collider_body_ids: list[int] | None = None,
         collider_margins: list[float] | None = None,

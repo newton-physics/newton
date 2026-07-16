@@ -35,7 +35,7 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
 
 
 def test_zero_mass_isolated_particle_remains_finite(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_mesh(
         builder,
@@ -65,7 +65,7 @@ def test_zero_mass_isolated_particle_remains_finite(test, device):
 
 
 def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_mesh(
         builder,
@@ -92,7 +92,7 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
 
 
 def test_solver_flags_track_runtime_model_changes(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
         builder,

@@ -40,9 +40,14 @@ _HAS_ONNX_RUNTIME = importlib.util.find_spec("onnx") is not None and importlib.u
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
     r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
 )
-_WARP_CUDA_DRIVER_WARNING_RE = (
+_WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
+    r"(?:"
     r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver\. "
-    r"GPU execution will not be available\.\n?"
+    r"GPU execution will not be available\."
+    r"|"
+    r"Warp CUDA error 100: no CUDA-capable device is detected "
+    r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
+    r")\n?"
 )
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _BASIC_PLOTTING_OUTPUT_RE = (
@@ -67,7 +72,7 @@ _WARP_SDF_CONSTANT_CONVERSION_WARNING_RE = (
 )
 _EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
+    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
 ]
 _OutputRegexSpec = str | tuple[str, str]
 
@@ -267,6 +272,18 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
+    def test_warp_cuda_unavailable_output_is_allowed(self):
+        outputs = (
+            "Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.\n",
+            "Warp CUDA error 100: no CUDA-capable device is detected "
+            "(in function init_cuda_driver, /builds/omniverse/warp/warp/native/cuda_util.cpp:319)\n",
+        )
+
+        for output in outputs:
+            with self.subTest(output=output):
+                unmatched_output = re.sub(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "", output, flags=re.MULTILINE)
+                self.assertEqual(unmatched_output, "")
+
     def test_basic_plotting_output_does_not_consume_trailing_output(self):
         unexpected_output = "unexpected output\n"
         output = (

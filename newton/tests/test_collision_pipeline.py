@@ -95,7 +95,7 @@ class CollisionSetup:
         self.sdf_max_resolution_b = sdf_max_resolution_b
         self._device = device
 
-        self.builder = newton.ModelBuilder(gravity=0.0)
+        self.builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Set contact margin to match previous test expectations
         # Note: margins are now summed (margin_a + margin_b), so we use half the previous value
         self.builder.rigid_gap = 0.005
@@ -240,7 +240,7 @@ devices = get_cuda_test_devices(mode="basic")
 
 class TestCollisionPipeline(unittest.TestCase):
     def test_soft_contact_max_zero_disables_soft_contact_generation(self):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
         builder.add_particle(pos=(0.0, 0.0, 0.025), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
         model = builder.finalize(device="cpu")
@@ -914,7 +914,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
         broad_phase: Broad phase algorithm to test (NXN or SAP).
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
         # Two overlapping spheres (same position so they definitely overlap)
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
@@ -966,7 +966,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
     EXPLICIT, NXN, and SAP all report exactly the same set of contacting shape pairs.
     """
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = 0.01
 
         # Three overlapping spheres at the same position
@@ -1061,7 +1061,7 @@ def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
         y_offsets = [0.0, 3.0, 6.0, 9.0]
         expect_contact = [True, True, True, False]
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = gap
 
         positions = []
