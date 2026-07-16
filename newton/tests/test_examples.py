@@ -1057,7 +1057,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_franka_vbd_cable_admm_solver",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={
         "num-frames": 2,
         "world-count": 1,
@@ -1073,7 +1073,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_mpm_coupled_solver",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},
     use_viewer=True,
 )
@@ -1094,21 +1094,21 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_proxy_joint_gripper",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_vbd_mpm_coupled_solver",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={"num-frames": 2, "proxy-iterations": 1, "vbd-iterations": 2, "mpm-iterations": 1},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_xpbd_mpm_coupled_solver",
-    devices=test_devices,
+    devices=cuda_test_devices,
     test_options={
         "num-frames": 2,
         "proxy-iterations": 1,
