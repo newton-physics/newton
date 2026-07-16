@@ -55,6 +55,7 @@
 - Align MJCF and USD margin/gap import with MuJoCo 3.9+. Drop the `mj_margin - mj_gap` subtraction; `Model.shape_margin` now matches authored `margin`, and `Model.shape_gap` matches authored `gap`. Pass `legacy_margin_gap=True` to `ModelBuilder.add_mjcf` or `ModelBuilder.add_usd` to restore the pre-3.9 translation for files authored against MuJoCo <= 3.8.
 - Enable particle-particle contact forces by default in standalone `SolverSemiImplicit`: the solver now rebuilds `Model.particle_grid` every substep and adds contact forces to the existing `particle_f`. Existing scenes with particles closer than `2 * particle_max_radius + particle_cohesion` may change trajectories; set `model.particle_grid = None` before stepping to preserve the previous behavior without particle-particle contacts.
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
+- Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
 - Change `CollisionPipeline.soft_contact_max` to default to the precomputed `soft_rigid_contact_pair_count` instead of `shape_count * particle_count`; pass `soft_contact_max=model.shape_count * model.particle_count` to preserve the previous capacity.
 - Enable graph capture on CPU in examples and allow `SolverVBD` contact buffers to grow during CPU graph capture.
 - Change `SolverFeatherstone` to solve floating-base articulations about the root body's center of mass, improving stability far from the world origin; simulation results for floating-base articulations differ numerically from previous releases.
@@ -102,6 +103,7 @@
 - Raise an error when `SolverVBD(rigid_contact_history=True)` would allocate or grow contact-history buffers during CUDA graph capture; construct `CollisionPipeline` before `SolverVBD`, or run one uncaptured solver step before capture.
 - Fix `SensorTiledCamera.utils.convert_ray_depth_to_forward_depth()` to preserve the clear-depth sentinel for zero-direction rays and non-positive depths.
 - Fix `SensorTiledCamera` tiled rendering for image sizes that are not exact multiples of the configured tile dimensions.
+- Fix `SensorTiledCamera` rendering cloth and volume deformable vertices as particle spheres while preserving standalone particle rendering in mixed scenes.
 - Fix `ModelBuilder.approximate_meshes()` crashing when explicit `shape_indices` contains incompatible non-mesh shapes; `GeoType.MESH` and `GeoType.CONVEX_MESH` entries are processed, while other types are ignored.
 - Fix `SolverMuJoCo` placing articulations whose root is a fully-locked D6 joint (e.g. imported from a generic USD `PhysicsJoint`) at the first world's root pose in every world; such roots now become mocap bodies like fixed-joint roots. (#3430)
 - Fix `ViewerGL.get_frame()` crashing when a CPU model is rendered while a CUDA context is active.
