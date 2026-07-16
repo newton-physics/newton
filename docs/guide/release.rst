@@ -143,6 +143,11 @@ Bug fixes merge to ``main`` first, then are cherry-picked to
 branch and open a pull request targeting ``release-X.Y`` — never push
 directly to the release branch.
 
+The final changelog is an exception to the main-first flow.  Prepare it from
+the current ``release-X.Y`` branch and merge its dedicated pull request
+directly into ``release-X.Y``.  Reconcile the dated release section back to
+``main`` after the release, as described in :ref:`post-release`.
+
 For each new RC (``rc2``, ``rc3``, …) bump the version in
 ``pyproject.toml``, run ``uv run docs/generate_api.py``, and regenerate
 ``uv.lock`` (``uv lock``), then tag and push.  Resolve any cherry-pick
@@ -209,19 +214,32 @@ otherwise.
    * - ☐
      - Go/no-go approval obtained from maintainers.
    * - ☐
-     - Finalize ``CHANGELOG.md``: rename ``[Unreleased]`` →
-       ``[X.Y.Z] - YYYY-MM-DD``.  Review the entries for:
+     - Finalize ``CHANGELOG.md`` in a fresh worktree based on the current
+       ``release-X.Y`` branch, then open a dedicated pull request targeting
+       ``release-X.Y``.  Run the ``.claude/skills/release-changelog`` skill
+       and provide the latest ``release-audit`` report as an input.  The
+       final review must:
 
-       - **Missing entries** — cross-check merged PRs since the last GA
-         release (or micro release) to catch changes that were not recorded in the
-         changelog.
-       - **Redundant entries** — consolidate or remove duplicates for changes
-         within the same release period (e.g. a bug fix for a feature added
-         in the same cycle should not appear as both an "Added" and a "Fixed"
-         entry).
+       - Rename ``[Unreleased]`` to ``[X.Y.Z] - YYYY-MM-DD``, using the
+         actual GA date.  Update the date before merging if the release date
+         changes.
+       - Cross-check merged changes from the previous release through the
+         final release candidate for missing entries, including fixes merged
+         during RC stabilization.
+       - Remove exact and semantic duplicates.  Consolidate related entries
+         when that makes the user impact clearer, including a fix for a
+         feature added during the same release cycle.
+       - Preserve user-relevant behavior, limitations, changed defaults, and
+         compatibility details while editing.  Verify each entry's category,
+         and keep migration or retesting guidance in the affected
+         ``Changed``, ``Deprecated``, or ``Removed`` item rather than adding a
+         separate upgrade-notes section.
+       - Check referenced pull requests selectively and perform a second
+         editorial pass for scanability and facts lost while grouping.
 
-       The ``release-audit`` skill's CHANGELOG language review is a useful
-       first pass before this manual sweep.
+       Merge this changelog pull request into ``release-X.Y`` before the
+       final version and tag are created; do not merge it to ``main`` first
+       and cherry-pick it back.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
@@ -257,6 +275,8 @@ otherwise.
      - Release announcement posted.
 
 
+.. _post-release:
+
 Post-release
 ------------
 
@@ -265,10 +285,19 @@ Post-release
    :header-rows: 0
 
    * - ☐
-     - Merge back the changelog from ``release-X.Y`` to ``main``: move
-       entries included in the release from ``[Unreleased]`` to a new
-       ``[X.Y.Z]`` section.  (``[Unreleased]`` is a permanent header in
-       the changelog that always exists on ``main``.)
+     - Reconcile the released changelog back to ``main`` in a dedicated
+       changelog-only pull request.  Start from the current ``main`` branch
+       and bring in the dated ``[X.Y.Z] - YYYY-MM-DD`` section from
+       ``release-X.Y``; do not replace ``main``'s changelog wholesale.
+
+       - Keep a fresh ``[Unreleased]`` section at the top of ``main``.
+       - Move entries added to ``main`` after the release branch was cut, but
+         not shipped in ``X.Y.Z``, into that new ``[Unreleased]`` section
+         under the correct categories.
+       - Keep shipped entries only in the dated ``[X.Y.Z]`` section.  Resolve
+         semantic overlap between that section and ``[Unreleased]`` so the
+         same user-facing change is not recorded twice.
+       - Verify that older released sections remain unchanged.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐
