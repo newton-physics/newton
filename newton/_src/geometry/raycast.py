@@ -23,7 +23,6 @@ EPSILON = 1e-6
 PARALLEL_TOL = 1e-6
 
 _DEFAULT_MESH_MAX_T = 1.0e6
-_DEFAULT_WORLD = -1
 
 
 @wp.func
@@ -614,7 +613,7 @@ def _make_ray_intersect_mesh(compute_normal: bool):
         mesh_id: wp.uint64,
         enable_backface_culling: bool,
         max_t: float,
-        root: int,
+        root: int = -1,
     ) -> tuple[float, wp.vec3, float, float, int]:
         """Computes ray-mesh intersection in the mesh's local frame using Warp's built-in mesh query.
 
@@ -658,7 +657,7 @@ def ray_intersect_mesh_anyhit(
     ray_direction: wp.vec3,
     mesh_id: wp.uint64,
     max_t: float,
-    root: int,
+    root: int = -1,
 ) -> float:
     """Tests whether a ray hits a mesh within ``max_t``, in the mesh's local frame.
 
@@ -843,7 +842,6 @@ def raycast_kernel(
             shape_source_ptr[shape_idx],
             False,
             _DEFAULT_MESH_MAX_T,
-            _DEFAULT_WORLD,
         )
     else:
         t, _normal = ray_intersect_shape(
@@ -971,7 +969,6 @@ def intersect_ray(
                         shape_source_ptr[shape_id],
                         False,
                         min_dist,
-                        _DEFAULT_WORLD,
                     )
                     hit_normal = wp.vec3(0.0)
                     if hit_dist >= 0.0:

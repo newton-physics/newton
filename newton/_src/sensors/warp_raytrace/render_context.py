@@ -453,7 +453,6 @@ class RenderContext:
             self.triangle_mesh = wp.Mesh(
                 self.triangle_points, self.triangle_indices, groups=triangle_groups, bvh_constructor="sah"
             )
-            self.triangle_mesh_group_roots = wp.full(self.world_count + 1, value=-1, dtype=wp.int32, device=self.device)
 
             wp.launch(
                 kernel=RenderContext._compute_mesh_group_roots,

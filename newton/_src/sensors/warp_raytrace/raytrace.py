@@ -52,7 +52,7 @@ def _ray_intersect_mesh_smooth(
     """
     ray_origin_local, ray_direction_local = raycast.map_ray_to_local(transform, ray_origin, ray_direction, scale)
     t, normal_local, u, v, face = raycast.ray_intersect_mesh(
-        ray_origin_local, ray_direction_local, scale, mesh_id, enable_backface_culling, max_t, -1
+        ray_origin_local, ray_direction_local, scale, mesh_id, enable_backface_culling, max_t
     )
     if t < 0.0:
         return t, normal_local, u, v, face
@@ -398,7 +398,6 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                             shape_source_ptr[si],
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
-                            -1,
                         )
                     elif shape_type == GeoType.GAUSSIAN:
                         if num_gaussians_hit < wp.static(state.num_gaussians):
@@ -625,7 +624,6 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                             ray_direction_local,
                             shape_source_ptr[si],
                             max_dist,
-                            -1,
                         )
                     else:
                         hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
