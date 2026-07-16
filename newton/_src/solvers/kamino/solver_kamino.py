@@ -882,8 +882,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._update_joint_transforms()
 
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            # Joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) are direct
-            # references to Newton's arrays, so no copy needed.
+            # Kamino's joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) reference
+            # Newton's arrays directly, so no copy needed.
             pass
 
         if flags & ModelFlags.ACTUATOR_PROPERTIES:

@@ -37,9 +37,13 @@ from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
-from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
-from ..solvers.mujoco.enums import EqType
-from ..solvers.mujoco.equality import _add_equality_constraint
+from ..solvers.mujoco.constants import (
+    SOLREF_MODE_FORCE_SPACE,
+    SOLREF_MODE_MJCF_DEFAULT,
+    SOLREF_MODE_RAW,
+)
+from ..solvers.mujoco.enums import EqType, _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
+from ..solvers.mujoco.equality import _add_equality_constraint, _register_equality_constraint_attributes
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -2161,6 +2165,9 @@ def parse_usd(
     # Looking for and parsing the attributes on PhysicsScene prims
     scene_attributes = {}
     physics_scene_prim = None
+    scene_gravity_direction = None
+    scene_gravity_magnitude = None
+    gravity_enabled = True
     if UsdPhysics.ObjectType.Scene in ret_dict:
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
@@ -2170,7 +2177,8 @@ def parse_usd(
             print("Found PhysicsScene:", path)
             print("Gravity direction:", scene_desc.gravityDirection)
             print("Gravity magnitude:", scene_desc.gravityMagnitude)
-        builder.gravity = -scene_desc.gravityMagnitude
+        scene_gravity_direction = scene_desc.gravityDirection
+        scene_gravity_magnitude = scene_desc.gravityMagnitude
 
         # Storing Physics Scene attributes
         physics_scene_prim = stage.GetPrimAtPath(path)
@@ -2196,8 +2204,6 @@ def parse_usd(
         gravity_enabled = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="gravity_enabled", default=True, verbose=verbose
         )
-        if not gravity_enabled:
-            builder.gravity = 0.0
         max_solver_iters = R.get_value(
             physics_scene_prim, prim_type=PrimType.SCENE, key="max_solver_iterations", default=None, verbose=verbose
         )
@@ -2221,6 +2227,21 @@ def parse_usd(
     else:
         incoming_world_xform = wp.transform(*xform) * axis_xform
 
+    if scene_gravity_direction is not None:
+        gravity_direction = wp.vec3(*scene_gravity_direction)
+        direction_length = wp.length(gravity_direction)
+        if direction_length > 0.0:
+            gravity_direction /= direction_length
+        else:
+            gravity_direction = -stage_up_axis.to_vec3()
+        gravity_xform = axis_xform if override_root_xform else incoming_world_xform
+        gravity_direction = wp.transform_vector(gravity_xform, gravity_direction)
+        gravity_vector = gravity_direction * scene_gravity_magnitude if gravity_enabled else wp.vec3()
+        if builder.current_world >= 0:
+            builder.world_gravity[builder.current_world] = gravity_vector
+        else:
+            builder.gravity = gravity_vector
+
     if verbose:
         print(
             f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
@@ -2238,6 +2259,7 @@ def parse_usd(
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
+    _register_equality_constraint_attributes(builder)
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         ["mujoco:equality_constraint"]
     )
@@ -4161,16 +4183,6 @@ def parse_usd(
     # builder's collapse logic can remap body/joint indices and adjust anchors/relposes
     # for any bodies that get merged.
     def _parse_mjc_equality_constraints():
-        local_builder_custom_attr_eq = builder_custom_attr_eq
-        # The equality custom attributes are declared by ModelBuilder.__init__; register the
-        # remaining MuJoCo custom attributes needed to parse and convert the model.
-        # register_custom_attributes is idempotent, so re-registering the equality fields is a no-op.
-        if convert_mjc_equality_constraints:
-            from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
-
-            SolverMuJoCo.register_custom_attributes(builder)
-            local_builder_custom_attr_eq = builder.get_custom_attributes_by_frequency(["mujoco:equality_constraint"])
-
         def add_converted_loop_joint(
             eq_type: EqType,
             body1: int,
@@ -4224,7 +4236,7 @@ def parse_usd(
                 R.collect_prim_attrs(joint_prim)
 
             eq_custom_attrs = usd.get_custom_attribute_values(
-                joint_prim, local_builder_custom_attr_eq, context={"builder": builder}
+                joint_prim, builder_custom_attr_eq, context={"builder": builder}
             )
             enabled = bool(joint_desc.jointEnabled)
 
@@ -4738,16 +4750,8 @@ def parse_usd(
         mjc_actuator_count = 0
 
     if mjc_actuator_count > 0:
-        # Lazy imports: only needed when MuJoCo custom attributes are registered
-        # (i.e. SolverMuJoCo is in use), and avoids a top-level mujoco dependency
-        # for USD parsing in non-MuJoCo configurations.
-        import mujoco
-
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
-        biastype_affine = int(mujoco.mjtBias.mjBIAS_AFFINE)
-        dyntype_none = int(mujoco.mjtDyn.mjDYN_NONE)
-        gaintype_fixed = int(mujoco.mjtGain.mjGAIN_FIXED)
         ctrl_source_joint_target = int(SolverMuJoCo.CtrlSource.JOINT_TARGET)
 
         def _row(key: str, row: int) -> Any:
@@ -4773,9 +4777,9 @@ def parse_usd(
             # (see joint_target_ranges in _init_actuators). Effort limit
             # (jnt_actfrcrange) comes from the joint, not the actuator.
             if (
-                int(_row("mujoco:actuator_biastype", row)) != biastype_affine
-                or int(_row("mujoco:actuator_dyntype", row)) != dyntype_none
-                or int(_row("mujoco:actuator_gaintype", row)) != gaintype_fixed
+                int(_row("mujoco:actuator_biastype", row)) != _ActuatorBiasType.AFFINE
+                or int(_row("mujoco:actuator_dyntype", row)) != _ActuatorDynamicsType.NONE
+                or int(_row("mujoco:actuator_gaintype", row)) != _ActuatorGainType.FIXED
             ):
                 continue
             gear = list(_row("mujoco:actuator_gear", row))
