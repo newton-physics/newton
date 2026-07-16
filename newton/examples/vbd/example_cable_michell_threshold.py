@@ -88,7 +88,7 @@ class Example:
 
         self.critical_twist = self.TOTAL_TWIST
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         self.cases = []
         x_offsets = self._case_offsets(len(self.TWIST_TO_BEND_RATIOS))
         for twist_to_bend, x_offset in zip(self.TWIST_TO_BEND_RATIOS, x_offsets, strict=True):

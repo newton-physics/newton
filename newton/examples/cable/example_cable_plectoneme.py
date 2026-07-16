@@ -85,7 +85,7 @@ class Example:
     TWIST_STIFFNESS = 400.0
     BEND_DAMPING = 0.02
     TWIST_DAMPING = 0.02
-    GRAVITY = -9.81
+    GRAVITY = (0.0, 0.0, -9.81)
 
     # Self-contact (true radius, hard-history). Radius is kept below half the
     # segment length so rest-state neighbours do not overlap; the gap catches

@@ -97,7 +97,7 @@ class Example:
         self.cable_length = self.NUM_ELEMENTS * self.SEGMENT_LENGTH
         self.cycle_duration = self.NUM_PHASES * self.PHASE_DURATION
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
         self.cases: list[dict] = []

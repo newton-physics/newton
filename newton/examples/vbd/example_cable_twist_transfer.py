@@ -85,7 +85,7 @@ class Example:
 
         self.cases: list[dict] = []
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
         path_builders = [
             ("straight", self._straight_points(1.3)),

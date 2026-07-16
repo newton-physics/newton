@@ -144,7 +144,7 @@ class Example:
         self.shear_modulus = self.YOUNGS_MODULUS / (2.0 * (1.0 + self.POISSONS_RATIO))
         self.polar_inertia = 0.5 * math.pi * self.CABLE_RADIUS**4
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         points = newton.utils.create_straight_cable_points(
             start=wp.vec3(-0.5 * self.cable_length, 0.0, 0.45),
             direction=wp.vec3(1.0, 0.0, 0.0),

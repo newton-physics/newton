@@ -72,7 +72,7 @@ class Example:
         self.cable_length = self.NUM_ELEMENTS * self.SEGMENT_LENGTH
         self.num_cables = len(self.BEND_STIFFNESS_VALUES)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
         self.tip_bodies: list[int] = []
         self.tip_rest_z: list[float] = []

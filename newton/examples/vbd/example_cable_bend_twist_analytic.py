@@ -104,7 +104,7 @@ class Example:
         self.cable_length = self.NUM_ELEMENTS * self.SEGMENT_LENGTH
         self.num_joints = self.NUM_ELEMENTS - 1
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
         self.bend_cases = []
         self.twist_cases = []

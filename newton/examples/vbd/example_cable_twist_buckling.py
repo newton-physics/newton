@@ -97,7 +97,7 @@ class Example:
     TWIST_STIFFNESS = 50.0
     BEND_DAMPING = 0.001
     TWIST_DAMPING = 0.001
-    GRAVITY = -9.81
+    GRAVITY = (0.0, 0.0, -9.81)
 
     FPS = 60
     SIM_SUBSTEPS = 6

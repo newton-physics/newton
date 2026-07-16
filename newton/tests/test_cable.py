@@ -5005,7 +5005,7 @@ def _split_cable_angular_slot_layout(test, device):
     ]
     for kwargs, expected_k, expected_kd in cases:
         with test.subTest(kwargs=kwargs):
-            builder = newton.ModelBuilder(gravity=0.0)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             body = builder.add_link()
             joint = builder.add_joint_cable(-1, body, stretch_stiffness=100.0, bend_stiffness=10.0, **kwargs)
             builder.add_articulation([joint])
@@ -5020,7 +5020,7 @@ def _split_cable_angular_slot_layout(test, device):
             np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], expected_kd)
 
     # Negative stiffness must be rejected before reaching the solver.
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     with test.assertRaisesRegex(ValueError, "stretch_stiffness, shear_stiffness, bend_stiffness, and twist_stiffness"):
         builder.add_joint_cable(-1, body, bend_stiffness=10.0, twist_stiffness=-1.0)
@@ -5302,7 +5302,7 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
 
 def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     """Explicit shear stiffness/damping must land in the split shear slot."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     joint = builder.add_joint_cable(
         -1,
@@ -5466,7 +5466,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     # body orientation and the half-segment offset along local +Z.
     half_segment = 0.5 * segment_length
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
     points = newton.utils.create_straight_cable_points(
@@ -5706,7 +5706,7 @@ def _split_cable_bend_twist_deformation_derivative_matches_finite_difference(tes
 
 def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     """A solver step with Dahl enabled should not leak pure bend history into twist, or vice versa."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
 
     bend_body = builder.add_link(xform=wp.transform_identity())
