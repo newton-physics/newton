@@ -854,11 +854,10 @@ class SolverKaminoImpl(SolverBase):
         # on the first call to `step()`
         self._solver_fd.reset(problem=self._problem_fd, world_mask=world_mask)
 
-        # TODO: Enable this when world-masking is implemented
         # Reset the warm-starting caches if enabled
-        # if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
-        #     self._ws_limits.reset()
-        #     self._ws_contacts.reset()
+        if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+            self._ws_limits.reset(world_mask=world_mask)
+            self._ws_contacts.reset(world_mask=world_mask)
 
     ###
     # Internals - Step Operations

@@ -155,7 +155,7 @@ class Example:
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
 
     def _build_scene(self):
-        template = newton.ModelBuilder(gravity=-9.81)
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         template.rigid_gap = 0.01
         SolverMuJoCo.register_custom_attributes(template)
         SolverVBD.register_custom_attributes(template, dahl_defaults_enabled=False)
@@ -165,7 +165,7 @@ class Example:
         joints_per_world = template.joint_count
         shapes_per_world = template.shape_count
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.rigid_gap = template.rigid_gap
         builder.replicate(template, world_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
@@ -358,7 +358,7 @@ class Example:
         # IK runs on a standalone Franka-only model so the solver does not see the
         # cable's articulated bodies. The Franka is added first in the coupled model,
         # so its coords (0 .. n_coords) line up with this model's coords.
-        ik_builder = newton.ModelBuilder(gravity=-9.81)
+        ik_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         self._add_franka(ik_builder, self.surface_z)
         self.ik_model = ik_builder.finalize(device=self.device)
 

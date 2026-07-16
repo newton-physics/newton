@@ -40,9 +40,14 @@ _HAS_ONNX_RUNTIME = importlib.util.find_spec("onnx") is not None and importlib.u
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
     r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
 )
-_WARP_CUDA_DRIVER_WARNING_RE = (
+_WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
+    r"(?:"
     r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver\. "
-    r"GPU execution will not be available\.\n?"
+    r"GPU execution will not be available\."
+    r"|"
+    r"Warp CUDA error 100: no CUDA-capable device is detected "
+    r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
+    r")\n?"
 )
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _BASIC_PLOTTING_OUTPUT_RE = (
@@ -262,6 +267,18 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
+    def test_warp_cuda_unavailable_output_is_allowed(self):
+        outputs = (
+            "Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.\n",
+            "Warp CUDA error 100: no CUDA-capable device is detected "
+            "(in function init_cuda_driver, /builds/omniverse/warp/warp/native/cuda_util.cpp:319)\n",
+        )
+
+        for output in outputs:
+            with self.subTest(output=output):
+                unmatched_output = re.sub(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "", output, flags=re.MULTILINE)
+                self.assertEqual(unmatched_output, "")
+
     def test_basic_plotting_output_does_not_consume_trailing_output(self):
         unexpected_output = "unexpected output\n"
         output = (
@@ -283,7 +300,7 @@ test_devices = get_test_devices(mode="basic")
 
 _BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
+    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
 ]
 
 
@@ -298,6 +315,13 @@ def add_basic_example_test(**kwargs):
 
 
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+
+add_basic_example_test(
+    name="basic.example_recording",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "world-count": 8},
+)
 
 add_basic_example_test(
     name="basic.example_basic_urdf",
@@ -338,7 +362,16 @@ add_basic_example_test(
     name="basic.example_basic_shapes",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 150},
+    test_options={"num-frames": 150, "solver": "xpbd"},
+    test_suffix="xpbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_shapes",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "solver": "vbd"},
+    test_suffix="vbd",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
@@ -403,6 +436,22 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
+    test_suffix="dahl_retention",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "no-dahl": True},
+    test_suffix="no_dahl_recovery",
 )
 add_example_test(
     TestCableExamples,

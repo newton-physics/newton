@@ -913,7 +913,7 @@ def _build_single_body_pendulum(joint_kind: str, parent_kinematic: bool, gravity
     the joint anchor along -Z, so steady-state requires the joint to support
     its weight along +Z.
     """
-    builder = newton.ModelBuilder(gravity=-gravity, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
     if parent_kinematic:
@@ -1065,7 +1065,7 @@ def test_xpbd_parent_force_chain_weight_propagation(test, device):
     """
     gravity = 9.81
 
-    builder = newton.ModelBuilder(gravity=-gravity, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
     link0 = builder.add_link()
@@ -1212,7 +1212,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
 
     # add_link (NOT add_body) so we control the joint topology and avoid
     # the implicit free joints that ``add_body`` would create.
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
     body_1 = builder.add_link()
@@ -1312,7 +1312,7 @@ def test_xpbd_parent_f_consistent_across_solvers(test, device):
     """
 
     def _build():
-        builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
         builder.request_state_attributes("body_parent_f")
         link = builder.add_link()
         builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
@@ -1368,7 +1368,7 @@ def _build_two_body_one_joint(joint_kind: str, device):
     impulse exchanged is at the inner joint, so Newton's 2nd law on the
     child becomes an exact algebraic identity against ``body_parent_f``.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
     parent = builder.add_link()
     builder.add_shape_box(parent, hx=0.2, hy=0.1, hz=0.1)
