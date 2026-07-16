@@ -14,12 +14,12 @@ from warp.types import is_array
 
 from ..sim import (
     Control,
-    InverseDynamics,
     JointType,
     Model,
     State,
     eval_fk,
-    eval_inverse_dynamics,
+    eval_inverse_dynamics_force,
+    eval_inverse_dynamics_passive,
     eval_jacobian,
     eval_mass_matrix,
 )
@@ -1756,30 +1756,40 @@ class ArticulationView:
             self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
         )
 
-    def eval_inverse_dynamics(
+    def eval_inverse_dynamics_passive(
         self,
         state: State,
-        eval_type: InverseDynamics.EvalType,
-        inverse_dynamics: InverseDynamics,
+        *,
+        mass_matrix: wp.array3d[wp.float32] | None = None,
+        gravity_force: wp.array[wp.float32] | None = None,
+        coriolis_force: wp.array[wp.float32] | None = None,
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
-        """Compute inverse-dynamics quantities for articulations in this view.
+        """Compute passive inverse-dynamics quantities for this view.
 
-        Forwards to :func:`~newton.eval_inverse_dynamics` with an
-        articulation mask derived from this view (combined with the
-        optional view-local ``mask``). Output buffers in
-        ``inverse_dynamics`` are sized for the whole model: entries
-        belonging to articulations outside the view (or outside the
-        sub-selection) are written as zero, matching the convention
-        used by :meth:`eval_mass_matrix`.
+        Forwards to :func:`~newton.eval_inverse_dynamics_passive` with an
+        articulation mask derived from this view and the optional view-local
+        ``mask``. Each non-``None`` output is computed; entries belonging to
+        articulations outside the selection are zero.
+
+        .. experimental::
 
         Args:
             state: The state containing the current generalized
                 coordinates and velocities. ``state.body_q`` must
                 already reflect ``state.joint_q``.
-            eval_type: Bitmask selecting which quantities to compute.
-            inverse_dynamics: Output container whose buffers are
-                written in place; also holds the internal scratch.
+            mass_matrix: Optional output, shape
+                ``(model.articulation_count,
+                model.max_dofs_per_articulation,
+                model.max_dofs_per_articulation)``, dtype float. Entry units
+                depend on the row and column DOF types: [kg] for two
+                translational DOFs, [kg·m] for mixed translational/rotational
+                DOFs, and [kg·m²] for two rotational DOFs.
+            gravity_force: Optional gravity-force output [N or N·m, depending
+                on joint type], shape ``(model.joint_dof_count,)``, dtype float.
+            coriolis_force: Optional Coriolis + centrifugal-force output [N or
+                N·m, depending on joint type], shape
+                ``(model.joint_dof_count,)``, dtype float.
             mask: Optional mask of articulations in this
                 ArticulationView (all by default). Either 1-D
                 ``[world_count]`` selecting whole worlds or 2-D
@@ -1787,7 +1797,68 @@ class ArticulationView:
                 articulations per world.
         """
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        eval_inverse_dynamics(self.model, state, eval_type, inverse_dynamics, mask=articulation_mask)
+        eval_inverse_dynamics_passive(
+            self.model,
+            state,
+            mass_matrix=mass_matrix,
+            gravity_force=gravity_force,
+            coriolis_force=coriolis_force,
+            mask=articulation_mask,
+        )
+
+    def eval_inverse_dynamics_force(
+        self,
+        state: State,
+        *,
+        mass_matrix: wp.array3d[wp.float32],
+        joint_qdd: wp.array[wp.float32],
+        coriolis_force: wp.array[wp.float32],
+        gravity_force: wp.array[wp.float32],
+        joint_f: wp.array[wp.float32],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Compute inverse-dynamics joint forces for articulations in this view.
+
+        Entries outside this view or the optional sub-selection are zeroed.
+
+        .. experimental::
+
+        Args:
+            state: State providing body transforms consistent with the
+                supplied mass matrix and bias forces.
+            mass_matrix: Joint-space mass matrix, shape
+                ``(model.articulation_count,
+                model.max_dofs_per_articulation,
+                model.max_dofs_per_articulation)``, dtype float. Entry units
+                depend on the row and column DOF types: [kg] for two
+                translational DOFs, [kg·m] for mixed translational/rotational
+                DOFs, and [kg·m²] for two rotational DOFs.
+            joint_qdd: Generalized joint accelerations [m/s² or rad/s²,
+                depending on joint type], shape
+                ``(model.joint_dof_count,)``, dtype float.
+            coriolis_force: Coriolis + centrifugal force [N or N·m, depending
+                on joint type], shape ``(model.joint_dof_count,)``, dtype float.
+            gravity_force: Gravity force [N or N·m, depending on joint type],
+                shape ``(model.joint_dof_count,)``, dtype float.
+            joint_f: Output generalized joint force :math:`\tau` [N or N·m,
+                depending on joint type], shape ``(model.joint_dof_count,)``,
+                dtype float. Uses the same layout and convention as
+                :attr:`~newton.Control.joint_f`.
+            mask: Optional mask of articulations in this ArticulationView.
+                Either 1-D ``[world_count]`` or 2-D
+                ``[world_count, count_per_world]``.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        eval_inverse_dynamics_force(
+            self.model,
+            state,
+            mass_matrix=mass_matrix,
+            joint_qdd=joint_qdd,
+            coriolis_force=coriolis_force,
+            gravity_force=gravity_force,
+            joint_f=joint_f,
+            mask=articulation_mask,
+        )
 
     # ========================================================================================
     # Actuator parameter access
