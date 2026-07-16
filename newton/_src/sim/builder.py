@@ -11,7 +11,8 @@ import inspect
 import math
 import warnings
 from collections import Counter, deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1382,6 +1383,8 @@ class ModelBuilder:
         """Inclusive joint-range start of each cable group."""
         self._cable_joint_end: list[int] = []
         """Exclusive joint-range end of each cable group."""
+        self._cable_group_recording_suppressed: int = 0
+        """Nesting depth for private cable-group recording suppression."""
 
         self._cloth_label: list[str] = []
         """Prim-path labels of imported cloth groups."""
@@ -2679,12 +2682,23 @@ class ModelBuilder:
         joint_range: tuple[int, int],
     ) -> None:
         """Register a cable as an addressable, world-tagged group."""
+        if self._cable_group_recording_suppressed:
+            return
         self._cable_label.append(label)
         self._cable_world.append(self.current_world)
         self._cable_body_start.append(body_range[0])
         self._cable_body_end.append(body_range[1])
         self._cable_joint_start.append(joint_range[0])
         self._cable_joint_end.append(joint_range[1])
+
+    @contextmanager
+    def _suppress_cable_group_recording(self) -> Iterator[None]:
+        """Temporarily let internal callers choose a different cable grouping."""
+        self._cable_group_recording_suppressed += 1
+        try:
+            yield
+        finally:
+            self._cable_group_recording_suppressed -= 1
 
     def _record_cloth_group(
         self,
@@ -7364,7 +7378,6 @@ class ModelBuilder:
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
-        _record_group: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
 
@@ -7485,24 +7498,24 @@ class ModelBuilder:
         # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
         start_body = self.body_count
         start_joint = self.joint_count
-        link_bodies, link_joints = self.add_rod_graph(
-            node_positions=positions_wp,
-            edges=edges,
-            radius=radius,
-            cfg=cfg,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            label=label,
-            wrap_in_articulation=False,
-            quaternions=quaternions,
-            color=color,
-            body_frame_origin=body_frame_origin,
-            # add_rod records its own group below, after the optional loop-closing joint,
-            # so a closed rod's group covers that joint too.
-            _record_group=False,
-        )
+        # add_rod records its own group below, after the optional loop-closing joint,
+        # so a closed rod's group covers that joint too.
+        with self._suppress_cable_group_recording():
+            link_bodies, link_joints = self.add_rod_graph(
+                node_positions=positions_wp,
+                edges=edges,
+                radius=radius,
+                cfg=cfg,
+                stretch_stiffness=stretch_stiffness,
+                stretch_damping=stretch_damping,
+                bend_stiffness=bend_stiffness,
+                bend_damping=bend_damping,
+                label=label,
+                wrap_in_articulation=False,
+                quaternions=quaternions,
+                color=color,
+                body_frame_origin=body_frame_origin,
+            )
 
         # Wrap all joints into an articulation if requested.
         if wrap_in_articulation and link_joints:
@@ -7558,7 +7571,7 @@ class ModelBuilder:
                 )
                 link_joints.append(j_loop)
 
-        if label is not None and _record_group:
+        if label is not None:
             self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return link_bodies, link_joints
@@ -7581,7 +7594,6 @@ class ModelBuilder:
         junction_collision_filter: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] | None = None,
-        _record_group: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
 
@@ -7957,7 +7969,7 @@ class ModelBuilder:
                             for sj in self.body_shapes.get(bj, []):
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
 
-        if label is not None and _record_group:
+        if label is not None:
             self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return edge_bodies, all_joints

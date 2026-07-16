@@ -517,6 +517,32 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
 class TestDeformableViewBuilderGroups(unittest.TestCase):
     """Groups recorded by labeled builder calls (no USD) are selectable through the view."""
 
+    def test_labeled_curve_builders_record_one_complete_group(self):
+        """Public rod builders hide their nested construction from group selection."""
+        closed_builder = newton.ModelBuilder()
+        closed_builder.add_rod(
+            positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.1, 0.1, 1.0), (0.0, 0.0, 1.0)],
+            radius=0.02,
+            closed=True,
+            label="closed",
+            body_frame_origin="com",
+        )
+        closed = DeformableView(closed_builder.finalize(), "closed", family="curve")
+        self.assertEqual((closed.count, closed.elements_per_group("body")), (1, 3))
+        self.assertEqual(closed.elements_per_group("joint"), 3)
+
+        graph_builder = newton.ModelBuilder()
+        graph_builder.add_rod_graph(
+            node_positions=[(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)],
+            edges=[(0, 1), (1, 2), (1, 3)],
+            radius=0.02,
+            label="graph",
+            body_frame_origin="com",
+        )
+        graph = DeformableView(graph_builder.finalize(), "graph", family="curve")
+        self.assertEqual((graph.count, graph.elements_per_group("body")), (1, 3))
+        self.assertEqual(graph.elements_per_group("joint"), 2)
+
     def test_builder_built_prototype_clones_select_per_world(self):
         """A labeled soft body and rod built in a prototype and cloned per world with
         add_world stay selectable, with correctly offset ranges (the Isaac Lab pattern
