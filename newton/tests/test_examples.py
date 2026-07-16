@@ -437,7 +437,7 @@ add_example_test(
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_bundle_hysteresis",
-    devices=cuda_test_devices,
+    devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
     test_suffix="dahl_retention",
@@ -445,7 +445,7 @@ add_example_test(
 add_example_test(
     TestCableExamples,
     name="cable.example_cable_bundle_hysteresis",
-    devices=cuda_test_devices,
+    devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 150, "no-dahl": True},
     test_suffix="no_dahl_recovery",
@@ -962,22 +962,25 @@ class TestMultiphysicsExamples(NewtonTestCase):
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_gift",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 200},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="cloth.example_cloth_poker_cards",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 30},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_dropping_to_cloth",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 200},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 add_example_test(
@@ -991,24 +994,27 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 180, "solver": "xpbd"},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
     test_suffix="xpbd",
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 180, "solver": "semi_implicit"},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
     test_suffix="semi_implicit",
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_rigid_soft_contact",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 180, "solver": "vbd"},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
     test_suffix="vbd",
 )
@@ -1051,7 +1057,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_franka_vbd_cable_admm_solver",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={
         "num-frames": 2,
         "world-count": 1,
@@ -1062,11 +1068,12 @@ add_example_test(
         "graph-capture": False,
     },
     use_viewer=True,
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_mpm_coupled_solver",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 2, "rigid-substeps": 1, "proxy-iterations": 1},
     use_viewer=True,
 )
@@ -1087,21 +1094,21 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_proxy_joint_gripper",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 120},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_vbd_mpm_coupled_solver",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 2, "proxy-iterations": 1, "vbd-iterations": 2, "mpm-iterations": 1},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_xpbd_mpm_coupled_solver",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={
         "num-frames": 2,
         "proxy-iterations": 1,
@@ -1124,8 +1131,9 @@ class TestSoftbodyExamples(NewtonTestCase):
 add_example_test(
     TestSoftbodyExamples,
     name="softbody.example_softbody_hanging",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 120},
+    test_options_cpu={"num-frames": 2},
     use_viewer=True,
 )
 

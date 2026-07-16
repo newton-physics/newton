@@ -544,7 +544,7 @@ def create_test_func(func, device, check_output, **kwargs):
     return test_func
 
 
-@unittest.skip("No suitable devices to run the test.")
+@unittest.skip("No selected devices are available for this test.")
 def skip_test_func(self):
     pass
 
