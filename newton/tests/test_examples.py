@@ -49,6 +49,19 @@ _WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
     r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
     r")\n?"
 )
+_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE = (
+    r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+    r"\(ref: [0-9a-f]{40}\)\.\.\.\n"
+    r"Successfully downloaded folder to: [^\n]+\n?"
+)
+_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE = (
+    r"Cloning https://github\.com/isaac-sim/IsaacGymEnvs\.git "
+    r"\(ref: main\)\.\.\.\n"
+    r"Successfully downloaded folder to: [^\n]+\n?"
+)
+_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE = r"Downloading nut/bolt assets\.\.\.\n?"
+_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE = r"Assets downloaded to: [^\n]+\n?"
+_PYRAMID_BUILD_OUTPUT_RE = r"Built 3 pyramids x 5 rows = 45 boxes\n?"
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
 _BASIC_PLOTTING_OUTPUT_RE = (
     r"(?:"
@@ -290,6 +303,29 @@ class TestExampleOutputRegexes(unittest.TestCase):
         )
 
         unmatched_output = re.sub(_BASIC_PLOTTING_OUTPUT_RE, "", output, flags=re.MULTILINE)
+
+        self.assertEqual(unmatched_output, unexpected_output)
+
+    def test_newton_asset_download_output_does_not_consume_trailing_output(self):
+        unexpected_output = "unexpected output\n"
+        output = (
+            "Cloning https://github.com/newton-physics/newton-assets.git "
+            "(ref: 261cd1f429619d8ef4f546bd788ab9dea906b5e1)...\n"
+            "Successfully downloaded folder to: /tmp/newton-assets/franka_emika_panda\n" + unexpected_output
+        )
+
+        unmatched_output = re.sub(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
+
+        self.assertEqual(unmatched_output, unexpected_output)
+
+    def test_isaacgym_asset_download_output_does_not_consume_trailing_output(self):
+        unexpected_output = "unexpected output\n"
+        output = (
+            "Cloning https://github.com/isaac-sim/IsaacGymEnvs.git (ref: main)...\n"
+            "Successfully downloaded folder to: /tmp/newton-assets/factory_nut_bolt\n" + unexpected_output
+        )
+
+        unmatched_output = re.sub(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "", output, flags=re.MULTILINE)
 
         self.assertEqual(unmatched_output, unexpected_output)
 
@@ -924,37 +960,57 @@ add_basic_example_test(
 )
 
 
-class TestContactsExamples(unittest.TestCase):
+class TestContactsExamples(NewtonTestCase):
     pass
 
 
-add_example_test(
-    TestContactsExamples,
+_CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
+    (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
+]
+
+
+def add_contact_example_test(**kwargs):
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [*_CONTACT_EXAMPLE_ALLOW_OUTPUT_REGEXES, *extra_allow_output_regexes]
+    add_example_test(TestContactsExamples, allow_output_regexes=allow_output_regexes, **kwargs)
+
+
+add_contact_example_test(
     name="contacts.example_nut_bolt_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1},
     use_viewer=True,
+    expect_output_regexes=[
+        (_NUT_BOLT_DOWNLOAD_START_OUTPUT_RE, "stdout"),
+        (_NUT_BOLT_DOWNLOAD_DONE_OUTPUT_RE, "stdout"),
+    ],
+    allow_output_regexes=[(_ISAACGYM_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_brick_stacking",
     devices=cuda_test_devices,
     test_options={"num-frames": 1200},
     use_viewer=True,
+    allow_output_regexes=[(_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE, "stdout")],
 )
-add_example_test(
-    TestContactsExamples,
+add_contact_example_test(
     name="contacts.example_pyramid",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "num-pyramids": 3, "pyramid-size": 5},
     use_viewer=True,
+    expect_output_regexes=[(_PYRAMID_BUILD_OUTPUT_RE, "stdout")],
 )
 
 
