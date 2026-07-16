@@ -970,10 +970,6 @@ class ModelBuilderKamino:
         info_jkcio = []
         info_base_bid = []
         info_base_jid = []
-        info_mass_min = []
-        info_mass_max = []
-        info_mass_total = []
-        info_inertia_total = []
 
         # Initialize the gravity data collections
         gravity_g_dir_acc = []
@@ -1076,12 +1072,6 @@ class ModelBuilderKamino:
                 info_bio.append(world.bodies_idx_offset)
                 info_jio.append(world.joints_idx_offset)
                 info_gio.append(world.geoms_idx_offset)
-
-                # Collect the model mass and inertia data
-                info_mass_min.append(world.mass_min)
-                info_mass_max.append(world.mass_max)
-                info_mass_total.append(world.mass_total)
-                info_inertia_total.append(world.inertia_total)
 
             # Collect the index offsets for bodies and joints
             for world in self._worlds:
@@ -1351,10 +1341,6 @@ class ModelBuilderKamino:
                 joint_kinematic_cts_offset=to_warp_int32_array(info_jkcio),
                 base_body_index=to_warp_int32_array(info_base_bid),
                 base_joint_index=to_warp_int32_array(info_base_jid),
-                mass_min=wp.array(info_mass_min, dtype=wp.float32),
-                mass_max=wp.array(info_mass_max, dtype=wp.float32),
-                mass_total=wp.array(info_mass_total, dtype=wp.float32),
-                inertia_total=wp.array(info_inertia_total, dtype=wp.float32),
             )
 
             # Create the model time data
