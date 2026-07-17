@@ -29,11 +29,57 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
 
 
 class TestSelection(unittest.TestCase):
+    def test_articulation_selector_lists(self):
+        builder = newton.ModelBuilder()
+        for label in ["robot_a", "robot_b", "prop"]:
+            body = builder.add_link(label=f"{label}/body")
+            joint = builder.add_joint_free(child=body, label=f"{label}/joint")
+            builder.add_articulation([joint], label=label)
+        model = builder.finalize()
+
+        pattern_view = ArticulationView(model, pattern=["robot_*", "prop"])
+        assert_np_equal(pattern_view.articulation_ids.numpy(), [[0, 1, 2]])
+
+        index_view = ArticulationView(model, pattern=[0, 2])
+        assert_np_equal(index_view.articulation_ids.numpy(), [[0, 2]])
+
+        with self.assertRaisesRegex(ValueError, "must be unique and in ascending order"):
+            ArticulationView(model, pattern=[2, 0])
+        with self.assertRaisesRegex(ValueError, "must be unique and in ascending order"):
+            ArticulationView(model, pattern=[0, 0])
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 3\)"):
+            ArticulationView(model, pattern=[3])
+
+        # each articulation has a single joint and link
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 1\)"):
+            ArticulationView(model, pattern="robot_a", include_joints=[1])
+        with self.assertRaisesRegex(ValueError, r"must be in range \[0, 1\)"):
+            ArticulationView(model, pattern="robot_a", include_links=[1])
+
     def test_no_match(self):
         builder = newton.ModelBuilder()
         builder.add_body()
         model = builder.finalize()
         self.assertRaises(KeyError, ArticulationView, model, pattern="no_match")
+
+    def test_unsorted_include_indices_deprecated(self):
+        builder = newton.ModelBuilder()
+        root = builder.add_link(label="root")
+        middle = builder.add_link(label="middle")
+        tip = builder.add_link(label="tip")
+        root_joint = builder.add_joint_free(child=root, label="root_joint")
+        middle_joint = builder.add_joint_revolute(parent=root, child=middle, label="middle_joint")
+        tip_joint = builder.add_joint_revolute(parent=middle, child=tip, label="tip_joint")
+        builder.add_articulation([root_joint, middle_joint, tip_joint], label="robot")
+        model = builder.finalize()
+
+        with self.assertWarnsRegex(DeprecationWarning, "include_joints"):
+            joint_view = ArticulationView(model, "robot", include_joints=[2, 0])
+        self.assertEqual(joint_view.joint_names, ["root_joint", "tip_joint"])
+
+        with self.assertWarnsRegex(DeprecationWarning, "include_links"):
+            link_view = ArticulationView(model, "robot", include_links=[2, 0])
+        self.assertEqual(link_view.link_names, ["root", "tip"])
 
     def test_empty_selection(self):
         builder = newton.ModelBuilder()
@@ -331,7 +377,7 @@ class TestSelection(unittest.TestCase):
                 )
 
     def test_eval_fk_translated_joint_chain_uses_view_mask(self):
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
         def add_translated_chain(label: str, x_offset: float):
             base = builder.add_link()
@@ -1237,7 +1283,7 @@ class TestSelection(unittest.TestCase):
 
     def test_get_attribute_extended_state(self):
         """Test that get_attribute works for extended state attributes."""
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
 
         link = builder.add_link()
@@ -1321,7 +1367,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
     def test_tendon_count(self):
         """Test that tendon count is correctly detected."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1330,7 +1376,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
     def test_tendon_selection_shapes(self):
         """Test that tendon selection API returns correct shapes."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1349,7 +1395,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
     def test_tendon_generic_api(self):
         """Test that tendon attributes are accessible via generic get/set_attribute."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1378,11 +1424,11 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
     def test_tendon_multi_world(self):
         """Test that tendon selection works with multiple worlds."""
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         W = 4  # num worlds
-        scene = newton.ModelBuilder(gravity=0.0)
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         scene.replicate(individual_builder, world_count=W)
         model = scene.finalize()
 
@@ -1402,11 +1448,11 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
     def test_tendon_set_values(self):
         """Test that setting tendon values works correctly."""
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         W = 2  # num worlds
-        scene = newton.ModelBuilder(gravity=0.0)
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         scene.replicate(individual_builder, world_count=W)
         model = scene.finalize()
 
@@ -1422,7 +1468,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
     def test_tendon_names(self):
         """Test that tendon names are correctly populated."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(self.TENDON_MJCF)
         model = builder.finalize()
 
@@ -1469,7 +1515,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
   </worldbody>
 </mujoco>
 """
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_mjcf(with_tendons_mjcf)
         builder.add_mjcf(no_tendons_mjcf)
         model = builder.finalize()
@@ -1487,12 +1533,12 @@ class TestSelectionFixedTendons(unittest.TestCase):
     def test_multiple_articulations_per_world(self):
         """Test tendon selection with multiple articulations in a single world."""
         # Build a single articulation with tendons
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         individual_builder.add_mjcf(self.TENDON_MJCF)
 
         # Create a world with multiple copies of the articulation
         A = 2  # articulations per world
-        multi_robot_world = newton.ModelBuilder(gravity=0.0)
+        multi_robot_world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for i in range(A):
             multi_robot_world.add_builder(
                 individual_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
@@ -1500,7 +1546,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         # Replicate to multiple worlds
         W = 2  # num worlds
-        scene = newton.ModelBuilder(gravity=0.0)
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         scene.replicate(multi_robot_world, world_count=W)
         model = scene.finalize()
 

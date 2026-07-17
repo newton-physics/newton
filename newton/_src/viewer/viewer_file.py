@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -245,6 +246,10 @@ def _ptr_key_from_numpy(arr: np.ndarray) -> int:
     # Use the underlying buffer address as a stable key within a process
     # for non-aliased arrays. For views, this still points to the base buffer;
     # since user guarantees no aliasing across arrays, we can use the data address.
+    # Empty arrays share a null data buffer, so distinct empties would otherwise
+    # collide on the same key; fall back to object identity for them.
+    if arr.size == 0:
+        return id(arr)
     return int(arr.__array_interface__["data"][0])
 
 
@@ -453,8 +458,9 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Iterables (like list, tuple, set)
         if isinstance(obj, Iterable) and not isinstance(obj, str | bytes | bytearray):
+            type_name = "set" if isinstance(obj, set) else type(obj).__name__
             return {
-                "__type__": type(obj).__name__,
+                "__type__": type_name,
                 "items": [
                     serialize(
                         item, callback, _visited, f"{_path}[{i}]" if _path else f"[{i}]", format_type, cache=cache
@@ -653,6 +659,13 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     for attr_name, source_value in source_dict.items():
         if attr_name.startswith("_"):
             continue
+
+        if isinstance(target_obj, Model) and attr_name == "shape_collision_filter_pairs":
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                target_obj.shape_collision_filter_pairs = source_value
+            continue
+
         target_value = getattr(target_obj, attr_name, _MISSING)
 
         # Source carries a reconstructed AttributeNamespace (e.g. ``model.mujoco``).
@@ -761,6 +774,18 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Custom objects
     if "attributes" in data:
+        if type_name == "AttributeSpec" and data.get("__module__") == Model.AttributeSpec.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            for attr in ("frequency", "references"):
+                if isinstance(attributes.get(attr), int):
+                    attributes[attr] = Model.AttributeFrequency(attributes[attr])
+            if isinstance(attributes.get("assignment"), int):
+                attributes["assignment"] = Model.AttributeAssignment(attributes["assignment"])
+            return Model.AttributeSpec(**attributes)
+
         # Reconstruct AttributeNamespace as a real instance so downstream consumers
         # (notably ``transfer_to_model``) can identify it without resorting to a
         # heuristic on serialized field names.

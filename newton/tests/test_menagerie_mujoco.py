@@ -343,14 +343,15 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "body_conaffinity",
     "body_contype",
     "exclude_signature",
+    # Compared semantically because storage depends on simple-body compilation.
+    "M_",
+    "mapM",
+    "mapD",
+    "qLD_",
+    "nC",
     # TileSet types: comparison function doesn't handle these
     "qM_tiles",
-    "qLD_tiles",
-    "qLD_all_updates",
-    "qLD_level_offsets",
     "qLDiagInv_tiles",
-    # Visualization group: Newton defaults to 0, native may use other groups
-    "geom_group",
     # Collision exclusions: Newton needs to fix parent/child filtering to match MuJoCo
     "nexclude",
     # Lights: Newton doesn't parse lights from MJCF
@@ -377,6 +378,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "body_ipos",
     # Inertia frame orientation: derived from inertia diagonalization.
     "body_iquat",
+    # Simple-body classification (new in mujoco-warp 3.10.0.2): derived from the
+    # inertia representation, so Newton's re-diagonalization can classify differently.
+    "body_simple",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
     "geom_contype",
@@ -424,6 +428,10 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     # Derived from inertia and dof_armature by set_const_0. Backfilled.
     "dof_invweight0",
+    # Per-DOF characteristic length (mujoco_warp >= 3.10, used to weight velocity norms
+    # for the sleep feature). Derived from subtree extent and COM/inertia frames, so it
+    # differs when Newton re-diagonalizes inertia (e.g. mesh-based visual geoms).
+    "dof_length",
     # Body frame position/orientation: compilation-dependent, derived from joint and inertia
     # frames by mj_setConst. Differs due to inertia re-diagonalization. Backfilled.
     "body_pos",
@@ -614,6 +622,63 @@ def compare_inertia_tensors(
         atol=tol,
         err_msg="Inertia tensor mismatch (reconstructed from principal + iquat)",
     )
+
+
+def _mass_matrix_row(model: Any, row: int) -> dict[int, int]:
+    """Map stored columns in a mass-matrix row to their addresses."""
+    rowadr = model.M_rowadr.numpy()
+    rownnz = model.M_rownnz.numpy()
+    colind = model.M_colind.numpy()
+    start = int(rowadr[row])
+    return {int(colind[start + offset]): start + offset for offset in range(int(rownnz[row]))}
+
+
+def compare_mass_matrix_layouts(
+    newton_model: Any,
+    native_model: Any,
+    newton_data: Any,
+    native_data: Any,
+    tol: float = 1e-7,
+) -> None:
+    """Verify that mass-matrix layout differences only expand simple rows."""
+    np.testing.assert_array_equal(newton_model.M_fullm_i.numpy(), native_model.M_fullm_i.numpy())
+    np.testing.assert_array_equal(newton_model.M_fullm_j.numpy(), native_model.M_fullm_j.numpy())
+
+    newton_simple = newton_model.qLD_dof_simple.numpy().astype(bool)
+    native_simple = native_model.qLD_dof_simple.numpy().astype(bool)
+    newton_mass = newton_data.M.numpy()
+    native_mass = native_data.M.numpy()
+
+    for row in range(native_model.nv):
+        newton_entries = _mass_matrix_row(newton_model, row)
+        native_entries = _mass_matrix_row(native_model, row)
+        if newton_entries.keys() == native_entries.keys():
+            continue
+
+        assert newton_simple[row] != native_simple[row], (
+            f"DOF {row}: different mass-matrix layouts are not explained by simple-body classification"
+        )
+
+        if newton_simple[row]:
+            simple_entries = newton_entries
+            general_entries = native_entries
+            general_mass = native_mass
+        else:
+            simple_entries = native_entries
+            general_entries = newton_entries
+            general_mass = newton_mass
+
+        assert set(simple_entries) == {row}, f"DOF {row}: simple mass-matrix row is not diagonal"
+        assert set(simple_entries) < set(general_entries), f"DOF {row}: general row does not expand simple row"
+
+        extra_addresses = [general_entries[column] for column in sorted(general_entries.keys() - simple_entries.keys())]
+        np.testing.assert_allclose(
+            general_mass[:, extra_addresses],
+            0.0,
+            rtol=0.0,
+            atol=tol,
+            err_msg=f"DOF {row}: entries omitted by the simple layout are nonzero",
+        )
 
 
 def solref_to_ke_kd(solref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -1409,6 +1474,7 @@ class TestMenagerieBase(unittest.TestCase):
         - num_steps: int - dynamics steps to run (default: 0, dynamics disabled)
         - dynamics_target: float - step-response target position offset (default: 0.3)
         - dynamics_tolerance: float - qpos/qvel comparison tolerance (default: 1e-6)
+        - allow_standalone_world_roots: bool - permit SolverMuJoCo's rootless-world-joint warning
         - skip_reason: str | None - if set, skip this test
     """
 
@@ -1425,6 +1491,7 @@ class TestMenagerieBase(unittest.TestCase):
     # a target position (wrapping with modulo). Collisions disabled.
     dynamics_target: float = 0.3  # Position offset for step-response target
     dynamics_tolerance: float = 1e-6  # Tolerance for qpos/qvel comparison
+    allow_standalone_world_roots: bool = False
 
     # Model comparison: fields to SKIP (substrings to match)
     # Override in subclass with: model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"extra", "fields"}
@@ -1535,11 +1602,13 @@ class TestMenagerieBase(unittest.TestCase):
         """
 
     def _compare_mass_matrix_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
-        """Compare sparse mass matrix structure (M_colind, M_rowadr, M_rownnz).
-
-        Default: no-op (covered by compare_mjw_models for same-order pipelines).
-        Override in subclasses where DOF ordering may differ.
-        """
+        """Compare equivalent simple and general mass-matrix layouts."""
+        compare_mass_matrix_layouts(
+            newton_mjw,
+            native_mjw,
+            self._newton_solver.mjw_data,
+            self._native_mjw_data,
+        )
 
     def _compare_tendon_jacobian_structure(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare sparse tendon Jacobian structure (ten_J_colind, ten_J_rowadr, ten_J_rownnz).
@@ -1676,6 +1745,11 @@ class TestMenagerieBase(unittest.TestCase):
         # than failing under strict warnings. Other warnings still surface.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=r"(Geom|Pair).* zeroed for NATIVECCD")
+            if self.allow_standalone_world_roots:
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"SolverMuJoCo is converting .* outside articulations as standalone world roots",
+                )
             cls._newton_solver = SolverMuJoCo(cls._newton_model, **solver_kwargs)
 
         cls._mj_model, cls._mj_data_native, cls._native_mjw_model, cls._native_mjw_data = (

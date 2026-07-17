@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.geometry import ContactAggregation
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.sensors import SensorContact
 from newton.solvers import SolverKamino, SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
@@ -343,6 +344,8 @@ class TestSensorContact(unittest.TestCase):
         model = _make_two_world_model(include_ground=True)
         sensor = SensorContact(model, sensing_bodies="*", counterpart_shapes="*", measure_total=False)
         self.assertIsNone(sensor.total_force)
+        self.assertIsNotNone(sensor.position_matrix)
+        self.assertEqual(sensor.position_matrix.shape, sensor.force_matrix.shape)
 
         contacts = create_contacts(model.device, [(0, 2)], naconmax=4, forces=[5.0])
         sensor.update(None, contacts)
@@ -350,6 +353,127 @@ class TestSensorContact(unittest.TestCase):
         net = sensor.force_matrix.numpy()
         ground_col = sensor.counterpart_indices[0].index(2)
         np.testing.assert_allclose(net[0, ground_col], [0, 0, 5.0], atol=1e-5)
+        # no state passed, so positions are reset and never populated
+        np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
+
+    def test_position_matrix(self):
+        """Contact positions are force-weighted world-space midpoints grouped by counterpart."""
+        device = wp.get_device()
+
+        builder = newton.ModelBuilder()
+        body_a = builder.add_body(label="A")
+        shape_a = builder.add_shape_box(body_a, hx=0.1, hy=0.1, hz=0.1)
+        body_b = builder.add_body(label="B")
+        shape_b = builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.1)
+        ground = builder.add_shape_box(body=-1, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device=device)
+
+        sensor = SensorContact(
+            model,
+            sensing_bodies="*",
+            counterpart_shapes="*",
+            measure_total=False,
+        )
+        self.assertIsNotNone(sensor.position_matrix)
+        self.assertEqual(sensor.position_matrix.shape, sensor.force_matrix.shape)
+
+        state = types.SimpleNamespace(
+            body_q=wp.array(
+                [
+                    wp.transform(
+                        wp.vec3(10.0, 0.0, 0.0),
+                        wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi * 0.5),
+                    ),
+                    wp.transform(wp.vec3(0.0, 20.0, 0.0), wp.quat_identity()),
+                ],
+                dtype=wp.transform,
+                device=device,
+            )
+        )
+
+        # Contact 4 (b vs ground) is stored with the static shape as shape0 to exercise
+        # the matched1-only path with the identity transform on point0.
+        contacts = newton.Contacts(5, 0, device=device, requested_attributes={"force"})
+        with wp.ScopedDevice(device):
+            contacts.rigid_contact_shape0 = wp.array([shape_a, shape_a, shape_a, shape_b, ground], dtype=wp.int32)
+            contacts.rigid_contact_shape1 = wp.array([shape_b, shape_b, ground, ground, shape_b], dtype=wp.int32)
+            contacts.rigid_contact_point0 = wp.array(
+                [
+                    (1.0, 0.0, 0.0),
+                    (0.0, 2.0, 0.0),
+                    (0.0, 0.0, 2.0),
+                    (1.0, 1.0, 1.0),
+                    (4.0, 24.0, 0.0),
+                ],
+                dtype=wp.vec3,
+            )
+            contacts.rigid_contact_point1 = wp.array(
+                [
+                    (2.0, 0.0, 0.0),
+                    (0.0, 4.0, 0.0),
+                    (14.0, 6.0, 2.0),
+                    (99.0, 98.0, 97.0),
+                    (2.0, 0.0, 0.0),
+                ],
+                dtype=wp.vec3,
+            )
+            contacts.rigid_contact_offset0 = wp.array([(1.0, 0.0, 0.0)] * 5, dtype=wp.vec3)
+            contacts.rigid_contact_offset1 = wp.array([(0.0, 2.0, 0.0)] * 5, dtype=wp.vec3)
+            contacts.rigid_contact_normal = wp.array([(0.0, 0.0, 1.0)] * 5, dtype=wp.vec3)
+            contacts.rigid_contact_count = wp.array([5], dtype=wp.int32)
+            contacts.force = wp.array(
+                [
+                    (0.0, 0.0, 2.0, 0.0, 0.0, 0.0),
+                    (3.0, 4.0, 0.0, 0.0, 0.0, 0.0),
+                    (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0, 9.0, 8.0, 7.0),
+                    (-1.0e-6, 0.0, 0.0, 0.0, 0.0, 0.0),
+                ],
+                dtype=wp.spatial_vector,
+            )
+
+        sensor.update(state, contacts)
+
+        row_a = sensor.sensing_indices.index(body_a)
+        row_b = sensor.sensing_indices.index(body_b)
+        col_a = sensor.counterpart_indices[row_b].index(shape_a)
+        col_b = sensor.counterpart_indices[row_a].index(shape_b)
+        col_ground_a = sensor.counterpart_indices[row_a].index(ground)
+        col_ground_b = sensor.counterpart_indices[row_b].index(ground)
+        positions = sensor.position_matrix.numpy()
+        # surface points are the offset-shifted contact points in world space
+        # A-B: weights 2 and 5 over surface midpoints (6, 12, 0) and (4, 13.5, 0)
+        expected_ab = [32.0 / 7.0, 91.5 / 7.0, 0.0]
+        np.testing.assert_allclose(positions[row_a, col_b], expected_ab, atol=1e-5)
+        np.testing.assert_allclose(positions[row_b, col_a], expected_ab, atol=1e-5)
+        # A-ground: single contact, midpoint of surface points (10, 1, 2) and (14, 8, 2)
+        np.testing.assert_allclose(positions[row_a, col_ground_a], [12.0, 4.5, 2.0], atol=1e-5)
+        # B-ground: single tiny-force contact, midpoint of surface points (5, 24, 0) and (2, 22, 0)
+        np.testing.assert_allclose(positions[row_b, col_ground_b], [3.5, 23.0, 0.0], atol=1e-5)
+        # entries with no contributing contacts (here: each body's own shape) are zero
+        col_self_a = sensor.counterpart_indices[row_a].index(shape_a)
+        np.testing.assert_array_equal(positions[row_a, col_self_a], 0.0)
+
+        # a second update with the same inputs must give identical results
+        # (catches stale weight accumulation across updates)
+        sensor.update(state, contacts)
+        np.testing.assert_allclose(sensor.position_matrix.numpy(), positions, rtol=1e-6)
+
+        # updates without body transforms reset positions to zero so they cannot pair with the new forces
+        forces_before = sensor.force_matrix.numpy().copy()
+        changed_contacts = create_contacts(device, [(shape_a, shape_b)], naconmax=4, forces=[11.0])
+        sensor.update(None, changed_contacts)
+        np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
+        self.assertFalse(np.array_equal(sensor.force_matrix.numpy(), forces_before))
+
+        sensor.update(state, contacts)  # repopulate positions
+        sensor.update(types.SimpleNamespace(body_q=None), changed_contacts)
+        np.testing.assert_array_equal(sensor.position_matrix.numpy(), 0.0)
+
+        zero_force_contacts = create_contacts(device, [(shape_a, shape_b)], naconmax=4, forces=[0.0])
+        sensor.update(state, zero_force_contacts)
+        positions = sensor.position_matrix.numpy()
+        np.testing.assert_array_equal(positions, 0.0)
 
     def test_duplicate_sensing_objects_raises(self):
         """Duplicate sensing object indices raise ValueError."""
@@ -524,6 +648,7 @@ class TestSensorContact(unittest.TestCase):
         model = _make_two_world_model()
         sensor = SensorContact(model, sensing_bodies="*")
         self.assertIsNone(sensor.force_matrix_friction)
+        self.assertIsNone(sensor.position_matrix)
         self.assertIsNotNone(sensor.total_force_friction)
 
     def test_purely_normal_force_has_zero_friction(self):
@@ -609,7 +734,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         except ImportError as e:
             self.skipTest(f"MuJoCo not available: {e}")
 
-        sensor = SensorContact(model, sensing_bodies=["a", "b"])
+        sensor = SensorContact(model, sensing_bodies=["a", "b"], counterpart_shapes="*")
         contacts = newton.Contacts(
             solver.get_max_contact_count(),
             0,
@@ -623,8 +748,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         num_steps = 240 * 2
 
         device = model.device
-        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-        if use_cuda_graph:
+        use_graph = is_graph_capture_allocation_enabled(device)
+        if use_graph:
             # warmup (2 steps to allocate both buffers)
             solver.step(state_in, state_out, control, None, sim_dt)
             solver.step(state_out, state_in, control, None, sim_dt)
@@ -634,14 +759,14 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             graph = capture.graph
 
         avg_steps = 10  # average forces over last few steps for stability
-        remaining = num_steps - avg_steps - (4 if use_cuda_graph else 0)
-        for _ in range(remaining // 2 if use_cuda_graph else remaining):
-            if use_cuda_graph:
+        remaining = num_steps - avg_steps - (4 if use_graph else 0)
+        for _ in range(remaining // 2 if use_graph else remaining):
+            if use_graph:
                 wp.capture_launch(graph)
             else:
                 solver.step(state_in, state_out, control, None, sim_dt)
                 state_in, state_out = state_out, state_in
-        if use_cuda_graph and remaining % 2 == 1:
+        if use_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
@@ -657,6 +782,24 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         g = 9.81
         self.assertAlmostEqual(total[0, 2], mass_a * g, delta=mass_a * g * 0.01)
         self.assertAlmostEqual(total[1, 2], mass_b * g, delta=mass_b * g * 0.01)
+
+        # Contact positions from solver-generated contacts pin the body-frame convention of
+        # rigid_contact_point0/1: a sits centered on the base top (z=0.25), b on a's top (z=0.75).
+        shape_base, shape_a, shape_b = 0, 1, 2
+        row_a = sensor.sensing_indices.index(body_a)
+        row_b = sensor.sensing_indices.index(body_b)
+        positions = sensor.position_matrix.numpy()
+        np.testing.assert_allclose(
+            positions[row_a, sensor.counterpart_indices[row_a].index(shape_base)], [0.0, 0.0, 0.25], atol=0.05
+        )
+        np.testing.assert_allclose(
+            positions[row_a, sensor.counterpart_indices[row_a].index(shape_b)], [0.0, 0.0, 0.75], atol=0.05
+        )
+        np.testing.assert_allclose(
+            positions[row_b, sensor.counterpart_indices[row_b].index(shape_a)], [0.0, 0.0, 0.75], atol=0.05
+        )
+        # b never touches the base
+        np.testing.assert_array_equal(positions[row_b, sensor.counterpart_indices[row_b].index(shape_base)], 0.0)
 
     def test_stacking_friction(self):
         """Friction forces are near zero for boxes at rest on a flat surface."""
@@ -749,8 +892,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         num_steps = 240 * 2
 
         device = model.device
-        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-        if use_cuda_graph:
+        use_graph = is_graph_capture_allocation_enabled(device)
+        if use_graph:
             # warmup (2 steps to allocate both buffers)
             solver.step(state_in, state_out, control, None, sim_dt)
             solver.step(state_out, state_in, control, None, sim_dt)
@@ -760,14 +903,14 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             graph = capture.graph
 
         avg_steps = 10  # average forces over last few steps for stability
-        remaining = num_steps - avg_steps - (4 if use_cuda_graph else 0)
-        for _ in range(remaining // 2 if use_cuda_graph else remaining):
-            if use_cuda_graph:
+        remaining = num_steps - avg_steps - (4 if use_graph else 0)
+        for _ in range(remaining // 2 if use_graph else remaining):
+            if use_graph:
                 wp.capture_launch(graph)
             else:
                 solver.step(state_in, state_out, control, None, sim_dt)
                 state_in, state_out = state_out, state_in
-        if use_cuda_graph and remaining % 2 == 1:
+        if use_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 

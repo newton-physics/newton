@@ -49,7 +49,7 @@ def test_free_fall(test, device, solver_fn):
     h0 = 5.0
 
     # Add a sphere
-    builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
     b = builder.add_body(xform=wp.transform(wp.vec3(0.0, h0, 0.0), wp.quat_identity()))
     builder.add_shape_sphere(b, radius=0.1)
     model = builder.finalize(device=device)
@@ -112,7 +112,7 @@ def test_pendulum_period(test, device, solver_fn, uses_generalized_coords, sim_d
     initial_angle = 0.05  # small angle to keep analytical solution valid
 
     # Add a sphere
-    builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
     link = builder.add_link()
     builder.add_shape_sphere(link, radius=sphere_radius)
     j = builder.add_joint_revolute(
@@ -190,7 +190,7 @@ def test_energy_conservation(test, device, solver_fn, uses_generalized_coords, s
     initial_angle = 1.0
 
     # Create pendulum
-    builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
     link = builder.add_link()
     builder.add_shape_sphere(link, radius=sphere_radius)
     j = builder.add_joint_revolute(
@@ -285,7 +285,7 @@ def test_projectile_motion(test, device, solver_fn, uses_generalized_coords):
     vx0, vy0, vz0 = 5.0, 10.0, 0.0
 
     # Add a sphere
-    builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
     b = builder.add_body(xform=wp.transform(wp.vec3(x0, y0, z0), wp.quat_identity()))
     builder.add_shape_sphere(b, radius=0.1)
     model = builder.finalize(device=device)
@@ -348,7 +348,7 @@ def test_joint_actuation(test, device, solver_fn):
     tau_rev = 5.0
     F_prismatic = 5.0
 
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     # Articulation 0: revolute joint (box body)
     link_rev = builder.add_link()
     builder.add_shape_box(link_rev, hx=0.2, hy=0.2, hz=0.2)
@@ -473,7 +473,7 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
     ]
 
     # Add 4 separated boxes
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     for pos in positions:
         b = builder.add_body(xform=wp.transform(wp.vec3(*pos), wp.quat_identity()))
         builder.add_shape_box(b, hx=0.5, hy=0.5, hz=0.5)
@@ -523,6 +523,71 @@ def test_momentum_conservation(test, device, solver_fn, uses_generalized_coords)
     test.assertGreater(pos_change, 0.1, "Bodies should have moved")
 
 
+def test_torque_free_precession(test, device, solver_fn):
+    """Torque-free anisotropic body on a D6 joint with three angular DOFs.
+
+    With no applied torque and no gravity, angular momentum is conserved in the
+    world frame: ``L = R(t) I_body R(t)^T omega(t) = const`` (Euler's equations
+    for a free rigid body). The body must also precess (the angular velocity
+    direction changes) to ensure the test is meaningful.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
+    # Anisotropic inertia so the gyroscopic coupling between axes is non-trivial.
+    link = builder.add_link(
+        mass=1.0,
+        com=wp.vec3(0.0, 0.0, 0.0),
+        inertia=wp.mat33(0.2, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.4),
+    )
+    cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
+    j = builder.add_joint_d6(
+        parent=-1,
+        child=link,
+        angular_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y), cfg(axis=newton.Axis.Z)],
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform_identity(),
+    )
+    builder.add_articulation([j])
+    model = builder.finalize(device=device)
+
+    solver = solver_fn(model)
+    state_0 = model.state()
+    state_1 = model.state()
+
+    # Non-zero angular velocity on every DOF. Joint position stays at zero; for
+    # three angular axes the Coriolis bias projects onto the DOFs already there.
+    omega0 = np.array([0.7, -0.5, 0.9], dtype=np.float32)
+    qd = state_0.joint_qd.numpy()
+    qd[:3] = omega0
+    state_0.joint_qd.assign(qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+
+    I_body = model.body_inertia.numpy()[0]
+
+    def angular_momentum_world(state):
+        bq = state.body_q.numpy()[0]
+        omega = state.body_qd.numpy()[0, 3:6]
+        R = np.array(wp.quat_to_matrix(wp.quat(*bq[3:7].tolist()))).reshape(3, 3)
+        return (R @ I_body @ R.T) @ omega
+
+    L0 = angular_momentum_world(state_0)
+    quat_0 = state_0.body_q.numpy()[0, 3:7].copy()
+    test.assertGreater(np.linalg.norm(L0), 0.1, "Initial angular momentum should be nonzero")
+
+    sim_dt = 1e-2
+    for _ in range(20):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, None, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    L_drift = np.linalg.norm(angular_momentum_world(state_0) - L0) / np.linalg.norm(L0)
+    test.assertLess(L_drift, 5e-3, f"Angular momentum drift: {L_drift:.6e}")
+
+    # Sanity: the body must actually precess over the interval.
+    quat_f = state_0.body_q.numpy()[0, 3:7]
+    rotation_angle = 2.0 * np.arccos(min(abs(float(np.dot(quat_0, quat_f))), 1.0))
+    test.assertGreater(rotation_angle, 0.1, f"Body should have rotated, got {rotation_angle:.4f} rad")
+
+
 # Coulomb friction is covered by test_rigid_friction_ramp.py (mu, theta) grid.
 
 
@@ -549,7 +614,7 @@ def test_restitution(test, device, solver_fn):
         cfg.margin = 0.001
         cfg.gap = 0.0
 
-        builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
+        builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
         builder.add_ground_plane(cfg=cfg)
         b = builder.add_body(xform=wp.transform(wp.vec3(0.0, radius + h_drop, 0.0), wp.quat_identity()))
         builder.add_shape_sphere(b, radius=radius, cfg=cfg)
@@ -632,7 +697,7 @@ def test_restitution_mujoco(test, device, solver_fn, use_mujoco_cpu):
     # Single model: ground + elastic sphere (body 0) + inelastic sphere (body 1)
     # Note: ground plane uses default cfg (custom cfg causes MuJoCo Warp divergence).
     # Restitution is controlled via geom_solref set directly on the solver below.
-    builder = newton.ModelBuilder(gravity=g, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, g, 0.0), up_axis=newton.Axis.Y)
     builder.add_ground_plane()
     b_elastic = builder.add_body(xform=wp.transform(wp.vec3(0.0, radius + h_drop, 0.0), wp.quat_identity()))
     b_inelastic = builder.add_body(xform=wp.transform(wp.vec3(2.0, radius + h_drop, 0.0), wp.quat_identity()))
@@ -771,7 +836,7 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
     # Build the four-bar linkage
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 1000.0
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     crank_body = builder.add_link(xform=wp.transform_identity())
     coupler_body = builder.add_link(xform=wp.transform_identity())
@@ -828,7 +893,7 @@ def test_fourbar_linkage(test, device, solver_fn, use_loop_joint=False):
     else:
         _add_equality_constraint(
             builder,
-            constraint_type=newton.EqType.CONNECT,
+            constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
             body1=-1,
             body2=rocker_body,
             anchor=wp.vec3(d_link, 0.0, 0.0),
@@ -998,7 +1063,7 @@ def test_revolute_loop_joint(test, device, solver_fn):
 
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 1000.0
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     crank_body = builder.add_link(xform=wp.transform_identity())
     coupler_body = builder.add_link(xform=wp.transform_identity())
@@ -1150,7 +1215,7 @@ def test_revolute_loop_joint(test, device, solver_fn):
 def test_ball_loop_joint(test, device, solver_fn):
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 1000.0
-    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, -9.81, 0.0), up_axis=newton.Axis.Y)
 
     # A single link with COM at (0, -0.5, 0); ball pivot at origin.
     link = builder.add_link(xform=wp.transform(wp.vec3(0.0, -0.5, 0.0), wp.quat_identity()))
@@ -1279,7 +1344,7 @@ def test_ball_loop_joint(test, device, solver_fn):
 def test_fixed_loop_joint(test, device, solver_fn):
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 1000.0
-    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, -9.81, 0.0), up_axis=newton.Axis.Y)
 
     # link_a: vertical bar from (0,0,0) to (0,-0.5,0), COM at (0,-0.25,0)
     # link_b: horizontal bar extending from link_a's bottom end,
@@ -1498,6 +1563,18 @@ for device in devices:
             sim_dt=3e-4 if solver_name in ("xpbd", "semi_implicit") else 1e-3,
             sphere_radius=0.1 if solver_name == "semi_implicit" else 0.01,
         )
+
+        # Torque-free precession exercises the articulated rigid-body dynamics
+        # exactly (rigid joints, no soft constraints), so restrict it to the
+        # exact generalized-coordinate solvers.
+        if solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
+            add_function_test(
+                TestPhysicsVerification,
+                f"test_torque_free_precession_{solver_name}",
+                test_torque_free_precession,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
 
         if solver_name == "semi_implicit":
             continue

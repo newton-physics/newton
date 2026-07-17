@@ -46,10 +46,9 @@ class FKJointDoFType(IntEnum):
     CYLINDRICAL = 3
     UNIVERSAL = 4
     SPHERICAL = 5
-    GIMBAL = 6
-    CARTESIAN = 7
-    FIXED = 8
-    AXIS = 9
+    CARTESIAN = 6
+    FIXED = 7
+    AXIS = 8
 
 
 class ForwardKinematicsPreconditionerType(IntEnum):
@@ -84,8 +83,8 @@ class ForwardKinematicsStatus:
 
     success: np.ndarray(dtype=np.int32)
     """
-    Solver success flag per world, as an integer array (0 = failure, 1 = success).\n
-    Shape `(num_worlds,)` and type :class:`np.int32`.
+    Solver success flag per world, as an integer array (0 = failure, 1 = success).
+    Shape of `(num_worlds,)`.
 
     Note that in some cases the solver may fail to converge within the maximum number
     of iterations, but still produce a solution with a reasonable residual.
@@ -96,8 +95,8 @@ class ForwardKinematicsStatus:
 
     iterations: np.ndarray(dtype=np.int32)
     """
-    Number of Gauss-Newton iterations executed per world.\n
-    Shape `(num_worlds,)` and type :class:`np.int32`.
+    Number of Gauss-Newton iterations executed per world.
+    Shape of `(num_worlds,)`.
     """
 
     max_residual: np.ndarray(dtype=np.float32)
@@ -105,5 +104,5 @@ class ForwardKinematicsStatus:
     Maximal absolute residual at the final solution, per world. In the general case, the residual vector
     is the kinematic constraints vector; if regularization is enabled, it is the penalty gradient.
 
-    Shape `(num_worlds,)` and type :class:`np.float32`.
+    Shape of `(num_worlds,)`.
     """

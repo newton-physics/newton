@@ -64,7 +64,7 @@ from ..core.data import DataKamino
 from ..core.math import FLOAT32_EPS, screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
-from ..core.types import float32, int32, mat33f, vec2f, vec3f, vec4f, vec6f
+from ..core.types import vec6f
 from ..dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
@@ -99,13 +99,13 @@ class DualProblemConfigStruct:
     A Warp struct to hold on-device configuration parameters of a dual problem.
     """
 
-    alpha: float32
+    alpha: wp.float32
     """Baumgarte stabilization parameter for bilateral joint constraints."""
-    beta: float32
+    beta: wp.float32
     """Baumgarte stabilization parameter for unilateral joint limit constraints."""
-    gamma: float32
+    gamma: wp.float32
     """Baumgarte stabilization parameter for unilateral contact constraints."""
-    delta: float32
+    delta: wp.float32
     """Contact penetration margin used for unilateral contact constraints"""
     preconditioning: wp.bool
     """Flag to enable preconditioning of the dual problem."""
@@ -127,113 +127,113 @@ class DualProblemData:
     # Problem configurations
     ###
 
-    config: wp.array | None = None
+    config: wp.array[DualProblemConfigStruct] | None = None
     """
-    Problem configuration parameters for each world.\n
-    Shape of `(num_worlds,)` and type :class:`DualProblemConfigStruct`.
+    Problem configuration parameters for each world.
+    Shape of `(num_worlds,)`.
     """
 
     ###
     # Constraints info
     ###
 
-    njc: wp.array | None = None
+    njc: wp.array[wp.int32] | None = None
     """
-    The number of active joint constraints in each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.
-    """
-
-    nl: wp.array | None = None
-    """
-    The number of active limit constraints in each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.
+    The number of active joint constraints in each world.
+    Shape of `(num_worlds,)`.
     """
 
-    nc: wp.array | None = None
+    nl: wp.array[wp.int32] | None = None
     """
-    The number of active contact constraints in each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.
-    """
-
-    lio: wp.array | None = None
-    """
-    The limit index offset of each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.\n
+    The number of active limit constraints in each world.
+    Shape of `(num_worlds,)`.
     """
 
-    cio: wp.array | None = None
+    nc: wp.array[wp.int32] | None = None
     """
-    The contact index offset of each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.\n
-    """
-
-    uio: wp.array | None = None
-    """
-    The unilateral index offset of each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.\n
+    The number of active contact constraints in each world.
+    Shape of `(num_worlds,)`.
     """
 
-    lcgo: wp.array | None = None
+    lio: wp.array[wp.int32] | None = None
     """
-    The limit constraint group offset of each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.\n
+    The limit index offset of each world.
+    Shape of `(num_worlds,)`.
     """
 
-    ccgo: wp.array | None = None
+    cio: wp.array[wp.int32] | None = None
     """
-    The contact constraint group offset of each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.\n
+    The contact index offset of each world.
+    Shape of `(num_worlds,)`.
+    """
+
+    uio: wp.array[wp.int32] | None = None
+    """
+    The unilateral index offset of each world.
+    Shape of `(num_worlds,)`.
+    """
+
+    lcgo: wp.array[wp.int32] | None = None
+    """
+    The limit constraint group offset of each world.
+    Shape of `(num_worlds,)`.
+    """
+
+    ccgo: wp.array[wp.int32] | None = None
+    """
+    The contact constraint group offset of each world.
+    Shape of `(num_worlds,)`.
     """
 
     ###
     # Delassus operator
     ###
 
-    maxdim: wp.array | None = None
+    maxdim: wp.array[wp.int32] | None = None
     """
-    The maximum number of dual problem dimensions of each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.
-    """
-
-    dim: wp.array | None = None
-    """
-    The active number of dual problem dimensions of each world.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.
+    The maximum number of dual problem dimensions of each world.
+    Shape of `(num_worlds,)`.
     """
 
-    mio: wp.array | None = None
+    dim: wp.array[wp.int32] | None = None
     """
-    The matrix index offset of each Delassus matrix block.\n
-    This is applicable to `D` as well as to its (optional) factorizations.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.
-    """
-
-    vio: wp.array | None = None
-    """
-    The vector index offset of each constraint dimension vector block.\n
-    This is applicable to `v_b`, `v_i` and `v_f`.\n
-    Shape of `(num_worlds,)` and type :class:`int32`.
+    The active number of dual problem dimensions of each world.
+    Shape of `(num_worlds,)`.
     """
 
-    D: wp.array | None = None
+    mio: wp.array[wp.int32] | None = None
     """
-    The flat array of Delassus matrix blocks (constraint-space apparent inertia).\n
-    Shape of `(sum_of_max_total_delassus_size,)` and type :class:`float32`.
+    The matrix index offset of each Delassus matrix block.
+    This is applicable to `D` as well as to its (optional) factorizations.
+    Shape of `(num_worlds,)`.
     """
 
-    P: wp.array | None = None
+    vio: wp.array[wp.int32] | None = None
     """
-    The flat array of Delassus diagonal preconditioner blocks.\n
-    Shape of `(sum_of_max_total_cts,)` and type :class:`float32`.
+    The vector index offset of each constraint dimension vector block.
+    This is applicable to `v_b`, `v_i` and `v_f`.
+    Shape of `(num_worlds,)`.
+    """
+
+    D: wp.array[wp.float32] | None = None
+    """
+    The flat array of Delassus matrix blocks (constraint-space apparent inertia).
+    Shape of `(sum_of_max_total_delassus_size,)`.
+    """
+
+    P: wp.array[wp.float32] | None = None
+    """
+    The flat array of Delassus diagonal preconditioner blocks.
+    Shape of `(sum_of_max_total_cts,)`.
     """
 
     ###
     # Problem vectors
     ###
 
-    h: wp.array | None = None
+    h: wp.array[wp.spatial_vectorf] | None = None
     """
-    Stack of non-linear generalized forces vectors of each world.\n
+    Stack of non-linear generalized forces vectors of each world.
 
     Computed as:
     `h = dt * (w_e + w_gc + w_a)`
@@ -248,12 +248,12 @@ class DualProblemData:
     incorporated in the computation of the generalized free-velocity `u_f`.
     It is can be optionally built for analysis or debugging purposes.
 
-    Shape of `(sum_of_num_body_dofs,)` and type :class:`vec6f`.
+    Shape of `(sum_of_num_body_dofs,)`.
     """
 
-    u_f: wp.array | None = None
+    u_f: wp.array[wp.spatial_vectorf] | None = None
     """
-    Stack of unconstrained generalized velocity vectors.\n
+    Stack of unconstrained generalized velocity vectors.
 
     Computed as:
     `u_f = u_minus + dt * M^{-1} @ h`
@@ -263,12 +263,12 @@ class DualProblemData:
     - `M^{-1}` is the block-diagonal inverse generalized mass matrix
     - `h` is the stack of non-linear generalized forces vectors
 
-    Shape of `(sum_of_num_body_dofs,)` and type :class:`vec6f`.
+    Shape of `(sum_of_num_body_dofs,)`.
     """
 
-    v_b: wp.array | None = None
+    v_b: wp.array[wp.float32] | None = None
     """
-    Stack of free-velocity constraint bias vectors (in constraint-space).\n
+    Stack of free-velocity constraint bias vectors (in constraint-space).
 
     Computed as:
     `v_b = [ v_b_dynamics;
@@ -285,12 +285,12 @@ class DualProblemData:
     - `alpha`, `beta`, `gamma` are the Baumgarte stabilization
         parameters for joints, limits and contacts, respectively
 
-    Shape of `(sum_of_max_total_cts,)` and type :class:`float32`.
+    Shape of `(sum_of_max_total_cts,)`.
     """
 
-    v_i: wp.array | None = None
+    v_i: wp.array[wp.float32] | None = None
     """
-    The stack of free-velocity impact biases vector (in constraint-space).\n
+    The stack of free-velocity impact biases vector (in constraint-space).
 
     Computed as:
     `v_i = epsilon @ (J_cts @ u_minus)`
@@ -300,12 +300,12 @@ class DualProblemData:
     - `J_cts` is the constraint Jacobian matrix
     - `u_minus` is the stack of per-body generalized velocities at the beginning of the time step
 
-    Shape of `(sum_of_max_total_cts,)` and type :class:`float32`.
+    Shape of `(sum_of_max_total_cts,)`.
     """
 
-    v_f: wp.array | None = None
+    v_f: wp.array[wp.float32] | None = None
     """
-    Stack of free-velocity vectors (constraint-space unconstrained velocity).\n
+    Stack of free-velocity vectors (constraint-space unconstrained velocity).
 
     Computed as:
     `v_f = J_cts @ u_f + v_b + v_i`
@@ -316,13 +316,13 @@ class DualProblemData:
     - `v_b` is the stack of free-velocity stabilization biases vectors
     - `v_i` is the stack of free-velocity impact biases vectors
 
-    Shape of `(sum_of_max_total_cts,)` and type :class:`float32`.
+    Shape of `(sum_of_max_total_cts,)`.
     """
 
-    mu: wp.array | None = None
+    mu: wp.array[wp.float32] | None = None
     """
-    Stack of per-contact constraint friction coefficient vectors.\n
-    Shape of `(sum_of_max_contacts,)` and type :class:`float32`.
+    Stack of per-contact constraint friction coefficient vectors.
+    Shape of `(sum_of_max_contacts,)`.
     """
 
 
@@ -333,11 +333,11 @@ class DualProblemData:
 
 @wp.func
 def gravity_plus_coriolis_wrench(
-    g: vec3f,
-    m_i: float32,
-    I_i: mat33f,
-    omega_i: vec3f,
-) -> vec6f:
+    g: wp.vec3f,
+    m_i: wp.float32,
+    I_i: wp.mat33f,
+    omega_i: wp.vec3f,
+) -> wp.spatial_vectorf:
     """
     Compute the gravitational + Coriolis wrench acting on a body.
     """
@@ -348,11 +348,11 @@ def gravity_plus_coriolis_wrench(
 
 @wp.func
 def gravity_plus_coriolis_wrench_split(
-    g: vec3f,
-    m_i: float32,
-    I_i: mat33f,
-    omega_i: vec3f,
-):
+    g: wp.vec3f,
+    m_i: wp.float32,
+    I_i: wp.mat33f,
+    omega_i: wp.vec3f,
+) -> tuple[wp.vec3f, wp.vec3f]:
     """
     Compute the gravitational+inertial wrench on a body.
     """
@@ -369,16 +369,16 @@ def gravity_plus_coriolis_wrench_split(
 @wp.kernel
 def _build_nonlinear_generalized_force(
     # Inputs:
-    model_time_dt: wp.array[float32],
-    model_gravity_vector: wp.array[vec4f],
-    model_bodies_wid: wp.array[int32],
-    model_bodies_m_i: wp.array[float32],
-    state_bodies_u_i: wp.array[vec6f],
-    state_bodies_I_i: wp.array[mat33f],
-    state_bodies_w_e_i: wp.array[vec6f],
-    state_bodies_w_a_i: wp.array[vec6f],
+    model_time_dt: wp.array[wp.float32],
+    model_gravity_vector: wp.array[wp.vec4f],
+    model_bodies_wid: wp.array[wp.int32],
+    model_bodies_m_i: wp.array[wp.float32],
+    state_bodies_u_i: wp.array[wp.spatial_vectorf],
+    state_bodies_I_i: wp.array[wp.mat33f],
+    state_bodies_w_e_i: wp.array[wp.spatial_vectorf],
+    state_bodies_w_a_i: wp.array[wp.spatial_vectorf],
     # Outputs:
-    problem_h: wp.array[vec6f],
+    problem_h: wp.array[wp.spatial_vectorf],
 ):
     # Retrieve the body index as the thread index
     bid = wp.tid()
@@ -396,7 +396,7 @@ def _build_nonlinear_generalized_force(
     gv = model_gravity_vector[wid]
 
     # Extract the effective gravity vector
-    g = gv.w * vec3f(gv.x, gv.y, gv.z)
+    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
 
     # Extract the linear and angular components of the generalized velocity
     omega_i = screw_angular(u_i)
@@ -411,18 +411,18 @@ def _build_nonlinear_generalized_force(
 @wp.kernel
 def _build_generalized_free_velocity(
     # Inputs:
-    model_time_dt: wp.array[float32],
-    model_gravity_vector: wp.array[vec4f],
-    model_bodies_wid: wp.array[int32],
-    model_bodies_m_i: wp.array[float32],
-    model_bodies_inv_m_i: wp.array[float32],
-    state_bodies_u_i: wp.array[vec6f],
-    state_bodies_I_i: wp.array[mat33f],
-    state_bodies_inv_I_i: wp.array[mat33f],
-    state_bodies_w_e_i: wp.array[vec6f],
-    state_bodies_w_a_i: wp.array[vec6f],
+    model_time_dt: wp.array[wp.float32],
+    model_gravity_vector: wp.array[wp.vec4f],
+    model_bodies_wid: wp.array[wp.int32],
+    model_bodies_m_i: wp.array[wp.float32],
+    model_bodies_inv_m_i: wp.array[wp.float32],
+    state_bodies_u_i: wp.array[wp.spatial_vectorf],
+    state_bodies_I_i: wp.array[wp.mat33f],
+    state_bodies_inv_I_i: wp.array[wp.mat33f],
+    state_bodies_w_e_i: wp.array[wp.spatial_vectorf],
+    state_bodies_w_a_i: wp.array[wp.spatial_vectorf],
     # Outputs:
-    problem_u_f: wp.array[vec6f],
+    problem_u_f: wp.array[wp.spatial_vectorf],
 ):
     # Retrieve the body index as the thread index
     bid = wp.tid()
@@ -442,7 +442,7 @@ def _build_generalized_free_velocity(
     gv = model_gravity_vector[wid]
 
     # Extract the effective gravity vector
-    g = gv.w * vec3f(gv.x, gv.y, gv.z)
+    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
 
     # Extract the linear and angular components of the generalized velocity
     v_i = screw_linear(u_i)
@@ -464,12 +464,12 @@ def _build_generalized_free_velocity(
 @wp.kernel
 def _build_free_velocity_bias_joint_dynamics(
     # Inputs:
-    model_joints_wid: wp.array[int32],
-    model_joints_dynamic_cts_offset: wp.array[int32],
-    model_joints_dynamic_cts_offset_total_cts: wp.array[int32],
-    data_joints_dq_b_j: wp.array[float32],
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_dynamic_cts_offset: wp.array[wp.int32],
+    model_joints_dynamic_cts_offset_total_cts: wp.array[wp.int32],
+    data_joints_dq_b_j: wp.array[wp.float32],
     # Outputs:
-    problem_v_b: wp.array[float32],
+    problem_v_b: wp.array[wp.float32],
 ):
     # Retrieve the joint index as the thread index
     jid = wp.tid()
@@ -493,14 +493,14 @@ def _build_free_velocity_bias_joint_dynamics(
 @wp.kernel
 def _build_free_velocity_bias_joint_kinematics(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_joints_wid: wp.array[int32],
-    model_joints_kinematic_cts_offset: wp.array[int32],
-    model_joints_kinematic_cts_offset_total_cts: wp.array[int32],
-    data_joints_r_j: wp.array[float32],
+    model_time_inv_dt: wp.array[wp.float32],
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_kinematic_cts_offset: wp.array[wp.int32],
+    model_joints_kinematic_cts_offset_total_cts: wp.array[wp.int32],
+    data_joints_r_j: wp.array[wp.float32],
     problem_config: wp.array[DualProblemConfigStruct],
     # Outputs:
-    problem_v_b: wp.array[float32],
+    problem_v_b: wp.array[wp.float32],
 ):
     # Retrieve the joint index as the thread index
     jid = wp.tid()
@@ -532,17 +532,17 @@ def _build_free_velocity_bias_joint_kinematics(
 @wp.kernel
 def _build_free_velocity_bias_limits(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    data_info_limit_cts_group_offset: wp.array[int32],
-    limits_model_max: int32,
-    limits_model_num: wp.array[int32],
-    limits_wid: wp.array[int32],
-    limits_lid: wp.array[int32],
-    limits_r_q: wp.array[float32],
+    model_time_inv_dt: wp.array[wp.float32],
+    data_info_limit_cts_group_offset: wp.array[wp.int32],
+    limits_model_max: wp.int32,
+    limits_model_num: wp.array[wp.int32],
+    limits_wid: wp.array[wp.int32],
+    limits_lid: wp.array[wp.int32],
+    limits_r_q: wp.array[wp.float32],
     problem_config: wp.array[DualProblemConfigStruct],
-    problem_vio: wp.array[int32],
+    problem_vio: wp.array[wp.int32],
     # Outputs:
-    problem_v_b: wp.array[float32],
+    problem_v_b: wp.array[wp.float32],
 ):
     # Retrieve the limit index as the thread index
     tid = wp.tid()
@@ -575,21 +575,21 @@ def _build_free_velocity_bias_limits(
 @wp.kernel
 def _build_free_velocity_bias_contacts(
     # Inputs:
-    model_time_inv_dt: wp.array[float32],
-    model_info_contacts_offset: wp.array[int32],
-    data_info_contact_cts_group_offset: wp.array[int32],
-    contacts_model_max: int32,
-    contacts_model_num: wp.array[int32],
-    contacts_wid: wp.array[int32],
-    contacts_cid: wp.array[int32],
-    contacts_gapfunc: wp.array[vec4f],
-    contacts_material: wp.array[vec2f],
+    model_time_inv_dt: wp.array[wp.float32],
+    model_info_contacts_offset: wp.array[wp.int32],
+    data_info_contact_cts_group_offset: wp.array[wp.int32],
+    contacts_model_max: wp.int32,
+    contacts_model_num: wp.array[wp.int32],
+    contacts_wid: wp.array[wp.int32],
+    contacts_cid: wp.array[wp.int32],
+    contacts_gapfunc: wp.array[wp.vec4f],
+    contacts_material: wp.array[wp.vec2f],
     problem_config: wp.array[DualProblemConfigStruct],
-    problem_vio: wp.array[int32],
+    problem_vio: wp.array[wp.int32],
     # Outputs:
-    problem_v_b: wp.array[float32],
-    problem_v_i: wp.array[float32],
-    problem_mu: wp.array[float32],
+    problem_v_b: wp.array[wp.float32],
+    problem_v_i: wp.array[wp.float32],
+    problem_mu: wp.array[wp.float32],
 ):
     # Retrieve the contact index as the thread index
     tid = wp.tid()
@@ -663,17 +663,17 @@ def _build_free_velocity_bias_contacts(
 @wp.kernel
 def _build_free_velocity(
     # Inputs:
-    model_info_bodies_offset: wp.array[int32],
-    data_bodies_u_i: wp.array[vec6f],
-    jacobians_J_cts_offsets: wp.array[int32],
-    jacobians_J_cts_data: wp.array[float32],
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_u_f: wp.array[vec6f],
-    problem_v_b: wp.array[float32],
-    problem_v_i: wp.array[float32],
+    model_info_bodies_offset: wp.array[wp.int32],
+    data_bodies_u_i: wp.array[wp.spatial_vectorf],
+    jacobians_J_cts_offsets: wp.array[wp.int32],
+    jacobians_J_cts_data: wp.array[wp.float32],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_u_f: wp.array[wp.spatial_vectorf],
+    problem_v_b: wp.array[wp.float32],
+    problem_v_i: wp.array[wp.float32],
     # Outputs:
-    problem_v_f: wp.array[float32],
+    problem_v_f: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -710,7 +710,7 @@ def _build_free_velocity(
 
     # Buffers
     J_i = vec6f(0.0)
-    v_f_j = float32(0.0)
+    v_f_j = wp.float32(0.0)
 
     # Iterate over each body to accumulate velocity contributions
     for i in range(nb):
@@ -739,17 +739,17 @@ def _build_free_velocity(
 @wp.kernel
 def _build_free_velocity_sparse(
     # Inputs:
-    model_info_bodies_offset: wp.array[int32],
-    state_bodies_u_i: wp.array[vec6f],
-    jac_num_nzb: wp.array[int32],
-    jac_nzb_start: wp.array[int32],
-    jac_nzb_coords: wp.array2d[int32],
+    model_info_bodies_offset: wp.array[wp.int32],
+    state_bodies_u_i: wp.array[wp.spatial_vectorf],
+    jac_num_nzb: wp.array[wp.int32],
+    jac_nzb_start: wp.array[wp.int32],
+    jac_nzb_coords: wp.array2d[wp.int32],
     jac_nzb_values: wp.array[vec6f],
-    problem_vio: wp.array[int32],
-    problem_u_f: wp.array[vec6f],
-    problem_v_i: wp.array[float32],
+    problem_vio: wp.array[wp.int32],
+    problem_u_f: wp.array[wp.spatial_vectorf],
+    problem_v_i: wp.array[wp.float32],
     # Outputs:
-    problem_v_f: wp.array[float32],
+    problem_v_f: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, nzb_id = wp.tid()
@@ -776,7 +776,7 @@ def _build_free_velocity_sparse(
     epsilon_j = problem_v_i[thread_offset]
 
     # Buffers
-    v_f_j = float32(0.0)
+    v_f_j = wp.float32(0.0)
 
     # Iterate over each body to accumulate velocity contributions
     bid = jac_block_coord[1] // 6
@@ -799,14 +799,14 @@ def _build_free_velocity_sparse(
 def _build_dual_preconditioner_all_constraints(
     # Inputs:
     problem_config: wp.array[DualProblemConfigStruct],
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    problem_nl: wp.array[int32],
-    problem_D: wp.array[float32],
+    problem_dim: wp.array[wp.int32],
+    problem_mio: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_njc: wp.array[wp.int32],
+    problem_nl: wp.array[wp.int32],
+    problem_D: wp.array[wp.float32],
     # Outputs:
-    problem_P: wp.array[float32],
+    problem_P: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -850,8 +850,8 @@ def _build_dual_preconditioner_all_constraints(
             D_kk_2 = problem_D[mio + ncts * (tid + 2) + (tid + 2)]
             # Compute the effective diagonal entry
             # D_kk = (D_kk_0 + D_kk_1 + D_kk_2) / 3.0
-            # D_kk = wp.min(vec3f(D_kk_0, D_kk_1, D_kk_2))
-            D_kk = wp.max(vec3f(D_kk_0, D_kk_1, D_kk_2))
+            # D_kk = wp.min(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
+            D_kk = wp.max(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
             # Compute the corresponding Jacobi preconditioner entry
             P_k = wp.sqrt(1.0 / (wp.abs(D_kk) + FLOAT32_EPS))
             problem_P[vio + tid] = P_k
@@ -863,12 +863,12 @@ def _build_dual_preconditioner_all_constraints(
 def _build_dual_preconditioner_all_constraints_sparse(
     # Inputs:
     problem_config: wp.array[DualProblemConfigStruct],
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_njc: wp.array[int32],
-    problem_nl: wp.array[int32],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_njc: wp.array[wp.int32],
+    problem_nl: wp.array[wp.int32],
     # Outputs:
-    problem_P: wp.array[float32],
+    problem_P: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -909,8 +909,8 @@ def _build_dual_preconditioner_all_constraints_sparse(
             D_kk_2 = problem_P[vio + tid + 2]
             # Compute the effective diagonal entry
             # D_kk = (D_kk_0 + D_kk_1 + D_kk_2) / 3.0
-            # D_kk = wp.min(vec3f(D_kk_0, D_kk_1, D_kk_2))
-            D_kk = wp.max(vec3f(D_kk_0, D_kk_1, D_kk_2))
+            # D_kk = wp.min(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
+            D_kk = wp.max(wp.vec3f(D_kk_0, D_kk_1, D_kk_2))
             # Compute the corresponding Jacobi preconditioner entry
             P_k = wp.sqrt(1.0 / (wp.abs(D_kk) + FLOAT32_EPS))
             problem_P[vio + tid] = P_k
@@ -921,12 +921,12 @@ def _build_dual_preconditioner_all_constraints_sparse(
 @wp.kernel
 def _apply_dual_preconditioner_to_matrix(
     # Inputs:
-    problem_dim: wp.array[int32],
-    problem_mio: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_P: wp.array[float32],
+    problem_dim: wp.array[wp.int32],
+    problem_mio: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_P: wp.array[wp.float32],
     # Outputs:
-    X: wp.array[float32],
+    X: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -969,11 +969,11 @@ def _apply_dual_preconditioner_to_matrix(
 @wp.kernel
 def _apply_dual_preconditioner_to_vector(
     # Inputs:
-    problem_dim: wp.array[int32],
-    problem_vio: wp.array[int32],
-    problem_P: wp.array[float32],
+    problem_dim: wp.array[wp.int32],
+    problem_vio: wp.array[wp.int32],
+    problem_P: wp.array[wp.float32],
     # Outputs:
-    x: wp.array[float32],
+    x: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     wid, tid = wp.tid()
@@ -1072,21 +1072,15 @@ class DualProblem:
         by calling the `finalize()` method at a later point.
 
         Args:
-            model (ModelKamino, optional):
-                The model to build the dual problem for.
-            contacts (ContactsKamino, optional):
-                The contacts container to use for the dual problem.
-            jacobians (SparseSystemJacobians | DenseSystemJacobians, optional):
-                The constraints Jacobians for this model. Must be provided if model is provided.
-            solver (LinearSolverType, optional):
-                The linear solver to use for the Delassus operator. Defaults to None.
-            config (List[DualProblem.Config] | DualProblem.Config, optional):
-                The config for the dual problem.\n
+            model: The model to build the dual problem for.
+            contacts: The contacts container to use for the dual problem.
+            jacobians: The constraints Jacobians for this model. Must be provided if model is provided.
+            solver: The linear solver to use for the Delassus operator. Defaults to None.
+            config: The config for the dual problem.
                 If a single `DualProblem.Config` object is provided, it will be replicated for all worlds.
                 Defaults to `None`, indicating that default config will be used for all worlds.
-            compute_h (bool, optional):
-                Set to `True` to enable the computation of the nonlinear
-                generalized forces vectors in construction of the dual problem.\n
+            compute_h: Set to `True` to enable the computation of the nonlinear
+                generalized forces vectors in construction of the dual problem.
                 Defaults to `False`.
         """
         # Ensure Jacobians are given if model is provided.
@@ -1205,22 +1199,16 @@ class DualProblem:
         for the given model, limits, contacts and Jacobians.
 
         Args:
-            model (ModelKamino):
-                The model to build the dual problem for.
-            jacobians (SparseSystemJacobians | DenseSystemJacobians):
-                The constraints Jacobians for this model.
-            contacts (ContactsKamino, optional):
-                The contacts container to use for the dual problem.
-            solver (LinearSolverType, optional):
-                The linear solver to use for the Delassus operator.\n
+            model: The model to build the dual problem for.
+            jacobians: The constraints Jacobians for this model.
+            contacts: The contacts container to use for the dual problem.
+            solver: The linear solver to use for the Delassus operator.
                 Defaults to `None`.
-            config (List[DualProblem.Config] | DualProblem.Config, optional):
-                The config for the dual problem.\n
+            config: The config for the dual problem.
                 If a single `DualProblem.Config` object is provided, it will be replicated for all worlds.
                 Defaults to `None`, indicating that default config will be used for all worlds.
-            compute_nonlinear_forces (bool, optional):
-                Set to `True` to enable the computation of the nonlinear
-                generalized forces vectors in construction of the dual problem.\n
+            compute_h: Set to `True` to enable the computation of the nonlinear
+                generalized forces vectors in construction of the dual problem.
                 Defaults to `False`.
         """
         # Ensure the model is valid
@@ -1274,7 +1262,7 @@ class DualProblem:
             self._delassus.set_regularization(
                 wp.zeros(
                     (model.size.sum_of_max_total_cts,),
-                    dtype=float32,
+                    dtype=wp.float32,
                     device=self._device,
                 )
             )
@@ -1312,13 +1300,15 @@ class DualProblem:
                     D=None,
                     # Allocate new memory for the remaining dual problem quantities
                     config=wp.array([c.to_struct() for c in self.config], dtype=DualProblemConfigStruct),
-                    h=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=vec6f) if self._compute_h else None,
-                    u_f=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=vec6f),
-                    v_b=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=float32),
-                    v_i=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=float32),
-                    v_f=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=float32),
-                    mu=wp.zeros(shape=(model_max_contacts_host,), dtype=float32),
-                    P=wp.ones(shape=(self._delassus.sum_of_max_dims,), dtype=float32),
+                    h=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf)
+                    if self._compute_h
+                    else None,
+                    u_f=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf),
+                    v_b=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
+                    v_i=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
+                    v_f=wp.zeros(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
+                    mu=wp.zeros(shape=(model_max_contacts_host,), dtype=wp.float32),
+                    P=wp.ones(shape=(self._delassus.sum_of_max_dims,), dtype=wp.float32),
                 )
                 # Connect Delassus preconditioner to data array
                 self._delassus.set_preconditioner(self._data.P)
@@ -1344,13 +1334,15 @@ class DualProblem:
                     D=self._delassus.D,
                     # Allocate new memory for the remaining dual problem quantities
                     config=wp.array([c.to_struct() for c in self.config], dtype=DualProblemConfigStruct),
-                    h=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=vec6f) if self._compute_h else None,
-                    u_f=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=vec6f),
-                    v_b=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=float32),
-                    v_i=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=float32),
-                    v_f=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=float32),
-                    mu=wp.zeros(shape=(model_max_contacts_host,), dtype=float32),
-                    P=wp.ones(shape=(self._delassus.num_maxdims,), dtype=float32),
+                    h=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf)
+                    if self._compute_h
+                    else None,
+                    u_f=wp.zeros(shape=(model.size.sum_of_num_bodies,), dtype=wp.spatial_vectorf),
+                    v_b=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
+                    v_i=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
+                    v_f=wp.zeros(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
+                    mu=wp.zeros(shape=(model_max_contacts_host,), dtype=wp.float32),
+                    P=wp.ones(shape=(self._delassus.num_maxdims,), dtype=wp.float32),
                 )
 
     def zero(self):
@@ -1724,7 +1716,7 @@ class DualProblem:
             device=self.device,
         )
 
-    def _apply_dual_preconditioner_to_matrix(self, X: wp.array):
+    def _apply_dual_preconditioner_to_matrix(self, X: wp.array[wp.float32]):
         """
         Applies the diagonal preconditioner 'P' to a given matrix.
         """
@@ -1743,7 +1735,7 @@ class DualProblem:
             device=self.device,
         )
 
-    def _apply_dual_preconditioner_to_vector(self, x: wp.array):
+    def _apply_dual_preconditioner_to_vector(self, x: wp.array[wp.float32]):
         """
         Applies the diagonal preconditioner 'P' to a given vector.
         """

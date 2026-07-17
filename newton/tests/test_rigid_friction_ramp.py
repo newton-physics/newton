@@ -98,6 +98,7 @@ STOPPING_PATCH_HX = 5.0  # comfortably exceeds d_stop(mu_min) ~ 1.02 m
 STOPPING_PATCH_HY = 0.6
 STOPPING_PATCH_HZ = 0.05
 STOPPING_BOX_PITCH_Y = 5.0
+STOPPING_SETTLE_FRAMES = 30
 STOPPING_V_FINAL_MAX = 0.05  # m/s - sanity bound: box must have come to rest
 
 _ROW_COLORS = (
@@ -110,7 +111,9 @@ _ROW_COLORS = (
 
 
 def build_friction_grid(device, mus, angles_deg):
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for row, mu in enumerate(mus):
@@ -119,6 +122,7 @@ def build_friction_grid(device, mus, angles_deg):
         cfg.ke = 1.0e5
         cfg.kd = 1.0e3
         cfg.kf = 0.0  # validate Coulomb friction only — disable viscous component
+        cfg.gap = 0.0
         cfg.color = _ROW_COLORS[row % len(_ROW_COLORS)]
 
         row_box_ids = []
@@ -216,7 +220,9 @@ def build_stopping_distance_scene(device):
     give effective mu = (mu_box + mu_patch) / 2. Per-box patches keep the
     effective mu equal to the per-box value.
     """
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for i, mu in enumerate(STOPPING_MUS):
@@ -225,6 +231,7 @@ def build_stopping_distance_scene(device):
         cfg.ke = 1.0e5
         cfg.kd = 0.0
         cfg.kf = 0.0
+        cfg.gap = 0.0
         cfg.color = _ROW_COLORS[i % len(_ROW_COLORS)]
 
         patch_y = float(i * STOPPING_BOX_PITCH_Y)
@@ -259,10 +266,10 @@ def build_stopping_distance_scene(device):
 def test_friction_stopping_distance(test, device, solver_fn, rel_tol, v_final_max):
     """Kinetic-friction oracle: a sliding box stops at d = v0^2 / (2 mu g).
 
-    Three boxes at mu in STOPPING_MUS each start with v0 along world-X on a
-    matching ground patch. Run for 1.5 * t_stop(mu_min) so every box has come
-    to rest for Coulomb-cone solvers, then compare measured stopping distance
-    against the analytical value with per-solver bounds.
+    Three boxes at mu in STOPPING_MUS settle on matching ground patches, then
+    start with v0 along world-X. Run for 1.5 * t_stop(mu_min) so every box has
+    come to rest for Coulomb-cone solvers, then compare measured stopping
+    distance against the analytical value with per-solver bounds.
     """
     model, box_ids = build_stopping_distance_scene(device)
     solver = solver_fn(model)
@@ -273,10 +280,13 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, v_final_ma
     is_mujoco = isinstance(solver, newton.solvers.SolverMuJoCo)
     contacts = model.contacts() if not is_mujoco else None
 
+    # Establish resting contacts so the measurement excludes landing impulses.
+    state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, STOPPING_SETTLE_FRAMES)
     initial_q = state_0.body_q.numpy().copy()
 
     qd = state_0.body_qd.numpy()
     for bid in box_ids:
+        qd[bid] = 0.0
         qd[bid, 0] = STOPPING_V0  # body_qd: [v_lin (0:3), omega (3:6)]
     state_0.body_qd.assign(qd)
 

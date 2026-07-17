@@ -124,6 +124,7 @@ def solve_particle_shape_contacts(
     body_com: wp.array[wp.vec3],
     body_m_inv: wp.array[float],
     body_I_inv: wp.array[wp.mat33],
+    body_flags: wp.array[wp.int32],
     shape_body: wp.array[int],
     shape_material_mu: wp.array[float],
     particle_mu: float,
@@ -151,8 +152,16 @@ def solve_particle_shape_contacts(
     body_index = shape_body[shape_index]
     particle_index = contact_particle[tid]
 
-    if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
+    particle_flag = particle_flags[particle_index]
+    if (particle_flag & ParticleFlags.ACTIVE) == 0:
         return
+    if (particle_flag & ParticleFlags.PROXY) != 0:
+        if body_index < 0:
+            return
+        if (body_flags[body_index] & int(BodyFlags.PROXY)) != 0:
+            return
+        if body_m_inv[body_index] == 0.0:
+            return
 
     px = particle_x[particle_index]
     pv = particle_v[particle_index]
@@ -251,8 +260,10 @@ def solve_particle_particle_contacts(
     if i == -1:
         # hash grid has not been built yet
         return
-    if (particle_flags[i] & ParticleFlags.ACTIVE) == 0:
+    particle_flag = particle_flags[i]
+    if (particle_flag & ParticleFlags.ACTIVE) == 0:
         return
+    is_proxy = particle_flag & ParticleFlags.PROXY
 
     x = particle_x[i]
     v = particle_v[i]
@@ -266,7 +277,12 @@ def solve_particle_particle_contacts(
     delta = wp.vec3(0.0)
 
     while wp.hash_grid_query_next(query, index):
-        if (particle_flags[index] & ParticleFlags.ACTIVE) != 0 and index != i:
+        neighbor_flag = particle_flags[index]
+        if (
+            (neighbor_flag & ParticleFlags.ACTIVE) != 0
+            and (is_proxy == 0 or ((neighbor_flag & ParticleFlags.PROXY) == 0 and particle_invmass[index] > 0.0))
+            and index != i
+        ):
             # compute distance to point
             n = x - particle_x[index]
             d = wp.length(n)
@@ -276,7 +292,7 @@ def solve_particle_particle_contacts(
             w2 = particle_invmass[index]
             denom = w1 + w2
 
-            if err <= k_cohesion and denom > 0.0:
+            if err <= k_cohesion and denom > 0.0 and d > 0.0:
                 n = n / d
                 vrel = v - particle_v[index]
 
@@ -2560,8 +2576,6 @@ def apply_rigid_restitution(
     contact_point1: wp.array[wp.vec3],
     contact_offset0: wp.array[wp.vec3],
     contact_offset1: wp.array[wp.vec3],
-    contact_thickness0: wp.array[float],
-    contact_thickness1: wp.array[float],
     contact_inv_weight: wp.array[float],
     gravity: wp.array[wp.vec3],
     dt: float,
@@ -2634,7 +2648,7 @@ def apply_rigid_restitution(
     bx_b = contact_surface_point(X_wb_b_prev, contact_point1[tid], contact_offset1[tid])
 
     n = contact_normal[tid]
-    d = contact_surface_separation(bx_a, bx_b, n, contact_thickness0[tid], contact_thickness1[tid])
+    d = wp.dot(n, bx_b - bx_a)
     if d >= 0.0:
         return
 

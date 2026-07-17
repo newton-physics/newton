@@ -14,6 +14,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.solvers.xpbd.kernels import apply_rigid_restitution
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -146,6 +147,26 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
     )
 
 
+def test_optional_control_and_contacts(test, device):
+    """Test that XPBD accepts omitted control and contact data.
+
+    The ground-plane shape catches attempts to access a missing contact buffer,
+    while the falling particle verifies that non-contact integration still runs.
+    """
+    builder = newton.ModelBuilder(up_axis="Y")
+    builder.add_particle(pos=(0.0, 1.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.1)
+    builder.add_ground_plane()
+
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverXPBD(model)
+    state_in = model.state()
+    state_out = model.state()
+
+    solver.step(state_in, state_out, control=None, contacts=None, dt=1.0 / 60.0)
+
+    test.assertLess(float(state_out.particle_q.numpy()[0, 1]), 1.0)
+
+
 def test_particle_particle_friction_with_relative_motion(test, device):
     """
     Test that friction DOES affect particles with different tangential velocities.
@@ -222,6 +243,81 @@ def test_particle_particle_friction_with_relative_motion(test, device):
         slip_with_friction,
         slip_no_friction * 0.95,
         msg="With mu>0, particle-particle friction should reduce tangential slip over one step vs mu=0 baseline",
+    )
+
+
+def test_xpbd_particle_particle_contact_nan_guard(test, device):
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    particle_radius = 0.5
+    builder.add_particles(
+        pos=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+        vel=[wp.vec3(0.0), wp.vec3(0.0)],
+        mass=[1.0, 1.0],
+        radius=[particle_radius, particle_radius],
+    )
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    model.particle_mu = 1.0
+    model.particle_cohesion = 0.0
+
+    solver = newton.solvers.SolverXPBD(model=model, iterations=1)
+    state0 = model.state()
+    state1 = model.state()
+    contacts = model.contacts()
+
+    solver.step(state0, state1, model.control(), contacts, 1.0 / 60.0)
+
+    test.assertTrue(
+        np.all(np.isfinite(state1.particle_q.numpy())),
+        msg="Exact-overlap particle contact must not write non-finite particle positions.",
+    )
+    test.assertTrue(
+        np.all(np.isfinite(state1.particle_qd.numpy())),
+        msg="Exact-overlap particle contact must not write non-finite particle velocities.",
+    )
+
+
+def test_xpbd_particle_particle_tiny_separation_contact_remains_active(test, device):
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    particle_radius = 0.5
+    separation = 5.0e-9
+    builder.add_particles(
+        pos=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(separation, 0.0, 0.0)],
+        vel=[wp.vec3(0.0), wp.vec3(0.0)],
+        mass=[1.0, 1.0],
+        radius=[particle_radius, particle_radius],
+    )
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    model.particle_mu = 1.0
+    model.particle_cohesion = 0.0
+
+    solver = newton.solvers.SolverXPBD(model=model, iterations=1)
+    state0 = model.state()
+    state1 = model.state()
+    contacts = model.contacts()
+
+    solver.step(state0, state1, model.control(), contacts, 1.0 / 60.0)
+
+    particle_q = state1.particle_q.numpy()
+    final_separation = float(np.linalg.norm(particle_q[1] - particle_q[0]))
+
+    test.assertTrue(
+        np.all(np.isfinite(particle_q)),
+        msg="Tiny nonzero-separation particle contact must not write non-finite particle positions.",
+    )
+    test.assertTrue(
+        np.all(np.isfinite(state1.particle_qd.numpy())),
+        msg="Tiny nonzero-separation particle contact must not write non-finite particle velocities.",
+    )
+    test.assertGreater(
+        final_separation,
+        0.1,
+        msg="Tiny but nonzero particle separation has a valid normal and should keep the contact active.",
     )
 
 
@@ -367,6 +463,67 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
         7.0,
         msg=f"Particle should receive restitution impulse from the moving body (expected ~10 m/s, got {float(vel[0, 1]):.2f})",
     )
+
+
+def test_rigid_restitution_surface_gate_does_not_double_count_thickness(test, device):
+    body_q = wp.array([wp.transform_identity()], dtype=wp.transform, device=device)
+    body_qd_prev = wp.array([wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
+    body_qd = wp.array([wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0)], dtype=wp.spatial_vector, device=device)
+    body_com = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+    body_m_inv = wp.array([1.0], dtype=float, device=device)
+    body_I_inv = wp.array(
+        [wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)],
+        dtype=wp.mat33,
+        device=device,
+    )
+    body_world = wp.array([0], dtype=wp.int32, device=device)
+
+    shape_body = wp.array([0], dtype=wp.int32, device=device)
+    contact_count = wp.array([1], dtype=wp.int32, device=device)
+    contact_normal = wp.array([wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device)
+    contact_shape0 = wp.array([0], dtype=wp.int32, device=device)
+    contact_shape1 = wp.array([-1], dtype=wp.int32, device=device)
+    restitution = wp.array([1.0], dtype=float, device=device)
+
+    contact_point0 = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+    contact_offset0 = wp.array([wp.vec3(0.0, 0.05, 0.0)], dtype=wp.vec3, device=device)
+    contact_point1 = wp.array([wp.vec3(0.0, 0.06, 0.0)], dtype=wp.vec3, device=device)
+    contact_offset1 = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+    contact_inv_weight = wp.array([1.0], dtype=float, device=device)
+    gravity = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+    deltas = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+
+    wp.launch(
+        apply_rigid_restitution,
+        dim=1,
+        inputs=[
+            body_q,
+            body_qd,
+            body_q,
+            body_qd_prev,
+            body_com,
+            body_m_inv,
+            body_I_inv,
+            body_world,
+            shape_body,
+            contact_count,
+            contact_normal,
+            contact_shape0,
+            contact_shape1,
+            restitution,
+            contact_point0,
+            contact_point1,
+            contact_offset0,
+            contact_offset1,
+            contact_inv_weight,
+            gravity,
+            1.0 / 60.0,
+        ],
+        outputs=[deltas],
+        device=device,
+    )
+
+    np.testing.assert_allclose(deltas.numpy()[0], np.zeros(6), atol=1.0e-6)
 
 
 def test_articulation_contact_drift(test, device):
@@ -756,7 +913,7 @@ def _build_single_body_pendulum(joint_kind: str, parent_kinematic: bool, gravity
     the joint anchor along -Z, so steady-state requires the joint to support
     its weight along +Z.
     """
-    builder = newton.ModelBuilder(gravity=-gravity, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
     if parent_kinematic:
@@ -908,7 +1065,7 @@ def test_xpbd_parent_force_chain_weight_propagation(test, device):
     """
     gravity = 9.81
 
-    builder = newton.ModelBuilder(gravity=-gravity, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
     link0 = builder.add_link()
@@ -1055,7 +1212,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
 
     # add_link (NOT add_body) so we control the joint topology and avoid
     # the implicit free joints that ``add_body`` would create.
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
     body_1 = builder.add_link()
@@ -1155,7 +1312,7 @@ def test_xpbd_parent_f_consistent_across_solvers(test, device):
     """
 
     def _build():
-        builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
         builder.request_state_attributes("body_parent_f")
         link = builder.add_link()
         builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
@@ -1211,7 +1368,7 @@ def _build_two_body_one_joint(joint_kind: str, device):
     impulse exchanged is at the inner joint, so Newton's 2nd law on the
     child becomes an exact algebraic identity against ``body_parent_f``.
     """
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
     parent = builder.add_link()
     builder.add_shape_box(parent, hx=0.2, hy=0.1, hz=0.1)
@@ -1422,8 +1579,32 @@ add_function_test(
 
 add_function_test(
     TestSolverXPBD,
+    "test_optional_control_and_contacts",
+    test_optional_control_and_contacts,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
     "test_particle_particle_friction_with_relative_motion",
     test_particle_particle_friction_with_relative_motion,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_particle_particle_contact_nan_guard",
+    test_xpbd_particle_particle_contact_nan_guard,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_xpbd_particle_particle_tiny_separation_contact_remains_active",
+    test_xpbd_particle_particle_tiny_separation_contact_remains_active,
     devices=devices,
     check_output=False,
 )
@@ -1441,6 +1622,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_shape_restitution_accounts_for_body_velocity",
     test_particle_shape_restitution_accounts_for_body_velocity,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_rigid_restitution_surface_gate_does_not_double_count_thickness",
+    test_rigid_restitution_surface_gate_does_not_double_count_thickness,
     devices=devices,
     check_output=False,
 )

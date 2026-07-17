@@ -20,15 +20,19 @@ material properties that can be queried at simulation runtime. It includes:
 - :class:`MaterialPairsModel`: A container to hold and manage per-material-pair properties.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 
 import numpy as np
 import warp as wp
 
+from .....core.types import override
 from ..utils import logger as msg
 from .math import tril_index
-from .types import Descriptor, float32, int32, override
+from .types import Descriptor
 
 ###
 # Module interface
@@ -43,6 +47,7 @@ __all__ = [
     "MaterialPairProperties",
     "MaterialPairsModel",
     "MaterialsModel",
+    "make_get_mixed_material_pair_property",
 ]
 
 ###
@@ -51,7 +56,7 @@ __all__ = [
 
 DEFAULT_DENSITY = 1000.0
 """
-The global default density for materials, in kg/m^3.\n
+The global default density for materials, in kg/m^3.
 Equals ``1000.0`` kg/m^3.
 """
 
@@ -72,7 +77,7 @@ Equals ``0.7``.
 ###
 
 
-class MaterialMuxMode(IntEnum):
+class MaterialMixMode(IntEnum):
     """
     An enumeration defining the heuristic modes for deriving
     pairwise material properties from individual materials.
@@ -84,11 +89,32 @@ class MaterialMuxMode(IntEnum):
     AVERAGE = 0
     """Pairwise property is the average of the two material properties."""
 
-    MAX = 1
+    MULTIPLY = 1
+    """Pairwise property is the product of the two material properties."""
+
+    MAX = 2
     """Pairwise property is the maximum of the two material properties."""
 
-    MIN = 2
+    MIN = 3
     """Pairwise property is the minimum of the two material properties."""
+
+    @classmethod
+    def from_string(cls, s: str) -> MaterialMixMode:
+        """Converts a string to a MaterialMixMode enum value."""
+        try:
+            return cls[s.upper()]
+        except KeyError as e:
+            raise ValueError(f"Invalid MaterialMixMode: {s}. Valid options are: {[e.name for e in cls]}") from e
+
+    @override
+    def __str__(self):
+        """Returns a string representation of the MaterialMixMode."""
+        return f"MaterialMixMode.{self.name} ({self.value})"
+
+    @override
+    def __repr__(self):
+        """Returns a string representation of the MaterialMixMode."""
+        return self.__str__()
 
 
 @dataclass
@@ -103,27 +129,19 @@ class MaterialDescriptor(Descriptor):
     currently do not support material-pair definitions.
 
     Attributes:
-        name (`str`):
-            The name of the material.
-        uid (`str`):
-            The unique identifier (UUID) of the material.
-        density (`float`):
-            The density of the material, in kg/m^3.\n
-            Defaults to the global default of ``1000.0`` kg/m^3.
-        restitution (`float`):
-            The coefficient of restitution, according to the Newtonian impact model.\n
+        name: The name of the material.
+        uid: The unique identifier (UUID) of the material.
+        density: The density of the material [kg/m³].
+            Defaults to the global default of ``1000.0`` kg/m³.
+        restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
-        static_friction (`float`):
-            The coefficient of static friction, according to the Coulomb friction model.\n
+        static_friction: The coefficient of static friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
-        dynamic_friction (`float`):
-            The coefficient of dynamic friction, according to the Coulomb friction model.\n
+        dynamic_friction: The coefficient of dynamic friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
-        wid (`int`):
-            Index of the world to which the material belongs.\n
+        wid: Index of the world to which the material belongs.
             Defaults to `-1`, indicating that the material has not yet been added to a world.
-        mid (`int`):
-            Index of the material w.r.t. the world.\n
+        mid: Index of the material w.r.t. the world.
             Defaults to `-1`, indicating that the material has not yet been added to a world.
     """
 
@@ -133,25 +151,25 @@ class MaterialDescriptor(Descriptor):
 
     density: float = DEFAULT_DENSITY
     """
-    The density of the material, in kg/m^3.\n
+    The density of the material, in kg/m^3.
     Defaults to the global default of ``1000.0`` kg/m^3.
     """
 
     restitution: float = DEFAULT_RESTITUTION
     """
-    The coefficient of restitution, according to the Newtonian impact model.\n
+    The coefficient of restitution, according to the Newtonian impact model.
     Defaults to the global default of ``0.0``.
     """
 
     static_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of static friction, according to the isotropic Coulomb friction model.\n
+    The coefficient of static friction, according to the isotropic Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
     dynamic_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of dynamic friction, according to the isotropicCoulomb friction model.\n
+    The coefficient of dynamic friction, according to the isotropic Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
@@ -161,13 +179,13 @@ class MaterialDescriptor(Descriptor):
 
     wid: int = -1
     """
-    Index of the world to which the material belongs.\n
+    Index of the world to which the material belongs.
     Defaults to `-1`, indicating that the material has not yet been added to a world.
     """
 
     mid: int = -1
     """
-    Index of the material w.r.t. the world.\n
+    Index of the material w.r.t. the world.
     Defaults to `-1`, indicating that the material has not yet been added to a world.
     """
 
@@ -194,32 +212,29 @@ class MaterialPairProperties:
     A container to represent the properties of a pair of materials, including friction and restitution coefficients.
 
     Attributes:
-        restitution (`float`):
-            The coefficient of restitution, according to the Newtonian impact model.\n
+        restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
-        static_friction (`float`):
-            The coefficient of static surface friction, according to the Coulomb friction model.\n
+        static_friction: The coefficient of static surface friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
-        dynamic_friction (`float`):
-            The coefficient of dynamic surface friction, according to the Coulomb friction model.\n
+        dynamic_friction: The coefficient of dynamic surface friction, according to the Coulomb friction model.
             Defaults to the global default of ``0.7``.
     """
 
     restitution: float = DEFAULT_RESTITUTION
     """
-    The coefficient of restitution, according to the Newtonian impact model.\n
+    The coefficient of restitution, according to the Newtonian impact model.
     Defaults to the global default of ``0.0``.
     """
 
     static_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of static surface friction, according to the Coulomb friction model.\n
+    The coefficient of static surface friction, according to the Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
     dynamic_friction: float = DEFAULT_FRICTION
     """
-    The coefficient of dynamic surface friction, according to the Coulomb friction model.\n
+    The coefficient of dynamic surface friction, according to the Coulomb friction model.
     Defaults to the global default of ``0.7``.
     """
 
@@ -238,46 +253,44 @@ class MaterialsModel:
     to the material index (`mid`) defined by the MaterialManager.
 
     Attributes:
-        num_pairs (int):
-            Total number of material pairs in the model.
-        restitution (wp.array):
-            Array of restitution coefficients for each registered material.\n
-            Shape of ``(num_materials, num_materials)`` and type :class:`float`.
-        static_friction (wp.array):
-            Array of static friction coefficients for each registered material.\n
-            Shape of ``(num_materials, num_materials)`` and type :class:`float`.
-        dynamic_friction (wp.array):
-            Array of dynamic friction coefficients for each registered material.\n
-            Shape of ``(num_materials, num_materials)`` and type :class:`float`.
+        num_materials: Total number of materials represented in the model.
+        density: Array of material density values of each registered material.
+            Shape of ``(num_materials,)``.
+        restitution: Array of restitution coefficients for each registered material.
+            Shape of ``(num_materials,)``.
+        static_friction: Array of static friction coefficients for each registered material.
+            Shape of ``(num_materials,)``.
+        dynamic_friction: Array of dynamic friction coefficients for each registered material.
+            Shape of ``(num_materials,)``.
     """
 
     num_materials: int = 0
     """Total number of materials represented in the model."""
 
-    density: wp.array | None = None
+    density: wp.array[wp.float32] | None = None
     """
-    Array of material density values of each registered material.\n
-    Shape of ``(num_materials,)`` and type :class:`float`.
-    """
-
-    restitution: wp.array | None = None
-    """
-    Array of restitution coefficients for each registered material.\n
-    Shape of ``(num_materials,)`` and type :class:`float`.
+    Array of material density values of each registered material.
+    Shape of ``(num_materials,)``.
     """
 
-    # TODO: Switch to vec3f for anisotropic+torsional friction?
-    static_friction: wp.array | None = None
+    restitution: wp.array[wp.float32] | None = None
     """
-    Array of static friction coefficients for each registered material.\n
-    Shape of ``(num_materials,)`` and type :class:`float`.
+    Array of restitution coefficients for each registered material.
+    Shape of ``(num_materials,)``.
     """
 
-    # TODO: Switch to vec3f for anisotropic+torsional friction?
-    dynamic_friction: wp.array | None = None
+    # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
+    static_friction: wp.array[wp.float32] | None = None
     """
-    Array of dynamic friction coefficients for each registered material.\n
-    Shape of ``(num_materials,)`` and type :class:`float`.
+    Array of static friction coefficients for each registered material.
+    Shape of ``(num_materials,)``.
+    """
+
+    # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
+    dynamic_friction: wp.array[wp.float32] | None = None
+    """
+    Array of dynamic friction coefficients for each registered material.
+    Shape of ``(num_materials,)``.
     """
 
 
@@ -292,40 +305,36 @@ class MaterialPairsModel:
     `i,j` correspond to the material indices (`mid`) defined by the MaterialManager.
 
     Attributes:
-        num_material_pairs (int):
-            Total number of material pairs represented in the model.
-        restitution (wp.array):
-            Lower-triangular matrix of material-pair restitution coefficients.\n
-            Shape of ``(num_material_pairs,)`` and type :class:`float`.
-        static_friction (wp.array):
-            Lower-triangular matrix of material-pair static friction coefficients.\n
-            Shape of ``(num_material_pairs,)`` and type :class:`float`.
-        dynamic_friction (wp.array):
-            Lower-triangular matrix of material-pair dynamic friction coefficients.\n
-            Shape of ``(num_material_pairs,)`` and type :class:`float`.
+        num_material_pairs: Total number of material pairs represented in the model.
+        restitution: Lower-triangular matrix of material-pair restitution coefficients.
+            Shape of ``(num_material_pairs,)``.
+        static_friction: Lower-triangular matrix of material-pair static friction coefficients.
+            Shape of ``(num_material_pairs,)``.
+        dynamic_friction: Lower-triangular matrix of material-pair dynamic friction coefficients.
+            Shape of ``(num_material_pairs,)``.
     """
 
     num_material_pairs: int = 0
     """Total number of material pairs represented in the model."""
 
-    restitution: wp.array | None = None
+    restitution: wp.array[wp.float32] | None = None
     """
-    Lower-triangular matrix of material-pair restitution coefficients.\n
-    Shape of ``(num_material_pairs,)`` and type :class:`float`.
-    """
-
-    # TODO: Switch to vec3f for anisotropic+torsional friction?
-    static_friction: wp.array | None = None
-    """
-    Lower-triangular matrix of material-pair static friction coefficients.\n
-    Shape of ``(num_material_pairs,)`` and type :class:`float`.
+    Lower-triangular matrix of material-pair restitution coefficients.
+    Shape of ``(num_material_pairs,)``.
     """
 
-    # TODO: Switch to vec3f for anisotropic+torsional friction?
-    dynamic_friction: wp.array | None = None
+    # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
+    static_friction: wp.array[wp.float32] | None = None
     """
-    Lower-triangular matrix of material-pair dynamic friction coefficients.\n
-    Shape of ``(num_material_pairs,)`` and type :class:`float`.
+    Lower-triangular matrix of material-pair static friction coefficients.
+    Shape of ``(num_material_pairs,)``.
+    """
+
+    # TODO: Switch to wp.vec3f for anisotropic+torsional friction?
+    dynamic_friction: wp.array[wp.float32] | None = None
+    """
+    Lower-triangular matrix of material-pair dynamic friction coefficients.
+    Shape of ``(num_material_pairs,)``.
     """
 
 
@@ -336,112 +345,180 @@ class MaterialPairsModel:
 
 @wp.func
 def material_average(
-    value1: float32,
-    value2: float32,
-) -> float32:
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
     """
     Computes the average of two material property values.
 
     Args:
-        value1 (float32): The first material property value.
-        value2 (float32): The second material property value.
+        value1: The first material property value.
+        value2: The second material property value.
 
     Returns:
-        float32: The average of the two material property values.
+        The average of the two material property values.
     """
     return 0.5 * (value1 + value2)
 
 
 @wp.func
+def material_multiply(
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
+    """
+    Computes the product of two material property values.
+
+    Args:
+        value1: The first material property value.
+        value2: The second material property value.
+
+    Returns:
+        The product of the two material property values.
+    """
+    return value1 * value2
+
+
+@wp.func
 def material_max(
-    value1: float32,
-    value2: float32,
-) -> float32:
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
     """
     Computes the maximum of two material property values.
 
     Args:
-        value1 (float32): The first material property value.
-        value2 (float32): The second material property value.
+        value1: The first material property value.
+        value2: The second material property value.
 
     Returns:
-        float32: The maximum of the two material property values.
+        The maximum of the two material property values.
     """
     return wp.max(value1, value2)
 
 
 @wp.func
 def material_min(
-    value1: float32,
-    value2: float32,
-) -> float32:
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
     """
-    Computes the maximinimum of two material property values.
+    Computes the minimum of two material property values.
 
     Args:
-        value1 (float32): The first material property value.
-        value2 (float32): The second material property value.
+        value1: The first material property value.
+        value2: The second material property value.
 
     Returns:
-        float32: The minimum of the two material property values.
+        The minimum of the two material property values.
     """
     return wp.min(value1, value2)
 
 
-def make_get_material_pair_properties(muxmode: MaterialMuxMode = MaterialMuxMode.MAX):
+def get_material_mixing_function(
+    mixmode: MaterialMixMode = MaterialMixMode.AVERAGE,
+) -> Callable[[wp.float32, wp.float32], wp.float32]:
     """
-    Generates a Warp function to retrieve material pair
-    properties based on the specified muxing mode.
-
-    Args:
-        muxmode (MaterialMuxMode): The muxing mode to use for material pair properties.
-
-    Returns:
-        function: A Warp function that retrieves material pair properties.
+    Returns the appropriate material mix function based on the specified mixing mode.
     """
-    # Select the appropriate muxing function based on the muxing mode
-    match muxmode:
-        case MaterialMuxMode.AVERAGE:
+    # Select the appropriate mixing function based on the mixing mode
+    match mixmode:
+        case MaterialMixMode.AVERAGE:
             mix_func = material_average
-        case MaterialMuxMode.MAX:
+        case MaterialMixMode.MULTIPLY:
+            mix_func = material_multiply
+        case MaterialMixMode.MAX:
             mix_func = material_max
-        case MaterialMuxMode.MIN:
+        case MaterialMixMode.MIN:
             mix_func = material_min
         case _:
-            raise ValueError(f"Unsupported material muxing mode: {muxmode}")
+            raise ValueError(f"Unsupported material mixing mode: {mixmode}")
+
+    # Return the selected mixing function
+    return mix_func
+
+
+def make_get_mixed_material_pair_property(mixmode: MaterialMixMode = MaterialMixMode.AVERAGE):
+    """
+    Generates a Warp function to retrieve material pair
+    property based on the specified mixing mode.
+
+    Args:
+        mixmode: The mixing mode to use for material pair property.
+
+    Returns:
+        A Warp function that retrieves material pair property.
+    """
+    # Select the appropriate mixing function based on the mixing mode
+    mix_func = get_material_mixing_function(mixmode)
+
+    # Define the Warp function to retrieve material pair properties
+    @wp.func
+    def _get_mixed_material_pair_property(
+        property_0: wp.float32,
+        property_1: wp.float32,
+    ) -> wp.float32:
+        """
+        Retrieves the mixed properties of a material pair given the properties of the two materials.
+
+        Args:
+            property_0: The property of the first material.
+            property_1: The property of the second material.
+
+        Returns:
+            The mixed property of the two materials.
+        """
+        return mix_func(property_0, property_1)
+
+    # Return the generated Warp function
+    return _get_mixed_material_pair_property
+
+
+def make_get_material_pair_properties(mixmode: MaterialMixMode = MaterialMixMode.AVERAGE):
+    """
+    Generates a Warp function to retrieve material pair
+    properties based on the specified mixing mode.
+
+    Args:
+        mixmode: The mixing mode to use for material pair properties.
+
+    Returns:
+        A Warp function that retrieves material pair properties.
+    """
+    # Select the appropriate mixing function based on the mixing mode
+    mix_func = get_material_mixing_function(mixmode)
 
     # Define the Warp function to retrieve material pair properties
     @wp.func
     def _get_material_pair_properties(
-        mid1: int32,
-        mid2: int32,
-        material_restitution: wp.array[float32],
-        material_static_friction: wp.array[float32],
-        material_dynamic_friction: wp.array[float32],
-        material_pair_restitution: wp.array[float32],
-        material_pair_static_friction: wp.array[float32],
-        material_pair_dynamic_friction: wp.array[float32],
-    ) -> tuple[float32, float32, float32]:
+        mid1: wp.int32,
+        mid2: wp.int32,
+        material_restitution: wp.array[wp.float32],
+        material_static_friction: wp.array[wp.float32],
+        material_dynamic_friction: wp.array[wp.float32],
+        material_pair_restitution: wp.array[wp.float32],
+        material_pair_static_friction: wp.array[wp.float32],
+        material_pair_dynamic_friction: wp.array[wp.float32],
+    ) -> tuple[wp.float32, wp.float32, wp.float32]:
         """
         Retrieves the properties of a material pair given their material indices.
 
         If material-pair properties are not defined (i.e., negative values) for the given
         material indices `mid1, mid2`, the properties are computed from the individual
-        materials using the configured muxing method.
+        materials using the configured mixing method.
 
         Args:
-            mid1 (int32): The index of the first material.
-            mid2 (int32): The index of the second material.
-            material_restitution (wp.array): The per-material restitution coefficients.
-            material_static_friction (wp.array): The per-material static friction coefficients.
-            material_dynamic_friction (wp.array): The per-material dynamic friction coefficients.
-            material_pair_restitution (wp.array): The per-material-pair restitution coefficients.
-            material_pair_static_friction (wp.array): The per-material-pair static friction coefficients.
-            material_pair_dynamic_friction (wp.array): The per-material-pair dynamic friction coefficients.
+            mid1: The index of the first material.
+            mid2: The index of the second material.
+            material_restitution: The per-material restitution coefficients.
+            material_static_friction: The per-material static friction coefficients.
+            material_dynamic_friction: The per-material dynamic friction coefficients.
+            material_pair_restitution: The per-material-pair restitution coefficients.
+            material_pair_static_friction: The per-material-pair static friction coefficients.
+            material_pair_dynamic_friction: The per-material-pair dynamic friction coefficients.
 
         Returns:
-            tuple: A tuple containing the restitution, static friction,
-            and dynamic friction coefficients for the material pair.
+            The restitution, static friction, and dynamic friction coefficients for the material pair.
         """
         # Compute the index in the flattened lower-triangular matrix
         mid_tril_idx = tril_index(mid1, mid2)
@@ -451,7 +528,7 @@ def make_get_material_pair_properties(muxmode: MaterialMuxMode = MaterialMuxMode
         static_friction = material_pair_static_friction[mid_tril_idx]
         dynamic_friction = material_pair_dynamic_friction[mid_tril_idx]
 
-        # If any property is negative, compute the material pair properties using the set muxing method
+        # If any property is negative, compute the material pair properties using the set mixing method
         if restitution < 0.0:
             restitution = mix_func(material_restitution[mid1], material_restitution[mid2])
         if static_friction < 0.0:
@@ -476,10 +553,10 @@ class MaterialManager:
     A class to manage materials used in simulations, including their properties and pairwise interactions.
 
     Attributes:
-        num_materials (int): The number of materials managed by this MaterialManager.
-        materials (list[MaterialDescriptor]): A list of materials managed by this MaterialManager.
-        pairs (list[list[MaterialPairProperties]]): A 2D list representing the properties of material pairs.
-        default (MaterialDescriptor): The default material managed by this MaterialManager.
+        num_materials: The number of materials managed by this MaterialManager.
+        materials: A list of materials managed by this MaterialManager.
+        pairs: A 2D list representing the properties of material pairs.
+        default: The default material managed by this MaterialManager.
     """
 
     def __init__(
@@ -493,12 +570,14 @@ class MaterialManager:
         Initializes the MaterialManager with an optional default material and its properties.
 
         Args:
-            default_material (MaterialDescriptor, optional): The default material to register.\n
+            default_material: The default material to register.
                 If None, a default material with the name 'default' will be created.
-            default_static_friction (float): The default friction coefficient for material pairs.\n
-                Defaults to `DEFAULT_FRICTION`.
-            default_dynamic_friction (float): The default restitution coefficient for material pairs.\n
-                Defaults to `DEFAULT_RESTITUTION`.
+            default_restitution: The default restitution coefficient for material pairs.
+                Defaults to ``DEFAULT_RESTITUTION``.
+            default_static_friction: The default static friction coefficient for material pairs.
+                Defaults to ``DEFAULT_FRICTION``.
+            default_dynamic_friction: The default dynamic friction coefficient for material pairs.
+                Defaults to ``DEFAULT_FRICTION``.
         """
         # Declare the materials and material-pairs lists
         self._materials: list[MaterialDescriptor] = []
@@ -564,7 +643,7 @@ class MaterialManager:
         Sets the default material to the provided material descriptor.
 
         Args:
-            material (`MaterialDescriptor`): The material to set as the default.
+            material: The material to set as the default.
 
         Raises:
             TypeError: If the provided material is not an instance of MaterialDescriptor.
@@ -585,10 +664,10 @@ class MaterialManager:
         Checks if a material with the given name exists in the manager.
 
         Args:
-            name (str): The name of the material to check.
+            name: The name of the material to check.
 
         Returns:
-            bool: True if the material exists, False otherwise.
+            True if the material exists, False otherwise.
         """
         for m in self._materials:
             if m.name == name:
@@ -600,10 +679,10 @@ class MaterialManager:
         Registers a new material with the manager.
 
         Args:
-            material (MaterialDescriptor): The material descriptor to register.
+            material: The material descriptor to register.
 
         Returns:
-            int: The index of the newly registered material.
+            The index of the newly registered material.
 
         Raises:
             ValueError: If a material with the same name or UID already exists.
@@ -637,9 +716,9 @@ class MaterialManager:
         Registers a new material pair with the manager.
 
         Args:
-            first (MaterialDescriptor): The first material in the pair.
-            second (MaterialDescriptor): The second material in the pair.
-            material_pair (MaterialPairProperties): The properties of the material pair.
+            first: The first material in the pair.
+            second: The second material in the pair.
+            material_pair: The properties of the material pair.
 
         Raises:
             ValueError: If either material is not already registered.
@@ -661,9 +740,9 @@ class MaterialManager:
         Configures the properties of an existing material pair.
 
         Args:
-            first (int | str): The index or name of the first material in the pair.
-            second (int | str): The index or name of the second material in the pair.
-            material_pair (MaterialPairProperties): The properties to set for the material pair.
+            first: The index or name of the first material in the pair.
+            second: The index or name of the second material in the pair.
+            material_pair: The properties to set for the material pair.
 
         Raises:
             ValueError: If either material is not found.
@@ -676,12 +755,12 @@ class MaterialManager:
         self._pair_properties[mid1][mid2] = self._pair_properties[mid2][mid1] = material_pair
         msg.debug("Configured material pair: %s - %s", self.materials[mid1].name, self.materials[mid2].name)
 
-    def merge(self, other: "MaterialManager"):
+    def merge(self, other: MaterialManager):
         """
         Merges another MaterialManager into this one, combining their materials and material-pair properties.
 
         Args:
-            other (MaterialManager): The other MaterialManager to merge.
+            other: The other MaterialManager to merge.
 
         Raises:
             ValueError: If there are conflicting material names or UIDs.
@@ -705,10 +784,10 @@ class MaterialManager:
         Retrieves a material descriptor by its index or name.
 
         Args:
-            key (str | int): The name or index of the material.
+            key: The name or index of the material.
 
         Returns:
-            MaterialDescriptor: The material descriptor.
+            The material descriptor.
 
         Raises:
             IndexError: If the index is out of range.
@@ -736,10 +815,10 @@ class MaterialManager:
         Retrieves the index of a material by its name or index.
 
         Args:
-            key (str | int): The name or index of the material.
+            key: The name or index of the material.
 
         Returns:
-            int: The index of the material.
+            The index of the material.
 
         Raises:
             ValueError: If the material is not found.
@@ -769,7 +848,7 @@ class MaterialManager:
         Generates a vector of restitution coefficients over all materials.
 
         Returns:
-            np.ndarray: A 1D numpy array containing per-material restitution coefficients.
+            A 1D numpy array containing per-material restitution coefficients.
         """
         # Get the number of materials
         num_materials = len(self._materials)
@@ -789,7 +868,7 @@ class MaterialManager:
         Generates a matrix of restitution coefficients for all material pairs.
 
         Returns:
-            np.ndarray: A 2D numpy array containing restitution coefficients.
+            A 2D numpy array containing restitution coefficients.
         """
         # Get the number of materials
         num_materials = len(self._materials)
@@ -819,7 +898,7 @@ class MaterialManager:
         Generates a vector of static friction coefficients over all materials.
 
         Returns:
-            np.ndarray: A 1D numpy array containing per-material static friction coefficients.
+            A 1D numpy array containing per-material static friction coefficients.
         """
         # Get the number of materials
         num_materials = len(self._materials)
@@ -839,7 +918,7 @@ class MaterialManager:
         Generates a matrix of friction coefficients for all material pairs.
 
         Returns:
-            np.ndarray: A 2D numpy array containing static friction coefficients.
+            A 2D numpy array containing static friction coefficients.
         """
         # Get the number of materials
         num_materials = len(self._materials)
@@ -869,7 +948,7 @@ class MaterialManager:
         Generates a vector of dynamic friction coefficients over all materials.
 
         Returns:
-            np.ndarray: A 1D numpy array containing per-material dynamic friction coefficients.
+            A 1D numpy array containing per-material dynamic friction coefficients.
         """
         # Get the number of materials
         num_materials = len(self._materials)
@@ -889,7 +968,7 @@ class MaterialManager:
         Generates a matrix of friction coefficients for all material pairs.
 
         Returns:
-            np.ndarray: A 2D numpy array containing dynamic friction coefficients.
+            A 2D numpy array containing dynamic friction coefficients.
         """
         # Get the number of materials
         num_materials = len(self._materials)
@@ -925,9 +1004,9 @@ class MaterialManager:
         materials_dynamic_fric = [self.dynamic_friction_vector()]
         return MaterialsModel(
             num_materials=self.num_materials,
-            restitution=wp.array(materials_rest[0], dtype=float32),
-            static_friction=wp.array(materials_static_fric[0], dtype=float32),
-            dynamic_friction=wp.array(materials_dynamic_fric[0], dtype=float32),
+            restitution=wp.array(materials_rest[0], dtype=wp.float32),
+            static_friction=wp.array(materials_static_fric[0], dtype=wp.float32),
+            dynamic_friction=wp.array(materials_dynamic_fric[0], dtype=wp.float32),
         )
 
     def make_material_pairs_model(self) -> MaterialPairsModel:
@@ -937,7 +1016,7 @@ class MaterialManager:
         mpairs_dynamic_fric = [self.dynamic_friction_matrix()]
         return MaterialPairsModel(
             num_material_pairs=self.num_material_pairs,
-            restitution=wp.array(mpairs_rest[0], dtype=float32),
-            static_friction=wp.array(mpairs_static_fric[0], dtype=float32),
-            dynamic_friction=wp.array(mpairs_dynamic_fric[0], dtype=float32),
+            restitution=wp.array(mpairs_rest[0], dtype=wp.float32),
+            static_friction=wp.array(mpairs_static_fric[0], dtype=wp.float32),
+            dynamic_friction=wp.array(mpairs_dynamic_fric[0], dtype=wp.float32),
         )

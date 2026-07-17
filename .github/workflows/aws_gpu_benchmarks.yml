@@ -15,7 +15,6 @@ env:
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
   AWS_ROLE_DURATION: 7200
   AWS_RUNNER_RESOURCE_TAG: newton-github-runner
-  HOME: /actions-runner
 
 on:
   workflow_call:
@@ -105,6 +104,8 @@ jobs:
     runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
     permissions:
       contents: read
+    env:
+      HOME: /actions-runner
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -123,7 +124,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.4"
+          version: "0.11.26"
 
       - name: Set up Python
         run: uv python install

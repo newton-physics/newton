@@ -124,7 +124,7 @@ class TestKinematicLinks(unittest.TestCase):
         sim_dt = 1.0 / 60.0
         applied_wrench = np.array([200.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
-        builder = ModelBuilder(gravity=0.0)
+        builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
@@ -160,6 +160,60 @@ class TestKinematicLinks(unittest.TestCase):
             1.0e-2,
             "Dynamic body should move on the first step after a kinematic toggle.",
         )
+
+    def test_immovable_contact_pair_filtering(self):
+        for shape_a, shape_b in [
+            ("kinematic", "kinematic"),
+            ("static", "kinematic"),
+            ("kinematic", "static"),
+            ("static", "static"),
+        ]:
+            model = _build_contact_pair(shape_a, shape_b)
+            with self.subTest(shape_a=shape_a, shape_b=shape_b, model_pair_superset=True):
+                self.assertEqual(model.shape_contact_pair_count, 1)
+            for broad_phase in ("explicit", "nxn", "sap"):
+                with self.subTest(
+                    shape_a=shape_a,
+                    shape_b=shape_b,
+                    broad_phase=broad_phase,
+                    include_static_kinematic_pairs=False,
+                ):
+                    count = _rigid_contact_count(
+                        model,
+                        broad_phase=broad_phase,
+                        include_static_kinematic_pairs=False,
+                    )
+                    self.assertEqual(count, 0)
+
+                with self.subTest(
+                    shape_a=shape_a,
+                    shape_b=shape_b,
+                    broad_phase=broad_phase,
+                    include_static_kinematic_pairs=True,
+                ):
+                    count = _rigid_contact_count(
+                        model,
+                        broad_phase=broad_phase,
+                        include_static_kinematic_pairs=True,
+                    )
+                    self.assertGreater(count, 0)
+
+    def test_immovable_filter_does_not_remove_dynamic_pairs(self):
+        for shape_a, shape_b in [
+            ("dynamic", "static"),
+            ("static", "dynamic"),
+            ("dynamic", "kinematic"),
+            ("kinematic", "dynamic"),
+        ]:
+            model = _build_contact_pair(shape_a, shape_b)
+            for broad_phase in ("explicit", "nxn", "sap"):
+                with self.subTest(shape_a=shape_a, shape_b=shape_b, broad_phase=broad_phase):
+                    count = _rigid_contact_count(
+                        model,
+                        broad_phase=broad_phase,
+                        include_static_kinematic_pairs=False,
+                    )
+                    self.assertGreater(count, 0)
 
 
 class TestKinematicLinksCanonical(unittest.TestCase):
@@ -202,8 +256,50 @@ def _configure_contact_defaults(builder: ModelBuilder) -> None:
     builder.default_shape_cfg.kf = 0.5
 
 
+def _build_contact_pair(shape_a: str, shape_b: str) -> newton.Model:
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    _configure_contact_defaults(builder)
+
+    def add_sphere(kind: str, x: float) -> None:
+        xform = wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity())
+        if kind == "static":
+            builder.add_shape_sphere(-1, xform=xform, radius=0.5)
+        elif kind == "kinematic":
+            body = builder.add_body(xform=xform, mass=1.0, is_kinematic=True)
+            builder.add_shape_sphere(body, radius=0.5)
+        elif kind == "dynamic":
+            body = builder.add_body(xform=xform, mass=1.0)
+            builder.add_shape_sphere(body, radius=0.5)
+        else:
+            raise ValueError(f"Unsupported shape kind: {kind}")
+
+    add_sphere(shape_a, -0.25)
+    add_sphere(shape_b, 0.25)
+    # Static shapes share the world body and are filtered as a same-body pair
+    # by default. Clear that independent filter so this test isolates the
+    # broad phase's immovable-pair option.
+    builder.shape_collision_filter_pairs.clear()
+    return builder.finalize(requires_grad=False)
+
+
+def _rigid_contact_count(
+    model: newton.Model,
+    *,
+    broad_phase: str = "explicit",
+    include_static_kinematic_pairs: bool = True,
+) -> int:
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase=broad_phase,
+        include_static_kinematic_pairs=include_static_kinematic_pairs,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    return int(contacts.rigid_contact_count.numpy()[0])
+
+
 def _build_free_root_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     kinematic_body = builder.add_body(
@@ -228,7 +324,7 @@ def _build_free_root_scene(device):
 
 
 def _build_revolute_root_pendulum_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     root = builder.add_link(mass=1.0, is_kinematic=True, label="kinematic_root")
@@ -272,7 +368,7 @@ def _build_revolute_root_pendulum_scene(device):
 
 
 def _build_fixed_root_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     static_body = builder.add_link(
@@ -548,7 +644,7 @@ def test_kinematic_runtime_toggle(
     sim_dt = 1.0 / 240.0
     phase_steps = 60
 
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,
