@@ -4256,7 +4256,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 
     def test_sphere_rolls_without_slip_with_newton_contacts(self):
         radius = 0.1
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverMuJoCo.register_custom_attributes(builder)
         builder.default_shape_cfg.ke = 1.0e5
         builder.default_shape_cfg.kd = 2.0e3
@@ -5690,7 +5690,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         """Runtime inertia coupling matches a model compiled with that coupling."""
 
         def build_model(inertia):
-            builder = newton.ModelBuilder(gravity=0.0)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             body = builder.add_link(
                 mass=0.1,
                 com=wp.vec3(0.0, 0.0, 0.0),
@@ -8025,7 +8025,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             ),
         }
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         ball_j = builder.add_joint_ball(
             -1,
@@ -8087,7 +8087,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             "compound": (compound, wp.vec3(0.3, -0.5, 0.7)),
         }
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         child = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         ball_j = builder.add_joint_ball(
             -1,
@@ -10712,7 +10712,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         kd: float,
         *,
         inertia: float = 0.5,
-        gravity: float = -9.81,
+        gravity: tuple[float, float, float] = (0.0, 0.0, -9.81),
         register_mujoco_attrs: bool = False,
     ):
         builder = newton.ModelBuilder(gravity=gravity)
@@ -11125,7 +11125,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         joints are also skipped (they have no limit to author). Authored
         RAW solreflimit values still survive the export.
         """
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
         inertia = wp.mat33(np.eye(3) * 0.5)
         link_a = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia, label="link_a")
@@ -11230,7 +11230,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         """CPU ``MjModel.jnt_solref`` must use the same force-space scaling as the warp backend."""
         ke = 50000.0
         kd = 500.0
-        model = self._build_pendulum_model(mass=1.0, ke=ke, kd=kd, inertia=0.5, gravity=0.0)
+        model = self._build_pendulum_model(mass=1.0, ke=ke, kd=kd, inertia=0.5, gravity=(0.0, 0.0, 0.0))
         solver = SolverMuJoCo(model, iterations=50, disable_contacts=True, use_mujoco_cpu=True)
 
         def assert_scaled_solref(expected_invweight0):
@@ -11275,7 +11275,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         inertia = 0.5
         ke = 50000.0
         kd = 500.0
-        model = self._build_pendulum_model(mass=mass, ke=ke, kd=kd, inertia=inertia, gravity=0.0)
+        model = self._build_pendulum_model(mass=mass, ke=ke, kd=kd, inertia=inertia, gravity=(0.0, 0.0, 0.0))
 
         solver = SolverMuJoCo(model, iterations=50, disable_contacts=True)
 
@@ -11387,7 +11387,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
         ``joint_limit_ke``/``kd`` pair so the per-DOF scaling can be observed
         in the resulting ``jnt_solref`` rows.
         """
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
         inertia = wp.mat33(np.eye(3) * 0.3)
         link = builder.add_link(
@@ -11462,7 +11462,7 @@ class TestMuJoCoSolverInvweightScaledSolref(unittest.TestCase):
 
     def test_invalid_raw_solreflimit_warns_in_update_solref(self):
         """``_update_solref_from_invweight0`` warns once on invalid RAW solreflimit and re-arms after JOINT_DOF_PROPERTIES."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
         inertia = wp.mat33(np.eye(3) * 0.5)
         link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia)
@@ -11619,7 +11619,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         model.mujoco.solref_mode.assign(mode)
 
     def _build_box_on_plane(self, *, mass: float, ke: float, kd: float):
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverMuJoCo.register_custom_attributes(builder)
         builder.default_shape_cfg.ke = ke
         builder.default_shape_cfg.kd = kd
@@ -11685,7 +11685,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
     def test_force_space_contact_solref_uses_two_body_invweight_sum(self):
         """Dynamic-vs-dynamic contact: factor uses the sum of both bodies' invweight0."""
         ke, kd = 1.0e4, 100.0
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverMuJoCo.register_custom_attributes(builder)
         builder.default_shape_cfg.ke = ke
         builder.default_shape_cfg.kd = kd
@@ -11883,7 +11883,7 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         """
         ke_a, kd_a = 5.0e3, 50.0
         ke_b, kd_b = 2.0e4, 200.0
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverMuJoCo.register_custom_attributes(builder)
         builder.default_shape_cfg.ke = ke_a
         builder.default_shape_cfg.kd = kd_a

@@ -607,7 +607,7 @@ def test_texture_sdf_multi_resolution(test, device):
 
 def test_texture_sdf_in_model(test, device):
     """Build a scene with 2 mesh shapes with SDFs and verify model._texture_sdf_data."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     for i in range(2):
         body = builder.add_body(xform=wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0)))
