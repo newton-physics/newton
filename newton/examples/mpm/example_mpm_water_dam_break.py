@@ -12,6 +12,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.solvers import SolverImplicitMPM
+from newton.viewer import ViewerRTX
 
 
 @wp.kernel
@@ -130,6 +131,7 @@ class Example:
         self.collider_extrapolation_depth = min(2.0 * surface_voxel_size, 0.5 * args.wall_thickness)
         self.surface_path = "/model/water_surface"
         self.surface_triangle_count = 0
+        self._rtx_water_material_bound = False
 
         self._empty_surface_points = wp.empty(0, dtype=wp.vec3, device=self.model.device)
         self._empty_surface_indices = wp.empty(0, dtype=wp.int32, device=self.model.device)
@@ -148,6 +150,33 @@ class Example:
             extrapolate_into_colliders=self.extrapolate_into_colliders,
             collider_extrapolation_depth=self.collider_extrapolation_depth,
         )
+
+    def _bind_rtx_water_material(self):
+        if self._rtx_water_material_bound or not isinstance(self.viewer, ViewerRTX):
+            return
+
+        from pxr import Sdf, UsdShade  # noqa: PLC0415
+
+        mesh_prim = self.viewer.stage.GetPrimAtPath(f"/root{self.surface_path}")
+        if not mesh_prim:
+            return
+
+        material_path = "/root/Materials/Water"
+        material = UsdShade.Material.Define(self.viewer.stage, material_path)
+        shader = UsdShade.Shader.Define(self.viewer.stage, f"{material_path}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.02, 0.18, 0.32))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.05)
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(0.35)
+        shader.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(0.0)
+        shader.CreateInput("ior", Sdf.ValueTypeNames.Float).Set(1.333)
+        shader.CreateInput("clearcoat", Sdf.ValueTypeNames.Float).Set(1.0)
+        shader.CreateInput("clearcoatRoughness", Sdf.ValueTypeNames.Float).Set(0.03)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh_prim)
+        UsdShade.MaterialBindingAPI(mesh_prim).Bind(material)
+        self._rtx_water_material_bound = True
 
     def _capture_surface_extraction(self):
         self.surface_graph = None
@@ -216,6 +245,7 @@ class Example:
             roughness=0.15,
             metallic=0.0,
         )
+        self._bind_rtx_water_material()
         self.viewer.end_frame()
 
     def test_final(self):
