@@ -199,17 +199,17 @@ def _maybe_capture(sim: Simulation, use_graph: bool | None) -> None:
     try:
         with wp.ScopedCapture() as capture:
             _step_device_ops(sim, collide=True)
+        graph_no_collide = None
+        if sim.collision_interval > 1:
+            with wp.ScopedCapture() as capture2:
+                _step_device_ops(sim, collide=False)
+            graph_no_collide = capture2.graph
     except RuntimeError:
         if use_graph:
             raise  # capture explicitly requested but unsupported
         return
     if capture.graph is None:
         return
-    graph_no_collide = None
-    if sim.collision_interval > 1:
-        with wp.ScopedCapture() as capture2:
-            _step_device_ops(sim, collide=False)
-        graph_no_collide = capture2.graph
     sim._graphs = (capture.graph, graph_no_collide)
 
 

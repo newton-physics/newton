@@ -276,6 +276,23 @@ class TestUsdRuntime(unittest.TestCase):
             runtime.step(sim_plain)
         assert_np_equal(sim_graph.state.body_q.numpy(), sim_plain.state.body_q.numpy(), tol=1e-6)
 
+    def test_collision_interval_graph_pair(self):
+        from pxr import Sdf
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        attrs = {"newton:collisionInterval": (Sdf.ValueTypeNames.Int, 4)}
+        sim_graph = runtime.load_usd(_make_stage(scene_attrs=attrs), use_graph=True)
+        sim_plain = runtime.load_usd(_make_stage(scene_attrs=attrs), use_graph=False)
+        self.assertIsNotNone(sim_graph._graphs)
+        self.assertIsNotNone(sim_graph._graphs[0])
+        self.assertIsNotNone(sim_graph._graphs[1])
+        self.assertIsNot(sim_graph._graphs[0], sim_graph._graphs[1])
+        for _ in range(10):
+            runtime.step(sim_graph)
+            runtime.step(sim_plain)
+        assert_np_equal(sim_graph.state.body_q.numpy(), sim_plain.state.body_q.numpy(), tol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()
