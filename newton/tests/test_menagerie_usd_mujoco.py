@@ -1792,8 +1792,8 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
     def test_pad_mass_matches_source_scale(self):
         """The pinned MJCF and USD agree on the finger-pad mass scale."""
         self._ensure_models()
-        newton_mass = self._newton_solver.mjw_model.body_mass.numpy()[0]
-        native_mass = self._native_mjw_model.body_mass.numpy()[0]
+        newton_mass = self._newton_solver.mj_model.body_mass
+        native_mass = self._mj_model.body_mass
 
         for body_name in ("left_pad", "right_pad"):
             native_id = self._mj_model.body(body_name).id
