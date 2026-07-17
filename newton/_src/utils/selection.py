@@ -2131,11 +2131,14 @@ class DeformableView:
 
     ``pattern`` uses the label glob matching shared by Newton selection APIs.
     Results keep model order: world order followed by builder order. The public
-    families are ``"curve"``, ``"surface"``, and ``"volume"``.
+    families are ``"curve"``, ``"surface"``, and ``"volume"``. ``family`` is an
+    optional filter and is inferred when all matches belong to one family. A mixed-family
+    match without a filter is rejected.
 
-    Labeled native deformables and deformables loaded by
+    Native deformables and deformables loaded by
     :meth:`~newton.ModelBuilder.add_usd` use the same finalized group records. Native
-    deformables without a label remain valid but cannot be selected by label.
+    builder calls may provide stable labels for later lookup; otherwise Newton assigns
+    family-specific labels such as ``surface_0``. USD deformables use their prim paths.
 
     A group is one independently addressable cable, cloth, or soft volume together
     with the ranges of its simulation elements. Fixed-joint collapse does not preserve
@@ -2148,8 +2151,9 @@ class DeformableView:
     model world, including worlds without a match, and :attr:`world_ids` identifies
     the world of each group. :meth:`ranges` and :meth:`starts` work even when selected
     groups have different element counts. Batched getters and setters require equal
-    counts for the element kind they use and otherwise direct callers to the raw
-    ranges. Global groups (world ``-1``) cannot be mixed with per-world groups.
+    counts for the requested element kind, which must be recorded by every selected
+    group, and otherwise direct callers to the raw ranges. Global groups (world ``-1``)
+    cannot be mixed with per-world groups.
 
     Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
     changes its initial arrays; writing a state changes only that state. Host
@@ -2283,8 +2287,7 @@ class DeformableView:
 
         if verbose:
             elements = ", ".join(
-                f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)"
-                for k in self._kinds
+                f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)" for k in self._kinds
             )
             print(f"DeformableView '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
 

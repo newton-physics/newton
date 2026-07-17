@@ -115,10 +115,10 @@ class Example:
         self.contacts = self.model.contacts()
         self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
 
-        self.curve = DeformableView(self.model, "hanging_cable", family="curve")
-        self.surface = DeformableView(self.model, "surface_primary", family="surface")
+        self.curve = DeformableView(self.model, "hanging_cable")
+        self.surface = DeformableView(self.model, "surface_primary")
         self.surfaces = DeformableView(self.model, "surface_*", family="surface")
-        self.volume = DeformableView(self.model, "soft_cube", family="volume")
+        self.volume = DeformableView(self.model, "soft_cube")
 
         # These host ranges are sufficient for one-time renderer/Fabric offset setup.
         self.curve_body_ranges = self.curve.ranges("body")

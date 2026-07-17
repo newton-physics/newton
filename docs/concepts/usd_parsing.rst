@@ -185,10 +185,14 @@ ranges. Without the flag the return shape carries no deformable entries. On the 
 :class:`~newton.Model`, select groups by label pattern with
 :class:`~newton.selection.DeformableView` (following
 :class:`~newton.selection.ArticulationView`): it batches each group's state on one flat group
-axis as ``(group_count, elements_per_group)`` arrays. ``world_starts`` partitions that axis by
-model world, including empty worlds, and ``world_ids`` identifies the world of every group.
-Setters use ``group_indices`` for flat rows or ``world_indices`` when every world has exactly
-one match. The view also exposes raw per-group ranges
+axis as ``(group_count, elements_per_group)`` arrays. The family is inferred when a pattern
+matches only curves, only surfaces, or only volumes; pass ``family`` to filter a broader
+pattern. ``world_starts`` partitions the flat axis by model world, including empty worlds, and
+``world_ids`` identifies the world of every group. Setters use ``group_indices`` to select flat
+rows. When exactly one group matches in each world, those flat indices coincide with model
+world IDs. Getters follow :class:`~newton.selection.ArticulationView`: regular layouts return
+zero-copy views, while irregular layouts reuse an internally owned contiguous result after the
+first call and can be replayed in a CUDA graph. The view also exposes raw per-group ranges
 (:meth:`~newton.selection.DeformableView.ranges`) for deformables with different element counts
 and for consumers that need slices of the flat model arrays. The ranges stay valid through
 :meth:`~newton.ModelBuilder.finalize`,
@@ -241,10 +245,10 @@ close a loop, so they stay outside the articulation.
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
     # Post-finalize selection by label pattern:
-    cable = newton.selection.DeformableView(model, "/World/Cable", family="curve")
+    cable = newton.selection.DeformableView(model, "/World/Cable")
     ((body_start, body_end),) = cable.ranges("body")
-    # With one matching cable per world, these are real model world IDs.
-    cable.set_body_velocities(state, reset_velocities, world_indices=environment_ids)
+    # With one matching cable per world, flat group indices equal model world IDs.
+    cable.set_body_velocities(state, reset_velocities, group_indices=environment_ids)
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to its attributes exactly

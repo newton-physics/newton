@@ -7409,9 +7409,9 @@ class ModelBuilder:
                 defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            label: Optional label prefix for bodies, shapes, and joints. A labeled rod is also
-                recorded as a selectable cable group (see
-                :class:`~newton.selection.DeformableView`).
+            label: Optional label prefix for bodies, shapes, joints, and the selectable cable
+                group. If None, the group receives a generated ``curve_N`` label. See
+                :class:`~newton.selection.DeformableView`.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
             color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
@@ -7633,9 +7633,9 @@ class ModelBuilder:
                 (torque per radian).
                 Defaults to 0.0.
             bend_damping: Bend/twist damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations. A labeled
-                graph is also recorded as one selectable cable group (see
-                :class:`~newton.selection.DeformableView`).
+            label: Optional label prefix for bodies, shapes, joints, articulations, and the
+                selectable cable group. If None, the group receives a generated ``curve_N``
+                label. See :class:`~newton.selection.DeformableView`.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -8657,8 +8657,9 @@ class ModelBuilder:
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
             label: Optional name forwarded to :func:`newton.utils.validate_triangle_mesh`
-                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify
-                this cloth.
+                via :meth:`add_cloth_mesh` so a mesh-quality warning can identify this cloth.
+                The same name labels the selectable surface group; if None, the group receives
+                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableView`.
         """
 
         def grid_index(x, y, dim_x):
@@ -8786,9 +8787,9 @@ class ModelBuilder:
                 pipeline.)
             label: Optional name forwarded to
                 :func:`newton.utils.validate_triangle_mesh` so a mesh-quality
-                warning emitted with ``validate_mesh=True`` can identify
-                this cloth. A labeled cloth is also recorded as a selectable group
-                (see :class:`~newton.selection.DeformableView`).
+                warning emitted with ``validate_mesh=True`` can identify this cloth.
+                The same name labels the selectable surface group; if None, the group receives
+                a generated ``surface_N`` label. See :class:`~newton.selection.DeformableView`.
 
         Note:
             The mesh should be two-manifold.
@@ -9059,9 +9060,8 @@ class ModelBuilder:
             edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
-            label: Optional name for the generated volume. A labeled grid is
-                recorded as a selectable group (see
-                :class:`~newton.selection.DeformableView`).
+            label: Optional name for the selectable volume group. If None, the group receives
+                a generated ``volume_N`` label. See :class:`~newton.selection.DeformableView`.
 
         Note:
             The generated surface triangles and optional edges are for collision purposes.
@@ -9234,10 +9234,10 @@ class ModelBuilder:
                 tetrahedra, sliver tetrahedra, and non-manifold faces, and
                 emit warnings. See :func:`newton.utils.validate_tet_mesh`.
             label: Optional name forwarded to
-                :func:`newton.utils.validate_tet_mesh` so a mesh-quality
-                warning emitted with ``validate_mesh=True`` can identify
-                this soft body. A labeled soft body is also recorded as a selectable group
-                (see :class:`~newton.selection.DeformableView`).
+                :func:`newton.utils.validate_tet_mesh` so a mesh-quality warning emitted with
+                ``validate_mesh=True`` can identify this soft body. The same name labels the
+                selectable volume group; if None, the group receives a generated ``volume_N``
+                label. See :class:`~newton.selection.DeformableView`.
 
         Note:
             **Parameter resolution order:** explicit argument > :class:`~newton.TetMesh`
