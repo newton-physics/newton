@@ -2606,6 +2606,8 @@ class ModelBuilder:
 
         All copies are merged in a single batched pass; subclass overrides of
         :meth:`add_world` or :meth:`add_builder` are not invoked during replication.
+        Merged entries may share objects with ``builder`` and across the replicated
+        worlds; see :meth:`add_builder` for the supported life-cycle.
 
         Note:
             For visual separation of worlds, it is recommended to use the viewer's
@@ -4127,6 +4129,12 @@ class ModelBuilder:
         Use :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
         :meth:`replicate` to manage world assignment. :attr:`current_world`
         is read-only and should not be set directly.
+
+        The source builder acts as a template: merged entries may share objects
+        with it (and across copies when replicating). Mutating such entries in
+        place afterwards (e.g. ``xform.p = ...``) writes through to every
+        builder sharing them and is unsupported; reassign entries instead
+        (``shape_transform[i] = xform``).
 
         Example::
 
