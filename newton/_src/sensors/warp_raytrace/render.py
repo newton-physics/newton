@@ -32,7 +32,7 @@ def create_kernel(
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique", module_options={"fast_math": config.enable_fast_math})
     def render_megakernel(
         # Model and Config
         world_count: wp.int32,
@@ -63,6 +63,7 @@ def create_kernel(
         # Particles
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        topology_particle_mask: wp.array[wp.bool],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
         # Meshes
@@ -80,6 +81,7 @@ def create_kernel(
         # Outputs
         out_color: wp.array[wp.uint32],
         out_depth: wp.array[wp.float32],
+        out_forward_depth: wp.array[wp.float32],
         out_shape_index: wp.array[wp.uint32],
         out_normal: wp.array[wp.vec3f],
         out_albedo: wp.array[wp.uint32],
@@ -112,7 +114,9 @@ def create_kernel(
         camera_transform = camera_transforms[camera_index, world_index]
         ray_origin_world = wp.transform_point(camera_transform, camera_rays[camera_index, py, px, 0])
         ray_dir_world = wp.transform_vector(camera_transform, camera_rays[camera_index, py, px, 1])
-        camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
+        camera_forward = wp.vec3f(0.0)
+        if wp.static(state.num_gaussians > 0):
+            camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
             return
@@ -135,6 +139,7 @@ def create_kernel(
             mesh_data,
             particles_position,
             particles_radius,
+            topology_particle_mask,
             triangle_mesh_id,
             gaussians_data,
             ray_origin_world,
@@ -147,6 +152,10 @@ def create_kernel(
 
         if wp.static(state.render_depth):
             out_depth[out_index] = closest_hit.distance
+
+        if wp.static(state.render_forward_depth):
+            forward_depth_axis_world = wp.normalize(wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0)))
+            out_forward_depth[out_index] = closest_hit.distance * wp.dot(ray_dir_world, forward_depth_axis_world)
 
         if wp.static(state.render_normal):
             out_normal[out_index] = closest_hit.normal
@@ -162,9 +171,10 @@ def create_kernel(
             return
 
         is_gaussian = wp.bool(False)
-        if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
-            if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
-                is_gaussian = wp.bool(True)
+        if wp.static(state.num_gaussians > 0):
+            if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
+                if shape_types[closest_hit.shape_index] == GeoType.GAUSSIAN:
+                    is_gaussian = wp.bool(True)
 
         albedo_color = wp.vec3f(0.0)
 
@@ -241,6 +251,7 @@ def create_kernel(
                     light_orientations[light_index],
                     particles_position,
                     particles_radius,
+                    topology_particle_mask,
                     triangle_mesh_id,
                     closest_hit.normal,
                     hit_point,

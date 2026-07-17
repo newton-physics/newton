@@ -13,7 +13,7 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 def test_no_overhead_when_disabled(test, device):
     """Differentiable arrays are None when requires_grad=False."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -31,7 +31,7 @@ def test_no_overhead_when_disabled(test, device):
 def test_arrays_allocated_when_enabled(test, device):
     """Differentiable arrays are allocated when requires_grad=True."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -50,7 +50,7 @@ def test_arrays_allocated_when_enabled(test, device):
 def test_sphere_on_plane_distance(test, device):
     """Sphere penetrating ground plane produces correct differentiable distance."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         sphere_height = 0.3
         sphere_radius = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, sphere_height)))
@@ -77,7 +77,7 @@ def test_sphere_on_plane_distance(test, device):
 def test_gradient_flow_through_body_q(test, device):
     """Verify gradients flow from diff distance through body_q via wp.Tape."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -109,7 +109,7 @@ def test_gradient_flow_through_body_q(test, device):
 def test_gradient_direction(test, device):
     """Moving the sphere upward should increase (make less negative) the contact distance."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -144,7 +144,7 @@ def test_gradient_direction(test, device):
 def test_collide_outside_tape(test, device):
     """collide() works correctly outside a tape (no gradients, no crash)."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -165,7 +165,7 @@ def test_collide_outside_tape(test, device):
 def test_two_body_contact(test, device):
     """Two dynamic bodies in contact both receive non-zero gradients."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
         builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5)
         body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.8)))
@@ -201,7 +201,7 @@ def test_two_body_contact(test, device):
 def test_world_points_correctness(test, device):
     """Differentiable world-space points and distance are geometrically consistent."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         sphere_height = 0.3
         sphere_radius = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, sphere_height)))
@@ -249,7 +249,7 @@ def test_world_points_correctness(test, device):
 def test_finite_difference_distance_gradient(test, device):
     """Tape gradient of distance w.r.t. z-translation matches finite differences."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         h0 = 0.3
         r = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, h0)))
@@ -302,7 +302,7 @@ def test_finite_difference_distance_gradient(test, device):
 def test_repeated_collide_independent_gradients(test, device):
     """Calling collide() twice in separate tapes gives independent gradients."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.3)))
         builder.add_shape_sphere(body=body, radius=0.5)
         builder.add_ground_plane()
@@ -344,7 +344,7 @@ def test_repeated_collide_independent_gradients(test, device):
 def test_finite_difference_two_body_gradient(test, device):
     """Tape gradients match central finite differences for two overlapping boxes across all translation DOFs."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
         builder.add_shape_box(body=body_a, hx=0.5, hy=0.5, hz=0.5)
         body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.8)))
@@ -411,7 +411,7 @@ def _body_position_loss_kernel(
 def test_multistep_gradient_flow(test, device):
     """Multi-step tape gradient of position loss w.r.t. initial z matches finite differences."""
     with wp.ScopedDevice(device):
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         sphere_height = 2.0
         sphere_radius = 0.5
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, sphere_height)))
@@ -568,6 +568,250 @@ add_function_test(
     TestDifferentiableContacts,
     "test_multistep_gradient_flow",
     test_multistep_gradient_flow,
+    devices=devices,
+)
+
+
+@wp.kernel
+def _soft_contact_gap_kernel(
+    count: wp.array[int],
+    corners: wp.array[wp.vec3i],
+    bary: wp.array[wp.vec3],
+    shape: wp.array[int],
+    body_pos: wp.array[wp.vec3],
+    normal: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    shape_body: wp.array[int],
+    body_q: wp.array[wp.transform],
+    loss: wp.array[float],
+):
+    """Sum the soft-contact gap ``dot(n, x - bx)``, ``x = sum_i bary[i] * particle_q[corners[i]]``.
+
+    Replicates the differentiable core of the VBD penetration formula
+    (``rigid_vbd_kernels._eval_soft_ef_contact``): the contact geometry (``bary``, ``body_pos``,
+    ``normal``) is frozen and only the live particle positions enter, so the gradient of this loss
+    w.r.t. ``particle_q`` is the gap derivative the solver relies on -- ``bary_i * n`` per corner.
+    """
+    i = wp.tid()
+    if i >= count[0]:
+        return
+    c = corners[i]
+    b = bary[i]
+    x = b[0] * particle_q[c[0]]
+    if c[1] >= 0:
+        x = x + b[1] * particle_q[c[1]]
+    if c[2] >= 0:
+        x = x + b[2] * particle_q[c[2]]
+    X_wb = wp.transform_identity()
+    body_idx = shape_body[shape[i]]
+    if body_idx >= 0:
+        X_wb = body_q[body_idx]
+    bx = wp.transform_point(X_wb, body_pos[i])
+    wp.atomic_add(loss, 0, wp.dot(normal[i], x - bx))
+
+
+def _assert_soft_contact_gap_differentiable(test, device, builder, full_surface):
+    """collide once, freeze the contact geometry, then check the gap is differentiable w.r.t. the
+    live particle positions -- analytic tape gradient vs central finite differences. The barycentric
+    contact point is intentionally frozen (fixed-contact-point model); only the gap must be
+    differentiable, which is what the VBD contact force consumes."""
+    model = builder.finalize(device=device, requires_grad=True)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        soft_contact_margin=0.25,
+        enable_rigid_soft_full_surface_contact=full_surface,
+        requires_grad=True,
+    )
+    contacts = pipeline.contacts()
+    state = model.state(requires_grad=True)
+    pipeline.collide(state, contacts)
+
+    count = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(count, 0, "expected at least one soft contact")
+    idx = contacts.soft_contact_indices.numpy()[:count]
+
+    # Freeze the contact geometry as detached constants; only particle_q stays differentiable.
+    frozen_cnt = wp.array([count], dtype=int, device=device)
+    frozen_corners = wp.array(idx, dtype=wp.vec3i, device=device)
+    frozen_bary = wp.array(contacts.soft_contact_barycentric.numpy()[:count], dtype=wp.vec3, device=device)
+    frozen_shape = wp.array(contacts.soft_contact_shape.numpy()[:count], dtype=int, device=device)
+    frozen_body_pos = wp.array(contacts.soft_contact_body_pos.numpy()[:count], dtype=wp.vec3, device=device)
+    frozen_normal = wp.array(contacts.soft_contact_normal.numpy()[:count], dtype=wp.vec3, device=device)
+
+    def _launch(pq, loss):
+        wp.launch(
+            _soft_contact_gap_kernel,
+            dim=count,
+            inputs=[
+                frozen_cnt,
+                frozen_corners,
+                frozen_bary,
+                frozen_shape,
+                frozen_body_pos,
+                frozen_normal,
+                pq,
+                model.shape_body,
+                state.body_q,
+            ],
+            outputs=[loss],
+            device=device,
+        )
+
+    q0 = state.particle_q.numpy()
+    pq = wp.array(q0, dtype=wp.vec3, device=device, requires_grad=True)
+    loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+    tape = wp.Tape()
+    with tape:
+        _launch(pq, loss)
+    tape.backward(loss)
+    grad = pq.grad.numpy()
+
+    def _loss_at(qnp):
+        p2 = wp.array(qnp, dtype=wp.vec3, device=device)
+        loss_fd = wp.zeros(1, dtype=float, device=device)
+        _launch(p2, loss_fd)
+        return float(loss_fd.numpy()[0])
+
+    test.assertGreater(
+        np.count_nonzero(np.abs(grad) > 1e-9), 0, "gap gradient must be nonzero (path is differentiable)"
+    )
+    eps = 1e-3
+    participating = sorted({int(v) for row in idx for v in row if v >= 0})
+    for vi in participating:
+        for comp in range(3):
+            qp = q0.copy()
+            qp[vi, comp] += eps
+            qm = q0.copy()
+            qm[vi, comp] -= eps
+            fd = (_loss_at(qp) - _loss_at(qm)) / (2.0 * eps)
+            test.assertAlmostEqual(
+                float(grad[vi, comp]),
+                fd,
+                places=3,
+                msg=f"gap gradient v{vi}.{'xyz'[comp]}: analytic={grad[vi, comp]:.5f} vs FD={fd:.5f}",
+            )
+
+
+def test_particle_soft_contact_gap_differentiable(test, device):
+    """The particle soft-contact gap is differentiable w.r.t. the particle position (analytic tape
+    gradient matches finite differences; d(gap)/d(particle) = contact normal)."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    builder.add_particle(wp.vec3(0.6, 0.1, 0.05), wp.vec3(0.0), 1.0, radius=0.0)
+    _assert_soft_contact_gap_differentiable(test, device, builder, full_surface=False)
+
+
+def test_full_surface_gap_differentiable(test, device):
+    """The full-surface edge/face gap is differentiable w.r.t. the soft vertices with the barycentric
+    contact point frozen: gap = dot(n, sum_i bary_i * pos_i - bx), so d(gap)/d(pos_i) = bary_i * n.
+    Analytic tape gradient matches finite differences (confirms EF autodiff through the frozen point)."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    # A triangle whose v0-v1 edge grazes the +x face; the third vertex is far, and the endpoints are
+    # far enough in y that they are NOT within the per-particle margin -> an edge/face record only.
+    v0 = builder.add_particle(wp.vec3(0.6, -1.0, 0.0), wp.vec3(0.0), 1.0, radius=0.0)
+    v1 = builder.add_particle(wp.vec3(0.6, 1.0, 0.0), wp.vec3(0.0), 1.0, radius=0.0)
+    v2 = builder.add_particle(wp.vec3(2.0, 0.0, 0.0), wp.vec3(0.0), 1.0, radius=0.0)
+    builder.add_triangle(v0, v1, v2)
+    _assert_soft_contact_gap_differentiable(test, device, builder, full_surface=True)
+
+
+for _name, _fn in (
+    ("test_particle_soft_contact_gap_differentiable", test_particle_soft_contact_gap_differentiable),
+    ("test_full_surface_gap_differentiable", test_full_surface_gap_differentiable),
+):
+    add_function_test(TestDifferentiableContacts, _name, _fn, devices=devices)
+
+
+@wp.kernel
+def _sum_soft_contact_bodypos_y(count: wp.array[int], body_pos: wp.array[wp.vec3], loss: wp.array[float]):
+    i = wp.tid()
+    if i < count[0]:
+        wp.atomic_add(loss, 0, body_pos[i][1])
+
+
+def test_soft_contact_detection_differentiable_through_collide(test, device):
+    """Differentiating THROUGH ``collide()`` (the detection recorded on the tape) propagates a correct
+    gradient to ``particle_q`` -- this is the path that actually exercises ``create_soft_contacts`` ->
+    :func:`~newton._src.geometry.kernels.counter_increment` -> its ``@wp.func_replay`` and the
+    per-thread ``tids`` replay array. A single particle-vs-box contact has a differentiable contact
+    point, so the analytic tape gradient of ``sum(body_pos.y)`` matches finite differences.
+
+    This measures the *contact-point location* (``body_pos``) route. For an edge/face record the SDF
+    argmin freezes that location, so *this* route is zero -- but that does NOT mean the EF path is
+    non-differentiable: the sim-relevant gradient flows through the gap ``dot(n, sum_i bary_i * pos_i
+    - bx)`` w.r.t. the live positions (``bary_i * n``), which is nonzero and covered by
+    ``test_full_surface_gap_differentiable`` above.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5)
+    builder.add_particle(wp.vec3(0.6, 0.1, 0.05), wp.vec3(0.0), 1.0, radius=0.0)
+    model = builder.finalize(device=device, requires_grad=True)
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_margin=0.25, requires_grad=True)
+    q0 = model.state().particle_q.numpy()
+
+    def _loss(qnp, on_tape):
+        state = model.state(requires_grad=on_tape)
+        state.particle_q.assign(qnp)
+        contacts = pipeline.contacts()
+        loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+        if on_tape:
+            tape = wp.Tape()
+            with tape:
+                pipeline.collide(state, contacts)
+                wp.launch(
+                    _sum_soft_contact_bodypos_y,
+                    dim=pipeline.soft_contact_max,
+                    inputs=[contacts.soft_contact_count, contacts.soft_contact_body_pos],
+                    outputs=[loss],
+                    device=device,
+                )
+            tape.backward(loss)
+            return state.particle_q.grad.numpy(), int(contacts.soft_contact_count.numpy()[0])
+        pipeline.collide(state, contacts)
+        wp.launch(
+            _sum_soft_contact_bodypos_y,
+            dim=pipeline.soft_contact_max,
+            inputs=[contacts.soft_contact_count, contacts.soft_contact_body_pos],
+            outputs=[loss],
+            device=device,
+        )
+        return float(loss.numpy()[0]), int(contacts.soft_contact_count.numpy()[0])
+
+    grad, count = _loss(q0, on_tape=True)
+    test.assertEqual(count, 1, "expected exactly one particle-vs-box contact")
+    test.assertGreater(
+        np.count_nonzero(np.abs(grad) > 1e-9),
+        0,
+        "detection must be differentiable through collide() (counter_increment replay path)",
+    )
+
+    eps = 1e-3
+    for comp in range(3):
+        if abs(grad[0, comp]) < 1e-9:
+            continue
+        qp = q0.copy()
+        qp[0, comp] += eps
+        qm = q0.copy()
+        qm[0, comp] -= eps
+        lp, cp = _loss(qp, on_tape=False)
+        lm, cm = _loss(qm, on_tape=False)
+        test.assertEqual(cp, count)
+        test.assertEqual(cm, count)
+        fd = (lp - lm) / (2.0 * eps)
+        test.assertAlmostEqual(
+            float(grad[0, comp]),
+            fd,
+            places=3,
+            msg=f"through-collide gradient p.{'xyz'[comp]}: analytic={grad[0, comp]:.5f} vs FD={fd:.5f}",
+        )
+
+
+add_function_test(
+    TestDifferentiableContacts,
+    "test_soft_contact_detection_differentiable_through_collide",
+    test_soft_contact_detection_differentiable_through_collide,
     devices=devices,
 )
 
