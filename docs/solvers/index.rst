@@ -60,6 +60,41 @@ fits the application. :class:`~newton.solvers.SolverMuJoCo` and
 bodies, particles, or differentiable simulation, use the feature matrix below
 to narrow the choice, then follow the linked API documentation.
 
+Determinism
+-----------
+
+By default, solvers inherit Warp's current determinism mode. The following
+solvers also accept ``deterministic=wp.DeterministicMode.RUN_TO_RUN`` to opt
+into deterministic execution for their atomic-emitting kernel modules:
+
+- :class:`~newton.solvers.SolverFeatherstone`
+- :class:`~newton.solvers.SolverMuJoCo`
+- :class:`~newton.solvers.SolverSemiImplicit`
+- :class:`~newton.solvers.SolverVBD`
+- :class:`~newton.solvers.SolverXPBD`
+
+For example:
+
+.. code-block:: python
+
+    import warp as wp
+    import newton
+
+    solver = newton.solvers.SolverXPBD(
+        model,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+    )
+
+:class:`~newton.solvers.SolverImplicitMPM`,
+:class:`~newton.solvers.SolverKamino`, and
+:class:`~newton.solvers.SolverStyle3D` do not currently provide a solver
+``deterministic`` option.
+
+This setting applies to the solver's kernels only; it does not guarantee that
+an entire simulation is deterministic. For example, simulations using
+Newton-generated contacts should also configure deterministic contact ordering
+as described in the :doc:`collisions guide </concepts/collisions>`.
+
 .. _Supported Features:
 
 Supported Features
