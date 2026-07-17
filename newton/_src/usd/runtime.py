@@ -43,9 +43,10 @@ _SOLVER_REGISTRY: dict[str, _SolverEntry] = {
         _SolverEntry(
             schema="NewtonSolverMujocoAPI",
             cls=SolverMuJoCo,
+            # MuJoCo solver options (iterations, tolerances, ...) are authored
+            # as mjc:option:* custom attributes; the registry only exposes
+            # params that have no existing USD channel.
             param_attrs={
-                "newton:mujoco:iterations": "iterations",
-                "newton:mujoco:lsIterations": "ls_iterations",
                 "newton:mujoco:njmax": "njmax",
                 "newton:mujoco:nconmax": "nconmax",
             },
