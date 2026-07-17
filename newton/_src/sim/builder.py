@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import functools
 import inspect
 import math
 import warnings
@@ -81,6 +82,11 @@ _SCALAR_GRAVITY_DEPRECATION_MSG = (
     "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
     "Scalar gravity will be removed in a future release."
 )
+
+# Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
+# dispatch through overload resolution and would initialize the Warp runtime at import.
+_IDENTITY_TRANSFORM = np.asarray(wp.transformf((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), dtype=np.float32)
+_IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
 
 
 @dataclass(frozen=True)
@@ -2659,7 +2665,6 @@ class ModelBuilder:
             raise ValueError("worlds, xforms, and label_prefixes must have the same length")
 
         worlds = np.asarray(worlds, dtype=np.int64)
-        identity_transform = np.asarray(wp.transform_identity(), dtype=np.float32)
 
         def normalize_xform(xform: Transform | None) -> wp.transform | None:
             if xform is None:
@@ -2667,15 +2672,14 @@ class ModelBuilder:
             xform = wp.transform(*xform)
             # Identity behaves as None: skips the per-world transform loops and keeps copies
             # bit-exact (identity transform_mul round-trips are not exact for free-root joint_q).
-            return None if np.array_equal(np.asarray(xform), identity_transform) else xform
+            return None if np.array_equal(np.asarray(xform), _IDENTITY_TRANSFORM) else xform
 
         xforms = [normalize_xform(xform) for xform in xforms]
         offsets = np.asarray(
             [np.zeros(3, dtype=np.float32) if xform is None else xform.p for xform in xforms], dtype=np.float32
         )
-        identity_rotation = np.asarray(wp.quat_identity(), dtype=np.float32)
         translations_only = all(
-            xform is None or np.array_equal(np.asarray(xform.q), identity_rotation) for xform in xforms
+            xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION) for xform in xforms
         )
 
         def source_list(attr: str) -> list:
@@ -2696,12 +2700,9 @@ class ModelBuilder:
         attribute_specs = self._builder_merge_attribute_specs()
         bases = self._builder_merge_counts(self)
 
-        start_arrays = {
-            kind: base + np.arange(world_count, dtype=np.int64) * counts[kind] for kind, base in bases.items()
-        }
-        start_arrays["muscle_point"] = len(self.muscle_bodies) + np.arange(world_count, dtype=np.int64) * len(
-            builder.muscle_bodies
-        )
+        world_range = np.arange(world_count, dtype=np.int64)
+        start_arrays = {kind: base + world_range * counts[kind] for kind, base in bases.items()}
+        start_arrays["muscle_point"] = len(self.muscle_bodies) + world_range * len(builder.muscle_bodies)
 
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
@@ -2710,6 +2711,10 @@ class ModelBuilder:
             if not values:
                 return
             source = np.asarray(values, dtype=np.int64)
+            if world_count == 1:
+                start = int(start_arrays[kind][0])
+                dst.extend(np.where(source >= 0, source + start, source).tolist())
+                return
             tiled = np.tile(source, (world_count,) + (1,) * (source.ndim - 1))
             offset_shape = (world_count * len(source),) + (1,) * (source.ndim - 1)
             offsets = np.repeat(starts(kind), len(source)).reshape(offset_shape)
@@ -2772,18 +2777,23 @@ class ModelBuilder:
                     self.joint_X_p[target] = transform_mul(xform, source)
 
             free_roots = np.flatnonzero((joint_parents == -1) & (joint_types == int(JointType.FREE)))
-            for world_index, xform in enumerate(xforms):
-                if xform is None:
-                    continue
-                coord_base = world_index * counts["joint_coord"]
+            if len(free_roots) and any(xform is not None for xform in xforms):
+                # Per-joint frames are invariant across worlds; compute them once.
+                free_root_frames = []
                 for joint in free_roots.tolist():
                     source_q = builder.joint_q_start[joint]
                     xform_prev = wp.transform(*builder.joint_q[source_q : source_q + 7])
                     X_pj = wp.transform(*builder.joint_X_p[joint])
-                    xform_local = transform_mul(transform_mul(wp.transform_inverse(X_pj), xform), X_pj)
-                    transformed = transform_mul(xform_local, xform_prev)
-                    target_q = coord_base + source_q
-                    joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
+                    free_root_frames.append((source_q, X_pj, wp.transform_inverse(X_pj), xform_prev))
+                for world_index, xform in enumerate(xforms):
+                    if xform is None:
+                        continue
+                    coord_base = world_index * counts["joint_coord"]
+                    for source_q, X_pj, X_pj_inv, xform_prev in free_root_frames:
+                        xform_local = transform_mul(transform_mul(X_pj_inv, xform), X_pj)
+                        transformed = transform_mul(xform_local, xform_prev)
+                        target_q = coord_base + source_q
+                        joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
 
         self.joint_q.extend(joint_q.tolist())
 
@@ -2833,10 +2843,12 @@ class ModelBuilder:
                     )
 
         for attr, spec in attribute_specs.items():
-            source = source_list(attr)
-            destination = getattr(self, attr)
             if spec.compaction_policy in {"world_start", "passthrough"}:
                 continue
+            source = source_list(attr)
+            if not source:
+                continue
+            destination = getattr(self, attr)
             if spec.compaction_policy == "color_groups":
                 kind = self._builder_frequency_key(spec.frequency)
                 group_starts = starts(kind)[:, None]
@@ -2872,6 +2884,7 @@ class ModelBuilder:
             )
 
     @staticmethod
+    @functools.cache
     def _builder_frequency_key(frequency: Model.AttributeFrequency | str) -> str:
         return frequency.name.lower() if isinstance(frequency, Model.AttributeFrequency) else frequency
 
@@ -2882,8 +2895,9 @@ class ModelBuilder:
             if frequency == Model.AttributeFrequency.WORLD:
                 continue
             key = cls._builder_frequency_key(frequency)
-            if hasattr(builder, count_attr):
-                counts[key] = getattr(builder, count_attr)
+            count = getattr(builder, count_attr, None)
+            if count is not None:
+                counts[key] = count
             elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                 counts[key] = len(builder.constraint_mimic_joint0)
         return counts
@@ -2905,6 +2919,22 @@ class ModelBuilder:
 
     @classmethod
     def _builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
+        import newton  # noqa: PLC0415
+
+        # Copy: the merge pops entries it handles manually.
+        return dict(ModelBuilder._cached_builder_merge_attribute_specs(cls, newton.use_coord_layout_targets))
+
+    @staticmethod
+    @functools.cache
+    def _cached_builder_merge_attribute_specs(
+        builder_class: type[ModelBuilder], use_coord_layout_targets: bool
+    ) -> dict[str, Model.AttributeSpec]:
+        return builder_class._build_builder_merge_attribute_specs()
+
+    @classmethod
+    def _build_builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
+        """Build and validate the merge schema; all inputs are class-level constants
+        apart from ``newton.use_coord_layout_targets``, which keys the cache above."""
         base_attributes, list_attributes = cls._base_builder_attributes()
         specs = {name: spec for name, spec in Model._CORE_ATTRIBUTE_SPECS.items() if name in list_attributes}
         specs.update(cls._BUILDER_ATTRIBUTE_SPECS)
@@ -2956,6 +2986,10 @@ class ModelBuilder:
 
     @staticmethod
     def _custom_attribute_defaults_match(existing: Any, incoming: Any) -> bool:
+        # Repeated merges of one source compare identical objects; skip the
+        # slow element-wise equality of Warp value types.
+        if existing is incoming:
+            return True
         try:
             matches = existing == incoming
             if hasattr(matches, "__iter__") and not isinstance(matches, (str, bytes)):
@@ -3979,73 +4013,81 @@ class ModelBuilder:
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
+            needs_remap = value_offset != 0 or use_current_world or is_equality_target_attr
 
-            def transform_equality_target_value(entity_idx: int, value: Any) -> Any:
-                try:
-                    target = int(value)
-                except (TypeError, ValueError):
-                    return value
-                if target < 0:
-                    return value
+            if needs_remap:
 
-                target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
-                target_kind = 0
-                if (
-                    target_kind_attr is not None
-                    and target_kind_attr.values
-                    and entity_idx < len(target_kind_attr.values)
-                    and target_kind_attr.values[entity_idx] is not None
-                ):
+                def transform_equality_target_value(entity_idx: int, value: Any) -> Any:
                     try:
-                        target_kind = int(target_kind_attr.values[entity_idx])
+                        target = int(value)
                     except (TypeError, ValueError):
-                        target_kind = 0
+                        return value
+                    if target < 0:
+                        return value
 
-                if target_kind == 1:
-                    return target + entity_offsets["joint"]
-                if target_kind == 2:
-                    return target + entity_offsets["constraint_mimic"]
-                return value
+                    target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
+                    target_kind = 0
+                    if (
+                        target_kind_attr is not None
+                        and target_kind_attr.values
+                        and entity_idx < len(target_kind_attr.values)
+                        and target_kind_attr.values[entity_idx] is not None
+                    ):
+                        try:
+                            target_kind = int(target_kind_attr.values[entity_idx])
+                        except (TypeError, ValueError):
+                            target_kind = 0
 
-            def transform_value(
-                value: Any,
-                offset: int = value_offset,
-                replace_with_world: bool = use_current_world,
-            ) -> Any:
-                if replace_with_world:
-                    return world
-                if offset == 0:
-                    return value
-                if self._is_integer_scalar(value):
-                    return value + offset if value >= 0 else value
-                if isinstance(value, (list, tuple)):
-                    transformed = [
-                        item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
-                    ]
-                    return type(value)(transformed)
-                try:
-                    return value + offset
-                except TypeError:
+                    if target_kind == 1:
+                        return target + entity_offsets["joint"]
+                    if target_kind == 2:
+                        return target + entity_offsets["constraint_mimic"]
                     return value
 
-            def transform_enum_value(
-                entity_idx: int,
-                value: Any,
-                is_equality_target: bool = is_equality_target_attr,
-            ) -> Any:
-                if is_equality_target:
-                    return transform_equality_target_value(entity_idx, value)
-                return transform_value(value)
+                def transform_value(
+                    value: Any,
+                    offset: int = value_offset,
+                    replace_with_world: bool = use_current_world,
+                ) -> Any:
+                    if replace_with_world:
+                        return world
+                    if offset == 0:
+                        return value
+                    if self._is_integer_scalar(value):
+                        return value + offset if value >= 0 else value
+                    if isinstance(value, (list, tuple)):
+                        transformed = [
+                            item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
+                        ]
+                        return type(value)(transformed)
+                    try:
+                        return value + offset
+                    except TypeError:
+                        return value
+
+                def transform_enum_value(
+                    entity_idx: int,
+                    value: Any,
+                    is_equality_target: bool = is_equality_target_attr,
+                ) -> Any:
+                    if is_equality_target:
+                        return transform_equality_target_value(entity_idx, value)
+                    return transform_value(value)
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if isinstance(freq_key, str):
                     mapped_values = [None] * index_offset
-                    mapped_values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
-                else:
+                    if needs_remap:
+                        mapped_values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
+                    else:
+                        mapped_values.extend(attr.values)
+                elif needs_remap:
                     mapped_values = {
                         index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
                     }
+                else:
+                    mapped_values = {index_offset + idx: value for idx, value in attr.values.items()}
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -4061,11 +4103,16 @@ class ModelBuilder:
             if isinstance(freq_key, str):
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
-                merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
-            else:
+                if needs_remap:
+                    merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
+                else:
+                    merged.values.extend(attr.values)
+            elif needs_remap:
                 merged.values.update(
                     {index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()}
                 )
+            else:
+                merged.values.update({index_offset + idx: value for idx, value in attr.values.items()})
 
         if label_prefix and builder._equality_constraint_count > 0:
             label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
