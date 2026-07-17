@@ -164,6 +164,8 @@ class MeshGL:
 
         self.num_points = num_points
         self.num_indices = num_indices
+        self.max_points = num_points
+        self.max_indices = num_indices
 
         # Store references to input buffers and rendering data
         self.device = device
@@ -274,10 +276,14 @@ class MeshGL:
         """
         gl = RendererGL.gl
 
-        if len(points) != len(self.vertices):
-            raise RuntimeError("Number of points does not match")
+        if len(points) > self.max_points:
+            raise RuntimeError("Number of points exceeds mesh capacity")
+        if len(indices) > self.max_indices:
+            raise RuntimeError("Number of indices exceeds mesh capacity")
 
         self._points = points
+        self.num_points = len(points)
+        self.num_indices = len(indices)
 
         if self.indices is None or self.dynamic:
             self.indices = wp.clone(indices).view(dtype=wp.uint32)
@@ -286,17 +292,20 @@ class MeshGL:
             ebo_usage = gl.GL_DYNAMIC_DRAW if self.dynamic else gl.GL_STATIC_DRAW
             host_indices = self.indices.numpy()
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo)
-            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, ebo_usage)
+            if self.dynamic:
+                gl.glBufferSubData(gl.GL_ELEMENT_ARRAY_BUFFER, 0, host_indices.nbytes, host_indices.ctypes.data)
+            else:
+                gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, ebo_usage)
 
         # If normals are missing, compute them before packing vertex data.
         if points is not None and normals is None:
             self.recompute_normals()
-            normals = self.normals
+            normals = self.normals[: self.num_points]
 
         # update gfx vertices
         wp.launch(
             fill_vertex_data,
-            dim=len(self.vertices),
+            dim=self.num_points,
             inputs=[points, normals, uvs],
             outputs=[self.vertices],
             device=self.device,
@@ -306,23 +315,28 @@ class MeshGL:
         if self.vertex_cuda_buffer is not None:
             # upload points via CUDA if possible
             vbo_vertices = self.vertex_cuda_buffer.map(dtype=RenderVertex, shape=self.vertices.shape)
-            wp.copy(vbo_vertices, self.vertices)
+            wp.copy(vbo_vertices, self.vertices, count=self.num_points)
             self.vertex_cuda_buffer.unmap()
 
         else:
-            host_vertices = self.vertices.numpy()
+            host_vertices = self.vertices[: self.num_points].numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
+            if self.dynamic:
+                gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, host_vertices.nbytes, host_vertices.ctypes.data)
+            else:
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
         self.update_texture(texture)
 
     def recompute_normals(self):
         if self._points is None or self.indices is None:
             return
-        self.normals = compute_vertex_normals(
+        if self.normals is None or len(self.normals) < self.max_points:
+            self.normals = wp.empty(self.max_points, dtype=wp.vec3, device=self.device)
+        compute_vertex_normals(
             self._points,
             self.indices,
-            normals=self.normals,
+            normals=self.normals[: self.num_points],
             device=self.device,
         )
 
@@ -717,39 +731,8 @@ class MeshInstancerGL:
         gl.glGenVertexArrays(1, self.vao)
         gl.glBindVertexArray(self.vao)
 
-        # -------------------------
-        # index buffer
-
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.mesh.ebo)
-
-        # ------------------------
-        # mesh buffers
-
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.mesh.vbo)
-
-        # positions
-        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, self.mesh.vertex_byte_size, ctypes.c_void_p(0))
-        gl.glEnableVertexAttribArray(0)
-        # normals
-        gl.glVertexAttribPointer(
-            1,
-            3,
-            gl.GL_FLOAT,
-            gl.GL_FALSE,
-            self.mesh.vertex_byte_size,
-            ctypes.c_void_p(3 * 4),
-        )
-        gl.glEnableVertexAttribArray(1)
-        # uv coordinates
-        gl.glVertexAttribPointer(
-            2,
-            2,
-            gl.GL_FLOAT,
-            gl.GL_FALSE,
-            self.mesh.vertex_byte_size,
-            ctypes.c_void_p(6 * 4),
-        )
-        gl.glEnableVertexAttribArray(2)
+        self._bind_mesh_buffers()
+        gl.glBindVertexArray(self.vao)
 
         self.transform_byte_size = 16 * 4  # sizeof(mat44)
         self.color_byte_size = 3 * 4  # sizeof(vec3)
@@ -808,6 +791,40 @@ class MeshInstancerGL:
             )
         else:
             self._instance_transform_cuda_buffer = None
+
+    def _bind_mesh_buffers(self):
+        gl = RendererGL.gl
+        gl.glBindVertexArray(self.vao)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.mesh.ebo)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.mesh.vbo)
+        gl.glVertexAttribPointer(0, 3, gl.GL_FLOAT, gl.GL_FALSE, self.mesh.vertex_byte_size, ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(0)
+        gl.glVertexAttribPointer(
+            1,
+            3,
+            gl.GL_FLOAT,
+            gl.GL_FALSE,
+            self.mesh.vertex_byte_size,
+            ctypes.c_void_p(3 * 4),
+        )
+        gl.glEnableVertexAttribArray(1)
+        gl.glVertexAttribPointer(
+            2,
+            2,
+            gl.GL_FLOAT,
+            gl.GL_FALSE,
+            self.mesh.vertex_byte_size,
+            ctypes.c_void_p(6 * 4),
+        )
+        gl.glEnableVertexAttribArray(2)
+        gl.glBindVertexArray(0)
+
+    def set_mesh(self, mesh):
+        """Rebind this instancer to replacement prototype buffers."""
+        if mesh.device != self.device:
+            raise ValueError("Replacement mesh must use the instancer device")
+        self.mesh = mesh
+        self._bind_mesh_buffers()
 
     def update_from_transforms(
         self,

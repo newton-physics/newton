@@ -3,6 +3,8 @@
 
 """MPM collider adapters for particle surface extraction."""
 
+import math
+
 import warp as wp
 
 from ...geometry.particle_surface import ParticleSurface
@@ -89,7 +91,8 @@ def extrapolate_surface_sdf_into_colliders(
         collider_world: World index for each collider, or ``-1`` for global.
         body_q: Current rigid body transforms, shape ``(body_count,)``.
         max_depth: Maximum extrapolation depth inside colliders [m]. Defaults to
-            ``4 * surface.voxel_size``.
+            the smaller of ``4 * surface.voxel_size`` and the allocated
+            particle-surface topology halo.
         onset: Signed collider distance where extrapolation starts [m]. A value
             of ``0`` starts at the collider surface.
         redistance: Whether to redistance the modified SDF before extracting the mesh.
@@ -106,8 +109,24 @@ def extrapolate_surface_sdf_into_colliders(
     capacity = surface._capacity
     if capacity is None:
         raise ValueError("Particle surface field has not been extracted")
+    topology_halo = (
+        surface.padding
+        + surface.field_smooth_iterations * surface.field_smooth_radius
+        + surface.redistance_iterations
+        + 1
+    ) * surface.voxel_size
+    if not math.isfinite(onset):
+        raise ValueError("onset must be finite")
     if max_depth is None:
-        max_depth = _DEFAULT_COLLIDER_EXTRAPOLATION_DEPTH_SCALE * surface.voxel_size
+        max_depth = min(_DEFAULT_COLLIDER_EXTRAPOLATION_DEPTH_SCALE * surface.voxel_size, topology_halo)
+    elif not math.isfinite(max_depth) or max_depth < 0.0:
+        raise ValueError("max_depth must be finite and non-negative")
+    required_inward_halo = max_depth + max(0.0, -onset)
+    if required_inward_halo > topology_halo:
+        raise ValueError(
+            f"Collider extrapolation requires an inward halo of {required_inward_halo}, "
+            f"which exceeds the allocated particle-surface topology halo ({topology_halo})"
+        )
     if capacity.volume is None or capacity.voxel_ijk is None or capacity.node_world is None:
         raise ValueError("Particle surface field has no sparse grid topology")
 

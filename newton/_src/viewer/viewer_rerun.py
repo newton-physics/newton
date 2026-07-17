@@ -278,6 +278,8 @@ class ViewerRerun(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
         """
         name = self._qualify(name)
+        previous_mesh = self._meshes.get(name)
+        was_visible = isinstance(previous_mesh, dict) and previous_mesh.get("visible", False)
 
         if not hidden:
             assert isinstance(points, wp.array)
@@ -333,9 +335,12 @@ class ViewerRerun(ViewerBase):
             "texture_image": texture_image,
             "texture_buffer": texture_buffer,
             "texture_format": texture_format,
+            "visible": not hidden,
         }
 
         if hidden:
+            if was_visible:
+                rr.log(name, rr.Clear(recursive=False))
             return
 
         mesh_kwargs = {

@@ -878,25 +878,48 @@ class ViewerGL(ViewerBase):
 
         # Route user-supplied names through the active layer (idempotent).
         name = self._qualify(name)
-        if name in self.objects and (
-            len(points) != self.objects[name].num_points
-            or len(indices) != self.objects[name].num_indices
-            or dynamic != self.objects[name].dynamic
-        ):
-            self.objects[name].destroy()
-            del self.objects[name]
+        existing = self.objects.get(name)
+        replace = existing is None
+        if existing is not None:
+            replace = dynamic != existing.dynamic
+            if dynamic and existing.dynamic:
+                replace = replace or len(points) > existing.max_points or len(indices) > existing.max_indices
+            else:
+                replace = replace or len(points) != existing.num_points or len(indices) != existing.num_indices
 
-        if name not in self.objects:
-            self.objects[name] = MeshGL(
-                len(points),
-                len(indices),
+        updated = False
+        if replace:
+            point_capacity = len(points)
+            index_capacity = len(indices)
+            if existing is not None and existing.dynamic and dynamic:
+                point_capacity = max(point_capacity, 1, 2 * existing.max_points)
+                index_capacity = max(index_capacity, 1, 2 * existing.max_indices)
+            replacement = MeshGL(
+                point_capacity,
+                index_capacity,
                 self.device,
                 hidden=hidden,
                 backface_culling=backface_culling,
                 dynamic=dynamic,
             )
+            if existing is not None:
+                replacement.color = existing.color
+                replacement.material = existing.material
+            try:
+                replacement.update(points, indices, normals, uvs, texture)
+            except Exception:
+                replacement.destroy()
+                raise
+            self.objects[name] = replacement
+            updated = True
+            if existing is not None:
+                for obj in self.objects.values():
+                    if isinstance(obj, MeshInstancerGL) and obj.mesh is existing:
+                        obj.set_mesh(replacement)
+                existing.destroy()
 
-        self.objects[name].update(points, indices, normals, uvs, texture)
+        if not updated:
+            self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 

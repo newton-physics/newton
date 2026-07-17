@@ -280,6 +280,24 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(list(face_counts.Get(1)), [3, 3])
         self.assertEqual(list(face_indices.Get(1)), [0, 1, 2, 0, 2, 3])
 
+    def test_log_mesh_dynamic_clears_stale_normals(self):
+        viewer = self._make_viewer()
+        points = wp.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=wp.vec3,
+        )
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        normals = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3)
+
+        viewer.begin_frame(0.0)
+        viewer.log_mesh("/dynamic_mesh", points, indices, normals=normals, dynamic=True)
+        viewer.begin_frame(1.0 / viewer.fps)
+        viewer.log_mesh("/dynamic_mesh", points, indices, normals=None, dynamic=True)
+
+        mesh = UsdGeom.Mesh.Get(viewer.stage, viewer._get_path("/dynamic_mesh"))
+        self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
+        self.assertEqual(list(mesh.GetNormalsAttr().Get(1)), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1130,7 +1130,8 @@ class ParticleSurface:
             per-particle anisotropic ellipsoid SDFs and stores an SDF field.
         particle_sdf_radius_scale: Radius multiplier for ``surface_method="particle_sdf"``.
         particle_sdf_band: Narrow-band half-width in normalized ellipsoid
-            coordinates for ``surface_method="particle_sdf"``.
+            coordinates for ``surface_method="particle_sdf"``. Must be at
+            least 1 so the band contains the zero level set.
         padding: Extra voxels added around the particle bounding box.
         field_smooth_iterations: Number of separable Gaussian blur passes
             applied to the scalar field before marching cubes.  Defaults to
@@ -1289,8 +1290,8 @@ class ParticleSurface:
             raise ValueError("mesh_smooth_lambda must be in [0, 1]")
         if not math.isfinite(particle_sdf_radius_scale) or particle_sdf_radius_scale <= 0.0:
             raise ValueError("particle_sdf_radius_scale must be positive")
-        if not math.isfinite(particle_sdf_band) or particle_sdf_band <= 0.0:
-            raise ValueError("particle_sdf_band must be positive")
+        if not math.isfinite(particle_sdf_band) or particle_sdf_band < 1.0:
+            raise ValueError("particle_sdf_band must be at least 1")
         if world_count <= 0:
             raise ValueError("world_count must be positive")
         if surface_method not in ("density", "particle_sdf"):
@@ -1595,11 +1596,23 @@ class ParticleSurface:
             raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
         if self._capacity.volume is None:
             raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
-        geometry = fem.Nanogrid(
-            self._capacity.volume,
-            cell_env=self._capacity.cell_world,
-            env_offsets=self._capacity.env_offsets,
-        )
+        env_offset = wp.vec3i(0)
+        volume = self._capacity.volume
+        if self.world_count > 1:
+            cell_count = volume.get_active_stats().voxel_count
+            cell_ijk = self._capacity.voxel_ijk[:cell_count].numpy()
+            cell_world = self._capacity.cell_world[:cell_count].numpy()
+            env_offset_np = self._capacity.env_offsets.numpy()[world]
+            world_cell_ijk = cell_ijk[cell_world == world] - env_offset_np
+            world_cells = wp.array(world_cell_ijk, dtype=wp.vec3i, device=self._capacity.device)
+            volume = wp.Volume.allocate_by_voxels(
+                world_cells,
+                voxel_size=self.voxel_size,
+                translation=(0.5 * self.voxel_size,) * 3,
+                device=self._capacity.device,
+            )
+            env_offset = wp.vec3i(env_offset_np)
+        geometry = fem.Nanogrid(volume)
         space = fem.make_polynomial_space(geometry, degree=1, dtype=float)
         discrete_field = fem.make_discrete_field(space)
         outside_value = 0.0
@@ -1607,18 +1620,34 @@ class ParticleSurface:
             outside_value = self.kernel_radius * self.particle_sdf_band
         elif self.field_mode == "sdf":
             outside_value = self.threshold
-        wp.launch(
-            sparse_kernels.copy_field_to_nanogrid,
-            dim=geometry.vertex_count(),
-            inputs=[
-                self._capacity.volume.id,
-                self._capacity.field,
-                geometry._node_ijk,
-                discrete_field.dof_values,
-                outside_value,
-            ],
-            device=self._capacity.device,
-        )
+        if self.world_count == 1:
+            wp.launch(
+                sparse_kernels.copy_field_to_nanogrid,
+                dim=geometry.vertex_count(),
+                inputs=[
+                    self._capacity.volume.id,
+                    self._capacity.field,
+                    geometry._node_ijk,
+                    discrete_field.dof_values,
+                    env_offset,
+                    outside_value,
+                ],
+                device=self._capacity.device,
+            )
+        else:
+            key_dtype = np.dtype([("x", np.int32), ("y", np.int32), ("z", np.int32)])
+            source_keys = np.ascontiguousarray(cell_ijk).view(key_dtype).reshape(-1)
+            source_order = np.argsort(source_keys, order=("x", "y", "z"))
+            sorted_keys = source_keys[source_order]
+            node_ijk = geometry._node_ijk.numpy() + env_offset_np
+            node_keys = np.ascontiguousarray(node_ijk).view(key_dtype).reshape(-1)
+            source_indices = np.searchsorted(sorted_keys, node_keys)
+            clamped_indices = np.minimum(source_indices, len(sorted_keys) - 1)
+            valid = source_indices < len(sorted_keys)
+            valid &= sorted_keys[clamped_indices] == node_keys
+            values = np.full(geometry.vertex_count(), outside_value, dtype=np.float32)
+            values[valid] = self._capacity.field[:cell_count].numpy()[source_order[clamped_indices[valid]]]
+            wp.copy(discrete_field.dof_values, wp.array(values, dtype=float, device=self._capacity.device))
         return discrete_field
 
     # -- Core extraction --
@@ -2439,8 +2468,9 @@ def extract_particle_surface(
             anisotropic density splatting. ``"particle_sdf"`` directly unions
             per-particle anisotropic ellipsoid SDFs.
         particle_sdf_radius_scale: Radius multiplier for ``surface_method="particle_sdf"``.
-        particle_sdf_band: Narrow-band half-width in normalized ellipsoid
-            coordinates for ``surface_method="particle_sdf"``.
+    particle_sdf_band: Narrow-band half-width in normalized ellipsoid
+        coordinates for ``surface_method="particle_sdf"``. Must be at least
+        1 so the band contains the zero level set.
 
     Returns:
         Mesh buffers and device-resident logical counts.

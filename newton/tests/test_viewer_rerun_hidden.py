@@ -82,6 +82,19 @@ class TestViewerRerunHidden(unittest.TestCase):
         self.assertIn("/layers/solverA/hidden_mesh", viewer._meshes)
         self.mock_rr.log.assert_not_called()
 
+    def test_log_mesh_hidden_clears_previously_visible_entity(self):
+        viewer = self._create_viewer()
+        viewer._meshes["mesh"] = {"visible": True}
+
+        points = self._make_mock_wp_array([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+        indices = self._make_mock_wp_array([0, 1, 2])
+
+        with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
+            viewer.log_mesh("mesh", points, indices, hidden=True)
+
+        self.mock_rr.Clear.assert_called_once_with(recursive=False)
+        self.mock_rr.log.assert_called_once_with("mesh", self.mock_rr.Clear.return_value)
+
     def test_log_mesh_hidden_preserves_uvs_and_texture(self):
         """Hidden mesh templates should retain shading data for later instancing."""
         viewer = self._create_viewer()

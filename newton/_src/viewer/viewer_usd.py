@@ -325,6 +325,8 @@ class ViewerUSD(ViewerBase):
             normals_np = normals.numpy().astype(np.float32)
             mesh_prim.GetNormalsAttr().Set(normals_np, self._frame_index)
             mesh_prim.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+        elif dynamic:
+            mesh_prim.GetNormalsAttr().Set([], self._frame_index)
 
         # Set UVs if provided
         if uvs is not None:

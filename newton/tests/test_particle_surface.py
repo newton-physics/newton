@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -146,6 +147,23 @@ def test_multi_world_mesh(test, device):
     test.assertEqual(surface.grid_dims_for_world(0), surface.grid_dims_for_world(1))
     test.assertEqual(surface.grid_dims_for_world(2), (0, 0, 0))
     test.assertIsNone(surface.field_for_world(2))
+    active_cell_count = surface._capacity.volume.get_active_stats().voxel_count
+    cell_ijk = surface._capacity.voxel_ijk[:active_cell_count].numpy()
+    cell_world = surface._capacity.cell_world[:active_cell_count].numpy()
+    field_values = surface._capacity.field[:active_cell_count].numpy()
+    env_offsets = surface._capacity.env_offsets.numpy()
+    for world in range(2):
+        with wp.ScopedDevice(device):
+            fem_world = surface.fem_field(world)
+            test.assertEqual(fem_world.space.geometry.cell_count(), int(np.count_nonzero(cell_world == world)))
+            selected = np.flatnonzero(cell_world == world)[::31]
+            node_points = ((cell_ijk[selected] - env_offsets[world]) * surface.voxel_size).astype(np.float32)
+            query = wp.array(node_points, dtype=wp.vec3, device=device)
+            domain = fem.Cells(fem_world.space.geometry)
+            quadrature = fem.PicQuadrature(domain, positions=query)
+            interpolated = wp.empty(len(selected), dtype=float, device=device)
+            fem.interpolate(fem_world, dest=interpolated, at=quadrature)
+        np.testing.assert_allclose(interpolated.numpy(), field_values[selected], atol=1.0e-4)
     np.testing.assert_allclose(
         np.array(surface.grid_origin_for_world(1)) - np.array(surface.grid_origin_for_world(0)),
         offset,
@@ -294,7 +312,7 @@ def test_isotropic_fallback_stencil_covers_support(test, device):
                 leaf_hash = surface._capacity.leaf_hash
                 candidate_leaf_count = int(leaf_hash.active_slots.numpy()[leaf_hash.capacity])
             candidate_voxel_count = 512 * candidate_leaf_count
-            test.assertEqual(active_voxel_count, 1759)
+            test.assertEqual(active_voxel_count, 1761)
             test.assertLess(active_voxel_count, candidate_voxel_count)
 
 
@@ -608,6 +626,111 @@ def test_grid_capacity_extraction(test, device):
         with wp.ScopedCapture(device=device) as capture:
             surface.extract(positions, radii, compute_normals=False)
         wp.capture_launch(capture.graph)
+
+
+def test_sparse_density_matches_reference(test, device):
+    positions_np = np.array(
+        [
+            [-0.217, 0.133, -0.091],
+            [-0.041, 0.207, 0.052],
+            [0.164, -0.118, 0.139],
+            [0.293, 0.064, -0.176],
+        ],
+        dtype=np.float32,
+    )
+    radii_np = np.array([0.051, 0.063, 0.057, 0.069], dtype=np.float32)
+    positions = wp.array(positions_np, dtype=wp.vec3, device=device)
+    radii = wp.array(radii_np, dtype=float, device=device)
+    voxel_size = 0.07
+    kernel_radius = 0.23
+    kernel_scale = 0.65
+    surface = ParticleSurface(
+        voxel_size=voxel_size,
+        kernel_radius=kernel_radius,
+        kernel_scale=kernel_scale,
+        smooth_lambda=0.0,
+        padding=0,
+        max_grid_cells=20_000,
+        device=device,
+    )
+
+    surface.update_field(positions, radii)
+
+    coordinates, actual = _sparse_field_samples(surface)
+    _, leaf_counts = np.unique(coordinates // 8, axis=0, return_counts=True)
+    test.assertTrue(np.any((leaf_counts > 1) & (leaf_counts < 512)))
+
+    sample_positions = np.float32(voxel_size) * coordinates.astype(np.float32)
+    scale = np.float32(1.0 / (kernel_scale * kernel_radius))
+    expected = np.zeros(coordinates.shape[0], dtype=np.float32)
+    for position, radius in zip(positions_np, radii_np, strict=True):
+        q = np.linalg.norm(scale * (sample_positions - position), axis=1)
+        kernel = np.zeros_like(q)
+        inner = q < 1.0
+        kernel[inner] = 1.0 - 1.5 * q[inner] ** 2 + 0.75 * q[inner] ** 3
+        outer = (q >= 1.0) & (q < 2.0)
+        kernel[outer] = 0.25 * (2.0 - q[outer]) ** 3
+        weight = np.float32(8.0 * radius**3 * scale**3 / np.pi)
+        expected += weight * kernel
+
+    np.testing.assert_allclose(actual, expected, rtol=3.0e-5, atol=2.0e-6)
+
+
+def test_sparse_anisotropic_density_matches_reference(test, device):
+    positions_np = np.array(
+        [
+            [-0.18, -0.025, 0.012],
+            [-0.14, 0.018, -0.016],
+            [-0.09, -0.012, 0.021],
+            [-0.04, 0.026, -0.008],
+            [0.01, -0.021, 0.017],
+            [0.06, 0.014, -0.019],
+            [0.11, -0.017, 0.009],
+            [0.16, 0.022, -0.013],
+        ],
+        dtype=np.float32,
+    )
+    radii_np = np.linspace(0.045, 0.059, positions_np.shape[0], dtype=np.float32)
+    positions = wp.array(positions_np, dtype=wp.vec3, device=device)
+    radii = wp.array(radii_np, dtype=float, device=device)
+    voxel_size = 0.055
+    surface = ParticleSurface(
+        voxel_size=voxel_size,
+        kernel_radius=0.24,
+        kernel_scale=0.6,
+        smooth_lambda=0.0,
+        anisotropic=True,
+        anisotropy_ratio=4.0,
+        anisotropy_scale=1.5,
+        anisotropy_min_neighbors=2,
+        anisotropy_strength=0.9,
+        padding=0,
+        max_grid_cells=30_000,
+        device=device,
+    )
+
+    surface.update_field(positions, radii)
+
+    coordinates, actual = _sparse_field_samples(surface)
+    sample_positions = np.float32(voxel_size) * coordinates.astype(np.float32)
+    smoothed = surface._smoothed.numpy()[: positions_np.shape[0]]
+    G_matrices = surface._G.numpy()[: positions_np.shape[0]]
+    det_G = surface._det_G.numpy()[: positions_np.shape[0]]
+    test.assertGreater(np.max(np.abs(G_matrices[:, 0, 0] - G_matrices[:, 1, 1])), 1.0e-3)
+
+    expected = np.zeros(coordinates.shape[0], dtype=np.float32)
+    for position, radius, G, determinant in zip(smoothed, radii_np, G_matrices, det_G, strict=True):
+        transformed = (sample_positions - position) @ G.T
+        q = np.linalg.norm(transformed, axis=1)
+        kernel = np.zeros_like(q)
+        inner = q < 1.0
+        kernel[inner] = 1.0 - 1.5 * q[inner] ** 2 + 0.75 * q[inner] ** 3
+        outer = (q >= 1.0) & (q < 2.0)
+        kernel[outer] = 0.25 * (2.0 - q[outer]) ** 3
+        weight = np.float32(8.0 * radius**3 * determinant / np.pi)
+        expected += weight * kernel
+
+    np.testing.assert_allclose(actual, expected, rtol=5.0e-5, atol=3.0e-6)
 
 
 def test_sparse_grid_avoids_empty_span(test, device):
@@ -949,7 +1072,10 @@ def test_solver_extract_particle_surface(test, device):
         field_smooth_iterations=0,
     )
 
-    verts, indices, normals = solver.extract_particle_surface(state, surface, compute_normals=False)
+    with patch.object(surface, "extract", wraps=surface.extract) as extract:
+        verts, indices, normals = solver.extract_particle_surface(state, surface, compute_normals=False)
+
+    test.assertIs(extract.call_args.kwargs["particle_flags"], solver._mpm_model.particle_flags)
 
     test.assertIsNotNone(verts)
     test.assertGreater(verts.shape[0], 0)
@@ -1003,6 +1129,34 @@ def test_solver_extract_particle_surface(test, device):
     test.assertGreater(int(capacity_counts[0]), 0)
     test.assertGreater(int(capacity_counts[1]), 0)
 
+    invalid_depths = (-0.01, float("inf"), 1.0)
+    for max_depth in invalid_depths:
+        with test.subTest(max_depth=max_depth), test.assertRaisesRegex(ValueError, "max_depth|topology halo"):
+            solver.extract_particle_surface(
+                state,
+                capacity_surface_sdf,
+                compute_normals=False,
+                extrapolate_into_colliders=True,
+                collider_extrapolation_depth=max_depth,
+            )
+    with test.assertRaisesRegex(ValueError, "onset"):
+        solver.extract_particle_surface(
+            state,
+            capacity_surface_sdf,
+            compute_normals=False,
+            extrapolate_into_colliders=True,
+            collider_extrapolation_onset=float("nan"),
+        )
+    with test.assertRaisesRegex(ValueError, "topology halo"):
+        solver.extract_particle_surface(
+            state,
+            capacity_surface_sdf,
+            compute_normals=False,
+            extrapolate_into_colliders=True,
+            collider_extrapolation_depth=0.1,
+            collider_extrapolation_onset=-0.3,
+        )
+
     if wp.get_device(device).is_cuda:
         with wp.ScopedCapture(device=device) as capture:
             solver.extract_particle_surface(
@@ -1045,6 +1199,7 @@ def test_solver_extract_particle_surface_multi_world(test, device):
     options.grid_type = "dense"
     options.voxel_size = 0.1
     solver = SolverImplicitMPM(model, options)
+    np.testing.assert_array_equal(np.sort(solver._mpm_model.collider_world.numpy()), [0, 1])
     surface = solver.create_particle_surface(
         voxel_size=0.08,
         kernel_radius=0.24,
@@ -1098,6 +1253,7 @@ class TestParticleSurface(unittest.TestCase):
             ({"voxel_size": 0.1, "kernel_scale": 0.0}, "kernel_scale"),
             ({"voxel_size": 0.1, "anisotropy_scale": 0.0}, "anisotropy_scale"),
             ({"voxel_size": 0.1, "anisotropy_strength": 1.5}, "anisotropy_strength"),
+            ({"voxel_size": 0.1, "particle_sdf_band": 0.5}, "particle_sdf_band"),
             ({"voxel_size": 0.1, "world_count": 0}, "world_count"),
             ({"voxel_size": 0.1, "field_smooth_iterations": -1}, "field_smooth_iterations"),
             ({"voxel_size": 0.1, "mesh_smooth_lambda": 1.5}, "mesh_smooth_lambda"),
@@ -1199,6 +1355,18 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestParticleSurface, "test_grid_capacity_extraction", test_grid_capacity_extraction, devices=devices)
+add_function_test(
+    TestParticleSurface,
+    "test_sparse_density_matches_reference",
+    test_sparse_density_matches_reference,
+    devices=devices,
+)
+add_function_test(
+    TestParticleSurface,
+    "test_sparse_anisotropic_density_matches_reference",
+    test_sparse_anisotropic_density_matches_reference,
+    devices=devices,
+)
 add_function_test(
     TestParticleSurface, "test_sparse_grid_avoids_empty_span", test_sparse_grid_avoids_empty_span, devices=devices
 )

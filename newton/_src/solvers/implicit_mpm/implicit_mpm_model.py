@@ -474,13 +474,32 @@ class ImplicitMPMModel:
         if model is None:
             model = self.model
 
+        collider_shapes = None
         if collider_body_ids is None:
             if collider_meshes is None:
-                collider_body_ids = [
-                    body_id
-                    for body_id in range(-1, model.body_count)
-                    if len(_get_body_collision_shapes(model, body_id)) > 0
-                ]
+                collider_body_ids = []
+                collider_shapes = []
+                static_shapes = _get_body_collision_shapes(model, -1)
+                if len(static_shapes) > 0:
+                    shape_world = model.shape_world.numpy()
+                    static_shape_worlds = shape_world[static_shapes]
+                    for world in np.unique(static_shape_worlds):
+                        collider_body_ids.append(-1)
+                        collider_shapes.append(
+                            np.asarray(
+                                [
+                                    shape
+                                    for shape, shape_world in zip(static_shapes, static_shape_worlds, strict=True)
+                                    if shape_world == world
+                                ],
+                                dtype=int,
+                            )
+                        )
+                for body_id in range(model.body_count):
+                    shapes = _get_body_collision_shapes(model, body_id)
+                    if len(shapes) > 0:
+                        collider_body_ids.append(body_id)
+                        collider_shapes.append(shapes)
             else:
                 collider_body_ids = [None] * len(collider_meshes)
         if collider_meshes is None:
@@ -527,15 +546,18 @@ class ImplicitMPMModel:
 
         # count materials and shapes
         material_count = 1  # default material
-        body_shapes = {}
         collider_material_ids = []
-        for body_id in collider_body_ids:
+        if collider_shapes is None:
+            collider_shapes = [None] * collider_count
+        for collider_id, body_id in enumerate(collider_body_ids):
             if body_id is not None:
-                shapes = _get_body_collision_shapes(model, body_id)
+                shapes = collider_shapes[collider_id]
+                if shapes is None:
+                    shapes = _get_body_collision_shapes(model, body_id)
                 if len(shapes) == 0:
                     raise ValueError(f"Body {body_id} has no collision shapes")
 
-                body_shapes[body_id] = shapes
+                collider_shapes[collider_id] = shapes
                 collider_material_ids.append(list(range(material_count, material_count + len(shapes))))
                 material_count += len(shapes)
             else:
@@ -577,7 +599,7 @@ class ImplicitMPMModel:
             if body_id is not None:
                 for material_id, shape_margin, shape_friction in zip(
                     collider_material_ids[collider_id],
-                    *_get_shape_collision_materials(model, body_shapes[body_id]),
+                    *_get_shape_collision_materials(model, collider_shapes[collider_id]),
                     strict=True,
                 ):
                     # use material from shapes as default
@@ -639,7 +661,7 @@ class ImplicitMPMModel:
                 collider_worlds.append(int(body_world[body_id]))
                 continue
             if body_id == -1:
-                worlds = np.unique(shape_world[body_shapes[body_id]])
+                worlds = np.unique(shape_world[collider_shapes[collider_id]])
             elif collider_particle_ids[collider_id] is not None:
                 particle_ids = collider_particle_ids[collider_id]
                 particle_ids = particle_ids.numpy() if isinstance(particle_ids, wp.array) else np.asarray(particle_ids)
@@ -666,7 +688,7 @@ class ImplicitMPMModel:
                     mesh_face_material_ids = np.full(face_count, material_id, dtype=int)
                 else:
                     collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
-                        model, body_shapes[body_index], collider_material_ids[collider_id]
+                        model, collider_shapes[collider_id], collider_material_ids[collider_id]
                     )
 
                 face_material_ids.append(mesh_face_material_ids)

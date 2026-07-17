@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+import warp as wp
 
+from newton._src.viewer.gl.opengl import MeshGL
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
@@ -121,6 +123,94 @@ class TestViewerGLParticles(unittest.TestCase):
         viewer._log_particles(SimpleNamespace())
 
         viewer.log_points.assert_called_once_with("/model/particles", points=None, hidden=True)
+
+
+class TestViewerGLDynamicMeshes(unittest.TestCase):
+    def test_dynamic_normal_scratch_supports_shrink_then_growth(self):
+        mesh = MeshGL.__new__(MeshGL)
+        mesh.device = wp.get_device("cpu")
+        mesh.max_points = 8
+        mesh.num_points = 3
+        mesh._points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        mesh.indices = wp.array([0, 1, 2], dtype=wp.uint32)
+        mesh.normals = None
+
+        normal_lengths = []
+
+        def record_normals(_points, _indices, normals, **_kwargs):
+            normal_lengths.append(len(normals))
+            return normals
+
+        with patch("newton._src.viewer.gl.opengl.compute_vertex_normals", side_effect=record_normals):
+            mesh.recompute_normals()
+            scratch = mesh.normals
+            self.assertEqual(len(scratch), 8)
+
+            mesh.num_points = 7
+            mesh._points = wp.zeros(7, dtype=wp.vec3)
+            mesh.recompute_normals()
+
+        self.assertIs(mesh.normals, scratch)
+        self.assertEqual(len(mesh.normals), 8)
+        self.assertEqual(normal_lengths, [3, 7])
+
+    def test_dynamic_mesh_reuses_capacity_and_rebinds_instancers_on_growth(self):
+        class FakeMesh:
+            def __init__(self, num_points, num_indices, device, hidden=False, backface_culling=True, dynamic=False):
+                self.max_points = num_points
+                self.max_indices = num_indices
+                self.num_points = num_points
+                self.num_indices = num_indices
+                self.device = device
+                self.hidden = hidden
+                self.backface_culling = backface_culling
+                self.dynamic = dynamic
+                self.color = (0.7, 0.5, 0.3)
+                self.material = (0.5, 0.0, 0.0, 0.0)
+                self.destroyed = False
+
+            def update(self, points, indices, normals, uvs, texture):
+                self.num_points = len(points)
+                self.num_indices = len(indices)
+
+            def destroy(self):
+                self.destroyed = True
+
+        class FakeInstancer:
+            def __init__(self, mesh):
+                self.mesh = mesh
+                self.rebinds = 0
+
+            def set_mesh(self, mesh):
+                self.mesh = mesh
+                self.rebinds += 1
+
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer.objects = {}
+        viewer.device = wp.get_device("cpu")
+        viewer._qualify = lambda name: name
+        points = wp.zeros(3, dtype=wp.vec3)
+        indices = wp.zeros(3, dtype=wp.int32)
+
+        with (
+            patch("newton._src.viewer.viewer_gl.MeshGL", FakeMesh),
+            patch("newton._src.viewer.viewer_gl.MeshInstancerGL", FakeInstancer),
+        ):
+            viewer.log_mesh("mesh", points, indices, dynamic=True)
+            original = viewer.objects["mesh"]
+            instancer = FakeInstancer(original)
+            viewer.objects["instances"] = instancer
+
+            viewer.log_mesh("mesh", points[:2], indices, dynamic=True)
+            self.assertIs(viewer.objects["mesh"], original)
+            self.assertEqual(instancer.rebinds, 0)
+
+            viewer.log_mesh("mesh", wp.zeros(7, dtype=wp.vec3), indices, dynamic=True)
+
+        self.assertTrue(original.destroyed)
+        self.assertIs(instancer.mesh, viewer.objects["mesh"])
+        self.assertEqual(instancer.rebinds, 1)
+        self.assertGreaterEqual(viewer.objects["mesh"].max_points, 7)
 
 
 if __name__ == "__main__":

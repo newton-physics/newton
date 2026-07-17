@@ -1509,7 +1509,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 into collider interiors before meshing.  Requires
                 ``surface.field_mode == "sdf"``.
             collider_extrapolation_depth: Maximum distance [m] to extrapolate
-                into colliders.  Defaults to ``4 * surface.voxel_size``.
+                into colliders. Defaults to the smaller of
+                ``4 * surface.voxel_size`` and the allocated topology halo.
             collider_extrapolation_onset: Signed collider distance [m] where
                 extrapolation starts.  ``0`` starts at the collider surface.
             particle_flags: Optional per-particle flags selecting the active
@@ -1519,7 +1520,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             Mesh buffers and device-resident logical counts.
         """
         if particle_flags is None:
-            particle_flags = self.model.particle_flags
+            particle_flags = self._mpm_model.particle_flags
         if extrapolate_into_colliders and surface.field_mode != "sdf":
             raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
 
