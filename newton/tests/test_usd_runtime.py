@@ -293,6 +293,18 @@ class TestUsdRuntime(unittest.TestCase):
             runtime.step(sim_plain)
         assert_np_equal(sim_graph.state.body_q.numpy(), sim_plain.state.body_q.numpy(), tol=1e-6)
 
+    def test_cli_runs_headless(self):
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        from newton._src.usd.runtime import _main  # noqa: PLC0415
+
+        stage = _make_stage()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "scene.usda")
+            stage.GetRootLayer().Export(path)
+            _main([path, "--viewer", "null", "--num-steps", "20"])
+
 
 if __name__ == "__main__":
     unittest.main()

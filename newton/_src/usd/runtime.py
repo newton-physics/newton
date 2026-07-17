@@ -257,3 +257,37 @@ def step(sim: Simulation) -> None:
         _step_device_ops(sim, collide=collide)
     sim.time += sim.dt
     sim.step_count += 1
+
+
+def _main(argv: list[str] | None = None) -> None:
+    """Run a stage-driven simulation: load, step, and hand state to the selected viewer."""
+    import sys  # noqa: PLC0415
+
+    import newton.examples  # noqa: PLC0415
+
+    if argv is not None:
+        old_argv = sys.argv
+        sys.argv = [sys.argv[0], *argv]
+    try:
+        parser = newton.examples.create_parser()
+        parser.add_argument("stage", help="Path to the USD stage to simulate.")
+        parser.add_argument("--num-steps", type=int, default=None, help="Stop after this many physics steps.")
+        viewer, args = newton.examples.init(parser)
+
+        sim = load_usd(args.stage)
+        viewer.set_model(sim.model)
+        fps = sim.usd_info.get("fps") or 60.0
+        steps_per_frame = max(1, round(1.0 / (fps * sim.dt)))
+
+        while viewer.is_running():
+            for _ in range(steps_per_frame):
+                step(sim)
+            viewer.begin_frame(sim.time)
+            viewer.log_state(sim.state)
+            viewer.end_frame()
+            if args.num_steps is not None and sim.step_count >= args.num_steps:
+                break
+        viewer.close()
+    finally:
+        if argv is not None:
+            sys.argv = old_argv
