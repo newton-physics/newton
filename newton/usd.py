@@ -58,6 +58,7 @@ __all__ = [
 from ._src.usd.schema_resolver import (
     PrimType,
     SchemaResolver,
+    create_schema_resolution,
 )
 from ._src.usd.schemas import (
     SchemaResolverMjc,
@@ -71,4 +72,5 @@ __all__ += [
     "SchemaResolverMjc",
     "SchemaResolverNewton",
     "SchemaResolverPhysx",
+    "create_schema_resolution",
 ]

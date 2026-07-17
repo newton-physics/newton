@@ -9371,6 +9371,9 @@ def Xform "Articulation" (
         """Test that max_hull_vertices is parsed correctly from mesh collision."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
+        from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
+        from newton.usd import create_schema_resolution  # noqa: PLC0415
+
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -9398,6 +9401,15 @@ def Xform "Articulation" (
         with self.assertWarnsRegex(DeprecationWarning, "newton:maxHullVertices"):
             builder.add_usd(stage, mesh_maxhullvert=20)
         self.assertEqual(builder.shape_source[0].maxhullvert, 20)
+
+        # Composed resolution gives the applied schema ownership.
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            mesh_maxhullvert=20,
+            schema_resolution=create_schema_resolution([SchemaResolverNewton()]),
+        )
+        self.assertEqual(builder.shape_source[0].maxhullvert, -1)
 
         # Set max_hull_vertices to 32 on the mesh prim
         mesh_prim.GetAttribute("newton:maxHullVertices").Set(32)

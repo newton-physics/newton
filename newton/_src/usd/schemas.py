@@ -15,8 +15,6 @@ from ..usd.schema_resolver import PrimType, SchemaResolver, _reader_schema_attri
 from . import utils as usd
 
 if TYPE_CHECKING:
-    from pxr import Usd
-
     from ..sim.builder import ModelBuilder
 
 
@@ -43,8 +41,8 @@ def _physx_gap_from_reader(read_attribute: _AttributeReader) -> float | None:
 def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
     """Return a getter that reads a legacy contact custom attr with a deprecation warning."""
 
-    def _getter(prim: Usd.Prim) -> float | None:
-        value = usd.get_attribute(prim, legacy_name)
+    def _getter(read_attribute: _AttributeReader) -> float | None:
+        value = read_attribute(legacy_name)
         if value is not None:
             warnings.warn(
                 f"'{legacy_name}' on shape prim is deprecated; "
@@ -61,8 +59,8 @@ def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
 def _newton_non_schema_joint_state_attr(attr_name: str):
     """Return a getter that reads a non-schema Newton joint state attr with a UserWarning."""
 
-    def _getter(prim: Usd.Prim) -> float | None:
-        value = usd.get_attribute(prim, attr_name)
+    def _getter(read_attribute: _AttributeReader) -> float | None:
+        value = read_attribute(attr_name)
         if value is not None:
             warnings.warn(
                 f"'{attr_name}' on joint prim is a non-schema attribute. "
@@ -80,8 +78,8 @@ def _newton_non_schema_joint_state_attr(attr_name: str):
 def _newton_legacy_joint_limit_attr(legacy_name: str, schema_attr: str):
     """Return a getter that reads a legacy per-DOF limit attr with a deprecation warning."""
 
-    def _getter(prim: Usd.Prim) -> float | None:
-        value = usd.get_attribute(prim, legacy_name)
+    def _getter(read_attribute: _AttributeReader) -> float | None:
+        value = read_attribute(legacy_name)
         if value is not None:
             warnings.warn(
                 f"'{legacy_name}' on joint prim is deprecated; use '{schema_attr}' instead.",
@@ -97,8 +95,8 @@ def _newton_legacy_joint_limit_attr(legacy_name: str, schema_attr: str):
 def _mjc_legacy_material_solref(converter, material_attr: str):
     """Return a getter that reads legacy mjc:solref on a material prim with a deprecation warning."""
 
-    def _getter(prim: Usd.Prim) -> float | None:
-        value = usd.get_attribute(prim, "mjc:solref")
+    def _getter(read_attribute: _AttributeReader) -> float | None:
+        value = read_attribute("mjc:solref")
         if value is not None:
             warnings.warn(
                 f"'mjc:solref' on material prim is deprecated; author '{material_attr}' on the "
@@ -160,110 +158,120 @@ class SchemaResolverNewton(SchemaResolver):
             "limit_kd": SchemaAttribute("newton:limitDamping", None),
             "velocity_limit": SchemaAttribute("newton:velocityLimit", float("inf")),
             # Non-schema per-DOF limit attrs (deprecated; use newton:limitStiffness / newton:limitDamping)
-            "limit_linear_ke": SchemaAttribute(
+            "limit_linear_ke": _source_schema_attribute(
                 "newton:linear:limitStiffness",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr(
+                _source_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:linear:limitStiffness", "newton:limitStiffness"
                 ),
             ),
-            "limit_angular_ke": SchemaAttribute(
+            "limit_angular_ke": _source_schema_attribute(
                 "newton:angular:limitStiffness",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr(
+                _source_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:angular:limitStiffness", "newton:limitStiffness"
                 ),
             ),
-            "limit_rotX_ke": SchemaAttribute(
+            "limit_rotX_ke": _source_schema_attribute(
                 "newton:rotX:limitStiffness",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:rotX:limitStiffness", "newton:limitStiffness"),
+                _source_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:rotX:limitStiffness", "newton:limitStiffness"
+                ),
             ),
-            "limit_rotY_ke": SchemaAttribute(
+            "limit_rotY_ke": _source_schema_attribute(
                 "newton:rotY:limitStiffness",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:rotY:limitStiffness", "newton:limitStiffness"),
+                _source_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:rotY:limitStiffness", "newton:limitStiffness"
+                ),
             ),
-            "limit_rotZ_ke": SchemaAttribute(
+            "limit_rotZ_ke": _source_schema_attribute(
                 "newton:rotZ:limitStiffness",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:rotZ:limitStiffness", "newton:limitStiffness"),
+                _source_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:rotZ:limitStiffness", "newton:limitStiffness"
+                ),
             ),
-            "limit_linear_kd": SchemaAttribute(
+            "limit_linear_kd": _source_schema_attribute(
                 "newton:linear:limitDamping",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:linear:limitDamping", "newton:limitDamping"),
+                _source_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:linear:limitDamping", "newton:limitDamping"
+                ),
             ),
-            "limit_angular_kd": SchemaAttribute(
+            "limit_angular_kd": _source_schema_attribute(
                 "newton:angular:limitDamping",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:angular:limitDamping", "newton:limitDamping"),
+                _source_value_getter=_newton_legacy_joint_limit_attr(
+                    "newton:angular:limitDamping", "newton:limitDamping"
+                ),
             ),
-            "limit_rotX_kd": SchemaAttribute(
+            "limit_rotX_kd": _source_schema_attribute(
                 "newton:rotX:limitDamping",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:rotX:limitDamping", "newton:limitDamping"),
+                _source_value_getter=_newton_legacy_joint_limit_attr("newton:rotX:limitDamping", "newton:limitDamping"),
             ),
-            "limit_rotY_kd": SchemaAttribute(
+            "limit_rotY_kd": _source_schema_attribute(
                 "newton:rotY:limitDamping",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:rotY:limitDamping", "newton:limitDamping"),
+                _source_value_getter=_newton_legacy_joint_limit_attr("newton:rotY:limitDamping", "newton:limitDamping"),
             ),
-            "limit_rotZ_kd": SchemaAttribute(
+            "limit_rotZ_kd": _source_schema_attribute(
                 "newton:rotZ:limitDamping",
                 None,
-                usd_value_getter=_newton_legacy_joint_limit_attr("newton:rotZ:limitDamping", "newton:limitDamping"),
+                _source_value_getter=_newton_legacy_joint_limit_attr("newton:rotZ:limitDamping", "newton:limitDamping"),
             ),
             # Non-schema per-DOF initial state attrs
-            "angular_position": SchemaAttribute(
+            "angular_position": _source_schema_attribute(
                 "newton:angular:position",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:angular:position"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:angular:position"),
             ),
-            "linear_position": SchemaAttribute(
+            "linear_position": _source_schema_attribute(
                 "newton:linear:position",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:linear:position"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:linear:position"),
             ),
-            "rotX_position": SchemaAttribute(
+            "rotX_position": _source_schema_attribute(
                 "newton:rotX:position",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:position"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:position"),
             ),
-            "rotY_position": SchemaAttribute(
+            "rotY_position": _source_schema_attribute(
                 "newton:rotY:position",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:position"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:position"),
             ),
-            "rotZ_position": SchemaAttribute(
+            "rotZ_position": _source_schema_attribute(
                 "newton:rotZ:position",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:position"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:position"),
             ),
-            "angular_velocity": SchemaAttribute(
+            "angular_velocity": _source_schema_attribute(
                 "newton:angular:velocity",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:angular:velocity"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:angular:velocity"),
             ),
-            "linear_velocity": SchemaAttribute(
+            "linear_velocity": _source_schema_attribute(
                 "newton:linear:velocity",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:linear:velocity"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:linear:velocity"),
             ),
-            "rotX_velocity": SchemaAttribute(
+            "rotX_velocity": _source_schema_attribute(
                 "newton:rotX:velocity",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:velocity"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:velocity"),
             ),
-            "rotY_velocity": SchemaAttribute(
+            "rotY_velocity": _source_schema_attribute(
                 "newton:rotY:velocity",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:velocity"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:velocity"),
             ),
-            "rotZ_velocity": SchemaAttribute(
+            "rotZ_velocity": _source_schema_attribute(
                 "newton:rotZ:velocity",
                 0.0,
-                usd_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:velocity"),
+                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:velocity"),
             ),
         },
         PrimType.SHAPE: {
@@ -273,28 +281,27 @@ class SchemaResolverNewton(SchemaResolver):
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
             # Legacy per-shape contact attrs (deprecated; use NewtonMaterialAPI instead)
-            "ke": SchemaAttribute(
+            "ke": _source_schema_attribute(
                 "newton:contact_ke",
                 None,
-                usd_value_getter=_newton_legacy_contact_attr("newton:contact_ke", "newton:contactStiffness"),
+                _source_value_getter=_newton_legacy_contact_attr("newton:contact_ke", "newton:contactStiffness"),
             ),
-            "kd": SchemaAttribute(
+            "kd": _source_schema_attribute(
                 "newton:contact_kd",
                 None,
-                usd_value_getter=_newton_legacy_contact_attr("newton:contact_kd", "newton:contactDamping"),
+                _source_value_getter=_newton_legacy_contact_attr("newton:contact_kd", "newton:contactDamping"),
             ),
-            "kf": SchemaAttribute(
+            "kf": _source_schema_attribute(
                 "newton:contact_kf",
                 None,
-                usd_value_getter=_newton_legacy_contact_attr("newton:contact_kf", "newton:contactFrictionGain"),
+                _source_value_getter=_newton_legacy_contact_attr("newton:contact_kf", "newton:contactFrictionGain"),
             ),
-            "ka": SchemaAttribute(
+            "ka": _source_schema_attribute(
                 "newton:contact_ka",
                 None,
-                usd_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
+                _source_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
             ),
-            # SDF configuration — from NewtonSDFCollisionAPI. `-inf` is the
-            # "unset" sentinel (same convention as gap / shell_thickness above).
+            # SDF configuration — from NewtonSDFCollisionAPI.
             "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
             "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", float("-inf")),
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", float("-inf")),
@@ -401,7 +408,9 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.SCENE: {
             "max_solver_iterations": SchemaAttribute("physxScene:maxVelocityIterationCount", 255),
             "time_steps_per_second": SchemaAttribute("physxScene:timeStepsPerSecond", 60),
-            "gravity_enabled": SchemaAttribute("physxRigidBody:disableGravity", False, lambda value: not value),
+            "gravity_enabled": SchemaAttribute(
+                "physxRigidBody:disableGravity", False, usd_value_transformer=lambda value: not value
+            ),
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("physxJoint:armature", 0.0),
@@ -439,7 +448,9 @@ class SchemaResolverPhysx(SchemaResolver):
             # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
             # PhysX uses -inf to mean "engine default"; treat as unset (None).
             "margin": SchemaAttribute(
-                "physxCollision:restOffset", 0.0, lambda v: None if v == float("-inf") else float(v)
+                "physxCollision:restOffset",
+                0.0,
+                usd_value_transformer=lambda v: None if v == float("-inf") else float(v),
             ),
             "gap": _reader_schema_attribute(
                 "physxCollision:contactOffset",
@@ -566,7 +577,7 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SCENE: {
             "max_solver_iterations": SchemaAttribute("mjc:option:iterations", 100),
             "time_steps_per_second": SchemaAttribute(
-                "mjc:option:timestep", 0.002, lambda s: int(1.0 / s) if (s and s > 0) else None
+                "mjc:option:timestep", 0.002, usd_value_transformer=lambda s: int(1.0 / s) if (s and s > 0) else None
             ),
             "gravity_enabled": SchemaAttribute("mjc:flag:gravity", True),
         },
@@ -599,7 +610,9 @@ class SchemaResolverMjc(SchemaResolver):
             "margin": SchemaAttribute("mjc:margin", 0.0),
             "gap": SchemaAttribute("mjc:gap", 0.0),
             # Mass model: mjc:shellinertia (bool) → "shell" / "solid"
-            "mass_model": SchemaAttribute("mjc:shellinertia", False, lambda v: "shell" if v else "solid"),
+            "mass_model": SchemaAttribute(
+                "mjc:shellinertia", False, usd_value_transformer=lambda v: "shell" if v else "solid"
+            ),
             # mjc:solref also fills shape_material_ke/kd via the legacy lossy
             # conversion for back-compat with the convert_solref(ke, kd, 1, 1)
             # round-trip; raw solref is preserved in mujoco.solref. See
@@ -617,15 +630,15 @@ class SchemaResolverMjc(SchemaResolver):
             "weight": SchemaAttribute("mjc:solmix", 1.0),
             # See PrimType.SHAPE above for the mjc:solref → stiffness/damping
             # back-compat mirror.
-            "ke": SchemaAttribute(
+            "ke": _source_schema_attribute(
                 "mjc:solref",
                 None,
-                usd_value_getter=_mjc_legacy_material_solref(solref_to_stiffness, "newton:contactStiffness"),
+                _source_value_getter=_mjc_legacy_material_solref(solref_to_stiffness, "newton:contactStiffness"),
             ),
-            "kd": SchemaAttribute(
+            "kd": _source_schema_attribute(
                 "mjc:solref",
                 None,
-                usd_value_getter=_mjc_legacy_material_solref(solref_to_damping, "newton:contactDamping"),
+                _source_value_getter=_mjc_legacy_material_solref(solref_to_damping, "newton:contactDamping"),
             ),
         },
         PrimType.ACTUATOR: {

@@ -450,7 +450,11 @@ def parse_usd(
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
 
-    if schema_resolvers is None:
+    if schema_resolvers is not None and schema_resolution is not None:
+        raise ValueError("schema_resolvers and schema_resolution are mutually exclusive")
+    if schema_resolution is not None:
+        schema_resolvers = list(schema_resolution._resolvers)
+    elif schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
 
@@ -821,7 +825,6 @@ def parse_usd(
             spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
             if spec is None:
                 continue
-
             if resolver.name == "mjc":
                 raw_value = usd.get_attribute(prim, spec.name)
                 if raw_value is None:

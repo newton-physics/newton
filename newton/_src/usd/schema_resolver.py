@@ -19,6 +19,7 @@ from numbers import Real
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from . import utils as usd
+from ._schema_fallbacks import _schema_fallbacks
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -669,6 +670,63 @@ class SchemaResolverManager:
             key,
         )
         return value
+
+    def _resolve_value(
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        *,
+        default: Any = None,
+    ) -> _ResolvedValue:
+        """Resolve a value while retaining source provenance."""
+        if self._resolution is None:
+            raise RuntimeError("composed schema resolution is not enabled")
+        return self._resolution._resolve_value(
+            lambda resolver, key: resolver.get_value(prim, prim_type, key),
+            lambda resolver, key: resolver._schema_is_applied(prim, prim_type, key),
+            prim_type,
+            key,
+            default=default,
+            read_fallback=lambda resolver, key: self._pxr_fallback(resolver, prim, prim_type, key),
+        )
+
+    def _pxr_fallback(
+        self,
+        resolver: SchemaResolver,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+    ) -> Any:
+        schema_name = resolver._schema_name(prim_type, key)
+        if schema_name is None or prim is None:
+            return _MISSING_FALLBACK
+
+        from pxr import Usd
+
+        prim_type_name = str(prim.GetTypeName())
+        cache_key = (prim_type_name, schema_name)
+        if cache_key not in self._pxr_schema_fallbacks:
+            registry = Usd.SchemaRegistry()
+            if prim_type_name == schema_name:
+                prim_definition = registry.FindConcretePrimDefinition(schema_name)
+            else:
+                prim_definition = registry.BuildComposedPrimDefinition(prim_type_name, [schema_name])
+            self._pxr_schema_fallbacks[cache_key] = (
+                {name: prim_definition.GetAttributeFallbackValue(name) for name in prim_definition.GetPropertyNames()}
+                if prim_definition is not None
+                else {}
+            )
+
+        fallbacks = self._pxr_schema_fallbacks[cache_key]
+        value = resolver._get_fallback_from_source(
+            lambda name: fallbacks.get(name, _MISSING_FALLBACK),
+            prim_type,
+            key,
+        )
+        if value is not _MISSING_FALLBACK:
+            return value
+        return self._resolution._mapping_fallback(resolver, prim_type, key)
 
     def deformable_compat_namespaces(self) -> list[str]:
         """Deformable vendor attribute namespaces declared by the active resolvers.
