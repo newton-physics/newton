@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
@@ -94,20 +95,33 @@ def _find_physics_scene(stage: Usd.Stage) -> Usd.Prim:
     return scenes[0]
 
 
-def _resolve_solver_entry(scene_prim: Usd.Prim) -> _SolverEntry:
-    applied = set(scene_prim.GetAppliedSchemas()) | set(_get_raw_api_schemas(scene_prim))
-    tokens = sorted(t for t in applied if t.startswith("NewtonSolver") and t.endswith("API"))
+def _select_solver(applied_schemas: Iterable[str], *, context: str = "") -> _SolverEntry:
+    """Pick the registered solver whose schema token appears in ``applied_schemas``.
+
+    ``context`` is appended after "applied"/"applied<context>" in error messages, e.g.
+    ``" to <path>"``, so callers can attribute the failure without this function knowing
+    what a prim is.
+    """
+    tokens = sorted(t for t in applied_schemas if t.startswith("NewtonSolver") and t.endswith("API"))
     registered = ", ".join(sorted(_SOLVER_REGISTRY))
     if not tokens:
-        raise ValueError(f"No NewtonSolver*API applied to {scene_prim.GetPath()}. Apply exactly one of: {registered}")
+        raise ValueError(f"No NewtonSolver*API applied{context}. Apply exactly one of: {registered}")
     if len(tokens) > 1:
-        raise ValueError(
-            f"exactly one NewtonSolver*API must be applied to {scene_prim.GetPath()}, found: {', '.join(tokens)}"
-        )
+        raise ValueError(f"exactly one NewtonSolver*API must be applied{context}, found: {', '.join(tokens)}")
     entry = _SOLVER_REGISTRY.get(tokens[0])
     if entry is None:
         raise ValueError(f"Unknown solver schema {tokens[0]}. Registered: {registered}")
     return entry
+
+
+def _resolve_params(entry: _SolverEntry, attrs: dict[str, Any]) -> dict[str, Any]:
+    """Map authored-only attribute values to the solver constructor kwargs they configure."""
+    return {kwarg: attrs[attr] for attr, kwarg in entry.param_attrs.items() if attrs.get(attr) is not None}
+
+
+def _resolve_solver_entry(scene_prim: Usd.Prim) -> _SolverEntry:
+    applied = set(scene_prim.GetAppliedSchemas()) | set(_get_raw_api_schemas(scene_prim))
+    return _select_solver(applied, context=f" to {scene_prim.GetPath()}")
 
 
 @dataclass
@@ -190,10 +204,7 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
         builder.color()
     model = builder.finalize(requires_grad=requires_grad)
 
-    scene_attrs = usd_info["scene_attributes"]
-    params = {
-        kwarg: scene_attrs[attr] for attr, kwarg in entry.param_attrs.items() if scene_attrs.get(attr) is not None
-    }
+    params = _resolve_params(entry, usd_info["scene_attributes"])
     solver = entry.cls(model, **params)
 
     state = model.state()

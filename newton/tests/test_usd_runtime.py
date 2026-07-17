@@ -269,6 +269,16 @@ class TestUsdRuntime(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "newton:collisionInterval"):
             runtime.load_usd(stage, use_graph=False)
 
+    def test_solver_selection_is_pure_data(self):
+        from newton._src.usd.runtime import _SOLVER_REGISTRY, _resolve_params, _select_solver  # noqa: PLC0415
+
+        entry = _select_solver(["PhysicsSceneAPI", "NewtonSolverXpbdAPI"])
+        self.assertIs(entry, _SOLVER_REGISTRY["NewtonSolverXpbdAPI"])
+        params = _resolve_params(entry, {"newton:xpbd:iterations": 7, "unrelated:attr": 1})
+        self.assertEqual(params, {"iterations": 7})
+        with self.assertRaisesRegex(ValueError, "NewtonSolverXpbdAPI"):
+            _select_solver([])
+
     def test_all_registered_solvers_load_and_step(self):
         import newton.usd.runtime as runtime  # noqa: PLC0415
         from newton._src.usd.runtime import _SOLVER_REGISTRY  # noqa: PLC0415
