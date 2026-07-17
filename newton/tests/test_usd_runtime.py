@@ -3,6 +3,7 @@
 
 import unittest
 
+import newton
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 
@@ -76,6 +77,68 @@ class TestUsdRuntime(unittest.TestCase):
         stage = _make_stage(solver_api=["NewtonSolverXpbdAPI", "NewtonSolverVbdAPI"])
         with self.assertRaisesRegex(ValueError, "exactly one"):
             runtime.load_usd(stage)
+
+    def test_load_populates_simulation(self):
+        from pxr import Sdf
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        stage = _make_stage(
+            scene_attrs={
+                "newton:timeStepsPerSecond": (Sdf.ValueTypeNames.Float, 240.0),
+                "newton:xpbd:iterations": (Sdf.ValueTypeNames.Int, 7),
+                "newton:collisionInterval": (Sdf.ValueTypeNames.Int, 2),
+            }
+        )
+        sim = runtime.load_usd(stage, use_graph=False)
+        self.assertIsInstance(sim.model, newton.Model)
+        self.assertEqual(len(sim.solvers), 1)
+        self.assertIs(sim.solver, sim.solvers[0])
+        self.assertIsInstance(sim.solver, newton.solvers.SolverXPBD)
+        self.assertEqual(sim.solver.iterations, 7)  # authored param
+        self.assertAlmostEqual(sim.dt, 1.0 / 240.0)  # authored timestep
+        self.assertEqual(sim.collision_interval, 2)
+        self.assertEqual(sim.time, 0.0)
+        self.assertEqual(sim.step_count, 0)
+        self.assertIsNotNone(sim.contacts)
+        self.assertEqual(sim.model.body_count, 1)
+
+    def test_unauthored_params_use_constructor_defaults(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim = runtime.load_usd(_make_stage(), use_graph=False)
+        self.assertEqual(sim.solver.iterations, 2)  # SolverXPBD default
+        self.assertAlmostEqual(sim.dt, 1.0 / 1000.0)  # resolver default 1000 Hz
+        self.assertEqual(sim.collision_interval, 1)
+
+    def test_unknown_solver_namespace_attrs_are_inert(self):
+        from pxr import Sdf
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        stage = _make_stage(scene_attrs={"newton:xpbd:iterattions": (Sdf.ValueTypeNames.Int, 99)})
+        sim = runtime.load_usd(stage, use_graph=False)  # no warning, no error
+        self.assertEqual(sim.solver.iterations, 2)
+
+    def test_source_stage_not_mutated(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        stage = _make_stage()
+        before = stage.GetRootLayer().ExportToString()
+        runtime.load_usd(stage, use_graph=False)
+        self.assertEqual(stage.GetRootLayer().ExportToString(), before)
+
+    def test_requires_grad_passthrough(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim = runtime.load_usd(_make_stage(), requires_grad=True, use_graph=False)
+        self.assertTrue(sim.state.body_q.requires_grad)
+
+    def test_vbd_stage_loads_with_coloring(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim = runtime.load_usd(_make_stage(solver_api="NewtonSolverVbdAPI"), use_graph=False)
+        self.assertIsInstance(sim.solver, newton.solvers.SolverVBD)
 
 
 if __name__ == "__main__":
