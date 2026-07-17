@@ -2839,10 +2839,11 @@ class ModelBuilder:
                 continue
             if spec.compaction_policy == "color_groups":
                 kind = self._builder_frequency_key(spec.frequency)
-                for start in starts(kind).tolist():
-                    translated = [group + start for group in source]
-                    destination = combine_independent_particle_coloring(destination, translated)
-                setattr(self, attr, destination)
+                group_starts = starts(kind)[:, None]
+                # Copies are disjoint, so each color unions across worlds; a single
+                # combine call keeps replication O(total) instead of O(worlds^2).
+                translated = [(np.asarray(group, dtype=np.int64) + group_starts).ravel() for group in source]
+                setattr(self, attr, combine_independent_particle_coloring(destination, translated))
             elif attr.endswith("_label"):
                 for label_prefix in label_prefixes:
                     if label_prefix:

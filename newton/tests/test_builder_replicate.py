@@ -268,6 +268,20 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 err_msg=attr,
             )
 
+    def test_replicate_combines_color_groups_across_worlds(self):
+        source = ModelBuilder()
+        for i in range(6):
+            source.add_particle(wp.vec3(float(i), 0.0, 0.0), wp.vec3(), 1.0)
+        # Plain lists must be tolerated alongside ndarray groups.
+        source.particle_color_groups = [[0, 1], np.arange(2, 6)]
+
+        replicated = ModelBuilder()
+        replicated.replicate(source, 3)
+
+        self.assertEqual(len(replicated.particle_color_groups), 2)
+        np.testing.assert_array_equal(replicated.particle_color_groups[0], [0, 1, 6, 7, 12, 13])
+        np.testing.assert_array_equal(replicated.particle_color_groups[1], [2, 3, 4, 5, 8, 9, 10, 11, 14, 15, 16, 17])
+
     def test_zero_spacing_replication_copies_joint_q_exactly(self):
         source = ModelBuilder()
         body = source.add_body()
