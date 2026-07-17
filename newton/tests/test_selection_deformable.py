@@ -24,6 +24,25 @@ def _replicated_model(world_count=3, device=None):
     return scene.finalize() if device is None else scene.finalize(device=device)
 
 
+def _irregular_model(device=None):
+    """Three equal cloths and cables separated by unequal unrelated data."""
+    builder = newton.ModelBuilder()
+    _add_test_cloth(builder, label="selected_cloth_0")
+    builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), 1.0)
+    _add_test_cloth(builder, label="selected_cloth_1")
+    builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), 1.0)
+    builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), 1.0)
+    _add_test_cloth(builder, label="selected_cloth_2")
+
+    _add_test_cable(builder, label="selected_cable_0")
+    builder.add_link()
+    _add_test_cable(builder, label="selected_cable_1")
+    builder.add_link()
+    builder.add_link()
+    _add_test_cable(builder, label="selected_cable_2")
+    return builder.finalize() if device is None else builder.finalize(device=device)
+
+
 def _add_test_articulation(builder):
     root = builder.add_link(label="robot/root")
     root_joint = builder.add_joint_free(child=root, label="robot/root_joint")
@@ -216,6 +235,66 @@ class TestDeformableView(unittest.TestCase):
         lifted[..., 2] += 1.0
         view.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3, device="cpu"))
         np.testing.assert_allclose(view.get_particle_positions(state).numpy(), lifted, atol=1e-6)
+
+    def test_regular_getter_returns_a_live_state_view(self):
+        """A regular selection aliases state data like an ArticulationView getter."""
+        model = _replicated_model(2, device="cpu")
+        state = model.state()
+        view = DeformableView(model, "/World/Cloth", family="surface")
+        positions = view.get_particle_positions(state)
+        moved = positions.numpy().copy()
+        moved[..., 2] += 1.0
+
+        view.set_particle_positions(state, wp.array(moved, dtype=wp.vec3, device=model.device))
+
+        np.testing.assert_allclose(positions.numpy(), moved, atol=1.0e-6)
+
+    def test_irregular_getter_reuses_internal_staging(self):
+        """An indexed selection reuses its internally owned contiguous result."""
+        model = _irregular_model(device="cpu")
+        state = model.state()
+        view = DeformableView(model, "selected_cloth_*", family="surface")
+        first = view.get_particle_positions(state)
+        moved = first.numpy().copy()
+        moved[..., 2] += 1.0
+
+        view.set_particle_positions(state, wp.array(moved, dtype=wp.vec3, device=model.device))
+        second = view.get_particle_positions(state)
+
+        self.assertIs(first, second)
+        np.testing.assert_allclose(first.numpy(), moved, atol=1.0e-6)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_irregular_getters_capture_all_state_dtypes(self):
+        """Internally staged vec3, transform, and spatial-vector reads replay in a CUDA graph."""
+        device = wp.get_device("cuda:0")
+        model = _irregular_model(device=device)
+        state = model.state()
+        cloth = DeformableView(model, "selected_cloth_*", family="surface")
+        cable = DeformableView(model, "selected_cable_*", family="curve")
+
+        for name, getter, setter, dtype in (
+            ("particle_positions", cloth.get_particle_positions, cloth.set_particle_positions, wp.vec3),
+            ("particle_velocities", cloth.get_particle_velocities, cloth.set_particle_velocities, wp.vec3),
+            ("body_transforms", cable.get_body_transforms, cable.set_body_transforms, wp.transform),
+            (
+                "body_velocities",
+                cable.get_body_velocities,
+                cable.set_body_velocities,
+                wp.spatial_vector,
+            ),
+        ):
+            with self.subTest(getter=name):
+                result = getter(state)  # warm up and allocate indexed staging
+                with wp.ScopedCapture(device) as capture:
+                    captured_result = getter(state)
+                self.assertIs(result, captured_result)
+
+                expected = result.numpy().copy()
+                expected[..., 0] += 0.25
+                setter(state, wp.array(expected, dtype=dtype, device=device))
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(result.numpy(), expected, atol=1.0e-6)
 
     def test_selection_errors(self):
         """No match raises KeyError; ragged element counts and bad families raise ValueError."""

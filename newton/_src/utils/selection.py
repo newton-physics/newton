@@ -2157,9 +2157,9 @@ class DeformableView:
     worlds when every world has exactly one matching group. Host group indices are
     bounds-checked and duplicates are rejected. Device ``int32`` indices stay on the
     device: out-of-range entries are ignored and the last value wins for duplicates.
-    Indexed setters using preallocated device values and indices can be captured after
-    view construction and kernel warm-up. View construction, getters, and allocations
-    are outside the captured region.
+    Indexed setters and internally staged getters can be captured after view
+    construction and kernel warm-up. Regular getter layouts return zero-copy views;
+    irregular layouts reuse an internal contiguous staging array.
 
     Example:
 
@@ -2275,6 +2275,7 @@ class DeformableView:
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
+        self._attribute_arrays: dict[tuple[str, int], tuple[wp.array[Any], Any]] = {}
         self._kinds = tuple(kind for kind in selected[0].ranges if all(kind in group.ranges for group in selected))
         for kind in self._kinds:
             kind_ranges = [g.ranges[kind] for g in selected]
@@ -2382,9 +2383,63 @@ class DeformableView:
             )
         return count
 
-    def _gather(self, kind: str, src: wp.array[Any], kernel: Any, dtype: Any) -> wp.array2d[Any]:
+    def _get_attribute_array(self, kind: str, src: wp.array[Any]):
+        cache_key = (kind, id(src))
+        cached = self._attribute_arrays.get(cache_key)
+        if cached is not None and cached[0] is src:
+            return cached[1]
+
         count = self._element_count(kind)
-        out = wp.empty((self.count, count), dtype=dtype, device=self.device)
+        shape = (self.count, count)
+        if count == 0:
+            result = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
+            self._attribute_arrays[cache_key] = (src, result)
+            return result
+
+        starts = [start for start, _end in self._ranges[kind]]
+
+        def make_view(data: wp.array[Any], start: int, row_count: int, row_stride: int):
+            value_stride = data.strides[0]
+            result = wp.array(
+                ptr=int(data.ptr) + start * value_stride,
+                dtype=data.dtype,
+                shape=(row_count, count),
+                strides=(row_stride * value_stride, value_stride),
+                device=data.device,
+                copy=False,
+            )
+            result._ref = data
+            return result
+
+        row_stride = count if self.count == 1 else starts[1] - starts[0]
+        if all(start == starts[0] + row * row_stride for row, start in enumerate(starts)):
+            grad = None if src.grad is None else make_view(src.grad, starts[0], self.count, row_stride)
+            result = make_view(src, starts[0], self.count, row_stride)
+            result.grad = grad
+            self._attribute_arrays[cache_key] = (src, result)
+            return result
+
+        # A sliding-window view turns arbitrary equal-sized ranges into row indices
+        # without copying their source values.
+        grad = None if src.grad is None else make_view(src.grad, 0, src.shape[0] - count + 1, 1)
+        windows = make_view(src, 0, src.shape[0] - count + 1, 1)
+        windows.grad = grad
+        result = windows[self._starts[kind], :]
+        result._staging_array = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
+        self._attribute_arrays[cache_key] = (src, result)
+        return result
+
+    def _gather(
+        self,
+        kind: str,
+        src: wp.array[Any],
+        kernel: Any,
+    ) -> wp.array2d[Any]:
+        count = self._element_count(kind)
+        attribute = self._get_attribute_array(kind, src)
+        if not isinstance(attribute, wp.indexedarray):
+            return attribute
+        out = attribute._staging_array
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
@@ -2475,7 +2530,10 @@ class DeformableView:
         """Particles in each selected surface or volume group."""
         return self._element_count("particle")
 
-    def get_particle_positions(self, source: Model | State) -> wp.array2d[wp.vec3]:
+    def get_particle_positions(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.vec3]:
         """Return particle positions [m] for the selected surface or volume groups.
 
         Args:
@@ -2488,7 +2546,7 @@ class DeformableView:
             AttributeError: If this is not a surface or volume view.
             ValueError: If the selected groups have different particle counts.
         """
-        return self._gather("particle", source.particle_q, _gather_group_vec3_kernel, wp.vec3)
+        return self._gather("particle", source.particle_q, _gather_group_vec3_kernel)
 
     def set_particle_positions(
         self,
@@ -2531,7 +2589,10 @@ class DeformableView:
             world_indices,
         )
 
-    def get_particle_velocities(self, source: Model | State) -> wp.array2d[wp.vec3]:
+    def get_particle_velocities(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.vec3]:
         """Return particle velocities [m/s] for the selected surface or volume groups.
 
         Args:
@@ -2544,7 +2605,7 @@ class DeformableView:
             AttributeError: If this is not a surface or volume view.
             ValueError: If the selected groups have different particle counts.
         """
-        return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel, wp.vec3)
+        return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel)
 
     def set_particle_velocities(
         self,
@@ -2595,7 +2656,10 @@ class DeformableView:
         """Segment bodies in each selected curve group."""
         return self._element_count("body")
 
-    def get_body_transforms(self, source: Model | State) -> wp.array2d[wp.transform]:
+    def get_body_transforms(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.transform]:
         """Segment transforms of each curve, shape ``(count, bodies_per_group)``.
 
         Each transform contains a world-space translation [m] and a unitless
@@ -2611,7 +2675,7 @@ class DeformableView:
             AttributeError: If this is not a curve view.
             ValueError: If the selected groups have different body counts.
         """
-        return self._gather("body", source.body_q, _gather_group_transform_kernel, wp.transform)
+        return self._gather("body", source.body_q, _gather_group_transform_kernel)
 
     def set_body_transforms(
         self,
@@ -2655,7 +2719,10 @@ class DeformableView:
             world_indices,
         )
 
-    def get_body_velocities(self, source: Model | State) -> wp.array2d[wp.spatial_vector]:
+    def get_body_velocities(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.spatial_vector]:
         """Segment velocities, shape ``(count, bodies_per_group)``.
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
@@ -2671,7 +2738,7 @@ class DeformableView:
             AttributeError: If this is not a curve view.
             ValueError: If the selected groups have different body counts.
         """
-        return self._gather("body", source.body_qd, _gather_group_spatial_kernel, wp.spatial_vector)
+        return self._gather("body", source.body_qd, _gather_group_spatial_kernel)
 
     def set_body_velocities(
         self,
