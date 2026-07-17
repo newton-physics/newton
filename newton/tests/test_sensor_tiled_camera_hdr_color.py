@@ -21,7 +21,7 @@ def _build_single_sphere_model():
 def _render_tiny_color_and_hdr(model, *, output_color_space=newton.utils.ColorSpace.SRGB):
     sensor = SensorTiledCamera(
         model=model,
-        config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
+        default_render_config=SensorTiledCamera.RenderConfig(output_color_space=output_color_space),
     )
     state = model.state()
 

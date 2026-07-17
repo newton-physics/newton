@@ -143,6 +143,16 @@ class WorldDescriptor(Descriptor):
     in the world, and is always less than or equal to `num_joint_dofs`.
     """
 
+    num_fk_actuated_joint_coords: int = 0
+    """
+    The number of actuated joint coordinates, for FK actuation types.
+    """
+
+    num_fk_actuated_joint_dofs: int = 0
+    """
+    The number of actuated joint DoFs, for FK actuation types.
+    """
+
     num_joint_cts: int = 0
     """
     The total number of joint constraints.
@@ -490,7 +500,13 @@ class WorldDescriptor(Descriptor):
             self.num_actuated_joint_dofs += joint.num_dofs
             self.joint_actuated_coords.append(joint.num_coords)
             self.joint_actuated_dofs.append(joint.num_dofs)
+            if joint.fk_act_flag < 0:
+                self.num_fk_actuated_joint_coords += joint.num_coords
+                self.num_fk_actuated_joint_dofs += joint.num_dofs
             self.actuated_joint_names.append(joint.name)
+        if joint.fk_act_flag == 1:
+            self.num_fk_actuated_joint_coords += joint.num_coords
+            self.num_fk_actuated_joint_dofs += joint.num_dofs
 
         # Append joint dynamics group info
         if joint.num_dynamic_cts > 0:

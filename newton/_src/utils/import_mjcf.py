@@ -1372,11 +1372,11 @@ def parse_mjcf(
 
         show_colliders = should_show_collider(
             force_show_colliders,
-            has_visual_shapes=len(visuals) > 0 and parse_visuals,
+            model_has_visual_shapes=True,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
         )
 
-        parse_shapes(
+        collider_shape_indices = parse_shapes(
             defaults,
             body_name,
             link,
@@ -1386,6 +1386,7 @@ def parse_mjcf(
             incoming_xform=incoming_xform,
             label_prefix=label_prefix,
         )
+        collider_shapes.extend(collider_shape_indices)
 
         return visual_shape_indices
 
@@ -2316,6 +2317,7 @@ def parse_mjcf(
     # start articulation
 
     visual_shapes = []
+    collider_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
@@ -2372,7 +2374,7 @@ def parse_mjcf(
         # `parse_visuals_as_colliders=True` apply uniformly to worldbody
         # geoms too (not just geoms inside bodies).
 
-        _process_body_geoms(
+        world_visual_shapes = _process_body_geoms(
             geoms=world.findall("geom"),
             defaults=world_defaults,
             body_name="world",
@@ -2380,6 +2382,7 @@ def parse_mjcf(
             incoming_xform=xform,
             label_prefix=root_label_path,
         )
+        visual_shapes.extend(world_visual_shapes)
 
         if parse_sites:
             _parse_sites_impl(
@@ -3007,6 +3010,10 @@ def parse_mjcf(
         parse_actuators(actuator_section)
 
     # -----------------
+
+    if not visual_shapes:
+        for shape_idx in collider_shapes:
+            builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
 
     end_shape_count = len(builder.shape_type)
 

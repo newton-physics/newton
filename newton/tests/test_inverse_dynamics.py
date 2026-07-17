@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for InverseDynamics, eval_inverse_dynamics(), and the
-gravity/Coriolis force helpers."""
+"""Tests for inverse-dynamics passive terms and joint forces."""
 
 from __future__ import annotations
 
 import unittest
+from enum import IntFlag
 from typing import ClassVar
 
 import numpy as np
@@ -15,22 +15,69 @@ import warp as wp
 import newton
 
 
-def _gravity_vec_to_scalar_and_axis(gravity: wp.vec3) -> tuple[float, newton.Axis]:
-    """Decode an axis-aligned gravity vec3 into Newton's (scalar, axis) form.
+class _PassiveOutput(IntFlag):
+    """Test-only selector for sharing setup across passive-output tests."""
 
-    Newton's ``ModelBuilder`` only takes scalar gravity plus an up-axis, so we
-    accept at most one non-zero component and recover the signed magnitude and
-    matching axis. When all components are zero, the axis is indeterminate and
-    defaults to Y.
-    """
-    components = (float(gravity[0]), float(gravity[1]), float(gravity[2]))
-    non_zero = [i for i, v in enumerate(components) if v != 0.0]
-    if len(non_zero) > 1:
-        raise ValueError(f"gravity must have at most one non-zero component (axis-aligned); got {components}.")
-    if non_zero:
-        axis_idx = non_zero[0]
-        return components[axis_idx], (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)[axis_idx]
-    return 0.0, newton.Axis.Y
+    MASS_MATRIX = 1 << 0
+    GRAVITY_FORCE = 1 << 1
+    CORIOLIS_FORCE = 1 << 2
+    ALL = MASS_MATRIX | GRAVITY_FORCE | CORIOLIS_FORCE
+
+
+class _InverseDynamicsArrays:
+    """Test-only owner for caller-allocated inverse-dynamics arrays."""
+
+    def __init__(self, model: newton.Model):
+        self.mass_matrix = wp.zeros(
+            (
+                model.articulation_count,
+                model.max_dofs_per_articulation,
+                model.max_dofs_per_articulation,
+            ),
+            dtype=wp.float32,
+            device=model.device,
+        )
+        self.gravity_force = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        self.coriolis_force = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        self.joint_f = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+
+
+def _eval_inverse_dynamics_passive(
+    model: newton.Model,
+    state: newton.State,
+    eval_type: _PassiveOutput,
+    arrays: _InverseDynamicsArrays,
+    mask: wp.array[bool] | None = None,
+) -> None:
+    """Invoke the public passive evaluator for the selected test outputs."""
+    newton.eval_inverse_dynamics_passive(
+        model,
+        state,
+        mass_matrix=(arrays.mass_matrix if eval_type & _PassiveOutput.MASS_MATRIX else None),
+        gravity_force=(arrays.gravity_force if eval_type & _PassiveOutput.GRAVITY_FORCE else None),
+        coriolis_force=(arrays.coriolis_force if eval_type & _PassiveOutput.CORIOLIS_FORCE else None),
+        mask=mask,
+    )
+
+
+def _eval_inverse_dynamics_force(
+    model: newton.Model,
+    state: newton.State,
+    arrays: _InverseDynamicsArrays,
+    joint_qdd: wp.array[wp.float32],
+    mask: wp.array[bool] | None = None,
+) -> None:
+    """Invoke the public force evaluator with arrays owned by the test."""
+    newton.eval_inverse_dynamics_force(
+        model,
+        state,
+        mass_matrix=arrays.mass_matrix,
+        joint_qdd=joint_qdd,
+        coriolis_force=arrays.coriolis_force,
+        gravity_force=arrays.gravity_force,
+        joint_f=arrays.joint_f,
+        mask=mask,
+    )
 
 
 class TestInverseDynamicsBase:
@@ -57,8 +104,7 @@ class TestInverseDynamicsBase:
         joint_frames: list[wp.transform],
         link_inertias: list[wp.mat33],
     ) -> newton.ModelBuilder:
-        gravity_scalar, up_axis = _gravity_vec_to_scalar_and_axis(gravity)
-        builder = newton.ModelBuilder(gravity=gravity_scalar, up_axis=up_axis)
+        builder = newton.ModelBuilder(gravity=gravity)
 
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
@@ -173,8 +219,6 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 controller would apply to hold the articulation static under
                 gravity.
         """
-        gravity_scalar, up_axis = _gravity_vec_to_scalar_and_axis(gravity_vec)
-
         # Derive shape constants from the structured inputs.
         num_worlds = len(is_floating_base)
         num_arts_per_world = len(is_floating_base[0])
@@ -194,9 +238,9 @@ class TestGravCompForce(TestInverseDynamicsBase):
             )
 
         # Build the model from the structured per-world / per-articulation inputs.
-        model_builder = newton.ModelBuilder(gravity=gravity_scalar, up_axis=up_axis)
+        model_builder = newton.ModelBuilder(gravity=gravity_vec)
         for i in range(0, num_worlds):
-            world_builder = newton.ModelBuilder(gravity=gravity_scalar, up_axis=up_axis)
+            world_builder = newton.ModelBuilder(gravity=gravity_vec)
             for j in range(0, num_arts_per_world):
                 articulation_builder = self._build_two_link_articulation(
                     gravity=gravity_vec,
@@ -236,13 +280,13 @@ class TestGravCompForce(TestInverseDynamicsBase):
         state.joint_q.assign(joint_q_arr)
 
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
 
-        newton.eval_inverse_dynamics(
+        _eval_inverse_dynamics_passive(
             model=model,
             state=state,
-            eval_type=newton.InverseDynamics.EvalType.GRAVITY_FORCE,
-            inverse_dynamics=inverse_dynamics,
+            eval_type=_PassiveOutput.GRAVITY_FORCE,
+            arrays=inverse_dynamics,
         )
 
         measured_gravity_comp_force = inverse_dynamics.gravity_force.numpy()
@@ -868,7 +912,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             )
             model = builder.finalize(device=self.device)
             state = model.state()
-            inverse_dynamics = model.inverse_dynamics()
+            inverse_dynamics = _InverseDynamicsArrays(model)
 
             sweep = [0.0, 0.5 * np.pi, np.pi, 1.5 * np.pi]
             for q in sweep:
@@ -877,11 +921,11 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 state.joint_q.assign(joint_q)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                newton.eval_inverse_dynamics(
+                _eval_inverse_dynamics_passive(
                     model=model,
                     state=state,
-                    eval_type=newton.InverseDynamics.EvalType.GRAVITY_FORCE,
-                    inverse_dynamics=inverse_dynamics,
+                    eval_type=_PassiveOutput.GRAVITY_FORCE,
+                    arrays=inverse_dynamics,
                 )
                 tau = inverse_dynamics.gravity_force.numpy()
 
@@ -912,7 +956,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
 
         # Build a single-world template containing one free body.
         def build_world() -> newton.ModelBuilder:
-            b = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+            b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
             body = b.add_link(
                 xform=identity_xform,
                 mass=m,
@@ -928,7 +972,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
             b.add_articulation([j])
             return b
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         for _ in range(3):
             builder.add_world(build_world())
 
@@ -954,12 +998,12 @@ class TestGravCompForce(TestInverseDynamicsBase):
         state.joint_q.assign(joint_q)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        inverse_dynamics = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(
             model=model,
             state=state,
-            eval_type=newton.InverseDynamics.EvalType.GRAVITY_FORCE,
-            inverse_dynamics=inverse_dynamics,
+            eval_type=_PassiveOutput.GRAVITY_FORCE,
+            arrays=inverse_dynamics,
         )
 
         measured = inverse_dynamics.gravity_force.numpy()
@@ -994,10 +1038,10 @@ class TestGravCompForce(TestInverseDynamicsBase):
         while the correct world-frame output is (0, 0, -m*g).
 
         This test covers only the RNEA bias term (``GRAVITY_FORCE``). The
-        companion mass-matrix contribution -- that the ``M(q)*qddot`` wrench
+        companion mass-matrix contribution -- that the ``M(q)*joint_qdd`` wrench
         surfaced by :func:`~newton.eval_inverse_dynamics_force` obeys the same
         world-frame contract for a rotated-parent FREE root under a known
-        ``qddot`` (gravity disabled) -- is covered by
+        ``joint_qdd`` (gravity disabled) -- is covered by
         :meth:`test_inverse_dynamics_force_free_root_rotated_parent`.
         """
         m = 2.0
@@ -1026,7 +1070,7 @@ class TestGravCompForce(TestInverseDynamicsBase):
 
         for jtype in ("free", "distance"):
             with self.subTest(joint_type=jtype):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
                 body = builder.add_link(
                     xform=identity_xform,
                     mass=m,
@@ -1047,12 +1091,12 @@ class TestGravCompForce(TestInverseDynamicsBase):
                 state.joint_q.assign(joint_q)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                inverse_dynamics = model.inverse_dynamics()
-                newton.eval_inverse_dynamics(
+                inverse_dynamics = _InverseDynamicsArrays(model)
+                _eval_inverse_dynamics_passive(
                     model=model,
                     state=state,
-                    eval_type=newton.InverseDynamics.EvalType.GRAVITY_FORCE,
-                    inverse_dynamics=inverse_dynamics,
+                    eval_type=_PassiveOutput.GRAVITY_FORCE,
+                    arrays=inverse_dynamics,
                 )
 
                 measured = inverse_dynamics.gravity_force.numpy()
@@ -1094,11 +1138,11 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         state.joint_qd.zero_()
 
-        inverse_dynamics = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(
             model,
             state,
-            newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+            _PassiveOutput.CORIOLIS_FORCE,
             inverse_dynamics,
         )
 
@@ -1122,7 +1166,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         With ``m = 25``, ``L_1 = 1``, ``l_2c = 0.5`` the prefactor is 12.5;
         the test evaluates these formulas at each ``q_dot`` case below and
         compares against ``coriolis_force`` from
-        :func:`newton.eval_inverse_dynamics`, which stores the standard
+        :func:`newton.eval_inverse_dynamics_passive`, which stores the standard
         manipulator-equation bias term ``+C(q, q_dot)*q_dot``.
         """
         # Per-link mass, link length L_1 (joint-to-joint distance), and link
@@ -1139,7 +1183,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         neg_half = wp.transform(wp.vec3(-l_2c, 0.0, 0.0), wp.quat_identity())
         y_axis = wp.vec3(0.0, 1.0, 0.0)
 
-        builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
 
         b1 = builder.add_link(
             xform=identity_xform,
@@ -1170,7 +1214,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         builder.add_articulation([j1, j2], label="double_pendulum")
 
         model = builder.finalize(device=self.device)
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
 
         # All cases share q = (0, pi/2); only q_dot varies. The expected
         # +C(q, q_dot) * q_dot values come from the closed-form Coriolis terms
@@ -1197,10 +1241,10 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 state.joint_qd.assign(joint_qd)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                newton.eval_inverse_dynamics(
+                _eval_inverse_dynamics_passive(
                     model,
                     state,
-                    newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                    _PassiveOutput.CORIOLIS_FORCE,
                     inverse_dynamics,
                 )
 
@@ -1249,7 +1293,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         I_negligible = wp.mat33(1e-6, 0.0, 0.0, 0.0, 1e-6, 0.0, 0.0, 0.0, 1e-6)
         for link_inertia in (I_negligible, *self.INERTIA_PASSES):
             with self.subTest(inertia=link_inertia):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
 
                 base = builder.add_link(
                     xform=identity_xform,
@@ -1286,7 +1330,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 builder.add_articulation([j_rot, j_slide], label="radial_slider")
 
                 model = builder.finalize(device=self.device)
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics = _InverseDynamicsArrays(model)
 
                 state = model.state()
                 joint_q = state.joint_q.numpy()
@@ -1297,10 +1341,10 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 state.joint_qd.assign(joint_qd)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                newton.eval_inverse_dynamics(
+                _eval_inverse_dynamics_passive(
                     model,
                     state,
-                    newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                    _PassiveOutput.CORIOLIS_FORCE,
                     inverse_dynamics,
                 )
 
@@ -1344,7 +1388,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         for link_mass in (0.5, 50.0):
             with self.subTest(mass=link_mass):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
 
                 inner = builder.add_link(
                     xform=identity_xform,
@@ -1381,7 +1425,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 builder.add_articulation([j1, j2], label="anisotropic_gimbal")
 
                 model = builder.finalize(device=self.device)
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics = _InverseDynamicsArrays(model)
 
                 state = model.state()
                 joint_q = state.joint_q.numpy()
@@ -1392,10 +1436,10 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 state.joint_qd.assign(joint_qd)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                newton.eval_inverse_dynamics(
+                _eval_inverse_dynamics_passive(
                     model,
                     state,
-                    newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                    _PassiveOutput.CORIOLIS_FORCE,
                     inverse_dynamics,
                 )
 
@@ -1442,7 +1486,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         # linear ``omega x m * v_com`` correction.
         r_com = wp.vec3(0.5, 0.2, -0.3)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         body = builder.add_link(
             xform=identity_xform,
             mass=m,
@@ -1462,7 +1506,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         model = builder.finalize(device=self.device)
         state = model.state()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
 
         # Sweep two states: stationary CoM with rotation (purely gyroscopic),
         # and translating + rotating CoM. Under Newton's v_com convention both
@@ -1493,10 +1537,10 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 state.joint_qd.assign(joint_qd)
 
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-                newton.eval_inverse_dynamics(
+                _eval_inverse_dynamics_passive(
                     model,
                     state,
-                    newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                    _PassiveOutput.CORIOLIS_FORCE,
                     inverse_dynamics,
                 )
                 # Newton stores the standard +C(q, q_dot)*q_dot directly.
@@ -1552,7 +1596,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         I_body = wp.mat33(I_diag[0], 0.0, 0.0, 0.0, I_diag[1], 0.0, 0.0, 0.0, I_diag[2])
         r_com = wp.vec3(0.5, 0.2, -0.3)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         body = builder.add_link(
             xform=identity_xform,
             mass=m,
@@ -1572,7 +1616,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
 
         model = builder.finalize(device=self.device)
         state = model.state()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
 
         # Body world rotation R_b = R_c^T = R(z, -2 * half_angle).
         body_z_angle = -2.0 * half_angle
@@ -1609,10 +1653,10 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 state.joint_qd.assign(joint_qd)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                newton.eval_inverse_dynamics(
+                _eval_inverse_dynamics_passive(
                     model,
                     state,
-                    newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                    _PassiveOutput.CORIOLIS_FORCE,
                     inverse_dynamics,
                 )
                 # Newton stores the standard +C(q, q_dot)*q_dot directly.
@@ -1632,8 +1676,8 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         Builds a 2-link revolute chain anchored to world (joint axes y, z
         for cross-coupling) with non-zero CoM offsets and anisotropic
         inertias on both links. Under zero gravity and zero applied force
-        the manipulator equation reduces to ``M(q) * qddot = -C(q, qd) * qd``,
-        so the simulator's ``M * qddot`` after one step must equal the
+        the manipulator equation reduces to ``M(q) * joint_qdd = -C(q, qd) * qd``,
+        so the simulator's ``M * joint_qdd`` after one step must equal the
         negation of Newton's ``coriolis_force``.
 
         For non-free joints, the joint torque is the scalar projection
@@ -1654,7 +1698,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         I_link = wp.mat33(2.0, 0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.0)
         com_link = wp.vec3(0.1, 0.2, -0.15)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         b1 = builder.add_link(xform=identity_xform, mass=1.0, inertia=I_link, com=com_link)
         j1 = builder.add_joint_revolute(
             parent=-1,
@@ -1678,7 +1722,7 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         state_next = model.state()
         control = model.control()
         contacts = model.contacts()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
         solver = newton.solvers.SolverMuJoCo(model)
         dt = 1e-4
         zero_bias = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
@@ -1710,39 +1754,38 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
                 state.joint_qd.assign(joint_qd)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                newton.eval_inverse_dynamics(
+                _eval_inverse_dynamics_passive(
                     model,
                     state,
-                    newton.InverseDynamics.EvalType.MASS_MATRIX | newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                    _PassiveOutput.MASS_MATRIX | _PassiveOutput.CORIOLIS_FORCE,
                     inverse_dynamics,
                 )
-                coriolis_comp = inverse_dynamics.coriolis_force.numpy()
+                coriolis_comp = inverse_dynamics.coriolis_force.numpy().copy()
 
                 # Step with zero applied force and zero gravity:
-                # M * qddot = -C(q, qd) * qd = -coriolis_force.
+                # M * joint_qdd = -C(q, qd) * qd = -coriolis_force.
                 solver.step(state, state_next, control, contacts, dt)
-                qddot_observed = (state_next.joint_qd.numpy() - np.asarray(joint_qd[:], dtype=np.float64)) / dt
+                joint_qdd_observed = (state_next.joint_qd.numpy() - np.asarray(joint_qd[:], dtype=np.float64)) / dt
 
-                qddot_arr = wp.array(qddot_observed.astype(np.float32), dtype=wp.float32, device=self.device)
-                newton.eval_inverse_dynamics_force(
+                joint_qdd_arr = wp.array(joint_qdd_observed.astype(np.float32), dtype=wp.float32, device=self.device)
+                inverse_dynamics.coriolis_force.assign(zero_bias)
+                inverse_dynamics.gravity_force.assign(zero_bias)
+                _eval_inverse_dynamics_force(
                     model,
                     state,
-                    inverse_dynamics.mass_matrix,
-                    qddot_arr,
-                    zero_bias,
-                    zero_bias,
-                    inverse_dynamics.tau,
+                    inverse_dynamics,
+                    joint_qdd_arr,
                 )
-                M_qddot = inverse_dynamics.tau.numpy()
+                M_joint_qdd = inverse_dynamics.joint_f.numpy()
 
-                np.testing.assert_allclose(-coriolis_comp, M_qddot, atol=2e-3, rtol=2e-3)
+                np.testing.assert_allclose(-coriolis_comp, M_joint_qdd, atol=2e-3, rtol=2e-3)
 
 
 class TestMassMatrix(TestInverseDynamicsBase):
     """Mass-matrix tests for the two-link pendulum harness."""
 
     def test_mass_matrix_matches_eval_mass_matrix(self):
-        """eval_inverse_dynamics(EvalType.MASS_MATRIX) must match newton.eval_mass_matrix element-wise."""
+        """eval_inverse_dynamics_passive(_PassiveOutput.MASS_MATRIX) must match newton.eval_mass_matrix element-wise."""
         builder = self._build_two_link_articulation(
             gravity=wp.vec3(0.0, -9.81, 0.0),
             floating_base=False,
@@ -1765,8 +1808,8 @@ class TestMassMatrix(TestInverseDynamicsBase):
 
         H_reference = newton.eval_mass_matrix(model, state).numpy()
 
-        inverse_dynamics = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.MASS_MATRIX, inverse_dynamics)
 
         np.testing.assert_allclose(inverse_dynamics.mass_matrix.numpy(), H_reference, rtol=1e-6, atol=1e-6)
 
@@ -1809,7 +1852,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
                 l1c = 0.5 + com_x
                 l2c = 0.5 + com_x
 
-                builder = newton.ModelBuilder(gravity=-10.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0), up_axis=newton.Axis.Z)
                 b1 = builder.add_link(
                     xform=identity_xform,
                     mass=m,
@@ -1839,7 +1882,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
                 builder.add_articulation([j1, j2], label="double_pendulum")
 
                 model = builder.finalize(device=self.device)
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics = _InverseDynamicsArrays(model)
 
                 for q2 in q2_cases:
                     with self.subTest(com_x=com_x, q2=q2):
@@ -1849,9 +1892,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
                         state.joint_q.assign(joint_q)
                         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                        newton.eval_inverse_dynamics(
-                            model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics
-                        )
+                        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.MASS_MATRIX, inverse_dynamics)
                         M = inverse_dynamics.mass_matrix.numpy()[0, :2, :2]
 
                         cos_q2 = np.cos(q2)
@@ -1866,7 +1907,7 @@ class TestMassMatrix(TestInverseDynamicsBase):
 class TestManipulatorEquation(TestInverseDynamicsBase):
     """Manipulator-equation tests covering combined inverse-dynamics outputs."""
 
-    def test_eval_inverse_dynamics_finite_on_distance_joint(self):
+    def test_eval_inverse_dynamics_passive_finite_on_distance_joint(self):
         """Finite-only guard for the DISTANCE joint type.
 
         DISTANCE is supported by the inverse-dynamics pipeline (treated as
@@ -1908,11 +1949,11 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             joint_qd = np.ones(model.joint_dof_count, dtype=np.float32) * 0.5
             state.joint_qd.assign(joint_qd)
 
-        inverse_dynamics = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(
             model,
             state,
-            newton.InverseDynamics.EvalType.ALL,
+            _PassiveOutput.ALL,
             inverse_dynamics,
         )
 
@@ -1920,32 +1961,46 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.gravity_force.numpy())))
         self.assertTrue(np.all(np.isfinite(inverse_dynamics.coriolis_force.numpy())))
 
-    def test_inverse_dynamics_container_rejects_cable_joint(self):
-        """CABLE joints are unsupported; ``Model.inverse_dynamics()`` must reject them.
+    def test_inverse_dynamics_rejects_cable_joint(self):
+        """Both inverse-dynamics entrypoints reject CABLE joints eagerly."""
+        identity_xform = wp.transform_identity()
+        builder = newton.ModelBuilder()
+        link = builder.add_link(
+            xform=identity_xform,
+            mass=1.0,
+            inertia=self.I_UNIT,
+            com=wp.vec3(0.0),
+        )
+        joint = builder.add_joint_cable(
+            parent=-1,
+            child=link,
+            parent_xform=identity_xform,
+            child_xform=identity_xform,
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        arrays = _InverseDynamicsArrays(model)
 
-        Inverse dynamics has no motion-subspace implementation for CABLE
-        (``jcalc_motion`` / ``jcalc_motion_subspace``) and ``eval_fk`` does not
-        reconstruct it, so its outputs are undefined. The container factory
-        raises a clear ``ValueError`` up front rather than letting the
-        graph-capturable :func:`~newton.eval_inverse_dynamics` emit undefined
-        (intermittently non-finite) results.
-        """
-        identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
-        b = newton.ModelBuilder()
-        link = b.add_link(xform=identity_xform, mass=1.0, inertia=self.I_UNIT, com=wp.vec3(0.0, 0.0, 0.0))
-        j = b.add_joint_cable(parent=-1, child=link, parent_xform=identity_xform, child_xform=identity_xform)
-        b.add_articulation([j])
-        model = b.finalize(device=self.device)
+        with self.assertRaisesRegex(ValueError, "JointType.CABLE"):
+            newton.eval_inverse_dynamics_passive(model, state, mass_matrix=arrays.mass_matrix)
 
-        with self.assertRaises(ValueError) as ctx:
-            model.inverse_dynamics()
-        self.assertIn("CABLE", str(ctx.exception))
+        with self.assertRaisesRegex(ValueError, "JointType.CABLE"):
+            newton.eval_inverse_dynamics_force(
+                model,
+                state,
+                mass_matrix=arrays.mass_matrix,
+                joint_qdd=wp.zeros_like(state.joint_qd),
+                coriolis_force=arrays.coriolis_force,
+                gravity_force=arrays.gravity_force,
+                joint_f=arrays.joint_f,
+            )
 
     def test_eval_inverse_dynamics_force_hand_crafted_inputs(self):
         """White-box test of ``eval_inverse_dynamics_force`` with hand-chosen inputs.
 
         Builds a two-articulation model where the articulations have *different*
-        DOF counts (1 and 2), then passes synthetic H, qddot, and bias arrays
+        DOF counts (1 and 2), then passes synthetic H, joint_qdd, and bias arrays
         whose values are computed independently in NumPy. Comparing the output
         ``tau`` against the NumPy result catches DOF-slicing bugs
         (wrong ``dof_start``, wrong ``art_idx`` into H, off-by-one in
@@ -1995,38 +2050,41 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
             dtype=np.float32,
         )
 
-        qddot_np = np.array([2.0, 5.0, -1.0], dtype=np.float32)  # [art0_dof0, art1_dof0, art1_dof1]
+        joint_qdd_np = np.array([2.0, 5.0, -1.0], dtype=np.float32)  # [art0_dof0, art1_dof0, art1_dof1]
         coriolis_np = np.array([0.1, 0.2, 0.3], dtype=np.float32)
         gravity_np = np.array([1.0, -0.5, 0.25], dtype=np.float32)
 
         # Reference computed entirely in NumPy, independent of Newton's pipeline.
-        # art0 (1 DOF):  tau[0] = H[0,0,0]*qddot[0] + coriolis[0] + gravity[0]
-        # art1 (2 DOFs): tau[1:3] = H[1,:2,:2] @ qddot[1:3] + coriolis[1:3] + gravity[1:3]
+        # art0 (1 DOF):  tau[0] = H[0,0,0]*joint_qdd[0] + coriolis[0] + gravity[0]
+        # art1 (2 DOFs): tau[1:3] = H[1,:2,:2] @ joint_qdd[1:3] + coriolis[1:3] + gravity[1:3]
         tau_expected = np.empty(3, dtype=np.float32)
-        tau_expected[0:1] = H_np[0, :1, :1] @ qddot_np[0:1] + coriolis_np[0:1] + gravity_np[0:1]
-        tau_expected[1:3] = H_np[1, :2, :2] @ qddot_np[1:3] + coriolis_np[1:3] + gravity_np[1:3]
+        tau_expected[0:1] = H_np[0, :1, :1] @ joint_qdd_np[0:1] + coriolis_np[0:1] + gravity_np[0:1]
+        tau_expected[1:3] = H_np[1, :2, :2] @ joint_qdd_np[1:3] + coriolis_np[1:3] + gravity_np[1:3]
 
         H = wp.array(H_np, dtype=wp.float32, device=self.device)
-        qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
+        joint_qdd = wp.array(joint_qdd_np, dtype=wp.float32, device=self.device)
         coriolis = wp.array(coriolis_np, dtype=wp.float32, device=self.device)
         gravity = wp.array(gravity_np, dtype=wp.float32, device=self.device)
-        tau = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        inverse_dynamics.mass_matrix.assign(H)
+        inverse_dynamics.coriolis_force.assign(coriolis)
+        inverse_dynamics.gravity_force.assign(gravity)
 
-        newton.eval_inverse_dynamics_force(model, model.state(), H, qddot, coriolis, gravity, tau)
+        _eval_inverse_dynamics_force(model, model.state(), inverse_dynamics, joint_qdd)
 
-        np.testing.assert_allclose(tau.numpy(), tau_expected, atol=1e-6)
+        np.testing.assert_allclose(inverse_dynamics.joint_f.numpy(), tau_expected, atol=1e-6)
 
-    def test_eval_all_populates_every_buffer(self):
-        """EvalType.ALL must produce the same results as three isolated single-flag calls.
+    def test_combined_passive_outputs_match_individual_calls(self):
+        """A combined request must match three isolated output requests.
 
         Uses a floating base so the articulation has multi-DOF coupling; a
         fixed root with a single revolute DOF has identically-zero Coriolis
         and would trivially defeat that assertion.
 
         The cross-check against isolated calls directly catches scratch-buffer
-        aliasing: if combining all three flags causes one pass to corrupt the
-        scratch consumed by another, the ALL results will diverge from the
-        per-flag references.
+        aliasing: if combining all three outputs causes one pass to corrupt the
+        scratch consumed by another, the results will diverge from the
+        individual references.
         """
         builder = self._build_two_link_articulation(
             gravity=wp.vec3(0.0, -9.81, 0.0),
@@ -2054,19 +2112,17 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         joint_qd[:] = np.linspace(0.1, 0.7, joint_qd.shape[0])
         state.joint_qd.assign(joint_qd)
 
-        EvalType = newton.InverseDynamics.EvalType
-
-        # Reference: three isolated single-flag calls, each with a fresh scratch.
-        ref_mm = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, EvalType.MASS_MATRIX, ref_mm)
-        ref_gf = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, EvalType.GRAVITY_FORCE, ref_gf)
-        ref_cf = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, EvalType.CORIOLIS_FORCE, ref_cf)
+        # Reference: three isolated calls, each with fresh internal scratch.
+        ref_mm = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.MASS_MATRIX, ref_mm)
+        ref_gf = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.GRAVITY_FORCE, ref_gf)
+        ref_cf = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.CORIOLIS_FORCE, ref_cf)
 
         # Combined call under test.
-        combined = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, EvalType.ALL, combined)
+        combined = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.ALL, combined)
 
         np.testing.assert_array_equal(combined.mass_matrix.numpy(), ref_mm.mass_matrix.numpy())
         np.testing.assert_array_equal(combined.gravity_force.numpy(), ref_gf.gravity_force.numpy())
@@ -2075,15 +2131,15 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
     def _test_inverse_dynamics_force(self, non_zero_gravity: bool, non_zero_initial_dof_velocities: bool):
         """Manipulator-equation test parameterized on whether the bias terms are exercised.
 
-        With gravity and ``joint_qd`` both zero, ``tau = M(q)*qddot``. Setting
+        With gravity and ``joint_qd`` both zero, ``tau = M(q)*joint_qdd``. Setting
         ``non_zero_gravity`` switches on a non-zero ``g(q)`` term;
         ``non_zero_initial_dof_velocities`` switches on a non-zero
         ``C(q, q_dot)*q_dot`` term. In every case
         :func:`newton.eval_inverse_dynamics_force` must produce the joint force
-        that drives the system to the prescribed ``qddot`` after one
+        that drives the system to the prescribed ``joint_qdd`` after one
         small-step simulation, recovered from the velocity change.
         """
-        gravity_value = -10.0 if non_zero_gravity else 0.0
+        gravity_value = wp.vec3(0.0, 0.0, -10.0 if non_zero_gravity else 0.0)
 
         # Each articulation is a chain of three uniform-density 4x2x2 boxes;
         # the per-articulation density (and so the link mass and inertia) varies
@@ -2341,7 +2397,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         state_next = model.state()
         control = model.control()
         contacts = model.contacts()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
         solvers = {
             "featherstone": newton.solvers.SolverFeatherstone(model),
             "mujoco": newton.solvers.SolverMuJoCo(model),
@@ -2381,7 +2437,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         # separate Newton-vs-MuJoCo angular-velocity-frame question on the
         # simulator side, independent of the inverse-dynamics convention this
         # test exercises). Root accelerations are arbitrary non-zero values so
-        # the floating root exercises non-trivial M(q)*qddot rows.
+        # the floating root exercises non-trivial M(q)*joint_qdd rows.
         root_omega = (0.3, -0.1, 0.2) if non_zero_initial_dof_velocities else (0.0, 0.0, 0.0)
         root_alpha = (0.2, -0.25, 0.3)
         root_lin_dot = (0.05, -0.1, 0.15)
@@ -2429,14 +2485,14 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         }
 
         # Pick the smallest eval_type that covers the active bias terms:
-        # MASS_MATRIX is always required for M*qddot; add GRAVITY_FORCE
+        # MASS_MATRIX is always required for M*joint_qdd; add GRAVITY_FORCE
         # only when gravity is non-zero, CORIOLIS_FORCE only when
         # joint_qd is non-zero. When both are non-zero this collapses to ALL.
-        eval_type = newton.InverseDynamics.EvalType.MASS_MATRIX
+        eval_type = _PassiveOutput.MASS_MATRIX
         if non_zero_gravity:
-            eval_type |= newton.InverseDynamics.EvalType.GRAVITY_FORCE
+            eval_type |= _PassiveOutput.GRAVITY_FORCE
         if non_zero_initial_dof_velocities:
-            eval_type |= newton.InverseDynamics.EvalType.CORIOLIS_FORCE
+            eval_type |= _PassiveOutput.CORIOLIS_FORCE
 
         for joint_q_values, joint_qd_values, joint_qdd_values in zip(
             initial_joint_positions, initial_joint_speeds, initial_joint_accelerations, strict=True
@@ -2454,7 +2510,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                     qdd_pieces.extend(joint_qdd_values)
                 joint_q_full = np.asarray(q_pieces, dtype=np.float32)
                 joint_qd_full = np.asarray(qd_pieces, dtype=np.float32)
-                qddot_target = np.asarray(qdd_pieces, dtype=np.float32)
+                joint_qdd_target = np.asarray(qdd_pieces, dtype=np.float32)
 
                 joint_q = state.joint_q.numpy()
                 joint_q[:] = joint_q_full
@@ -2464,20 +2520,17 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 state.joint_qd.assign(joint_qd)
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-                # Manipulator equation: tau = M(q)*qddot + C(q,qdot)*qdot + g(q).
-                newton.eval_inverse_dynamics(model, state, eval_type, inverse_dynamics)
-                qddot = wp.array(qddot_target, dtype=wp.float32, device=self.device)
-                newton.eval_inverse_dynamics_force(
+                # Manipulator equation: tau = M(q)*joint_qdd + C(q,qdot)*qdot + g(q).
+                _eval_inverse_dynamics_passive(model, state, eval_type, inverse_dynamics)
+                joint_qdd = wp.array(joint_qdd_target, dtype=wp.float32, device=self.device)
+                _eval_inverse_dynamics_force(
                     model,
                     state,
-                    inverse_dynamics.mass_matrix,
-                    qddot,
-                    inverse_dynamics.coriolis_force,
-                    inverse_dynamics.gravity_force,
-                    inverse_dynamics.tau,
+                    inverse_dynamics,
+                    joint_qdd,
                 )
 
-                control.joint_f.assign(inverse_dynamics.tau)
+                control.joint_f.assign(inverse_dynamics.joint_f)
 
                 # The same tau must round-trip through both solvers. Each steps
                 # from the same input ``state`` (neither mutates it) into
@@ -2486,9 +2539,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                     with self.subTest(solver=solver_name):
                         solver.step(state, state_next, control, contacts, dt)
 
-                        # Recover qddot from the velocity change.
-                        qddot_observed = (state_next.joint_qd.numpy() - joint_qd_full) / dt
-                        np.testing.assert_allclose(qddot_observed, qddot_target, atol=1e-3, rtol=1e-3)
+                        # Recover joint_qdd from the velocity change.
+                        joint_qdd_observed = (state_next.joint_qd.numpy() - joint_qd_full) / dt
+                        np.testing.assert_allclose(joint_qdd_observed, joint_qdd_target, atol=1e-3, rtol=1e-3)
 
     def test_inverse_dynamics_force_baseline(self):
         """Manipulator equation with zero gravity and zero initial DOF velocities."""
@@ -2507,15 +2560,15 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         self._test_inverse_dynamics_force(non_zero_gravity=True, non_zero_initial_dof_velocities=True)
 
     def test_inverse_dynamics_force_free_root_rotated_parent(self):
-        """FREE root with a rotated parent frame and non-zero ``qddot``.
+        """FREE root with a rotated parent frame and non-zero ``joint_qdd``.
 
         The mass matrix is expressed in the joint parent frame while the bias
-        terms use the world-frame CoM-wrench convention, so ``H @ qddot`` for the
+        terms use the world-frame CoM-wrench convention, so ``H @ joint_qdd`` for the
         FREE root must be rotated to world before summing. This case exercises
-        that rotation (a rotated parent + non-zero ``qddot`` -- the base
+        that rotation (a rotated parent + non-zero ``joint_qdd`` -- the base
         ``_test_inverse_dynamics_force`` uses an identity root-parent rotation and
         would not catch it). With zero gravity and zero velocity the bias terms
-        vanish, so ``tau`` is purely the world-frame ``M(q)*qddot`` wrench, which
+        vanish, so ``tau`` is purely the world-frame ``M(q)*joint_qdd`` wrench, which
         for a free rigid body with COM at the joint origin is
         ``(m * R * a_com_parent, R * I_local * alpha_parent)``.
         """
@@ -2525,7 +2578,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         qx = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
         R = np.array(wp.quat_to_matrix(qx), dtype=np.float64).reshape(3, 3)
 
-        builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
         link = builder.add_link(
             mass=m_mass,
             com=wp.vec3(0.0, 0.0, 0.0),
@@ -2543,38 +2596,35 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         model = builder.finalize(device=self.device)
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
 
         # Parent-frame accelerations (COM linear, angular). qd stays zero.
         a_parent = np.array([0.5, -0.3, 0.7], dtype=np.float64)
         alpha_parent = np.array([0.2, 0.4, -0.6], dtype=np.float64)
-        qddot_np = np.concatenate([a_parent, alpha_parent]).astype(np.float32)
+        joint_qdd_np = np.concatenate([a_parent, alpha_parent]).astype(np.float32)
 
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics)
-        qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
-        newton.eval_inverse_dynamics_force(
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.MASS_MATRIX, inverse_dynamics)
+        joint_qdd = wp.array(joint_qdd_np, dtype=wp.float32, device=self.device)
+        _eval_inverse_dynamics_force(
             model,
             state,
-            inverse_dynamics.mass_matrix,
-            qddot,
-            inverse_dynamics.coriolis_force,
-            inverse_dynamics.gravity_force,
-            inverse_dynamics.tau,
+            inverse_dynamics,
+            joint_qdd,
         )
 
         # World-frame wrench at the COM: force = m*R*a, torque = R*I_local*alpha.
         expected = np.concatenate([m_mass * (R @ a_parent), R @ (I_local @ alpha_parent)]).astype(np.float32)
-        np.testing.assert_allclose(inverse_dynamics.tau.numpy(), expected, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(inverse_dynamics.joint_f.numpy(), expected, atol=1e-5, rtol=1e-5)
 
     def test_inverse_dynamics_force_non_root_free_joint_rotated_parent(self):
-        """Non-root FREE or DISTANCE joint with a rotated parent frame and non-zero ``qddot``.
+        """Non-root FREE or DISTANCE joint with a rotated parent frame and non-zero ``joint_qdd``.
 
-        A FIXED root joint makes the second joint non-root. The ``H @ qddot``
+        A FIXED root joint makes the second joint non-root. The ``H @ joint_qdd``
         wrench for that joint's six DOFs is in the joint's parent frame and must
         be rotated to world before summing with the world-frame bias terms.
 
         With zero gravity and zero velocity the bias terms vanish, so ``tau``
-        equals the world-frame ``M(q)*qddot`` wrench. For a free rigid body whose
+        equals the world-frame ``M(q)*joint_qdd`` wrench. For a free rigid body whose
         COM coincides with the joint origin this is
         ``(m * R * a_parent, R * I_local * alpha_parent)`` where ``R`` is the
         rotation from the joint's parent frame to world.
@@ -2588,9 +2638,9 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         qx = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
         identity = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
-        qddot_np = np.array([0.5, -0.3, 0.7, 0.2, 0.4, -0.6], dtype=np.float32)
-        a_parent = wp.vec3(*qddot_np[0:3].tolist())
-        alpha_parent = wp.vec3(*qddot_np[3:6].tolist())
+        joint_qdd_np = np.array([0.5, -0.3, 0.7, 0.2, 0.4, -0.6], dtype=np.float32)
+        a_parent = wp.vec3(*joint_qdd_np[0:3].tolist())
+        alpha_parent = wp.vec3(*joint_qdd_np[3:6].tolist())
         f_expected = np.array(wp.quat_rotate(qx, m_mass * a_parent), dtype=np.float32)
         torque_expected = np.array(wp.quat_rotate(qx, I_local * alpha_parent), dtype=np.float32)
 
@@ -2617,7 +2667,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         ]
         for joint_name, add_joint in joint_cases:
             with self.subTest(joint=joint_name):
-                builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)
                 body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=self.I_UNIT)
                 body2 = builder.add_link(mass=m_mass, com=wp.vec3(0.0, 0.0, 0.0), inertia=I_local)
                 j_fixed = builder.add_joint_fixed(parent=-1, child=body1, parent_xform=identity, child_xform=identity)
@@ -2628,23 +2678,18 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
                 model = builder.finalize(device=self.device)
                 state = model.state()
                 newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics = _InverseDynamicsArrays(model)
 
-                newton.eval_inverse_dynamics(
-                    model, state, newton.InverseDynamics.EvalType.MASS_MATRIX, inverse_dynamics
-                )
-                qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
-                newton.eval_inverse_dynamics_force(
+                _eval_inverse_dynamics_passive(model, state, _PassiveOutput.MASS_MATRIX, inverse_dynamics)
+                joint_qdd = wp.array(joint_qdd_np, dtype=wp.float32, device=self.device)
+                _eval_inverse_dynamics_force(
                     model,
                     state,
-                    inverse_dynamics.mass_matrix,
-                    qddot,
-                    inverse_dynamics.coriolis_force,
-                    inverse_dynamics.gravity_force,
-                    inverse_dynamics.tau,
+                    inverse_dynamics,
+                    joint_qdd,
                 )
 
-                tau = inverse_dynamics.tau.numpy()
+                tau = inverse_dynamics.joint_f.numpy()
                 np.testing.assert_allclose(tau[0:3], f_expected, atol=1e-5, rtol=1e-5)
                 np.testing.assert_allclose(tau[3:6], torque_expected, atol=1e-5, rtol=1e-5)
 
@@ -2654,7 +2699,7 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         Two worlds contain identical fixed-base 2-revolute chains. World 1 also
         has a loop-closing revolute joint (NOT added to the articulation) whose
         single DOF is appended after the tree DOFs. Both
-        :func:`newton.eval_inverse_dynamics` and
+        :func:`newton.eval_inverse_dynamics_passive` and
         :func:`newton.eval_inverse_dynamics_force` must produce identical results
         for both articulations.
 
@@ -2662,10 +2707,10 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         using ``articulation_end`` (not ``articulation_start[i+1]``) to bound the
         DOF range. With the wrong boundary the kernel includes the loop-closing
         DOF in art 1's ``dof_count`` and reads an off-diagonal entry of the mass
-        matrix as a spurious third column, scaled by the large orphan ``qddot``
+        matrix as a spurious third column, scaled by the large orphan ``joint_qdd``
         value set below.
         """
-        gravity_val = -10.0
+        gravity_val = wp.vec3(0.0, 0.0, -10.0)
         mass = 2.0
         I = self.I_UNIT
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -2742,8 +2787,8 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         state.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        inverse_dynamics = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.ALL, inverse_dynamics)
 
         H = inverse_dynamics.mass_matrix.numpy()
         g = inverse_dynamics.gravity_force.numpy()
@@ -2755,29 +2800,26 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
         np.testing.assert_allclose(g[0:2], g[2:4], atol=1e-5, err_msg="gravity_force differs between articulations")
         np.testing.assert_allclose(c[0:2], c[2:4], atol=1e-5, err_msg="coriolis_force differs between articulations")
 
-        # qddot: same for both tree DOF ranges; large sentinel at the
+        # joint_qdd: same for both tree DOF ranges; large sentinel at the
         # loop-closing slot. With the bug (wrong DOF boundary), the kernel
         # reads H[art1, 0, 2] — which aliases H[art1, 1, 0] (off-diagonal,
         # non-zero for a coupled chain) — multiplied by 99, producing a
         # large detectable contamination in tau[2].
-        qddot_np = np.zeros(model.joint_dof_count, dtype=np.float32)
-        qddot_np[0] = 0.5  # art0 first DOF acceleration
-        qddot_np[1] = 0.3  # art0 second DOF acceleration
-        qddot_np[2] = 0.5  # art1 first DOF acceleration (identical)
-        qddot_np[3] = 0.3  # art1 second DOF acceleration (identical)
-        qddot_np[4] = 99.0  # loop-closing DOF: must NOT enter tau[2:4]
-        qddot = wp.array(qddot_np, dtype=wp.float32, device=self.device)
-        newton.eval_inverse_dynamics_force(
+        joint_qdd_np = np.zeros(model.joint_dof_count, dtype=np.float32)
+        joint_qdd_np[0] = 0.5  # art0 first DOF acceleration
+        joint_qdd_np[1] = 0.3  # art0 second DOF acceleration
+        joint_qdd_np[2] = 0.5  # art1 first DOF acceleration (identical)
+        joint_qdd_np[3] = 0.3  # art1 second DOF acceleration (identical)
+        joint_qdd_np[4] = 99.0  # loop-closing DOF: must NOT enter tau[2:4]
+        joint_qdd = wp.array(joint_qdd_np, dtype=wp.float32, device=self.device)
+        _eval_inverse_dynamics_force(
             model,
             state,
-            inverse_dynamics.mass_matrix,
-            qddot,
-            inverse_dynamics.coriolis_force,
-            inverse_dynamics.gravity_force,
-            inverse_dynamics.tau,
+            inverse_dynamics,
+            joint_qdd,
         )
 
-        tau = inverse_dynamics.tau.numpy()
+        tau = inverse_dynamics.joint_f.numpy()
         np.testing.assert_allclose(
             tau[0:2],
             tau[2:4],
@@ -2787,13 +2829,11 @@ class TestManipulatorEquation(TestInverseDynamicsBase):
 
 
 class TestInverseDynamicsAPI(TestInverseDynamicsBase):
-    """API-surface tests: flag dispatch, error paths, and degenerate-model
+    """API-surface tests: output dispatch, error paths, and degenerate-model
     edge cases not exercised by the analytical-correctness suites."""
 
-    def test_bias_forces_flag_populates_both(self):
-        """``EvalType.GRAVITY_FORCE | EvalType.CORIOLIS_FORCE`` writes
-        ``g(q)`` and ``C(q, q_dot)*q_dot`` in a single call and leaves the
-        mass matrix untouched.
+    def test_omitted_mass_matrix_is_not_written(self):
+        """Requesting both bias forces leaves the omitted mass matrix untouched.
 
         A floating-base articulation with non-zero gravity and non-zero
         joint velocities is used so both bias buffers must come back
@@ -2827,15 +2867,15 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         joint_qd[:] = np.linspace(0.1, 0.7, joint_qd.shape[0])
         state.joint_qd.assign(joint_qd)
 
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
 
         sentinel = np.full(inverse_dynamics.mass_matrix.shape, 7.5, dtype=np.float32)
         inverse_dynamics.mass_matrix.assign(sentinel)
 
-        newton.eval_inverse_dynamics(
+        _eval_inverse_dynamics_passive(
             model,
             state,
-            newton.InverseDynamics.EvalType.GRAVITY_FORCE | newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+            _PassiveOutput.GRAVITY_FORCE | _PassiveOutput.CORIOLIS_FORCE,
             inverse_dynamics,
         )
 
@@ -2847,10 +2887,9 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertGreater(float(np.max(np.abs(g))), 1e-6)
         self.assertGreater(float(np.max(np.abs(c))), 1e-6)
 
-    def test_eval_inverse_dynamics_raises_on_buffer_shape_mismatch(self):
-        """``eval_inverse_dynamics`` and ``eval_inverse_dynamics_force`` raise
-        ``ValueError`` when any output buffer's shape disagrees with the
-        model's expected shape.
+    def test_inverse_dynamics_raises_on_shape_mismatch(self):
+        """``eval_inverse_dynamics_passive`` and ``eval_inverse_dynamics_force`` raise
+        ``ValueError`` when any array's shape disagrees with the model.
         """
         builder = self._build_two_link_articulation(
             gravity=wp.vec3(0.0, 0.0, 0.0),
@@ -2871,19 +2910,19 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         cases = [
             (
                 "gravity_force",
-                newton.InverseDynamics.EvalType.GRAVITY_FORCE,
+                _PassiveOutput.GRAVITY_FORCE,
                 "gravity_force",
                 (model.joint_dof_count + 1,),
             ),
             (
                 "coriolis_force",
-                newton.InverseDynamics.EvalType.CORIOLIS_FORCE,
+                _PassiveOutput.CORIOLIS_FORCE,
                 "coriolis_force",
                 (model.joint_dof_count + 1,),
             ),
             (
                 "mass_matrix",
-                newton.InverseDynamics.EvalType.MASS_MATRIX,
+                _PassiveOutput.MASS_MATRIX,
                 "mass_matrix",
                 (
                     model.articulation_count,
@@ -2894,41 +2933,74 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         ]
         for attr, flag, expected_substr, wrong_shape in cases:
             with self.subTest(flag=flag):
-                inverse_dynamics = model.inverse_dynamics()
+                inverse_dynamics = _InverseDynamicsArrays(model)
                 setattr(
                     inverse_dynamics,
                     attr,
                     wp.zeros(wrong_shape, dtype=wp.float32, device=self.device),
                 )
                 with self.assertRaises(ValueError) as ctx:
-                    newton.eval_inverse_dynamics(model, state, flag, inverse_dynamics)
+                    _eval_inverse_dynamics_passive(model, state, flag, inverse_dynamics)
                 msg = str(ctx.exception)
                 self.assertIn(expected_substr, msg)
                 self.assertIn(str(wrong_shape), msg)
 
-        with self.subTest(flag="tau"):
-            inverse_dynamics = model.inverse_dynamics()
-            wrong_shape = (model.joint_dof_count + 1,)
-            inverse_dynamics.tau = wp.zeros(wrong_shape, dtype=wp.float32, device=self.device)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        joint_qdd = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device)
+        force_args = {
+            "mass_matrix": inverse_dynamics.mass_matrix,
+            "joint_qdd": joint_qdd,
+            "coriolis_force": inverse_dynamics.coriolis_force,
+            "gravity_force": inverse_dynamics.gravity_force,
+            "joint_f": inverse_dynamics.joint_f,
+        }
+        force_cases = [
+            (
+                "mass_matrix",
+                (
+                    model.articulation_count,
+                    model.max_dofs_per_articulation + 1,
+                    model.max_dofs_per_articulation + 1,
+                ),
+            ),
+            ("joint_qdd", (model.joint_dof_count + 1,)),
+            ("coriolis_force", (model.joint_dof_count + 1,)),
+            ("gravity_force", (model.joint_dof_count + 1,)),
+            ("joint_f", (model.joint_dof_count + 1,)),
+        ]
+        for name, wrong_shape in force_cases:
+            with self.subTest(force_array=name):
+                args = force_args.copy()
+                args[name] = wp.zeros(wrong_shape, dtype=wp.float32, device=self.device)
+                with self.assertRaises(ValueError) as ctx:
+                    newton.eval_inverse_dynamics_force(model, state, **args)
+                msg = str(ctx.exception)
+                self.assertIn(name, msg)
+                self.assertIn(str(wrong_shape), msg)
+
+        wrong_mask_shape = (model.articulation_count + 1,)
+        wrong_mask = wp.zeros(wrong_mask_shape, dtype=bool, device=self.device)
+        with self.subTest(passive_array="mask"):
             with self.assertRaises(ValueError) as ctx:
-                newton.eval_inverse_dynamics_force(
+                newton.eval_inverse_dynamics_passive(
                     model,
                     state,
-                    inverse_dynamics.mass_matrix,
-                    wp.zeros(model.joint_dof_count, dtype=wp.float32, device=self.device),
-                    inverse_dynamics.coriolis_force,
-                    inverse_dynamics.gravity_force,
-                    inverse_dynamics.tau,
+                    gravity_force=inverse_dynamics.gravity_force,
+                    mask=wrong_mask,
                 )
             msg = str(ctx.exception)
-            self.assertIn("tau", msg)
-            self.assertIn(str(wrong_shape), msg)
+            self.assertIn("mask", msg)
+            self.assertIn(str(wrong_mask_shape), msg)
 
-    def test_eval_inverse_dynamics_raises_on_unrecognized_eval_type(self):
-        """``eval_inverse_dynamics`` raises ``ValueError`` for any ``eval_type``
-        with no bits in common with the recognized flags: zero (empty) and 8
-        (next power-of-two above ``ALL = 7``, entirely out of range).
-        """
+        with self.subTest(force_array="mask"):
+            with self.assertRaises(ValueError) as ctx:
+                newton.eval_inverse_dynamics_force(model, state, **force_args, mask=wrong_mask)
+            msg = str(ctx.exception)
+            self.assertIn("mask", msg)
+            self.assertIn(str(wrong_mask_shape), msg)
+
+    def test_eval_inverse_dynamics_passive_raises_without_outputs(self):
+        """The passive evaluator rejects a call that requests no outputs."""
         builder = self._build_two_link_articulation(
             gravity=wp.vec3(0.0, 0.0, 0.0),
             floating_base=False,
@@ -2944,29 +3016,81 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         )
         model = builder.finalize(device=self.device)
         state = model.state()
-        inverse_dynamics = model.inverse_dynamics()
+        with self.assertRaisesRegex(ValueError, "At least one inverse-dynamics output"):
+            newton.eval_inverse_dynamics_passive(model, state)
 
-        for value in (0, 8):
-            with self.subTest(eval_type=value):
-                with self.assertRaises(ValueError) as ctx:
-                    newton.eval_inverse_dynamics(
-                        model,
-                        state,
-                        newton.InverseDynamics.EvalType(value),
-                        inverse_dynamics,
-                    )
-                msg = str(ctx.exception)
-                self.assertIn("does not include any recognized flag", msg)
-                self.assertIn("MASS_MATRIX", msg)
-                self.assertIn("GRAVITY_FORCE", msg)
-                self.assertIn("CORIOLIS_FORCE", msg)
+    def test_inverse_dynamics_arrays_are_keyword_only(self):
+        """All inverse-dynamics arrays must be passed by keyword."""
+        builder = self._build_two_link_articulation(
+            gravity=wp.vec3(0.0, 0.0, 0.0),
+            floating_base=False,
+            joint_type="revolute",
+            joint_axis=wp.vec3(0.0, 0.0, 1.0),
+            link_coms=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+            link_masses=[1.0, 1.0],
+            joint_frames=[wp.transform_identity(), wp.transform_identity()],
+            link_inertias=[self.I_UNIT, self.I_UNIT],
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        arrays = _InverseDynamicsArrays(model)
 
-    def test_eval_inverse_dynamics_force_zero_articulations_preserves_tau(self):
+        with self.assertRaises(TypeError):
+            newton.eval_inverse_dynamics_passive(model, state, arrays.mass_matrix)
+        with self.assertRaises(TypeError):
+            newton.eval_inverse_dynamics_force(
+                model,
+                state,
+                arrays.mass_matrix,
+                wp.zeros_like(state.joint_qd),
+                arrays.coriolis_force,
+                arrays.gravity_force,
+                arrays.joint_f,
+            )
+
+    def test_eval_inverse_dynamics_passive_cuda_graph_capture(self):
+        """Internally allocated scratch remains valid in a captured graph."""
+        if self.device is None or not self.device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        if not wp.is_mempool_enabled(self.device):
+            self.skipTest("CUDA graph capture requires the memory pool")
+
+        builder = self._build_two_link_articulation(
+            gravity=wp.vec3(0.0, -9.81, 0.0),
+            floating_base=False,
+            joint_type="revolute",
+            joint_axis=wp.vec3(0.0, 0.0, 1.0),
+            link_coms=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)],
+            link_masses=[1.0, 1.0],
+            joint_frames=[wp.transform_identity(), wp.transform_identity()],
+            link_inertias=[self.I_UNIT, self.I_UNIT],
+        )
+        model = builder.finalize(device=self.device)
+        state = model.state()
+        arrays = _InverseDynamicsArrays(model)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        with wp.ScopedCapture(device=self.device) as capture:
+            newton.eval_inverse_dynamics_passive(
+                model,
+                state,
+                mass_matrix=arrays.mass_matrix,
+                gravity_force=arrays.gravity_force,
+                coriolis_force=arrays.coriolis_force,
+            )
+
+        wp.capture_launch(capture.graph)
+        wp.capture_launch(capture.graph)
+        self.assertTrue(np.all(np.isfinite(arrays.mass_matrix.numpy())))
+        self.assertTrue(np.all(np.isfinite(arrays.gravity_force.numpy())))
+        self.assertTrue(np.all(np.isfinite(arrays.coriolis_force.numpy())))
+
+    def test_eval_inverse_dynamics_force_zero_articulations_preserves_joint_f(self):
         """``eval_inverse_dynamics_force`` short-circuits on a model with
-        zero articulations without touching ``tau``.
+        zero articulations without touching ``joint_f``.
 
         The ``articulation_count == 0`` guard returns before the in-place
-        ``tau.zero_()``, so a sentinel previously written into ``tau`` must
+        ``joint_f.zero_()``, so a sentinel previously written into ``joint_f`` must
         be preserved -- a regression check that the early return stays in
         place ahead of the zero pass.
         """
@@ -2976,33 +3100,35 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
 
         n = 4
         sentinel = np.array([7.0, -2.5, 0.1, 99.0], dtype=np.float32)
-        tau = wp.array(sentinel, dtype=wp.float32, device=self.device)
+        joint_f = wp.array(sentinel, dtype=wp.float32, device=self.device)
         # Buffer sizes here are otherwise irrelevant: the kernel never runs.
         H = wp.zeros((1, 1, 1), dtype=wp.float32, device=self.device)
-        qddot = wp.zeros(n, dtype=wp.float32, device=self.device)
+        joint_qdd = wp.zeros(n, dtype=wp.float32, device=self.device)
         zero_bias = wp.zeros(n, dtype=wp.float32, device=self.device)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        inverse_dynamics.mass_matrix = H
+        inverse_dynamics.coriolis_force = zero_bias
+        inverse_dynamics.gravity_force = zero_bias
+        inverse_dynamics.joint_f = joint_f
 
-        newton.eval_inverse_dynamics_force(model, model.state(), H, qddot, zero_bias, zero_bias, tau)
+        _eval_inverse_dynamics_force(model, model.state(), inverse_dynamics, joint_qdd)
 
-        np.testing.assert_array_equal(tau.numpy(), sentinel)
+        np.testing.assert_array_equal(joint_f.numpy(), sentinel)
 
-    def test_eval_inverse_dynamics_zero_articulations_no_error(self):
-        """``eval_inverse_dynamics`` with ``EvalType.ALL`` on a model with
-        zero articulations completes without raising and leaves the
-        zero-sized output buffers consistent.
-        """
+    def test_eval_inverse_dynamics_passive_zero_articulations_no_error(self):
+        """Requesting every output on an empty model leaves consistent arrays."""
         builder = newton.ModelBuilder()
         model = builder.finalize(device=self.device)
         self.assertEqual(model.articulation_count, 0)
         self.assertEqual(model.joint_dof_count, 0)
 
         state = model.state()
-        inverse_dynamics = model.inverse_dynamics()
+        inverse_dynamics = _InverseDynamicsArrays(model)
 
-        newton.eval_inverse_dynamics(
+        _eval_inverse_dynamics_passive(
             model,
             state,
-            newton.InverseDynamics.EvalType.ALL,
+            _PassiveOutput.ALL,
             inverse_dynamics,
         )
 
@@ -3011,12 +3137,12 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         self.assertEqual(inverse_dynamics.mass_matrix.shape[0], 0)
 
     def test_articulation_view_masks_inverse_dynamics(self):
-        """``ArticulationView.eval_inverse_dynamics`` restricts the computation to selected articulations.
+        """``ArticulationView.eval_inverse_dynamics_passive`` restricts the computation to selected articulations.
 
         Builds a 2-world model where each world has two articulations
         labelled ``"A"`` and ``"B"`` with distinct masses / inertias.
         Creates an :class:`ArticulationView` selecting only ``"A"``
-        articulations and runs ``view.eval_inverse_dynamics``. Asserts:
+        articulations and runs ``view.eval_inverse_dynamics_passive``. Asserts:
 
         - Slots in ``mass_matrix`` / ``gravity_force`` /
           ``coriolis_force`` corresponding to selected
@@ -3085,11 +3211,14 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         #   DOF range           0,1  2,3  4,5  6,7
 
         # Reference: unmasked run → full-model M, g, C.
-        reference_id = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, reference_id)
+        reference_id = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.ALL, reference_id)
         H_ref = reference_id.mass_matrix.numpy()
         g_ref = reference_id.gravity_force.numpy()
         c_ref = reference_id.coriolis_force.numpy()
+        joint_qdd = wp.array(np.linspace(0.1, 0.8, model.joint_dof_count), dtype=wp.float32, device=self.device)
+        _eval_inverse_dynamics_force(model, state, reference_id, joint_qdd)
+        tau_ref = reference_id.joint_f.numpy()
 
         # Ensure no entry in H_ref / g_ref / c_ref is (numerically) zero
         # — we use zero later as the signal that a slot was masked out, so
@@ -3132,12 +3261,13 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         # All-deselected case: per-world mask is all-False, so no articulation
         # is selected and every output slot must be exactly zero.
         with self.subTest(case_idx="all_deselected"):
-            inverse_dynamics = model.inverse_dynamics()
+            inverse_dynamics = _InverseDynamicsArrays(model)
             all_false_mask = wp.array(np.asarray([False, False], dtype=bool), dtype=bool, device=self.device)
-            view.eval_inverse_dynamics(
+            view.eval_inverse_dynamics_passive(
                 state,
-                newton.InverseDynamics.EvalType.ALL,
-                inverse_dynamics,
+                mass_matrix=inverse_dynamics.mass_matrix,
+                gravity_force=inverse_dynamics.gravity_force,
+                coriolis_force=inverse_dynamics.coriolis_force,
                 mask=all_false_mask,
             )
             np.testing.assert_array_equal(
@@ -3152,20 +3282,49 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                 inverse_dynamics.coriolis_force.numpy(),
                 np.zeros_like(inverse_dynamics.coriolis_force.numpy()),
             )
+            joint_qdd_nan = wp.array(
+                np.full(model.joint_dof_count, np.nan, dtype=np.float32),
+                dtype=wp.float32,
+                device=self.device,
+            )
+            view.eval_inverse_dynamics_force(
+                state,
+                mass_matrix=inverse_dynamics.mass_matrix,
+                joint_qdd=joint_qdd_nan,
+                coriolis_force=inverse_dynamics.coriolis_force,
+                gravity_force=inverse_dynamics.gravity_force,
+                joint_f=inverse_dynamics.joint_f,
+                mask=all_false_mask,
+            )
+            np.testing.assert_array_equal(
+                inverse_dynamics.joint_f.numpy(),
+                np.zeros_like(inverse_dynamics.joint_f.numpy()),
+            )
 
         for case_idx in range(len(per_world_masks)):
             with self.subTest(case_idx=case_idx):
-                inverse_dynamics = model.inverse_dynamics()
-                view.eval_inverse_dynamics(
+                inverse_dynamics = _InverseDynamicsArrays(model)
+                view.eval_inverse_dynamics_passive(
                     state,
-                    newton.InverseDynamics.EvalType.ALL,
-                    inverse_dynamics,
+                    mass_matrix=inverse_dynamics.mass_matrix,
+                    gravity_force=inverse_dynamics.gravity_force,
+                    coriolis_force=inverse_dynamics.coriolis_force,
                     mask=per_world_masks[case_idx],
                 )
 
                 H = inverse_dynamics.mass_matrix.numpy()
                 g = inverse_dynamics.gravity_force.numpy()
                 c = inverse_dynamics.coriolis_force.numpy()
+                view.eval_inverse_dynamics_force(
+                    state,
+                    mass_matrix=inverse_dynamics.mass_matrix,
+                    joint_qdd=joint_qdd,
+                    coriolis_force=inverse_dynamics.coriolis_force,
+                    gravity_force=inverse_dynamics.gravity_force,
+                    joint_f=inverse_dynamics.joint_f,
+                    mask=per_world_masks[case_idx],
+                )
+                tau = inverse_dynamics.joint_f.numpy()
 
                 # Mass matrix: selected articulations match reference; the rest are zero.
                 for art_id in range(model.articulation_count):
@@ -3185,8 +3344,13 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
                         self.assertAlmostEqual(float(g[dof_idx]), 0.0, delta=1e-6)
                         self.assertAlmostEqual(float(c[dof_idx]), 0.0, delta=1e-6)
 
+                    if dof_selected[case_idx, dof_idx]:
+                        self.assertAlmostEqual(float(tau[dof_idx]), float(tau_ref[dof_idx]), delta=1e-5)
+                    else:
+                        self.assertAlmostEqual(float(tau[dof_idx]), 0.0, delta=1e-6)
+
     def test_articulation_view_masks_inverse_dynamics_2d(self):
-        """``ArticulationView.eval_inverse_dynamics`` accepts a 2-D ``wp.array2d[bool]`` mask.
+        """``ArticulationView.eval_inverse_dynamics_passive`` accepts a 2-D ``wp.array2d[bool]`` mask.
 
         A 2-D mask of shape ``[world_count, count_per_world]`` selects
         individual articulations per world independently, which cannot be
@@ -3240,11 +3404,14 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
         # Unmasked reference.
-        reference_id = model.inverse_dynamics()
-        newton.eval_inverse_dynamics(model, state, newton.InverseDynamics.EvalType.ALL, reference_id)
+        reference_id = _InverseDynamicsArrays(model)
+        _eval_inverse_dynamics_passive(model, state, _PassiveOutput.ALL, reference_id)
         H_ref = reference_id.mass_matrix.numpy()
         g_ref = reference_id.gravity_force.numpy()
         c_ref = reference_id.coriolis_force.numpy()
+        joint_qdd = wp.array(np.linspace(0.1, 0.8, model.joint_dof_count), dtype=wp.float32, device=self.device)
+        _eval_inverse_dynamics_force(model, state, reference_id, joint_qdd)
+        tau_ref = reference_id.joint_f.numpy()
 
         # View covers all four articulations (A and B in both worlds),
         # giving count_per_world=2.  The fnmatch pattern "[AB]" matches
@@ -3258,8 +3425,14 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
         # just one articulation slot — which a count_per_world=1 view cannot test.
         mask1d = wp.array(np.array([True, False], dtype=bool), dtype=bool, device=self.device)
 
-        inverse_dynamics = model.inverse_dynamics()
-        view.eval_inverse_dynamics(state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, mask=mask1d)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        view.eval_inverse_dynamics_passive(
+            state,
+            mass_matrix=inverse_dynamics.mass_matrix,
+            gravity_force=inverse_dynamics.gravity_force,
+            coriolis_force=inverse_dynamics.coriolis_force,
+            mask=mask1d,
+        )
 
         H = inverse_dynamics.mass_matrix.numpy()
         g = inverse_dynamics.gravity_force.numpy()
@@ -3293,12 +3466,28 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             device=self.device,
         )
 
-        inverse_dynamics = model.inverse_dynamics()
-        view.eval_inverse_dynamics(state, newton.InverseDynamics.EvalType.ALL, inverse_dynamics, mask=mask2d)
+        inverse_dynamics = _InverseDynamicsArrays(model)
+        view.eval_inverse_dynamics_passive(
+            state,
+            mass_matrix=inverse_dynamics.mass_matrix,
+            gravity_force=inverse_dynamics.gravity_force,
+            coriolis_force=inverse_dynamics.coriolis_force,
+            mask=mask2d,
+        )
+        view.eval_inverse_dynamics_force(
+            state,
+            mass_matrix=inverse_dynamics.mass_matrix,
+            joint_qdd=joint_qdd,
+            coriolis_force=inverse_dynamics.coriolis_force,
+            gravity_force=inverse_dynamics.gravity_force,
+            joint_f=inverse_dynamics.joint_f,
+            mask=mask2d,
+        )
 
         H = inverse_dynamics.mass_matrix.numpy()
         g = inverse_dynamics.gravity_force.numpy()
         c = inverse_dynamics.coriolis_force.numpy()
+        tau = inverse_dynamics.joint_f.numpy()
 
         # art 0 = A0 (selected), art 1 = B0 (not), art 2 = A1 (not), art 3 = B1 (selected)
         articulation_selected_2d = [True, False, False, True]
@@ -3320,6 +3509,11 @@ class TestInverseDynamicsAPI(TestInverseDynamicsBase):
             else:
                 self.assertAlmostEqual(float(g[dof_idx]), 0.0, delta=1e-6)
                 self.assertAlmostEqual(float(c[dof_idx]), 0.0, delta=1e-6)
+
+            if dof_selected_2d[dof_idx]:
+                self.assertAlmostEqual(float(tau[dof_idx]), float(tau_ref[dof_idx]), delta=1e-5)
+            else:
+                self.assertAlmostEqual(float(tau[dof_idx]), 0.0, delta=1e-6)
 
 
 class TestGravCompForceCPU(TestGravCompForce, unittest.TestCase):

@@ -406,10 +406,6 @@ def assert_model_info_equal(
         "joint_kinematic_cts_group_offset",
         "base_body_index",
         "base_joint_index",
-        "mass_min",
-        "mass_max",
-        "mass_total",
-        "inertia_total",
     ]
     if excluded:
         array_attributes = [attr for attr in array_attributes if attr not in excluded]
