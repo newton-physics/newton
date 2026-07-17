@@ -252,6 +252,30 @@ class TestUsdRuntime(unittest.TestCase):
                 runtime.step(sim)
         self.assertEqual(spy.call_count, 2)  # steps 0 and 4
 
+    def test_capture_does_not_advance_sim(self):
+        import warp as wp  # noqa: PLC0415
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim_graph = runtime.load_usd(_make_stage(), use_graph=True)
+        sim_plain = runtime.load_usd(_make_stage(), use_graph=False)
+        self.assertEqual(sim_graph.time, 0.0)
+        self.assertEqual(sim_graph.step_count, 0)
+        assert_np_equal(sim_graph.state.body_q.numpy(), sim_plain.state.body_q.numpy())
+        assert_np_equal(sim_graph.state.body_qd.numpy(), sim_plain.state.body_qd.numpy())
+        if wp.get_device().is_cuda:
+            self.assertIsNotNone(sim_graph._graphs)
+
+    def test_graph_and_direct_trajectories_match(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim_graph = runtime.load_usd(_make_stage(), use_graph=True)
+        sim_plain = runtime.load_usd(_make_stage(), use_graph=False)
+        for _ in range(50):
+            runtime.step(sim_graph)
+            runtime.step(sim_plain)
+        assert_np_equal(sim_graph.state.body_q.numpy(), sim_plain.state.body_q.numpy(), tol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()
