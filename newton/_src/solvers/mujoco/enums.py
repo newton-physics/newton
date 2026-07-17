@@ -19,4 +19,27 @@ class EqType(IntEnum):
     """Constrains one scalar joint coordinate to a quartic polynomial of another."""
 
 
+class _ActuatorBiasType(IntEnum):
+    NONE = 0
+    AFFINE = 1
+    MUSCLE = 2
+    USER = 3
+
+
+class _ActuatorDynamicsType(IntEnum):
+    NONE = 0
+    INTEGRATOR = 1
+    FILTER = 2
+    FILTER_EXACT = 3
+    MUSCLE = 4
+    USER = 5
+
+
+class _ActuatorGainType(IntEnum):
+    FIXED = 0
+    AFFINE = 1
+    MUSCLE = 2
+    USER = 3
+
+
 __all__ = ["EqType"]

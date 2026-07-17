@@ -173,7 +173,7 @@ def _run(solver, model: newton.Model, n_steps: int = 30, dt: float = 1.0 / 60.0)
 
 
 def _build_two_particle_scene() -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_particle(pos=(-0.5, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
     builder.add_particle(pos=(0.5, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
     builder.color()
@@ -186,13 +186,11 @@ def _build_two_particle_contact_scene(
     vel_b: tuple[float, float, float] = (0.0, 0.0, 0.0),
     radius: float = 0.05,
 ) -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_particle(pos=(gap, 0.0, 0.0), vel=vel_a, mass=1.0, radius=radius)
     builder.add_particle(pos=(0.0, 0.0, 0.0), vel=vel_b, mass=1.0, radius=radius)
     builder.color()
-    model = builder.finalize(device="cpu")
-    model.particle_grid = None
-    return model
+    return builder.finalize(device="cpu")
 
 
 def _run_particles(solver, model: newton.Model, n_steps: int = 5, dt: float = 1.0 / 60.0):
@@ -255,7 +253,7 @@ def _make_semi_particle_solver(model: newton.Model):
 
 
 def _build_body_particle_contact_scene() -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_body(
         xform=wp.transform(p=wp.vec3(-0.1, 0.0, 0.0), q=wp.quat_identity()),
         mass=1.0,
@@ -269,7 +267,7 @@ def _build_body_particle_contact_scene() -> newton.Model:
 
 
 def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(
         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
         mass=1.0,
@@ -290,7 +288,7 @@ def _build_body_particle_attachment_scene(enabled: bool = True) -> newton.Model:
 
 
 def _build_two_body_contact_scene(gap: float = -0.1) -> newton.Model:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_body(
         xform=wp.transform(p=wp.vec3(gap, 0.0, 0.0), q=wp.quat_identity()),
         mass=1.0,
@@ -306,7 +304,7 @@ def _build_two_body_contact_scene(gap: float = -0.1) -> newton.Model:
 
 
 def _build_collision_contact_scene() -> tuple[newton.Model, int, int, int]:
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     tray_body = builder.add_body(
         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
         mass=0.1,
@@ -429,7 +427,7 @@ def _build_inclined_plane_particle_box_scene(
     box_half_extent: float = 0.06,
     penetration: float = 0.002,
 ) -> tuple[newton.Model, int, int, list[int]]:
-    builder = newton.ModelBuilder(gravity=-10.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     plane_q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
     plane_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), plane_q),
@@ -563,7 +561,7 @@ def _build_inclined_plane_rigid_box_scene(
     box_half_height: float = 0.08,
     penetration: float = 0.002,
 ) -> tuple[newton.Model, int, int]:
-    builder = newton.ModelBuilder(gravity=-10.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     plane_q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
     plane_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), plane_q),
@@ -592,7 +590,7 @@ def _build_collision_inclined_plane_rigid_box_scene(
     box_half_height: float = 0.08,
     penetration: float = 0.004,
 ) -> tuple[newton.Model, int, int]:
-    builder = newton.ModelBuilder(gravity=-10.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
     plane_q = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle)
     plane_body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), plane_q),
@@ -787,7 +785,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires CUDA")
     def test_xpbd_vbd_contact_proximal_refresh_is_graph_capturable(self):
         device = "cuda:0"
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.default_shape_cfg.density = 1000.0
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
         builder.add_shape_box(body=body_a, hx=0.05, hy=0.05, hz=0.05)
@@ -857,7 +855,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         *,
         friction: float = 0.0,
     ) -> tuple[newton.Model, int, int, int]:
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(
             xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
             mass=1.0,
@@ -922,7 +920,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         self.assertLess(final_gap, 0.5 * initial_gap)
 
     def test_joint_proxy_shape_collisions_disabled_after_shape_compaction(self):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         unrelated = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_shape_sphere(body=unrelated, radius=0.05)
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -1141,6 +1139,32 @@ class TestAdmmCollisionDetection(unittest.TestCase):
 
         self.assertGreater(solver.collision_contact_count_max, 0)
         self.assertGreater(q_contact[1, 0] - q_contact[0, 0], 0.08 + 1.0e-3)
+
+    def test_collision_particle_particle_contacts_respect_disabled_model_particle_grid(self):
+        model = _build_two_particle_contact_scene(gap=-0.08)
+        model.particle_grid = None
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="a",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    particles=[0],
+                ),
+                SolverCoupled.Entry(
+                    name="b",
+                    solver=lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+                    particles=[1],
+                ),
+            ],
+            coupling=SolverCoupledADMM.Config(
+                contact_pairs=[SolverCoupledADMM.ContactPair(source="a", destination="b")],
+            ),
+        )
+
+        _run_particles(solver, model, n_steps=1)
+
+        self.assertEqual(solver.collision_contact_count_max, 0)
 
     def test_collision_frictional_contact_matches_inclined_plane_box_motion(self):
         friction = 0.4

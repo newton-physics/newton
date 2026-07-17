@@ -20,8 +20,6 @@ MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)
 TRIANGLE_MESH_SHAPE_ID = wp.uint32(0xFFFFFFFD)
 PARTICLES_SHAPE_ID = wp.uint32(0xFFFFFFFE)
 
-_BACKFACE_EPS = 1.0e-6
-
 
 @wp.struct
 class ClosestHit:
@@ -46,53 +44,29 @@ def _ray_intersect_mesh_smooth(
     enable_backface_culling: wp.bool,
     max_t: wp.float32,
 ) -> tuple[wp.float32, wp.vec3f, wp.float32, wp.float32, wp.int32]:
-    """Ray-mesh intersection with optional per-vertex normal interpolation.
+    """Ray-mesh intersection (world-space normal) with optional per-vertex normal interpolation.
 
-    When ``shape_mesh_data_id`` is non-negative and the referenced ``mesh_data`` entry
-    supplies per-vertex normals, the returned normal is the barycentric interpolation
-    of those vertex normals (for smooth shading); otherwise the triangle's face normal
-    is used.
+    Wraps :func:`~newton._src.geometry.raycast.ray_intersect_mesh`, then when ``shape_mesh_data_id``
+    is non-negative and the referenced ``mesh_data`` entry supplies per-vertex normals, replaces the
+    triangle face normal with the barycentric interpolation of those vertex normals (smooth shading).
     """
-    ray_origin_local, ray_direction_local = raycast.map_ray_to_local_scaled(transform, scale, ray_origin, ray_direction)
+    ray_origin_local, ray_direction_local = raycast.map_ray_to_local(transform, ray_origin, ray_direction, scale)
+    t, normal_local, u, v, face = raycast.ray_intersect_mesh(
+        ray_origin_local, ray_direction_local, scale, mesh_id, enable_backface_culling, max_t
+    )
+    if t < 0.0:
+        return t, normal_local, u, v, face
 
-    query = wp.mesh_query_ray(mesh_id, ray_origin_local, ray_direction_local, max_t)
+    if shape_mesh_data_id > -1:
+        normals = mesh_data[shape_mesh_data_id].normals
+        if normals.shape[0] > 0:
+            n0 = wp.mesh_get_index(mesh_id, face * 3 + 0)
+            n1 = wp.mesh_get_index(mesh_id, face * 3 + 1)
+            n2 = wp.mesh_get_index(mesh_id, face * 3 + 2)
+            vertex_normal = normals[n0] * u + normals[n1] * v + normals[n2] * (1.0 - u - v)
+            normal_local = raycast.safe_div_vec3(vertex_normal, scale)
 
-    if query.result:
-        if not enable_backface_culling or wp.dot(ray_direction_local, query.normal) < 0.0:
-            normal_local = query.normal
-
-            if shape_mesh_data_id > -1:
-                normals = mesh_data[shape_mesh_data_id].normals
-                if normals.shape[0] > 0:
-                    n0 = wp.mesh_get_index(mesh_id, query.face * 3 + 0)
-                    n1 = wp.mesh_get_index(mesh_id, query.face * 3 + 1)
-                    n2 = wp.mesh_get_index(mesh_id, query.face * 3 + 2)
-                    normal_local = (
-                        normals[n0] * query.u + normals[n1] * query.v + normals[n2] * (1.0 - query.u - query.v)
-                    )
-
-            normal_world = wp.transform_vector(transform, raycast.safe_div_vec3(normal_local, scale))
-            normal_world = wp.normalize(normal_world)
-            return query.t, normal_world, query.u, query.v, query.face
-
-    return wp.float32(-1.0), wp.vec3f(0.0), wp.float32(0.0), wp.float32(0.0), wp.int32(-1)
-
-
-@wp.func
-def _plane_hit_with_culling(
-    transform: wp.transformf,
-    size: wp.vec3f,
-    ray_origin: wp.vec3f,
-    ray_direction: wp.vec3f,
-    enable_backface_culling: wp.bool,
-) -> tuple[wp.float32, wp.vec3f]:
-    """Ray-plane intersection; when ``enable_backface_culling`` is set, rejects rays that
-    approach the plane from behind (ray direction aligned with the plane normal)."""
-    hit_distance, hit_normal = raycast.ray_intersect_plane(transform, ray_origin, ray_direction, size)
-    if enable_backface_culling and hit_distance >= 0.0:
-        if wp.dot(ray_direction, hit_normal) > -_BACKFACE_EPS:
-            return wp.float32(-1.0), wp.vec3f(0.0)
-    return hit_distance, hit_normal
+    return t, wp.normalize(wp.transform_vector(transform, normal_local)), u, v, face
 
 
 @wp.func
@@ -161,59 +135,6 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
-                    elif shape_type == GeoType.PLANE:
-                        hit_distance, hit_normal = _plane_hit_with_culling(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            wp.static(config.enable_backface_culling),
-                        )
-                    elif shape_type == GeoType.SPHERE:
-                        hit_distance, hit_normal = raycast.ray_intersect_sphere(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                        )
-                    elif shape_type == GeoType.ELLIPSOID:
-                        hit_distance, hit_normal = raycast.ray_intersect_ellipsoid(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
-                        )
-                    elif shape_type == GeoType.CAPSULE:
-                        hit_distance, hit_normal = raycast.ray_intersect_capsule(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CYLINDER:
-                        hit_distance, hit_normal = raycast.ray_intersect_cylinder(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CONE:
-                        hit_distance, hit_normal = raycast.ray_intersect_cone(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.BOX:
-                        hit_distance, hit_normal = raycast.ray_intersect_box(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
-                        )
                     elif shape_type == GeoType.GAUSSIAN:
                         if num_gaussians_hit < wp.static(state.num_gaussians):
                             gaussians_hit[num_gaussians_hit] = si
@@ -227,6 +148,15 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                             #     gaussians_data[gaussian_id],
                             #     closest_hit.distance
                             # )
+                    else:
+                        hit_distance, hit_normal = raycast.ray_intersect_shape(
+                            shape_transforms[si],
+                            shape_sizes[si],
+                            shape_type,
+                            ray_origin_world,
+                            ray_dir_world,
+                            wp.static(config.enable_backface_culling),
+                        )
 
                     if hit_distance >= 0.0 and hit_distance < closest_hit.distance:
                         closest_hit.distance = hit_distance
@@ -276,6 +206,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         world_index: wp.int32,
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        topology_particle_mask: wp.array[wp.bool],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
@@ -289,6 +220,9 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                 si = wp.int32(0)
 
                 while wp.bvh_query_next(query, si, closest_hit.distance):
+                    if topology_particle_mask[si]:
+                        continue
+
                     hit_distance, hit_normal = raycast.ray_intersect_particle_sphere(
                         ray_origin_world,
                         ray_dir_world,
@@ -311,10 +245,11 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
         if triangle_mesh_id:
-            hit_distance, hit_normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh_no_transform(
-                triangle_mesh_id,
+            hit_distance, hit_normal, bary_u, bary_v, face_idx = raycast.ray_intersect_mesh(
                 ray_origin_world,
                 ray_dir_world,
+                wp.vec3f(1.0),
+                triangle_mesh_id,
                 wp.static(config.enable_backface_culling),
                 closest_hit.distance,
             )
@@ -347,6 +282,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
         mesh_data: wp.array[MeshData],
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         gaussians_data: wp.array[Gaussian.Data],
         ray_origin_world: wp.vec3f,
@@ -379,7 +315,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
             camera_forward,
         )
 
-        if wp.static(config.enable_particles):
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
             closest_hit = closest_hit_particles(
                 closest_hit,
                 bvh_particles_size,
@@ -388,6 +324,7 @@ def create_closest_hit_function(config: RenderContext.Config, state: RenderConte
                 world_index,
                 particles_position,
                 particles_radius,
+                topology_particle_mask,
                 ray_origin_world,
                 ray_dir_world,
             )
@@ -440,63 +377,30 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                     # Heightfields are triangulated meshes; RenderContext remaps
                     # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
+                        ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
+                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
+                        )
+                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh_no_normal(
+                            ray_origin_local,
+                            ray_direction_local,
                             shape_sizes[si],
                             shape_source_ptr[si],
                             wp.static(config.enable_backface_culling),
                             closest_hit.distance,
                         )
-                    elif shape_type == GeoType.PLANE:
-                        hit_dist, _plane_normal = _plane_hit_with_culling(
-                            shape_transforms[si],
-                            shape_sizes[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            wp.static(config.enable_backface_culling),
-                        )
-                    elif shape_type == GeoType.SPHERE:
-                        hit_dist, _normal = raycast.ray_intersect_sphere(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0]
-                        )
-                    elif shape_type == GeoType.ELLIPSOID:
-                        hit_dist, _normal = raycast.ray_intersect_ellipsoid(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
-                    elif shape_type == GeoType.CAPSULE:
-                        hit_dist, _normal = raycast.ray_intersect_capsule(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CYLINDER:
-                        hit_dist, _normal = raycast.ray_intersect_cylinder(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CONE:
-                        hit_dist, _normal = raycast.ray_intersect_cone(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.BOX:
-                        hit_dist, _normal = raycast.ray_intersect_box(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
                     elif shape_type == GeoType.GAUSSIAN:
                         if num_gaussians_hit < wp.static(state.num_gaussians):
                             gaussians_hit[num_gaussians_hit] = si
                             num_gaussians_hit += 1
+                    else:
+                        hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
+                            shape_transforms[si],
+                            shape_sizes[si],
+                            shape_type,
+                            ray_origin_world,
+                            ray_dir_world,
+                            wp.static(config.enable_backface_culling),
+                        )
 
                     if hit_dist > -1.0 and hit_dist < closest_hit.distance:
                         closest_hit.distance = hit_dist
@@ -532,6 +436,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         world_index: wp.int32,
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        topology_particle_mask: wp.array[wp.bool],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
@@ -545,6 +450,9 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                 si = wp.int32(0)
 
                 while wp.bvh_query_next(query, si, closest_hit.distance):
+                    if topology_particle_mask[si]:
+                        continue
+
                     hit_dist, _normal = raycast.ray_intersect_particle_sphere(
                         ray_origin_world,
                         ray_dir_world,
@@ -566,10 +474,13 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         ray_dir_world: wp.vec3f,
     ) -> ClosestHit:
         if triangle_mesh_id:
-            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_transform(
-                triangle_mesh_id,
+            # Triangle mesh is in world space; its local frame is the world frame (see
+            # closest_hit_triangle_mesh).
+            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_normal(
                 ray_origin_world,
                 ray_dir_world,
+                wp.vec3f(1.0),
+                triangle_mesh_id,
                 wp.static(config.enable_backface_culling),
                 closest_hit.distance,
             )
@@ -598,6 +509,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
         mesh_data: wp.array[MeshData],
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         gaussians_data: wp.array[Gaussian.Data],
         ray_origin_world: wp.vec3f,
@@ -631,7 +543,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
             camera_forward,
         )
 
-        if wp.static(config.enable_particles):
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
             closest_hit = closest_hit_particles_depth_only(
                 closest_hit,
                 bvh_particles_size,
@@ -640,6 +552,7 @@ def create_closest_hit_depth_only_function(config: RenderContext.Config, state: 
                 world_index,
                 particles_position,
                 particles_radius,
+                topology_particle_mask,
                 ray_origin_world,
                 ray_dir_world,
             )
@@ -683,58 +596,23 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                     # Heightfields are triangulated meshes; RenderContext remaps
                     # HFIELD -> MESH, so this branch renders them too.
                     if shape_type == GeoType.MESH:
-                        hit_dist, _normal, _u, _v, _face = raycast.ray_intersect_mesh(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si],
+                        ray_origin_local, ray_direction_local = raycast.map_ray_to_local(
+                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
+                        )
+                        hit_dist = raycast.ray_intersect_mesh_anyhit(
+                            ray_origin_local,
+                            ray_direction_local,
                             shape_source_ptr[si],
-                            False,
                             max_dist,
                         )
-                    elif shape_type == GeoType.PLANE:
-                        hit_dist, _plane_normal = _plane_hit_with_culling(
+                    else:
+                        hit_dist, _normal = raycast.ray_intersect_shape_no_normal(
                             shape_transforms[si],
                             shape_sizes[si],
+                            shape_type,
                             ray_origin_world,
                             ray_dir_world,
                             wp.static(config.enable_backface_culling),
-                        )
-                    elif shape_type == GeoType.SPHERE:
-                        hit_dist, _normal = raycast.ray_intersect_sphere(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0]
-                        )
-                    elif shape_type == GeoType.ELLIPSOID:
-                        hit_dist, _normal = raycast.ray_intersect_ellipsoid(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
-                        )
-                    elif shape_type == GeoType.CAPSULE:
-                        hit_dist, _normal = raycast.ray_intersect_capsule(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CYLINDER:
-                        hit_dist, _normal = raycast.ray_intersect_cylinder(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.CONE:
-                        hit_dist, _normal = raycast.ray_intersect_cone(
-                            shape_transforms[si],
-                            ray_origin_world,
-                            ray_dir_world,
-                            shape_sizes[si][0],
-                            shape_sizes[si][1],
-                        )
-                    elif shape_type == GeoType.BOX:
-                        hit_dist, _normal = raycast.ray_intersect_box(
-                            shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
                         )
                     if hit_dist > -1 and hit_dist < max_dist:
                         return True
@@ -749,6 +627,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         world_index: wp.int32,
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        topology_particle_mask: wp.array[wp.bool],
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
         max_dist: wp.float32,
@@ -763,6 +642,9 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                 si = wp.int32(0)
 
                 while wp.bvh_query_next(query, si, max_dist):
+                    if topology_particle_mask[si]:
+                        continue
+
                     hit_dist, _normal = raycast.ray_intersect_particle_sphere(
                         ray_origin_world,
                         ray_dir_world,
@@ -783,9 +665,9 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         max_dist: wp.float32,
     ) -> wp.bool:
         if triangle_mesh_id:
-            hit_dist, _normal, _bary_u, _bary_v, _face_idx = raycast.ray_intersect_mesh_no_transform(
-                triangle_mesh_id, ray_origin_world, ray_dir_world, wp.static(config.enable_backface_culling), max_dist
-            )
+            # Triangle mesh is in world space; its local frame is the world frame (see
+            # closest_hit_triangle_mesh). Shadow rays only need any hit within ``max_dist``.
+            hit_dist = raycast.ray_intersect_mesh_anyhit(ray_origin_world, ray_dir_world, triangle_mesh_id, max_dist)
             return hit_dist >= 0.0
         return False
 
@@ -805,6 +687,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         shape_source_ptr: wp.array[wp.uint64],
         particles_position: wp.array[wp.vec3f],
         particles_radius: wp.array[wp.float32],
+        topology_particle_mask: wp.array[wp.bool],
         triangle_mesh_id: wp.uint64,
         ray_origin_world: wp.vec3f,
         ray_dir_world: wp.vec3f,
@@ -829,7 +712,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
         ):
             return True
 
-        if wp.static(config.enable_particles):
+        if wp.static(config.enable_particles) and wp.static(state.has_particles):
             if first_hit_particles(
                 bvh_particles_size,
                 bvh_particles_id,
@@ -837,6 +720,7 @@ def create_first_hit_function(config: RenderContext.Config, state: RenderContext
                 world_index,
                 particles_position,
                 particles_radius,
+                topology_particle_mask,
                 ray_origin_world,
                 ray_dir_world,
                 max_distance,

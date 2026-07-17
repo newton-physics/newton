@@ -12,12 +12,14 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+import numpy as np
 import warp as wp
 
 from ...core.types import override
 from ...sim import (
     Contacts,
     Control,
+    JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
         ConstrainedDynamicsConfig,
         ConstraintStabilizationConfig,
         ForwardKinematicsSolverConfig,
+        MaterialManagerConfig,
         PADMMSolverConfig,
     )
 
@@ -166,6 +169,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         If `None`, default values will be used.
         """
 
+        materials: MaterialManagerConfig | None = None
+        """
+        Configurations for the material manager and material property mixing.
+        See :class:`MaterialManagerConfig` for more details.
+        If `None`, default values will be used.
+        """
+
         rotation_correction: Literal["twopi", "continuous", "none"] = "twopi"
         """
         The rotation correction mode to use for rotational DoFs.\n
@@ -223,6 +233,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.ConstrainedDynamicsConfig.register_custom_attributes(builder)
             config.CollisionDetectorConfig.register_custom_attributes(builder)
             config.PADMMSolverConfig.register_custom_attributes(builder)
+            config.MaterialManagerConfig.register_custom_attributes(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
             builder.add_custom_attribute(
@@ -276,6 +287,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "dynamics": config.ConstrainedDynamicsConfig,
                 "padmm": config.PADMMSolverConfig,
                 "fk": config.ForwardKinematicsSolverConfig,
+                "materials": config.MaterialManagerConfig,
             }
             for attr_name, config_cls in subconfigs.items():
                 nested_config = kwargs.get(attr_name, None)
@@ -319,6 +331,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self.constraints.validate()
             self.dynamics.validate()
             self.padmm.validate()
+            self.materials.validate()
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
@@ -354,6 +367,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 self.dynamics = config.ConstrainedDynamicsConfig()
             if self.padmm is None:
                 self.padmm = config.PADMMSolverConfig()
+            if self.materials is None:
+                self.materials = config.MaterialManagerConfig()
 
             # Validate the config values after all default-initialization is done
             # to ensure that any inter-dependent parameters are properly checked.
@@ -458,8 +473,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             Reset option, to set a new pose for the base body, and transform all bodies accordingly.
             If a base joint is set, the prescribed pose is interpreted in the frame of the base joint;
             else it is directly interpreted as the new pose of the base body.
-            Note: if a base joint is set that is not a free joint, no check is made that the new pose is
-            compatible with the base joint's DoFs. To guarantee a feasible pose, use instead FromJointQ.
             """
 
             base_q: wp.array[wp.transformf]
@@ -471,8 +484,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             Reset option, to set a new velocity for the base body, and compose with body velocities accordingly.
             If a base joint is set, the prescribed velocity is interpreted in the frame of the base joint;
             else it is directly interpreted as the new velocity of the base body.
-            Note: if a base joint is set that is not a free joint, no check is made that the new velocity is
-            compatible with the base joint's DoFs. To guarantee a feasible velocity, use instead FromJointU.
             """
 
             base_u: wp.array[wp.spatial_vectorf]
@@ -517,6 +528,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         Body poses and velocities are transformed (if needed) to match the prescribed base pose, while
         preserving relative poses and velocities.
+        All options are ignored for worlds for which no base body is set.
         """
 
         base_velocity: ToDefault | Preserve | FromJointU | FromBaseU = ToDefault()
@@ -531,6 +543,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - FromBaseU: use the provided base velocity.
 
         Body velocities are updated to match the prescribed base velocity, while preserving relative velocities.
+        All options are ignored for worlds for which no base body is set.
         """
 
         @classmethod
@@ -604,6 +617,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Create a Kamino model from the Newton model
         self._model_kamino = self._kamino.ModelKamino.from_newton(model)
 
+        # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
+        q_min = self._model_kamino.joints.q_j_min.numpy()
+        q_max = self._model_kamino.joints.q_j_max.numpy()
+        self._built_limit_finite = (q_min > self._kamino.JOINT_QMIN) | (q_max < self._kamino.JOINT_QMAX)
+
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino
         self._collision_detector_kamino = None
@@ -659,6 +677,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         flags: StateFlags | int | None = None,
         *,
         config: SolverKamino.ResetConfig | None = None,
+        success_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -685,6 +704,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
+            success_mask: Optional mask, filled with a success boolean per world if provided
+                (True if reset successfully, False if not reset due to world_mask, or if reset
+                was unsuccessful, e.g. due to an unconverged FK solve).
         """
         if state is None:
             raise ValueError("'state' argument is required.")
@@ -747,6 +769,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             state=state_kamino,
             world_mask=world_mask,
             config=config,
+            success_mask=success_mask,
         )
 
         # Restore fields excluded from the reset op
@@ -808,6 +831,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 contacts_in=contacts,
                 contacts_out=self._contacts_kamino,
                 convert_forces=False,
+                friction_mix_mode=self._config.materials.friction_mix_mode,
+                restitution_mix_mode=self._config.materials.restitution_mix_mode,
             )
         # Otherwise, use Kamino's internal collision detector to generate contacts
         else:
@@ -849,6 +874,12 @@ class SolverKamino(SolverBase, CouplingInterface):
         Args:
             flags: Bitmask of :class:`~newton.ModelFlags` or custom ``int`` bits indicating which properties changed.
         """
+        self._validate_structural_invariants(flags)
+
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
+            # The documentation is unclear about which flag should trigger this update, so we update on both flags.
+            self._update_actuation_types()
+
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._update_gravity()
 
@@ -856,33 +887,35 @@ class SolverKamino(SolverBase, CouplingInterface):
             pass  # TODO: convert to CoM-frame if body_q_i_0 is changed at runtime?
 
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-            # Kamino's RigidBodiesModel references Newton's arrays directly
-            # (m_i, inv_m_i, i_I_i, inv_i_I_i, i_r_com_i), so no copy needed.
-            pass
+            pass  # TODO: refresh CoM-derived joint frames + geom offsets.
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
-            pass  # TODO: ???
+            pass  # TODO: geom offsets + contact materials.
 
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_transforms()
 
         if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            # Joint limits (q_j_min, q_j_max, dq_j_max, tau_j_max) are direct
-            # references to Newton's arrays, so no copy needed.
             pass
 
-        if flags & ModelFlags.ACTUATOR_PROPERTIES:
-            pass  # TODO: ???
+        if flags & (ModelFlags.CONSTRAINT_PROPERTIES | ModelFlags.TENDON_PROPERTIES):
+            # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
+            # When using a coupled solver environment, these flags are meant for one of the other solvers.
+            # No warning is emitted for compatibility with such an environment.
+            pass
 
-        if flags & ModelFlags.CONSTRAINT_PROPERTIES:
-            pass  # TODO: ???
-
-        unsupported = flags & ~(
+        handled = (
             ModelFlags.MODEL_PROPERTIES
+            | ModelFlags.BODY_PROPERTIES
             | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.SHAPE_PROPERTIES
             | ModelFlags.JOINT_PROPERTIES
             | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.ACTUATOR_PROPERTIES
+            | ModelFlags.CONSTRAINT_PROPERTIES
+            | ModelFlags.TENDON_PROPERTIES
         )
+        unsupported = int(flags) & ~int(handled)
         if unsupported:
             self._kamino.msg.warning(
                 "SolverKamino.notify_model_changed: flags 0x%x not yet supported",
@@ -936,12 +969,21 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @override
     @staticmethod
-    def register_custom_attributes(builder: ModelBuilder) -> None:
+    def register_custom_attributes(
+        builder: ModelBuilder,
+        *,
+        fk_actuation_flags: dict[int, int] | None = None,
+    ) -> None:
         """
         Register custom attributes for SolverKamino.
 
         Args:
             builder: The model builder to register the custom attributes to.
+            fk_actuation_flags: Optional dictionary of {joint_index: fk_actuation_flag} integer flags,
+                overwriting what joints should be considered actuated (flag = 1) or passive (flag = 0)
+                by the Forward Kinematics solver during reset() operations.
+                Joints not listed or with a flag of -1 use the joint actuation type from the model
+                (treating all actuator types equally, as only passive vs actuated matters in FK).
         """
         # Register State attributes
         builder.add_custom_attribute(
@@ -969,6 +1011,18 @@ class SolverKamino(SolverBase, CouplingInterface):
                 frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.float32,
                 default=0.0,
+            )
+        )
+
+        # Register FK custom actuation types
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="fk_actuation_flag",
+                assignment=Model.AttributeAssignment.MODEL,
+                frequency=Model.AttributeFrequency.JOINT,
+                dtype=wp.int32,
+                default=-1,
+                values=fk_actuation_flags,
             )
         )
 
@@ -1061,6 +1115,109 @@ class SolverKamino(SolverBase, CouplingInterface):
             for feature in unsupported_features:
                 error_msg += "\n  - " + feature
             raise ValueError(error_msg)
+
+    def _validate_structural_invariants(self, flags: ModelFlags | int) -> None:
+        """Raise if a runtime edit changes a structural decision frozen at build.
+
+        Kamino freezes joint constraint counts, the actuated/passive partition,
+        and joint-limit slot capacity when constructing its model. The underlying
+        Newton values may be aliased, but the derived layout cannot change.
+
+        Raises:
+            RuntimeError: If the solver must be recreated to apply the edit.
+        """
+        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
+            self._check_dynamic_constraint_topology()
+            self._check_limit_capacity()
+        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
+            self._check_actuation_types()
+
+    def _reduce_dof_maximum_by_joint(self, values: np.ndarray) -> np.ndarray:
+        """Reduce per-DoF values to per-joint maxima, including zero-DoF joints."""
+        starts = self.model.joint_qd_start.numpy()
+        nonempty = np.diff(starts) > 0
+        maxima = np.zeros(self.model.joint_count, dtype=values.dtype)
+        if np.any(nonempty):
+            maxima[nonempty] = np.maximum.reduceat(values, starts[:-1][nonempty])
+        return maxima
+
+    def _check_dynamic_constraint_topology(self) -> None:
+        """Check that each joint retains its as-built dynamic status.
+
+        Kamino marks a joint dynamic when any of its DoFs has positive armature,
+        damping, target stiffness, or target damping. A dynamic joint receives
+        one dynamic constraint per DoF, so preserving this status also preserves
+        its constraint count.
+        """
+        dof_dynamic = (
+            (self.model.joint_armature.numpy() > 0.0)
+            | (self.model.joint_damping.numpy() > 0.0)
+            | (self.model.joint_target_ke.numpy() > 0.0)
+            | (self.model.joint_target_kd.numpy() > 0.0)
+        )
+        current_dynamic = self._reduce_dof_maximum_by_joint(dof_dynamic)
+        built_dynamic = self._model_kamino.joints.num_dynamic_cts.numpy() > 0
+        changed = np.flatnonzero(current_dynamic != built_dynamic)
+        if changed.size > 0:
+            joint = int(changed[0])  # report only first violation
+            raise RuntimeError(
+                f"Changing dynamic constraint topology for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver. "
+                "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
+            )
+
+    def _check_actuation_types(self) -> None:
+        """Check that each joint remains in its as-built actuation partition.
+
+        The comparison follows Kamino's per-joint aggregation so individual DoF
+        changes are allowed when the joint remains actuated or remains passive.
+        """
+        current_actuation = self._get_joint_actuation()
+        built_actuation = self._model_kamino.joints.act_type.numpy()
+        current_passive = current_actuation == self._kamino.JointActuationType.PASSIVE
+        built_passive = built_actuation == self._kamino.JointActuationType.PASSIVE
+        changed = np.flatnonzero(current_passive != built_passive)
+        if changed.size > 0:
+            joint = int(changed[0])  # report only first violation
+            raise RuntimeError(
+                f"Changing the actuation partition for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
+            )
+
+    def _get_joint_actuation(self) -> np.ndarray:
+        """Compute Kamino's per-joint actuation types.
+
+        Newton stores one target mode per DoF. Kamino takes the maximum target
+        mode over all DoFs of a joint, then maps that value to a
+        ``JointActuationType``. Zero-DoF joints retain the reduction's default
+        target mode, ``JointTargetMode.NONE``.
+        """
+        target_modes = self._reduce_dof_maximum_by_joint(self.model.joint_target_mode.numpy())
+        return np.array(
+            [
+                int(self._kamino.JointActuationType.from_newton(JointTargetMode(int(target_mode))))
+                for target_mode in target_modes
+            ],
+            dtype=np.int32,
+        )
+
+    def _update_actuation_types(self) -> None:
+        """Refresh actuation modes without changing the passive/actuated layout."""
+        self._model_kamino.joints.act_type.assign(self._get_joint_actuation())
+
+    def _check_limit_capacity(self) -> None:
+        """Check that each DoF retains its as-built finite-limit status."""
+        current_finite = (self.model.joint_limit_lower.numpy() > self._kamino.JOINT_QMIN) | (
+            self.model.joint_limit_upper.numpy() < self._kamino.JOINT_QMAX
+        )
+        changed = np.flatnonzero(current_finite != self._built_limit_finite)
+        if changed.size > 0:
+            dof = int(changed[0])  # report only first violation
+            raise RuntimeError(
+                f"Changing the existence of a joint limit for DoF {dof} "
+                f"is not supported; recreate SolverKamino to apply the change."
+            )
 
     def _update_gravity(self):
         """
