@@ -71,7 +71,7 @@ class _SimulationMetricTracks:
     track_sim_substeps.unit = "simulation-steps/frame"
 
 
-class _UnparameterizedSimulationMetricTracks:
+class _SimulationMetricTracksUnparameterized:
     """ASV track methods backed by one cached simulation configuration."""
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -264,7 +264,7 @@ def collect_simulation_metrics(
     )
 
 
-def collect_synchronized_simulation_metrics(
+def collect_simulation_metrics_synchronized(
     create_workload: Callable[[], Any],
     world_count: int,
     num_frames: int,

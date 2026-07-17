@@ -14,8 +14,8 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
 from benchmark_metrics import (
-    _UnparameterizedSimulationMetricTracks,
-    collect_synchronized_simulation_metrics,
+    _SimulationMetricTracksUnparameterized,
+    collect_simulation_metrics_synchronized,
     compute_gpu_memory_usage,
     validate_simulation_state,
 )
@@ -67,7 +67,7 @@ class FastExampleAnymalPretrained:
         wp.synchronize_device()
 
 
-class FastMetricsExampleAnymalPretrained(_UnparameterizedSimulationMetricTracks):
+class FastMetricsExampleAnymalPretrained(_SimulationMetricTracksUnparameterized):
     num_frames = _NUM_FRAMES
     samples = 3
     world_count = 1
@@ -76,7 +76,7 @@ class FastMetricsExampleAnymalPretrained(_UnparameterizedSimulationMetricTracks)
         wp.synchronize_device()
         device = wp.get_device()
         free_memory_before = device.free_memory
-        return collect_synchronized_simulation_metrics(
+        return collect_simulation_metrics_synchronized(
             create_workload=lambda: _create_example(self.num_frames),
             world_count=self.world_count,
             num_frames=self.num_frames,

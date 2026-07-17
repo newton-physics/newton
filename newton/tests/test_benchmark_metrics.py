@@ -15,7 +15,7 @@ sys.path.insert(0, str(BENCHMARK_DIR))
 
 from benchmark_metrics import (  # noqa: E402
     collect_simulation_metrics,
-    collect_synchronized_simulation_metrics,
+    collect_simulation_metrics_synchronized,
     compute_gpu_memory_usage,
     compute_simulation_metrics,
     validate_simulation_state,
@@ -90,7 +90,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.p95_frame_time_ms, 40.0)
         self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
 
-    def test_collect_synchronized_simulation_metrics(self):
+    def test_collect_simulation_metrics_synchronized(self):
         workloads = []
         events = []
         sync_calls = []
@@ -118,7 +118,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
         def validate(workload):
             events.append(("validate", workload))
 
-        metrics = collect_synchronized_simulation_metrics(
+        metrics = collect_simulation_metrics_synchronized(
             create_workload=create_workload,
             world_count=4,
             num_frames=2,
@@ -189,20 +189,39 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertEqual(specialized_checks, [workload])
 
     def test_run_benchmark_with_setup_cache(self):
+        cache_events = []
+
         class CachedBenchmark:
             params: ClassVar = [[2, 3]]
             setup_cache_calls = 0
+            cache_value: ClassVar = {"base": 10}
 
             def setup_cache(self):
                 type(self).setup_cache_calls += 1
-                return 10
+                return self.cache_value
+
+            def setup(self, cache, value):
+                cache_events.append(("setup", cache, value))
+
+            def time_value(self, cache, value):
+                cache_events.append(("time", cache, value))
 
             def track_value(self, cache, value):
-                return cache + value
+                cache_events.append(("track", cache, value))
+                return cache["base"] + value
+
+            def teardown(self, cache, value):
+                cache_events.append(("teardown", cache, value))
 
         results = run_benchmark(CachedBenchmark, print_results=False)
 
         self.assertEqual(CachedBenchmark.setup_cache_calls, 1)
+        self.assertTrue(all(cache is CachedBenchmark.cache_value for _, cache, _ in cache_events))
+        self.assertEqual([event for event, _, _ in cache_events].count("setup"), 2)
+        self.assertEqual([event for event, _, _ in cache_events].count("time"), 4)
+        self.assertEqual([event for event, _, _ in cache_events].count("track"), 2)
+        self.assertEqual([event for event, _, _ in cache_events].count("teardown"), 2)
+        self.assertEqual({value for _, _, value in cache_events}, {2, 3})
         self.assertEqual(results[("track_value", (2,))], 12)
         self.assertEqual(results[("track_value", (3,))], 13)
 
