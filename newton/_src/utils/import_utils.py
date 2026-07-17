@@ -181,29 +181,26 @@ def sanitize_name(name: str) -> str:
 
 def should_show_collider(
     force_show_colliders: bool,
-    has_visual_shapes: bool,
+    model_has_visual_shapes: bool,
     parse_visuals_as_colliders: bool = False,
 ) -> bool:
     """Determine whether collision shapes should have the VISIBLE flag.
 
     Collision shapes are shown (VISIBLE flag) when explicitly forced, when
-    visual shapes are used as colliders, or when no visual shapes exist for
-    the owning body (so there is something to render). Otherwise, collision
-    shapes get only COLLIDE_SHAPES and are controlled by the viewer's
-    "Show Collision" toggle.
+    visual shapes are used as colliders, or when the imported model has no
+    visual shapes. Otherwise, collision shapes get only COLLIDE_SHAPES and are
+    controlled by the viewer's "Show Collision" toggle.
 
     Args:
         force_show_colliders: User explicitly wants collision shapes visible.
-        has_visual_shapes: Whether the body/link has visual (non-collision) shapes.
+        model_has_visual_shapes: Whether the current import has visual (non-collision) shapes.
         parse_visuals_as_colliders: Whether visual geometry is repurposed as collision geometry.
 
     Returns:
         True if the collision shape should carry the VISIBLE flag; False if it should
         be hidden by default and only revealed via the viewer's "Show Collision" toggle.
     """
-    if force_show_colliders or parse_visuals_as_colliders:
-        return True
-    return not has_visual_shapes
+    return force_show_colliders or parse_visuals_as_colliders or not model_has_visual_shapes
 
 
 def collapse_massless_fixed_root_joints(
