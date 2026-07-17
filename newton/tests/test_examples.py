@@ -1183,5 +1183,18 @@ add_example_test(
 )
 
 
+class TestUsdExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestUsdExamples,
+    name="usd.example_usd_runtime",
+    devices=test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
