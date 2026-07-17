@@ -107,6 +107,7 @@ def sample_actuator_coords(
     max_angle: float = np.radians(20.0),
     max_quat: float = 1.0,
     unit_quaternions: bool = True,
+    use_fk_actuators: bool = False,
 ) -> np.ndarray:
     """
     Helper sampling random actuator coords for a given model.
@@ -119,21 +120,22 @@ def sample_actuator_coords(
         max_angle: maximal absolute sample value, for coordinates that are angles.
         max_quat: maximal absolute sample value, for coordinates that are unit quaternion coefficients.
         unit_quaternions: whether to normalize sampled quaternions.
+        use_fk_actuators: whether to consider FK actuation types rather than regular actuation types.
 
     Returns:
         actuator_q: sampled coordinates, with shape (num_samples, num_actuator_coords)
     """
     # Generate sampling bounds
-    max_coords = actuator_coords_from_units(model, max_pos, max_angle, max_quat)
+    max_coords = actuator_coords_from_units(model, max_pos, max_angle, max_quat, use_fk_actuators)
 
     # Sample coordinates
-    actuator_q = np.zeros((num_samples, model.size.sum_of_num_actuated_joint_coords), dtype=np.float32)
+    actuator_q = np.zeros((num_samples, max_coords.shape[0]), dtype=np.float32)
     for i in range(actuator_q.shape[1]):
         actuator_q[:, i] = rng.uniform(-max_coords[i], max_coords[i], size=num_samples)
 
     # Normalize quaternions
     if unit_quaternions:
-        quat_ids = get_actuators_q_quaternion_first_ids(model)
+        quat_ids = get_actuators_q_quaternion_first_ids(model, use_fk_actuators)
         for i in quat_ids:
             actuator_q[:, i : i + 4] /= np.linalg.norm(actuator_q[:, i : i + 4], axis=1)[:, None]
 
@@ -146,6 +148,7 @@ def sample_actuator_velocities(
     num_samples: int = 1,
     max_lin_vel: float = 0.5,
     max_ang_vel: float = np.radians(90.0),
+    use_fk_actuators: bool = False,
 ) -> np.ndarray:
     """
     Helper sampling random actuator velocities for a given model.
@@ -161,10 +164,10 @@ def sample_actuator_velocities(
         actuator_u: sampled velocities, with shape (num_samples, num_actuator_dofs)
     """
     # Generate sampling bounds
-    max_vel = actuator_dofs_from_units(model, max_lin_vel, max_ang_vel)
+    max_vel = actuator_dofs_from_units(model, max_lin_vel, max_ang_vel, use_fk_actuators)
 
     # Sample velocities
-    actuator_u = np.zeros((num_samples, model.size.sum_of_num_actuated_joint_dofs), dtype=np.float32)
+    actuator_u = np.zeros((num_samples, max_vel.shape[0]), dtype=np.float32)
     for i in range(actuator_u.shape[1]):
         actuator_u[:, i] = rng.uniform(-max_vel[i], max_vel[i], size=num_samples)
 

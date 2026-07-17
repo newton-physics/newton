@@ -473,8 +473,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             Reset option, to set a new pose for the base body, and transform all bodies accordingly.
             If a base joint is set, the prescribed pose is interpreted in the frame of the base joint;
             else it is directly interpreted as the new pose of the base body.
-            Note: if a base joint is set that is not a free joint, no check is made that the new pose is
-            compatible with the base joint's DoFs. To guarantee a feasible pose, use instead FromJointQ.
             """
 
             base_q: wp.array[wp.transformf]
@@ -486,8 +484,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             Reset option, to set a new velocity for the base body, and compose with body velocities accordingly.
             If a base joint is set, the prescribed velocity is interpreted in the frame of the base joint;
             else it is directly interpreted as the new velocity of the base body.
-            Note: if a base joint is set that is not a free joint, no check is made that the new velocity is
-            compatible with the base joint's DoFs. To guarantee a feasible velocity, use instead FromJointU.
             """
 
             base_u: wp.array[wp.spatial_vectorf]
@@ -532,6 +528,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         Body poses and velocities are transformed (if needed) to match the prescribed base pose, while
         preserving relative poses and velocities.
+        All options are ignored for worlds for which no base body is set.
         """
 
         base_velocity: ToDefault | Preserve | FromJointU | FromBaseU = ToDefault()
@@ -546,6 +543,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         - FromBaseU: use the provided base velocity.
 
         Body velocities are updated to match the prescribed base velocity, while preserving relative velocities.
+        All options are ignored for worlds for which no base body is set.
         """
 
         @classmethod
@@ -679,6 +677,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         flags: StateFlags | int | None = None,
         *,
         config: SolverKamino.ResetConfig | None = None,
+        success_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -705,6 +704,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
+            success_mask: Optional mask, filled with a success boolean per world if provided
+                (True if reset successfully, False if not reset due to world_mask, or if reset
+                was unsuccessful, e.g. due to an unconverged FK solve).
         """
         if state is None:
             raise ValueError("'state' argument is required.")
@@ -767,6 +769,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             state=state_kamino,
             world_mask=world_mask,
             config=config,
+            success_mask=success_mask,
         )
 
         # Restore fields excluded from the reset op
@@ -966,12 +969,21 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @override
     @staticmethod
-    def register_custom_attributes(builder: ModelBuilder) -> None:
+    def register_custom_attributes(
+        builder: ModelBuilder,
+        *,
+        fk_actuation_flags: dict[int, int] | None = None,
+    ) -> None:
         """
         Register custom attributes for SolverKamino.
 
         Args:
             builder: The model builder to register the custom attributes to.
+            fk_actuation_flags: Optional dictionary of {joint_index: fk_actuation_flag} integer flags,
+                overwriting what joints should be considered actuated (flag = 1) or passive (flag = 0)
+                by the Forward Kinematics solver during reset() operations.
+                Joints not listed or with a flag of -1 use the joint actuation type from the model
+                (treating all actuator types equally, as only passive vs actuated matters in FK).
         """
         # Register State attributes
         builder.add_custom_attribute(
@@ -999,6 +1011,18 @@ class SolverKamino(SolverBase, CouplingInterface):
                 frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.float32,
                 default=0.0,
+            )
+        )
+
+        # Register FK custom actuation types
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="fk_actuation_flag",
+                assignment=Model.AttributeAssignment.MODEL,
+                frequency=Model.AttributeFrequency.JOINT,
+                dtype=wp.int32,
+                default=-1,
+                values=fk_actuation_flags,
             )
         )
 
@@ -1138,8 +1162,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             joint = int(changed[0])  # report only first violation
             raise RuntimeError(
                 f"Changing dynamic constraint topology for joint {joint} "
-                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
-                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver."
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver. "
                 "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
             )
 
