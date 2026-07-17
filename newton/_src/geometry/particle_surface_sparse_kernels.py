@@ -8,6 +8,7 @@ import math
 import warp as wp
 
 from .flags import ParticleFlags
+from .hashtable import HASHTABLE_EMPTY_KEY, hashtable_find, hashtable_find_or_insert
 
 wp.set_module_options({"enable_backward": False})
 
@@ -23,11 +24,13 @@ _GRID_COUNT_STRIDE = wp.constant(7)
 _MESH_VERTEX_COUNT = wp.constant(0)
 _MESH_INDEX_COUNT = wp.constant(1)
 _MESH_COUNT_STRIDE = wp.constant(3)
-_SUPPORT_VOXEL_COUNT = 19
+_SUPPORT_VOXEL_COUNT = 8
 _DENSITY_SPLAT_LANES_ANISOTROPIC = 8
 _DENSITY_SPLAT_LANES_ISOTROPIC = 1
 _DENSITY_SPLAT_BLOCK_DIM_ANISOTROPIC = 64
 _DENSITY_SPLAT_BLOCK_DIM_ISOTROPIC = 128
+_LEAF_COORDINATE_OFFSET = wp.constant(wp.int32(1 << 20))
+_LEAF_COORDINATE_MASK = wp.constant(wp.uint64(0x1FFFFF))
 
 
 @wp.func
@@ -76,6 +79,64 @@ def _tile_origin(point: wp.vec3i) -> wp.vec3i:
         _floor_tile_coordinate(point[1]),
         _floor_tile_coordinate(point[2]),
     )
+
+
+@wp.func
+def _leaf_key(point: wp.vec3i) -> wp.vec3i:
+    origin = _tile_origin(point)
+    return wp.vec3i(origin[0] // _TILE_SIZE, origin[1] // _TILE_SIZE, origin[2] // _TILE_SIZE)
+
+
+@wp.func
+def _leaf_coordinate_in_range(key: wp.vec3i) -> bool:
+    return (
+        key[0] >= -_LEAF_COORDINATE_OFFSET
+        and key[0] < _LEAF_COORDINATE_OFFSET
+        and key[1] >= -_LEAF_COORDINATE_OFFSET
+        and key[1] < _LEAF_COORDINATE_OFFSET
+        and key[2] >= -_LEAF_COORDINATE_OFFSET
+        and key[2] < _LEAF_COORDINATE_OFFSET
+    )
+
+
+@wp.func
+def _leaf_coordinate_hash_key(key: wp.vec3i) -> wp.uint64:
+    x = wp.uint64(key[0] + _LEAF_COORDINATE_OFFSET) & _LEAF_COORDINATE_MASK
+    y = wp.uint64(key[1] + _LEAF_COORDINATE_OFFSET) & _LEAF_COORDINATE_MASK
+    z = wp.uint64(key[2] + _LEAF_COORDINATE_OFFSET) & _LEAF_COORDINATE_MASK
+    return x | (y << wp.uint64(21)) | (z << wp.uint64(42))
+
+
+@wp.func
+def _candidate_voxel_slot_hash(keys: wp.array[wp.uint64], coordinate: wp.vec3i) -> int:
+    key = _leaf_key(coordinate)
+    if not _leaf_coordinate_in_range(key):
+        return -1
+    leaf = hashtable_find(_leaf_coordinate_hash_key(key), keys)
+    if leaf < 0:
+        return -1
+    local = coordinate - _TILE_SIZE * key
+    return leaf * 512 + local[0] * 64 + local[1] * 8 + local[2]
+
+
+@wp.func
+def _candidate_voxel_slot(leaf_grid: wp.uint64, coordinate: wp.vec3i) -> int:
+    key = _leaf_key(coordinate)
+    leaf = wp.volume_lookup_index(leaf_grid, key[0], key[1], key[2])
+    if leaf < 0:
+        return -1
+    local = coordinate - _TILE_SIZE * key
+    return leaf * 512 + local[0] * 64 + local[1] * 8 + local[2]
+
+
+@wp.func
+def _bit_is_set(bits: wp.array[wp.uint32], slot: int) -> bool:
+    return (bits[slot >> 5] & wp.uint32(1 << (slot & 31))) != wp.uint32(0)
+
+
+@wp.func
+def _set_bit(bits: wp.array[wp.uint32], slot: int):
+    wp.atomic_or(bits, slot >> 5, wp.uint32(1 << (slot & 31)))
 
 
 @wp.func
@@ -198,18 +259,17 @@ def emit_particle_support_voxels(
     particle_world: wp.array[wp.int32],
     use_worlds: int,
     world_count: int,
-    isotropic_fallback: wp.array[wp.int32],
     det_G: wp.array[float],
     density_reach: wp.array[wp.vec3],
     particle_sdf_radius_scale: float,
     particle_sdf_band: float,
     particle_sdf: int,
     anisotropic_sdf: int,
-    stencil_voxels: int,
     env_offsets: wp.array[wp.vec3i],
     inv_voxel_size: float,
     points: wp.array[wp.vec3i],
     point_mask: wp.array[wp.int32],
+    max_support_reach_voxels: wp.array[float],
 ):
     slot = wp.tid()
     particle = slot // _SUPPORT_VOXEL_COUNT
@@ -224,9 +284,7 @@ def emit_particle_support_voxels(
         and radius > 0.0
         and wp.isfinite(radius)
     )
-    valid_sample = True
     if valid_particle:
-        direction = wp.vec3(0.0)
         reach = density_reach[particle]
         if particle_sdf != 0 and anisotropic_sdf == 0:
             reach = wp.vec3(radius * particle_sdf_radius_scale * particle_sdf_band)
@@ -234,52 +292,507 @@ def emit_particle_support_voxels(
             scaled_radius = wp.max(radius * particle_sdf_radius_scale, 1.0e-8)
             det_root = wp.pow(wp.max(det_G[particle], 1.0e-24), 1.0 / 3.0)
             reach *= 0.5 * particle_sdf_band * det_root * scaled_radius
-        if isotropic_fallback[particle] != 0:
-            if sample <= 8:
-                corner = sample - 1
-                if sample > 0:
-                    direction = wp.vec3(
-                        wp.where((corner & 1) == 0, -1.0, 1.0),
-                        wp.where((corner & 2) == 0, -1.0, 1.0),
-                        wp.where((corner & 4) == 0, -1.0, 1.0),
-                    )
-                    # Cover voxel centers at the edge of an isotropic support.
-                    reach += wp.vec3(wp.static(math.sqrt(3.0) / 2.0) / inv_voxel_size)
-            elif sample <= 14:
-                axis_sample = sample - 9
-                axis = axis_sample // 2
-                direction[axis] = wp.where(axis_sample - 2 * axis == 0, -1.0, 1.0)
-                reach += wp.vec3(float(stencil_voxels) / inv_voxel_size)
-            else:
-                valid_sample = False
-        else:
-            reach += wp.vec3(float(stencil_voxels) / inv_voxel_size)
-            if sample > 0 and sample <= 6:
-                axis_sample = sample - 1
-                axis = axis_sample // 2
-                direction[axis] = wp.where(axis_sample - 2 * axis == 0, -1.0, 1.0)
-            elif sample > 6:
-                edge = sample - 7
-                zero_axis = edge // 4
-                signs = edge - 4 * zero_axis
-                sign_0 = wp.where((signs & 1) == 0, -1.0, 1.0)
-                sign_1 = wp.where((signs & 2) == 0, -1.0, 1.0)
-                if zero_axis == 0:
-                    direction = wp.vec3(0.0, sign_0, sign_1)
-                elif zero_axis == 1:
-                    direction = wp.vec3(sign_0, 0.0, sign_1)
-                else:
-                    direction = wp.vec3(sign_0, sign_1, 0.0)
+        direction = wp.vec3(
+            wp.where((sample & 1) == 0, -0.5, 0.5),
+            wp.where((sample & 2) == 0, -0.5, 0.5),
+            wp.where((sample & 4) == 0, -0.5, 0.5),
+        )
         sample_position = position + wp.cw_mul(reach, direction)
         coordinate = wp.vec3i(
             int(wp.floor(sample_position[0] * inv_voxel_size)),
             int(wp.floor(sample_position[1] * inv_voxel_size)),
             int(wp.floor(sample_position[2] * inv_voxel_size)),
         )
-        points[slot] = coordinate + env_offsets[world]
+        points[slot] = _leaf_key(coordinate + env_offsets[world])
+        if sample == 0:
+            wp.atomic_max(
+                max_support_reach_voxels,
+                0,
+                wp.max(wp.max(reach[0], reach[1]), reach[2]) * inv_voxel_size,
+            )
     else:
         points[slot] = wp.vec3i(0)
-    point_mask[slot] = wp.where(valid_particle and valid_sample, wp.int32(1), wp.int32(0))
+    point_mask[slot] = wp.where(valid_particle, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def expand_candidate_leaf_keys(
+    leaf_grid: wp.uint64,
+    leaf_ijk: wp.array[wp.vec3i],
+    leaf_radius: int,
+    points: wp.array[wp.vec3i],
+    point_mask: wp.array[wp.int32],
+    status: wp.array[wp.uint32],
+):
+    output = wp.tid()
+    width = 2 * leaf_radius + 1
+    neighbor_count = width * width * width
+    leaf = output // neighbor_count
+    valid = leaf < wp.volume_voxel_count(leaf_grid)
+    if valid:
+        local = output - leaf * neighbor_count
+        dx = local // (width * width) - leaf_radius
+        remainder = local - (dx + leaf_radius) * width * width
+        dy = remainder // width - leaf_radius
+        dz = remainder - (dy + leaf_radius) * width - leaf_radius
+        points[output] = leaf_ijk[leaf] + wp.vec3i(dx, dy, dz)
+    elif output < neighbor_count * wp.volume_voxel_count(leaf_grid):
+        wp.atomic_or(status, 0, wp.uint32(1))
+    point_mask[output] = wp.where(valid, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def check_leaf_expansion_capacity(
+    leaf_grid: wp.uint64,
+    neighbor_count: int,
+    point_capacity: int,
+    status: wp.array[wp.uint32],
+):
+    if wp.tid() == 0 and neighbor_count * wp.volume_voxel_count(leaf_grid) > point_capacity:
+        status[0] = wp.uint32(1)
+
+
+@wp.kernel
+def check_support_leaf_radius(
+    max_support_reach_voxels: wp.array[float],
+    support_leaf_radius: int,
+    status: wp.array[wp.uint32],
+):
+    if wp.tid() == 0:
+        voxel_radius = int(wp.ceil(0.5 * max_support_reach_voxels[0])) + 1
+        required_leaf_radius = (voxel_radius + 7) // 8
+        if required_leaf_radius > support_leaf_radius:
+            status[0] = wp.uint32(1)
+
+
+@wp.kernel
+def insert_particle_candidate_leaves(
+    positions: wp.array[wp.vec3],
+    radii: wp.array[float],
+    flags: wp.array[wp.int32],
+    use_flags: int,
+    particle_world: wp.array[wp.int32],
+    use_worlds: int,
+    world_count: int,
+    det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
+    particle_sdf_radius_scale: float,
+    particle_sdf_band: float,
+    particle_sdf: int,
+    anisotropic_sdf: int,
+    env_offsets: wp.array[wp.vec3i],
+    inv_voxel_size: float,
+    stencil_voxels: int,
+    lane_count: int,
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
+    leaf_ijk: wp.array[wp.vec3i],
+    status: wp.array[wp.uint32],
+):
+    particle, lane = wp.tid()
+    world = _particle_world(particle_world, use_worlds, world_count, particle)
+    position = positions[particle]
+    radius = radii[particle]
+    if (
+        world < 0
+        or not _is_active(flags, use_flags, particle)
+        or not _is_finite(position)
+        or radius <= 0.0
+        or not wp.isfinite(radius)
+    ):
+        return
+
+    reach = density_reach[particle]
+    if particle_sdf != 0 and anisotropic_sdf == 0:
+        reach = wp.vec3(radius * particle_sdf_radius_scale * particle_sdf_band)
+    elif particle_sdf != 0:
+        scaled_radius = wp.max(radius * particle_sdf_radius_scale, 1.0e-8)
+        det_root = wp.pow(wp.max(det_G[particle], 1.0e-24), 1.0 / 3.0)
+        reach *= 0.5 * particle_sdf_band * det_root * scaled_radius
+
+    scaled_lower = (position - reach) * inv_voxel_size
+    scaled_upper = (position + reach) * inv_voxel_size
+    lower = wp.vec3i(
+        int(wp.ceil(scaled_lower[0])) - stencil_voxels,
+        int(wp.ceil(scaled_lower[1])) - stencil_voxels,
+        int(wp.ceil(scaled_lower[2])) - stencil_voxels,
+    )
+    upper = wp.vec3i(
+        int(wp.floor(scaled_upper[0])) + stencil_voxels,
+        int(wp.floor(scaled_upper[1])) + stencil_voxels,
+        int(wp.floor(scaled_upper[2])) + stencil_voxels,
+    )
+    lower_key = _leaf_key(lower + env_offsets[world])
+    upper_key = _leaf_key(upper + env_offsets[world])
+    leaf_dims = upper_key - lower_key + wp.vec3i(1)
+    leaf_count = leaf_dims[0] * leaf_dims[1] * leaf_dims[2]
+    leaf = lane
+    while leaf < leaf_count:
+        x = leaf // (leaf_dims[1] * leaf_dims[2])
+        remainder = leaf - x * leaf_dims[1] * leaf_dims[2]
+        y = remainder // leaf_dims[2]
+        z = remainder - y * leaf_dims[2]
+        key = lower_key + wp.vec3i(x, y, z)
+        if not _leaf_coordinate_in_range(key):
+            wp.atomic_or(status, 0, wp.uint32(1))
+        else:
+            slot = hashtable_find_or_insert(_leaf_coordinate_hash_key(key), keys, active_slots)
+            if slot < 0:
+                wp.atomic_or(status, 0, wp.uint32(1))
+            else:
+                leaf_ijk[slot] = key
+        leaf += lane_count
+
+
+@wp.kernel
+def mark_particle_support_voxels_hash(
+    keys: wp.array[wp.uint64],
+    positions: wp.array[wp.vec3],
+    radii: wp.array[float],
+    flags: wp.array[wp.int32],
+    use_flags: int,
+    particle_world: wp.array[wp.int32],
+    use_worlds: int,
+    world_count: int,
+    G_matrices: wp.array[wp.mat33],
+    det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
+    particle_sdf_radius_scale: float,
+    particle_sdf_band: float,
+    particle_sdf: int,
+    anisotropic_sdf: int,
+    env_offsets: wp.array[wp.vec3i],
+    inv_voxel_size: float,
+    lane_count: int,
+    occupancy: wp.array[wp.uint32],
+    status: wp.array[wp.uint32],
+):
+    particle, lane = wp.tid()
+    world = _particle_world(particle_world, use_worlds, world_count, particle)
+    position = positions[particle]
+    radius = radii[particle]
+    if (
+        world < 0
+        or not _is_active(flags, use_flags, particle)
+        or not _is_finite(position)
+        or radius <= 0.0
+        or not wp.isfinite(radius)
+    ):
+        return
+
+    reach = density_reach[particle]
+    sdf_radius = radius * particle_sdf_radius_scale
+    H = G_matrices[particle]
+    if particle_sdf != 0 and anisotropic_sdf == 0:
+        reach = wp.vec3(sdf_radius * particle_sdf_band)
+    elif particle_sdf != 0:
+        det_root = wp.pow(wp.max(det_G[particle], 1.0e-24), 1.0 / 3.0)
+        radius_normalization = det_root * wp.max(sdf_radius, 1.0e-8)
+        H *= 1.0 / radius_normalization
+        reach *= 0.5 * particle_sdf_band * radius_normalization
+
+    scaled_lower = (position - reach) * inv_voxel_size
+    scaled_upper = (position + reach) * inv_voxel_size
+    lower = wp.vec3i(int(wp.ceil(scaled_lower[0])), int(wp.ceil(scaled_lower[1])), int(wp.ceil(scaled_lower[2])))
+    upper = wp.vec3i(int(wp.floor(scaled_upper[0])), int(wp.floor(scaled_upper[1])), int(wp.floor(scaled_upper[2])))
+    voxel_size = 1.0 / inv_voxel_size
+    offset = env_offsets[world]
+    y_count = upper[1] - lower[1] + 1
+    row_count = (upper[0] - lower[0] + 1) * y_count
+    row = lane
+    while row < row_count:
+        di = row // y_count
+        dj = row - di * y_count
+        i = lower[0] + di
+        j = lower[1] + dj
+        k = lower[2]
+        while k <= upper[2]:
+            packed_coordinate = wp.vec3i(i, j, k) + offset
+            key = _leaf_key(packed_coordinate)
+            leaf = int(-1)
+            if _leaf_coordinate_in_range(key):
+                leaf = hashtable_find(_leaf_coordinate_hash_key(key), keys)
+            local_coordinate = packed_coordinate - _TILE_SIZE * key
+            segment_count = wp.min(upper[2] - k + 1, _TILE_SIZE - local_coordinate[2])
+            local_slot = local_coordinate[0] * 64 + local_coordinate[1] * 8 + local_coordinate[2]
+            bits = wp.uint32(0)
+            for sample in range(segment_count):
+                delta = voxel_size * wp.vec3(float(i), float(j), float(k + sample)) - position
+                inside = False
+                if particle_sdf != 0 and anisotropic_sdf == 0:
+                    inside = wp.dot(delta, delta) <= reach[0] * reach[0]
+                else:
+                    transformed = H * delta
+                    q_sq = wp.dot(transformed, transformed)
+                    limit_sq = wp.where(particle_sdf != 0, particle_sdf_band * particle_sdf_band, 4.0)
+                    inside = q_sq <= limit_sq
+                if inside:
+                    bits |= wp.uint32(1 << ((local_slot + sample) & 31))
+            if leaf < 0 or leaf * 16 + (local_slot >> 5) >= occupancy.shape[0]:
+                wp.atomic_or(status, 0, wp.uint32(1))
+            elif bits != wp.uint32(0):
+                wp.atomic_or(occupancy, leaf * 16 + (local_slot >> 5), bits)
+            k += segment_count
+        row += lane_count
+
+
+@wp.kernel
+def mark_particle_support_voxels(
+    leaf_grid: wp.uint64,
+    positions: wp.array[wp.vec3],
+    radii: wp.array[float],
+    flags: wp.array[wp.int32],
+    use_flags: int,
+    particle_world: wp.array[wp.int32],
+    use_worlds: int,
+    world_count: int,
+    G_matrices: wp.array[wp.mat33],
+    det_G: wp.array[float],
+    density_reach: wp.array[wp.vec3],
+    particle_sdf_radius_scale: float,
+    particle_sdf_band: float,
+    particle_sdf: int,
+    anisotropic_sdf: int,
+    env_offsets: wp.array[wp.vec3i],
+    inv_voxel_size: float,
+    lane_count: int,
+    occupancy: wp.array[wp.uint32],
+    status: wp.array[wp.uint32],
+):
+    particle, lane = wp.tid()
+    world = _particle_world(particle_world, use_worlds, world_count, particle)
+    position = positions[particle]
+    radius = radii[particle]
+    if (
+        world < 0
+        or not _is_active(flags, use_flags, particle)
+        or not _is_finite(position)
+        or radius <= 0.0
+        or not wp.isfinite(radius)
+    ):
+        return
+
+    reach = density_reach[particle]
+    sdf_radius = radius * particle_sdf_radius_scale
+    H = G_matrices[particle]
+    if particle_sdf != 0 and anisotropic_sdf == 0:
+        reach = wp.vec3(sdf_radius * particle_sdf_band)
+    elif particle_sdf != 0:
+        det_root = wp.pow(wp.max(det_G[particle], 1.0e-24), 1.0 / 3.0)
+        radius_normalization = det_root * wp.max(sdf_radius, 1.0e-8)
+        H *= 1.0 / radius_normalization
+        reach *= 0.5 * particle_sdf_band * radius_normalization
+
+    scaled_lower = (position - reach) * inv_voxel_size
+    scaled_upper = (position + reach) * inv_voxel_size
+    lower = wp.vec3i(int(wp.ceil(scaled_lower[0])), int(wp.ceil(scaled_lower[1])), int(wp.ceil(scaled_lower[2])))
+    upper = wp.vec3i(int(wp.floor(scaled_upper[0])), int(wp.floor(scaled_upper[1])), int(wp.floor(scaled_upper[2])))
+    voxel_size = 1.0 / inv_voxel_size
+    offset = env_offsets[world]
+    y_count = upper[1] - lower[1] + 1
+    row_count = (upper[0] - lower[0] + 1) * y_count
+    row = lane
+    while row < row_count:
+        di = row // y_count
+        dj = row - di * y_count
+        i = lower[0] + di
+        j = lower[1] + dj
+        k = lower[2]
+        while k <= upper[2]:
+            packed_coordinate = wp.vec3i(i, j, k) + offset
+            key = _leaf_key(packed_coordinate)
+            leaf = wp.volume_lookup_index(leaf_grid, key[0], key[1], key[2])
+            local_coordinate = packed_coordinate - _TILE_SIZE * key
+            segment_count = wp.min(upper[2] - k + 1, _TILE_SIZE - local_coordinate[2])
+            local_slot = local_coordinate[0] * 64 + local_coordinate[1] * 8 + local_coordinate[2]
+            bits = wp.uint32(0)
+            for sample in range(segment_count):
+                delta = voxel_size * wp.vec3(float(i), float(j), float(k + sample)) - position
+                inside = False
+                if particle_sdf != 0 and anisotropic_sdf == 0:
+                    inside = wp.dot(delta, delta) <= reach[0] * reach[0]
+                else:
+                    transformed = H * delta
+                    q_sq = wp.dot(transformed, transformed)
+                    limit_sq = wp.where(particle_sdf != 0, particle_sdf_band * particle_sdf_band, 4.0)
+                    inside = q_sq <= limit_sq
+                if inside:
+                    bits |= wp.uint32(1 << ((local_slot + sample) & 31))
+            if leaf < 0 or leaf * 16 + (local_slot >> 5) >= occupancy.shape[0]:
+                wp.atomic_or(status, 0, wp.uint32(1))
+            elif bits != wp.uint32(0):
+                wp.atomic_or(occupancy, leaf * 16 + (local_slot >> 5), bits)
+            k += segment_count
+        row += lane_count
+
+
+@wp.kernel
+def dilate_topology_axis(
+    leaf_grid: wp.uint64,
+    leaf_ijk: wp.array[wp.vec3i],
+    source: wp.array[wp.uint32],
+    destination: wp.array[wp.uint32],
+    radius: int,
+    axis: int,
+    status: wp.array[wp.uint32],
+    stride: int,
+):
+    source_slot = wp.tid()
+    candidate_voxel_count = 512 * wp.volume_voxel_count(leaf_grid)
+    while source_slot < candidate_voxel_count:
+        if _bit_is_set(source, source_slot):
+            leaf = source_slot // 512
+            local_slot = source_slot - leaf * 512
+            coordinate = _TILE_SIZE * leaf_ijk[leaf] + wp.vec3i(
+                local_slot // 64,
+                (local_slot // 8) & 7,
+                local_slot & 7,
+            )
+            for offset in range(-radius, radius + 1):
+                neighbor = coordinate
+                neighbor[axis] += offset
+                destination_slot = _candidate_voxel_slot(leaf_grid, neighbor)
+                if destination_slot < 0 or destination_slot >= 32 * destination.shape[0]:
+                    wp.atomic_or(status, 0, wp.uint32(1))
+                else:
+                    _set_bit(destination, destination_slot)
+        source_slot += stride
+
+
+@wp.kernel
+def clear_topology_leaf_hash(
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
+    occupancy: wp.array[wp.uint32],
+    occupancy_temp: wp.array[wp.uint32],
+    point_mask: wp.array[wp.int32],
+    point_count: wp.array[wp.uint32],
+    stride: int,
+):
+    index = wp.tid()
+    active_leaf_count = active_slots[keys.shape[0]]
+    active_point_count = int(point_count[0])
+    while index < wp.max(active_leaf_count, active_point_count):
+        if index < active_leaf_count:
+            leaf = active_slots[index]
+            keys[leaf] = HASHTABLE_EMPTY_KEY
+            for word in range(16):
+                occupancy[16 * leaf + word] = wp.uint32(0)
+                occupancy_temp[16 * leaf + word] = wp.uint32(0)
+        if index < active_point_count:
+            point_mask[index] = wp.int32(0)
+        index += stride
+
+
+@wp.kernel
+def reset_topology_leaf_hash_counts(
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
+    point_count: wp.array[wp.uint32],
+):
+    if wp.tid() == 0:
+        active_slots[keys.shape[0]] = wp.int32(0)
+        point_count[0] = wp.uint32(0)
+
+
+@wp.kernel
+def dilate_topology_axis_hash(
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
+    leaf_ijk: wp.array[wp.vec3i],
+    source: wp.array[wp.uint32],
+    destination: wp.array[wp.uint32],
+    radius: int,
+    axis: int,
+    stride: int,
+):
+    source_word = wp.tid()
+    candidate_word_count = 16 * active_slots[keys.shape[0]]
+    while source_word < candidate_word_count:
+        active_leaf = source_word // 16
+        local_word = source_word - active_leaf * 16
+        leaf = active_slots[active_leaf]
+        output_bits = wp.uint32(0)
+        for bit in range(32):
+            local_slot = 32 * local_word + bit
+            coordinate = _TILE_SIZE * leaf_ijk[leaf] + wp.vec3i(
+                local_slot // 64,
+                (local_slot // 8) & 7,
+                local_slot & 7,
+            )
+            occupied = wp.int32(0)
+            for offset in range(-radius, radius + 1):
+                neighbor = coordinate
+                neighbor[axis] += offset
+                source_slot = _candidate_voxel_slot_hash(keys, neighbor)
+                if source_slot >= 0 and (source_slot >> 5) < source.shape[0] and _bit_is_set(source, source_slot):
+                    occupied = wp.int32(1)
+            if occupied != 0:
+                output_bits |= wp.uint32(1 << bit)
+        destination[16 * leaf + local_word] = output_bits
+        source_word += stride
+
+
+@wp.kernel
+def emit_topology_voxels_hash(
+    keys: wp.array[wp.uint64],
+    active_slots: wp.array[wp.int32],
+    leaf_ijk: wp.array[wp.vec3i],
+    occupancy: wp.array[wp.uint32],
+    points: wp.array[wp.vec3i],
+    point_mask: wp.array[wp.int32],
+    point_count: wp.array[wp.uint32],
+    status: wp.array[wp.uint32],
+    stride: int,
+):
+    source_slot = wp.tid()
+    candidate_voxel_count = 512 * active_slots[keys.shape[0]]
+    while source_slot < candidate_voxel_count:
+        active_leaf = source_slot // 512
+        local_slot = source_slot - active_leaf * 512
+        leaf = active_slots[active_leaf]
+        if _bit_is_set(occupancy, leaf * 512 + local_slot):
+            output = int(wp.atomic_add(point_count, 0, wp.uint32(1)))
+            if output >= points.shape[0]:
+                wp.atomic_or(status, 0, wp.uint32(1))
+            else:
+                points[output] = _TILE_SIZE * leaf_ijk[leaf] + wp.vec3i(
+                    local_slot // 64,
+                    (local_slot // 8) & 7,
+                    local_slot & 7,
+                )
+                point_mask[output] = wp.int32(1)
+        source_slot += stride
+
+
+@wp.kernel
+def emit_topology_voxels(
+    leaf_grid: wp.uint64,
+    leaf_ijk: wp.array[wp.vec3i],
+    occupancy: wp.array[wp.uint32],
+    points: wp.array[wp.vec3i],
+    point_mask: wp.array[wp.int32],
+    point_count: wp.array[wp.uint32],
+    status: wp.array[wp.uint32],
+    stride: int,
+):
+    slot = wp.tid()
+    candidate_voxel_count = 512 * wp.volume_voxel_count(leaf_grid)
+    while slot < candidate_voxel_count:
+        if _bit_is_set(occupancy, slot):
+            output = int(wp.atomic_add(point_count, 0, wp.uint32(1)))
+            if output >= points.shape[0]:
+                wp.atomic_or(status, 0, wp.uint32(1))
+            else:
+                leaf = slot // 512
+                local_slot = slot - leaf * 512
+                points[output] = _TILE_SIZE * leaf_ijk[leaf] + wp.vec3i(
+                    local_slot // 64,
+                    (local_slot // 8) & 7,
+                    local_slot & 7,
+                )
+                point_mask[output] = wp.int32(1)
+        slot += stride
 
 
 @wp.kernel
@@ -418,21 +931,14 @@ def evaluate_density(
         i = lower[0] + di
         j = lower[1] + dj
         transformed = transformed_lower + float(di) * step_x + float(dj) * step_y
-        # Index-volume voxels are contiguous along each dense tile row.
-        node = wp.int32(-1)
         k = lower[2]
         while k <= upper[2]:
-            if (k & 7) == 0:
-                node = wp.int32(-1)
             q_sq = wp.dot(transformed, transformed)
             if q_sq < 4.0:
-                if node < 0:
-                    coordinate = wp.vec3i(i, j, k) + offset
-                    node = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
+                coordinate = wp.vec3i(i, j, k) + offset
+                node = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
                 if node >= 0:
                     wp.atomic_add(field, node, weight * _cubic_bspline(wp.sqrt(q_sq)))
-            if node >= 0:
-                node += 1
             transformed += step_z
             k += 1
         row += lane_count

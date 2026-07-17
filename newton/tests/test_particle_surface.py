@@ -269,12 +269,59 @@ def test_dynamic_grid_uses_realized_support(test, device):
 def test_isotropic_fallback_stencil_covers_support(test, device):
     positions = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
     radii = wp.array([1.0], dtype=wp.float32, device=device)
+    for max_grid_cells in (None, 10_000):
+        with test.subTest(max_grid_cells=max_grid_cells):
+            surface = ParticleSurface(
+                voxel_size=1.0,
+                max_grid_cells=max_grid_cells,
+                kernel_radius=3.0,
+                kernel_scale=1.0,
+                threshold=0.01,
+                anisotropic=False,
+                padding=0,
+                field_smooth_iterations=0,
+                mesh_smooth_iterations=0,
+                device=device,
+            )
+
+            mesh = surface.extract(positions, radii, compute_normals=False)
+
+            np.testing.assert_array_equal(mesh.counts.numpy(), [270, 1608, 0])
+            active_voxel_count = surface.sparse_volume.get_active_stats().voxel_count
+            if max_grid_cells is None:
+                candidate_leaf_count = surface._capacity.leaf_volume.get_active_stats().voxel_count
+            else:
+                leaf_hash = surface._capacity.leaf_hash
+                candidate_leaf_count = int(leaf_hash.active_slots.numpy()[leaf_hash.capacity])
+            candidate_voxel_count = 512 * candidate_leaf_count
+            test.assertEqual(active_voxel_count, 1759)
+            test.assertLess(active_voxel_count, candidate_voxel_count)
+
+
+def test_rebuildable_support_stencil_uses_anisotropy_bound(test, device):
     surface = ParticleSurface(
-        voxel_size=1.0,
-        max_grid_cells=10_000,
-        kernel_radius=3.0,
-        kernel_scale=1.0,
-        threshold=0.01,
+        voxel_size=0.015,
+        max_grid_cells=512,
+        kernel_radius=0.05,
+        kernel_scale=0.6,
+        anisotropic=True,
+        anisotropy_ratio=16.0,
+        anisotropy_scale=2.0,
+        anisotropy_strength=0.95,
+        device=device,
+    )
+
+    test.assertEqual(surface._capacity._support_leaf_radius, 3)
+    surface._capacity.ensure_support_leaf_keys(17)
+    test.assertEqual(surface._capacity._support_leaf_radius, 3)
+
+
+def test_rebuildable_topology_scratch_is_fixed(test, device):
+    radii = wp.full(3, value=0.05, dtype=float, device=device)
+    surface = ParticleSurface(
+        voxel_size=0.1,
+        max_grid_cells=100_000,
+        kernel_radius=0.3,
         anisotropic=False,
         padding=0,
         field_smooth_iterations=0,
@@ -282,10 +329,32 @@ def test_isotropic_fallback_stencil_covers_support(test, device):
         device=device,
     )
 
-    mesh = surface.extract(positions, radii, compute_normals=False)
+    clustered = wp.array([[0.0, 0.0, 0.0]] * 3, dtype=wp.vec3, device=device)
+    surface.extract(clustered, radii, compute_mesh=False)
+    leaf_hash = surface._capacity.leaf_hash
+    initial_hash_capacity = leaf_hash.capacity
+    initial_topology_capacity = surface._capacity.topology_voxels.shape[0]
+    initial_hash_keys_ptr = leaf_hash.keys.ptr
+    initial_hash_slots_ptr = leaf_hash.active_slots.ptr
+    initial_leaf_ijk_ptr = surface._capacity.leaf_ijk.ptr
+    initial_occupancy_ptr = surface._capacity.topology_occupancy.ptr
+    initial_occupancy_temp_ptr = surface._capacity.topology_occupancy_temp.ptr
+    initial_topology_ptr = surface._capacity.topology_voxels.ptr
 
-    np.testing.assert_array_equal(mesh.counts.numpy(), [270, 1608, 0])
-    test.assertEqual(surface.sparse_volume.get_active_stats().voxel_count, 4096)
+    spread = wp.array([[-5.0, 0.0, 0.0], [0.0, 0.0, 0.0], [5.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    surface.extract(spread, radii, compute_mesh=False)
+
+    test.assertGreaterEqual(initial_hash_capacity, surface._capacity.max_grid_cells)
+    test.assertEqual(leaf_hash.capacity, initial_hash_capacity)
+    test.assertEqual(surface._capacity.topology_occupancy.shape[0], 16 * initial_hash_capacity)
+    test.assertEqual(surface._capacity.topology_voxels.shape[0], initial_topology_capacity)
+    test.assertEqual(leaf_hash.keys.ptr, initial_hash_keys_ptr)
+    test.assertEqual(leaf_hash.active_slots.ptr, initial_hash_slots_ptr)
+    test.assertEqual(surface._capacity.leaf_ijk.ptr, initial_leaf_ijk_ptr)
+    test.assertEqual(surface._capacity.topology_occupancy.ptr, initial_occupancy_ptr)
+    test.assertEqual(surface._capacity.topology_occupancy_temp.ptr, initial_occupancy_temp_ptr)
+    test.assertEqual(surface._capacity.topology_voxels.ptr, initial_topology_ptr)
+    np.testing.assert_array_equal(surface._capacity.rebuild_status.numpy(), np.zeros(5, dtype=np.uint32))
 
 
 def test_mesh_smoothing(test, device):
@@ -1092,6 +1161,18 @@ add_function_test(
     TestParticleSurface,
     "test_isotropic_fallback_stencil_covers_support",
     test_isotropic_fallback_stencil_covers_support,
+    devices=devices,
+)
+add_function_test(
+    TestParticleSurface,
+    "test_rebuildable_support_stencil_uses_anisotropy_bound",
+    test_rebuildable_support_stencil_uses_anisotropy_bound,
+    devices=devices,
+)
+add_function_test(
+    TestParticleSurface,
+    "test_rebuildable_topology_scratch_is_fixed",
+    test_rebuildable_topology_scratch_is_fixed,
     devices=devices,
 )
 add_function_test(TestParticleSurface, "test_mesh_smoothing", test_mesh_smoothing, devices=devices)

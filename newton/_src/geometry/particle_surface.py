@@ -32,6 +32,7 @@ import warp.fem as fem
 
 from . import particle_surface_kernels as kernels
 from . import particle_surface_sparse_kernels as sparse_kernels
+from .hashtable import HashTable
 
 __all__ = ["ParticleSurface", "extract_particle_surface"]
 
@@ -142,6 +143,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         world_count: int,
         voxel_size: float,
         padding: int,
+        support_leaf_radius: int | None,
         device: wp.DeviceLike,
     ):
         self.world_count = int(world_count)
@@ -184,9 +186,22 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         self.normals: wp.array[wp.vec3] | None = None
         self.neighbor_sum: wp.array[wp.vec3] | None = None
         self.valence: wp.array[wp.int32] | None = None
-        self.emitted_voxels = wp.empty(1, dtype=wp.vec3i, device=self.device)
-        self.emitted_voxel_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
-        self.rebuild_status = wp.zeros(1, dtype=wp.uint32, device=self.device)
+        self.support_leaf_keys = wp.empty(1, dtype=wp.vec3i, device=self.device)
+        self.support_leaf_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self.expanded_leaf_keys = wp.empty(1, dtype=wp.vec3i, device=self.device)
+        self.expanded_leaf_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self.max_support_reach_voxels = wp.zeros(1, dtype=wp.float32, device=self.device)
+        self._configured_support_leaf_radius = support_leaf_radius
+        self._support_leaf_radius = support_leaf_radius
+        self.leaf_volume: wp.Volume | None = None
+        self.leaf_hash: HashTable | None = None
+        self.leaf_ijk = wp.empty(1, dtype=wp.vec3i, device=self.device)
+        self.topology_occupancy = wp.zeros(1, dtype=wp.uint32, device=self.device)
+        self.topology_occupancy_temp = wp.zeros(1, dtype=wp.uint32, device=self.device)
+        self.topology_voxels = wp.empty(1, dtype=wp.vec3i, device=self.device)
+        self.topology_voxel_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self.topology_voxel_count = wp.zeros(1, dtype=wp.uint32, device=self.device)
+        self.rebuild_status = wp.zeros(5, dtype=wp.uint32, device=self.device)
 
         corner_offsets = wp.MarchingCubes.CUBE_CORNER_OFFSETS
         edge_offsets: list[tuple[int, int, int]] = []
@@ -236,19 +251,25 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         max_tiles = max((max_grid_cells + 511) // 512, 1)
         self.max_grid_cells = max_tiles * 512
         dummy_points = wp.zeros(1, dtype=wp.vec3i, device=self.device)
-        dummy_status = self.rebuild_status[0:1]
-        self.volume = wp.Volume.allocate_by_tiles(
+        self.leaf_hash = HashTable(self.max_grid_cells, device=self.device)
+        self.volume = wp.Volume.allocate_by_voxels(
             dummy_points,
             voxel_size=self.voxel_size,
             translation=(0.5 * self.voxel_size,) * 3,
-            bg_value=None,
             device=self.device,
             rebuildable=True,
-            max_tiles=max_tiles,
+            max_active_voxels=self.max_grid_cells,
+            max_leaf_nodes=self.max_grid_cells,
             max_lower_nodes=max_tiles,
             max_upper_nodes=max_tiles,
-            status=dummy_status,
+            status=self.rebuild_status[4:5],
         )
+        self.leaf_ijk = wp.empty(self.leaf_hash.capacity, dtype=wp.vec3i, device=self.device)
+        occupancy_word_capacity = 16 * self.leaf_hash.capacity
+        self.topology_occupancy = wp.zeros(occupancy_word_capacity, dtype=wp.uint32, device=self.device)
+        self.topology_occupancy_temp = wp.zeros_like(self.topology_occupancy)
+        self.topology_voxels = wp.empty(self.max_grid_cells, dtype=wp.vec3i, device=self.device)
+        self.topology_voxel_mask = wp.zeros(self.max_grid_cells, dtype=wp.int32, device=self.device)
         self.cell_world = wp.zeros(self.max_grid_cells, dtype=wp.int32, device=self.device)
         self.node_world = self.cell_world
         self.voxel_ijk = wp.empty(self.max_grid_cells, dtype=wp.vec3i, device=self.device)
@@ -274,11 +295,20 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         self.neighbor_sum = wp.empty(self.max_vertices, dtype=wp.vec3, device=self.device)
         self.valence = wp.empty(self.max_vertices, dtype=wp.int32, device=self.device)
 
-    def ensure_emitted_voxels(self, particle_count: int) -> None:
+    def ensure_support_leaf_keys(self, particle_count: int) -> None:
         size = max(sparse_kernels._SUPPORT_VOXEL_COUNT * particle_count, 1)
-        if self.emitted_voxels.shape[0] != size:
-            self.emitted_voxels = wp.empty(size, dtype=wp.vec3i, device=self.device)
-            self.emitted_voxel_mask = wp.empty(size, dtype=wp.int32, device=self.device)
+        if self.support_leaf_keys.shape[0] == size:
+            return
+        self.support_leaf_keys = wp.empty(size, dtype=wp.vec3i, device=self.device)
+        self.support_leaf_mask = wp.empty(size, dtype=wp.int32, device=self.device)
+        if not self.rebuildable:
+            self.expanded_leaf_keys = wp.empty(1, dtype=wp.vec3i, device=self.device)
+            self.expanded_leaf_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
+            self.topology_occupancy = wp.zeros(1, dtype=wp.uint32, device=self.device)
+            self.topology_occupancy_temp = wp.zeros(1, dtype=wp.uint32, device=self.device)
+            self.topology_voxels = wp.empty(1, dtype=wp.vec3i, device=self.device)
+            self.topology_voxel_mask = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._support_leaf_radius = self._configured_support_leaf_radius
 
     def compute_grid(
         self,
@@ -349,7 +379,97 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         use_flags: int,
         particle_world: wp.array[wp.int32],
         use_worlds: int,
-        isotropic_fallback: wp.array[wp.int32],
+        det_G: wp.array[float],
+        density_reach: wp.array[wp.vec3],
+        particle_sdf_radius_scale: float,
+        particle_sdf_band: float,
+        particle_sdf: bool,
+        anisotropic_sdf: bool,
+        stencil_voxels: int,
+        G: wp.array[wp.mat33],
+    ) -> None:
+        self.rebuild_status.zero_()
+        if not self.rebuildable:
+            self.max_support_reach_voxels.zero_()
+            self.ensure_support_leaf_keys(positions.shape[0])
+            if positions.shape[0] > 0:
+                wp.launch(
+                    sparse_kernels.emit_particle_support_voxels,
+                    dim=sparse_kernels._SUPPORT_VOXEL_COUNT * positions.shape[0],
+                    inputs=[
+                        positions,
+                        radii,
+                        flags,
+                        use_flags,
+                        particle_world,
+                        use_worlds,
+                        self.world_count,
+                        det_G,
+                        density_reach,
+                        particle_sdf_radius_scale,
+                        particle_sdf_band,
+                        int(particle_sdf),
+                        int(anisotropic_sdf),
+                        self.env_offsets,
+                        1.0 / self.voxel_size,
+                        self.support_leaf_keys,
+                        self.support_leaf_mask,
+                        self.max_support_reach_voxels,
+                    ],
+                    device=self.device,
+                )
+            else:
+                self.support_leaf_mask.zero_()
+            max_reach_voxels = float(self.max_support_reach_voxels.numpy()[0])
+            # Half-reach octant samples leave at most half the support width between samples.
+            voxel_radius = int(math.ceil(0.5 * max_reach_voxels)) + 1
+            self._support_leaf_radius = (voxel_radius + 7) // 8
+
+        if self.rebuildable:
+            self._rebuild_topology(
+                positions,
+                radii,
+                flags,
+                use_flags,
+                particle_world,
+                use_worlds,
+                G,
+                det_G,
+                density_reach,
+                particle_sdf_radius_scale,
+                particle_sdf_band,
+                particle_sdf,
+                anisotropic_sdf,
+                stencil_voxels,
+            )
+        else:
+            self._build_exact_topology(
+                positions,
+                radii,
+                flags,
+                use_flags,
+                particle_world,
+                use_worlds,
+                G,
+                det_G,
+                density_reach,
+                particle_sdf_radius_scale,
+                particle_sdf_band,
+                particle_sdf,
+                anisotropic_sdf,
+                stencil_voxels,
+            )
+        self._classify_topology()
+
+    def _populate_topology(
+        self,
+        positions: wp.array[wp.vec3],
+        radii: wp.array[float],
+        flags: wp.array[wp.int32],
+        use_flags: int,
+        particle_world: wp.array[wp.int32],
+        use_worlds: int,
+        G: wp.array[wp.mat33],
         det_G: wp.array[float],
         density_reach: wp.array[wp.vec3],
         particle_sdf_radius_scale: float,
@@ -358,12 +478,16 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
         anisotropic_sdf: bool,
         stencil_voxels: int,
     ) -> None:
-        self.ensure_emitted_voxels(positions.shape[0])
+        self.topology_occupancy.zero_()
+        self.topology_voxel_mask.zero_()
+        self.topology_voxel_count.zero_()
+        lane_count = 64 if self.device.is_cuda else 1
         if positions.shape[0] > 0:
             wp.launch(
-                sparse_kernels.emit_particle_support_voxels,
-                dim=sparse_kernels._SUPPORT_VOXEL_COUNT * positions.shape[0],
+                sparse_kernels.mark_particle_support_voxels,
+                dim=(positions.shape[0], lane_count),
                 inputs=[
+                    self.leaf_volume.id,
                     positions,
                     radii,
                     flags,
@@ -371,46 +495,236 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                     particle_world,
                     use_worlds,
                     self.world_count,
-                    isotropic_fallback,
+                    G,
                     det_G,
                     density_reach,
                     particle_sdf_radius_scale,
                     particle_sdf_band,
                     int(particle_sdf),
                     int(anisotropic_sdf),
-                    stencil_voxels,
                     self.env_offsets,
                     1.0 / self.voxel_size,
-                    self.emitted_voxels,
-                    self.emitted_voxel_mask,
+                    lane_count,
+                    self.topology_occupancy,
+                    self.rebuild_status[0:1],
                 ],
                 device=self.device,
             )
-        else:
-            self.emitted_voxel_mask.zero_()
 
-        if self.rebuildable:
-            self._rebuild_topology()
-        else:
-            self._build_exact_topology()
-        self._classify_topology()
+        source = self.topology_occupancy
+        destination = self.topology_occupancy_temp
+        for axis in range(3):
+            destination.zero_()
+            wp.launch(
+                sparse_kernels.dilate_topology_axis,
+                dim=self.launch_threads,
+                inputs=[
+                    self.leaf_volume.id,
+                    self.leaf_ijk,
+                    source,
+                    destination,
+                    stencil_voxels,
+                    axis,
+                    self.rebuild_status[0:1],
+                    self.launch_threads,
+                ],
+                device=self.device,
+            )
+            source, destination = destination, source
+        wp.launch(
+            sparse_kernels.emit_topology_voxels,
+            dim=self.launch_threads,
+            inputs=[
+                self.leaf_volume.id,
+                self.leaf_ijk,
+                source,
+                self.topology_voxels,
+                self.topology_voxel_mask,
+                self.topology_voxel_count,
+                self.rebuild_status[0:1],
+                self.launch_threads,
+            ],
+            device=self.device,
+        )
 
-    def _rebuild_topology(self) -> None:
+    def _rebuild_topology(self, *topology_args) -> None:
+        positions = topology_args[0]
+        leaf_hash = self.leaf_hash
+        hash_clear_threads = min(65_536, leaf_hash.capacity)
+        wp.launch(
+            sparse_kernels.clear_topology_leaf_hash,
+            dim=hash_clear_threads,
+            inputs=[
+                leaf_hash.keys,
+                leaf_hash.active_slots,
+                self.topology_occupancy,
+                self.topology_occupancy_temp,
+                self.topology_voxel_mask,
+                self.topology_voxel_count,
+                hash_clear_threads,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            sparse_kernels.reset_topology_leaf_hash_counts,
+            dim=1,
+            inputs=[leaf_hash.keys, leaf_hash.active_slots, self.topology_voxel_count],
+            device=self.device,
+        )
+
+        candidate_lane_count = 16 if self.device.is_cuda else 1
+        if positions.shape[0] > 0:
+            wp.launch(
+                sparse_kernels.insert_particle_candidate_leaves,
+                dim=(positions.shape[0], candidate_lane_count),
+                inputs=[
+                    positions,
+                    topology_args[1],
+                    topology_args[2],
+                    topology_args[3],
+                    topology_args[4],
+                    topology_args[5],
+                    self.world_count,
+                    topology_args[7],
+                    topology_args[8],
+                    topology_args[9],
+                    topology_args[10],
+                    int(topology_args[11]),
+                    int(topology_args[12]),
+                    self.env_offsets,
+                    1.0 / self.voxel_size,
+                    int(topology_args[13]),
+                    candidate_lane_count,
+                    leaf_hash.keys,
+                    leaf_hash.active_slots,
+                    self.leaf_ijk,
+                    self.rebuild_status[0:1],
+                ],
+                device=self.device,
+            )
+
+            support_lane_count = 64 if self.device.is_cuda else 1
+            wp.launch(
+                sparse_kernels.mark_particle_support_voxels_hash,
+                dim=(positions.shape[0], support_lane_count),
+                inputs=[
+                    leaf_hash.keys,
+                    positions,
+                    topology_args[1],
+                    topology_args[2],
+                    topology_args[3],
+                    topology_args[4],
+                    topology_args[5],
+                    self.world_count,
+                    topology_args[6],
+                    topology_args[7],
+                    topology_args[8],
+                    topology_args[9],
+                    topology_args[10],
+                    int(topology_args[11]),
+                    int(topology_args[12]),
+                    self.env_offsets,
+                    1.0 / self.voxel_size,
+                    support_lane_count,
+                    self.topology_occupancy,
+                    self.rebuild_status[0:1],
+                ],
+                device=self.device,
+            )
+
+        source = self.topology_occupancy
+        destination = self.topology_occupancy_temp
+        for axis in range(3):
+            wp.launch(
+                sparse_kernels.dilate_topology_axis_hash,
+                dim=self.launch_threads,
+                inputs=[
+                    leaf_hash.keys,
+                    leaf_hash.active_slots,
+                    self.leaf_ijk,
+                    source,
+                    destination,
+                    int(topology_args[13]),
+                    axis,
+                    self.launch_threads,
+                ],
+                device=self.device,
+            )
+            source, destination = destination, source
+        wp.launch(
+            sparse_kernels.emit_topology_voxels_hash,
+            dim=self.launch_threads,
+            inputs=[
+                leaf_hash.keys,
+                leaf_hash.active_slots,
+                self.leaf_ijk,
+                source,
+                self.topology_voxels,
+                self.topology_voxel_mask,
+                self.topology_voxel_count,
+                self.rebuild_status[0:1],
+                self.launch_threads,
+            ],
+            device=self.device,
+        )
         self.volume.rebuild(
-            self.emitted_voxels,
-            status=self.rebuild_status[0:1],
-            point_mask=self.emitted_voxel_mask,
+            self.topology_voxels,
+            status=self.rebuild_status[4:5],
+            point_mask=self.topology_voxel_mask,
         )
         self.volume.get_voxels(out=self.voxel_ijk)
 
-    def _build_exact_topology(self) -> None:
-        volume = wp.Volume.allocate_by_tiles(
-            self.emitted_voxels,
+    def _build_exact_topology(self, *topology_args) -> None:
+        initial_leaf_volume = wp.Volume.allocate_by_voxels(
+            self.support_leaf_keys,
+            voxel_size=1.0,
+            device=self.device,
+            point_mask=self.support_leaf_mask,
+        )
+        initial_leaf_count = initial_leaf_volume.get_active_stats().voxel_count
+        initial_leaf_ijk = wp.empty(initial_leaf_count, dtype=wp.vec3i, device=self.device)
+        initial_leaf_volume.get_voxels(out=initial_leaf_ijk)
+        leaf_radius = self._support_leaf_radius + (int(topology_args[-1]) + 7) // 8
+        neighbor_width = 2 * leaf_radius + 1
+        expansion_count = initial_leaf_count * neighbor_width * neighbor_width * neighbor_width
+        self.expanded_leaf_keys = wp.empty(expansion_count, dtype=wp.vec3i, device=self.device)
+        self.expanded_leaf_mask = wp.empty(expansion_count, dtype=wp.int32, device=self.device)
+        wp.launch(
+            sparse_kernels.expand_candidate_leaf_keys,
+            dim=expansion_count,
+            inputs=[
+                initial_leaf_volume.id,
+                initial_leaf_ijk,
+                leaf_radius,
+                self.expanded_leaf_keys,
+                self.expanded_leaf_mask,
+                self.rebuild_status[2:3],
+            ],
+            device=self.device,
+        )
+        self.leaf_volume = wp.Volume.allocate_by_voxels(
+            self.expanded_leaf_keys,
+            voxel_size=1.0,
+            device=self.device,
+            point_mask=self.expanded_leaf_mask,
+        )
+        leaf_count = self.leaf_volume.get_active_stats().voxel_count
+        self.leaf_ijk = wp.empty(leaf_count, dtype=wp.vec3i, device=self.device)
+        self.leaf_volume.get_voxels(out=self.leaf_ijk)
+        candidate_voxel_count = 512 * leaf_count
+        occupancy_word_count = (candidate_voxel_count + 31) // 32
+        self.topology_occupancy = wp.zeros(occupancy_word_count, dtype=wp.uint32, device=self.device)
+        self.topology_occupancy_temp = wp.zeros_like(self.topology_occupancy)
+        self.topology_voxels = wp.empty(candidate_voxel_count, dtype=wp.vec3i, device=self.device)
+        self.topology_voxel_mask = wp.zeros(candidate_voxel_count, dtype=wp.int32, device=self.device)
+        self.launch_threads = min(max(candidate_voxel_count, 1), kernels._MAX_CAPACITY_LAUNCH_THREADS)
+        self._populate_topology(*topology_args)
+        volume = wp.Volume.allocate_by_voxels(
+            self.topology_voxels,
             voxel_size=self.voxel_size,
             translation=(0.5 * self.voxel_size,) * 3,
-            bg_value=None,
             device=self.device,
-            point_mask=self.emitted_voxel_mask,
+            point_mask=self.topology_voxel_mask,
         )
         self.volume = volume
         cell_count = volume.get_active_stats().voxel_count
@@ -1189,6 +1503,7 @@ class ParticleSurface:
             world_count=self.world_count,
             voxel_size=self.voxel_size,
             padding=self.padding,
+            support_leaf_radius=self._density_support_leaf_radius(),
             device=device_obj,
         )
         self._has_field = False
@@ -1199,6 +1514,25 @@ class ParticleSurface:
         if self.field_smooth_iterations > 0 and self.field_smooth_radius > 0:
             self._ensure_blur_weights(device_obj)
         return self
+
+    def _density_support_leaf_radius(self) -> int | None:
+        if self.surface_method != "density":
+            return None
+
+        axis_scale = 1.0
+        if self.anisotropic and self.anisotropy_strength > 0.0 and self.anisotropy_ratio > 1.0:
+            # Geometric-mean normalization bounds the longest WPCA axis by ratio**(2/3).
+            # Apply the same inverse-radius blend as the anisotropy kernels.
+            min_relative_inverse_radius = (1.0 - self.anisotropy_strength) + self.anisotropy_strength / (
+                self.anisotropy_scale * self.anisotropy_ratio ** (2.0 / 3.0)
+            )
+            axis_scale = max(axis_scale, 1.0 / min_relative_inverse_radius)
+        max_reach_voxels = (
+            kernels._DENSITY_KERNEL_SUPPORT * self.kernel_scale * self.kernel_radius * axis_scale / self.voxel_size
+        )
+        # Half-reach octant samples leave at most half the support width between samples.
+        voxel_radius = int(math.ceil(0.5 * max_reach_voxels)) + 1
+        return (voxel_radius + 7) // 8
 
     def update_field(
         self,
@@ -1409,6 +1743,7 @@ class ParticleSurface:
                 world_count=self.world_count,
                 voxel_size=self.voxel_size,
                 padding=self.padding,
+                support_leaf_radius=None,
                 device=device,
             )
             workspace = self._capacity
@@ -1481,7 +1816,6 @@ class ParticleSurface:
             use_flags,
             worlds,
             use_worlds,
-            self._isotropic_fallback[:particle_count],
             self._det_G[:particle_count],
             self._density_reach[:particle_count],
             self.particle_sdf_radius_scale,
@@ -1489,6 +1823,7 @@ class ParticleSurface:
             self.surface_method == "particle_sdf",
             not isotropic_sdf,
             self.padding + self.field_smooth_iterations * self.field_smooth_radius + self.redistance_iterations + 1,
+            self._G[:particle_count],
         )
 
         if self.field_smooth_iterations > 0 and self.field_smooth_radius > 0:
