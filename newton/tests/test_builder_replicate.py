@@ -490,7 +490,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
             mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists | added),
         ):
             with self.assertRaisesRegex(RuntimeError, "_missing_merge_metadata"):
-                ModelBuilder._build_builder_merge_attribute_specs()
+                ModelBuilder._build_builder_merge_attribute_specs(False)
 
         removed = {"body_lock_inertia"}
         with (
@@ -498,11 +498,11 @@ class TestModelBuilderReplicate(unittest.TestCase):
             mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed),
         ):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-                ModelBuilder._build_builder_merge_attribute_specs()
+                ModelBuilder._build_builder_merge_attribute_specs(False)
 
         with mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-                ModelBuilder._build_builder_merge_attribute_specs()
+                ModelBuilder._build_builder_merge_attribute_specs(False)
 
 
 if __name__ == "__main__":

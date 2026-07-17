@@ -341,6 +341,8 @@ class ModelBuilder:
     # Lazy snapshots of a plain ModelBuilder's attribute names; see _base_builder_attributes().
     _BASE_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
     _BASE_LIST_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
+    # Per-class merge schema cache; see _builder_merge_attribute_specs().
+    _MERGE_ATTRIBUTE_SPEC_CACHE: ClassVar[dict[bool, dict[str, Model.AttributeSpec]]]
 
     @staticmethod
     def _shape_palette_color(index: int) -> tuple[float, float, float]:
@@ -2930,31 +2932,30 @@ class ModelBuilder:
     def _builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
         import newton  # noqa: PLC0415
 
+        use_coord_layout_targets = bool(newton.use_coord_layout_targets)
+        # Stored in cls.__dict__ (not functools.cache) so dynamically created
+        # subclasses stay collectable.
+        cache = cls.__dict__.get("_MERGE_ATTRIBUTE_SPEC_CACHE")
+        if cache is None:
+            cache = {}
+            cls._MERGE_ATTRIBUTE_SPEC_CACHE = cache
+        specs = cache.get(use_coord_layout_targets)
+        if specs is None:
+            specs = cache[use_coord_layout_targets] = cls._build_builder_merge_attribute_specs(use_coord_layout_targets)
         # Copy: the merge pops entries it handles manually.
-        return dict(ModelBuilder._cached_builder_merge_attribute_specs(cls, newton.use_coord_layout_targets))
-
-    @staticmethod
-    @functools.cache
-    def _cached_builder_merge_attribute_specs(
-        builder_class: type[ModelBuilder], use_coord_layout_targets: bool
-    ) -> dict[str, Model.AttributeSpec]:
-        return builder_class._build_builder_merge_attribute_specs()
+        return dict(specs)
 
     @classmethod
-    def _build_builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
-        """Build and validate the merge schema; all inputs are class-level constants
-        apart from ``newton.use_coord_layout_targets``, which keys the cache above."""
+    def _build_builder_merge_attribute_specs(cls, use_coord_layout_targets: bool) -> dict[str, Model.AttributeSpec]:
+        """Build and validate the merge schema from class-level constants; cached
+        per (class, target layout) by :meth:`_builder_merge_attribute_specs`."""
         base_attributes, list_attributes = cls._base_builder_attributes()
         specs = {name: spec for name, spec in Model._CORE_ATTRIBUTE_SPECS.items() if name in list_attributes}
         specs.update(cls._BUILDER_ATTRIBUTE_SPECS)
         declared_builder_attributes = set(cls._BUILDER_ATTRIBUTE_SPECS)
 
-        import newton  # noqa: PLC0415
-
         target_q_frequency = (
-            Model.AttributeFrequency.JOINT_COORD
-            if newton.use_coord_layout_targets
-            else Model.AttributeFrequency.JOINT_DOF
+            Model.AttributeFrequency.JOINT_COORD if use_coord_layout_targets else Model.AttributeFrequency.JOINT_DOF
         )
         specs["joint_target_q"] = Model.AttributeSpec(target_q_frequency)
 
