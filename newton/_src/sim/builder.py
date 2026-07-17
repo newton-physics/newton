@@ -77,6 +77,12 @@ else:
     UsdStage = Any
 
 
+_SCALAR_GRAVITY_DEPRECATION_MSG = (
+    "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
+    "Scalar gravity will be removed in a future release."
+)
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -349,6 +355,19 @@ class ModelBuilder:
 
         shape_constructor: str | None = None
         """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
+
+    @dataclass
+    class MeshApproximationConfig:
+        """Default settings for mesh approximation.
+
+        :attr:`ModelBuilder.default_mesh_approximation_cfg` supplies defaults for
+        settings not passed to :meth:`ModelBuilder.approximate_meshes` explicitly,
+        including approximation triggered by :meth:`ModelBuilder.add_usd` via the
+        authored ``physics:approximation`` attribute.
+        """
+
+        coacd_threshold: float = 0.05
+        """CoACD concavity threshold. Lower values produce finer convex decompositions with more parts."""
 
     @dataclass(kw_only=True)
     class ShapeConfig:
@@ -976,15 +995,20 @@ class ModelBuilder:
             """The key of the custom frequency (e.g., ``"mujoco:actuator"`` or ``"pair"``)."""
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
-    def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
+    def __init__(
+        self,
+        up_axis: AxisType = Axis.Z,
+        gravity: float | Vec3 | None = None,
+    ):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
 
         Args:
             up_axis: The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity: The magnitude of gravity to apply along the up axis.
-                Defaults to -9.81.
+            gravity: Default gravity vector [m/s^2]. The deprecated scalar form
+                applies acceleration along ``up_axis``. If omitted, gravity
+                defaults to -9.81 along ``up_axis``.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
@@ -992,6 +1016,10 @@ class ModelBuilder:
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
         """Default BVH construction configuration used during model finalization."""
+
+        self.default_mesh_approximation_cfg = ModelBuilder.MeshApproximationConfig()
+        """Default mesh approximation settings used by :meth:`approximate_meshes` when not
+        passed explicitly, including USD-triggered approximation in :meth:`add_usd`."""
 
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
@@ -1396,12 +1424,14 @@ class ModelBuilder:
         """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        """Up axis used when expanding scalar gravity into per-world gravity vectors."""
-        self.gravity: float = gravity
-        """Gravity acceleration [m/s^2] applied along :attr:`up_axis` for newly added worlds."""
+        """Up axis used by geometry helpers and for resolving default or scalar gravity."""
+        self._gravity: float | wp.vec3 | None = None
+        """Explicitly set gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
+        if gravity is not None:
+            self._set_gravity(gravity, stacklevel=3)
 
         self.world_gravity: list[Vec3] = []
-        """Per-world gravity vectors retained until :meth:`finalize <ModelBuilder.finalize>` populates
+        """Per-world gravity vectors [m/s^2] retained until :meth:`finalize <ModelBuilder.finalize>` populates
         :attr:`Model.gravity`."""
 
         self.rigid_gap: float = 0.1
@@ -2198,6 +2228,35 @@ class ModelBuilder:
         )
 
     @property
+    def gravity(self) -> float | wp.vec3:
+        """Default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
+        if np.isscalar(self._gravity):
+            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            return self._gravity
+        return self._gravity_as_vector()
+
+    @gravity.setter
+    def gravity(self, value: float | Vec3) -> None:
+        self._set_gravity(value, stacklevel=3)
+
+    def _set_gravity(self, value: float | Vec3, stacklevel: int) -> None:
+        if np.isscalar(value):
+            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
+            self._gravity = float(value)
+            return
+        gravity = np.asarray(value, dtype=np.float32)
+        if gravity.shape != (3,):
+            raise ValueError(f"Expected gravity with shape (3,), got {gravity.shape}")
+        self._gravity = wp.vec3(*gravity)
+
+    def _gravity_as_vector(self) -> wp.vec3:
+        """Resolve gravity to a fresh vector so callers never alias builder state."""
+        if self._gravity is None or np.isscalar(self._gravity):
+            magnitude = -9.81 if self._gravity is None else self._gravity
+            return wp.vec3(*(component * magnitude for component in self.up_vector))
+        return wp.vec3(*self._gravity)
+
+    @property
     def current_world(self) -> int:
         """Returns the builder-managed world context for subsequently added entities.
 
@@ -2930,14 +2989,12 @@ class ModelBuilder:
             root_path: The USD path to import, defaults to "/".
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
-            skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+            skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden unconditionally, regardless of
-                whether the collider has authored PBR material data. Collision
-                shapes on bodies without visual-only geometry remain visible as a
-                rendering fallback. Default is False.
+                whether the collider has authored PBR material data. Default is False.
             force_show_colliders: If True, collision shapes get the VISIBLE flag
                 regardless of whether visual shapes exist on the same body. Note that
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
@@ -3304,9 +3361,8 @@ class ModelBuilder:
                 a default label "world_{index}" will be generated.
             attributes: Optional custom attributes to associate
                 with this world for later use.
-            gravity: Optional gravity vector for this world. If None,
-                the world will use the builder's default gravity (computed from
-                ``self.gravity`` and ``self.up_vector``).
+            gravity: Optional gravity vector [m/s^2] for this world. If None,
+                the world uses the builder's default :attr:`gravity`.
 
         Raises:
             RuntimeError: If called when already inside a world context
@@ -3347,12 +3403,9 @@ class ModelBuilder:
 
         # Initialize this world's gravity
         if gravity is not None:
-            self.world_gravity.append(gravity)
+            self.world_gravity.append(wp.vec3(*gravity))
         else:
-            up_vector = self.up_vector
-            self.world_gravity.append(
-                (up_vector[0] * self.gravity, up_vector[1] * self.gravity, up_vector[2] * self.gravity)
-            )
+            self.world_gravity.append(self._gravity_as_vector())
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -3467,15 +3520,10 @@ class ModelBuilder:
         # Copy gravity from source builder
         if self.current_world >= 0 and self.current_world < len(self.world_gravity):
             # We're in a world context, update this world's gravity vector
-            builder_up = builder.up_vector
-            self.world_gravity[self.current_world] = (
-                builder_up[0] * builder.gravity,
-                builder_up[1] * builder.gravity,
-                builder_up[2] * builder.gravity,
-            )
+            self.world_gravity[self.current_world] = builder._gravity_as_vector()
         elif self.current_world < 0:
-            # No world context (add_builder called directly), copy scalar gravity
-            self.gravity = builder.gravity
+            # No world context (add_builder called directly), copy default gravity
+            self._gravity = copy.copy(builder._gravity)
 
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
@@ -7005,7 +7053,7 @@ class ModelBuilder:
 
         Args:
             method: The method to use for approximating the mesh shapes.
-            shape_indices: The indices of the shapes to simplify. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
+            shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
@@ -7034,6 +7082,9 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+        else:
+            # primitives have no mesh source; preserve explicit re-approximation of convex meshes
+            shape_indices = [i for i in shape_indices if self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)]
 
         # These methods rewrite shape_type away from MESH; any SDF/hydro state
         # would be silently dropped at finalize. The USD importer intercepts
@@ -7111,7 +7162,7 @@ class ModelBuilder:
                         if method == "coacd":
                             cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
-                                "threshold": 0.05,
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
                                 "mcts_nodes": 20,
                                 "mcts_iterations": 5,
                                 "mcts_max_depth": 1,
@@ -7180,10 +7231,13 @@ class ModelBuilder:
                         f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
                     )
                     method = "convex_hull"
+                    # kwargs were addressed to the failed decomposition method
+                    remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            remesh_failed = False
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
@@ -7203,6 +7257,7 @@ class ModelBuilder:
                                 f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
                                 stacklevel=2,
                             )
+                            remesh_failed = True
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
@@ -7210,6 +7265,9 @@ class ModelBuilder:
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
+            if remesh_failed:
+                # route the shapes that failed (not in remeshed_shapes) into the fallback below
+                method = "bounding_box"
 
         if method == "bounding_box":
             for shape in shape_indices:
@@ -11505,6 +11563,7 @@ class ModelBuilder:
                 m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
+            m._has_cable_joints = JointType.CABLE in self.joint_type  # pyright: ignore[reportPrivateUsage]
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
@@ -11643,9 +11702,7 @@ class ModelBuilder:
                 # Use per-world gravity from world_gravity list
                 gravity_vecs = self.world_gravity
             else:
-                # Fallback: use scalar gravity for all worlds
-                gravity_vec = tuple(g * self.gravity for g in self.up_vector)
-                gravity_vecs = [gravity_vec] * self.world_count
+                gravity_vecs = [self._gravity_as_vector()] * self.world_count
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,

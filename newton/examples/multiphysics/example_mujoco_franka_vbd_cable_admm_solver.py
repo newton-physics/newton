@@ -122,7 +122,7 @@ class Example:
         self.surface_z = float(PAYLOAD_CENTER[2]) - self.payload_radius
         self.grip_hold = min(GRIP_OPEN, max(GRIP_CLOSE, GRIP_HOLD_FACTOR * self.payload_radius))
 
-        template = newton.ModelBuilder(gravity=-9.81)
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         template.rigid_gap = 0.005
         SolverMuJoCo.register_custom_attributes(template)
         if self.payload_kind == "vbd-cable":
@@ -133,7 +133,7 @@ class Example:
         joints_per_world = template.joint_count
         shapes_per_world = template.shape_count
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.replicate(template, world_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
         self.ground_shapes = [self._emit_ground_plane(builder)]
@@ -440,7 +440,7 @@ class Example:
 
     def _build_ik(self) -> None:
         # IK runs on a Franka-only model so payload coordinates do not enter the solve.
-        ik_builder = newton.ModelBuilder(gravity=-9.81)
+        ik_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         self._add_franka(ik_builder, self.surface_z)
         self.ik_model = ik_builder.finalize(device=self.device)
 

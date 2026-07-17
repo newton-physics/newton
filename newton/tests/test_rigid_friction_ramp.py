@@ -111,7 +111,9 @@ _ROW_COLORS = (
 
 
 def build_friction_grid(device, mus, angles_deg):
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for row, mu in enumerate(mus):
@@ -189,10 +191,7 @@ def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box
         test.fail("\n  ".join([f"{len(failures)} friction-ramp cell(s) failed:", *failures]))
 
 
-def test_friction_ramp(test, device, solver_name, solver_fn, mus, angles_deg, thresholds):
-    if solver_name == "mujoco_warp" and device.is_cuda:
-        test.skipTest("Flaky on CUDA (GH-3391), pending google-deepmind/mujoco_warp#1512")
-
+def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds):
     model, box_ids = build_friction_grid(device, mus, angles_deg)
 
     solver = solver_fn(model)
@@ -221,7 +220,9 @@ def build_stopping_distance_scene(device):
     give effective mu = (mu_box + mu_patch) / 2. Per-box patches keep the
     effective mu equal to the per-box value.
     """
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for i, mu in enumerate(STOPPING_MUS):
@@ -519,7 +520,6 @@ for device in devices:
             test_friction_ramp,
             devices=[device],
             check_output=False,
-            solver_name=solver_name,
             solver_fn=cfg["factory"],
             mus=cfg["mus"],
             angles_deg=cfg["angles_deg"],

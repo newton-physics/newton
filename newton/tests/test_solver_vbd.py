@@ -1021,7 +1021,7 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
     """Contact history must be allocated before CUDA graph recording."""
 
     def make_scene(pipeline_first, rigid_contact_max=4):
-        builder = newton.ModelBuilder(gravity=-10.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
         builder.add_ground_plane()
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.2), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
@@ -1690,7 +1690,7 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):
     """D6 structural slots should be inactive when all axes are free."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
 
@@ -1732,10 +1732,10 @@ def _rigid_reset_state_and_history(test, device):
         joint = builder.add_joint_fixed(parent=-1, child=body)
         builder.add_articulation([joint])
 
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     add_fixed_body(template, 0.0)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     add_fixed_body(builder, -2.0)  # Global head range.
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
@@ -1943,11 +1943,11 @@ def _rigid_reset_state_and_history(test, device):
 
 def _rigid_reset_replays_captured_step(test, device):
     """A reset issued after capture is consumed by the existing step graph."""
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(mass=1.0, is_kinematic=True)
     template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
@@ -2005,7 +2005,7 @@ def _rigid_reset_replays_captured_step(test, device):
 def _rigid_contact_reset_lifecycle(test, device):
     """A reset cold-starts only selected-world contacts, once, on the next refresh."""
     cfg = newton.ModelBuilder.ShapeConfig(ke=100.0, kd=0.0, mu=0.5)
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
         mass=1.0,
@@ -2013,7 +2013,7 @@ def _rigid_contact_reset_lifecycle(test, device):
     )
     template.add_shape_sphere(body, radius=0.1, cfg=cfg)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_ground_plane(cfg=cfg)
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
@@ -2143,7 +2143,7 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
 
 
 def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_max=None, dahl_tau=None):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=dahl_defaults_enabled)
@@ -2493,7 +2493,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
     num_frames = 200
     settle_frames = 50
 
-    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 100.0
     cfg.mu = 0.0
@@ -2906,7 +2906,7 @@ def _build_edge_over_post(device):
     on it. Gravity is disabled so the contact push-out is the only force.
     """
     builder = newton.ModelBuilder()
-    builder.gravity = 0.0
+    builder.gravity = (0.0, 0.0, 0.0)
 
     # Narrow tall post centered at the origin: x,z in [-0.1, 0.1], top face at y = +0.5.
     builder.add_shape_box(

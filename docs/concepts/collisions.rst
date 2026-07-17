@@ -1304,13 +1304,12 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
      - Per-shape thickness: effective radius + margin (scalar).
    * - ``rigid_contact_match_index``
-     - Per-contact frame-to-frame match result (int32). ``>= 0``: matched old
-       index, ``-1``: new, ``-2``: broken.  Only allocated when
+     - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
-     - Compact index list of new contacts in the current sorted buffer (where
-       ``match_index < 0``). Only allocated when ``contact_report=True``.
+     - Compact index list of new contacts in the current sorted buffer. Only
+       allocated when ``contact_report=True``.
        See :ref:`Contact Reports`.
    * - ``rigid_contact_broken_indices``, ``rigid_contact_broken_count``
      - Compact index list of contacts from the previous frame that no current
@@ -1442,7 +1441,7 @@ treated as a frozen constant.
 
 .. testcode:: diff-contacts
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.3)))
     builder.add_shape_sphere(body=body, radius=0.5)
     builder.add_ground_plane()
@@ -1891,12 +1890,6 @@ Any non-disabled mode implies ``deterministic=True``.
 
     pipeline.collide(state, contacts)
 
-    # Per-contact match index (int32):
-    #   >= 0 : index of the matched contact in the previous frame
-    #     -1 : new contact (no match found)
-    #     -2 : key matched but position/normal thresholds exceeded (broken)
-    match_idx = contacts.rigid_contact_match_index.numpy()
-
 Each frame, the matcher binary-searches the current contacts against the
 previous frame's sorted keys, then verifies candidates against a world-space
 distance threshold and a normal dot-product threshold.  The sort key encodes
@@ -1923,8 +1916,8 @@ as motion on both sides of the contact, not just one.
 
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
-rows (``MATCH_NOT_FOUND`` / ``MATCH_BROKEN``) are left untouched, so new and
-threshold-broken contacts keep their fresh narrow-phase geometry.  Because
+rows are left untouched, so new and threshold-broken contacts keep their fresh
+narrow-phase geometry.  Because
 matching requires both a position delta below the threshold and a normal dot
 product above the threshold, the saved values are guaranteed to be a close
 approximation of the current geometry and are safe to reuse.  The extra
@@ -1958,12 +1951,7 @@ matching mode:
     broken_indices = contacts.rigid_contact_broken_indices.numpy()[:n_broken]
 
 ``rigid_contact_new_indices`` holds indices into the current frame's sorted
-contact buffer for every contact with ``match_index < 0``.  This includes both
-genuinely new contacts (``MATCH_NOT_FOUND``, ``match_index == -1``) and
-threshold-broken contacts whose sort key matched a previous-frame contact but
-whose position or normal exceeded the configured thresholds
-(``MATCH_BROKEN``, ``match_index == -2``).  Inspect
-``contacts.rigid_contact_match_index`` to distinguish the two cases.
+contact buffer for contacts without an accepted previous-frame match.
 
 ``rigid_contact_broken_indices`` holds indices into the *previous* frame's
 sorted buffer for contacts that no current contact matched.

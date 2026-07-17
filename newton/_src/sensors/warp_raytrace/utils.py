@@ -325,6 +325,21 @@ class Utils:
             device=self.__render_context.device,
         )
 
+    def create_forward_depth_image_output(
+        self, width: int, height: int, camera_count: int = 1
+    ) -> wp.array4d[wp.float32]:
+        """Create a forward-depth output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
+        Returns:
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``float32``.
+        """
+        return self.create_depth_image_output(width, height, camera_count)
+
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a shape-index output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
 

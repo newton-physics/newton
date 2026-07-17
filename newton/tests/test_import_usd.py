@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import builtins
 import functools
 import hashlib
 import math
 import os
 import posixpath
 import tempfile
+import types
 import unittest
 import warnings
 from unittest import mock
@@ -29,7 +31,7 @@ from newton._src.solvers.mujoco.constants import (
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
 
 devices = get_test_devices()
 
@@ -2698,6 +2700,58 @@ class TestImportUsdPhysics(unittest.TestCase):
         assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-5)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mesh_approximation_cfg(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def create_collision_mesh(name, approximation_method):
+            box = newton.Mesh.create_box(
+                1.0,
+                1.0,
+                1.0,
+                duplicate_vertices=False,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in box.vertices.tolist()])
+            meshColAPI = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+            meshColAPI.GetApproximationAttr().Set(approximation_method)
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        create_collision_mesh("/meshDecomposition", UsdPhysics.Tokens.convexDecomposition)
+        create_collision_mesh("/meshConvexHull", UsdPhysics.Tokens.convexHull)
+
+        self.assertEqual(newton.ModelBuilder().default_mesh_approximation_cfg.coacd_threshold, 0.05)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.05)
+
+            captured.clear()
+            builder = newton.ModelBuilder()
+            builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
@@ -5834,6 +5888,52 @@ def Xform "Body" (
 
 class TestImportSampleAssetsParsing(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_mjc_schemas_without_mujoco(self):
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "mjc_schema_import.usda")
+        original_import = builtins.__import__
+        optional_runtime_imports = []
+
+        def track_optional_runtime_imports(name, *args, **kwargs):
+            if name.partition(".")[0] in {"mujoco", "mujoco_warp"}:
+                optional_runtime_imports.append(name)
+            return original_import(name, *args, **kwargs)
+
+        for register_mujoco, convert_equalities in (
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ):
+            with self.subTest(register_mujoco=register_mujoco, convert_equalities=convert_equalities):
+                builder = newton.ModelBuilder()
+                if register_mujoco:
+                    SolverMuJoCo.register_custom_attributes(builder)
+
+                optional_runtime_imports.clear()
+                with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
+                    builder.add_usd(
+                        asset_path,
+                        convert_mjc_equality_constraints=convert_equalities,
+                        schema_resolvers=[usd.SchemaResolverMjc()],
+                    )
+                self.assertEqual(optional_runtime_imports, [])
+
+                model = builder.finalize()
+                self.assertEqual(model.mujoco.equality_constraint_count, 3)
+                self.assertEqual(model.constraint_mimic_count, int(convert_equalities))
+                self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), int(register_mujoco))
+
+                if register_mujoco:
+                    np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [1])
+                    self.assertIn(int(newton.JointTargetMode.POSITION), builder.joint_target_mode)
+                    self.assertEqual(
+                        set(model.mujoco.solreflimit_mode.numpy().tolist()),
+                        {SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT},
+                    )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_jnt_actgravcomp_parsing(self):
         """Test that jnt_actgravcomp attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -8170,7 +8270,7 @@ def Xform "Articulation" (
         builder.add_usd(stage)
 
         # Gravity should be enabled (non-zero)
-        self.assertNotEqual(builder.gravity, 0.0)
+        self.assertGreater(np.linalg.norm(np.asarray(builder.gravity)), 0.0)
 
         # Test with gravity disabled via newton:gravityEnabled
         stage2 = Usd.Stage.CreateInMemory()
@@ -8189,7 +8289,7 @@ def Xform "Articulation" (
         builder2.add_usd(stage2)
 
         # Gravity should be disabled (zero)
-        self.assertEqual(builder2.gravity, 0.0)
+        np.testing.assert_allclose(builder2.gravity, (0.0, 0.0, 0.0))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_non_unit_linear_unit(self):
@@ -8211,7 +8311,59 @@ def Xform "Articulation" (
         with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
             builder.add_usd(stage)
 
-        self.assertAlmostEqual(builder.gravity, -12.34, places=6)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -12.34), atol=1.0e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_gravity_direction(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(3.0, 4.0, 0.0))
+        scene.CreateGravityMagnitudeAttr().Set(10.0)
+
+        body = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-6)
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.begin_world()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+        )
+        np.testing.assert_allclose(builder.world_gravity[0], (-8.0, 6.0, 0.0), atol=1.0e-5)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+            override_root_xform=True,
+        )
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-5)
+
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        scene.GetGravityDirectionAttr().Set(Gf.Vec3f(0.0, -1.0, 0.0))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -10.0), atol=1.0e-5)
+
+        # Unauthored direction/magnitude sentinels resolve to standard gravity along -up_axis
+        stage2 = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage2, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage2, 1.0)
+        UsdPhysics.Scene.Define(stage2, "/physicsScene")
+        body2 = UsdGeom.Cube.Define(stage2, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body2.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body2.GetPrim())
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage2)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -9.81), atol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_time_steps_per_second_parsing(self):
@@ -9663,11 +9815,11 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_with_visual & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags_with_visual & ShapeFlags.VISIBLE)
 
-        # Collision shapes on bodies WITHOUT visuals should auto-get VISIBLE
+        # Collision shapes on bodies WITHOUT visuals should remain hidden by default
         collision_no_visual = path_shape_map["/BodyWithoutVisuals/CollisionSphere"]
         flags_no_visual = builder.shape_flags[collision_no_visual]
         self.assertTrue(flags_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags_no_visual & ShapeFlags.VISIBLE)
+        self.assertFalse(flags_no_visual & ShapeFlags.VISIBLE)
 
         # force_show_colliders=True: collision shapes always get VISIBLE
         builder2 = newton.ModelBuilder()
@@ -9679,8 +9831,7 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
 
-        # hide_collision_shapes=True: hide colliders on bodies that have visuals
-        # but keep colliders visible on bodies with no visual-only geometry.
+        # hide_collision_shapes=True keeps colliders hidden by default.
         builder3 = newton.ModelBuilder()
         result3 = builder3.add_usd(stage, hide_collision_shapes=True)
         path_shape_map3 = result3["path_shape_map"]
@@ -9691,9 +9842,10 @@ def Xform "BodyWithoutVisuals" (
 
         flags_fallback_no_visual = builder3.shape_flags[path_shape_map3["/BodyWithoutVisuals/CollisionSphere"]]
         self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags_fallback_no_visual & ShapeFlags.VISIBLE)
+        self.assertFalse(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
-        # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
+        # load_visual_shapes=False: collision shapes remain visible because no
+        # visual geometry is loaded for this import.
         builder4 = newton.ModelBuilder()
         result4 = builder4.add_usd(stage, load_visual_shapes=False)
         path_shape_map4 = result4["path_shape_map"]
@@ -9702,6 +9854,38 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collision_only_asset_keeps_colliders_visible(self):
+        """Collision-only USD assets must remain visible by default."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "CollisionSphere" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        collision_flags = builder.shape_flags[result["path_shape_map"]["/Body/CollisionSphere"]]
+        self.assertTrue(collision_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_flags & ShapeFlags.VISIBLE)
 
     @staticmethod
     def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
@@ -9947,7 +10131,7 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_invisible_visual_sibling_does_not_suppress_collider_visibility(self):
-        """An invisible visual shape must not prevent fallback-visible colliders."""
+        """An invisible visual shape must not suppress fallback-visible colliders."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -9989,8 +10173,8 @@ def Xform "Body" (
         vis_shape = path_shape_map["/Body/InvisibleVisual"]
         self.assertFalse(builder.shape_flags[vis_shape] & ShapeFlags.VISIBLE)
 
-        # Collider must remain visible because no *visible* visual shapes
-        # exist for this body.
+        # The collider remains visible because the import has no effectively
+        # visible visual shapes.
         collision_shape = path_shape_map["/Body/CollisionBox"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
@@ -11552,13 +11736,14 @@ def Xform "World"
         temperature = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
         region_id = np.array([7], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 
@@ -11570,6 +11755,37 @@ def Xform "World"
         arr, freq = tm.custom_attributes["regionId"]
         assert_np_equal(arr, region_id)
         self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+
+    def test_tetmesh_custom_attributes_infer_once(self):
+        """Test that length-1 arrays are inferred as ONCE when unambiguous."""
+        vertices = np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0.5]],
+            dtype=np.float32,
+        )
+        tet_indices = np.array([0, 1, 2, 3, 0, 1, 2, 4], dtype=np.int32)
+        constant = np.array([42.0], dtype=np.float32)
+
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={"constant": constant},
+        )
+
+        arr, freq = tm.custom_attributes["constant"]
+        assert_np_equal(arr, constant)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.ONCE)
+
+    def test_tetmesh_custom_attributes_ambiguous_once(self):
+        """Test that length-1 arrays raise when tet_count is also 1."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+
+        with self.assertRaisesRegex(ValueError, "ONCE"):
+            newton.TetMesh(
+                vertices,
+                tet_indices,
+                custom_attributes={"ambig": np.array([1.0], dtype=np.float32)},
+            )
 
     def test_tetmesh_custom_attributes_empty_by_default(self):
         """Test TetMesh has empty custom_attributes when none are provided."""
@@ -11616,13 +11832,14 @@ def Xform "World"
         temperature = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
         region_id = np.array([3], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 
