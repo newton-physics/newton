@@ -4,8 +4,11 @@
 import sys
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
+
+from newton.utils import run_benchmark
 
 BENCHMARK_DIR = Path(__file__).parents[2] / "asv" / "benchmarks"
 sys.path.insert(0, str(BENCHMARK_DIR))
@@ -18,8 +21,6 @@ from benchmark_metrics import (  # noqa: E402
     validate_simulation_state,
     validate_simulation_workload,
 )
-
-from newton.utils import run_benchmark
 
 
 class TestBenchmarkMetrics(unittest.TestCase):
@@ -189,7 +190,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
 
     def test_run_benchmark_with_setup_cache(self):
         class CachedBenchmark:
-            params = [[2, 3]]
+            params: ClassVar = [[2, 3]]
             setup_cache_calls = 0
 
             def setup_cache(self):

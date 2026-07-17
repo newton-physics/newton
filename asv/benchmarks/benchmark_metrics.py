@@ -199,8 +199,7 @@ def validate_simulation_state(
     max_measured_angular_speed = np.linalg.norm(body_qd[:, 3:], axis=-1).max()
     if max_measured_linear_speed > max_linear_speed:
         raise RuntimeError(
-            f"Maximum body linear speed is {max_measured_linear_speed:.3f} m/s, "
-            f"exceeding {max_linear_speed:.1f} m/s"
+            f"Maximum body linear speed is {max_measured_linear_speed:.3f} m/s, exceeding {max_linear_speed:.1f} m/s"
         )
     if max_measured_angular_speed > max_angular_speed:
         raise RuntimeError(
