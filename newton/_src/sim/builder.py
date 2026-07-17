@@ -2677,13 +2677,14 @@ class ModelBuilder:
 
     def _record_cable_group(
         self,
-        label: str,
+        label: str | None,
         body_range: tuple[int, int],
         joint_range: tuple[int, int],
     ) -> None:
         """Register a cable as an addressable, world-tagged group."""
         if self._cable_group_recording_suppressed:
             return
+        label = label or f"curve_{len(self._cable_label)}"
         self._cable_label.append(label)
         self._cable_world.append(self.current_world)
         self._cable_body_start.append(body_range[0])
@@ -2702,12 +2703,13 @@ class ModelBuilder:
 
     def _record_cloth_group(
         self,
-        label: str,
+        label: str | None,
         particle_range: tuple[int, int],
         tri_range: tuple[int, int],
         edge_range: tuple[int, int],
     ) -> None:
         """Register a cloth as an addressable, world-tagged group."""
+        label = label or f"surface_{len(self._cloth_label)}"
         self._cloth_label.append(label)
         self._cloth_world.append(self.current_world)
         self._cloth_particle_start.append(particle_range[0])
@@ -2719,11 +2721,12 @@ class ModelBuilder:
 
     def _record_soft_group(
         self,
-        label: str,
+        label: str | None,
         particle_range: tuple[int, int],
         tet_range: tuple[int, int],
     ) -> None:
         """Register a soft volume as an addressable, world-tagged group."""
+        label = label or f"volume_{len(self._soft_label)}"
         self._soft_label.append(label)
         self._soft_world.append(self.current_world)
         self._soft_particle_start.append(particle_range[0])
@@ -7571,8 +7574,7 @@ class ModelBuilder:
                 )
                 link_joints.append(j_loop)
 
-        if label is not None:
-            self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return link_bodies, link_joints
 
@@ -7969,8 +7971,7 @@ class ModelBuilder:
                             for sj in self.body_shapes.get(bj, []):
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
 
-        if label is not None:
-            self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
+        self._record_cable_group(label, (start_body, self.body_count), (start_joint, self.joint_count))
 
         return edge_bodies, all_joints
 
@@ -8881,15 +8882,12 @@ class ModelBuilder:
             for i, j in spring_indices:
                 self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
-        if label is not None:
-            # A labeled cloth becomes a selectable group (newton.selection.DeformableView),
-            # matching what add_usd records for imported cloth.
-            self._record_cloth_group(
-                label,
-                (start_vertex, len(self.particle_q)),
-                (start_tri, end_tri),
-                (edge_range.start, edge_range.stop),
-            )
+        self._record_cloth_group(
+            label,
+            (start_vertex, len(self.particle_q)),
+            (start_tri, end_tri),
+            (edge_range.start, edge_range.stop),
+        )
 
     @deprecate_nonkeyword_arguments
     def add_particle_grid(
@@ -9166,8 +9164,7 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-        if label is not None:
-            self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+        self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     @deprecate_nonkeyword_arguments
     def add_soft_mesh(
@@ -9390,10 +9387,7 @@ class ModelBuilder:
             if end_tri > start_tri:
                 self._add_soft_mesh_edges_from_triangles(start_tri, end_tri, edge_ke=edge_ke, edge_kd=edge_kd)
 
-        if label is not None:
-            # A labeled soft body becomes a selectable group (newton.selection.DeformableView),
-            # matching what add_usd records for imported volumes.
-            self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
+        self._record_soft_group(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):

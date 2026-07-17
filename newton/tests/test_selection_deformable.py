@@ -671,6 +671,69 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
 class TestDeformableViewBuilderGroups(unittest.TestCase):
     """Groups recorded by labeled builder calls (no USD) are selectable through the view."""
 
+    def test_unlabeled_curve_builders_get_default_group_labels(self):
+        """Both public curve constructors record a group without an explicit label."""
+        rod_builder = newton.ModelBuilder()
+        rod_builder.add_rod(
+            positions=_CABLE_PTS,
+            radius=0.02,
+            body_frame_origin="com",
+        )
+        rod = DeformableView(rod_builder.finalize(), "curve_0", family="curve")
+        self.assertEqual((rod.labels, rod.bodies_per_group), (["curve_0"], 3))
+
+        graph_builder = newton.ModelBuilder()
+        graph_builder.add_rod_graph(
+            node_positions=_CABLE_PTS,
+            edges=[(0, 1), (1, 2), (2, 3)],
+            radius=0.02,
+            body_frame_origin="com",
+        )
+        graph = DeformableView(graph_builder.finalize(), "curve_0", family="curve")
+        self.assertEqual((graph.labels, graph.bodies_per_group), (["curve_0"], 3))
+
+    def test_unlabeled_volume_builders_get_default_group_labels(self):
+        """Mesh and grid volume constructors record a group without an explicit label."""
+        mesh_builder = newton.ModelBuilder()
+        _add_test_soft_body(mesh_builder, label=None)
+        mesh = DeformableView(mesh_builder.finalize(), "volume_0", family="volume")
+        self.assertEqual((mesh.labels, mesh.particles_per_group), (["volume_0"], 4))
+
+        grid_builder = newton.ModelBuilder()
+        grid_builder.add_soft_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=1,
+            dim_y=1,
+            dim_z=1,
+            cell_x=1.0,
+            cell_y=1.0,
+            cell_z=1.0,
+            density=1.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+        )
+        grid = DeformableView(grid_builder.finalize(), "volume_0", family="volume")
+        self.assertEqual((grid.labels, grid.particles_per_group), (["volume_0"], 8))
+
+    def test_default_group_labels_survive_replication(self):
+        """Generated identities remain selectable after builder replication."""
+        prototype = newton.ModelBuilder()
+        _add_test_cable(prototype, label=None)
+        _add_test_cloth(prototype, label=None)
+        _add_test_soft_body(prototype, label=None)
+
+        scene = newton.ModelBuilder()
+        scene.replicate(prototype, 2)
+        model = scene.finalize(device="cpu")
+
+        for label, family in (("curve_0", "curve"), ("surface_0", "surface"), ("volume_0", "volume")):
+            with self.subTest(label=label):
+                view = DeformableView(model, label, family=family)
+                self.assertEqual((view.count, view.labels, view.worlds), (2, [label, label], [0, 1]))
+
     def test_labeled_curve_builders_record_one_complete_group(self):
         """Public rod builders hide their nested construction from group selection."""
         closed_builder = newton.ModelBuilder()
@@ -807,8 +870,8 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
         soft.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
         np.testing.assert_allclose(soft.get_particle_positions(state).numpy(), lifted, atol=1e-6)
 
-    def test_unlabeled_builder_deformables_record_no_group(self):
-        """Deformables built without a label stay undiscoverable (no accidental groups)."""
+    def test_unlabeled_cloth_gets_a_default_group_label(self):
+        """A cloth group exists even when the caller does not provide its label."""
         builder = newton.ModelBuilder()
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 1.0),
@@ -820,8 +883,9 @@ class TestDeformableViewBuilderGroups(unittest.TestCase):
             density=0.1,
         )
         model = builder.finalize()
-        with self.assertRaises(KeyError):
-            DeformableView(model, "*", family="surface")
+        view = DeformableView(model, "surface_0", family="surface")
+        self.assertEqual(view.labels, ["surface_0"])
+        self.assertEqual(view.ranges("particle"), [(0, 4)])
 
     def test_fixed_joint_collapse_drops_incomplete_curve_group(self):
         """A label does not prevent collapse; an incomplete curve is not selectable."""
