@@ -387,7 +387,8 @@ class ModelKaminoInfo:
 
     base_body_index: wp.array[wp.int32] | None = None
     """
-    The index of the base body assigned in each world w.r.t the model.
+    The index of the base body assigned in each world w.r.t the model (-1 if not assigned).
+    Must be assigned to enable setting the base pose/velocity in reset operations.
     If a base joint is also assigned, must be the follower body of that joint.
     Shape of ``(num_worlds,)``.
     """
@@ -395,35 +396,8 @@ class ModelKaminoInfo:
     base_joint_index: wp.array[wp.int32] | None = None
     """
     The index of the base joint assigned in each world w.r.t the model (-1 if not assigned).
-    If assigned, must be a unary, non-universal, joint.
-    Shape of ``(num_worlds,)``.
-    """
-
-    ###
-    # Inertial Properties
-    ###
-
-    mass_min: wp.array[wp.float32] | None = None
-    """
-    Smallest mass amongst all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    mass_max: wp.array[wp.float32] | None = None
-    """
-    Largest mass amongst all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    mass_total: wp.array[wp.float32] | None = None
-    """
-    Total mass over all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    inertia_total: wp.array[wp.float32] | None = None
-    """
-    Total diagonal inertia over all bodies in each world.
+    If assigned, reset operations will interpret the base pose/velocity in the base joint frame.
+    If assigned, must be a unary free joint.
     Shape of ``(num_worlds,)``.
     """
 

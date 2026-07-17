@@ -63,10 +63,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
 """
 
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
@@ -210,10 +210,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions[2] = joint_start_positions[0]
         joint_start_velocities[2] = joint_start_velocities[0]
 
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
