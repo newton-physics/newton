@@ -94,6 +94,8 @@ class TestModelBuilderReplicate(unittest.TestCase):
         )
         builder.add_muscle([root, child], [wp.vec3(), wp.vec3(0.0, 0.0, 0.5)], 1.0, 1.0, 1.0, 1.0, 0.0)
         builder.body_color_groups = [np.asarray([root, child, fixed])]
+        # Uneven group sizes exercise the balancing in the merge combine.
+        builder.set_coloring([[0], [1, 2, 3]])
 
         builder._record_cable_group("cable", (root, child + 1), (root_joint, child_joint + 1))
         builder._record_cloth_group("cloth", (0, 3), (0, 1), (0, 1))
@@ -119,7 +121,12 @@ class TestModelBuilderReplicate(unittest.TestCase):
             expected_value = getattr(expected, name)
             actual_value = getattr(actual, name)
             with self.subTest(attribute=name):
-                if isinstance(expected_value, list) or wp.types.type_is_vector(type(expected_value)):
+                if name.endswith("_color_groups"):
+                    # Group lengths may differ, so element-wise np.asarray would fail.
+                    self.assertEqual(len(expected_value), len(actual_value))
+                    for expected_group, actual_group in zip(expected_value, actual_value, strict=True):
+                        np.testing.assert_array_equal(expected_group, actual_group)
+                elif isinstance(expected_value, list) or wp.types.type_is_vector(type(expected_value)):
                     np.testing.assert_array_equal(np.asarray(expected_value), np.asarray(actual_value))
                 elif (
                     isinstance(expected_value, (bool, float, int, str, tuple, set, frozenset, dict))
@@ -275,12 +282,18 @@ class TestModelBuilderReplicate(unittest.TestCase):
         # Plain lists must be tolerated alongside ndarray groups.
         source.particle_color_groups = [[0, 1], np.arange(2, 6)]
 
+        expected = ModelBuilder()
+        for _ in range(3):
+            expected.add_world(source)
+
         replicated = ModelBuilder()
         replicated.replicate(source, 3)
 
-        self.assertEqual(len(replicated.particle_color_groups), 2)
-        np.testing.assert_array_equal(replicated.particle_color_groups[0], [0, 1, 6, 7, 12, 13])
-        np.testing.assert_array_equal(replicated.particle_color_groups[1], [2, 3, 4, 5, 8, 9, 10, 11, 14, 15, 16, 17])
+        self.assertEqual(len(replicated.particle_color_groups), len(expected.particle_color_groups))
+        for expected_group, actual_group in zip(
+            expected.particle_color_groups, replicated.particle_color_groups, strict=True
+        ):
+            np.testing.assert_array_equal(actual_group, expected_group)
 
     def test_zero_spacing_replication_copies_joint_q_exactly(self):
         source = ModelBuilder()
