@@ -38,7 +38,7 @@ class Example:
         body_q = self.sim.state.body_q.numpy()
         assert np.isfinite(body_q).all(), "non-finite body transforms"
         assert (body_q[:, 2] > 0.0).all(), "boxes fell through the ground"
-        assert (body_q[:, 2] < 4.0).all(), "boxes did not settle"
+        assert (body_q[:, 2] < 3.0).all(), "boxes did not settle"
 
 
 if __name__ == "__main__":

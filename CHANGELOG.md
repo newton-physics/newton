@@ -22,6 +22,7 @@
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Fix Style3D solver divergence caused by isolated vertices.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
+- Fix spurious custom-attribute warnings when importing USD stages that author plain `newton:` attributes without customData
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
 - Fix `cloth_franka` example rendering particles at simulation scale (cm) instead of viewer scale (m)

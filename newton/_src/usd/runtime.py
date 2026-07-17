@@ -6,13 +6,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import warp as wp
 
 import newton
 import newton.usd
-from newton._src.solvers import SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit, SolverVBD, SolverXPBD
+from newton._src.solvers import SolverBase, SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit, SolverVBD, SolverXPBD
 from newton._src.usd.utils import _get_raw_api_schemas, get_attribute
 
 if TYPE_CHECKING:
@@ -132,9 +132,9 @@ class Simulation:
         step_count: Number of steps taken so far.
     """
 
-    stage: Any
+    stage: Usd.Stage
     model: newton.Model
-    solvers: list
+    solvers: list[SolverBase]
     state: newton.State
     control: newton.Control
     contacts: newton.Contacts | None
@@ -162,7 +162,9 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
         source: Path to a USD file or an open ``Usd.Stage``. The stage is read, never written.
         requires_grad: Finalize the model with gradient arrays. ``step()`` remains
             forward-only; gradient workflows drive ``sim.solver`` directly.
-        use_graph: Force graph capture on/off; ``None`` follows the examples' criteria.
+        use_graph: ``None`` attempts graph capture and falls back to direct stepping when
+            unsupported; ``True`` requires capture and raises if unsupported; ``False``
+            disables capture.
 
     Returns:
         The derived :class:`Simulation`, ready for :func:`step`.
@@ -200,6 +202,10 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
     if model.joint_count:
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
+    collision_interval = int(get_attribute(scene_prim, "newton:collisionInterval", 1))
+    if collision_interval < 1:
+        raise ValueError(f"newton:collisionInterval must be >= 1, got {collision_interval}.")
+
     sim = Simulation(
         stage=stage,
         model=model,
@@ -208,7 +214,7 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
         control=control,
         contacts=contacts,
         dt=usd_info["physics_dt"],
-        collision_interval=int(get_attribute(scene_prim, "newton:collisionInterval", 1)),
+        collision_interval=collision_interval,
         usd_info=usd_info,
     )
     _maybe_capture(sim, use_graph)

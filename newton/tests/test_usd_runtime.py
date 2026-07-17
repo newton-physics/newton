@@ -6,7 +6,15 @@ import unittest
 import numpy as np
 
 import newton
+from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+
+# Check for mujoco availability via SolverMuJoCo's lazy import mechanism
+try:
+    SolverMuJoCo.import_mujoco()
+    MUJOCO_AVAILABLE = True
+except ImportError:
+    MUJOCO_AVAILABLE = False
 
 
 def _make_stage(solver_api="NewtonSolverXpbdAPI", scene_attrs=None, num_bodies=1, num_scenes=1):
@@ -251,6 +259,30 @@ class TestUsdRuntime(unittest.TestCase):
             for _ in range(8):
                 runtime.step(sim)
         self.assertEqual(spy.call_count, 2)  # steps 0 and 4
+
+    def test_invalid_collision_interval_errors_at_load(self):
+        from pxr import Sdf
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        stage = _make_stage(scene_attrs={"newton:collisionInterval": (Sdf.ValueTypeNames.Int, 0)})
+        with self.assertRaisesRegex(ValueError, "newton:collisionInterval"):
+            runtime.load_usd(stage, use_graph=False)
+
+    def test_all_registered_solvers_load_and_step(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+        from newton._src.usd.runtime import _SOLVER_REGISTRY  # noqa: PLC0415
+
+        for schema, entry in _SOLVER_REGISTRY.items():
+            with self.subTest(solver=schema):
+                if entry.cls is newton.solvers.SolverMuJoCo and not MUJOCO_AVAILABLE:
+                    self.skipTest("Requires mujoco-warp")
+                sim = runtime.load_usd(_make_stage(solver_api=schema), use_graph=False)
+                self.assertIsInstance(sim.solver, entry.cls)
+                for _ in range(10):
+                    runtime.step(sim)
+                self.assertTrue(np.isfinite(sim.state.body_q.numpy()).all())
+                self.assertEqual(sim.step_count, 10)
 
     def test_capture_does_not_advance_sim(self):
         import warp as wp  # noqa: PLC0415
