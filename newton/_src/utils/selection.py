@@ -2254,13 +2254,13 @@ class DeformableView:
         counts_per_world = [len(ids) for ids in group_ids]
         group_count = sum(counts_per_world)
 
-        # can't mix global and per-world groups in the same view
+        # Global groups have no real model-world rows, so mixing them would make
+        # the flat group's world partition ambiguous.
         if group_count > 0 and global_group_ids:
             raise ValueError(
                 f"Deformable pattern '{pattern}' matches global and per-world groups, which is not supported"
             )
 
-        # handle scenes with only global groups
         if group_count == 0 and global_group_ids:
             world_count = 1
             group_count = len(global_group_ids)
@@ -2406,7 +2406,7 @@ class DeformableView:
             )
         return count
 
-    def _gather(self, kind: str, src: wp.array[Any], kernel: Any, dtype: Any) -> wp.array[Any]:
+    def _gather(self, kind: str, src: wp.array[Any], kernel: Any, dtype: Any) -> wp.array2d[Any]:
         count = self._element_count(kind)
         out = wp.empty((self.count, count), dtype=dtype, device=self.device)
         wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)

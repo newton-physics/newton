@@ -1367,12 +1367,12 @@ class ModelBuilder:
         self.articulation_world: list[int] = []
         """World indices accumulated for :attr:`Model.articulation_world`."""
 
-        # Deformable group registries: prim-path-labelled, world-tagged index ranges for each
-        # imported cable/cloth/volume (mirrors articulation_start/end/label/world). Ranges are
+        # Deformable group registries: labeled, world-tagged index ranges for each
+        # curve/surface/volume (mirrors articulation_start/end/label/world). Ranges are
         # [start, end) into the corresponding builder arrays; finalize() copies them onto the Model,
-        # and replicate()/add_builder() carry them per world so each group stays indexable by path.
+        # and replicate()/add_builder() carry them per world so each group stays indexable by label.
         self._cable_label: list[str] = []
-        """Prim-path labels of imported cable groups."""
+        """Labels of curve (cable) groups."""
         self._cable_world: list[int] = []
         """World index of each cable group."""
         self._cable_body_start: list[int] = []
@@ -1387,7 +1387,7 @@ class ModelBuilder:
         """Nesting depth for private cable-group recording suppression."""
 
         self._cloth_label: list[str] = []
-        """Prim-path labels of imported cloth groups."""
+        """Labels of surface (cloth) groups."""
         self._cloth_world: list[int] = []
         """World index of each cloth group."""
         self._cloth_particle_start: list[int] = []
@@ -1404,7 +1404,7 @@ class ModelBuilder:
         """Exclusive edge-range end of each cloth group."""
 
         self._soft_label: list[str] = []
-        """Prim-path labels of imported soft (volume) groups."""
+        """Labels of volume (soft-body) groups."""
         self._soft_world: list[int] = []
         """World index of each soft group."""
         self._soft_particle_start: list[int] = []
