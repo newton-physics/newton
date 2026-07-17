@@ -23,7 +23,14 @@ import newton.utils
 from newton.sensors import SensorContact
 from newton.utils import EventTracer
 
+if __package__:
+    from .benchmark_metrics import validate_simulation_state
+else:
+    from benchmark_metrics import validate_simulation_state
+
 _NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
+_MAX_BODY_LINEAR_SPEED = 100.0
+_MAX_BODY_ANGULAR_SPEED = 500.0
 
 
 def _target_q(owner):
@@ -482,16 +489,23 @@ class Example:
             self.apply_waypoint_control()
 
         wp.synchronize_device()
-        start_time = time.time()
+        start_time = time.perf_counter()
         if self.use_cuda_graph:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
         wp.synchronize_device()
-        end_time = time.time()
+        end_time = time.perf_counter()
 
         self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
+
+    def test_final(self):
+        validate_simulation_state(
+            self.state_0,
+            max_linear_speed=_MAX_BODY_LINEAR_SPEED,
+            max_angular_speed=_MAX_BODY_ANGULAR_SPEED,
+        )
 
     def render(self):
         if self.renderer is None:

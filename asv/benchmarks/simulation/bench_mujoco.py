@@ -14,12 +14,17 @@ from asv_runner.benchmarks.mark import skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
+from benchmark_metrics import (
+    _SimulationMetricTracks,
+    collect_simulation_metrics,
+    compute_gpu_memory_usage,
+)
 from benchmark_mujoco import Example
 
 from newton.utils import EventTracer
 
 
-class _KpiBenchmark:
+class _KpiBenchmark(_SimulationMetricTracks):
     """Utility base class for KPI benchmarks."""
 
     param_names = ["world_count"]
@@ -31,39 +36,40 @@ class _KpiBenchmark:
     random_init = None
     environment = "None"
 
-    def setup(self, world_count):
-        if not hasattr(self, "builder") or self.builder is None:
-            self.builder = {}
-        if world_count not in self.builder:
-            self.builder[world_count] = Example.create_model_builder(
-                self.robot, world_count, randomize=self.random_init, seed=123
-            )
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self, world_count):
-        total_time = 0.0
-        for _iter in range(self.samples):
-            example = Example(
-                stage_path=None,
-                robot=self.robot,
-                randomize=self.random_init,
-                headless=True,
-                actuation="random",
-                use_cuda_graph=True,
-                builder=self.builder[world_count],
-                ls_iteration=self.ls_iteration,
-                environment=self.environment,
-            )
-
+    def _collect_metrics(self):
+        metrics = {}
+        for world_count in self.params[0]:
             wp.synchronize_device()
-            for _ in range(self.num_frames):
-                example.step()
-            wp.synchronize_device()
-            total_time += example.benchmark_time
+            device = wp.get_device()
+            free_memory_before = device.free_memory
+            builder = Example.create_model_builder(self.robot, world_count, randomize=self.random_init, seed=123)
 
-        return total_time * 1000 / (self.num_frames * example.sim_substeps * world_count * self.samples)
+            def create_workload(builder=builder):
+                example = Example(
+                    stage_path=None,
+                    robot=self.robot,
+                    randomize=self.random_init,
+                    headless=True,
+                    actuation="random",
+                    use_cuda_graph=True,
+                    builder=builder,
+                    ls_iteration=self.ls_iteration,
+                    environment=self.environment,
+                )
+                wp.synchronize_device()
+                return example
 
-    track_simulate.unit = "ms/world-step"
+            metrics[world_count] = collect_simulation_metrics(
+                create_workload=create_workload,
+                world_count=world_count,
+                num_frames=self.num_frames,
+                samples=self.samples,
+                memory_usage_bytes=lambda workload, device=device, free_memory_before=free_memory_before: (
+                    compute_gpu_memory_usage(device, free_memory_before)
+                ),
+                validate=lambda workload: workload.test_final(),
+            )
+        return metrics
 
 
 class _NewtonOverheadBenchmark:
@@ -124,6 +130,9 @@ class FastCartpole(_KpiBenchmark):
     random_init = True
     environment = "None"
 
+    def setup_cache(self):
+        return self._collect_metrics()
+
 
 class FastG1(_KpiBenchmark):
     params = [[8192]]
@@ -134,6 +143,9 @@ class FastG1(_KpiBenchmark):
     ls_iteration = 10
     random_init = True
     environment = "None"
+
+    def setup_cache(self):
+        return self._collect_metrics()
 
 
 class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
@@ -155,6 +167,9 @@ class FastHumanoid(_KpiBenchmark):
     random_init = True
     environment = "None"
 
+    def setup_cache(self):
+        return self._collect_metrics()
+
 
 class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
     params = [[8192]]
@@ -175,6 +190,9 @@ class FastAllegro(_KpiBenchmark):
     random_init = False
     environment = "None"
 
+    def setup_cache(self):
+        return self._collect_metrics()
+
 
 class FastKitchenG1(_KpiBenchmark):
     params = [[512]]
@@ -185,6 +203,9 @@ class FastKitchenG1(_KpiBenchmark):
     ls_iteration = 10
     random_init = True
     environment = "kitchen"
+
+    def setup_cache(self):
+        return self._collect_metrics()
 
 
 if __name__ == "__main__":

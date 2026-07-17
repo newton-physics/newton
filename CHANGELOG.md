@@ -5,6 +5,7 @@
 ### Added
 
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
+- Add simulation throughput, real-time factor, p95 step-time, steady-state GPU-memory, and timestep metrics to the ASV robot-learning benchmarks.
 
 ### Changed
 

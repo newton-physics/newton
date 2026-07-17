@@ -1,15 +1,36 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+import sys
+
 import warp as wp
 from asv_runner.benchmarks.mark import skip_benchmark_if
 
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(parent_dir)
+
+from benchmark_metrics import (
+    _UnparameterizedSimulationMetricTracks,
+    collect_synchronized_simulation_metrics,
+    compute_gpu_memory_usage,
+    validate_simulation_workload,
+)
+
 import newton
 import newton.examples
 from newton.examples.basic.example_basic_urdf import Example
+
+
+def _create_example(num_frames, world_count):
+    if hasattr(newton.examples, "default_args") and hasattr(Example, "create_parser"):
+        args = newton.examples.default_args(Example.create_parser())
+        args.world_count = world_count
+        return Example(newton.viewer.ViewerNull(num_frames=num_frames), args)
+    return Example(newton.viewer.ViewerNull(num_frames=num_frames), world_count)
 
 
 class FastExampleQuadrupedXPBD:
@@ -18,18 +39,37 @@ class FastExampleQuadrupedXPBD:
 
     def setup(self):
         self.num_frames = 1000
-        if hasattr(newton.examples, "default_args") and hasattr(Example, "create_parser"):
-            args = newton.examples.default_args(Example.create_parser())
-            args.world_count = 200
-            self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), args)
-        else:
-            self.example = Example(newton.viewer.ViewerNull(num_frames=self.num_frames), 200)
+        self.example = _create_example(self.num_frames, world_count=200)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_simulate(self):
         for _ in range(self.num_frames):
             self.example.step()
         wp.synchronize_device()
+
+
+class FastMetricsExampleQuadrupedXPBD(_UnparameterizedSimulationMetricTracks):
+    num_frames = 1000
+    samples = 1
+    world_count = 200
+
+    def setup_cache(self):
+        wp.synchronize_device()
+        device = wp.get_device()
+        free_memory_before = device.free_memory
+        return collect_synchronized_simulation_metrics(
+            create_workload=lambda: _create_example(self.num_frames, self.world_count),
+            world_count=self.world_count,
+            num_frames=self.num_frames,
+            samples=self.samples,
+            synchronize=wp.synchronize_device,
+            memory_usage_bytes=lambda workload: compute_gpu_memory_usage(device, free_memory_before),
+            validate=lambda workload: validate_simulation_workload(
+                workload,
+                max_linear_speed=0.3,
+                max_angular_speed=0.3,
+            ),
+        )
 
 
 if __name__ == "__main__":
@@ -39,6 +79,7 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "FastExampleQuadrupedXPBD": FastExampleQuadrupedXPBD,
+        "FastMetricsExampleQuadrupedXPBD": FastMetricsExampleQuadrupedXPBD,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

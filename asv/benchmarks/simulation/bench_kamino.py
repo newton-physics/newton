@@ -15,6 +15,41 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
 from benchmark_kamino import DRLegsBenchmarkWorkload
+from benchmark_metrics import (
+    _SimulationMetricTracks,
+    _UnparameterizedSimulationMetricTracks,
+    collect_simulation_metrics,
+    compute_gpu_memory_usage,
+)
+
+
+def _collect_dr_legs_metrics(robot, world_count, num_frames, samples, use_policy):
+    wp.synchronize_device()
+    device = wp.get_device()
+    free_memory_before = device.free_memory
+    builder = DRLegsBenchmarkWorkload.create_model_builder(robot, world_count)
+
+    def create_workload():
+        workload = DRLegsBenchmarkWorkload(
+            robot=robot,
+            world_count=world_count,
+            use_cuda_graph=True,
+            use_policy=use_policy,
+            builder=builder,
+        )
+        if workload.graph is None or workload.reset_graph is None:
+            raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
+        wp.synchronize_device()
+        return workload
+
+    return collect_simulation_metrics(
+        create_workload=create_workload,
+        world_count=world_count,
+        num_frames=num_frames,
+        samples=samples,
+        memory_usage_bytes=lambda workload: compute_gpu_memory_usage(device, free_memory_before),
+        validate=lambda workload: workload.test_final(),
+    )
 
 
 class _FastBenchmark:
@@ -58,7 +93,7 @@ class _FastBenchmark:
         wp.synchronize_device()
 
 
-class _KpiBenchmark:
+class _KpiBenchmark(_SimulationMetricTracks):
     """Utility base class for Kamino KPI benchmarks."""
 
     param_names: ClassVar[list[str]] = ["world_count"]
@@ -68,35 +103,17 @@ class _KpiBenchmark:
     samples = None
     use_policy = True
 
-    def setup(self, world_count):
-        if not hasattr(self, "_builder") or self._builder is None:
-            self._builder = {}
-        if world_count not in self._builder:
-            self._builder[world_count] = DRLegsBenchmarkWorkload.create_model_builder(self.robot, world_count)
-
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self, world_count):
-        total_time = 0.0
-        for _iter in range(self.samples):
-            workload = DRLegsBenchmarkWorkload(
+    def _collect_metrics(self):
+        metrics = {}
+        for world_count in self.params[0]:
+            metrics[world_count] = _collect_dr_legs_metrics(
                 robot=self.robot,
                 world_count=world_count,
-                use_cuda_graph=True,
+                num_frames=self.num_frames,
+                samples=self.samples,
                 use_policy=self.use_policy,
-                builder=self._builder[world_count],
             )
-            if workload.graph is None or workload.reset_graph is None:
-                raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
-
-            wp.synchronize_device()
-            for _ in range(self.num_frames):
-                workload.step()
-            total_time += workload.benchmark_time
-            workload.test_final()
-
-        return total_time * 1000 / (self.num_frames * workload.sim_substeps * world_count * self.samples)
-
-    track_simulate.unit = "ms/world-step"
+        return metrics
 
 
 class FastDRLegs(_FastBenchmark):
@@ -106,11 +123,30 @@ class FastDRLegs(_FastBenchmark):
     world_count = 32
 
 
+class FastMetricsDRLegs(_UnparameterizedSimulationMetricTracks):
+    num_frames = 25
+    robot = "dr_legs"
+    samples = 2
+    world_count = 32
+
+    def setup_cache(self):
+        return _collect_dr_legs_metrics(
+            robot=self.robot,
+            world_count=self.world_count,
+            num_frames=self.num_frames,
+            samples=self.samples,
+            use_policy=False,
+        )
+
+
 class KpiDRLegs(_KpiBenchmark):
     params: ClassVar[list[list[int]]] = [[4096]]
     num_frames = 25
     robot = "dr_legs"
     samples = 2
+
+    def setup_cache(self):
+        return self._collect_metrics()
 
 
 if __name__ == "__main__":
@@ -120,6 +156,7 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "FastDRLegs": FastDRLegs,
+        "FastMetricsDRLegs": FastMetricsDRLegs,
         "KpiDRLegs": KpiDRLegs,
     }
 
