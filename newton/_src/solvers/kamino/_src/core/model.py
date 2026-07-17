@@ -387,7 +387,8 @@ class ModelKaminoInfo:
 
     base_body_index: wp.array[wp.int32] | None = None
     """
-    The index of the base body assigned in each world w.r.t the model.
+    The index of the base body assigned in each world w.r.t the model (-1 if not assigned).
+    Must be assigned to enable setting the base pose/velocity in reset operations.
     If a base joint is also assigned, must be the follower body of that joint.
     Shape of ``(num_worlds,)``.
     """
@@ -395,7 +396,8 @@ class ModelKaminoInfo:
     base_joint_index: wp.array[wp.int32] | None = None
     """
     The index of the base joint assigned in each world w.r.t the model (-1 if not assigned).
-    If assigned, must be a unary, non-universal, joint.
+    If assigned, reset operations will interpret the base pose/velocity in the base joint frame.
+    If assigned, must be a unary free joint.
     Shape of ``(num_worlds,)``.
     """
 
