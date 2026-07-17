@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import io
 import os
 import shutil
 import tempfile
@@ -114,8 +115,10 @@ class TestViewerUSD(unittest.TestCase):
         self.assertFalse(prim_after.IsValid())
         self.assertTrue(os.path.exists(temp_file.name))
 
-    def test_generated_texture_path_stays_stable_after_clear_model(self):
-        """Reusing a mesh name across clear_model keeps the same texture asset path and leaves no temp siblings behind."""
+    def test_partial_texture_rewrite_keeps_published_png_intact(self):
+        """A crash mid-write must not corrupt the previously published PNG."""
+        from PIL import Image
+
         viewer = self._make_viewer()
         mesh_name = "/textured_mesh"
         points = wp.array(
@@ -134,16 +137,28 @@ class TestViewerUSD(unittest.TestCase):
 
         viewer.begin_frame(0.0)
         viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
-        first_texture_path = self._logged_texture_path(viewer, mesh_name)
+        tex_path = self._logged_texture_path(viewer, mesh_name)
+        with open(tex_path, "rb") as published_file:
+            published = published_file.read()
+
+        real_save = Image.Image.save
+
+        def partial_save(image, file_path, *args, **kwargs):
+            buffer = io.BytesIO()
+            kwargs.setdefault("format", "PNG")
+            real_save(image, buffer, *args, **kwargs)
+            partial_png = buffer.getvalue()
+            with open(file_path, "wb") as partial_file:
+                partial_file.write(partial_png[: len(partial_png) // 2])
+            raise OSError("simulated crash mid-write")
 
         viewer.clear_model()
         viewer.begin_frame(0.0)
-        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
-        second_texture_path = self._logged_texture_path(viewer, mesh_name)
+        with mock.patch("PIL.Image.Image.save", partial_save), self.assertWarns(UserWarning):
+            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
 
-        self.assertEqual(first_texture_path, second_texture_path)
-        self.assertTrue(os.path.exists(first_texture_path))
-        # Only scan the test's private work dir; the system temp dir is shared.
+        with open(tex_path, "rb") as published_file:
+            self.assertEqual(published_file.read(), published)
         leaked = sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".tmp"))
         self.assertEqual(leaked, [])
 

@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Fix Style3D solver divergence caused by isolated vertices.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
@@ -195,7 +196,6 @@
 - Fix TetMesh USD loading to infer unambiguous length-1 custom attributes as `AttributeFrequency.ONCE`, flatten indexed primvars, and omit uninferable attributes without dropping the soft body. `ModelBuilder.add_usd()` imports only registered TetMesh attributes using their declared frequencies. (#3228)
 - Fix `ModelBuilder.collapse_fixed_joints()` crashing with `IndexError` when a `mujoco:equality_constraint` row omits optional fields (`anchor`, `relpose`) that carry defaults. (#3054)
 - Fix `ViewerGL.set_model()` resetting headless/interactive camera and wind state when switching between models that use the same up-axis. (#2658)
-- Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
 - Fix bend force calculation error in Style3D solver
 - Fix `SolverSemiImplicit` particle-particle contact evaluation by rebuilding `Model.particle_grid` before contact generation and accumulating contact forces into, rather than overwriting, `particle_f`. (#2848)
 
