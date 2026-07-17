@@ -27,11 +27,12 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
 
         res = 16
         sensor = SensorTiledCamera(model=model)
+        sensor.default_render_config.enable_textures = True
         sensor.utils.create_default_light(enable_shadows=False)
         sensor.utils.assign_checkerboard_material(shape_indices=[0])
         # 30-deg fov: footprint half-extent at depth 4 is 4*tan(15)=1.07 < 2,
         # so the terrain robustly fills the whole frame.
-        rays = sensor.utils.compute_pinhole_camera_rays(res, res, math.radians(30.0))
+        rays = sensor.utils.compute_camera_rays_pinhole(res, res, camera_fovs=math.radians(30.0))
         depth = sensor.utils.create_depth_image_output(res, res)
         model.bvh_build_shapes(state)
         model.bvh_build_particles(state)
@@ -44,7 +45,7 @@ class TestSensorTiledCameraHeightfield(unittest.TestCase):
             [[wp.transformf(wp.vec3f(0.0, 0.0, 5.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
             dtype=wp.transformf,
         )
-        sensor.render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+        sensor.default_render_config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         sensor.update(state, cam, rays, depth_image=depth)
 
         d = depth.numpy()[0, 0]  # .numpy() syncs the device-to-host copy

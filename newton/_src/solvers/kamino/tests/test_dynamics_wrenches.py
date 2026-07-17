@@ -21,6 +21,7 @@ from newton._src.solvers.kamino._src.dynamics.wrenches import (
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.models.builders.testing import build_unary_revolute_joint_test
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton._src.solvers.kamino.tests.utils.extract import (
@@ -31,8 +32,10 @@ from newton._src.solvers.kamino.tests.utils.extract import (
 )
 from newton._src.solvers.kamino.tests.utils.make import (
     make_constraint_multiplier_arrays,
+    make_containers,
     make_test_problem_fourbar,
     make_test_problem_heterogeneous,
+    update_containers,
 )
 
 ###
@@ -243,7 +246,7 @@ class TestDynamicsWrenches(unittest.TestCase):
             num_worlds=1,
             with_limits=True,
             with_contacts=True,
-            with_implicit_joints=True,
+            with_implicit_joints=False,
             verbose=False,  # TODO
         )
 
@@ -263,7 +266,7 @@ class TestDynamicsWrenches(unittest.TestCase):
             num_worlds=3,
             with_limits=True,
             with_contacts=True,
-            with_implicit_joints=True,
+            with_implicit_joints=False,
             verbose=False,
         )
 
@@ -282,7 +285,7 @@ class TestDynamicsWrenches(unittest.TestCase):
             max_world_contacts=12,
             with_limits=True,
             with_contacts=True,
-            with_implicit_joints=True,
+            with_implicit_joints=False,
             verbose=False,
         )
 
@@ -293,6 +296,41 @@ class TestDynamicsWrenches(unittest.TestCase):
             limits=limits,
             contacts=contacts,
         )
+
+    def test_04_actuation_wrenches_skipped_for_dynamic_joints(self):
+        # Check that actuation wrenches are routed through joint dynamics if present.
+
+        for sparse in [False, True]:
+            # Build model and containers
+            builder = build_unary_revolute_joint_test(
+                dynamic=True,
+                implicit_pd=True,
+                ground=False,
+            )
+            model, data, state, limits, _detector, jacobians = make_containers(
+                builder, device=self.default_device, sparse=sparse
+            )
+            self.assertGreater(int(model.joints.num_dynamic_cts.numpy().sum()), 0)
+            update_containers(model, data, state, limits, detector=None, jacobians=jacobians)
+            data.joints.tau_j.fill_(1.0)
+
+            # Check that actuation body wrenches are zero
+            if sparse:
+                compute_joint_dof_body_wrenches_sparse(
+                    model=model,
+                    data=data,
+                    jacobians=jacobians,
+                    reset_to_zero=True,
+                )
+            else:
+                compute_joint_dof_body_wrenches_dense(
+                    model=model,
+                    data=data,
+                    jacobians=jacobians,
+                    reset_to_zero=True,
+                )
+            w_a_i_np = data.bodies.w_a_i.numpy().copy()
+            np.testing.assert_allclose(w_a_i_np, 0.0, atol=1e-6)
 
 
 ###

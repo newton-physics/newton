@@ -13,27 +13,15 @@ import numpy as np
 import warp as wp
 from warp._src.types import Any, Int, Vector
 
-from .....core.types import MAXVAL
+from .....core.types import MAXVAL, override
 from .....sim import JointTargetMode, JointType
 from .math import FLOAT32_MAX, FLOAT32_MIN, PI, TWO_PI
 from .types import (
     ArrayLike,
     Descriptor,
-    float32,
-    int32,
-    mat33f,
     mat63f,
-    override,
-    quatf,
-    transformf,
     vec1f,
     vec1i,
-    vec2f,
-    vec2i,
-    vec3f,
-    vec3i,
-    vec4f,
-    vec4i,
     vec5i,
     vec6f,
     vec6i,
@@ -126,11 +114,13 @@ class JointActuationType(IntEnum):
         Converts a `JointActuationType` to the corresponding `JointTargetMode`.
 
         Args:
-            type (JointActuationType): The joint actuation type to convert.
+            act_type: The joint actuation type to convert.
 
         Returns:
-            JointTargetMode:
-                The corresponding Newton joint target mode, or None if not applicable.
+            The corresponding Newton joint target mode.
+
+        Raises:
+            ValueError: if the joint actuation type is not supported.
         """
         _MAP_TO_NEWTON: dict[JointActuationType, JointTargetMode | None] = {
             JointActuationType.PASSIVE: JointTargetMode.NONE,
@@ -153,11 +143,13 @@ class JointActuationType(IntEnum):
         Converts a `JointTargetMode` to the corresponding `JointActuationType`.
 
         Args:
-            mode (JointTargetMode): The Newton joint target mode to convert.
+            target_mode: The Newton joint target mode to convert.
 
         Returns:
-            JointActuationType | None:
-                The corresponding joint actuation type, or None if not applicable.
+            The corresponding joint actuation type.
+
+        Raises:
+            ValueError: if the Newton joint target mode is not supported.
         """
         _MAP_FROM_NEWTON: dict[JointTargetMode, JointActuationType] = {
             JointTargetMode.NONE: JointActuationType.PASSIVE,
@@ -210,20 +202,20 @@ class JointCorrectionMode(IntEnum):
 
     TWOPI = 0
     """
-    Rotational joint coordinates are computed to always lie within ``[-2*pi, 2*pi]``.\n
+    Rotational joint coordinates are computed to always lie within ``[-2*pi, 2*pi]``.
     This is the default correction mode for all joints with rotational DoFs.
     """
 
     CONTINUOUS = 1
     """
-    Rotational joint coordinates are continuously accumulated and thus unbounded.\n
+    Rotational joint coordinates are continuously accumulated and thus unbounded.
     This means that joint coordinates can increase/decrease indefinitely over time,
     but are limited to numerical precision limits (i.e. ``[JOINT_QMIN, JOINT_QMAX]``).
     """
 
     NONE = -1
     """
-    No joint coordinate correction is applied.\n
+    No joint coordinate correction is applied.
     Rotational joint coordinates are computed to lie within ``[-pi, pi]``.
     """
 
@@ -272,12 +264,12 @@ class JointCorrectionMode(IntEnum):
 
 
 @wp.func
-def _axis_rotmatn_from_vec3f(vec: vec3f) -> mat33f:
+def _axis_rotmatn_from_vec3f(vec: wp.vec3f) -> wp.mat33f:
     n = wp.norm_l2(vec)
     assert n >= 1e-12, "Joint axis cannot have near-zero length"
     ax = vec / n
-    dominant = int32(wp.argmax(wp.abs(ax)))
-    ref = vec3f(0.0, 0.0, 0.0)
+    dominant = wp.int32(wp.argmax(wp.abs(ax)))
+    ref = wp.vec3f(0.0, 0.0, 0.0)
     ref[(dominant + 2) % 3] = 1.0
     ay = wp.cross(ref, ax)
     ay = wp.normalize(ay)
@@ -401,22 +393,7 @@ class JointDoFType(IntEnum):
         3D vector: {`T_x`, `T_y`, `T_z`}
     """
 
-    GIMBAL = 6
-    """
-    A 3-DoF gimbal joint, with rotational DoFs along {`R_x`, `R_y`, `R_z`}.
-
-    **DISCLAIMER**: This joint is not yet fully supported, and currently behaves
-    identically to the SPHERICAL joint. We do not recommend using it at present time.
-
-    Coordinates:
-        3D euler angles: {`R_x`, `R_y`, `R_z`}
-    DoFs:
-        3D angular velocities: {`R_x`, `R_y`, `R_z`}
-    Constraints:
-        3D vector: {`T_x`, `T_y`, `T_z`}
-    """
-
-    CARTESIAN = 7
+    CARTESIAN = 6
     """
     A 3-DoF Cartesian joint, with translational DoFs along {`T_x`, `T_y`, `T_z`}.
 
@@ -428,7 +405,7 @@ class JointDoFType(IntEnum):
         3D vector: {`R_x`, `R_y`, `R_z`}
     """
 
-    FIXED = 8
+    FIXED = 7
     """
     A 0-DoF fixed joint, fully constraining the relative motion between the connected bodies.
 
@@ -471,8 +448,6 @@ class JointDoFType(IntEnum):
             return 2  # 2D angles
         elif self.value == self.SPHERICAL:
             return 4  # 4D unit-quaternion
-        elif self.value == self.GIMBAL:
-            return 3  # 3D euler angles
         elif self.value == self.CARTESIAN:
             return 3  # 3D distances
         elif self.value == self.FIXED:
@@ -496,8 +471,6 @@ class JointDoFType(IntEnum):
         elif self.value == self.UNIVERSAL:
             return 2  # 2D angular velocities
         elif self.value == self.SPHERICAL:
-            return 3  # 3D angular velocities
-        elif self.value == self.GIMBAL:
             return 3  # 3D angular velocities
         elif self.value == self.CARTESIAN:
             return 3  # 3D linear velocities
@@ -523,8 +496,6 @@ class JointDoFType(IntEnum):
             return 4  # 4D vector for `{R_x, R_y, R_z, R_w}`
         elif self.value == self.SPHERICAL:
             return 3  # 3D vector for `{R_x, R_y, R_z}`
-        elif self.value == self.GIMBAL:
-            return 3  # 3D vector for `{R_x, R_y, R_z}`
         elif self.value == self.CARTESIAN:
             return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif self.value == self.FIXED:
@@ -544,15 +515,13 @@ class JointDoFType(IntEnum):
         elif self.value == self.PRISMATIC:
             return wp.constant(vec5i(1, 2, 3, 4, 5))
         elif self.value == self.CYLINDRICAL:
-            return wp.constant(vec4i(1, 2, 4, 5))
+            return wp.constant(wp.vec4i(1, 2, 4, 5))
         elif self.value == self.UNIVERSAL:
-            return wp.constant(vec4i(0, 1, 2, 5))
+            return wp.constant(wp.vec4i(0, 1, 2, 5))
         elif self.value == self.SPHERICAL:
-            return wp.constant(vec3i(0, 1, 2))
-        elif self.value == self.GIMBAL:
-            return wp.constant(vec3i(0, 1, 2))
+            return wp.constant(wp.vec3i(0, 1, 2))
         elif self.value == self.CARTESIAN:
-            return wp.constant(vec3i(3, 4, 5))
+            return wp.constant(wp.vec3i(3, 4, 5))
         elif self.value == self.FIXED:
             return wp.constant(vec6i(0, 1, 2, 3, 4, 5))
         else:
@@ -570,15 +539,13 @@ class JointDoFType(IntEnum):
         elif self.value == self.PRISMATIC:
             return wp.constant(vec1i(0))
         elif self.value == self.CYLINDRICAL:
-            return wp.constant(vec2i(0, 3))
+            return wp.constant(wp.vec2i(0, 3))
         elif self.value == self.UNIVERSAL:
-            return wp.constant(vec2i(3, 4))
+            return wp.constant(wp.vec2i(3, 4))
         elif self.value == self.SPHERICAL:
-            return wp.constant(vec3i(3, 4, 5))
-        elif self.value == self.GIMBAL:
-            return wp.constant(vec3i(3, 4, 5))
+            return wp.constant(wp.vec3i(3, 4, 5))
         elif self.value == self.CARTESIAN:
-            return wp.constant(vec3i(0, 1, 2))
+            return wp.constant(wp.vec3i(0, 1, 2))
         elif self.value == self.FIXED:
             return []  # Empty vector (TODO: wp.constant(vec0i()))
         else:
@@ -596,15 +563,13 @@ class JointDoFType(IntEnum):
         elif self.value == self.PRISMATIC:
             return vec1f
         elif self.value == self.CYLINDRICAL:
-            return vec2f
+            return wp.vec2f
         elif self.value == self.UNIVERSAL:
-            return vec2f
+            return wp.vec2f
         elif self.value == self.SPHERICAL:
-            return vec4f
-        elif self.value == self.GIMBAL:
-            return vec3f
+            return wp.vec4f
         elif self.value == self.CARTESIAN:
-            return vec3f
+            return wp.vec3f
         elif self.value == self.FIXED:
             return None
         else:
@@ -616,21 +581,19 @@ class JointDoFType(IntEnum):
         Returns the data type required to represent the joint's generalized coordinates.
         """
         if self.value == self.FREE:
-            return transformf
+            return wp.transformf
         elif self.value == self.REVOLUTE:
             return vec1f
         elif self.value == self.PRISMATIC:
             return vec1f
         elif self.value == self.CYLINDRICAL:
-            return vec2f
+            return wp.vec2f
         elif self.value == self.UNIVERSAL:
-            return vec2f
+            return wp.vec2f
         elif self.value == self.SPHERICAL:
-            return quatf
-        elif self.value == self.GIMBAL:
-            return vec3f
+            return wp.quatf
         elif self.value == self.CARTESIAN:
-            return vec3f
+            return wp.vec3f
         elif self.value == self.FIXED:
             return None
         else:
@@ -653,8 +616,6 @@ class JointDoFType(IntEnum):
             return [0.0, 0.0]
         elif self.value == self.SPHERICAL:
             return [0.0, 0.0, 0.0, 1.0]
-        elif self.value == self.GIMBAL:
-            return [0.0, 0.0, 0.0]
         elif self.value == self.CARTESIAN:
             return [0.0, 0.0, 0.0]
         elif self.value == self.FIXED:
@@ -681,8 +642,6 @@ class JointDoFType(IntEnum):
             return [rotation_bound, rotation_bound]
         elif self.value == self.SPHERICAL:
             return [JOINT_QMAX] * 4
-        elif self.value == self.GIMBAL:
-            return [rotation_bound] * 3
         elif self.value == self.CARTESIAN:
             return [JOINT_QMAX] * 3
         elif self.value == self.FIXED:
@@ -691,15 +650,18 @@ class JointDoFType(IntEnum):
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
     @staticmethod
-    def to_newton(dof_type: JointDoFType) -> JointType | None:
+    def to_newton(dof_type: JointDoFType) -> JointType:
         """
         Converts a `JointDoFType` to the corresponding `JointType`.
 
         Args:
-            dof_type (JointDoFType): The joint DoF type to convert.
+            dof_type: The joint DoF type to convert.
 
         Returns:
-            JointType | None: The corresponding Newton joint type, or None if unsupported.
+            The corresponding Newton joint type.
+
+        Raises:
+            ValueError: if the joint dof type is not supported.
         """
         _MAP_TO_NEWTON: dict[JointDoFType, JointType] = {
             # All trivially supported DoF types map directly
@@ -713,7 +675,6 @@ class JointDoFType(IntEnum):
             JointDoFType.CARTESIAN: JointType.D6,
             JointDoFType.CYLINDRICAL: JointType.D6,
             JointDoFType.UNIVERSAL: JointType.D6,
-            JointDoFType.GIMBAL: JointType.D6,
         }
         joint_type = _MAP_TO_NEWTON.get(dof_type, None)
         if joint_type is None:
@@ -733,10 +694,18 @@ class JointDoFType(IntEnum):
         Converts a `JointType` to the corresponding `JointDoFType`.
 
         Args:
-            type (JointType): The Newton joint type to convert.
+            type: The Newton joint type to convert.
+            q_count: The Newton coordinates count for this joint.
+            qd_count: The Newton dofs count for this joint.
+            dof_dim: The Newton dof dimension (linear/angular dof counts) for this joint.
+            limit_lower: The lower position limits from Newton for this joint (in dof space).
+            limit_upper: The upper position limits from Newton for this joint (in dof space).
 
         Returns:
-            JointDoFType: The corresponding joint DoF type.
+            The corresponding joint DoF type.
+
+        Raises:
+            ValueError: if the Newton joint type is not supported.
         """
         # First try directly mapping the trivially supported types
         _MAP_TO_KAMINO: dict[JointType, JointDoFType | None] = {
@@ -800,7 +769,6 @@ class JointDoFType(IntEnum):
             elif q_count == 3 and qd_count == 3 and dof_dim == (3, 0):
                 dof_type = JointDoFType.CARTESIAN
             elif q_count == 3 and qd_count == 3 and dof_dim == (0, 3):
-                # TODO: dof_type = JointDoFType.GIMBAL
                 raise ValueError("Unsupported joint type: GIMBAL joints are not currently supported.")
             elif q_count == 4 and qd_count == 3 and dof_dim == (0, 3):
                 dof_type = JointDoFType.SPHERICAL
@@ -833,10 +801,10 @@ class JointDoFType(IntEnum):
         joint_type: int,
         q_count: int,
         qd_count: int,
-        dof_dim: vec2i,
+        dof_dim: wp.vec2i,
         limit_lower: vec6f,
         limit_upper: vec6f,
-    ) -> int32:
+    ) -> wp.int32:
         """
         Converts a Newton `JointType` to the corresponding Kamino `JointDoFType`.
 
@@ -844,7 +812,12 @@ class JointDoFType(IntEnum):
             This is the warp-compatible equivalent to `from_newton()`.
 
         Args:
-            type: The Newton joint type to convert, see `JointType`.
+            joint_type: The Newton joint type to convert, see `JointType`.
+            q_count: The Newton coordinates count for this joint.
+            qd_count: The Newton dofs count for this joint.
+            dof_dim: The Newton dof dimension (linear/angular dof counts) for this joint.
+            limit_lower: The lower position limits from Newton for this joint (in dof space).
+            limit_upper: The upper position limits from Newton for this joint (in dof space).
 
         Returns:
             The corresponding joint DoF type, or -1 if the joint type is not
@@ -864,22 +837,21 @@ class JointDoFType(IntEnum):
 
         # If the type is not directly supported, attempt to infer the DoF type based
         # on the dimensions of the joint and number of DoFs.
-        if q_count == 0 and qd_count == 0 and dof_dim == vec2i(0, 0):
+        if q_count == 0 and qd_count == 0 and dof_dim == wp.vec2i(0, 0):
             return JointDoFType.FIXED
-        elif q_count == 1 and qd_count == 1 and dof_dim == vec2i(1, 0):
+        elif q_count == 1 and qd_count == 1 and dof_dim == wp.vec2i(1, 0):
             return JointDoFType.PRISMATIC
-        elif q_count == 1 and qd_count == 1 and dof_dim == vec2i(0, 1):
+        elif q_count == 1 and qd_count == 1 and dof_dim == wp.vec2i(0, 1):
             return JointDoFType.REVOLUTE
-        elif q_count == 2 and qd_count == 2 and dof_dim == vec2i(0, 2):
+        elif q_count == 2 and qd_count == 2 and dof_dim == wp.vec2i(0, 2):
             return JointDoFType.UNIVERSAL
-        elif q_count == 2 and qd_count == 2 and dof_dim == vec2i(1, 1):
+        elif q_count == 2 and qd_count == 2 and dof_dim == wp.vec2i(1, 1):
             return JointDoFType.CYLINDRICAL
-        elif q_count == 3 and qd_count == 3 and dof_dim == vec2i(3, 0):
+        elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(3, 0):
             return JointDoFType.CARTESIAN
-        elif q_count == 3 and qd_count == 3 and dof_dim == vec2i(0, 3):
-            # TODO: dof_type = JointDoFType.GIMBAL
+        elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
             return -1
-        elif q_count == 4 and qd_count == 3 and dof_dim == vec2i(0, 3):
+        elif q_count == 4 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
             return JointDoFType.SPHERICAL
         elif q_count == 7 and qd_count == 6:
             for i in range(qd_count):
@@ -916,8 +888,6 @@ class JointDoFType(IntEnum):
             return 2  # 2D angles
         elif dof_type == JointDoFType.SPHERICAL:
             return 4  # 4D unit-quaternion
-        elif dof_type == JointDoFType.GIMBAL:
-            return 3  # 3D euler angles
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D distances
         elif dof_type == JointDoFType.FIXED:
@@ -948,8 +918,6 @@ class JointDoFType(IntEnum):
         elif dof_type == JointDoFType.UNIVERSAL:
             return 2  # 2D angular velocities
         elif dof_type == JointDoFType.SPHERICAL:
-            return 3  # 3D angular velocities
-        elif dof_type == JointDoFType.GIMBAL:
             return 3  # 3D angular velocities
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D linear velocities
@@ -982,8 +950,6 @@ class JointDoFType(IntEnum):
             return 4  # 4D vector for `{R_x, R_y, R_z, R_w}`
         elif dof_type == JointDoFType.SPHERICAL:
             return 3  # 3D vector for `{R_x, R_y, R_z}`
-        elif dof_type == JointDoFType.GIMBAL:
-            return 3  # 3D vector for `{R_x, R_y, R_z}`
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif dof_type == JointDoFType.FIXED:
@@ -1001,10 +967,8 @@ class JointDoFType(IntEnum):
         specified joint DoF type, based on the provided DoF axes.
 
         Args:
-            dof_type:
-                The joint DoF type for which to compute the axes matrix.
-            dof_axes:
-                A 2D array of shape `(6, 3)`, of which the initial block of
+            dof_type: The joint DoF type for which to compute the axes matrix.
+            dof_axes: A 2D array of shape `(6, 3)`, of which the initial block of
                 shape `(num_dofs, 3)` contains the local axes of the joint's
                 DoFs in the order they are defined.
 
@@ -1013,7 +977,7 @@ class JointDoFType(IntEnum):
             identity matrix if the joint type does not require an axes matrix.
         """
         # Initialize the joint axes rotation matrix to identity by default
-        R_axis_j = wp.identity(3, dtype=float32)
+        R_axis_j = wp.identity(3, dtype=wp.float32)
 
         # Determine the joint axes matrix based on the DoF type and axes
         if dof_type == JointDoFType.FIXED:
@@ -1061,31 +1025,41 @@ class JointDescriptor(Descriptor):
     act_type: JointActuationType = JointActuationType.PASSIVE
     """Actuation type of the joint."""
 
+    fk_act_flag: int = -1
+    """
+    Integer flag indicating whether this joint should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
+    """
+
     dof_type: JointDoFType = JointDoFType.FREE
     """DoF type of the joint."""
 
     bid_B: int = -1
     """
-    The Base body index of the joint (-1 for world, >=0 for bodies).\n
+    The Base body index of the joint (-1 for world, >=0 for bodies).
     Defaults to `-1`, indicating that the joint has not been assigned a base body.
     """
 
     bid_F: int = -1
     """
-    The Follower body index of the joint (must always be >=0 to index a body).\n
+    The Follower body index of the joint (must always be >=0 to index a body).
     Defaults to `-1`, indicating that the joint has not been assigned a follower body.
     """
 
-    B_r_Bj: vec3f = field(default_factory=vec3f)
+    B_r_Bj: wp.vec3f = field(default_factory=wp.vec3f)
     """The relative position of the joint in the base body coordinates."""
 
-    F_r_Fj: vec3f = field(default_factory=vec3f)
+    F_r_Fj: wp.vec3f = field(default_factory=wp.vec3f)
     """The relative position of the joint in the follower body coordinates."""
 
-    X_Bj: mat33f = field(default_factory=mat33f)
+    X_Bj: wp.mat33f = field(default_factory=wp.mat33f)
     """The orientation of the joint frame on the base body, in the base body coordinates."""
 
-    X_Fj: mat33f | None = None
+    X_Fj: wp.mat33f | None = None
     """
     The orientation of the joint frame on the follower body, in the follower body coordinates.
 
@@ -1238,13 +1212,13 @@ class JointDescriptor(Descriptor):
 
     wid: int = -1
     """
-    Index of the world to which the joint belongs.\n
+    Index of the world to which the joint belongs.
     Defaults to `-1`, indicating that the joint has not yet been added to a world.
     """
 
     jid: int = -1
     """
-    Index of the joint w.r.t. its world.\n
+    Index of the joint w.r.t. its world.
     Defaults to `-1`, indicating that the joint has not yet been added to a world.
     """
 
@@ -1466,7 +1440,7 @@ class JointDescriptor(Descriptor):
         # Default the follower-side joint frame to the base-side one, which
         # is the convention for joints with aligned base/follower frames.
         if self.X_Fj is None:
-            self.X_Fj = mat33f(self.X_Bj)
+            self.X_Fj = wp.mat33f(self.X_Bj)
 
         # Set default values for joint limits if not provided
         self.q_j_min = self._check_dofs_array(self.q_j_min, self.num_dofs, float(JOINT_QMIN))
@@ -1535,6 +1509,7 @@ class JointDescriptor(Descriptor):
             f"uid: {self.uid},\n"
             "----------------------------------------------\n"
             f"act_type: {self.act_type},\n"
+            f"fk_act_flag: {self.fk_act_flag},\n"
             f"dof_type: {self.dof_type},\n"
             "----------------------------------------------\n"
             f"bid_B: {self.bid_B},\n"
@@ -1580,7 +1555,11 @@ class JointDescriptor(Descriptor):
     ###
 
     @staticmethod
-    def _check_dofs_array(x: ArrayLike | float | None, size: int, default: float = float(FLOAT32_MAX)) -> list[float]:
+    def _check_dofs_array(
+        x: ArrayLike | float | None,
+        size: int,
+        default: float = float(FLOAT32_MAX),
+    ) -> list[float]:
         """
         Processes a specified limit value to ensure it is a list of floats.
 
@@ -1592,12 +1571,12 @@ class JointDescriptor(Descriptor):
             contains only floats and matches the specified length.
 
         Args:
-            x (List[float] | float | None): The DOF array to be processed.
-            size (int): The number of degrees of freedom to determine the length of the output list.
-            default (float): The default value to use if DOF array is None or an empty list.
+            x: The DOF array to be processed.
+            size: The number of degrees of freedom to determine the length of the output list.
+            default: The default value to use if DOF array is None or an empty list.
 
         Returns:
-            List[float]: The processed list of DOF values.
+            The processed list of DOF values.
 
         Raises:
             ValueError: If the length of the DOF array does not match num_dofs.
@@ -1681,161 +1660,162 @@ class JointsModel:
 
     label: list[str] | None = None
     """
-    A list containing the label of each joint entity.\n
-    Length of ``num_joints`` and type :class:`str`.
+    A list containing the label of each joint entity.
+    Length of ``num_joints``.
     """
 
     ###
     # Identifiers
     ###
 
-    wid: wp.array | None = None
+    wid: wp.array[wp.int32] | None = None
     """
-    Index each the world in which each joint is defined.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Index each the world in which each joint is defined.
+    Shape of ``(num_joints,)``.
     """
 
-    jid: wp.array | None = None
+    jid: wp.array[wp.int32] | None = None
     """
-    Index of each joint w.r.t the world.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Index of each joint w.r.t the world.
+    Shape of ``(num_joints,)``.
     """
 
     ###
     # Parameterization
     ###
 
-    dof_type: wp.array | None = None
+    dof_type: wp.array[wp.int32] | None = None
     """
-    Joint DoF type ID of each joint.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
-    """
-
-    act_type: wp.array | None = None
-    """
-    Joint actuation type ID of each joint.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Joint DoF type ID of each joint.
+    Shape of ``(num_joints,)``.
     """
 
-    bid_B: wp.array | None = None
+    act_type: wp.array[wp.int32] | None = None
     """
-    Base body index of each joint w.r.t the model.\n
-    Equals `-1` for world, `>=0` for bodies.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
-    """
-
-    bid_F: wp.array | None = None
-    """
-    Follower body index of each joint w.r.t the model.\n
-    Equals `-1` for world, `>=0` for bodies.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Joint actuation type ID of each joint.
+    Shape of ``(num_joints,)``.
     """
 
-    B_r_Bj: wp.array | None = None
+    fk_act_flag: wp.array[wp.int32] | None = None
     """
-    Relative position of the joint, expressed in and w.r.t the base body coordinate frame.\n
-    Shape of ``(num_joints,)`` and type :class:`vec3`.
+    Integer flag per joint, indicating whether it should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+    Shape of ``(num_joints,)`` if set; else considered to be -1 for all joints.
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
     """
 
-    F_r_Fj: wp.array | None = None
+    bid_B: wp.array[wp.int32] | None = None
     """
-    Relative position of the joint, expressed in and w.r.t the follower body coordinate frame.\n
-    Shape of ``(num_joints,)`` and type :class:`vec3`.
-    """
-
-    X_Bj: wp.array | None = None
-    """
-    Orientation of the joint frame on the base body, expressed in the base body coordinate frame.\n
-    Shape of ``(num_joints,)`` and type :class:`mat33`.
+    Base body index of each joint w.r.t the model.
+    Equals `-1` for world, `>=0` for bodies.
+    Shape of ``(num_joints,)``.
     """
 
-    X_Fj: wp.array | None = None
+    bid_F: wp.array[wp.int32] | None = None
     """
-    Orientation of the joint frame on the follower body, expressed in the follower body coordinate frame.\n
-    Shape of ``(num_joints,)`` and type :class:`mat33`.
+    Follower body index of each joint w.r.t the model.
+    Equals `-1` for world, `>=0` for bodies.
+    Shape of ``(num_joints,)``.
+    """
+
+    B_r_Bj: wp.array[wp.vec3f] | None = None
+    """
+    Relative position of the joint, expressed in and w.r.t the base body coordinate frame.
+    Shape of ``(num_joints,)``.
+    """
+
+    F_r_Fj: wp.array[wp.vec3f] | None = None
+    """
+    Relative position of the joint, expressed in and w.r.t the follower body coordinate frame.
+    Shape of ``(num_joints,)``.
+    """
+
+    X_Bj: wp.array[wp.mat33f] | None = None
+    """
+    Orientation of the joint frame on the base body, expressed in the base body coordinate frame.
+    Shape of ``(num_joints,)``.
+    """
+
+    X_Fj: wp.array[wp.mat33f] | None = None
+    """
+    Orientation of the joint frame on the follower body, expressed in the follower body coordinate frame.
+    Shape of ``(num_joints,)``.
     """
 
     ###
     # Limits
     ###
 
-    q_j_min: wp.array | None = None
+    q_j_min: wp.array[wp.float32] | None = None
     """
-    Minimum (a.k.a. lower) joint DoF limits of each joint (as flat array).\n
+    Minimum (a.k.a. lower) joint DoF limits of each joint (as flat array).
 
     Limits are dimensioned according to the number of DoFs of each joint,
     as opposed to the number of coordinates in order to handle cases such
-    where joints have more coordinates than DoFs (e.g. spherical joints).\n
+    where joints have more coordinates than DoFs (e.g. spherical joints).
 
-    Shape of ``(sum_of_num_joint_dofs,)`` and type :class:`float`,\n
-    where `sum_of_num_joint_dofs := sum(d_j)`, and ``d_j``
-    is the number of DoFs of joint ``j``.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    q_j_max: wp.array | None = None
+    q_j_max: wp.array[wp.float32] | None = None
     """
-    Maximum (a.k.a. upper) joint DoF limits of each joint (as flat array).\n
+    Maximum (a.k.a. upper) joint DoF limits of each joint (as flat array).
 
     Limits are dimensioned according to the number of DoFs of each joint,
     as opposed to the number of coordinates in order to handle cases such
-    where joints have more coordinates than DoFs (e.g. spherical joints).\n
+    where joints have more coordinates than DoFs (e.g. spherical joints).
 
-    Shape of ``(sum_of_num_joint_dofs,)`` and type :class:`float`,\n
-    where `sum_of_num_joint_dofs := sum(d_j)`, and ``d_j``
-    is the number of DoFs of joint ``j``.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    dq_j_max: wp.array | None = None
+    dq_j_max: wp.array[wp.float32] | None = None
     """
-    Maximum joint velocity limits of each joint (as flat array).\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,\n
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Maximum joint velocity limits of each joint (as flat array).
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    tau_j_max: wp.array | None = None
+    tau_j_max: wp.array[wp.float32] | None = None
     """
-    Maximum joint torque limits of each joint (as flat array).\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,\n
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Maximum joint torque limits of each joint (as flat array).
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     ###
     # Dynamics
     ###
 
-    a_j: wp.array | None = None
+    a_j: wp.array[wp.float32] | None = None
     """
-    Internal inertia of each joint (as flat array), used for implicit integration of joint dynamics.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,\n
-    where ``d_j`` is the number of DoFs of joint ``j``.
-    """
-
-    b_j: wp.array | None = None
-    """
-    Internal damping of each joint (as flat array) used for implicit integration of joint dynamics.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,\n
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Internal inertia of each joint (as flat array), used for implicit integration of joint dynamics.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    k_p_j: wp.array | None = None
+    b_j: wp.array[wp.float32] | None = None
     """
-    Implicit PD-control proportional gain of each joint (as flat array).\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,\n
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Internal damping of each joint (as flat array) used for implicit integration of joint dynamics.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
-    k_d_j: wp.array | None = None
+    k_p_j: wp.array[wp.float32] | None = None
     """
-    Implicit PD-control derivative gain of each joint (as flat array).\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,\n
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Implicit PD-control proportional gain of each joint (as flat array).
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    k_d_j: wp.array[wp.float32] | None = None
+    """
+    Implicit PD-control derivative gain of each joint (as flat array).
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     ###
     # Initial State
     ###
 
-    q_j_0: wp.array | None = None
+    q_j_0: wp.array[wp.float32] | None = None
     """
     The initial coordinates of each joint (as flat array),
     indicating the "rest" or "neutral" position of each joint.
@@ -1843,11 +1823,10 @@ class JointsModel:
     These are used for resetting joint positions when multi-turn
     correction for revolute DoFs is enabled in the simulation.
 
-    Shape of ``(sum(c_j),)`` and type :class:`float`,\n
-    where ``c_j`` is the number of coordinates of joint ``j``.
+    Shape of ``(sum_of_num_joint_coords,)``.
     """
 
-    dq_j_0: wp.array | None = None
+    dq_j_0: wp.array[wp.float32] | None = None
     """
     The initial velocities of each joint (as flat array),
     indicating the "rest" or "neutral" velocity of each joint.
@@ -1855,47 +1834,46 @@ class JointsModel:
     These are used for resetting joint velocities when multi-turn
     correction for revolute DoFs is enabled in the simulation.
 
-    Shape of ``(sum(c_j),)`` and type :class:`float`,\n
-    where ``c_j`` is the number of coordinates of joint ``j``.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     ###
     # Metadata
     ###
 
-    num_coords: wp.array | None = None
+    num_coords: wp.array[wp.int32] | None = None
     """
-    Number of coordinates of each joint.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
-    """
-
-    num_dofs: wp.array | None = None
-    """
-    Number of DoFs of each joint.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Number of coordinates of each joint.
+    Shape of ``(num_joints,)``.
     """
 
-    # TODO: Consider making this a vec2i containing
+    num_dofs: wp.array[wp.int32] | None = None
+    """
+    Number of DoFs of each joint.
+    Shape of ``(num_joints,)``.
+    """
+
+    # TODO: Consider making this a wp.vec2i containing
     # both dynamic and kinematic constraint counts
-    num_cts: wp.array | None = None
+    num_cts: wp.array[wp.int32] | None = None
     """
-    Number of total constraints of each joint.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
-    """
-
-    num_dynamic_cts: wp.array | None = None
-    """
-    Number of dynamic constraints of each joint.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Number of total constraints of each joint.
+    Shape of ``(num_joints,)``.
     """
 
-    num_kinematic_cts: wp.array | None = None
+    num_dynamic_cts: wp.array[wp.int32] | None = None
     """
-    Number of kinematic constraints of each joint.\n
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Number of dynamic constraints of each joint.
+    Shape of ``(num_joints,)``.
     """
 
-    coords_offset: wp.array | None = None
+    num_kinematic_cts: wp.array[wp.int32] | None = None
+    """
+    Number of kinematic constraints of each joint.
+    Shape of ``(num_joints,)``.
+    """
+
+    coords_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's coordinates block, in model-wide
     flattened joint coordinates arrays.
@@ -1905,13 +1883,13 @@ class JointsModel:
     - array of joint generalized coordinates :attr:`JointsData.q_j`
     - array of previous joint generalized coordinates :attr:`JointsData.q_j_p`
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total coordinates count, so that the per-joint
     coordinates count is encoded as ``coords_offset[j+1] - coords_offset[j]``.
     """
 
-    dofs_offset: wp.array | None = None
+    dofs_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's DoFs block, in model-wide
     flattened joint DoFs arrays.
@@ -1921,68 +1899,68 @@ class JointsModel:
     - array of joint generalized velocities :attr:`JointsData.dq_j`
     - array of joint generalized forces :attr:`JointsData.tau_j`
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total DoFs count, so that the per-joint
     DoFs count is encoded as ``dofs_offset[j+1] - dofs_offset[j]``.
     """
 
-    passive_coords_offset: wp.array | None = None
+    passive_coords_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's passive coordinates block, in model-wide
     flattened passive joint coordinates arrays.
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total passive coordinates count, so that the per-joint
     passive coordinates count is encoded as ``passive_coords_offset[j+1] - passive_coords_offset[j]``.
     """
 
-    passive_dofs_offset: wp.array | None = None
+    passive_dofs_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's passive DoFs block, in model-wide
     flattened passive joint DoFs arrays.
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total passive DoFs count, so that the per-joint
     passive DoFs count is encoded as ``passive_dofs_offset[j+1] - passive_dofs_offset[j]``.
     """
 
-    actuated_coords_offset: wp.array | None = None
+    actuated_coords_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's actuated coordinates block, in model-wide
     flattened actuated joint coordinates arrays.
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total actuated coordinates count, so that the per-joint
     actuated coordinates count is encoded as ``actuated_coords_offset[j+1] - actuated_coords_offset[j]``.
     """
 
-    actuated_dofs_offset: wp.array | None = None
+    actuated_dofs_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's actuated DoFs block, in model-wide
     flattened actuated joint DoFs arrays.
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total actuated DoFs count, so that the per-joint
     actuated DoFs count is encoded as ``actuated_dofs_offset[j+1] - actuated_dofs_offset[j]``.
     """
 
-    cts_offset: wp.array | None = None
+    cts_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's constraints block, in model-wide
     flattened joint constraints arrays (dynamic + kinematic).
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total joint constraints count, so that the per-joint
     constraints count is encoded as ``cts_offset[j+1] - cts_offset[j]``.
     """
 
-    dynamic_cts_offset: wp.array | None = None
+    dynamic_cts_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's dynamic constraints block, in model-wide
     flattened joint dynamic constraints arrays.
@@ -1993,13 +1971,13 @@ class JointsModel:
     - array of joint-space P gains :attr:`JointsData.k_p_j`
     - array of joint-space D gains :attr:`JointsData.k_d_j`
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total joint dynamic constraints count, so that the per-joint
     dynamic constraints count is encoded as ``dynamic_cts_offset[j+1] - dynamic_cts_offset[j]``.
     """
 
-    kinematic_cts_offset: wp.array | None = None
+    kinematic_cts_offset: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's kinematic constraints block, in model-wide
     flattened joint kinematic constraints arrays.
@@ -2008,42 +1986,42 @@ class JointsModel:
     - array of joint constraint residuals :attr:`JointsData.r_j`
     - array of joint constraint residual time-derivatives :attr:`JointsData.dr_j`
 
-    Shape of ``(num_joints + 1,)`` and type :class:`int`.
+    Shape of ``(num_joints + 1,)``.
 
     The last entry is the total joint kinematic constraints count, so that the per-joint
     kinematic constraints count is encoded as ``kinematic_cts_offset[j+1] - kinematic_cts_offset[j]``.
     """
 
-    dynamic_cts_offset_joint_cts: wp.array | None = None
+    dynamic_cts_offset_joint_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's dynamic constraints block, in model-wide
     flattened joint constraints arrays.
 
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Shape of ``(num_joints,)``.
     """
 
-    kinematic_cts_offset_joint_cts: wp.array | None = None
+    kinematic_cts_offset_joint_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's kinematic constraints block, in model-wide
     flattened joint constraints arrays.
 
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Shape of ``(num_joints,)``.
     """
 
-    dynamic_cts_offset_total_cts: wp.array | None = None
+    dynamic_cts_offset_total_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's dynamic constraints block, in model-wide
     flattened total constraints arrays (joints + limits + contacts).
 
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Shape of ``(num_joints,)``.
     """
 
-    kinematic_cts_offset_total_cts: wp.array | None = None
+    kinematic_cts_offset_total_cts: wp.array[wp.int32] | None = None
     """
     Index offset of each joint's kinematic constraints block, in model-wide
     flattened total constraints arrays (joints + limits + contacts).
 
-    Shape of ``(num_joints,)`` and type :class:`int`.
+    Shape of ``(num_joints,)``.
     """
 
 
@@ -2060,49 +2038,41 @@ class JointsData:
     # State
     ###
 
-    p_j: wp.array | None = None
+    p_j: wp.array[wp.transformf] | None = None
     """
-    Array of joint frame pose transforms in world coordinates.\n
-    Shape of ``(num_joints,)`` and type :class:`transform`.
-    """
-
-    q_j: wp.array | None = None
-    """
-    Flat array of generalized coordinates of the joints.\n
-    Shape of ``(sum_of_num_joint_coords,)`` and type :class:`float`,\n
-    where `sum_of_num_joint_coords := sum(c_j)`, and ``c_j``
-    is the number of coordinates of joint ``j``.
+    Array of joint frame pose transforms in world coordinates.
+    Shape of ``(num_joints,)``.
     """
 
-    q_j_p: wp.array | None = None
+    q_j: wp.array[wp.float32] | None = None
     """
-    Flat array of previous generalized coordinates of the joints.\n
-    Shape of ``(sum_of_num_joint_coords,)`` and type :class:`float`,\n
-    where `sum_of_num_joint_coords := sum(c_j)`, and ``c_j``
-    is the number of coordinates of joint ``j``.
+    Flat array of generalized coordinates of the joints.
+    Shape of ``(sum_of_num_joint_coords,)``.
     """
 
-    dq_j: wp.array | None = None
+    q_j_p: wp.array[wp.float32] | None = None
     """
-    Flat array of generalized velocities of the joints.\n
-    Shape of ``(sum_of_num_joint_dofs,)`` and type :class:`float`,\n
-    where `sum_of_num_joint_dofs := sum(d_j)`, and ``d_j``
-    is the number of DoFs of joint ``j``.
+    Flat array of previous generalized coordinates of the joints.
+    Shape of ``(sum_of_num_joint_coords,)``.
     """
 
-    tau_j: wp.array | None = None
+    dq_j: wp.array[wp.float32] | None = None
     """
-    Flat array of generalized forces of the joints.\n
-    Shape of ``(sum_of_num_joint_dofs,)`` and type :class:`float`,
-    where `sum_of_num_joint_dofs := sum(d_j)`, and ``d_j``
-    is the number of DoFs of joint ``j``.
+    Flat array of generalized velocities of the joints.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    tau_j: wp.array[wp.float32] | None = None
+    """
+    Flat array of generalized forces of the joints.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     ###
     # Constraints
     ###
 
-    r_j: wp.array | None = None
+    r_j: wp.array[wp.float32] | None = None
     """
     Flat array of joint kinematic constraint residuals.
 
@@ -2110,12 +2080,10 @@ class JointsData:
     - to get the start index: ``model.info.joint_kinematic_cts_offset[w]``
     - to get the size: ``model.info.num_joint_kinematic_cts[w]``
 
-    Shape of ``(sum_of_num_kinematic_joint_cts,)`` and type :class:`float`,\n
-    where `sum_of_num_kinematic_joint_cts := sum(f_j)`, and ``f_j``
-    is the number of kinematic constraints of joint ``j``.
+    Shape of ``(sum_of_num_kinematic_joint_cts,)``.
     """
 
-    dr_j: wp.array | None = None
+    dr_j: wp.array[wp.float32] | None = None
     """
     Flat array of joint kinematic constraint residual time-derivatives.
 
@@ -2123,12 +2091,10 @@ class JointsData:
     - to get the start index: ``model.info.joint_kinematic_cts_offset[w]``
     - to get the size: ``model.info.num_joint_kinematic_cts[w]``
 
-    Shape of ``(sum_of_num_kinematic_joint_cts,)`` and type :class:`float`,\n
-    where `sum_of_num_kinematic_joint_cts := sum(f_j)`, and ``f_j``
-    is the number of kinematic constraints of joint ``j``.
+    Shape of ``(sum_of_num_kinematic_joint_cts,)``.
     """
 
-    lambda_j: wp.array | None = None
+    lambda_j: wp.array[wp.float32] | None = None
     """
     Flat array of joint constraint Lagrange multipliers.
 
@@ -2142,52 +2108,54 @@ class JointsData:
     - kinematic constraints:
         ``model.info.joint_kinematic_cts_group_offset[w]`` and ``model.info.num_joint_kinematic_cts[w]``
 
-    Shape of ``(sum_of_num_joint_cts,)`` and type :class:`float`,\n
-    where `sum_of_num_joint_cts := sum(e_j) + sum(f_j)`, and ``e_j`` and ``f_j``
-    are the number of dynamic and kinematic constraints of joint ``j``, respectively.
+    Shape of ``(sum_of_num_joint_cts,)``.
     """
 
     ###
     # Dynamics
     ###
 
-    m_j: wp.array | None = None
+    m_j: wp.array[wp.float32] | None = None
     """
     Internal effective inertia of each joint (as flat array),
     used for implicit integration of joint dynamics.
 
-    ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,\n
-    where dt is the simulation time step.
+    Let ``m_j_0 := a_j + dt * b_j``, where ``dt`` is the simulation time step.
+    The actuation mode determines the remaining terms:
 
-    Shape of ``(sum(e_j),)`` and type :class:`float`,\n
-    where ``e_j`` is the number of dynamic constraints of joint ``j``.
+    - ``PASSIVE`` or ``FORCE``: ``m_j := m_j_0``
+    - ``VELOCITY``: ``m_j := m_j_0 + dt * k_d_j``
+    - ``POSITION``, ``POSITION_VELOCITY``, or ``POSITION_VELOCITY_FORCE``:
+      ``m_j := m_j_0 + dt * k_d_j + dt^2 * k_p_j``
+
+    A non-zero minimum mass is enforced to avoid a
+    division-by-zero failure.
+
+    Shape of ``(sum_of_num_dynamic_joint_cts,)``.
     """
 
-    inv_m_j: wp.array | None = None
+    inv_m_j: wp.array[wp.float32] | None = None
     """
     Internal effective inverse inertia of each joint (as flat
     array), used for implicit integration of joint dynamics.
 
-    ``inv_m_j := 1 / m_j``, computed element-wise,\n
-    where ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,
-    and dt is the simulation time step.
+    ``inv_m_j := 1 / m_j``, computed element-wise.
 
-    Note that all ``inv_m_j>0``, otherwise the DoF would not be
-    part of the dynamic constraints.
+    Note that all ``inv_m_j>0`` due to a minimum non-zero mass
+    being enforced.
 
-    Shape of ``(sum(e_j),)`` and type :class:`float`,
-    where ``e_j`` is the number of dynamic constraints of joint ``j``.
+    Shape of ``(sum_of_num_dynamic_joint_cts,)``.
     """
 
-    dq_b_j: wp.array | None = None
+    dq_b_j: wp.array[wp.float32] | None = None
     """
     The velocity bias of the joint dynamic constraints (as flat array).
 
-    Each joint has local actuation and PD control dynamics:\n
+    Each joint has local actuation and PD control dynamics:
     ```
-    m_j * dq_j^{+} = a_j * dq_j^{-} + dt * h_j
+    m_j * dq_j^{+} = h_j
     ```
-    and is contributes to the dynamice of the system through the constraint equation:\n
+    and is contributes to the dynamics of the system through the constraint equation:
     ```
     dq_j^{+} = J_q_j * u^{+}
     ```
@@ -2200,95 +2168,102 @@ class JointsData:
 
     This results in the following dynamic constraint equation for each joint `j`:
     ```
-    dq_j^{+} + m_j^{-1} * lambda_q_j = m_j^{-1} * (a_j * dq_j^{-} + dt * h_j)
+    dq_j^{+} + m_j^{-1} * lambda_q_j = m_j^{-1} * h_j
     dq_j^{+} + m_j^{-1} * lambda_q_j = dq_b_j
     J_q_j * u^{+} + m_j^{-1} * lambda_q_j = dq_b_j
     ```
-    and thus the velocity bias term of the joint-space dynamics of each joint `j` is computed as:\n
+    and thus the velocity bias term of the joint-space dynamics of each joint `j` is computed as:
     ```
-    tau_j := dt * ( tau_j_ff + k_p_j * (q_j_ref - q_j^{-} ) + k_d_j * dq_j_ref )
-    h_j := a_j * dq_j^{-} + dt * tau_j
+    h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
-    where dt is the simulation time step.
+    The actuation mode determines ``tau_j_tot``:
 
-    Shape of ``(sum(e_j),)`` and type :class:`float`,
-    where ``e_j`` is the number of dynamic constraints of joint ``j``.
+    - ``PASSIVE``: ``tau_j``
+    - ``FORCE``: ``tau_j + tau_j_ff``
+    - ``POSITION``: ``tau_j + k_p_j * (q_j_ref - q_j^{-})``
+    - ``VELOCITY``: ``tau_j + k_d_j * dq_j_ref``
+    - ``POSITION_VELOCITY``:
+      ``tau_j + k_p_j * (q_j_ref - q_j^{-}) + k_d_j * dq_j_ref``
+    - ``POSITION_VELOCITY_FORCE``:
+      ``tau_j + tau_j_ff + k_p_j * (q_j_ref - q_j^{-}) + k_d_j * dq_j_ref``
+
+    For ``POSITION``, the ``dt * k_d_j`` term in :attr:`m_j` supplies derivative
+    damping toward zero velocity without consuming ``dq_j_ref``.
+
+    Shape of ``(sum_of_num_dynamic_joint_cts,)``.
     """
 
     ###
     # Reference State
     ###
 
-    q_j_ref: wp.array | None = None
+    q_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference generalized joint coordinates for implicit PD control.\n
-    Shape of ``(sum(c_j),)`` and type :class:`float`,
-    where ``c_j`` is the number of coordinates of joint ``j``.
-    """
-
-    dq_j_ref: wp.array | None = None
-    """
-    Array of reference generalized joint velocities for implicit PD control.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Array of reference generalized joint coordinates for implicit PD control.
+    Shape of ``(sum_of_num_joint_coords,)``.
     """
 
-    tau_j_ref: wp.array | None = None
+    dq_j_ref: wp.array[wp.float32] | None = None
     """
-    Array of reference feed-forward generalized joint forces for implicit PD control.\n
-    Shape of ``(sum(d_j),)`` and type :class:`float`,
-    where ``d_j`` is the number of DoFs of joint ``j``.
+    Array of reference generalized joint velocities for implicit PD control.
+    Shape of ``(sum_of_num_joint_dofs,)``.
+    """
+
+    tau_j_ref: wp.array[wp.float32] | None = None
+    """
+    Array of reference feed-forward generalized joint forces for implicit PD control.
+    Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
     ###
     # Per-Body Wrenches
     ###
 
-    j_w_j: wp.array | None = None
+    j_w_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Total wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction follows the convention that
-    joints act on the follower by the base body.\n
-    Shape of ``(num_joints,)`` and type :class:`vec6`.
+    joints act on the follower by the base body.
+    Shape of ``(num_joints,)``.
     """
 
-    j_w_a_j: wp.array | None = None
+    j_w_a_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Actuation wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction is defined by the convention that positive wrenches
     in the joint frame are those inducing a positive change in the
-    twist of the follower body relative to the base body.\n
-    Shape of ``(num_joints,)`` and type :class:`vec6`.
+    twist of the follower body relative to the base body.
+    Shape of ``(num_joints,)``.
     """
 
-    j_w_c_j: wp.array | None = None
+    j_w_c_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Constraint wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction is defined by the convention that positive wrenches
     in the joint frame are those inducing a positive change in the
-    twist of the follower body relative to the base body.\n
-    Shape of ``(num_joints,)`` and type :class:`vec6`.
+    twist of the follower body relative to the base body.
+    Shape of ``(num_joints,)``.
     """
 
-    j_w_l_j: wp.array | None = None
+    j_w_l_j: wp.array[wp.spatial_vectorf] | None = None
     """
     Joint-limit wrench applied by each joint, expressed
-    in and about the corresponding joint frame.\n
+    in and about the corresponding joint frame.
     Its direction is defined by the convention that positive wrenches
     in the joint frame are those inducing a positive change in the
-    twist of the follower body relative to the base body.\n
-    Shape of ``(num_joints,)`` and type :class:`vec6`.
+    twist of the follower body relative to the base body.
+    Shape of ``(num_joints,)``.
     """
 
     ###
     # Operations
     ###
 
-    def reset_state(self, q_j_0: wp.array | None = None):
+    def reset_state(self, q_j_0: wp.array[wp.float32] | None = None):
         """
         Resets all generalized joint coordinates to either zero or the provided
         reference coordinates and all generalized joint velocities to zero.
@@ -2304,17 +2279,19 @@ class JointsData:
         self.dq_j.zero_()
 
     def reset_references(
-        self, q_j_ref: wp.array | None = None, dq_j_ref: wp.array | None = None, joints: JointsModel | None = None
+        self,
+        q_j_ref: wp.array[wp.float32] | None = None,
+        dq_j_ref: wp.array[wp.float32] | None = None,
+        joints: JointsModel | None = None,
     ):
         """
         Resets all reference coordinates and velocities to either the provided reference values,
         or the initial values stored in the model.
 
         Args:
-            q_j_ref (wp.array, optional): New reference joint coordinates to set.
-            dq_j_ref (wp.array, optional): New reference joint velocities to set.
-            joints (JointsModel, optional): Joints model, to read initial joint coords/velocities
-                                            to use as reference if not provided.
+            q_j_ref: New reference joint coordinates to set.
+            dq_j_ref: New reference joint velocities to set.
+            joints: Joints model, to read initial joint coords/velocities to use as reference if not provided.
         """
         if q_j_ref is None and joints is None:
             raise ValueError("Either q_j_ref or joints must be provided to reset reference coordinates.")

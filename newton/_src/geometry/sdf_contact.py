@@ -973,10 +973,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 mesh_id_tri = shape_source[tri_shape]
                 mesh_id_sdf = shape_source[sdf_shape]
 
-                # Skip invalid sources (heightfields use HeightfieldData instead of mesh id)
+                # Edge carriers need a mesh source unless they are heightfields.
                 if not tri_is_hfield and mesh_id_tri == wp.uint64(0):
-                    continue
-                if not sdf_is_hfield and mesh_id_sdf == wp.uint64(0):
                     continue
 
                 hfd_tri = HeightfieldData()
@@ -994,6 +992,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     use_bvh_for_sdf = sdf_idx < 0 or sdf_idx >= texture_sdf_table.shape[0]
                     if not use_bvh_for_sdf:
                         use_bvh_for_sdf = texture_sdf_table[sdf_idx].coarse_texture.width == 0
+                    if use_bvh_for_sdf and mesh_id_sdf == wp.uint64(0):
+                        continue
 
                 scale_data_tri = shape_data[tri_shape]
                 scale_data_sdf = shape_data[sdf_shape]
@@ -1378,8 +1378,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                 if not tri_is_hfield and mesh_id_tri == wp.uint64(0):
                     continue
-                if not sdf_is_hfield and mesh_id_sdf == wp.uint64(0):
-                    continue
 
                 hfd_tri = HeightfieldData()
                 hfd_sdf = HeightfieldData()
@@ -1395,6 +1393,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     use_bvh_for_sdf = sdf_idx < 0 or sdf_idx >= texture_sdf_table.shape[0]
                     if not use_bvh_for_sdf:
                         use_bvh_for_sdf = texture_sdf_table[sdf_idx].coarse_texture.width == 0
+                    if use_bvh_for_sdf and mesh_id_sdf == wp.uint64(0):
+                        continue
 
                 scale_data_tri = shape_data[tri_shape]
                 scale_data_sdf = shape_data[sdf_shape]
@@ -1649,6 +1649,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                                 contact_normal = -direction_world if mode == 0 else direction_world
                                 margin_sum = triangle_mesh_margin + sdf_mesh_margin
+                                inner_spatial_depth = margin_sum
+                                if use_texture_sdf_for_search:
+                                    inner_spatial_depth += wp.min(texture_voxel_radius * min_sdf_scale, gap_sum)
                                 export_and_reduce_contact_centered_two_spatial_depths(
                                     pair[0],
                                     pair[1],
@@ -1657,7 +1660,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     dist,
                                     (my_edge_idx << 2) | (mode << 1),
                                     point_world - midpoint,
-                                    margin_sum,
+                                    inner_spatial_depth,
                                     margin_sum + gap_sum,
                                     X_ws_tri,
                                     aabb_lower_tri,

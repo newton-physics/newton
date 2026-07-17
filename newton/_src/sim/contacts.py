@@ -142,6 +142,7 @@ class Contacts:
         rigid_contact_max: int,
         soft_contact_max: int,
         *,
+        soft_contact_tids_size: int | None = None,
         requires_grad: bool = False,
         device: Devicelike = None,
         per_contact_shape_properties: bool = False,
@@ -156,6 +157,11 @@ class Contacts:
         Args:
             rigid_contact_max: Maximum number of rigid contacts
             soft_contact_max: Maximum number of soft contacts
+            soft_contact_tids_size: Length of the internal per-thread replay-index array
+                (``soft_contact_tids``) used for differentiable backward. Defaults to
+                ``soft_contact_max``; the collision pipeline sets it to the full
+                particle + edge + face candidate-pair count so a custom (smaller)
+                ``soft_contact_max`` cannot drop a launch thread's replay slot.
             requires_grad: Whether contact arrays require gradients for differentiable
                 simulation.  When ``True``, soft contact arrays (body_pos, body_vel, normal)
                 are allocated with gradients so that gradient-based optimization can flow
@@ -192,12 +198,14 @@ class Contacts:
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         with wp.ScopedDevice(device):
-            # Packed counter array [rigid_contact_count, soft_contact_count] so
-            # all counts can be zeroed together in one fused kernel launch.
-            # Every entry must be safe to reset to zero at the start of a
-            # collision pass.
+            # One int32[2] array holding two independent contact counts: [0] rigid, [1] soft.
+            # rigid_contact_count (the [0:1] view) and soft_contact_count (the [1:2] view) index
+            # into this same array, so each remains a separate count; they share one array only so
+            # a single kernel can reset both to zero in one launch instead of two. The reset
+            # happens at the start of every collision pass -- folded into the first kernel that
+            # runs, compute_shape_aabbs -- and clear() resets them as well.
             self.contact_counters = wp.zeros(2, dtype=wp.int32)
-            # Create sliced views for individual counters (no additional allocation)
+            # Sliced view for the rigid counter (no additional allocation)
             self.rigid_contact_count = self.contact_counters[0:1]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
@@ -287,17 +295,15 @@ class Contacts:
                 self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
                 """Per-contact match index from frame-to-frame matching.
 
-                Values: ``>= 0`` matched old contact index;
-                :data:`newton.geometry.MATCH_NOT_FOUND` (``-1``) new contact;
-                :data:`newton.geometry.MATCH_BROKEN` (``-2``) key matched but
-                position/normal thresholds exceeded.
+                Non-negative elements index matching contacts in the previous sorted contact buffer.
+                Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
-                """Indices of new contacts in the current sorted buffer (where ``match_index < 0``).
+                """Indices of new contacts in the current sorted buffer.
 
                 Valid after the collision pipeline runs.
                 Shape (rigid_contact_max,), dtype int32."""
@@ -316,9 +322,36 @@ class Contacts:
                 self.rigid_contact_broken_indices = None
                 self.rigid_contact_broken_count = None
 
-            # soft contacts — requires_grad flows through here for differentiable simulation
+            # requires_grad flows through the soft-contact arrays below for differentiable simulation.
+            # soft_contact_count is the [1:2] view of contact_counters above -- the total number of
+            # soft (particle + edge + face) contacts. With the full-surface flag off, only the
+            # particle pass emits records, so this equals the particle-contact count and is
+            # bit-identical in shape and meaning to a build without the feature.
             self.soft_contact_count = self.contact_counters[1:2]
+            # The soft-contact data arrays below are all length soft_contact_max and share one index
+            # space. Each record self-describes its feature kind through soft_contact_indices -- the
+            # soft-side particle ids, -1 padded -- paired with soft_contact_barycentric:
+            #   particle contact:  indices = (p,  -1, -1),  barycentric = (1, 0, 0)
+            #   edge contact:      indices = (v0, v1, -1),  barycentric = (u, 1 - u, 0)
+            #   face contact:      indices = (v0, v1, v2),  barycentric = (w0, w1, w2)
+            # so the number of non-negative index slots gives the kind; there is no per-record kind
+            # flag and no per-kind count ranges. The contact point is
+            # sum_i barycentric[i] * particle_q[indices[i]] over the non-negative slots.
+            self.soft_contact_indices = wp.full(soft_contact_max, wp.vec3i(-1, -1, -1), dtype=wp.vec3i)
+            """Soft-side particle ids per contact, -1 padded [dimensionless], shape (soft_contact_max,), dtype :class:`vec3i`.
+
+            Particle contact ``(p, -1, -1)``, edge contact ``(v0, v1, -1)``, face contact
+            ``(v0, v1, v2)``. Pair with :attr:`soft_contact_barycentric` to recover the contact
+            point over the non-negative slots."""
+            # Particle-only view kept for solvers that consume particle contacts exclusively (XPBD,
+            # semi-implicit, Style3D). Holds the particle id for particle contacts; -1 for edge/face.
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
+            """Particle id per particle contact, -1 for edge/face records [dimensionless], shape (soft_contact_max,), dtype int.
+
+            The particle-only view of :attr:`soft_contact_indices`; use ``soft_contact_indices`` for
+            full-surface (edge/face) contacts."""
+            self.soft_contact_barycentric = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Barycentric weights of the contact point on the soft feature's particles [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`.
@@ -329,7 +362,19 @@ class Contacts:
             """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
             """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
-            self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
+            # Replay index array for differentiable backward: recorded per launch *thread*, not per
+            # contact, so it must span the full particle+edge+face candidate-pair space -- which can
+            # exceed soft_contact_max when the caller overrides that capacity. Sized independently so a
+            # smaller soft_contact_max never drops a thread's replay slot. Defaults to soft_contact_max.
+            _tids_size = soft_contact_tids_size if soft_contact_tids_size is not None else soft_contact_max
+            self.soft_contact_tids = wp.full(_tids_size, -1, dtype=int)
+
+            # Private capability flag: set by the collision pipeline when full-surface (edge/face)
+            # soft contacts are enabled, so soft_contact_indices may hold edge/face records. Solvers
+            # that only consume particle contacts (everything but VBD) raise on this rather than
+            # silently misreading edge/face records -- the pipeline is solver-agnostic, so the check
+            # lives at the consuming solver. Kept private to avoid a public API/deprecation surface.
+            self._enable_rigid_soft_full_surface_contact = False
 
             # Extended contact attributes (optional, allocated on demand)
             self.force: wp.array | None = None
@@ -402,6 +447,7 @@ class Contacts:
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
 
+            self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
@@ -415,3 +461,20 @@ class Contacts:
         Returns the device on which the contact buffers are allocated.
         """
         return self.rigid_contact_count.device
+
+    def _assert_particle_only_soft_contacts(self, solver_name: str):
+        """Raise if these contacts include full-surface (edge/face) soft records.
+
+        Solvers that only consume particle soft contacts call this before reading the soft-contact
+        buffer, so enabling ``enable_rigid_soft_full_surface_contact`` with an unsupported solver
+        fails loudly instead of silently misreading edge/face records as particle contacts.
+
+        Args:
+            solver_name: Name of the calling solver, used in the error message.
+        """
+        if self._enable_rigid_soft_full_surface_contact:
+            raise NotImplementedError(
+                f"{solver_name} does not support full-surface soft contacts "
+                "(CollisionPipeline was built with enable_rigid_soft_full_surface_contact=True); "
+                "only SolverVBD consumes edge/face soft contacts. Disable the flag or use SolverVBD."
+            )

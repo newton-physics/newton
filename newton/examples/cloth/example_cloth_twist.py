@@ -144,7 +144,7 @@ class Example:
         vertices = [wp.vec3(v) for v in mesh_points]
         self.faces = mesh_indices.reshape(-1, 3)
 
-        scene = newton.ModelBuilder(gravity=0)
+        scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         scene.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
             rot=wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2),
@@ -224,10 +224,9 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         self.model.collide(self.state_0, self.contacts)
