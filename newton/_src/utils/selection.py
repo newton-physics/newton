@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import functools
 import operator
-import re
 import warnings
 from fnmatch import fnmatch
 from types import NoneType
@@ -2123,35 +2122,6 @@ def _scatter_group_spatial_kernel(
     dst[starts[group] + j] = values[i, j]
 
 
-def _find_matching_group_ids(pattern: str | re.Pattern[str], labels, world_ids, world_count: int):
-    """Group-id matching for DeformableView: fnmatch for str, fullmatch for re.Pattern.
-
-    Local to deformable selection so compiled-pattern support does not change the
-    string-glob semantics of :func:`find_matching_ids` shared with ArticulationView.
-    """
-    if isinstance(pattern, re.Pattern):
-
-        def matches(label: str) -> bool:
-            return pattern.fullmatch(label) is not None
-    else:
-
-        def matches(label: str) -> bool:
-            return fnmatch(label, pattern)
-
-    grouped_ids = [[] for _ in range(world_count)]
-    global_ids = []
-    for group_id, label in enumerate(labels):
-        if matches(label):
-            world = world_ids[group_id]
-            if world == -1:
-                global_ids.append(group_id)
-            elif 0 <= world < world_count:
-                grouped_ids[world].append(group_id)
-            else:
-                raise ValueError(f"World index out of range: {world}")
-    return grouped_ids, global_ids
-
-
 class DeformableView:
     """Select finalized deformable groups and read or update their existing state.
 
@@ -2159,9 +2129,9 @@ class DeformableView:
 
        This API may change while deformable selection is developed.
 
-    A string ``pattern`` uses label glob matching. A compiled :class:`re.Pattern`
-    uses ``fullmatch()``. Results keep model order: world order followed by builder
-    order. The public families are ``"curve"``, ``"surface"``, and ``"volume"``.
+    ``pattern`` uses the label glob matching shared by Newton selection APIs.
+    Results keep model order: world order followed by builder order. The public
+    families are ``"curve"``, ``"surface"``, and ``"volume"``.
 
     Labeled native deformables and deformables loaded by
     :meth:`~newton.ModelBuilder.add_usd` use the same finalized group records. Native
@@ -2211,7 +2181,7 @@ class DeformableView:
 
     Args:
         model: Model containing the finalized deformable groups.
-        pattern: String label glob or compiled regular expression.
+        pattern: Label glob or list of label globs.
         family: Family to select: ``"curve"``, ``"surface"``, or ``"volume"``.
         verbose: If True, print a short selection summary.
     """
@@ -2222,11 +2192,10 @@ class DeformableView:
         "volume": ("particle", "tetrahedron"),
     }
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
-        pattern: str | re.Pattern[str],
+        pattern: str | list[str],
         *,
         family: Literal["curve", "surface", "volume"],
         verbose: bool | None = None,
@@ -2246,7 +2215,7 @@ class DeformableView:
         labels = [g.label for g in groups]
         group_worlds = [g.world for g in groups]
 
-        group_ids, global_group_ids = _find_matching_group_ids(pattern, labels, group_worlds, model.world_count)
+        group_ids, global_group_ids = find_matching_ids(pattern, labels, group_worlds, model.world_count)
 
         # Keep every model world in the partition, including worlds without a
         # match. Equal adjacent offsets make empty worlds explicit to consumers.

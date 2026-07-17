@@ -3,7 +3,6 @@
 
 """Tests for DeformableView batched selection over finalized deformable groups."""
 
-import re
 import unittest
 
 import numpy as np
@@ -75,6 +74,13 @@ def _add_test_soft_body(builder, label="soft"):
 
 class TestDeformableView(unittest.TestCase):
     """Label-pattern selection and batched state access over deformable groups."""
+
+    def test_constructor_rejects_positional_family(self):
+        """The new view API keeps family keyword-only without a compatibility grace period."""
+        model = _replicated_model(1, device="cpu")
+
+        with self.assertRaises(TypeError):
+            DeformableView(model, "/World/Cloth", "surface")
 
     def test_cloth_view_selects_and_batches_across_worlds(self):
         """A replicated cloth selects one group per world with batched particle state."""
@@ -167,9 +173,8 @@ class TestDeformableView(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one selected group"):
             view.set_particle_positions(view.model.state(), wp.zeros((1, 4), dtype=wp.vec3), world_indices=[0])
 
-    def test_compiled_regex_pattern_selects_by_fullmatch(self):
-        """A compiled regular expression selects groups by fullmatch: alternation picks
-        two labels per replicated world, and a partial match selects nothing."""
+    def test_list_patterns_use_shared_label_matching(self):
+        """A list of glob patterns follows the matching contract shared by selection views."""
         sub = newton.ModelBuilder()
         _add_test_cloth(sub, label="/World/ClothA")
         _add_test_cloth(sub, label="/World/ClothB")
@@ -177,13 +182,9 @@ class TestDeformableView(unittest.TestCase):
         scene.replicate(sub, 2)
         model = scene.finalize()
 
-        view = DeformableView(model, re.compile(r"/World/Cloth(A|B)"), family="surface")
+        view = DeformableView(model, ["/World/ClothA", "/World/ClothB"], family="surface")
         self.assertEqual((view.count, view.count_per_world), (4, 2))
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
-
-        # fullmatch: a prefix of the label is not a match.
-        with self.assertRaises(KeyError):
-            DeformableView(model, re.compile(r"/World/Cloth"), family="surface")
 
     def test_view_round_trip_on_cpu(self):
         """The gather/scatter path works on a CPU-finalized model, not just CUDA."""
