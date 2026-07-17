@@ -8,17 +8,9 @@
 
 ### Changed
 
-- Move the MuJoCo guide from `/integrations/mujoco` to `/solvers/mujoco` and the Isaac Lab page from `/integrations/isaac-lab` to `/lab/isaac-lab`; use the new Solvers and Isaac Lab navigation entries.
-- Allow standalone world-root joints to remain outside articulation metadata during `ModelBuilder.finalize()`; use `SolverXPBD`, `SolverSemiImplicit`, or `SolverMuJoCo`'s standalone-root fallback, or add the joints to an articulation for solvers that require reduced-coordinate articulation metadata.
-- Change the default CoACD convex decomposition threshold from `0.5` to `0.05` to match CoACD's default. To preserve the previous coarse decomposition, set the new `builder.default_mesh_approximation_cfg.coacd_threshold = 0.5`; it applies whenever `threshold` is not passed to `ModelBuilder.approximate_meshes()` explicitly, including USD imports via `add_usd()`. (#3444)
-- **Breaking change (experimental `SolverVBD`):** VBD now interprets all damping coefficients as absolute physical units instead of dimensionless stiffness-relative (Rayleigh) multipliers (`D = kd · ke`). Existing `kd`-family values will produce different damping. Affected parameters: tetrahedral `k_damp` [Pa·s], `tri_kd`, spring `kd` [N·s/m], cable `stretch_damping` [N·s/m] and `bend_damping` [N·m·s/rad] in `add_joint_cable()`/`add_rod()`/`add_rod_graph()`, `joint_target_kd` and `joint_limit_kd` (including `JointDofConfig.limit_kd`), shape contact `kd`/`shape_material_kd` and `soft_contact_kd` [N·s/m], and `SolverVBD(rigid_joint_linear_kd=…, rigid_joint_angular_kd=…)`. To preserve previous behavior, set `kd_new = kd_old · k`, where `k` is the stiffness or penalty coefficient the value was previously paired with, and pass the product to the same field.
-- Change `SolverKamino.reset(world_mask=...)` to accept `wp.bool` arrays instead of `wp.int32`; callers passing `wp.int32` masks must switch to `wp.bool` (e.g. `wp.array([False, True, False], dtype=wp.bool)` or `wp.ones((num_worlds,), dtype=wp.bool)`). (#2934)
-- Speed up `ModelBuilder.replicate()` for large world counts by merging all copies in one pass; it no longer calls `add_world()` or `add_builder()` per copy, so `ModelBuilder` subclass overrides of those methods are not invoked during replication.
-- Upgrade `mujoco` to 3.10 and `mujoco-warp` to 3.10.0.2 and propagate `Model.shape_gap` into MuJoCo's `geom_gap`/`pair_gap` so contact-detection ranges authored on Newton shapes are honored by MuJoCo's broadphase.
-- Align MJCF and USD margin/gap import with MuJoCo 3.9+. Drop the `mj_margin - mj_gap` subtraction; `Model.shape_margin` now matches authored `margin`, and `Model.shape_gap` matches authored `gap`. Pass `legacy_margin_gap=True` to `ModelBuilder.add_mjcf` or `ModelBuilder.add_usd` to restore the pre-3.9 translation for files authored against MuJoCo <= 3.8.
-- Enable particle-particle contact forces by default in standalone `SolverSemiImplicit`: the solver now rebuilds `Model.particle_grid` every substep and adds contact forces to the existing `particle_f`. Existing scenes with particles closer than `2 * particle_max_radius + particle_cohesion` may change trajectories; set `model.particle_grid = None` before stepping to preserve the previous behavior without particle-particle contacts.
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
+- Speed up `ModelBuilder.replicate()` for large world counts by merging all copies in one pass; it no longer calls `add_world()` or `add_builder()` per copy, so `ModelBuilder` subclass overrides of those methods are not invoked during replication.
 
 ### Deprecated
 
@@ -28,18 +20,16 @@
 
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
 - Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
+- Fix builder merging (`ModelBuilder.add_builder()`, `add_world()`, `replicate()`) offsetting negative reference sentinels in custom attribute values stored as NumPy or Warp integer scalars.
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Fix Style3D solver divergence caused by isolated vertices.
-- Fix builder merging (`ModelBuilder.add_builder()`, `add_world()`, `replicate()`) offsetting negative reference sentinels in custom attribute values stored as NumPy or Warp integer scalars.
-- Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
-- Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
-- Fix `ModelBuilder` merges to accept array-valued transform fields and plain-list particle color groups.
-- Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
-- Fix `ModelBuilder.approximate_meshes()` forwarding CoACD/V-HACD keyword arguments to the convex-hull fallback when the decomposition backend fails or is not installed, which broke the fallback and left the original mesh in place.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
+- Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
+- Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
 - Fix `cloth_franka` example rendering particles at simulation scale (cm) instead of viewer scale (m)
+- Fix `ModelBuilder` merges to accept array-valued transform fields and plain-list particle color groups.
 
 ## [1.4.0] - 2026-07-16
 
@@ -183,8 +173,6 @@
 - Fix mesh-SDF contacts with positive contact gaps by making contact reduction prefer margin-depth contacts over gap-only directional fallbacks. (#3490)
 - Fix USD import of `MjcJointAPI` joints without authored `mjc:solreflimit` to use MuJoCo's `(0.02, 1)` default instead of `ModelBuilder` defaults. (#3286; fixes #2929)
 - Fix `SolverImplicitMPM` whole-step CUDA graph capture failing when the rheology inner solver is an iterative linear method such as `solver="cg"`. (#3155)
-- Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
-- Fix `ControllerNeuralMLP` and `ControllerNeuralLSTM` to feed raw joint velocity to the network instead of velocity error (`target_vel - velocity`), matching the actuator-net input convention used for training (position error and joint velocity).
 - Fix intermittent `SolverCoupledADMM` crashes when resetting particle-grid state. (#3467)
 - Fix coupled solvers generating stale contacts after a contact-producing sub-solver is disabled. (#3477)
 - Fix `ControllerNeuralMLP` and `ControllerNeuralLSTM` to feed raw joint velocity to the network instead of velocity error (`target_vel - velocity`), matching the actuator-net input convention used for training (position error and joint velocity). (#3413)
@@ -196,7 +184,6 @@
 - Fix USD import of MJCF weld and connect equalities that represent world with the stage's non-rigid default prim.
 - Fix USD import of authored rigid-body centers of mass to apply inherited transform scale. (#3332)
 - Fix VBD collision damping to use relative normal gap rate so uniform contact-stencil motion and tangential sliding do not create artificial normal damping.
-- Reject incompatible custom attribute and frequency definitions before composing `ModelBuilder` instances.
 - Fix `SolverVBD` building unused per-body rigid and particle contact lists for static and kinematic bodies, which caused unnecessary work and misleading contact-buffer overflow warnings.
 - Fix multi-world soft contact filtering to avoid cross-world rigid-soft particle-shape pairs and VBD soft-soft triangle/edge candidates.
 - Fix `ModelBuilder.add_usd` so a stray authored joint outside any articulation root no longer suppresses base-joint (articulation) creation for unrelated floating rigid bodies in the same call. (#3002)
