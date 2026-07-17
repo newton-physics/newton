@@ -82,6 +82,24 @@ class TestDeformableView(unittest.TestCase):
         with self.assertRaises(TypeError):
             DeformableView(model, "/World/Cloth", "surface")
 
+    def test_family_is_inferred_for_one_family_match(self):
+        """Callers can omit family when the matched labels identify one semantic family."""
+        model = _replicated_model(2, device="cpu")
+
+        view = DeformableView(model, "/World/Cloth")
+
+        self.assertEqual((view.family, view.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
+
+    def test_family_filters_or_disambiguates_mixed_matches(self):
+        """A family filters broad matches, while an unfiltered mixed match fails clearly."""
+        model = _replicated_model(2, device="cpu")
+
+        surface = DeformableView(model, "/World/*", family="surface")
+        self.assertEqual((surface.family, surface.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
+
+        with self.assertRaisesRegex(ValueError, "multiple families.*curve.*surface"):
+            DeformableView(model, "/World/*")
+
     def test_cloth_view_selects_and_batches_across_worlds(self):
         """A replicated cloth selects one group per world with batched particle state."""
         model = _replicated_model(3)

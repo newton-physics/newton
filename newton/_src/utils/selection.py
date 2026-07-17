@@ -2182,36 +2182,32 @@ class DeformableView:
     Args:
         model: Model containing the finalized deformable groups.
         pattern: Label glob or list of label globs.
-        family: Family to select: ``"curve"``, ``"surface"``, or ``"volume"``.
+        family: Optional family filter: ``"curve"``, ``"surface"``, or
+            ``"volume"``. Inferred when the match contains one family.
         verbose: If True, print a short selection summary.
     """
 
-    _FAMILY_KINDS: ClassVar[dict[str, tuple[str, ...]]] = {
-        "curve": ("body", "joint"),
-        "surface": ("particle", "triangle", "edge"),
-        "volume": ("particle", "tetrahedron"),
-    }
+    _FAMILIES: ClassVar[frozenset[str]] = frozenset(("curve", "surface", "volume"))
 
     def __init__(
         self,
         model: Model,
         pattern: str | list[str],
         *,
-        family: Literal["curve", "surface", "volume"],
+        family: Literal["curve", "surface", "volume"] | None = None,
         verbose: bool | None = None,
     ) -> None:
-        if family not in self._FAMILY_KINDS:
-            raise ValueError(f"Unknown deformable family '{family}'; expected one of {sorted(self._FAMILY_KINDS)}")
+        if family is not None and family not in self._FAMILIES:
+            raise ValueError(f"Unknown deformable family '{family}'; expected one of {sorted(self._FAMILIES)}")
         self.model = model
         self.device = model.device
-        self.family = family
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
 
         # Model group metadata is private (the view is the public addressability surface);
         # resolve the selection from the per-group records emitted by finalize().
-        groups = [g for g in model._deformable_groups if g.family == family]
+        groups = [g for g in model._deformable_groups if family is None or g.family == family]
         labels = [g.label for g in groups]
         group_worlds = [g.world for g in groups]
 
@@ -2237,7 +2233,8 @@ class DeformableView:
             group_ids = [global_group_ids]
 
         if group_count == 0:
-            raise KeyError(f"No {family} groups matching pattern '{pattern}'")
+            family_description = f"{family} " if family is not None else "deformable "
+            raise KeyError(f"No {family_description}groups matching pattern '{pattern}'")
 
         self.count = group_count
         """Number of selected groups across all worlds."""
@@ -2249,6 +2246,15 @@ class DeformableView:
         self._uses_global_groups = bool(global_group_ids)
         flat_ids = [i for ids in group_ids for i in ids]
         selected = [groups[i] for i in flat_ids]
+        matched_families = {group.family for group in selected}
+        if family is None:
+            if len(matched_families) > 1:
+                raise ValueError(
+                    f"Deformable pattern '{pattern}' matches multiple families {sorted(matched_families)}; "
+                    "pass family= or use a narrower pattern"
+                )
+            family = next(iter(matched_families))
+        self.family = family
         self.labels = [g.label for g in selected]
         """Label of each selected group, ordered world by world."""
         self.worlds = [g.world for g in selected]
@@ -2269,7 +2275,8 @@ class DeformableView:
         self._ranges: dict[str, list[tuple[int, int]]] = {}
         self._starts: dict[str, wp.array[wp.int32]] = {}
         self._counts: dict[str, int | None] = {}
-        for kind in self._FAMILY_KINDS[family]:
+        self._kinds = tuple(kind for kind in selected[0].ranges if all(kind in group.ranges for group in selected))
+        for kind in self._kinds:
             kind_ranges = [g.ranges[kind] for g in selected]
             sizes = {end - start for start, end in kind_ranges}
             self._counts[kind] = sizes.pop() if len(sizes) == 1 else None
@@ -2279,7 +2286,7 @@ class DeformableView:
         if verbose:
             elements = ", ".join(
                 f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)"
-                for k in self._FAMILY_KINDS[family]
+                for k in self._kinds
             )
             print(f"DeformableView '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
 
@@ -2361,8 +2368,8 @@ class DeformableView:
     # generic gather/scatter -------------------------------------------------
 
     def _validate_kind(self, kind: str) -> None:
-        if kind not in self._FAMILY_KINDS[self.family]:
-            raise AttributeError(f"{self.family} groups have no {kind} elements")
+        if kind not in self._kinds:
+            raise AttributeError(f"Selected {self.family} groups have no {kind} elements in common")
 
     def _element_count(self, kind: str) -> int:
         self._validate_kind(kind)
