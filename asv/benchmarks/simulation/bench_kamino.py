@@ -150,6 +150,8 @@ class KpiDRLegs(_KpiBenchmark):
     def setup_cache(self):
         return self._collect_metrics()
 
+    setup_cache.timeout = 1200
+
 
 class NotifyDRLegs:
     """Benchmark Kamino model notifications for 2048 DR Legs worlds."""
