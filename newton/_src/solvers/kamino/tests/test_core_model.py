@@ -470,6 +470,40 @@ class TestModelConversions(unittest.TestCase):
         ]
         test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino, excluded=excluded)
 
+    def test_05_model_conversions_base_assignment_non_free_root(self):
+        """
+        Test per-world base assignment when articulations have non-free root joints.
+
+        A free-rooted articulation following a fixed-rooted one still provides the
+        world's floating base without warning; a world whose only articulation is
+        fixed-rooted gets no base and warns that floating base resets are disabled.
+        """
+
+        def build_model(with_free_articulation: bool) -> Model:
+            builder: ModelBuilder = ModelBuilder()
+            SolverKamino.register_custom_attributes(builder)
+            body_fixed = builder.add_link()
+            builder.add_shape_box(body_fixed)
+            joint_fixed = builder.add_joint_fixed(parent=-1, child=body_fixed)
+            builder.add_articulation([joint_fixed])
+            if with_free_articulation:
+                body_free = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()))
+                builder.add_shape_box(body_free)
+                joint_free = builder.add_joint_free(child=body_free)
+                builder.add_articulation([joint_free])
+            return builder.finalize(device=self.default_device)
+
+        with self.assertNoLogs(level="WARNING"):
+            model_kamino = ModelKamino.from_newton(build_model(with_free_articulation=True))
+        self.assertEqual(model_kamino.info.base_body_index.numpy().tolist(), [1])
+        self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [1])
+
+        with self.assertLogs(level="WARNING") as logs:
+            model_kamino = ModelKamino.from_newton(build_model(with_free_articulation=False))
+        self.assertTrue(any("non-free joint as root" in message for message in logs.output))
+        self.assertEqual(model_kamino.info.base_body_index.numpy().tolist(), [-1])
+        self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [-1])
+
     def test_10_model_conversions_arbitrary_axis(self):
         """
         Test that Newton→Kamino conversion succeeds for a revolute joint
