@@ -125,15 +125,15 @@ class Example:
         self.surface_particle_ranges = self.surface.ranges("particle")
         self.volume_particle_ranges = self.volume.ranges("particle")
 
-        # The exact-label view has one primary cloth per world, so even worlds
-        # can be addressed directly with world indices.
+        # The exact-label view has one primary cloth per world, so its flat group
+        # indices coincide with model world IDs.
         positions_primary_default = self.surface.get_particle_positions(self.model).numpy()
         velocities_primary_default = self.surface.get_particle_velocities(self.model).numpy()
-        world_indices_primary_host = np.arange(0, self.world_count, 2, dtype=np.int32)
-        positions_primary_reset = positions_primary_default[world_indices_primary_host].copy()
+        group_indices_primary_host = np.arange(0, self.world_count, 2, dtype=np.int32)
+        positions_primary_reset = positions_primary_default[group_indices_primary_host].copy()
         positions_primary_reset[:, :, 2] += 0.25
-        self.world_indices_primary = wp.array(
-            world_indices_primary_host,
+        self.group_indices_primary = wp.array(
+            group_indices_primary_host,
             dtype=wp.int32,
             device=self.model.device,
         )
@@ -143,7 +143,7 @@ class Example:
             device=self.model.device,
         )
         self.velocities_primary_reset = wp.array(
-            velocities_primary_default[world_indices_primary_host],
+            velocities_primary_default[group_indices_primary_host],
             dtype=wp.vec3,
             device=self.model.device,
         )
@@ -172,33 +172,33 @@ class Example:
         )
 
         # Even-world cables return to their authored segment poses and velocities.
-        world_indices_cable_host = np.arange(0, self.world_count, 2, dtype=np.int32)
+        group_indices_cable_host = np.arange(0, self.world_count, 2, dtype=np.int32)
         transforms_cable_default = self.curve.get_body_transforms(self.model).numpy()
         velocities_cable_default = self.curve.get_body_velocities(self.model).numpy()
-        self.world_indices_cable = wp.array(
-            world_indices_cable_host,
+        self.group_indices_cable = wp.array(
+            group_indices_cable_host,
             dtype=wp.int32,
             device=self.model.device,
         )
         self.transforms_cable_reset = wp.array(
-            transforms_cable_default[world_indices_cable_host],
+            transforms_cable_default[group_indices_cable_host],
             dtype=wp.transform,
             device=self.model.device,
         )
         self.velocities_cable_reset = wp.array(
-            velocities_cable_default[world_indices_cable_host],
+            velocities_cable_default[group_indices_cable_host],
             dtype=wp.spatial_vector,
             device=self.model.device,
         )
 
         # Odd-world soft cubes restart half a meter above their authored positions.
-        world_indices_volume_host = np.arange(1, self.world_count, 2, dtype=np.int32)
+        group_indices_volume_host = np.arange(1, self.world_count, 2, dtype=np.int32)
         positions_volume_default = self.volume.get_particle_positions(self.model).numpy()
         velocities_volume_default = self.volume.get_particle_velocities(self.model).numpy()
-        positions_volume_reset = positions_volume_default[world_indices_volume_host].copy()
+        positions_volume_reset = positions_volume_default[group_indices_volume_host].copy()
         positions_volume_reset[:, :, 2] += 0.5
-        self.world_indices_volume = wp.array(
-            world_indices_volume_host,
+        self.group_indices_volume = wp.array(
+            group_indices_volume_host,
             dtype=wp.int32,
             device=self.model.device,
         )
@@ -208,7 +208,7 @@ class Example:
             device=self.model.device,
         )
         self.velocities_volume_reset = wp.array(
-            velocities_volume_default[world_indices_volume_host],
+            velocities_volume_default[group_indices_volume_host],
             dtype=wp.vec3,
             device=self.model.device,
         )
@@ -221,12 +221,12 @@ class Example:
         wp.capture_launch(self.reset_graph)
 
         positions_primary_expected = positions_primary_default.copy()
-        positions_primary_expected[world_indices_primary_host] = positions_primary_reset
+        positions_primary_expected[group_indices_primary_host] = positions_primary_reset
         positions_surface_expected = positions_surface_default.copy()
-        positions_surface_expected[2 * world_indices_primary_host] = positions_primary_reset
+        positions_surface_expected[2 * group_indices_primary_host] = positions_primary_reset
         positions_surface_expected[group_indices_secondary_host] = positions_secondary_reset
         positions_volume_expected = positions_volume_default.copy()
-        positions_volume_expected[world_indices_volume_host] = positions_volume_reset
+        positions_volume_expected[group_indices_volume_host] = positions_volume_reset
 
         # Comparing complete views also proves that indexed writes leave every
         # unselected group unchanged.
@@ -259,12 +259,12 @@ class Example:
             self.surface.set_particle_positions(
                 state,
                 self.positions_primary_reset,
-                world_indices=self.world_indices_primary,
+                group_indices=self.group_indices_primary,
             )
             self.surface.set_particle_velocities(
                 state,
                 self.velocities_primary_reset,
-                world_indices=self.world_indices_primary,
+                group_indices=self.group_indices_primary,
             )
             self.surfaces.set_particle_positions(
                 state,
@@ -279,22 +279,22 @@ class Example:
             self.curve.set_body_transforms(
                 state,
                 self.transforms_cable_reset,
-                world_indices=self.world_indices_cable,
+                group_indices=self.group_indices_cable,
             )
             self.curve.set_body_velocities(
                 state,
                 self.velocities_cable_reset,
-                world_indices=self.world_indices_cable,
+                group_indices=self.group_indices_cable,
             )
             self.volume.set_particle_positions(
                 state,
                 self.positions_volume_reset,
-                world_indices=self.world_indices_volume,
+                group_indices=self.group_indices_volume,
             )
             self.volume.set_particle_velocities(
                 state,
                 self.velocities_volume_reset,
-                world_indices=self.world_indices_volume,
+                group_indices=self.group_indices_volume,
             )
 
     def simulate(self) -> None:

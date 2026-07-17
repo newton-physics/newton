@@ -207,8 +207,6 @@ class TestDeformableView(unittest.TestCase):
         np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1, 1])
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothA", "/World/ClothB"])
         self.assertEqual(view.get_particle_positions(view.model.state()).shape, (3, 4))
-        with self.assertRaisesRegex(ValueError, "exactly one selected group"):
-            view.set_particle_positions(view.model.state(), wp.zeros((1, 4), dtype=wp.vec3), world_indices=[0])
 
     def test_list_patterns_use_shared_label_matching(self):
         """A list of glob patterns follows the matching contract shared by selection views."""
@@ -372,29 +370,26 @@ class TestDeformableView(unittest.TestCase):
         cloth = DeformableView(model, "/World/Cloth", family="surface")
         values = wp.full((1, cloth.particles_per_group), 9.0, dtype=wp.vec3, device="cpu")
 
-        for index_argument in ("group_indices", "world_indices"):
-            for invalid_indices in ([-0.2], [1.9], ["1"], [False], [True]):
-                with self.subTest(index_argument=index_argument, invalid_indices=invalid_indices):
-                    state = model.state()
-                    before = cloth.get_particle_positions(state).numpy()
-                    with self.assertRaisesRegex(TypeError, index_argument):
-                        cloth.set_particle_positions(state, values, **{index_argument: invalid_indices})
-                    np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
-
-            with self.subTest(index_argument=index_argument, valid_indices="numpy integer"):
+        for invalid_indices in ([-0.2], [1.9], ["1"], [False], [True]):
+            with self.subTest(invalid_indices=invalid_indices):
                 state = model.state()
                 before = cloth.get_particle_positions(state).numpy()
-                cloth.set_particle_positions(state, values, **{index_argument: [np.int64(1)]})
-                after = cloth.get_particle_positions(state).numpy()
-                np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
-                np.testing.assert_array_equal(after[1], np.full_like(after[1], 9.0))
-
-            with self.subTest(index_argument=index_argument, valid_indices="empty"):
-                state = model.state()
-                before = cloth.get_particle_positions(state).numpy()
-                empty_values = wp.empty((0, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
-                cloth.set_particle_positions(state, empty_values, **{index_argument: []})
+                with self.assertRaisesRegex(TypeError, "group_indices"):
+                    cloth.set_particle_positions(state, values, group_indices=invalid_indices)
                 np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
+
+        state = model.state()
+        before = cloth.get_particle_positions(state).numpy()
+        cloth.set_particle_positions(state, values, group_indices=[np.int64(1)])
+        after = cloth.get_particle_positions(state).numpy()
+        np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
+        np.testing.assert_array_equal(after[1], np.full_like(after[1], 9.0))
+
+        state = model.state()
+        before = cloth.get_particle_positions(state).numpy()
+        empty_values = wp.empty((0, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
+        cloth.set_particle_positions(state, empty_values, group_indices=[])
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before)
 
     def test_invalid_device_group_index_does_not_write(self):
         """An out-of-range device group index cannot address another group's state."""
@@ -423,16 +418,6 @@ class TestDeformableView(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one-dimensional"):
             cloth.set_particle_positions(state, values, group_indices=indices)
 
-    def test_indexed_writes_accept_only_one_selector(self):
-        """An indexed write cannot mix flat group rows with model-world rows."""
-        model = _replicated_model(3, device="cpu")
-        state = model.state()
-        cloth = DeformableView(model, "/World/Cloth", family="surface")
-        values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
-
-        with self.assertRaisesRegex(ValueError, "either group_indices or world_indices"):
-            cloth.set_particle_positions(state, values, group_indices=[0], world_indices=[0])
-
     def test_device_selectors_validate_dtype_and_device(self):
         """Warp selectors must be int32 arrays on the view's device."""
         model = _replicated_model(3, device="cpu")
@@ -440,17 +425,14 @@ class TestDeformableView(unittest.TestCase):
         cloth = DeformableView(model, "/World/Cloth", family="surface")
         values = wp.zeros((1, cloth.particles_per_group), dtype=wp.vec3, device="cpu")
 
-        for index_argument in ("group_indices", "world_indices"):
-            with self.subTest(index_argument=index_argument, mismatch="dtype"):
-                indices = wp.array([0], dtype=wp.int64, device="cpu")
-                with self.assertRaisesRegex(ValueError, rf"{index_argument} dtype int32"):
-                    cloth.set_particle_positions(state, values, **{index_argument: indices})
+        indices = wp.array([0], dtype=wp.int64, device="cpu")
+        with self.assertRaisesRegex(ValueError, "group_indices dtype int32"):
+            cloth.set_particle_positions(state, values, group_indices=indices)
 
-            if wp.is_cuda_available():
-                with self.subTest(index_argument=index_argument, mismatch="device"):
-                    indices = wp.array([0], dtype=wp.int32, device="cuda:0")
-                    with self.assertRaisesRegex(ValueError, rf"{index_argument} on device cpu"):
-                        cloth.set_particle_positions(state, values, **{index_argument: indices})
+        if wp.is_cuda_available():
+            indices = wp.array([0], dtype=wp.int32, device="cuda:0")
+            with self.assertRaisesRegex(ValueError, "group_indices on device cpu"):
+                cloth.set_particle_positions(state, values, group_indices=indices)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
     def test_device_index_writes_capture_and_replay(self):
@@ -459,44 +441,42 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(3, device=device)
         cloth = DeformableView(model, "/World/Cloth", family="surface")
 
-        for index_argument in ("group_indices", "world_indices"):
-            with self.subTest(index_argument=index_argument):
-                state = model.state()
-                initial = cloth.get_particle_positions(state).numpy().copy()
-                values_np = np.zeros((2, cloth.particles_per_group, 3), dtype=np.float32)
-                values = wp.array(values_np, dtype=wp.vec3, device=device)
-                indices = wp.array([cloth.count, cloth.count], dtype=wp.int32, device=device)
+        state = model.state()
+        initial = cloth.get_particle_positions(state).numpy().copy()
+        values_np = np.zeros((2, cloth.particles_per_group, 3), dtype=np.float32)
+        values = wp.array(values_np, dtype=wp.vec3, device=device)
+        indices = wp.array([cloth.count, cloth.count], dtype=wp.int32, device=device)
 
-                # Compile every captured operation without changing state.
-                cloth.set_particle_positions(state, values, **{index_argument: indices})
+        # Compile every captured operation without changing state.
+        cloth.set_particle_positions(state, values, group_indices=indices)
 
-                indices.assign(np.array([1, 1], dtype=np.int32))
-                values_np[0].fill(3.0)
-                values_np[1].fill(8.0)
-                values.assign(values_np)
-                with wp.ScopedCapture(device) as capture:
-                    cloth.set_particle_positions(state, values, **{index_argument: indices})
+        indices.assign(np.array([1, 1], dtype=np.int32))
+        values_np[0].fill(3.0)
+        values_np[1].fill(8.0)
+        values.assign(values_np)
+        with wp.ScopedCapture(device) as capture:
+            cloth.set_particle_positions(state, values, group_indices=indices)
 
-                wp.capture_launch(capture.graph)
-                expected = initial.copy()
-                expected[1].fill(8.0)
-                np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), expected, atol=1e-6)
+        wp.capture_launch(capture.graph)
+        expected = initial.copy()
+        expected[1].fill(8.0)
+        np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), expected, atol=1e-6)
 
-                indices.assign(np.array([0, 2], dtype=np.int32))
-                values_np[0].fill(4.0)
-                values_np[1].fill(9.0)
-                values.assign(values_np)
-                wp.capture_launch(capture.graph)
-                expected[0].fill(4.0)
-                expected[2].fill(9.0)
-                np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), expected, atol=1e-6)
+        indices.assign(np.array([0, 2], dtype=np.int32))
+        values_np[0].fill(4.0)
+        values_np[1].fill(9.0)
+        values.assign(values_np)
+        wp.capture_launch(capture.graph)
+        expected[0].fill(4.0)
+        expected[2].fill(9.0)
+        np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), expected, atol=1e-6)
 
-                before_invalid = cloth.get_particle_positions(state).numpy().copy()
-                indices.assign(np.array([-1, cloth.count], dtype=np.int32))
-                values_np.fill(12.0)
-                values.assign(values_np)
-                wp.capture_launch(capture.graph)
-                np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before_invalid)
+        before_invalid = cloth.get_particle_positions(state).numpy().copy()
+        indices.assign(np.array([-1, cloth.count], dtype=np.int32))
+        values_np.fill(12.0)
+        values.assign(values_np)
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), before_invalid)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
     def test_cable_device_writes_capture_and_replay(self):
@@ -566,9 +546,9 @@ class TestDeformableView(unittest.TestCase):
         np.testing.assert_array_equal(after[[0, 2]], before[[0, 2]])
         np.testing.assert_array_equal(after[1], values[1])
 
-    def test_world_indices_write_one_group_per_world(self):
-        """World indices address actual model worlds when each world has one match."""
-        model = _replicated_model(3)
+    def test_group_indices_are_the_only_indexed_write_selector(self):
+        """Environment IDs use the flat group axis when each world has one match."""
+        model = _replicated_model(3, device="cpu")
         state = model.state()
         cloth = DeformableView(model, "/World/Cloth", family="surface")
         before = cloth.get_particle_positions(state).numpy()
@@ -578,12 +558,15 @@ class TestDeformableView(unittest.TestCase):
         cloth.set_particle_positions(
             state,
             wp.array(moved, dtype=wp.vec3, device=model.device),
-            world_indices=wp.array([2], dtype=wp.int32, device=model.device),
+            group_indices=wp.array([2], dtype=wp.int32, device=model.device),
         )
 
         after = cloth.get_particle_positions(state).numpy()
         np.testing.assert_array_equal(after[:2], before[:2])
         np.testing.assert_allclose(after[2], moved[0], atol=1e-6)
+
+        with self.assertRaises(TypeError):
+            cloth.set_particle_positions(state, wp.array(moved, dtype=wp.vec3), world_indices=[2])
 
 
 class TestDeformableAndArticulationViews(unittest.TestCase):

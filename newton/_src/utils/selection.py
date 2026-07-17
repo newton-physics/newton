@@ -2153,10 +2153,9 @@ class DeformableView:
 
     Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
     changes its initial arrays; writing a state changes only that state. Host
-    ``group_indices`` select flat group rows. ``world_indices`` select actual model
-    worlds when every world has exactly one matching group. Host group indices are
-    bounds-checked and duplicates are rejected. Device ``int32`` indices stay on the
-    device: out-of-range entries are ignored and the last value wins for duplicates.
+    ``group_indices`` select flat group rows. Host group indices are bounds-checked
+    and duplicates are rejected. Device ``int32`` indices stay on the device:
+    out-of-range entries are ignored and the last value wins for duplicates.
     Indexed setters and internally staged getters can be captured after view
     construction and kernel warm-up. Regular getter layouts return zero-copy views;
     irregular layouts reuse an internal contiguous staging array.
@@ -2242,8 +2241,6 @@ class DeformableView:
         """Number of worlds spanned by the selection."""
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
         """Number of selected groups per world, or None when the counts vary."""
-        self._groups_per_world = counts_per_world
-        self._uses_global_groups = bool(global_group_ids)
         flat_ids = [i for ids in group_ids for i in ids]
         selected = [groups[i] for i in flat_ids]
         matched_families = {group.family for group in selected}
@@ -2475,15 +2472,6 @@ class DeformableView:
             raise ValueError(f"{argument_name} contains duplicate entries: {idx}")
         return wp.array(idx, dtype=wp.int32, device=self.device)
 
-    def _resolve_write_indices(self, group_indices: Any = None, world_indices: Any = None) -> wp.array[wp.int32]:
-        if group_indices is not None and world_indices is not None:
-            raise ValueError("Pass either group_indices or world_indices, not both")
-        if world_indices is None:
-            return self._resolve_group_indices(group_indices)
-        if self._uses_global_groups or any(count != 1 for count in self._groups_per_world):
-            raise ValueError("world_indices requires exactly one selected group in every model world")
-        return self._resolve_group_indices(world_indices, "world_indices")
-
     def _scatter(
         self,
         kind: str,
@@ -2492,11 +2480,10 @@ class DeformableView:
         dst: wp.array[Any],
         dtype: Any,
         group_indices: Any = None,
-        world_indices: Any = None,
     ) -> None:
         count = self._element_count(kind)
-        device_indices = isinstance(group_indices, wp.array) or isinstance(world_indices, wp.array)
-        groups = self._resolve_write_indices(group_indices, world_indices)
+        device_indices = isinstance(group_indices, wp.array)
+        groups = self._resolve_group_indices(group_indices)
         rows = groups.shape[0]
         if not isinstance(values, wp.array):
             values = wp.array(values, dtype=dtype, shape=(rows, count), device=self.device, copy=False)
@@ -2554,13 +2541,11 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
-        world_indices: Any = None,
     ) -> None:
         """Write particle positions [m] from ``(rows, particles_per_group)`` vec3 values.
 
         ``rows`` is ``count``, or the number of selected groups. ``group_indices``
-        selects flat rows. ``world_indices`` selects model worlds when every world has
-        exactly one matching group. Other groups are untouched.
+        selects flat rows. Other groups are untouched.
 
         Args:
             target: Model initial state or simulation state to update.
@@ -2568,16 +2553,12 @@ class DeformableView:
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
-            world_indices: Optional model-world rows, accepted only when every model
-                world has exactly one matching group. Uses the same host/device forms
-                as ``group_indices``.
 
         Raises:
             AttributeError: If this is not a surface or volume view.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness, or world-selection requirements are invalid, or
-                if both selector arguments are provided.
+                or uniqueness are invalid.
         """
         self._scatter(
             "particle",
@@ -2586,7 +2567,6 @@ class DeformableView:
             target.particle_q,
             wp.vec3,
             group_indices,
-            world_indices,
         )
 
     def get_particle_velocities(
@@ -2613,13 +2593,11 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
-        world_indices: Any = None,
     ) -> None:
         """Write particle velocities [m/s] from ``(rows, particles_per_group)`` vec3 values.
 
         ``rows`` is ``count``, or the number of selected groups. ``group_indices``
-        selects flat rows. ``world_indices`` selects model worlds when every world has
-        exactly one matching group. Other groups are untouched.
+        selects flat rows. Other groups are untouched.
 
         Args:
             target: Model initial state or simulation state to update.
@@ -2628,16 +2606,12 @@ class DeformableView:
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
-            world_indices: Optional model-world rows, accepted only when every model
-                world has exactly one matching group. Uses the same host/device forms
-                as ``group_indices``.
 
         Raises:
             AttributeError: If this is not a surface or volume view.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness, or world-selection requirements are invalid, or
-                if both selector arguments are provided.
+                or uniqueness are invalid.
         """
         self._scatter(
             "particle",
@@ -2646,7 +2620,6 @@ class DeformableView:
             target.particle_qd,
             wp.vec3,
             group_indices,
-            world_indices,
         )
 
     # body state (curve) --------------------------------------------------
@@ -2683,13 +2656,11 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
-        world_indices: Any = None,
     ) -> None:
         """Write segment transforms from ``(rows, bodies_per_group)`` values.
 
         Each transform contains a world-space translation [m] and a unitless
-        quaternion. ``group_indices`` selects flat rows. ``world_indices`` selects
-        model worlds when every world has exactly one matching group.
+        quaternion. ``group_indices`` selects flat rows.
 
         Args:
             target: Model initial state or simulation state to update.
@@ -2698,16 +2669,12 @@ class DeformableView:
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
-            world_indices: Optional model-world rows, accepted only when every model
-                world has exactly one matching group. Uses the same host/device forms
-                as ``group_indices``.
 
         Raises:
             AttributeError: If this is not a curve view.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness, or world-selection requirements are invalid, or
-                if both selector arguments are provided.
+                or uniqueness are invalid.
         """
         self._scatter(
             "body",
@@ -2716,7 +2683,6 @@ class DeformableView:
             target.body_q,
             wp.transform,
             group_indices,
-            world_indices,
         )
 
     def get_body_velocities(
@@ -2746,13 +2712,11 @@ class DeformableView:
         values: Any,
         *,
         group_indices: Any = None,
-        world_indices: Any = None,
     ) -> None:
         """Write segment velocities from ``(rows, bodies_per_group)`` values.
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
         followed by angular velocity [rad/s]. ``group_indices`` selects flat rows.
-        ``world_indices`` selects model worlds when every world has exactly one match.
 
         Args:
             target: Model initial state or simulation state to update.
@@ -2762,16 +2726,12 @@ class DeformableView:
             group_indices: Optional flat group rows. Host entries must be integers;
                 device entries must be a one-dimensional ``int32`` array on the model
                 device.
-            world_indices: Optional model-world rows, accepted only when every model
-                world has exactly one matching group. Uses the same host/device forms
-                as ``group_indices``.
 
         Raises:
             AttributeError: If this is not a curve view.
             TypeError: If a host selector entry is not an integer.
             ValueError: If group sizes, value shape/dtype/device, host selector bounds
-                or uniqueness, or world-selection requirements are invalid, or
-                if both selector arguments are provided.
+                or uniqueness are invalid.
         """
         self._scatter(
             "body",
@@ -2780,5 +2740,4 @@ class DeformableView:
             target.body_qd,
             wp.spatial_vector,
             group_indices,
-            world_indices,
         )
