@@ -493,7 +493,7 @@ class Example:
 
         wp.synchronize_device()
         start_time = time.perf_counter()
-        if self.use_cuda_graph:
+        if self.use_cuda_graph and self.graph is not None:
             wp.capture_launch(self.graph)
         else:
             self.simulate()

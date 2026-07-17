@@ -287,7 +287,8 @@ class FastAllegro(_KpiBenchmark):
 
 
 class FastKitchenG1(_KpiBenchmark):
-    params = [[512]]
+    # Leave headroom for replicated kitchen construction on 64 GiB CI runners.
+    params = [[128]]
     num_frames = 50
     robot = "g1"
     timeout = 900

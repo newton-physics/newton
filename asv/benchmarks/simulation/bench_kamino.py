@@ -19,13 +19,13 @@ sys.path.append(parent_dir)
 from benchmark_kamino import DRLegsBenchmarkWorkload
 from benchmark_metrics import (
     _SimulationMetricTracks,
-    _UnparameterizedSimulationMetricTracks,
+    _SimulationMetricTracksUnparameterized,
     collect_simulation_metrics,
     compute_gpu_memory_usage,
 )
 
 
-def _collect_dr_legs_metrics(robot, world_count, num_frames, samples, use_policy):
+def _collect_metrics_dr_legs(robot, world_count, num_frames, samples, use_policy):
     wp.synchronize_device()
     device = wp.get_device()
     free_memory_before = device.free_memory
@@ -108,7 +108,7 @@ class _KpiBenchmark(_SimulationMetricTracks):
     def _collect_metrics(self):
         metrics = {}
         for world_count in self.params[0]:
-            metrics[world_count] = _collect_dr_legs_metrics(
+            metrics[world_count] = _collect_metrics_dr_legs(
                 robot=self.robot,
                 world_count=world_count,
                 num_frames=self.num_frames,
@@ -125,14 +125,14 @@ class FastDRLegs(_FastBenchmark):
     world_count = 32
 
 
-class FastMetricsDRLegs(_UnparameterizedSimulationMetricTracks):
+class FastMetricsDRLegs(_SimulationMetricTracksUnparameterized):
     num_frames = 25
     robot = "dr_legs"
     samples = 2
     world_count = 32
 
     def setup_cache(self):
-        return _collect_dr_legs_metrics(
+        return _collect_metrics_dr_legs(
             robot=self.robot,
             world_count=self.world_count,
             num_frames=self.num_frames,
