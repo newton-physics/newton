@@ -384,6 +384,7 @@ class SolverKaminoImpl(SolverBase):
         state: StateKamino,
         world_mask: wp.array[wp.bool] | None = None,
         config: SolverKamino.ResetConfig | None = None,
+        success_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -404,6 +405,9 @@ class SolverKaminoImpl(SolverBase):
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
+            success_mask: Optional mask, filled with a success boolean per world if provided
+                (True if reset successfully, False if not reset due to world_mask, or if reset
+                was unsuccessful, e.g. due to an unconverged FK solve).
         """
 
         def _check_length(data: wp.array[Any], name: str, expected: int):
@@ -426,7 +430,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_poses.actuator_q,
                 "config.body_poses.actuator_q",
-                self._model.size.sum_of_num_actuated_joint_coords,
+                self._model.size.sum_of_num_fk_actuated_joint_coords,
             )
         if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromJointU):
             _check_length(
@@ -438,7 +442,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_velocities.actuator_u,
                 "config.body_velocities.actuator_u",
-                self._model.size.sum_of_num_actuated_joint_dofs,
+                self._model.size.sum_of_num_fk_actuated_joint_dofs,
             )
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromJointQ):
             _check_length(
@@ -621,6 +625,14 @@ class SolverKaminoImpl(SolverBase):
 
         # Reset solver internals
         self._reset_solver_data(world_mask=world_mask)
+
+        # Fill success mask
+        if success_mask is not None:
+            # Currently, only the position-level (iterative) FK solve can fail
+            if actuator_q is not None:
+                wp.copy(success_mask, self._solver_fk.newton_success)
+            else:
+                wp.copy(success_mask, world_mask)
 
         # Run the post-reset callback if it has been set
         self._run_post_reset_callback(state_out=state)
@@ -854,11 +866,10 @@ class SolverKaminoImpl(SolverBase):
         # on the first call to `step()`
         self._solver_fd.reset(problem=self._problem_fd, world_mask=world_mask)
 
-        # TODO: Enable this when world-masking is implemented
         # Reset the warm-starting caches if enabled
-        # if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
-        #     self._ws_limits.reset()
-        #     self._ws_contacts.reset()
+        if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+            self._ws_limits.reset(world_mask=world_mask)
+            self._ws_contacts.reset(world_mask=world_mask)
 
     ###
     # Internals - Step Operations

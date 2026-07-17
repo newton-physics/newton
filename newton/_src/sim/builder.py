@@ -77,6 +77,12 @@ else:
     UsdStage = Any
 
 
+_SCALAR_GRAVITY_DEPRECATION_MSG = (
+    "Scalar ModelBuilder.gravity is deprecated in Newton 1.4; pass a gravity vector instead. "
+    "Scalar gravity will be removed in a future release."
+)
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -350,6 +356,19 @@ class ModelBuilder:
         shape_constructor: str | None = None
         """Warp model shape BVH constructor backend. If ``None``, Warp's default is used."""
 
+    @dataclass
+    class MeshApproximationConfig:
+        """Default settings for mesh approximation.
+
+        :attr:`ModelBuilder.default_mesh_approximation_cfg` supplies defaults for
+        settings not passed to :meth:`ModelBuilder.approximate_meshes` explicitly,
+        including approximation triggered by :meth:`ModelBuilder.add_usd` via the
+        authored ``physics:approximation`` attribute.
+        """
+
+        coacd_threshold: float = 0.05
+        """CoACD concavity threshold. Lower values produce finer convex decompositions with more parts."""
+
     @dataclass(kw_only=True)
     class ShapeConfig:
         """
@@ -415,6 +434,10 @@ class ModelBuilder:
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
         If provided (and sdf_target_voxel_size is None), enables primitive SDF
         generation. Requires GPU since wp.Volume only supports CUDA."""
+        force_sdf: bool = False
+        """If True, :meth:`ModelBuilder.finalize` builds a volume SDF for this mesh/convex shape even
+        when neither ``sdf_max_resolution`` nor ``sdf_target_voxel_size`` is set (built at the default
+        resolution). Use to provision SDFs for full-surface rigid-soft contact; see :meth:`configure_sdf`."""
         sdf_texture_format: str = "uint16"
         """Subgrid texture storage format for the SDF. ``"uint16"``
         (default) stores subgrid voxels as 16-bit normalized textures (half
@@ -458,6 +481,7 @@ class ModelBuilder:
             is_hydroelastic: bool = False,
             kh: float = 1.0e10,
             texture_format: str | None = None,
+            force_sdf: bool = False,
         ) -> None:
             """Enable SDF-based collision for this shape.
 
@@ -476,12 +500,16 @@ class ModelBuilder:
                 texture_format: Subgrid texture storage format. ``"uint16"``
                     (default) uses 16-bit normalized textures. ``"float32"``
                     uses full-precision. ``"uint8"`` uses 8-bit textures.
+                force_sdf: Build the SDF even when neither ``max_resolution`` nor
+                    ``target_voxel_size`` is given (uses the default resolution). Provisions the SDF
+                    needed for full-surface rigid-soft contact without picking a resolution.
 
             Raises:
                 ValueError: If both max_resolution and target_voxel_size are provided.
             """
             if max_resolution is not None and target_voxel_size is not None:
                 raise ValueError("configure_sdf accepts either max_resolution or target_voxel_size, not both.")
+            self.force_sdf = force_sdf
             if max_resolution is not None:
                 self.sdf_max_resolution = max_resolution
                 self.sdf_target_voxel_size = None
@@ -967,15 +995,20 @@ class ModelBuilder:
             """The key of the custom frequency (e.g., ``"mujoco:actuator"`` or ``"pair"``)."""
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
-    def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
+    def __init__(
+        self,
+        up_axis: AxisType = Axis.Z,
+        gravity: float | Vec3 | None = None,
+    ):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
 
         Args:
             up_axis: The axis to use as the "up" direction in the simulation.
                 Defaults to Axis.Z.
-            gravity: The magnitude of gravity to apply along the up axis.
-                Defaults to -9.81.
+            gravity: Default gravity vector [m/s^2]. The deprecated scalar form
+                applies acceleration along ``up_axis``. If omitted, gravity
+                defaults to -9.81 along ``up_axis``.
         """
         self.world_count: int = 0
         """Number of worlds accumulated for :attr:`Model.world_count`."""
@@ -983,6 +1016,10 @@ class ModelBuilder:
         # region defaults
         self.default_bvh_cfg = ModelBuilder.BvhConfig()
         """Default BVH construction configuration used during model finalization."""
+
+        self.default_mesh_approximation_cfg = ModelBuilder.MeshApproximationConfig()
+        """Default mesh approximation settings used by :meth:`approximate_meshes` when not
+        passed explicitly, including USD-triggered approximation in :meth:`add_usd`."""
 
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
@@ -1134,12 +1171,13 @@ class ModelBuilder:
         """Per-shape target SDF voxel sizes retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_max_resolution: list[int | None] = []
         """Per-shape SDF maximum resolutions retained until :meth:`finalize <ModelBuilder.finalize>`."""
+        self.shape_force_sdf: list[bool] = []
+        """Per-shape :attr:`ShapeConfig.force_sdf` flags retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_texture_format: list[str] = []
         """Per-shape SDF texture format retained until :meth:`finalize <ModelBuilder.finalize>`."""
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
-
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
@@ -1386,12 +1424,14 @@ class ModelBuilder:
         """Internal world context backing the read-only :attr:`current_world` property."""
 
         self.up_axis: Axis = Axis.from_any(up_axis)
-        """Up axis used when expanding scalar gravity into per-world gravity vectors."""
-        self.gravity: float = gravity
-        """Gravity acceleration [m/s^2] applied along :attr:`up_axis` for newly added worlds."""
+        """Up axis used by geometry helpers and for resolving default or scalar gravity."""
+        self._gravity: float | wp.vec3 | None = None
+        """Explicitly set gravity; ``None`` means -9.81 along the current :attr:`up_axis`."""
+        if gravity is not None:
+            self._set_gravity(gravity, stacklevel=3)
 
         self.world_gravity: list[Vec3] = []
-        """Per-world gravity vectors retained until :meth:`finalize <ModelBuilder.finalize>` populates
+        """Per-world gravity vectors [m/s^2] retained until :meth:`finalize <ModelBuilder.finalize>` populates
         :attr:`Model.gravity`."""
 
         self.rigid_gap: float = 0.1
@@ -2188,6 +2228,35 @@ class ModelBuilder:
         )
 
     @property
+    def gravity(self) -> float | wp.vec3:
+        """Default gravity vector [m/s^2], or a deprecated scalar along :attr:`up_axis`."""
+        if np.isscalar(self._gravity):
+            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            return self._gravity
+        return self._gravity_as_vector()
+
+    @gravity.setter
+    def gravity(self, value: float | Vec3) -> None:
+        self._set_gravity(value, stacklevel=3)
+
+    def _set_gravity(self, value: float | Vec3, stacklevel: int) -> None:
+        if np.isscalar(value):
+            warnings.warn(_SCALAR_GRAVITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
+            self._gravity = float(value)
+            return
+        gravity = np.asarray(value, dtype=np.float32)
+        if gravity.shape != (3,):
+            raise ValueError(f"Expected gravity with shape (3,), got {gravity.shape}")
+        self._gravity = wp.vec3(*gravity)
+
+    def _gravity_as_vector(self) -> wp.vec3:
+        """Resolve gravity to a fresh vector so callers never alias builder state."""
+        if self._gravity is None or np.isscalar(self._gravity):
+            magnitude = -9.81 if self._gravity is None else self._gravity
+            return wp.vec3(*(component * magnitude for component in self.up_vector))
+        return wp.vec3(*self._gravity)
+
+    @property
     def current_world(self) -> int:
         """Returns the builder-managed world context for subsequently added entities.
 
@@ -2920,14 +2989,12 @@ class ModelBuilder:
             root_path: The USD path to import, defaults to "/".
             joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
-            skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined). Default is False.
+            skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes: If True, collision shapes on bodies that already
                 have visual-only geometry are hidden unconditionally, regardless of
-                whether the collider has authored PBR material data. Collision
-                shapes on bodies without visual-only geometry remain visible as a
-                rendering fallback. Default is False.
+                whether the collider has authored PBR material data. Default is False.
             force_show_colliders: If True, collision shapes get the VISIBLE flag
                 regardless of whether visual shapes exist on the same body. Note that
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
@@ -3294,9 +3361,8 @@ class ModelBuilder:
                 a default label "world_{index}" will be generated.
             attributes: Optional custom attributes to associate
                 with this world for later use.
-            gravity: Optional gravity vector for this world. If None,
-                the world will use the builder's default gravity (computed from
-                ``self.gravity`` and ``self.up_vector``).
+            gravity: Optional gravity vector [m/s^2] for this world. If None,
+                the world uses the builder's default :attr:`gravity`.
 
         Raises:
             RuntimeError: If called when already inside a world context
@@ -3337,12 +3403,9 @@ class ModelBuilder:
 
         # Initialize this world's gravity
         if gravity is not None:
-            self.world_gravity.append(gravity)
+            self.world_gravity.append(wp.vec3(*gravity))
         else:
-            up_vector = self.up_vector
-            self.world_gravity.append(
-                (up_vector[0] * self.gravity, up_vector[1] * self.gravity, up_vector[2] * self.gravity)
-            )
+            self.world_gravity.append(self._gravity_as_vector())
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -3457,15 +3520,10 @@ class ModelBuilder:
         # Copy gravity from source builder
         if self.current_world >= 0 and self.current_world < len(self.world_gravity):
             # We're in a world context, update this world's gravity vector
-            builder_up = builder.up_vector
-            self.world_gravity[self.current_world] = (
-                builder_up[0] * builder.gravity,
-                builder_up[1] * builder.gravity,
-                builder_up[2] * builder.gravity,
-            )
+            self.world_gravity[self.current_world] = builder._gravity_as_vector()
         elif self.current_world < 0:
-            # No world context (add_builder called directly), copy scalar gravity
-            self.gravity = builder.gravity
+            # No world context (add_builder called directly), copy default gravity
+            self._gravity = copy.copy(builder._gravity)
 
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
@@ -3771,6 +3829,7 @@ class ModelBuilder:
             "shape_gap",
             "shape_sdf_narrow_band_range",
             "shape_sdf_max_resolution",
+            "shape_force_sdf",
             "shape_sdf_target_voxel_size",
             "shape_sdf_texture_format",
             "shape_sdf_padding",
@@ -6190,6 +6249,7 @@ class ModelBuilder:
         self.shape_sdf_narrow_band_range.append(cfg.sdf_narrow_band_range)
         self.shape_sdf_target_voxel_size.append(cfg.sdf_target_voxel_size)
         self.shape_sdf_max_resolution.append(cfg.sdf_max_resolution)
+        self.shape_force_sdf.append(cfg.force_sdf)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
         self.shape_sdf_padding.append(cfg.sdf_padding)
 
@@ -7000,7 +7060,7 @@ class ModelBuilder:
 
         Args:
             method: The method to use for approximating the mesh shapes.
-            shape_indices: The indices of the shapes to simplify. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
+            shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
@@ -7029,6 +7089,9 @@ class ModelBuilder:
                 for i, stype in enumerate(self.shape_type)
                 if stype == GeoType.MESH and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
             ]
+        else:
+            # primitives have no mesh source; preserve explicit re-approximation of convex meshes
+            shape_indices = [i for i in shape_indices if self.shape_type[i] in (GeoType.MESH, GeoType.CONVEX_MESH)]
 
         # These methods rewrite shape_type away from MESH; any SDF/hydro state
         # would be silently dropped at finalize. The USD importer intercepts
@@ -7106,7 +7169,7 @@ class ModelBuilder:
                         if method == "coacd":
                             cmesh = coacd.Mesh(mesh.vertices, mesh.indices.reshape(-1, 3))
                             coacd_settings = {
-                                "threshold": 0.05,
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
                                 "mcts_nodes": 20,
                                 "mcts_iterations": 5,
                                 "mcts_max_depth": 1,
@@ -7175,10 +7238,13 @@ class ModelBuilder:
                         f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
                     )
                     method = "convex_hull"
+                    # kwargs were addressed to the failed decomposition method
+                    remeshing_kwargs = {}
 
         if method in RemeshingMethod.__args__:
             # remeshing of the individual meshes
             remeshed = {}
+            remesh_failed = False
             for shape in shape_indices:
                 if shape in remeshed_shapes:
                     # already remeshed with coacd or vhacd
@@ -7198,6 +7264,7 @@ class ModelBuilder:
                                 f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
                                 stacklevel=2,
                             )
+                            remesh_failed = True
                             continue
                 # note we need to copy the mesh to avoid modifying the original mesh
                 self.shape_source[shape] = self.shape_source[shape].copy(vertices=rmesh.vertices, indices=rmesh.indices)
@@ -7205,6 +7272,9 @@ class ModelBuilder:
                 if method == "convex_hull":
                     self.shape_type[shape] = GeoType.CONVEX_MESH
                 remeshed_shapes.add(shape)
+            if remesh_failed:
+                # route the shapes that failed (not in remeshed_shapes) into the fallback below
+                method = "bounding_box"
 
         if method == "bounding_box":
             for shape in shape_indices:
@@ -11115,6 +11185,86 @@ class ModelBuilder:
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
 
+            # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when a
+            # per-shape SDF is requested -- ShapeConfig.configure_sdf(force_sdf=True), or an sdf
+            # resolution/voxel-size set on the shape. Built in unscaled mesh space (scale_baked=False)
+            # and cached per source mesh; eval_shape_sdf applies the shape scale at query time. Texture
+            # SDFs are CUDA-only, so on CPU (or on any build failure) the SDF is left unprovisioned; a
+            # full-surface CollisionPipeline then raises for that shape rather than silently degrading.
+            if any(
+                self.shape_force_sdf[i]
+                or self.shape_sdf_max_resolution[i] is not None
+                or self.shape_sdf_target_voxel_size[i] is not None
+                for i in range(len(self.shape_type))
+            ):
+                wt_sdf_cache = {}
+                for i in range(len(self.shape_type)):
+                    if (
+                        shape_sdf_index[i] >= 0
+                        or self.shape_type[i] not in (GeoType.MESH, GeoType.CONVEX_MESH)
+                        or not (self.shape_flags[i] & ShapeFlags.COLLIDE_PARTICLES)
+                        or self.shape_source[i] is None
+                        or not (
+                            self.shape_force_sdf[i]
+                            or self.shape_sdf_max_resolution[i] is not None
+                            or self.shape_sdf_target_voxel_size[i] is not None
+                        )
+                    ):
+                        continue
+                    src = self.shape_source[i]
+                    sdf_padding_i = self.shape_sdf_padding[i]
+                    wt_margin = sdf_padding_i if sdf_padding_i is not None else self.shape_gap[i]
+                    # Mirror the rigid SDF cache key: shapes sharing one Mesh get distinct SDFs when any
+                    # baked generation parameter differs (margin/narrow-band/resolution/voxel/format).
+                    # scale stays out (scale_baked=False applies it at query time; the rigid path bakes it).
+                    src_key = (
+                        id(src),
+                        wt_margin,
+                        tuple(self.shape_sdf_narrow_band_range[i]),
+                        self.shape_sdf_target_voxel_size[i],
+                        self.shape_sdf_max_resolution[i],
+                        self.shape_sdf_texture_format[i],
+                    )
+                    if src_key in wt_sdf_cache:
+                        shape_sdf_index[i] = wt_sdf_cache[src_key]
+                        continue
+                    try:
+                        wt_wp_mesh = wp.Mesh(
+                            points=wp.array(
+                                np.asarray(src.vertices, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device
+                            ),
+                            indices=wp.array(
+                                np.asarray(src.indices, dtype=np.int32).reshape(-1), dtype=wp.int32, device=device
+                            ),
+                            support_winding_number=True,
+                        )
+                        wt_tex_data, wt_c_tex, wt_s_tex = create_texture_sdf_from_mesh(
+                            wt_wp_mesh,
+                            margin=wt_margin,
+                            narrow_band_range=tuple(self.shape_sdf_narrow_band_range[i]),
+                            max_resolution=(self.shape_sdf_max_resolution[i] or 64),
+                            target_voxel_size=self.shape_sdf_target_voxel_size[i],
+                            quantization_mode=_tex_fmt_map[self.shape_sdf_texture_format[i]],
+                            scale_baked=False,
+                            device=device,
+                        )
+                    except Exception as e:
+                        warnings.warn(
+                            f"Full-surface SDF construction failed for mesh shape {i} ({e}); it falls "
+                            "back to the legacy per-particle soft-contact path.",
+                            stacklevel=2,
+                        )
+                        continue
+                    wt_idx = len(compact_texture_sdf_data)
+                    wt_sdf_cache[src_key] = wt_idx
+                    shape_sdf_index[i] = wt_idx
+                    compact_texture_sdf_data.append(wt_tex_data)
+                    compact_texture_sdf_coarse_textures.append(wt_c_tex)
+                    compact_texture_sdf_subgrid_textures.append(wt_s_tex)
+                    compact_texture_sdf_subgrid_start_slots.append(
+                        wt_tex_data.subgrid_start_slots if wt_c_tex is not None else None
+                    )
+
             m._shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
             m._texture_sdf_data = (
                 wp.array(compact_texture_sdf_data, dtype=TextureSDFData, device=device)
@@ -11268,9 +11418,7 @@ class ModelBuilder:
             )
             # Build the soft-mesh adjacency from the accumulated bending edges and triangles:
             # keep the builder's edge numbering (it stays aligned with the bending materials) and
-            # derive the edge/triangle maps against the final triangles. Vertex adjacency stays
-            # unset until the solver builds it via init_vertex_adjacency; kernels get a device copy
-            # from MeshAdjacency.to.
+            # derive the edge/triangle maps against the final triangles.
             edge_indices = (
                 np.array(self.edge_indices, dtype=np.int32).reshape(-1, 4)
                 if self.edge_indices
@@ -11282,6 +11430,11 @@ class ModelBuilder:
                 spring_indices=self.spring_indices,
                 tet_indices=self.tet_indices,
             )
+            # Build the vertex adjacency (cheap) and upload one device copy here, so every consumer
+            # (VBD solver, collision pipeline) shares a single MeshAdjacencyData rather than each
+            # running init_vertex_adjacency + .to() itself.
+            m.soft_mesh_adjacency.init_vertex_adjacency(self.particle_count)
+            m.soft_mesh_adjacency_device = m.soft_mesh_adjacency.to(device)
 
             # ---------------------
             # tetrahedra
@@ -11417,6 +11570,7 @@ class ModelBuilder:
                 m.body_color_groups = [wp.array(group, dtype=int) for group in self.body_color_groups]
 
             # joints
+            m._has_cable_joints = JointType.CABLE in self.joint_type  # pyright: ignore[reportPrivateUsage]
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
@@ -11555,9 +11709,7 @@ class ModelBuilder:
                 # Use per-world gravity from world_gravity list
                 gravity_vecs = self.world_gravity
             else:
-                # Fallback: use scalar gravity for all worlds
-                gravity_vec = tuple(g * self.gravity for g in self.up_vector)
-                gravity_vecs = [gravity_vec] * self.world_count
+                gravity_vecs = [self._gravity_as_vector()] * self.world_count
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,

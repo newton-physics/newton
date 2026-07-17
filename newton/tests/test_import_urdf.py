@@ -369,6 +369,46 @@ def parse_urdf(urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] 
 
 
 class TestImportUrdfBasic(unittest.TestCase):
+    def test_collision_visibility_is_scoped_to_entire_import(self):
+        """URDF collider visibility must follow roles authored by the whole asset."""
+        mixed_urdf = """
+<robot name="mixed_visibility">
+    <link name="visual_link">
+        <visual><geometry><box size="1 1 1"/></geometry></visual>
+    </link>
+    <link name="collision_link">
+        <collision><geometry><sphere radius="0.5"/></geometry></collision>
+    </link>
+    <joint name="fixed" type="fixed">
+        <parent link="visual_link"/>
+        <child link="collision_link"/>
+    </joint>
+</robot>
+"""
+        mixed_builder = newton.ModelBuilder()
+        parse_urdf(mixed_urdf, mixed_builder)
+
+        self.assertEqual(mixed_builder.shape_count, 2)
+        visual_flags, collision_flags = mixed_builder.shape_flags
+        self.assertTrue(visual_flags & newton.ShapeFlags.VISIBLE)
+        self.assertFalse(visual_flags & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_flags & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(collision_flags & newton.ShapeFlags.VISIBLE)
+
+        collision_only_urdf = """
+<robot name="collision_only">
+    <link name="collision_link">
+        <collision><geometry><sphere radius="0.5"/></geometry></collision>
+    </link>
+</robot>
+"""
+        collision_only_builder = newton.ModelBuilder()
+        parse_urdf(collision_only_urdf, collision_only_builder)
+
+        collision_only_flags = collision_only_builder.shape_flags[0]
+        self.assertTrue(collision_only_flags & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_only_flags & newton.ShapeFlags.VISIBLE)
+
     def test_sphere_urdf(self):
         # load a urdf containing a sphere with r=0.5 and pos=(1.0,2.0,3.0)
         builder = newton.ModelBuilder()

@@ -15,7 +15,7 @@ class TestJointDamping(unittest.TestCase):
 
 
 def _build_revolute_model(device, damping: float):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
@@ -49,7 +49,7 @@ def _build_ball_model(
     parent_xform: wp.transform | None = None,
     child_xform: wp.transform | None = None,
 ):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
