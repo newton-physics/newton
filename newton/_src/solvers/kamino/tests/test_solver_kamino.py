@@ -630,12 +630,13 @@ class TestSolverKaminoImpl(unittest.TestCase):
         base_body_idx = model.info.base_body_index.numpy().copy()
         for wid in range(model.size.num_worlds):
             base_idx = base_body_idx[wid]
-            np.testing.assert_allclose(
-                state_n.q_i.numpy()[base_idx],
-                base_q_0_np[wid],
-                rtol=rtol,
-                atol=atol,
-            )
+            if base_idx >= 0:
+                np.testing.assert_allclose(
+                    state_n.q_i.numpy()[base_idx],
+                    base_q_0_np[wid],
+                    rtol=rtol,
+                    atol=atol,
+                )
 
         # Step the solver a few times to change the state
         solver._reset()

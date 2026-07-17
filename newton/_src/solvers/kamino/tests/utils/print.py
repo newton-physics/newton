@@ -91,12 +91,6 @@ def print_model_info(model: ModelKamino):
     print(f"model.info.total_cts_offset: {model.info.total_cts_offset}")
     print(f"model.info.joint_dynamic_cts_group_offset: {model.info.joint_dynamic_cts_group_offset}")
     print(f"model.info.joint_kinematic_cts_group_offset: {model.info.joint_kinematic_cts_group_offset}")
-    # Print the inertial properties
-    print("-------------------------------------------------------------------------------")
-    print(f"model.info.mass_min: {model.info.mass_min}")
-    print(f"model.info.mass_max: {model.info.mass_max}")
-    print(f"model.info.mass_total: {model.info.mass_total}")
-    print(f"model.info.inertia_total: {model.info.inertia_total}")
 
 
 def print_model_constraint_info(model: ModelKamino):
