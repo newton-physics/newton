@@ -9844,7 +9844,8 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
-        # load_visual_shapes=False: collision shapes still stay hidden by default.
+        # load_visual_shapes=False: collision shapes remain visible because no
+        # visual geometry is loaded for this import.
         builder4 = newton.ModelBuilder()
         result4 = builder4.add_usd(stage, load_visual_shapes=False)
         path_shape_map4 = result4["path_shape_map"]
@@ -9852,7 +9853,39 @@ def Xform "BodyWithoutVisuals" (
         collision_no_load = path_shape_map4["/BodyWithVisuals/CollisionBox"]
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
-        self.assertFalse(flags_no_load & ShapeFlags.VISIBLE)
+        self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collision_only_asset_keeps_colliders_visible(self):
+        """Collision-only USD assets must remain visible by default."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "CollisionSphere" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        collision_flags = builder.shape_flags[result["path_shape_map"]["/Body/CollisionSphere"]]
+        self.assertTrue(collision_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_flags & ShapeFlags.VISIBLE)
 
     @staticmethod
     def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
@@ -10097,8 +10130,8 @@ def Xform "Body" (
         self.assertFalse(builder.shape_flags[visual_shape] & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_invisible_visual_sibling_does_not_make_collider_visible(self):
-        """An invisible visual shape must not make colliders visible by default."""
+    def test_invisible_visual_sibling_does_not_suppress_collider_visibility(self):
+        """An invisible visual shape must not suppress fallback-visible colliders."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -10140,12 +10173,12 @@ def Xform "Body" (
         vis_shape = path_shape_map["/Body/InvisibleVisual"]
         self.assertFalse(builder.shape_flags[vis_shape] & ShapeFlags.VISIBLE)
 
-        # Colliders stay hidden by default even when no visible visual shapes
-        # exist for this body.
+        # The collider remains visible because the import has no effectively
+        # visible visual shapes.
         collision_shape = path_shape_map["/Body/CollisionBox"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
-        self.assertFalse(flags & ShapeFlags.VISIBLE)
+        self.assertTrue(flags & ShapeFlags.VISIBLE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_primitive_collider_with_roughness_only_material_stays_hidden(self):

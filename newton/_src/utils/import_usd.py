@@ -3240,6 +3240,7 @@ def parse_usd(
                     margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                model_has_visual_shapes = load_visual_shapes and bool(bodies_with_visual_shapes)
                 material_props = _get_material_props_cached(prim)
                 collider_has_visual_material = (
                     key == UsdPhysics.ObjectType.MeshShape and _has_visual_material_properties(material_props)
@@ -3250,7 +3251,7 @@ def parse_usd(
                 hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
                 show_collider_by_policy = should_show_collider(
                     force_show_colliders,
-                    has_visual_shapes=has_body_visual_shapes,
+                    model_has_visual_shapes=model_has_visual_shapes,
                 )
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material
