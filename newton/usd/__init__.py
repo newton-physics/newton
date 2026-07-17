@@ -72,3 +72,12 @@ __all__ += [
     "SchemaResolverNewton",
     "SchemaResolverPhysx",
 ]
+
+
+# ==================================================================================
+# Stage-driven simulation runtime
+# ==================================================================================
+
+from . import runtime  # noqa: E402
+
+__all__ += ["runtime"]

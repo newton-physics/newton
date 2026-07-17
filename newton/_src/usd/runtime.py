@@ -114,8 +114,22 @@ def _resolve_solver_entry(scene_prim: Usd.Prim) -> _SolverEntry:
 class Simulation:
     """A stage-driven simulation: the USD stage is the spec, this owns the derived runtime objects.
 
-    All fields are public; external control is opt-in by writing into
-    ``control`` or ``state.body_f`` between steps.
+    Construct with :func:`load_usd` and advance with :func:`step`. All fields are public;
+    external control is opt-in by writing into ``control`` or ``state.body_f`` between steps.
+
+    Attributes:
+        stage: The USD stage the simulation was derived from.
+        model: The finalized :class:`newton.Model`.
+        solvers: Solvers driving the simulation; ``solvers[0]`` is exposed as :attr:`solver`.
+        state: Current simulation state, updated in place by :func:`step`.
+        control: Control inputs applied on the next :func:`step`.
+        contacts: Contacts used by Newton's collision pipeline, or ``None`` when the solver
+            handles collision internally.
+        dt: Simulation timestep [s], resolved from the scene.
+        collision_interval: Number of steps between contact re-detection.
+        usd_info: Metadata returned by :meth:`newton.ModelBuilder.add_usd`.
+        time: Accumulated simulation time [s].
+        step_count: Number of steps taken so far.
     """
 
     stage: Any
@@ -132,18 +146,26 @@ class Simulation:
     _graphs: tuple | None = field(default=None, repr=False)
 
     @property
-    def solver(self):
+    def solver(self) -> newton.solvers.SolverBase:
+        """The primary solver driving the simulation (``solvers[0]``)."""
         return self.solvers[0]
 
 
 def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph: bool | None = None) -> Simulation:
     """Load a USD-authored simulation and derive the Newton runtime objects from it.
 
+    The stage must have exactly one ``UsdPhysics.Scene`` prim with exactly one
+    ``NewtonSolver*API`` applied; that schema selects and configures the solver. Parsing
+    uses :meth:`newton.ModelBuilder.add_usd`.
+
     Args:
         source: Path to a USD file or an open ``Usd.Stage``. The stage is read, never written.
         requires_grad: Finalize the model with gradient arrays. ``step()`` remains
             forward-only; gradient workflows drive ``sim.solver`` directly.
         use_graph: Force graph capture on/off; ``None`` follows the examples' criteria.
+
+    Returns:
+        The derived :class:`Simulation`, ready for :func:`step`.
     """
     from pxr import Usd
 
@@ -223,7 +245,11 @@ def _step_device_ops(sim: Simulation, collide: bool) -> None:
 
 
 def step(sim: Simulation) -> None:
-    """Advance the simulation by exactly ``sim.dt`` [s]."""
+    """Advance the simulation by exactly ``sim.dt`` [s], in place.
+
+    Args:
+        sim: The simulation to advance, as returned by :func:`load_usd`.
+    """
     collide = sim.step_count % sim.collision_interval == 0
     if sim._graphs is not None:
         wp.capture_launch(sim._graphs[0] if collide else sim._graphs[1])
