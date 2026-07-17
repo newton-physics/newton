@@ -401,34 +401,6 @@ class ModelKaminoInfo:
     Shape of ``(num_worlds,)``.
     """
 
-    ###
-    # Inertial Properties
-    ###
-
-    mass_min: wp.array[wp.float32] | None = None
-    """
-    Smallest mass amongst all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    mass_max: wp.array[wp.float32] | None = None
-    """
-    Largest mass amongst all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    mass_total: wp.array[wp.float32] | None = None
-    """
-    Total mass over all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
-    inertia_total: wp.array[wp.float32] | None = None
-    """
-    Total diagonal inertia over all bodies in each world.
-    Shape of ``(num_worlds,)``.
-    """
-
 
 @dataclass
 class ModelKamino:
