@@ -28,7 +28,6 @@ from typing import Literal
 
 import numpy as np
 import warp as wp
-import warp.fem as fem
 
 from . import particle_surface_kernels as kernels
 from . import particle_surface_sparse_kernels as sparse_kernels
@@ -768,6 +767,7 @@ class ParticleSurfaceSparseCapacity(_ParticleSurfaceCapacityBase):
                 self.grid_node_world_start,
                 self.grid_cell_world_start,
                 self.world_count,
+                self.requested_max_grid_cells if self.requested_max_grid_cells is not None else self.max_grid_cells,
             ],
             device=self.device,
         )
@@ -1130,7 +1130,8 @@ class ParticleSurface:
             per-particle anisotropic ellipsoid SDFs and stores an SDF field.
         particle_sdf_radius_scale: Radius multiplier for ``surface_method="particle_sdf"``.
         particle_sdf_band: Narrow-band half-width in normalized ellipsoid
-            coordinates for ``surface_method="particle_sdf"``.
+            coordinates for ``surface_method="particle_sdf"``. Must be at
+            least 1 so the band contains the zero level set.
         padding: Extra voxels added around the particle bounding box.
         field_smooth_iterations: Number of separable Gaussian blur passes
             applied to the scalar field before marching cubes.  Defaults to
@@ -1289,8 +1290,8 @@ class ParticleSurface:
             raise ValueError("mesh_smooth_lambda must be in [0, 1]")
         if not math.isfinite(particle_sdf_radius_scale) or particle_sdf_radius_scale <= 0.0:
             raise ValueError("particle_sdf_radius_scale must be positive")
-        if not math.isfinite(particle_sdf_band) or particle_sdf_band <= 0.0:
-            raise ValueError("particle_sdf_band must be positive")
+        if not math.isfinite(particle_sdf_band) or particle_sdf_band < 1.0:
+            raise ValueError("particle_sdf_band must be at least 1")
         if world_count <= 0:
             raise ValueError("world_count must be positive")
         if surface_method not in ("density", "particle_sdf"):
@@ -1568,59 +1569,6 @@ class ParticleSurface:
             return self.field
         return self._capacity.field
 
-    def fem_field(self, world: int = 0) -> fem.DiscreteField:
-        """Return the scalar field as a :class:`warp.fem.DiscreteField`.
-
-        This method builds a Q1 (trilinear) :class:`warp.fem.Nanogrid` view of
-        the sparse extraction volume. The resulting field can be
-        used directly with :func:`warp.fem.interpolate` or
-        :func:`warp.fem.integrate` to evaluate smooth values, gradients,
-        and curvature at arbitrary positions.  With ``field_mode="density"``,
-        the values are the scalar density field.  With ``field_mode="sdf"``
-        or ``surface_method="particle_sdf"``, negative values are inside the
-        particle surface and positive values are outside.
-
-        Must be called after :meth:`extract` or :meth:`update_field`.
-
-        Args:
-            world: World whose field to expose.
-
-        Returns:
-            A :class:`warp.fem.DiscreteField` with scalar ``float`` DOFs.
-        """
-        if not self._has_field:
-            raise RuntimeError("extract() or update_field() must populate the field before fem_field()")
-        dims = self.grid_dims_for_world(world)
-        if dims is None or any(dim < 2 for dim in dims):
-            raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
-        if self._capacity.volume is None:
-            raise RuntimeError("extract() or update_field() must produce a non-empty field before fem_field()")
-        geometry = fem.Nanogrid(
-            self._capacity.volume,
-            cell_env=self._capacity.cell_world,
-            env_offsets=self._capacity.env_offsets,
-        )
-        space = fem.make_polynomial_space(geometry, degree=1, dtype=float)
-        discrete_field = fem.make_discrete_field(space)
-        outside_value = 0.0
-        if self.surface_method == "particle_sdf":
-            outside_value = self.kernel_radius * self.particle_sdf_band
-        elif self.field_mode == "sdf":
-            outside_value = self.threshold
-        wp.launch(
-            sparse_kernels.copy_field_to_nanogrid,
-            dim=geometry.vertex_count(),
-            inputs=[
-                self._capacity.volume.id,
-                self._capacity.field,
-                geometry._node_ijk,
-                discrete_field.dof_values,
-                outside_value,
-            ],
-            device=self._capacity.device,
-        )
-        return discrete_field
-
     # -- Core extraction --
 
     def extract(
@@ -1861,7 +1809,7 @@ class ParticleSurface:
             compute_normals=compute_normals,
             exact=exact,
         )
-        self._verts, self._indices, self._normals = result.vertices, result.indices, result.normals
+        self._verts, self._indices, self._normals = None, None, None
         return result
 
     def _extract_current_mesh(
@@ -1939,6 +1887,7 @@ class ParticleSurface:
         density_reach = self._density_reach[:particle_count]
         isotropic_fallback = self._isotropic_fallback[:particle_count]
         hash_positions = positions
+        needs_smoothing_hash = self.smooth_lambda > 1.0e-6
 
         if use_worlds != 0 and particle_count > 0:
             hash_positions = self._hash_positions[:particle_count]
@@ -1959,7 +1908,7 @@ class ParticleSurface:
                 ],
                 device=device,
             )
-        elif use_flags != 0 and particle_count > 0:
+        elif (use_flags != 0 or needs_smoothing_hash) and particle_count > 0:
             hash_positions = self._hash_positions[:particle_count]
             wp.launch(
                 kernels.copy_active_or_sentinel_positions,
@@ -1979,7 +1928,7 @@ class ParticleSurface:
 
         if self.smooth_lambda > 1.0e-6 and particle_count > 0:
             self._hash_grid.build(hash_positions, self.kernel_radius)
-            if use_flags != 0 or use_worlds != 0:
+            if hash_positions is not positions:
                 wp.launch(
                     kernels.smooth_positions_flagged,
                     dim=particle_count,
@@ -2013,7 +1962,7 @@ class ParticleSurface:
                     device=device,
                 )
         elif particle_count > 0:
-            if use_flags != 0 or use_worlds != 0:
+            if use_flags != 0 or use_worlds != 0 or self.anisotropic:
                 wp.launch(
                     kernels.copy_active_or_sentinel_positions,
                     dim=particle_count,
@@ -2033,9 +1982,8 @@ class ParticleSurface:
                 wp.copy(smoothed, positions)
 
         if self.anisotropic and particle_count > 0:
-            anisotropy_hash_positions = smoothed
+            anisotropy_hash_positions = self._hash_positions[:particle_count]
             if use_worlds != 0:
-                anisotropy_hash_positions = self._hash_positions[:particle_count]
                 wp.launch(
                     kernels.compute_hash_positions,
                     dim=particle_count,
@@ -2048,6 +1996,22 @@ class ParticleSurface:
                         self.world_count,
                         workspace.lower,
                         workspace.hash_spacing,
+                        workspace.inactive_position,
+                        anisotropy_hash_positions,
+                    ],
+                    device=device,
+                )
+            else:
+                wp.launch(
+                    kernels.copy_active_or_sentinel_positions,
+                    dim=particle_count,
+                    inputs=[
+                        smoothed,
+                        flags,
+                        use_flags,
+                        particle_world,
+                        use_worlds,
+                        self.world_count,
                         workspace.inactive_position,
                         anisotropy_hash_positions,
                     ],
@@ -2171,6 +2135,8 @@ class ParticleSurface:
                 self.world_count,
                 workspace.lower,
                 1.0 / bin_size,
+                self.kernel_radius,
+                self.kernel_scale,
                 keys,
                 particles,
                 G,
@@ -2440,7 +2406,8 @@ def extract_particle_surface(
             per-particle anisotropic ellipsoid SDFs.
         particle_sdf_radius_scale: Radius multiplier for ``surface_method="particle_sdf"``.
         particle_sdf_band: Narrow-band half-width in normalized ellipsoid
-            coordinates for ``surface_method="particle_sdf"``.
+            coordinates for ``surface_method="particle_sdf"``. Must be at least
+            1 so the band contains the zero level set.
 
     Returns:
         Mesh buffers and device-resident logical counts.

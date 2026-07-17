@@ -496,6 +496,10 @@ def mark_particle_support_voxels_hash(
     lower = wp.vec3i(int(wp.ceil(scaled_lower[0])), int(wp.ceil(scaled_lower[1])), int(wp.ceil(scaled_lower[2])))
     upper = wp.vec3i(int(wp.floor(scaled_upper[0])), int(wp.floor(scaled_upper[1])), int(wp.floor(scaled_upper[2])))
     voxel_size = 1.0 / inv_voxel_size
+    density_transformed_lower = H * (voxel_size * wp.vec3(lower) - position)
+    density_step_x = voxel_size * wp.vec3(H[0, 0], H[1, 0], H[2, 0])
+    density_step_y = voxel_size * wp.vec3(H[0, 1], H[1, 1], H[2, 1])
+    density_step_z = voxel_size * wp.vec3(H[0, 2], H[1, 2], H[2, 2])
     offset = env_offsets[world]
     y_count = upper[1] - lower[1] + 1
     row_count = (upper[0] - lower[0] + 1) * y_count
@@ -506,6 +510,7 @@ def mark_particle_support_voxels_hash(
         i = lower[0] + di
         j = lower[1] + dj
         k = lower[2]
+        density_transformed = density_transformed_lower + float(di) * density_step_x + float(dj) * density_step_y
         while k <= upper[2]:
             packed_coordinate = wp.vec3i(i, j, k) + offset
             key = _leaf_key(packed_coordinate)
@@ -526,6 +531,11 @@ def mark_particle_support_voxels_hash(
                     q_sq = wp.dot(transformed, transformed)
                     limit_sq = wp.where(particle_sdf != 0, particle_sdf_band * particle_sdf_band, 4.0)
                     inside = q_sq <= limit_sq
+                if particle_sdf == 0:
+                    density_q_sq = wp.dot(density_transformed, density_transformed)
+                    # Reserve the traversal's floating-point boundary decisions too.
+                    inside = inside or density_q_sq < 4.0
+                density_transformed += density_step_z
                 if inside:
                     bits |= wp.uint32(1 << ((local_slot + sample) & 31))
             if leaf < 0 or leaf * 16 + (local_slot >> 5) >= occupancy.shape[0]:
@@ -588,6 +598,10 @@ def mark_particle_support_voxels(
     lower = wp.vec3i(int(wp.ceil(scaled_lower[0])), int(wp.ceil(scaled_lower[1])), int(wp.ceil(scaled_lower[2])))
     upper = wp.vec3i(int(wp.floor(scaled_upper[0])), int(wp.floor(scaled_upper[1])), int(wp.floor(scaled_upper[2])))
     voxel_size = 1.0 / inv_voxel_size
+    density_transformed_lower = H * (voxel_size * wp.vec3(lower) - position)
+    density_step_x = voxel_size * wp.vec3(H[0, 0], H[1, 0], H[2, 0])
+    density_step_y = voxel_size * wp.vec3(H[0, 1], H[1, 1], H[2, 1])
+    density_step_z = voxel_size * wp.vec3(H[0, 2], H[1, 2], H[2, 2])
     offset = env_offsets[world]
     y_count = upper[1] - lower[1] + 1
     row_count = (upper[0] - lower[0] + 1) * y_count
@@ -598,6 +612,7 @@ def mark_particle_support_voxels(
         i = lower[0] + di
         j = lower[1] + dj
         k = lower[2]
+        density_transformed = density_transformed_lower + float(di) * density_step_x + float(dj) * density_step_y
         while k <= upper[2]:
             packed_coordinate = wp.vec3i(i, j, k) + offset
             key = _leaf_key(packed_coordinate)
@@ -616,6 +631,11 @@ def mark_particle_support_voxels(
                     q_sq = wp.dot(transformed, transformed)
                     limit_sq = wp.where(particle_sdf != 0, particle_sdf_band * particle_sdf_band, 4.0)
                     inside = q_sq <= limit_sq
+                if particle_sdf == 0:
+                    density_q_sq = wp.dot(density_transformed, density_transformed)
+                    # Reserve the traversal's floating-point boundary decisions too.
+                    inside = inside or density_q_sq < 4.0
+                density_transformed += density_step_z
                 if inside:
                     bits |= wp.uint32(1 << ((local_slot + sample) & 31))
             if leaf < 0 or leaf * 16 + (local_slot >> 5) >= occupancy.shape[0]:
@@ -671,7 +691,7 @@ def clear_topology_leaf_hash(
 ):
     index = wp.tid()
     active_leaf_count = active_slots[keys.shape[0]]
-    active_point_count = int(point_count[0])
+    active_point_count = wp.min(int(point_count[0]), point_mask.shape[0])
     while index < wp.max(active_leaf_count, active_point_count):
         if index < active_leaf_count:
             leaf = active_slots[index]
@@ -841,6 +861,7 @@ def finalize_sparse_topology(
     node_world_start: wp.array[wp.int32],
     cell_world_start: wp.array[wp.int32],
     world_count: int,
+    max_grid_cells: int,
 ):
     if wp.tid() != 0:
         return
@@ -857,6 +878,9 @@ def finalize_sparse_topology(
         cell_start += grid_counts[_grid_count_index(world, _GRID_CELL_COUNT)]
         node_world_start[world + 1] = node_start
         cell_world_start[world + 1] = cell_start
+    if node_start > max_grid_cells or cell_start > max_grid_cells:
+        overflow = 1
+    for world in range(world_count):
         grid_counts[_grid_count_index(world, _GRID_OVERFLOW)] = overflow
 
 
@@ -867,20 +891,6 @@ def fill_field(node_grid: wp.uint64, field: wp.array[float], value: float, strid
     while node < node_count:
         field[node] = value
         node += stride
-
-
-@wp.kernel
-def copy_field_to_nanogrid(
-    node_grid: wp.uint64,
-    field: wp.array[float],
-    nanogrid_node_ijk: wp.array[wp.vec3i],
-    nanogrid_field: wp.array[float],
-    outside_value: float,
-):
-    node = wp.tid()
-    coordinate = nanogrid_node_ijk[node]
-    source = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
-    nanogrid_field[node] = wp.where(source >= 0, field[source], outside_value)
 
 
 @wp.kernel
@@ -932,13 +942,21 @@ def evaluate_density(
         j = lower[1] + dj
         transformed = transformed_lower + float(di) * step_x + float(dj) * step_y
         k = lower[2]
+        # Compaction keeps consecutive active z voxels contiguous within a leaf.
+        node = int(-1)
         while k <= upper[2]:
+            if ((k + offset[2]) & 7) == 0:
+                node = int(-1)
             q_sq = wp.dot(transformed, transformed)
             if q_sq < 4.0:
-                coordinate = wp.vec3i(i, j, k) + offset
-                node = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
+                if node < 0:
+                    coordinate = wp.vec3i(i, j, k) + offset
+                    node = wp.volume_lookup_index(node_grid, coordinate[0], coordinate[1], coordinate[2])
                 if node >= 0:
                     wp.atomic_add(field, node, weight * _cubic_bspline(wp.sqrt(q_sq)))
+                    node += 1
+            else:
+                node = int(-1)
             transformed += step_z
             k += 1
         row += lane_count
