@@ -140,6 +140,26 @@ class TestUsdRuntime(unittest.TestCase):
         sim = runtime.load_usd(_make_stage(solver_api="NewtonSolverVbdAPI"), use_graph=False)
         self.assertIsInstance(sim.solver, newton.solvers.SolverVBD)
 
+    def test_load_emits_no_custom_attr_warnings(self):
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+
+        from pxr import Sdf
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        stage = _make_stage(
+            scene_attrs={
+                "newton:timeStepsPerSecond": (Sdf.ValueTypeNames.Float, 240.0),
+                "newton:xpbd:iterations": (Sdf.ValueTypeNames.Int, 7),
+                "newton:collisionInterval": (Sdf.ValueTypeNames.Int, 2),
+            }
+        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            runtime.load_usd(stage, use_graph=False)
+        self.assertNotIn("Warning: Custom attribute", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
