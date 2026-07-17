@@ -337,6 +337,7 @@ class RenderContext:
             # Pre-fill outputs with clear values so the render kernel only needs
             # to write hit pixels; misses simply keep the pre-filled value.
             self._fill_clear_outputs(
+                config,
                 clear_data,
                 color_image,
                 depth_image,
@@ -347,10 +348,10 @@ class RenderContext:
                 hdr_color_image,
             )
 
-            kernel_cache_key = hash((self.config, self.state))
+            kernel_cache_key = hash((config, self.state))
             render_kernel = self.kernel_cache.get(kernel_cache_key)
             if render_kernel is None:
-                render_kernel = create_kernel(self.config, self.state)
+                render_kernel = create_kernel(config, self.state)
                 self.kernel_cache[kernel_cache_key] = render_kernel
 
             particle_count = state.particle_q.shape[0] if has_particles else 0
@@ -418,6 +419,7 @@ class RenderContext:
 
     def _fill_clear_outputs(
         self,
+        config: RenderContext.Config,
         clear_data: RenderContext.ClearData,
         color_image: wp.array[wp.uint32] | None,
         depth_image: wp.array[wp.float32] | None,
@@ -433,7 +435,7 @@ class RenderContext:
         :attr:`Config.output_color_space` is ``ColorSpace.LINEAR``, matching the
         color space the render kernel writes hit pixels in.
         """
-        linear = self.config.output_color_space == ColorSpace.LINEAR
+        linear = config.output_color_space == ColorSpace.LINEAR
 
         if color_image is not None:
             clear_color = _srgb_packed_rgba_to_linear(clear_data.clear_color) if linear else clear_data.clear_color
