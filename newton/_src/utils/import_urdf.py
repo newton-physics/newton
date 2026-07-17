@@ -629,6 +629,7 @@ def parse_urdf(
     link_index: dict[str, int] = {}
     visual_shapes: list[int] = []
     start_shape_count = len(builder.shape_type)
+    model_has_visual_shapes = any(len(urdf_link.findall("visual")) > 0 for urdf_link in urdf_links)
 
     for urdf_link in urdf_links:
         name = urdf_link.get("name")
@@ -653,7 +654,7 @@ def parse_urdf(
 
         show_colliders = should_show_collider(
             force_show_colliders,
-            has_visual_shapes=len(visuals) > 0,
+            model_has_visual_shapes=model_has_visual_shapes,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
         )
 
