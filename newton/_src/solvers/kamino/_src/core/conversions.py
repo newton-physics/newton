@@ -125,45 +125,6 @@ def rigid_bodies_indexing_kernel(
 
 
 @wp.kernel
-def mass_prop_accumulation_kernel(
-    # Inputs:
-    model_body_world_start: wp.array[wp.int32],
-    model_body_mass: wp.array[wp.float32],
-    body_inertia: wp.array[wp.mat33f],
-    # Outputs:
-    mass_total: wp.array[wp.float32],
-    mass_min: wp.array[wp.float32],
-    mass_max: wp.array[wp.float32],
-    inertia_total: wp.array[wp.float32],
-):
-    # Retrieve the world index
-    world_id = wp.tid()
-    # Retrieve the body index range for this world
-    body_id_start = model_body_world_start[world_id]
-    body_id_end = model_body_world_start[world_id + 1] - 1
-
-    mass = wp.float32(0.0)
-    m_min = wp.float32(1e10)
-    m_max = wp.float32(0.0)
-    inertia = wp.float32(0.0)
-
-    for body_id in range(body_id_start, body_id_end + 1):
-        mass_b = model_body_mass[body_id]
-        mass += mass_b
-        if mass_b < m_min:
-            m_min = mass_b
-        if mass_b > m_max:
-            m_max = mass_b
-        inertia_diag = wp.get_diag(body_inertia[body_id])
-        inertia += 3.0 * mass_b + inertia_diag[0] + inertia_diag[1] + inertia_diag[2]
-
-    mass_total[world_id] = mass
-    mass_min[world_id] = m_min
-    mass_max[world_id] = m_max
-    inertia_total[world_id] = inertia
-
-
-@wp.kernel
 def joint_conversion_kernel(
     # Inputs:
     model_joint_world: wp.array[wp.int32],
@@ -741,29 +702,6 @@ def convert_rigid_bodies(
         device=model.device,
     )
 
-    # Construct per-world inertial summaries
-    with wp.ScopedDevice(model.device):
-        mass_total = wp.empty((model.world_count,), dtype=wp.float32)
-        mass_min = wp.empty((model.world_count,), dtype=wp.float32)
-        mass_max = wp.empty((model.world_count,), dtype=wp.float32)
-        inertia_total = wp.empty((model.world_count,), dtype=wp.float32)
-    wp.launch(
-        kernel=mass_prop_accumulation_kernel,
-        dim=model.world_count,
-        inputs=[
-            model.body_world_start,
-            model.body_mass,
-            model.body_inertia,
-        ],
-        outputs=[
-            mass_total,
-            mass_min,
-            mass_max,
-            inertia_total,
-        ],
-        device=model.device,
-    )
-
     # model.body_q stores body-origin world poses, but Kamino expects
     # COM world poses (joint attachment vectors are COM-relative).
     q_i_0 = wp.empty((model.body_count,), dtype=wp.transformf, device=model.device)
@@ -792,10 +730,6 @@ def convert_rigid_bodies(
     model_info.bodies_offset = world_body_offset
     model_info.geoms_offset = world_shape_offset
     model_info.body_dofs_offset = world_body_dof_offset
-    model_info.mass_min = mass_min
-    model_info.mass_max = mass_max
-    model_info.mass_total = mass_total
-    model_info.inertia_total = inertia_total
 
     model_bodies = RigidBodiesModel(
         num_bodies=model.body_count,
