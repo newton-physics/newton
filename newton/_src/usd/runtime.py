@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import warp as wp
+
 import newton
 import newton.usd
 from newton._src.solvers import SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit, SolverVBD, SolverXPBD
@@ -193,3 +195,23 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
 
 def _maybe_capture(sim: Simulation, use_graph: bool | None) -> None:
     pass  # implemented in Task 5
+
+
+def _step_device_ops(sim: Simulation, collide: bool) -> None:
+    """Device work for one step; contains no Python bookkeeping so it can be graph-captured."""
+    if collide and sim.contacts is not None:
+        sim.model.collide(sim.state, sim.contacts)
+    sim.solver.step(sim.state, sim.state, sim.control, sim.contacts, sim.dt)
+    # Clear after the solve: forces written between steps act for exactly one step.
+    sim.state.clear_forces()
+
+
+def step(sim: Simulation) -> None:
+    """Advance the simulation by exactly ``sim.dt`` [s]."""
+    collide = sim.step_count % sim.collision_interval == 0
+    if sim._graphs is not None:
+        wp.capture_launch(sim._graphs[0] if collide else sim._graphs[1])
+    else:
+        _step_device_ops(sim, collide=collide)
+    sim.time += sim.dt
+    sim.step_count += 1

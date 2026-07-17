@@ -3,6 +3,6 @@
 
 """Stage-driven simulation runtime: derive a Newton simulation from USD."""
 
-from .._src.usd.runtime import Simulation, load_usd
+from .._src.usd.runtime import Simulation, load_usd, step
 
-__all__ = ["Simulation", "load_usd"]
+__all__ = ["Simulation", "load_usd", "step"]

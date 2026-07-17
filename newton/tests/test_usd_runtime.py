@@ -3,8 +3,10 @@
 
 import unittest
 
+import numpy as np
+
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
 
 def _make_stage(solver_api="NewtonSolverXpbdAPI", scene_attrs=None, num_bodies=1, num_scenes=1):
@@ -159,6 +161,96 @@ class TestUsdRuntime(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             runtime.load_usd(stage, use_graph=False)
         self.assertNotIn("Warning: Custom attribute", buf.getvalue())
+
+    def test_step_advances_falling_body(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim = runtime.load_usd(_make_stage(), use_graph=False)
+        z0 = sim.state.body_q.numpy()[0, 2]
+        for _ in range(50):
+            runtime.step(sim)
+        z1 = sim.state.body_q.numpy()[0, 2]
+        self.assertLess(z1, z0)  # gravity acted
+        self.assertTrue(np.isfinite(sim.state.body_q.numpy()).all())
+        self.assertAlmostEqual(sim.time, 50 * sim.dt, places=6)
+        self.assertEqual(sim.step_count, 50)
+
+    def test_state_identity_is_stable(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim = runtime.load_usd(_make_stage(), use_graph=False)
+        state_ref = sim.state
+        body_q_ref = sim.state.body_q
+        for _ in range(3):
+            runtime.step(sim)
+        self.assertIs(sim.state, state_ref)
+        self.assertIs(sim.state.body_q, body_q_ref)
+
+    def test_applied_force_acts_for_one_step(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim = runtime.load_usd(_make_stage(), use_graph=False)
+        force = np.zeros((1, 6), dtype=np.float32)
+        force[0, 3] = 1.0e4  # linear force +x; spatial vector layout [ang, lin]
+        sim.state.body_f.assign(force)
+        runtime.step(sim)
+        vx_after_one = sim.state.body_qd.numpy()[0, 3]
+        self.assertGreater(vx_after_one, 0.0)  # force was consumed
+        assert_np_equal(sim.state.body_f.numpy(), np.zeros((1, 6), dtype=np.float32))  # and cleared
+
+    def test_parity_with_manual_wiring(self):
+        from pxr import Sdf
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        scene_attrs = {"newton:xpbd:iterations": (Sdf.ValueTypeNames.Int, 4)}
+        sim = runtime.load_usd(_make_stage(scene_attrs=scene_attrs), use_graph=False)
+
+        # Manual canonical wiring of the identical stage.
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverXPBD.register_custom_attributes(builder)
+        builder.add_usd(
+            _make_stage(scene_attrs=scene_attrs),
+            schema_resolvers=[
+                newton.usd.SchemaResolverNewton(),
+                newton.usd.SchemaResolverPhysx(),
+                newton.usd.SchemaResolverMjc(),
+            ],
+            apply_up_axis_from_stage=True,
+        )
+        model = builder.finalize()
+        solver = newton.solvers.SolverXPBD(model, iterations=4)
+        state = model.state()
+        contacts = model.contacts()
+        dt = sim.dt
+        for _ in range(20):
+            runtime.step(sim)
+            model.collide(state, contacts)
+            solver.step(state, state, None, contacts, dt)
+            state.clear_forces()
+        assert_np_equal(sim.state.body_q.numpy(), state.body_q.numpy(), tol=1e-6)
+
+    def test_empty_stage_steps_as_noop(self):
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        sim = runtime.load_usd(_make_stage(num_bodies=0), use_graph=False)
+        for _ in range(5):
+            runtime.step(sim)
+        self.assertEqual(sim.step_count, 5)
+
+    def test_collision_interval_skips_collide(self):
+        from unittest import mock  # noqa: PLC0415
+
+        from pxr import Sdf
+
+        import newton.usd.runtime as runtime  # noqa: PLC0415
+
+        stage = _make_stage(scene_attrs={"newton:collisionInterval": (Sdf.ValueTypeNames.Int, 4)})
+        sim = runtime.load_usd(stage, use_graph=False)
+        with mock.patch.object(sim.model, "collide", wraps=sim.model.collide) as spy:
+            for _ in range(8):
+                runtime.step(sim)
+        self.assertEqual(spy.call_count, 2)  # steps 0 and 4
 
 
 if __name__ == "__main__":
