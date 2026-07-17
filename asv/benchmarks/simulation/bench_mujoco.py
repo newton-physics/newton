@@ -42,7 +42,13 @@ class _KpiBenchmark(_SimulationMetricTracks):
             wp.synchronize_device()
             device = wp.get_device()
             free_memory_before = device.free_memory
-            builder = Example.create_model_builder(self.robot, world_count, randomize=self.random_init, seed=123)
+            builder = Example.create_model_builder(
+                self.robot,
+                world_count,
+                environment=self.environment,
+                randomize=self.random_init,
+                seed=123,
+            )
 
             def create_workload(builder=builder):
                 example = Example(
@@ -199,6 +205,7 @@ class FastKitchenG1(_KpiBenchmark):
     num_frames = 50
     robot = "g1"
     timeout = 900
+    version = "2"  # The pre-v2 series accidentally omitted the kitchen environment.
     samples = 2
     ls_iteration = 10
     random_init = True

@@ -24,6 +24,10 @@ import newton
 import newton.examples
 from newton.examples.robot.example_robot_anymal_c_walk import Example
 
+_NUM_FRAMES = 50
+_MIN_BASE_HEIGHT = 0.4
+_MIN_FORWARD_PROGRESS = 0.25
+
 
 def _create_example(num_frames):
     if hasattr(newton.examples, "default_args"):
@@ -33,12 +37,27 @@ def _create_example(num_frames):
     return Example(newton.viewer.ViewerNull(num_frames=num_frames), args)
 
 
+def _validate_workload(workload):
+    validate_simulation_state(
+        workload.state_0,
+        max_linear_speed=10.0,
+        max_angular_speed=50.0,
+    )
+    root_position = workload.state_0.joint_q.numpy()[:3]
+    if root_position[2] < _MIN_BASE_HEIGHT:
+        raise RuntimeError(f"ANYmal base height is too low after {_NUM_FRAMES} frames: {root_position[2]:.3f} m")
+    if root_position[1] < _MIN_FORWARD_PROGRESS:
+        raise RuntimeError(
+            f"ANYmal made insufficient forward progress after {_NUM_FRAMES} frames: {root_position[1]:.3f} m"
+        )
+
+
 class FastExampleAnymalPretrained:
     repeat = 3
     number = 1
 
     def setup(self):
-        self.num_frames = 50
+        self.num_frames = _NUM_FRAMES
         self.example = _create_example(self.num_frames)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -49,7 +68,7 @@ class FastExampleAnymalPretrained:
 
 
 class FastMetricsExampleAnymalPretrained(_UnparameterizedSimulationMetricTracks):
-    num_frames = 50
+    num_frames = _NUM_FRAMES
     samples = 3
     world_count = 1
 
@@ -64,11 +83,7 @@ class FastMetricsExampleAnymalPretrained(_UnparameterizedSimulationMetricTracks)
             samples=self.samples,
             synchronize=wp.synchronize_device,
             memory_usage_bytes=lambda workload: compute_gpu_memory_usage(device, free_memory_before),
-            validate=lambda workload: validate_simulation_state(
-                workload.state_0,
-                max_linear_speed=10.0,
-                max_angular_speed=50.0,
-            ),
+            validate=_validate_workload,
         )
 
 

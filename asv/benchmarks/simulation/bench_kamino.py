@@ -148,6 +148,8 @@ class KpiDRLegs(_KpiBenchmark):
     def setup_cache(self):
         return self._collect_metrics()
 
+    setup_cache.timeout = 1200
+
 
 if __name__ == "__main__":
     import argparse
