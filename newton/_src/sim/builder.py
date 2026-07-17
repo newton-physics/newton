@@ -2738,7 +2738,7 @@ class ModelBuilder:
                 if xform is None:
                     continue
                 for shape in static_shapes.tolist():
-                    source = builder.shape_transform[shape]
+                    source = wp.transform(*builder.shape_transform[shape])
                     target = shape_transform_start + world_index * counts["shape"] + shape
                     self.shape_transform[target] = transform_mul(xform, source)
 
@@ -2767,7 +2767,7 @@ class ModelBuilder:
                 if xform is None:
                     continue
                 for joint in nonfree_roots.tolist():
-                    source = builder.joint_X_p[joint]
+                    source = wp.transform(*builder.joint_X_p[joint])
                     target = joint_X_p_start + world_index * counts["joint"] + joint
                     self.joint_X_p[target] = transform_mul(xform, source)
 
@@ -2779,7 +2779,7 @@ class ModelBuilder:
                 for joint in free_roots.tolist():
                     source_q = builder.joint_q_start[joint]
                     xform_prev = wp.transform(*builder.joint_q[source_q : source_q + 7])
-                    X_pj = builder.joint_X_p[joint]
+                    X_pj = wp.transform(*builder.joint_X_p[joint])
                     xform_local = transform_mul(transform_mul(wp.transform_inverse(X_pj), xform), X_pj)
                     transformed = transform_mul(xform_local, xform_prev)
                     target_q = coord_base + source_q
@@ -2810,7 +2810,7 @@ class ModelBuilder:
                     if xform is None:
                         self.body_q.extend(wp.transform(*body_q) for body_q in builder.body_q)
                     else:
-                        self.body_q.extend(transform_mul(xform, body_q) for body_q in builder.body_q)
+                        self.body_q.extend(transform_mul(xform, wp.transform(*body_q)) for body_q in builder.body_q)
 
         source_filter_pairs = builder._shape_collision_filter_pairs
         if source_filter_pairs:

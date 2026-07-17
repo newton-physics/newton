@@ -245,6 +245,29 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(destination.joint_q, joint_q)
         self.assertEqual([tuple(qd) for qd in destination.particle_qd], particle_qd)
 
+    def test_merge_accepts_array_valued_transforms_under_xform(self):
+        # A rotated xform routes static shapes, root joints, and body_q through
+        # the transform-multiply paths, which must accept ndarray rows.
+        xform = wp.transform((0.5, -0.3, 0.25), wp.quat_rpy(0.4, -0.2, 0.7))
+        source = self._make_source()
+
+        expected = ModelBuilder()
+        expected.add_builder(source, xform=xform)
+
+        source.shape_transform = np.asarray(source.shape_transform)
+        source.joint_X_p = np.asarray(source.joint_X_p)
+        source.body_q = np.asarray(source.body_q)
+
+        actual = ModelBuilder()
+        actual.add_builder(source, xform=xform)
+
+        for attr in ("shape_transform", "joint_X_p", "body_q", "joint_q"):
+            np.testing.assert_array_equal(
+                np.asarray(getattr(actual, attr), dtype=np.float32),
+                np.asarray(getattr(expected, attr), dtype=np.float32),
+                err_msg=attr,
+            )
+
     def test_zero_spacing_replication_copies_joint_q_exactly(self):
         source = ModelBuilder()
         body = source.add_body()
