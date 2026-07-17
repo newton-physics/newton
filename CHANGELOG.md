@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add `newton.usd.runtime` with `load_usd()` and `step()` for stage-driven simulation: solver selection and configuration are authored on the USD `PhysicsScene` prim via applied `NewtonSolver*API` schemas
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
 
 ### Changed
