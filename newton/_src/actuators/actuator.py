@@ -439,8 +439,6 @@ class Actuator:
                 output_dq is not None
                 and output_dqd is not None
                 and not self.clamping
-                and self.pos_indices is self.indices
-                and self.target_pos_indices is self.indices
                 and self.effort_indices is self.indices
             )
             if can_write_force_jacobians:

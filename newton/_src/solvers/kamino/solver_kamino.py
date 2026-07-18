@@ -55,6 +55,8 @@ def _apply_control_force_linearization_to_kamino(
     joint_f: wp.array[float],
     joint_f_dq: wp.array[float],
     joint_f_dqd: wp.array[float],
+    joint_q_index_from_qd: wp.array[int],
+    joint_target_q_index_from_qd: wp.array[int],
     positions: wp.array[float],
     velocities: wp.array[float],
     target_pos: wp.array[float],
@@ -71,10 +73,15 @@ def _apply_control_force_linearization_to_kamino(
     if dforce_dpos == 0.0 and dforce_dvel == 0.0:
         return
 
+    q_index = joint_q_index_from_qd[i]
+    target_q_index = joint_target_q_index_from_qd[i]
+    if q_index < 0 or target_q_index < 0:
+        return
+
     kp = wp.max(0.0, -dforce_dpos)
     kd = wp.max(0.0, -dforce_dvel)
 
-    position_error = target_pos[i] - positions[i]
+    position_error = target_pos[target_q_index] - positions[q_index]
     velocity_error = target_vel[i] - velocities[i]
 
     joint_f_effective[i] = 0.0
@@ -649,10 +656,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._joint_f_effective = None
         self._joint_target_ke_effective = None
         self._joint_target_kd_effective = None
+        self._joint_q_index_from_qd = None
+        self._joint_target_q_index_from_qd = None
         if self._config.use_actuator_jacobians and model.joint_count:
             self._joint_f_effective = wp.clone(model.joint_f)
             self._joint_target_ke_effective = wp.clone(model.joint_target_ke)
             self._joint_target_kd_effective = wp.clone(model.joint_target_kd)
+            self._joint_q_index_from_qd, self._joint_target_q_index_from_qd = self._build_joint_q_index_maps()
             self._model_kamino.joints.k_p_j = self._joint_target_ke_effective
             self._model_kamino.joints.k_d_j = self._joint_target_kd_effective
 
@@ -909,13 +919,42 @@ class SolverKamino(SolverBase, CouplingInterface):
                 self.model.joint_dof_count, dtype=wp.float32, requires_grad=self.model.requires_grad
             )
 
+    def _build_joint_q_index_maps(self) -> tuple[wp.array, wp.array]:
+        q_index_from_qd = [-1] * self.model.joint_dof_count
+        target_q_index_from_qd = [-1] * self.model.joint_dof_count
+
+        joint_q_start = self.model.joint_q_start.numpy()
+        joint_qd_start = self.model.joint_qd_start.numpy()
+        joint_target_q_start = self.model.joint_target_q_start.numpy()
+
+        for joint_index in range(self.model.joint_count):
+            q_start = int(joint_q_start[joint_index])
+            qd_start = int(joint_qd_start[joint_index])
+            target_q_start = int(joint_target_q_start[joint_index])
+            q_count = int(joint_q_start[joint_index + 1] - q_start)
+            qd_count = int(joint_qd_start[joint_index + 1] - qd_start)
+
+            if q_count == qd_count:
+                for local_index in range(qd_count):
+                    qd_index = qd_start + local_index
+                    q_index_from_qd[qd_index] = q_start + local_index
+                    target_q_index_from_qd[qd_index] = target_q_start + local_index
+            elif not self.model.use_coord_layout_targets:
+                for local_index in range(qd_count):
+                    target_q_index_from_qd[qd_start + local_index] = target_q_start + local_index
+
+        return (
+            wp.array(q_index_from_qd, dtype=wp.int32, device=self.model.device),
+            wp.array(target_q_index_from_qd, dtype=wp.int32, device=self.model.device),
+        )
+
     def _warn_unsupported_actuator_jacobians(self) -> None:
         if self._warned_unsupported_actuator_jacobians:
             return
         warnings.warn(
             "SolverKamino actuator Jacobian integration currently supports only diagonal joint-DoF force "
-            "Jacobians with matching joint_q and joint_qd layouts. The solver will ignore Control.joint_f_dq "
-            "and Control.joint_f_dqd for this step and use Control.joint_f explicitly.",
+            "Jacobians for joints with one position coordinate per velocity DOF. The solver will ignore "
+            "unsupported entries in Control.joint_f_dq and Control.joint_f_dqd and use Control.joint_f explicitly.",
             RuntimeWarning,
             stacklevel=3,
         )
@@ -928,6 +967,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._joint_f_effective is None
             or self._joint_target_ke_effective is None
             or self._joint_target_kd_effective is None
+            or self._joint_q_index_from_qd is None
+            or self._joint_target_q_index_from_qd is None
         ):
             self._warn_unsupported_actuator_jacobians()
             return
@@ -940,12 +981,6 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         if control.joint_f_dq is None or control.joint_f_dqd is None:
             return
-        if (
-            state_in.joint_q.size != state_in.joint_qd.size
-            or control.joint_target_q.size != control.joint_target_qd.size
-        ):
-            self._warn_unsupported_actuator_jacobians()
-            return
 
         wp.launch(
             kernel=_apply_control_force_linearization_to_kamino,
@@ -954,6 +989,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 control.joint_f,
                 control.joint_f_dq,
                 control.joint_f_dqd,
+                self._joint_q_index_from_qd,
+                self._joint_target_q_index_from_qd,
                 state_in.joint_q,
                 state_in.joint_qd,
                 control.joint_target_q,
