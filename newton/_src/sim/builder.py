@@ -2803,9 +2803,7 @@ class ModelBuilder:
                         if newton.use_coord_layout_targets:
                             target_prev = wp.transform(*builder.joint_target_q[source_q : source_q + 7])
                             transformed_target = transform_mul(xform_local, target_prev)
-                            joint_target_q[target_q : target_q + 7] = np.asarray(
-                                transformed_target, dtype=np.float32
-                            )
+                            joint_target_q[target_q : target_q + 7] = np.asarray(transformed_target, dtype=np.float32)
 
         self.joint_q.extend(joint_q.tolist())
         self.joint_target_q.extend(joint_target_q.tolist())
