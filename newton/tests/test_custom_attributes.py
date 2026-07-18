@@ -1695,10 +1695,11 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         builder = ModelBuilder()
         builder.add_world(template)
         builder.add_world(template)
+        builder.add_custom_values(**{"test:item_value": 8})
 
         model = builder.finalize(device=self.device)
-        np.testing.assert_array_equal(model.test.item_world.numpy(), [0, 1])
-        np.testing.assert_array_equal(model.test.item_value.numpy(), [7, 7])
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [0, 1, -1])
+        np.testing.assert_array_equal(model.test.item_value.numpy(), [7, 7, 8])
 
     def test_custom_frequency_registration_methods(self):
         """Test different ways to register custom frequencies."""

@@ -1548,6 +1548,8 @@ class ModelBuilder:
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
         """Registered custom attributes to materialize during :meth:`finalize <ModelBuilder.finalize>`."""
+        self._custom_world_reference_attribute_keys: dict[str, list[str]] = {}
+        """Custom-frequency world-reference attribute keys grouped by frequency."""
         self._custom_attribute_model_finalizers: dict[
             str, Callable[[ModelBuilder, Model, ModelBuilder.CustomAttribute], None]
         ] = {}
@@ -1687,6 +1689,7 @@ class ModelBuilder:
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
+            self._index_custom_world_reference_attribute(existing)
             return
 
         # Validate that custom frequencies are registered before use
@@ -1706,6 +1709,18 @@ class ModelBuilder:
             )
 
         self.custom_attributes[key] = attribute
+        self._index_custom_world_reference_attribute(attribute)
+
+    def _index_custom_world_reference_attribute(self, attribute: CustomAttribute) -> None:
+        """Index a custom-frequency world reference for row insertion."""
+        if not attribute.is_custom_frequency or attribute.references != "world":
+            return
+
+        freq_key = attribute.frequency
+        assert isinstance(freq_key, str), f"Custom frequency '{freq_key}' is not a string"
+        keys = self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
+        if attribute.key not in keys:
+            keys.append(attribute.key)
 
     def _add_custom_attribute_model_finalizer(
         self,
@@ -1751,6 +1766,7 @@ class ModelBuilder:
         freq_obj = frequency
 
         freq_key = freq_obj.key
+        self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
         if freq_key in self.custom_frequencies:
             existing = self.custom_frequencies[freq_key]
             if not self._custom_frequency_specs_match(existing, freq_obj):
@@ -1843,14 +1859,10 @@ class ModelBuilder:
             assert isinstance(attr.frequency, str), f"Custom frequency '{attr.frequency}' is not a string"
             touched_frequencies.add(attr.frequency)
 
-        for attr in self.custom_attributes.values():
-            if (
-                attr.is_custom_frequency
-                and attr.frequency in touched_frequencies
-                and attr.references == "world"
-                and values.get(attr.key) is None
-            ):
-                values[attr.key] = self.current_world
+        for freq_key in touched_frequencies:
+            for attr_key in self._custom_world_reference_attribute_keys.get(freq_key, ()):
+                if values.get(attr_key) is None:
+                    values[attr_key] = self.current_world
 
         indices: dict[str, int] = {}
         frequency_indices: dict[str, int] = {}  # Track indices assigned per frequency in this call
@@ -4032,7 +4044,9 @@ class ModelBuilder:
                 if full_key not in self.custom_attributes:
                     freq_key = attr.frequency
                     mapped_values = [] if isinstance(freq_key, str) else {}
-                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                    merged = replace(attr, values=mapped_values)
+                    self.custom_attributes[full_key] = merged
+                    self._index_custom_world_reference_attribute(merged)
                 continue
 
             freq_key = attr.frequency
@@ -4123,7 +4137,9 @@ class ModelBuilder:
                     }
                 else:
                     mapped_values = {index_offset + idx: value for idx, value in attr.values.items()}
-                self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                merged = replace(attr, values=mapped_values)
+                self.custom_attributes[full_key] = merged
+                self._index_custom_world_reference_attribute(merged)
                 continue
 
             if not self._custom_attribute_defaults_match(merged.default, attr.default):
@@ -4162,6 +4178,7 @@ class ModelBuilder:
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:
                 self.custom_frequencies[freq_key] = freq_obj
+            self._custom_world_reference_attribute_keys.setdefault(freq_key, [])
 
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
