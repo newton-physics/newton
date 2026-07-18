@@ -10998,6 +10998,7 @@ class ModelBuilder:
                 QuantizationMode,
                 TextureSDFData,
                 create_empty_texture_sdf_data,
+                create_texture_sdf_from_mesh,
                 create_texture_sdf_from_primitive,
             )
 

@@ -1415,12 +1415,12 @@ def _build_sparse_sdf(
     if linearization_error_threshold > 0.0:
         # Per-sample launch so the 9^3 inner loop is parallelized across
         # threads; atomic_max accumulates the per-subgrid linearity error.
-        # We deliberately do NOT cache the mesh samples for reuse in the
+        # We deliberately do NOT cache the source samples for reuse in the
         # populate pass: an empirical test showed the cache (one float32
         # per sample, total_subgrids * 9^3 bytes transient) costs more in
-        # global-memory traffic than re-querying the mesh BVH, both for
-        # small meshes (cube: 12 tris) and medium meshes (icosphere:
-        # 5120 tris) at resolutions up to 256.
+        # global-memory traffic than re-querying the source SDF. This was
+        # measured for both small mesh BVHs (cube: 12 tris) and medium ones
+        # (icosphere: 5120 tris) at resolutions up to 256.
         samples_per_dim = subgrid_size + 1
         samples_per_subgrid = samples_per_dim**3
         total_work = total_subgrids * samples_per_subgrid
@@ -1765,7 +1765,8 @@ def create_sparse_sdf_textures(
     """Create TextureSDFData struct with GPU textures from sparse data.
 
     Args:
-        sparse_data: dictionary from :func:`build_sparse_sdf_from_mesh`.
+        sparse_data: Dictionary from :func:`build_sparse_sdf_from_mesh` or
+            :func:`build_sparse_sdf_from_primitive`.
         device: Warp device string.
 
     Returns:
