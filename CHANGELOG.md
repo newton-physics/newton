@@ -43,6 +43,7 @@
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_soft_mesh()` dropping valid tetrahedra that use the opposite winding convention; negative-volume elements are reoriented before mass, elasticity, and surface topology are generated.
+- Fix `ModelBuilder.add_soft_mesh()` dropping valid tetrahedra that use the opposite winding convention.
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
