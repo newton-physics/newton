@@ -44,6 +44,9 @@ class Example:
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = int(args.substeps)
+        self.use_graph = bool(args.graph_capture)
+        if self.use_graph and self.sim_substeps % 2 != 0:
+            raise ValueError("Graph capture requires an even number of simulation substeps")
         self.sim_dt = self.frame_dt / float(self.sim_substeps)
         self.sim_time = 0.0
         self.scenario = args.scenario
@@ -59,7 +62,7 @@ class Example:
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
         SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
         builder.default_particle_radius = 0.01
@@ -78,7 +81,7 @@ class Example:
         self.model.soft_contact_ke = 1.5e5 if self.scenario == "harsh" else 5.0e4
         self.model.soft_contact_kd = 1.0e-4
         self.model.soft_contact_kf = 1.0e3
-        self.model.soft_contact_mu = 0.6
+        self.model.soft_contact_mu = 2.0
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -99,8 +102,8 @@ class Example:
             "particle_enable_tile_solve": False,
             "rigid_contact_hard": False,
             "rigid_body_particle_contact_buffer_size": 1024 if self.scenario == "harsh" else 512,
-            "rigid_joint_linear_ke": 5.0e5 if self.scenario == "harsh" else 2.0e5,
-            "rigid_joint_angular_ke": 5.0e5 if self.scenario == "harsh" else 2.0e5,
+            "rigid_joint_linear_ke": 5.0e5 if self.scenario == "harsh" else 2.0e7,
+            "rigid_joint_angular_ke": 5.0e5 if self.scenario == "harsh" else 2.0e6,
         }
 
         self.solver = SolverCoupledProxy(
@@ -147,6 +150,18 @@ class Example:
             ),
         )
         newton.examples.configure_coupled_view(self, args)
+        self.capture()
+
+    def capture(self) -> None:
+        self.graph = None
+        if not self.use_graph or not self.model.device.is_cuda:
+            return
+
+        with wp.ScopedDevice(self.model.device), wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
+        if self.graph is None:
+            raise RuntimeError(f"CUDA graph capture failed on device {self.model.device}")
 
     def _emit_soft_object(self, builder: newton.ModelBuilder) -> None:
         size = 0.1 if self.scenario == "harsh" else 0.09
@@ -284,7 +299,6 @@ class Example:
         return np.min(particle_q, axis=0), np.max(particle_q, axis=0)
 
     def simulate(self) -> None:
-        self._update_gripper_target()
         self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -292,7 +306,12 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self) -> None:
-        self.simulate()
+        self._update_gripper_target()
+        if self.graph is not None:
+            with wp.ScopedDevice(self.model.device):
+                wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def test_final(self) -> None:
@@ -335,10 +354,10 @@ class Example:
             default="default",
             help="Scene configuration to run.",
         )
-        parser.add_argument("--substeps", type=int, default=4, help="Simulation substeps per rendered frame.")
+        parser.add_argument("--substeps", type=int, default=6, help="Simulation substeps per rendered frame.")
         newton.examples.add_coupled_view_args(parser)
-        parser.add_argument("--vbd-iterations", type=int, default=8, help="VBD iterations per substep.")
-        parser.add_argument("--mujoco-iterations", type=int, default=60, help="MuJoCo solver iterations.")
+        parser.add_argument("--vbd-iterations", type=int, default=30, help="VBD iterations per substep.")
+        parser.add_argument("--mujoco-iterations", type=int, default=20, help="MuJoCo solver iterations.")
         parser.add_argument("--proxy-iterations", type=int, default=1, help="Proxy coupling iterations per substep.")
         parser.add_argument(
             "--mass-scale",
@@ -375,6 +394,13 @@ class Example:
         )
         parser.add_argument("--close-distance", type=float, default=None, help="Final inward finger target [m].")
         parser.add_argument("--close-time", type=float, default=None, help="Finger closing ramp duration [s].")
+        parser.add_argument(
+            "--no-graph-capture",
+            action="store_false",
+            dest="graph_capture",
+            default=True,
+            help="Disable CUDA graph capture.",
+        )
         return parser
 
 

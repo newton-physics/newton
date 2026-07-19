@@ -14,12 +14,15 @@ from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.core.shapes import GeoType
 from newton._src.solvers.kamino._src.core.state import StateKamino
 from newton._src.solvers.kamino._src.dynamics import DualProblem
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
+from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.models.builders import testing
 from newton._src.solvers.kamino._src.models.builders.basics import build_boxes_fourbar
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
@@ -28,6 +31,7 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+from newton._src.solvers.kamino.tests.utils.sampling import sample_world_mask
 
 ###
 # Kernels
@@ -312,12 +316,13 @@ def step_solver(
     state_n: StateKamino,
     control: ControlKamino,
     contacts: ContactsKamino | None = None,
+    detector: CollisionDetector | None = None,
     dt: float = 0.001,
     show_progress: bool = False,
 ):
     start_time = time.time()
     for step in range(num_steps):
-        solver.step(state_in=state_p, state_out=state_n, control=control, contacts=contacts, dt=dt)
+        solver.step(state_in=state_p, state_out=state_n, control=control, contacts=contacts, detector=detector, dt=dt)
         wp.synchronize()
         state_p.copy_from(state_n)
         if show_progress:
@@ -625,12 +630,13 @@ class TestSolverKaminoImpl(unittest.TestCase):
         base_body_idx = model.info.base_body_index.numpy().copy()
         for wid in range(model.size.num_worlds):
             base_idx = base_body_idx[wid]
-            np.testing.assert_allclose(
-                state_n.q_i.numpy()[base_idx],
-                base_q_0_np[wid],
-                rtol=rtol,
-                atol=atol,
-            )
+            if base_idx >= 0:
+                np.testing.assert_allclose(
+                    state_n.q_i.numpy()[base_idx],
+                    base_q_0_np[wid],
+                    rtol=rtol,
+                    atol=atol,
+                )
 
         # Step the solver a few times to change the state
         solver._reset()
@@ -968,11 +974,69 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Check that state was correctly preserved or reset based on mask
         assert_states_close_masked(model, state_n, state_n_reset_ref, state_n_stepped_ref, world_mask)
 
+    def test_10_reset_warmstarting_for_select_worlds(self):
+        """Test resetting the contacts warmstarting cache for select worlds."""
+        # Create a heterogenous, contact-rich model
+        shape_types = [GeoType.SPHERE, GeoType.CAPSULE, GeoType.CYLINDER, GeoType.BOX, GeoType.CONE]
+        shape_types = [type_.name.lower() for type_ in shape_types]
+        shape_pairs = [(type1, type2) for type1 in shape_types for type2 in shape_types]
+        builder = testing.make_shape_pairs_builder(
+            shape_pairs=shape_pairs,
+            distance=0.0,
+            ground_box=True,
+            ground_z=-1.0,  # Ensures non-zero contact reactions after just a few steps
+        )
+        model = builder.finalize(device=self.default_device)
+
+        # Initialize the solver and step it a few times
+        contacts = ContactsKamino(model=model)
+        config = SolverKamino.Config()
+        config.padmm.warmstart_mode = "containers"
+        solver = SolverKaminoImpl(model=model, contacts=contacts, config=config)
+        state_p = model.state()
+        state_n = model.state()
+        control = model.control()
+        detector = CollisionDetector(model)
+        step_solver(
+            num_steps=10,
+            solver=solver,
+            state_p=state_p,
+            state_n=state_n,
+            control=control,
+            contacts=contacts,
+            detector=detector,
+        )
+
+        # Check that all worlds have contacts, and that most reactions / velocities are non-trivial
+        self.assertTrue(np.all(contacts.world_active_contacts.numpy() > 0))
+        num_active = contacts.model_active_contacts.numpy()[0]
+        reaction_norms = np.linalg.norm(contacts.reaction.numpy()[:num_active], axis=1)
+        velocity_norms = np.linalg.norm(contacts.velocity.numpy()[:num_active], axis=1)
+        self.assertTrue(np.count_nonzero(reaction_norms + velocity_norms) > 0.8 * num_active)
+
+        # Reset the solver internals (including warmstarting) with a non-trivial mask
+        rng = np.random.default_rng(self.seed)
+        world_mask_np = sample_world_mask(model.size.num_worlds, rng, target_inactive_rate=0.5)[0]
+        world_mask = wp.array(world_mask_np, dtype=wp.bool, device=self.default_device)
+        solver.reset(state=state_n, world_mask=world_mask, config=SolverKamino.ResetConfig.preserve())
+
+        # Run contact warmstarting, and check that contacts in reset worlds get cold-started
+        solver._ws_contacts.warmstart(model=model, data=solver.data, contacts=contacts)
+        reaction_norms = np.linalg.norm(contacts.reaction.numpy()[:num_active], axis=1)
+        velocity_norms = np.linalg.norm(contacts.velocity.numpy()[:num_active], axis=1)
+        contact_wid = contacts.wid.numpy()[:num_active]
+        contact_reset_mask = world_mask_np[contact_wid]
+        np.testing.assert_equal(reaction_norms[contact_reset_mask], 0.0)
+        np.testing.assert_equal(velocity_norms[contact_reset_mask], 0.0)
+
+        # Sanity check that not everything got cold-started
+        self.assertTrue(max(reaction_norms) + max(velocity_norms) > 0.0)
+
     ###
     # Test Step Operations
     ###
 
-    def test_09_step_multiple_worlds_from_initial_state_without_contacts(self):
+    def test_11_step_multiple_worlds_from_initial_state_without_contacts(self):
         """
         Test stepping multiple worlds solvers initialized
         uniformly from the default initial state multiple times.
@@ -1149,7 +1213,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         np.testing.assert_allclose(multi_state_n.q_j.numpy(), multi_final_q_j, rtol=rtol, atol=atol)
         np.testing.assert_allclose(multi_state_n.dq_j.numpy(), multi_final_dq_j, rtol=rtol, atol=atol)
 
-    def test_10_step_multiple_worlds_from_initial_state_with_contacts(self):
+    def test_12_step_multiple_worlds_from_initial_state_with_contacts(self):
         """
         Test stepping multiple world solvers initialized
         uniformly from the default initial state multiple times.

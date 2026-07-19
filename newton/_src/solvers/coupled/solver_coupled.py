@@ -2001,7 +2001,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Refresh optional sub-solver spatial caches from reset entry states."""
         for entry in self._entries.values():
             rebuild_bvh = getattr(entry.solver, "rebuild_bvh", None)
-            if callable(rebuild_bvh):
+            # Current rebuild hooks consume particle positions; rigid-only entries
+            # have no compatible cache input to refresh.
+            if callable(rebuild_bvh) and entry.state_0.particle_q is not None:
                 rebuild_bvh(entry.state_0)
 
     def _step_coupled(
@@ -2318,6 +2320,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 dim=contact_update_dim,
                 inputs=[
                     contacts.contact_generation,
+                    filtered.contact_generation,
                     self._entry_rigid_contact_generation[entry.name],
                     self._entry_soft_contact_generation[entry.name],
                     self._entry_rigid_contact_update[entry.name],
@@ -2431,6 +2434,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_body_vel,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_barycentric,
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
@@ -2442,6 +2447,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_body_vel,
                     filtered.soft_contact_normal,
                     filtered.soft_contact_tids,
+                    filtered.soft_contact_indices,
+                    filtered.soft_contact_barycentric,
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -3033,6 +3040,7 @@ def _add_mapped_particle_forces_kernel(
 @wp.kernel(enable_backward=False)
 def _prepare_filtered_contact_update_kernel(
     src_generation: wp.array[wp.int32],
+    dst_generation: wp.array[wp.int32],
     rigid_generation: wp.array[wp.int32],
     soft_generation: wp.array[wp.int32],
     rigid_update_out: wp.array[wp.int32],
@@ -3055,6 +3063,13 @@ def _prepare_filtered_contact_update_kernel(
     if tid == 0:
         rigid_update_out[0] = rigid_update
         soft_update_out[0] = soft_update
+        if rigid_update != 0 or soft_update != 0:
+            generation = dst_generation[0]
+            if generation == 2147483647:
+                generation = 0
+            else:
+                generation = generation + 1
+            dst_generation[0] = generation
         if rigid_update != 0:
             rigid_generation[0] = src_generation[0]
         if soft_update != 0:
@@ -3215,6 +3230,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_body_vel: wp.array[wp.vec3],
     src_normal: wp.array[wp.vec3],
     src_tids: wp.array[int],
+    src_indices: wp.array[wp.vec3i],
+    src_barycentric: wp.array[wp.vec3],
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
@@ -3226,6 +3243,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel: wp.array[wp.vec3],
     dst_normal: wp.array[wp.vec3],
     dst_tids: wp.array[int],
+    dst_indices: wp.array[wp.vec3i],
+    dst_barycentric: wp.array[wp.vec3],
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -3255,3 +3274,8 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
     dst_tids[dst_id] = src_tids[contact_id]
+    # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
+    # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
+    # VBD even with full-surface contact off (E7).
+    dst_indices[dst_id] = src_indices[contact_id]
+    dst_barycentric[dst_id] = src_barycentric[contact_id]

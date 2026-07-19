@@ -8,6 +8,7 @@ from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
+from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -23,6 +24,7 @@ from ..semi_implicit.kernels_particle import (
     eval_triangle_forces,
 )
 from ..solver import SolverBase
+from . import kernels
 from .kernels import (
     accumulate_free_distance_joint_f_to_body_force,
     compute_body_parent_f,
@@ -173,6 +175,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
         use_actuator_jacobians: bool = False,
+        deterministic: wp.DeterministicMode | None = None,
     ):
         """
         Args:
@@ -184,8 +187,33 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             use_actuator_jacobians: Whether to linearly implicit integrate supported actuator force Jacobians. Defaults
                 to False.
+            deterministic: Opt-in determinism for this solver's atomic-emitting
+                kernel modules. Pass a :class:`warp.DeterministicMode`, or
+                ``None`` (default) to inherit the current
+                ``wp.config.deterministic`` mode.
         """
         super().__init__(model)
+        effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        if model.joint_count > 0:
+            self._set_module_options(
+                {
+                    "deterministic": effective_deterministic,
+                    "deterministic_max_records": 0,
+                },
+                module=kernels,
+            )
+
+        borrowed_modules = []
+        has_shape_contacts = getattr(model, "shape_count", 0) > 0 and (model.body_count > 0 or model.particle_count > 0)
+        if has_shape_contacts:
+            borrowed_modules.append(kernels_contact)
+        if getattr(model, "muscle_count", 0) > 0:
+            borrowed_modules.append(kernels_muscle)
+        if model.particle_count > 0:
+            borrowed_modules.append(kernels_particle)
+        borrowed_options = {"deterministic": effective_deterministic, "deterministic_max_records": 0}
+        for module in borrowed_modules:
+            self._set_module_options(borrowed_options, module=module)
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
@@ -295,6 +323,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        self._apply_module_options()
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
@@ -441,7 +470,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
             # derived rigid body data (maximal coordinates)
             # Previous public body poses used when step-in-place refreshes descendant FREE/DISTANCE joints.
-            target.body_q_prev = wp.empty_like(model.body_q, requires_grad=requires_grad)
+            target._featherstone_body_q_prev = wp.empty_like(model.body_q, requires_grad=requires_grad)
             # FK body twists in the public COM/world-coordinate convention.
             target.body_qd_fk = wp.empty_like(model.body_qd, requires_grad=requires_grad)
             # Body COM poses in world coordinates for frame shifts back to public wrenches.
@@ -534,6 +563,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
     ) -> None:
         if not self.use_actuator_jacobians:
             self._warn_if_actuator_jacobians_ignored(control)
+        self._apply_module_options()
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
 
@@ -578,8 +608,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     device=model.device,
                 )
                 if step_in_place and self.descendant_free_distance_joint_indices is not None:
-                    wp.copy(state_aug.body_q_prev, state_in.body_q)
-                    descendant_body_q_prev = state_aug.body_q_prev
+                    wp.copy(state_aug._featherstone_body_q_prev, state_in.body_q)
+                    descendant_body_q_prev = state_aug._featherstone_body_q_prev
 
             particle_f = None
             body_f = None
@@ -672,6 +702,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     eval_rigid_id,
                     dim=model.articulation_count,
                     inputs=[
+                        None,  # articulation_mask: solver runs on all articulations
                         model.articulation_start,
                         model.articulation_end,
                         model.joint_type,
@@ -768,6 +799,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         eval_rigid_tau,
                         dim=model.articulation_count,
                         inputs=[
+                            None,  # articulation_mask: solver runs on all articulations
                             model.articulation_start,
                             model.articulation_end,
                             model.joint_type,

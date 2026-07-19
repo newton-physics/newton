@@ -253,6 +253,7 @@ class Example:
         builder.default_shape_cfg.kd = 5.0e2
         builder.default_shape_cfg.kf = 1.0e3
         builder.default_shape_cfg.mu = 0.75
+        builder.rigid_gap = 0.0
 
         builder.add_usd(
             newton.examples.get_asset(asset_directory + "/" + robot_config.asset_path),
@@ -323,17 +324,17 @@ class Example:
 
     def capture(self):
         self.graph = None
-        self.use_cuda_graph = False
-        if wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()):
-            print("[INFO] Using CUDA graph")
-            self.use_cuda_graph = True
+        self.use_graph = False
+        if self.device.is_cpu or self.device.is_mempool_enabled:
+            print("[INFO] Using graph capture")
+            self.use_graph = True
             self.control.joint_target_q = wp.zeros(self.config["num_dofs"] + 6, dtype=wp.float32, device=self.device)
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
 
     def simulate(self):
-        need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
 
         for i in range(self.sim_substeps):
             self.state_0.clear_forces()

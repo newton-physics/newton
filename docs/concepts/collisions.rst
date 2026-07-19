@@ -515,6 +515,12 @@ Filter pairs are automatically populated in several cases:
 The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
 ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
 
+.. deprecated:: 1.4
+   Mutating this finalized-model set is deprecated; update
+   :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
+   model instead, because the precomputed :attr:`~Model.shape_contact_pairs` array is not rebuilt by
+   post-finalize filter edits.
+
 **USD Import Example**
 
 .. code-block:: python
@@ -1298,13 +1304,12 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
      - Per-shape thickness: effective radius + margin (scalar).
    * - ``rigid_contact_match_index``
-     - Per-contact frame-to-frame match result (int32). ``>= 0``: matched old
-       index, ``-1``: new, ``-2``: broken.  Only allocated when
+     - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
-     - Compact index list of new contacts in the current sorted buffer (where
-       ``match_index < 0``). Only allocated when ``contact_report=True``.
+     - Compact index list of new contacts in the current sorted buffer. Only
+       allocated when ``contact_report=True``.
        See :ref:`Contact Reports`.
    * - ``rigid_contact_broken_indices``, ``rigid_contact_broken_count``
      - Compact index list of contacts from the previous frame that no current
@@ -1320,9 +1325,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - Attribute
      - Description
    * - ``soft_contact_count``
-     - Number of active soft contacts.
+     - Total number of soft contacts (single element). With full-surface contact off, this equals the per-particle contact count and is unchanged from earlier releases.
+   * - ``soft_contact_indices``
+     - Soft-side particle ids per contact, a ``vec3i`` with ``-1`` padding: ``(p, -1, -1)`` particle, ``(v0, v1, -1)`` edge, ``(v0, v1, v2)`` face. The number of non-negative slots gives the feature kind; pair with ``soft_contact_barycentric`` to recover the contact point.
    * - ``soft_contact_particle``
-     - Particle indices.
+     - Particle id for particle contacts (``-1`` for edge/face records) — the particle-only view of ``soft_contact_indices``, for solvers that consume particle contacts exclusively.
+   * - ``soft_contact_barycentric``
+     - Barycentric weights of the contact point over the record's soft particles (``(1, 0, 0)`` for a particle contact).
    * - ``soft_contact_shape``
      - Shape indices.
    * - ``soft_contact_body_pos``, ``soft_contact_body_vel``
@@ -1432,7 +1441,7 @@ treated as a frozen constant.
 
 .. testcode:: diff-contacts
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.3)))
     builder.add_shape_sphere(body=body, radius=0.5)
     builder.add_ground_plane()
@@ -1666,7 +1675,7 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - :attr:`~ModelBuilder.ShapeConfig.kd`
      - :attr:`~Model.shape_material_kd`
    * - ``kf``
-     - Tangential friction response gain
+     - Contact friction gain
      - 1000.0
      - :attr:`~ModelBuilder.ShapeConfig.kf`
      - :attr:`~Model.shape_material_kf`
@@ -1881,12 +1890,6 @@ Any non-disabled mode implies ``deterministic=True``.
 
     pipeline.collide(state, contacts)
 
-    # Per-contact match index (int32):
-    #   >= 0 : index of the matched contact in the previous frame
-    #     -1 : new contact (no match found)
-    #     -2 : key matched but position/normal thresholds exceeded (broken)
-    match_idx = contacts.rigid_contact_match_index.numpy()
-
 Each frame, the matcher binary-searches the current contacts against the
 previous frame's sorted keys, then verifies candidates against a world-space
 distance threshold and a normal dot-product threshold.  The sort key encodes
@@ -1913,8 +1916,8 @@ as motion on both sides of the contact, not just one.
 
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
-rows (``MATCH_NOT_FOUND`` / ``MATCH_BROKEN``) are left untouched, so new and
-threshold-broken contacts keep their fresh narrow-phase geometry.  Because
+rows are left untouched, so new and threshold-broken contacts keep their fresh
+narrow-phase geometry.  Because
 matching requires both a position delta below the threshold and a normal dot
 product above the threshold, the saved values are guaranteed to be a close
 approximation of the current geometry and are safe to reuse.  The extra
@@ -1948,12 +1951,7 @@ matching mode:
     broken_indices = contacts.rigid_contact_broken_indices.numpy()[:n_broken]
 
 ``rigid_contact_new_indices`` holds indices into the current frame's sorted
-contact buffer for every contact with ``match_index < 0``.  This includes both
-genuinely new contacts (``MATCH_NOT_FOUND``, ``match_index == -1``) and
-threshold-broken contacts whose sort key matched a previous-frame contact but
-whose position or normal exceeded the configured thresholds
-(``MATCH_BROKEN``, ``match_index == -2``).  Inspect
-``contacts.rigid_contact_match_index`` to distinguish the two cases.
+contact buffer for contacts without an accepted previous-frame match.
 
 ``rigid_contact_broken_indices`` holds indices into the *previous* frame's
 sorted buffer for contacts that no current contact matched.
@@ -1981,21 +1979,20 @@ Performance
 - **Objects tunneling through each other?** Increase ``gap`` to detect contacts earlier, or increase substep count (decrease simulation ``dt``).
 - **Hydroelastic buffer overflow warnings?** Increase ``buffer_fraction`` in :class:`~geometry.HydroelasticSDF.Config`.
 
-**CUDA graph capture**
+**Graph capture**
 
-On CUDA devices, the simulation loop (including ``collide`` and ``solver.step``) can be
-captured into a CUDA graph with ``wp.ScopedCapture`` for reduced kernel launch overhead.
-Place ``collide`` inside the captured region so it is replayed each frame:
+The simulation loop (including ``collide`` and ``solver.step``) can be captured with
+``wp.ScopedCapture`` for reduced launch overhead. Place ``collide`` inside the
+captured region so it is replayed each frame:
 
 .. code-block:: python
 
-    if wp.get_device().is_cuda:
-        with wp.ScopedCapture() as capture:
-            model.collide(state_0, contacts)
-            for _ in range(sim_substeps):
-                solver.step(state_0, state_1, control, contacts, dt)
-                state_0, state_1 = state_1, state_0
-        graph = capture.graph
+    with wp.ScopedCapture() as capture:
+        model.collide(state_0, contacts)
+        for _ in range(sim_substeps):
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+    graph = capture.graph
 
     # Each frame:
     wp.capture_launch(graph)

@@ -17,7 +17,6 @@ from ..core.math import (
     FLOAT32_MAX,
     TWO_PI,
     quat_log,
-    quat_to_euler_xyz,
     quat_to_vec4,
     quat_twist_angle,
     screw,
@@ -140,17 +139,6 @@ def correct_joint_coord_spherical(
 
 
 @wp.func
-def correct_joint_coord_gimbal(
-    q_j_in: wp.vec3f, q_j_ref: wp.vec3f, q_j_limit: wp.vec3f = DEFAULT_LIMIT_V3F
-) -> wp.vec3f:
-    """Corrects each of the XYZ Euler angles individually."""
-    q_j_in[0] = correct_rotational_coord(q_j_in[0], q_j_ref[0], q_j_limit[0])
-    q_j_in[1] = correct_rotational_coord(q_j_in[1], q_j_ref[1], q_j_limit[1])
-    q_j_in[2] = correct_rotational_coord(q_j_in[2], q_j_ref[2], q_j_limit[2])
-    return q_j_in
-
-
-@wp.func
 def correct_joint_coord_cartesian(
     q_j_in: wp.vec3f, q_j_ref: wp.vec3f, q_j_limit: wp.vec3f = DEFAULT_LIMIT_V3F
 ) -> wp.vec3f:
@@ -175,8 +163,6 @@ def get_joint_coord_correction_function(dof_type: JointDoFType):
         return correct_joint_coord_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return correct_joint_coord_spherical
-    elif dof_type == JointDoFType.GIMBAL:
-        return correct_joint_coord_gimbal
     elif dof_type == JointDoFType.CARTESIAN:
         return correct_joint_coord_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -245,13 +231,6 @@ def map_to_joint_coords_spherical(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec4f:
 
 
 @wp.func
-def map_to_joint_coords_gimbal(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec3f:
-    """Returns the 3D XYZ Euler angles (roll, pitch, yaw)."""
-    # How can we make this safer?
-    return quat_to_euler_xyz(j_q_j)
-
-
-@wp.func
 def map_to_joint_coords_cartesian(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec3f:
     """Returns the 3D translational."""
     return j_r_j
@@ -274,8 +253,6 @@ def get_joint_coords_mapping_function(dof_type: JointDoFType):
         return map_to_joint_coords_universal
     elif dof_type == JointDoFType.SPHERICAL:
         return map_to_joint_coords_spherical
-    elif dof_type == JointDoFType.GIMBAL:
-        return map_to_joint_coords_gimbal
     elif dof_type == JointDoFType.CARTESIAN:
         return map_to_joint_coords_cartesian
     elif dof_type == JointDoFType.FIXED:
@@ -340,8 +317,6 @@ def get_joint_constraint_angular_residual_function(dof_type: JointDoFType):
     elif dof_type == JointDoFType.UNIVERSAL:
         return joint_constraint_angular_residual_universal
     elif dof_type == JointDoFType.SPHERICAL:
-        return joint_constraint_angular_residual_free
-    elif dof_type == JointDoFType.GIMBAL:
         return joint_constraint_angular_residual_free
     elif dof_type == JointDoFType.CARTESIAN:
         return joint_constraint_angular_residual_fixed
@@ -571,21 +546,6 @@ def make_write_joint_data(correction: JointCorrectionMode = JointCorrectionMode.
                 data_dq_j,
             )
 
-        elif dof_type == JointDoFType.GIMBAL:
-            wp.static(make_typed_write_joint_data(JointDoFType.GIMBAL, correction))(
-                cts_offset,
-                dofs_offset,
-                coords_offset,
-                j_r_j,
-                j_q_j,
-                j_u_j,
-                q_j_p,
-                data_r_j,
-                data_dr_j,
-                data_q_j,
-                data_dq_j,
-            )
-
         elif dof_type == JointDoFType.CARTESIAN:
             wp.static(make_typed_write_joint_data(JointDoFType.CARTESIAN))(
                 cts_offset,
@@ -716,6 +676,7 @@ def compute_joint_pose_and_relative_motion(
 def compute_and_write_joint_implicit_dynamics(
     # Constants:
     dt: wp.float32,
+    act_type: wp.int32,
     coords_offset: wp.int32,
     dofs_offset: wp.int32,
     num_dynamic_cts: wp.int32,
@@ -766,10 +727,25 @@ def compute_and_write_joint_implicit_dynamics(
         pd_tau_j_ff = data_joint_tau_j_ref[dofs_offset_j] if data_joint_tau_j_ref else 0.0
 
         # Compute the implicit joint dynamics intermediates
+        m_j = a_j + dt * b_j
+        tau_j_tot = tau_j
+        if act_type == JointActuationType.FORCE:
+            tau_j_tot += pd_tau_j_ff
+        elif act_type == JointActuationType.POSITION:
+            m_j += dt * k_d_j + dt * dt * k_p_j
+            tau_j_tot += k_p_j * (pd_q_j_ref - q_j)
+        elif act_type == JointActuationType.VELOCITY:
+            m_j += dt * k_d_j
+            tau_j_tot += k_d_j * pd_dq_j_ref
+        elif act_type == JointActuationType.POSITION_VELOCITY:
+            m_j += dt * k_d_j + dt * dt * k_p_j
+            tau_j_tot += k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
+        elif act_type == JointActuationType.POSITION_VELOCITY_FORCE:
+            m_j += dt * k_d_j + dt * dt * k_p_j
+            tau_j_tot += pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
         # Enforce minimum mass to avoid division by zero
-        m_j = wp.max(1e-6, a_j + dt * (b_j + k_d_j) + dt * dt * k_p_j)
+        m_j = wp.max(1e-6, m_j)
         inv_m_j = 1.0 / m_j
-        tau_j_tot = tau_j + pd_tau_j_ff + k_p_j * (pd_q_j_ref - q_j) + k_d_j * pd_dq_j_ref
         h_j = a_j * dq_j + dt * tau_j_tot
         dq_b_j = inv_m_j * h_j
 
@@ -796,6 +772,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         model_time_dt: wp.array[wp.float32],
         model_joint_wid: wp.array[wp.int32],
         model_joint_dof_type: wp.array[wp.int32],
+        model_joint_act_type: wp.array[wp.int32],
         model_joint_coords_offset: wp.array[wp.int32],
         model_joint_dofs_offset: wp.array[wp.int32],
         model_joint_dynamic_cts_offset: wp.array[wp.int32],
@@ -833,6 +810,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # Retrieve the joint model data
         wid = model_joint_wid[jid]
         dof_type = model_joint_dof_type[jid]
+        act_type = model_joint_act_type[jid]
         bid_B = model_joint_bid_B[jid]
         bid_F = model_joint_bid_F[jid]
         B_r_Bj = model_joint_B_r_Bj[jid]
@@ -890,6 +868,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
         # for the dynamic constraints of the joint
         compute_and_write_joint_implicit_dynamics(
             dt,
+            act_type,
             coords_offset,
             dofs_offset,
             num_dynamic_cts,
@@ -1046,6 +1025,7 @@ def compute_joints_data(
             model.time.dt,
             model.joints.wid,
             model.joints.dof_type,
+            model.joints.act_type,
             model.joints.coords_offset,
             model.joints.dofs_offset,
             model.joints.dynamic_cts_offset,

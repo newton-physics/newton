@@ -40,11 +40,19 @@ _HAS_ONNX_RUNTIME = importlib.util.find_spec("onnx") is not None and importlib.u
 _PXR_WORK_THREAD_LIMIT_OUTPUT_RE = (
     r"(?s)#+\n#  PXR_WORK_THREAD_LIMIT is overridden to '1'\.  Default is '0'\.  #\n#+\n?"
 )
-_WARP_CUDA_DRIVER_WARNING_RE = (
+_WARP_CUDA_UNAVAILABLE_OUTPUT_RE = (
+    r"(?:"
     r"Warp CUDA warning: Could not find or load the NVIDIA CUDA driver\. "
-    r"GPU execution will not be available\.\n?"
+    r"GPU execution will not be available\."
+    r"|"
+    r"Warp CUDA error 100: no CUDA-capable device is detected "
+    r"\(in function init_cuda_driver, [^\n]*cuda_util\.cpp:\d+\)"
+    r")\n?"
 )
 _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this may take a moment\.\n?"
+_DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
+_DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
+_DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}"
 _BASIC_PLOTTING_OUTPUT_RE = (
     r"(?:"
     r"Diagnostics plot saved to solver_convergence\.png\n?"
@@ -181,6 +189,10 @@ def add_example_test(
         # Append Warp commands
         command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
 
+        # Forward any --warp-config overrides from the test runner
+        for entry in newton.tests.unittest_utils.warp_config_overrides:
+            command.extend(["--warp-config", entry])
+
         if not use_viewer:
             stage_path = (
                 options.pop(
@@ -258,6 +270,18 @@ def _register_output_regexes(test: NewtonTestCase, regexes: list[_OutputRegexSpe
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
+    def test_warp_cuda_unavailable_output_is_allowed(self):
+        outputs = (
+            "Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.\n",
+            "Warp CUDA error 100: no CUDA-capable device is detected "
+            "(in function init_cuda_driver, /builds/omniverse/warp/warp/native/cuda_util.cpp:319)\n",
+        )
+
+        for output in outputs:
+            with self.subTest(output=output):
+                unmatched_output = re.sub(_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "", output, flags=re.MULTILINE)
+                self.assertEqual(unmatched_output, "")
+
     def test_basic_plotting_output_does_not_consume_trailing_output(self):
         unexpected_output = "unexpected output\n"
         output = (
@@ -279,7 +303,7 @@ test_devices = get_test_devices(mode="basic")
 
 _BASIC_EXAMPLE_ALLOW_OUTPUT_REGEXES = [
     (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
-    (_WARP_CUDA_DRIVER_WARNING_RE, "stderr"),
+    (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
 ]
 
 
@@ -294,6 +318,13 @@ def add_basic_example_test(**kwargs):
 
 
 add_basic_example_test(name="basic.example_basic_pendulum", devices=test_devices, use_viewer=True)
+
+add_basic_example_test(
+    name="basic.example_recording",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "world-count": 8},
+)
 
 add_basic_example_test(
     name="basic.example_basic_urdf",
@@ -334,7 +365,16 @@ add_basic_example_test(
     name="basic.example_basic_shapes",
     devices=test_devices,
     use_viewer=True,
-    test_options={"num-frames": 150},
+    test_options={"num-frames": 150, "solver": "xpbd"},
+    test_suffix="xpbd",
+    allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
+)
+add_basic_example_test(
+    name="basic.example_basic_shapes",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "solver": "vbd"},
+    test_suffix="vbd",
     allow_output_regexes=[(_WARP_SDF_CONSTANT_CONVERSION_WARNING_RE, "stderr")],
 )
 
@@ -399,6 +439,22 @@ add_example_test(
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "eps-max": 2.0, "tau": 0.1},
+    test_suffix="dahl_retention",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_bundle_hysteresis",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 150, "no-dahl": True},
+    test_suffix="no_dahl_recovery",
 )
 add_example_test(
     TestCableExamples,
@@ -492,6 +548,20 @@ add_example_test(
 add_example_test(
     TestClothExamples,
     name="vbd.example_cloth_stiff_material_stretch",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_triangle",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_grid",
     devices=cuda_test_devices,
     test_options={"num-frames": 360},
     use_viewer=True,
@@ -698,21 +768,30 @@ add_example_test(
 )
 
 
-class TestDiffSimExamples(unittest.TestCase):
+class TestDiffSimExamples(NewtonTestCase):
     pass
 
 
-add_example_test(
-    TestDiffSimExamples,
+def add_diffsim_example_test(**kwargs: Any) -> None:
+    extra_allow_output_regexes = kwargs.pop("allow_output_regexes", None) or ()
+    allow_output_regexes = [
+        (_PXR_WORK_THREAD_LIMIT_OUTPUT_RE, "stderr"),
+        (_WARP_CUDA_UNAVAILABLE_OUTPUT_RE, "stderr"),
+        *extra_allow_output_regexes,
+    ]
+    add_example_test(TestDiffSimExamples, allow_output_regexes=allow_output_regexes, **kwargs)
+
+
+add_diffsim_example_test(
     name="diffsim.example_diffsim_ball",
     devices=test_devices,
     test_options={"num-frames": 4 * 36},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 36},
     use_viewer=True,
+    expect_output_regexes=[(_DIFFSIM_BALL_GRADIENT_OUTPUT_RE, "stdout")],
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_cloth",
     devices=test_devices,
     test_options={"num-frames": 4 * 120},  # train_iters * sim_steps
@@ -720,17 +799,16 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_drone",
     devices=test_devices,
     test_options={"num-frames": 180},  # sim_steps
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
+    expect_output_regexes=[(_DIFFSIM_DRONE_LOSS_OUTPUT_RE, "stdout")],
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_spring_cage",
     devices=test_devices,
     test_options={"num-frames": 4 * 30},  # train_iters * sim_steps
@@ -738,8 +816,7 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_soft_body",
     devices=test_devices,
     test_options={"num-frames": 4 * 60},  # train_iters * sim_steps
@@ -747,11 +824,10 @@ add_example_test(
     use_viewer=True,
 )
 
-add_example_test(
-    TestDiffSimExamples,
+add_diffsim_example_test(
     name="diffsim.example_diffsim_bear",
     devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 4 * 60},  # train_iters * sim_steps
+    test_options={"usd_required": True, "num-frames": 4 * 120, "sim-steps": 120},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2, "sim-steps": 10},
     use_viewer=True,
 )
@@ -959,7 +1035,7 @@ add_example_test(
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_mujoco_vbd_admm_solver",
-    devices=cuda_test_devices,
+    devices=test_devices,
     test_options={"num-frames": 30},
     use_viewer=True,
 )
@@ -974,7 +1050,7 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_kamino_mujoco_admm_solver",
     devices=["cpu"],
-    test_options={"num-frames": 30, "world-count": 4, "graph-capture": False},
+    test_options={"num-frames": 30, "world-count": 4},
     use_viewer=True,
 )
 add_example_test(

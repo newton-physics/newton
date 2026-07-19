@@ -34,6 +34,7 @@ __all__ = [
     "_add_regularizer_to_diagonal",
     "_apply_line_search_step",
     "_correct_actuator_coords",
+    "_correct_universal_constraint_velocities",
     "_eval_actuator_coords",
     "_eval_body_velocities",
     "_eval_fk_actuated_dofs_or_coords",
@@ -1977,6 +1978,84 @@ def _eval_target_constraint_velocities(
             target_cts_u[wd_id, offset_cts_j + 4] = actuators_u[offset_u_j + 1]
         else:
             assert False, "Unexpected actuator dof type"  # noqa: B011
+
+
+@wp.kernel
+def _correct_universal_constraint_velocities(
+    # Inputs
+    num_joints: wp.array[wp.int32],
+    first_joint_id: wp.array[wp.int32],
+    joints_dof_type: wp.array[wp.int32],
+    joints_act_type: wp.array[wp.int32],
+    joints_bid_B: wp.array[wp.int32],
+    joints_bid_F: wp.array[wp.int32],
+    joints_X_Bj: wp.array[wp.mat33f],
+    joints_X_Fj: wp.array[wp.mat33f],
+    ct_full_to_red_map: wp.array[wp.int32],
+    bodies_q: wp.array[wp.transformf],
+    world_mask: wp.array[wp.bool],
+    # Outputs
+    target_cts_u: wp.array2d[wp.float32],
+):
+    """
+    A kernel correcting the prescribed target velocities for universal actuators.
+    This is needed because for universal joints, the dof-space velocity is expressed in the frame of the
+    intermediary body, rather than in the frame on the base body.
+
+    Inputs:
+        num_joints: Num joints per world
+        first_joint_id: First joint id per world
+        joints_dof_type: Joint dof type (i.e. revolute, spherical, ...)
+        joints_act_type: Joint actuation type (i.e. passive or actuated)
+        joints_bid_B: Joint base body id
+        joints_bid_F: Joint follower body id
+        joints_X_Bj: Joint local frame on base body
+        joints_X_Fj: Joint local frame on follower body
+        ct_full_to_red_map: Map from full to reduced constraint id
+        bodies_q: Current body poses.
+        world_mask: Per-world boolean flag to perform the computation (False = skip)
+    Outputs:
+        target_cts_u: Corrected target constraint velocities (provided uncorrected as input).
+    """
+    # Retrieve the thread indices (= world index, joint index)
+    wd_id, jt_id_loc = wp.tid()
+
+    if wd_id < world_mask.shape[0] and world_mask[wd_id] and jt_id_loc < num_joints[wd_id]:
+        # Early return if this is not a universal actuator
+        jt_id_tot = first_joint_id[wd_id] + jt_id_loc
+        if (
+            joints_act_type[jt_id_tot] == JointActuationType.PASSIVE
+            or joints_dof_type[jt_id_tot] != FKJointDoFType.UNIVERSAL
+        ):
+            return
+
+        # Read target angular velocity (currently, in dof space i.e. in the frame of the intermediary body)
+        offset_cts_j = ct_full_to_red_map[6 * jt_id_tot]
+        omega_curr = wp.vec3f(target_cts_u[wd_id, offset_cts_j + 3], target_cts_u[wd_id, offset_cts_j + 4], 0.0)
+
+        # Compute relative orientation of joint frame on follower body w.r.t. joint frame on base body
+        bid_B = joints_bid_B[jt_id_tot]
+        bid_F = joints_bid_F[jt_id_tot]
+        q_B = wp.quatf(0.0, 0.0, 0.0, 1.0) if bid_B < 0 else wp.transform_get_rotation(bodies_q[bid_B])
+        q_F = wp.transform_get_rotation(bodies_q[bid_F])
+        q_X_B = wp.quat_from_matrix(joints_X_Bj[jt_id_tot])
+        q_X_F = wp.quat_from_matrix(joints_X_Fj[jt_id_tot])
+        q_rel = wp.quat_inverse(q_B * q_X_B) * q_F * q_X_F
+
+        # Compute intermediary body axes, in the joint frame on the base body
+        e_x = wp.vec3f(1.0, 0.0, 0.0)
+        e_y = wp.vec3f(0.0, 1.0, 0.0)
+        a_x = e_x  # x axis on base
+        a_y_raw = wp.quat_rotate(q_rel, e_y)  #  y axis on follower (constrained to be orthogonal to a_x)
+        a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
+        a_y = wp.normalize(a_y)
+        a_z = wp.cross(a_x, a_y)
+
+        # Convert target angular velocity back to joint frame on the base body
+        omega = omega_curr[0] * a_x + omega_curr[1] * a_y + omega_curr[2] * a_z
+        target_cts_u[wd_id, offset_cts_j + 3] = omega[0]
+        target_cts_u[wd_id, offset_cts_j + 4] = omega[1]
+        target_cts_u[wd_id, offset_cts_j + 5] = omega[2]
 
 
 @wp.kernel

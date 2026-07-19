@@ -7,6 +7,7 @@ from enum import IntEnum
 import warp as wp
 
 import newton
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.solvers import SolverMuJoCo
 
 
@@ -62,10 +63,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
 """
 
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()
@@ -89,8 +90,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
         state_in.joint_q.assign(joint_start_positions)
 
         device = model.device
-        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-        if use_cuda_graph:
+        use_graph = is_graph_capture_allocation_enabled(device)
+        if use_graph:
             # warmup (2 steps for full ping-pong cycle)
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             solver.step(state_in=state_out, state_out=state_in, contacts=contacts, control=control, dt=dt)
@@ -99,14 +100,14 @@ class TestMujocoFixedTendon(unittest.TestCase):
                 solver.step(state_in=state_out, state_out=state_in, contacts=contacts, control=control, dt=dt)
             graph = capture.graph
 
-        remaining = 200 - (4 if use_cuda_graph else 0)
-        for _i in range(remaining // 2 if use_cuda_graph else remaining):
-            if use_cuda_graph:
+        remaining = 200 - (4 if use_graph else 0)
+        for _i in range(remaining // 2 if use_graph else remaining):
+            if use_graph:
                 wp.capture_launch(graph)
             else:
                 solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
                 state_in, state_out = state_out, state_in
-        if use_cuda_graph and remaining % 2 == 1:
+        if use_graph and remaining % 2 == 1:
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             state_in, state_out = state_out, state_in
 
@@ -209,10 +210,10 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions[2] = joint_start_positions[0]
         joint_start_velocities[2] = joint_start_velocities[0]
 
-        individual_builder = newton.ModelBuilder(gravity=0.0)
+        individual_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
         individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         for _i in range(0, 2):
             builder.add_world(individual_builder)
         model = builder.finalize()

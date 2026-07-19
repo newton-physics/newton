@@ -61,7 +61,7 @@ def _make_kamino_config() -> SolverKamino.Config:
 
 
 def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, enabled: bool = True):
-    if not enabled or not model.device.is_cuda:
+    if not enabled:
         return None
 
     with wp.ScopedDevice(model.device):
@@ -69,7 +69,7 @@ def _capture_frame_graph(model: newton.Model, simulate: Callable[[], None], *, e
             simulate()
 
     if capture.graph is None:
-        raise RuntimeError(f"CUDA graph capture failed on device {model.device}")
+        raise RuntimeError(f"Graph capture failed on device {model.device}")
     return capture.graph
 
 
@@ -117,7 +117,7 @@ class Example:
         self.use_graph = bool(args.graph_capture)
         self.world_count = max(1, int(args.world_count))
 
-        template = newton.ModelBuilder(gravity=-9.81)
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverKamino.register_custom_attributes(template)
         self._joint_checks: list[tuple[int, np.ndarray, int, np.ndarray]] = []
         self._emit_four_bar(template)
@@ -125,13 +125,15 @@ class Example:
         bodies_per_world = template.body_count
         joints_per_world = template.joint_count
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.replicate(template, world_count=self.world_count)
         builder.add_ground_plane()
         self._expand_world_indices(bodies_per_world, joints_per_world)
 
         builder.color()
         self.model = builder.finalize()
+        self.model.rigid_contact_max = 96
+
         self.device = self.model.device
 
         kamino_config = _make_kamino_config()
@@ -324,11 +326,16 @@ class Example:
         self.graph = _capture_frame_graph(self.model, self.simulate, enabled=self.use_graph)
 
     def simulate(self):
-        for _ in range(self.sim_substeps):
+        need_state_copy = self.use_graph and self.sim_substeps % 2 == 1
+
+        for i in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-            self.state_0, self.state_1 = self.state_1, self.state_0
+            if need_state_copy and i == self.sim_substeps - 1:
+                self.state_0.assign(self.state_1)
+            else:
+                self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
         if not _launch_frame_graph(self.model, self.graph):
@@ -347,8 +354,8 @@ class Example:
             child = _transform_point(body_q, child_body, child_point)
             max_gap = max(max_gap, float(np.linalg.norm(parent - child)))
         assert max_gap < 0.12, f"Kamino-MuJoCo four-bar ADMM joints drifted too far: gap={max_gap:.3f}"
-        if self.use_graph and self.device.is_cuda:
-            assert self.graph is not None, "CUDA graph capture was requested but no graph was captured"
+        if self.use_graph:
+            assert self.graph is not None, "Graph capture was requested but no graph was captured"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
@@ -374,7 +381,7 @@ class Example:
             action="store_false",
             dest="graph_capture",
             default=True,
-            help="Disable CUDA graph capture.",
+            help="Disable graph capture.",
         )
         return parser
 
