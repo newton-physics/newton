@@ -267,6 +267,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> None:
+        self._warn_if_actuator_jacobians_ignored(control)
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0

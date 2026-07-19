@@ -1624,6 +1624,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 depend on this argument.
             dt: Time step size.
         """
+        self._warn_if_actuator_jacobians_ignored(control)
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
 

@@ -1801,6 +1801,7 @@ class Model:
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
                 c.joint_f_dq = wp.zeros_like(self.joint_f, requires_grad=requires_grad)
                 c.joint_f_dqd = wp.zeros_like(self.joint_f, requires_grad=requires_grad)
+                c._clear_force_jacobians()
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
             if self.tet_count:
@@ -1815,6 +1816,7 @@ class Model:
             if self.joint_count:
                 c.joint_f_dq = wp.zeros_like(self.joint_f, requires_grad=requires_grad)
                 c.joint_f_dqd = wp.zeros_like(self.joint_f, requires_grad=requires_grad)
+                c._clear_force_jacobians()
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations

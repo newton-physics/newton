@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,8 +41,15 @@ def _scatter_add_force_jacobian_kernel(
 ):
     i = wp.tid()
     idx = indices[i]
-    output_dq[idx] = output_dq[idx] + dforce_dpos[i]
-    output_dqd[idx] = output_dqd[idx] + dforce_dvel[i]
+    if wp.isnan(output_dq[idx]):
+        output_dq[idx] = dforce_dpos[i]
+    else:
+        output_dq[idx] = output_dq[idx] + dforce_dpos[i]
+
+    if wp.isnan(output_dqd[idx]):
+        output_dqd[idx] = dforce_dvel[i]
+    else:
+        output_dqd[idx] = output_dqd[idx] + dforce_dvel[i]
 
 
 class Actuator:
@@ -210,6 +218,7 @@ class Actuator:
         )
         self._computed_dforce_dpos = wp.zeros_like(self._computed_forces)
         self._computed_dforce_dvel = wp.zeros_like(self._computed_forces)
+        self._warned_force_jacobians_unavailable = False
         self._applied_forces = (
             wp.zeros(self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad)
             if self.clamping
@@ -233,6 +242,17 @@ class Actuator:
     def supports_force_jacobians(self) -> bool:
         """Return True if this actuator can provide unclamped analytic force Jacobians."""
         return not self.clamping and self.controller.supports_force_jacobians()
+
+    def _warn_force_jacobians_unavailable(self) -> None:
+        if self._warned_force_jacobians_unavailable:
+            return
+        warnings.warn(
+            "Actuator force Jacobians were requested, but this actuator cannot provide them. "
+            "It will continue to write explicit force to Control.joint_f.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        self._warned_force_jacobians_unavailable = True
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
@@ -458,6 +478,10 @@ class Actuator:
                     dt,
                     device=self.device,
                 )
+            if not wrote_force_jacobians:
+                self._warn_force_jacobians_unavailable()
+        elif write_force_jacobians:
+            self._warn_force_jacobians_unavailable()
 
         # --- 3. Clamping: computed → applied ---
         if self.clamping:
@@ -493,6 +517,7 @@ class Actuator:
             device=self.device,
         )
         if wrote_force_jacobians:
+            sim_control._joint_force_jacobians_written = True
             wp.launch(
                 kernel=_scatter_add_force_jacobian_kernel,
                 dim=self.num_actuators,

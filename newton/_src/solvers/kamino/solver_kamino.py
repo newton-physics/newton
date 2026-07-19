@@ -70,7 +70,7 @@ def _apply_control_force_linearization_to_kamino(
 
     dforce_dpos = joint_f_dq[i]
     dforce_dvel = joint_f_dqd[i]
-    if dforce_dpos == 0.0 and dforce_dvel == 0.0:
+    if wp.isnan(dforce_dpos) or wp.isnan(dforce_dvel):
         return
 
     q_index = joint_q_index_from_qd[i]
@@ -865,6 +865,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             control = self.model.control(clone_variables=False)
         self._control_kamino.from_newton(control, self._model_kamino)
         self._control_kamino.tau_j_ref = None
+        if not self._config.use_actuator_jacobians:
+            self._warn_if_actuator_jacobians_ignored(control)
         self._prepare_actuator_jacobians(state_in, control, dt)
 
         # If contacts are provided, use them directly, bypassing Kamino's collision detector

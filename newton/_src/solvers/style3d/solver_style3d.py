@@ -170,6 +170,7 @@ class SolverStyle3D(SolverBase):
             contacts: :class:`newton.Contacts` used for collision response.
             dt: Time step in seconds.
         """
+        self._warn_if_actuator_jacobians_ignored(control)
         if self.collision is not None:
             self.collision.frame_begin(state_in.particle_q, state_in.particle_qd, dt)
 

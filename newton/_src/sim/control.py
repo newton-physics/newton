@@ -46,6 +46,7 @@ class Control:
         import newton  # noqa: PLC0415
 
         self._use_coord_layout_targets: bool = newton.use_coord_layout_targets
+        self._joint_force_jacobians_written: bool = False
 
         self.joint_f: wp.array | None = None
         """
@@ -60,10 +61,18 @@ class Control:
         frame with the child body's center of mass (COM) as reference point.
         """
         self.joint_f_dq: wp.array | None = None
-        """Diagonal derivative of :attr:`joint_f` with respect to joint position, shape ``(joint_dof_count,)``."""
+        """Diagonal derivative of :attr:`joint_f` with respect to joint position, shape ``(joint_dof_count,)``.
+
+        Entries are set to ``NaN`` by :meth:`clear` until an actuator writes a
+        valid derivative. A valid derivative may be zero.
+        """
 
         self.joint_f_dqd: wp.array | None = None
-        """Diagonal derivative of :attr:`joint_f` with respect to joint velocity, shape ``(joint_dof_count,)``."""
+        """Diagonal derivative of :attr:`joint_f` with respect to joint velocity, shape ``(joint_dof_count,)``.
+
+        Entries are set to ``NaN`` by :meth:`clear` until an actuator writes a
+        valid derivative. A valid derivative may be zero.
+        """
 
         self.joint_target_q: wp.array | None = None
         """Joint position targets [m or rad]. Shape is ``(joint_coord_count,)``
@@ -155,10 +164,7 @@ class Control:
 
         if self.joint_f is not None:
             self.joint_f.zero_()
-        if self.joint_f_dq is not None:
-            self.joint_f_dq.zero_()
-        if self.joint_f_dqd is not None:
-            self.joint_f_dqd.zero_()
+        self._clear_force_jacobians()
         if self.tri_activations is not None:
             self.tri_activations.zero_()
         if self.tet_activations is not None:
@@ -175,6 +181,13 @@ class Control:
         if self.joint_act is not None:
             self.joint_act.zero_()
         self._clear_namespaced_arrays()
+
+    def _clear_force_jacobians(self) -> None:
+        self._joint_force_jacobians_written = False
+        if self.joint_f_dq is not None:
+            self.joint_f_dq.fill_(wp.nan)
+        if self.joint_f_dqd is not None:
+            self.joint_f_dqd.fill_(wp.nan)
 
     def _clear_namespaced_arrays(self) -> None:
         """Clear all wp.array attributes in namespaced containers (e.g., control.mujoco.ctrl)."""

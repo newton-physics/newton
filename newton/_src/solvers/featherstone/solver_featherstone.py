@@ -438,6 +438,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
     ) -> None:
+        self._warn_if_actuator_jacobians_ignored(control)
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
 

@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import warp as wp
 
 from ..geometry import ParticleFlags
@@ -185,6 +187,7 @@ class SolverBase:
 
     def __init__(self, model: Model):
         self.model = model
+        self._warned_actuator_jacobians_ignored = False
 
     @property
     def device(self) -> wp.Device:
@@ -323,6 +326,18 @@ class SolverBase:
                 state attributes are reset.
         """
         pass
+
+    def _warn_if_actuator_jacobians_ignored(self, control: Control | None) -> None:
+        if self._warned_actuator_jacobians_ignored:
+            return
+        if control is None or not getattr(control, "_joint_force_jacobians_written", False):
+            return
+        warnings.warn(
+            f"{type(self).__name__} does not consume actuator force Jacobians; using explicit Control.joint_f.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        self._warned_actuator_jacobians_ignored = True
 
     def step(
         self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float

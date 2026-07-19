@@ -1066,6 +1066,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
         """
+        self._warn_if_actuator_jacobians_ignored(control)
         model = self.model
 
         with wp.ScopedDevice(model.device):
