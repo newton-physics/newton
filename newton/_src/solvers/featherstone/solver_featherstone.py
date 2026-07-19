@@ -52,6 +52,34 @@ from .kernels import (
 )
 
 
+@wp.kernel
+def _apply_actuator_jacobians_to_featherstone(
+    joint_f_dq: wp.array[float],
+    joint_f_dqd: wp.array[float],
+    joint_h_diag_index: wp.array[int],
+    joint_q_index_from_qd: wp.array[int],
+    joint_qd: wp.array[float],
+    dt: float,
+    # outputs
+    H_effective: wp.array[float],
+    joint_tau_effective: wp.array[float],
+):
+    i = wp.tid()
+
+    dforce_dq = joint_f_dq[i]
+    dforce_dqd = joint_f_dqd[i]
+    if wp.isnan(dforce_dq) or wp.isnan(dforce_dqd):
+        return
+
+    H_diag_index = joint_h_diag_index[i]
+    q_index = joint_q_index_from_qd[i]
+    if H_diag_index < 0 or q_index < 0:
+        return
+
+    H_effective[H_diag_index] += -dt * dforce_dqd - dt * dt * dforce_dq
+    joint_tau_effective[i] += dt * dforce_dq * joint_qd[i]
+
+
 class SolverFeatherstone(SolverBase, CouplingInterface):
     """A semi-implicit integrator using symplectic Euler that operates
     on reduced (also called generalized) coordinates to simulate articulated rigid body dynamics
@@ -91,6 +119,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
           :attr:`~newton.Control.joint_target_qd`) is applied only to PRISMATIC, REVOLUTE,
           and D6 joints. For BALL, FREE, and DISTANCE joints the target arrays are read
           but no drive force is applied.
+        - Actuator force Jacobians (:attr:`~newton.Control.joint_f_dq`/
+          :attr:`~newton.Control.joint_f_dqd`) are supported for scalar PRISMATIC,
+          REVOLUTE, and D6 joint DOFs when ``use_actuator_jacobians=True``. Unsupported
+          or missing entries fall back to explicit :attr:`~newton.Control.joint_f`.
         - :attr:`~newton.Model.joint_friction`, :attr:`~newton.Model.joint_effort_limit`,
           :attr:`~newton.Model.joint_velocity_limit`, :attr:`~newton.Model.joint_enabled`,
           and :attr:`~newton.Model.joint_target_mode` are not supported.
@@ -140,6 +172,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         friction_smoothing: float = 1.0,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
+        use_actuator_jacobians: bool = False,
     ):
         """
         Args:
@@ -149,6 +182,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
+            use_actuator_jacobians: Whether to linearly implicit integrate supported actuator force Jacobians. Defaults
+                to False.
         """
         super().__init__(model)
 
@@ -157,6 +192,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self.friction_smoothing = friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
+        self.use_actuator_jacobians = use_actuator_jacobians
 
         self._step = 0
         self._mass_matrix_dirty = False
@@ -164,6 +200,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self._update_kinematic_state()
 
         self._compute_articulation_indices(model)
+        if self.use_actuator_jacobians and model.joint_count:
+            self._build_actuator_jacobian_maps(model)
+        else:
+            self._joint_h_diag_index = None
+            self._joint_q_index_from_qd = None
         self._allocate_model_aux_vars(model)
 
         if self.use_tile_gemm:
@@ -340,6 +381,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
             # zero since only upper triangle is set which can trigger NaN detection
             self.L = wp.zeros_like(self.H)
+            if self.use_actuator_jacobians:
+                self.H_effective = wp.empty_like(self.H)
+                self.L_effective = wp.zeros_like(self.H)
+                self.joint_tau_effective = wp.empty_like(model.joint_qd, requires_grad=model.requires_grad)
+            else:
+                self.H_effective = None
+                self.L_effective = None
+                self.joint_tau_effective = None
 
         if model.body_count:
             self.body_I_m = wp.empty(
@@ -429,6 +478,51 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
             target._featherstone_augmented = True
 
+    def _build_actuator_jacobian_maps(self, model: Model) -> None:
+        joint_h_diag_index = [-1] * model.joint_dof_count
+        joint_q_index_from_qd = [-1] * model.joint_dof_count
+
+        articulation_start = model.articulation_start.numpy()
+        articulation_end = model.articulation_end.numpy()
+        joint_q_start = model.joint_q_start.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_type = model.joint_type.numpy()
+        articulation_H_start = self.articulation_H_start.numpy()
+
+        for articulation_index in range(model.articulation_count):
+            joint_start = int(articulation_start[articulation_index])
+            joint_end = int(articulation_end[articulation_index])
+            articulation_dof_start = int(joint_qd_start[joint_start])
+            articulation_dof_end = int(joint_qd_start[joint_end])
+            articulation_dof_count = articulation_dof_end - articulation_dof_start
+            H_start = int(articulation_H_start[articulation_index])
+
+            for joint_index in range(joint_start, joint_end):
+                q_start = int(joint_q_start[joint_index])
+                qd_start = int(joint_qd_start[joint_index])
+                q_count = int(joint_q_start[joint_index + 1] - q_start)
+                qd_count = int(joint_qd_start[joint_index + 1] - qd_start)
+
+                if joint_type[joint_index] not in (
+                    int(JointType.PRISMATIC),
+                    int(JointType.REVOLUTE),
+                    int(JointType.D6),
+                ):
+                    continue
+                if q_count != qd_count:
+                    continue
+
+                for local_index in range(qd_count):
+                    qd_index = qd_start + local_index
+                    articulation_dof_index = qd_index - articulation_dof_start
+                    joint_h_diag_index[qd_index] = (
+                        H_start + articulation_dof_index * articulation_dof_count + articulation_dof_index
+                    )
+                    joint_q_index_from_qd[qd_index] = q_start + local_index
+
+        self._joint_h_diag_index = wp.array(joint_h_diag_index, dtype=wp.int32, device=model.device)
+        self._joint_q_index_from_qd = wp.array(joint_q_index_from_qd, dtype=wp.int32, device=model.device)
+
     @override
     def step(
         self,
@@ -438,7 +532,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
     ) -> None:
-        self._warn_if_actuator_jacobians_ignored(control)
+        if not self.use_actuator_jacobians:
+            self._warn_if_actuator_jacobians_ignored(control)
         requires_grad = state_in.requires_grad
         step_in_place = state_in is state_out
 
@@ -889,6 +984,52 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         # print(self.L.numpy())
                         self._mass_matrix_dirty = False
 
+                    solve_H = self.H
+                    solve_L = self.L
+                    solve_tau = state_aug.joint_tau
+                    if (
+                        self.use_actuator_jacobians
+                        and control.joint_f_dq is not None
+                        and control.joint_f_dqd is not None
+                        and self.H_effective is not None
+                        and self.L_effective is not None
+                        and self.joint_tau_effective is not None
+                        and self._joint_h_diag_index is not None
+                        and self._joint_q_index_from_qd is not None
+                    ):
+                        wp.copy(self.H_effective, self.H)
+                        wp.copy(self.joint_tau_effective, state_aug.joint_tau)
+                        wp.launch(
+                            _apply_actuator_jacobians_to_featherstone,
+                            dim=model.joint_dof_count,
+                            inputs=[
+                                control.joint_f_dq,
+                                control.joint_f_dqd,
+                                self._joint_h_diag_index,
+                                self._joint_q_index_from_qd,
+                                state_aug.joint_qd_internal_in,
+                                dt,
+                            ],
+                            outputs=[self.H_effective, self.joint_tau_effective],
+                            device=model.device,
+                        )
+                        wp.launch(
+                            eval_dense_cholesky_batched,
+                            dim=model.articulation_count,
+                            inputs=[
+                                self.articulation_H_start,
+                                self.articulation_H_rows,
+                                self.articulation_dof_start,
+                                self.H_effective,
+                                self.joint_armature_effective,
+                            ],
+                            outputs=[self.L_effective],
+                            device=model.device,
+                        )
+                        solve_H = self.H_effective
+                        solve_L = self.L_effective
+                        solve_tau = self.joint_tau_effective
+
                     # solve for qdd
                     state_aug.joint_qdd.zero_()
                     wp.launch(
@@ -898,9 +1039,9 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             self.articulation_H_start,
                             self.articulation_H_rows,
                             self.articulation_dof_start,
-                            self.H,
-                            self.L,
-                            state_aug.joint_tau,
+                            solve_H,
+                            solve_L,
+                            solve_tau,
                         ],
                         outputs=[
                             state_aug.joint_qdd,

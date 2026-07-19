@@ -14,7 +14,14 @@ import newton
 from newton.actuators import Actuator, ClampingMaxEffort, ControllerPD
 
 
-def _make_pd_model(kp_model: float, kd_model: float, use_actuator: bool, clamp_actuator: bool = False):
+def _make_pd_model(
+    kp_model: float,
+    kd_model: float,
+    use_actuator: bool,
+    clamp_actuator: bool = False,
+    kp_controller: float | None = None,
+    kd_controller: float | None = None,
+):
     builder = newton.ModelBuilder(gravity=0.0)
     body = builder.add_link(mass=1.0, inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
     builder.add_shape_sphere(
@@ -39,6 +46,10 @@ def _make_pd_model(kp_model: float, kd_model: float, use_actuator: bool, clamp_a
     model = builder.finalize()
     model.rigid_contact_max = 0
     if use_actuator:
+        if kp_controller is None:
+            kp_controller = kp_model
+        if kd_controller is None:
+            kd_controller = kd_model
         indices = wp.array([0], dtype=wp.uint32, device=model.device)
         clamping = None
         if clamp_actuator:
@@ -47,8 +58,8 @@ def _make_pd_model(kp_model: float, kd_model: float, use_actuator: bool, clamp_a
             Actuator(
                 indices=indices,
                 controller=ControllerPD(
-                    kp=wp.array([kp_model], dtype=wp.float32, device=model.device),
-                    kd=wp.array([kd_model], dtype=wp.float32, device=model.device),
+                    kp=wp.array([kp_controller], dtype=wp.float32, device=model.device),
+                    kd=wp.array([kd_controller], dtype=wp.float32, device=model.device),
                 ),
                 clamping=clamping,
                 control_target_pos_attr="joint_target_q",
@@ -72,6 +83,8 @@ def _run_kamino_pd_case(
         kd if use_model_pd else 0.0,
         use_actuator=use_actuator,
         clamp_actuator=clamp_actuator,
+        kp_controller=kp,
+        kd_controller=kd,
     )
     config = newton.solvers.SolverKamino.Config.from_model(model)
     config.use_actuator_jacobians = use_actuator_jacobians
@@ -94,6 +107,33 @@ def _run_kamino_pd_case(
         state_0, state_1 = state_1, state_0
 
     return state_0.joint_q.numpy().copy(), state_0.joint_qd.numpy().copy()
+
+
+def _run_featherstone_pd_case(kp: float, kd: float, dt: float, use_actuator_jacobians: bool):
+    model = _make_pd_model(
+        0.0,
+        0.0,
+        use_actuator=True,
+        kp_controller=kp,
+        kd_controller=kd,
+    )
+    solver = newton.solvers.SolverFeatherstone(model, use_actuator_jacobians=use_actuator_jacobians)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    for _ in range(3):
+        control.clear(model)
+        control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
+        control.joint_target_qd.assign(np.array([0.0], dtype=np.float32))
+        for actuator in model.actuators:
+            actuator.step(state_0, control, dt=dt, write_force_jacobians=use_actuator_jacobians)
+        solver.step(state_0, state_1, control, None, dt)
+        state_0, state_1 = state_1, state_0
+
+    return state_0.joint_q.numpy().copy()
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +221,17 @@ class TestImplicitPDSolvers(unittest.TestCase):
         np.testing.assert_allclose(jacobian_qd, implicit_qd, rtol=1e-5, atol=1e-5)
         self.assertGreater(np.linalg.norm(explicit_q - implicit_q), 1e-4)
 
+    def test_featherstone_cases(self):
+        kp = 2000.0
+        kd = 100.0
+        dt = 1.0 / 30.0
+
+        explicit_q = _run_featherstone_pd_case(kp, kd, dt, use_actuator_jacobians=False)
+        jacobian_q = _run_featherstone_pd_case(kp, kd, dt, use_actuator_jacobians=True)
+        target_q = np.array([1.0], dtype=np.float32)
+
+        self.assertLess(np.linalg.norm(jacobian_q - target_q), np.linalg.norm(explicit_q - target_q))
+
     def test_kamino_fallback(self):
         kp = 200.0
         kd = 20.0
@@ -223,6 +274,22 @@ class TestImplicitPDSolvers(unittest.TestCase):
 
         with self.assertWarnsRegex(RuntimeWarning, "does not consume actuator force Jacobians"):
             solver.step(state_0, state_1, control, None, dt)
+
+    def test_featherstone_warning(self):
+        model = _make_pd_model(200.0, 20.0, use_actuator=True)
+        solver = newton.solvers.SolverFeatherstone(model)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        control.clear(model)
+        control.joint_target_q.assign(np.array([1.0], dtype=np.float32))
+        control.joint_target_qd.assign(np.array([0.0], dtype=np.float32))
+        self.assertTrue(model.actuators[0].step(state_0, control, dt=0.01, write_force_jacobians=True))
+
+        with self.assertWarnsRegex(RuntimeWarning, "does not consume actuator force Jacobians"):
+            solver.step(state_0, state_1, control, None, 0.01)
 
     def test_solver_warning(self):
         model = _make_pd_model(200.0, 20.0, use_actuator=True)

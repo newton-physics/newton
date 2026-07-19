@@ -4,7 +4,7 @@
 
 ### Added
 
-- Add `Control.joint_f_dq` / `Control.joint_f_dqd` and opt-in `SolverKamino.Config.use_actuator_jacobians` support for linearly implicit external actuator integration.
+- Add `Control.joint_f_dq` / `Control.joint_f_dqd` and opt-in `SolverKamino.Config.use_actuator_jacobians` plus `SolverFeatherstone(use_actuator_jacobians=True)` support for linearly implicit external actuator integration.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
 - Add `newton[onnx]` for ONNX policy inference through Warp-NN; `ControllerNeuralMLP`, `ControllerNeuralLSTM`, and RL policy examples can run exported `.onnx` policies without requiring PyTorch for ONNX execution.
 - Add three VBD contact examples — `vbd_rigid_rigid_contact`, `vbd_soft_rigid_contact`, and `vbd_soft_rigid_mix_contact` — demonstrating rigid-rigid, soft (particle-rigid), and mixed cloth-bag contacts

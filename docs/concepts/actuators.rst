@@ -195,6 +195,67 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
+Force Jacobians
+---------------
+
+By default, :meth:`Actuator.step` preserves the explicit actuator behavior: it
+computes effort and accumulates it into :attr:`newton.Control.joint_f`.  Some
+solvers can optionally use local actuator force Jacobians to integrate stiff
+controllers more implicitly.  Request these derivatives with
+``write_force_jacobians=True``:
+
+.. code-block:: python
+
+   control.clear(model)
+   wrote_jacobians = model.actuators[0].step(
+       state,
+       control,
+       dt=sim_dt,
+       write_force_jacobians=True,
+   )
+
+When supported, the actuator still writes force to
+:attr:`newton.Control.joint_f` and also accumulates diagonal derivatives into
+:attr:`newton.Control.joint_f_dq` and
+:attr:`newton.Control.joint_f_dqd`.  The return value is ``True`` when
+Jacobians were written for that actuator call.  If Jacobians are not requested,
+or if the actuator cannot provide them, the return value is ``False`` and the
+existing explicit force path remains active.
+
+Currently, analytic force Jacobians are available for unclamped
+:class:`ControllerPD` actuators.  For a PD controller with force law
+
+.. math::
+
+   \tau =
+   k_p(q_\mathrm{target} - q)
+   +
+   k_d(\dot{q}_\mathrm{target} - \dot{q})
+   +
+   \tau_\mathrm{ff},
+
+the local derivatives are
+
+.. math::
+
+   \frac{\partial \tau}{\partial q} = -k_p,
+   \qquad
+   \frac{\partial \tau}{\partial \dot{q}} = -k_d.
+
+Unsupported controllers and clamped actuators continue to write explicit force
+to :attr:`newton.Control.joint_f`, leave the Jacobian entries unset, and warn
+once when Jacobians were requested.  Missing Jacobian entries are represented
+as ``NaN`` after :meth:`newton.Control.clear`, so a valid zero derivative is
+distinct from "not provided."
+
+.. note::
+
+   Requesting actuator force Jacobians only makes the derivatives available in
+   :class:`newton.Control`.  The selected solver must also support and enable
+   use of those Jacobians.  :class:`newton.solvers.SolverKamino` and
+   :class:`newton.solvers.SolverFeatherstone` currently provide opt-in support.
+   Unsupported solvers fall back to :attr:`newton.Control.joint_f`.
+
 Differentiability and Graph Capture
 -----------------------------------
 
