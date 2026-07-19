@@ -83,9 +83,10 @@ kinematic loop into MuJoCo equality constraints: ``WELD`` for a fixed joint,
 two ``CONNECT`` constraints for a revolute joint, or one ``CONNECT`` for a
 ball joint. Equality constraints do not have MuJoCo joint coordinates or
 joint properties. Consequently, limits, drives, damping, passive stiffness,
-armature, friction, effort/velocity limits, and ``joint_enabled`` configured
-on a loop-closing joint are ignored. The solver emits one warning per affected
-loop joint and names the configured properties it cannot represent.
+spring reference, reference position, armature, friction, effort/velocity
+limits, and ``joint_enabled`` configured on a loop-closing joint are ignored.
+The solver emits one warning per affected loop joint and names the configured
+properties it cannot represent.
 
 The corresponding entries in :attr:`~newton.State.joint_q` and
 :attr:`~newton.State.joint_qd` remain in Newton's shape-stable arrays, but the
