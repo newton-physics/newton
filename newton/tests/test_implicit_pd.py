@@ -232,6 +232,31 @@ class TestImplicitPDSolvers(unittest.TestCase):
 
         self.assertLess(np.linalg.norm(jacobian_q - target_q), np.linalg.norm(explicit_q - target_q))
 
+    def test_stiff_timestep_cases(self):
+        kp = 3000.0
+        kd = 100.0
+        dt = 1.0 / 15.0
+        target_q = np.array([1.0], dtype=np.float32)
+
+        implicit_q, implicit_qd = _run_kamino_pd_case(
+            kp, kd, dt, use_model_pd=True, use_actuator=False, use_actuator_jacobians=False
+        )
+        jacobian_q, jacobian_qd = _run_kamino_pd_case(
+            kp, kd, dt, use_model_pd=True, use_actuator=True, use_actuator_jacobians=True
+        )
+        explicit_q, _ = _run_kamino_pd_case(
+            kp, kd, dt, use_model_pd=False, use_actuator=True, use_actuator_jacobians=False
+        )
+
+        np.testing.assert_allclose(jacobian_q, implicit_q, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(jacobian_qd, implicit_qd, rtol=1e-5, atol=1e-5)
+        self.assertLess(np.linalg.norm(jacobian_q - target_q), np.linalg.norm(explicit_q - target_q))
+
+        explicit_q = _run_featherstone_pd_case(kp, kd, dt, use_actuator_jacobians=False)
+        jacobian_q = _run_featherstone_pd_case(kp, kd, dt, use_actuator_jacobians=True)
+
+        self.assertLess(np.linalg.norm(jacobian_q - target_q), np.linalg.norm(explicit_q - target_q))
+
     def test_kamino_fallback(self):
         kp = 200.0
         kd = 20.0
