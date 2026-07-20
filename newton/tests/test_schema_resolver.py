@@ -342,6 +342,20 @@ class TestSchemaResolver(unittest.TestCase):
         for vel_limit in velocity_limits_found:
             self.assertAlmostEqual(vel_limit, expected_velocity_limit, places=3)
 
+    def test_physx_d6_translational_limit_instances(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = stage.DefinePrim("/joint", "PhysicsJoint")
+        resolver = SchemaResolverPhysx()
+
+        for gain, property_name in (("ke", "stiffness"), ("kd", "damping")):
+            joint.CreateAttribute(f"physxLimit:linear:{property_name}", Sdf.ValueTypeNames.Float).Set(99.0)
+            for index, axis in enumerate(("transX", "transY", "transZ"), start=1):
+                expected = float(index + (3 if gain == "kd" else 0))
+                joint.CreateAttribute(f"physxLimit:{axis}:{property_name}", Sdf.ValueTypeNames.Float).Set(expected)
+
+                with self.subTest(axis=axis, gain=gain):
+                    self.assertEqual(resolver.get_value(joint, PrimType.JOINT, f"limit_{axis}_{gain}"), expected)
+
     def test_schema_attrs_collection(self):
         """
         Test solver-specific attribute collection from USD files.

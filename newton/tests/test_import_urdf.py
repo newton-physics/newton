@@ -631,6 +631,35 @@ class TestImportUrdfBasic(unittest.TestCase):
                 else:
                     self.assertIn(filter_pair, builder.shape_collision_filter_pairs)
 
+    def test_self_collision_filter_pairs_reference_only_colliding_shapes(self):
+        urdf = """<?xml version="1.0"?>
+        <robot name="visual_filter_test">
+          <link name="link1">
+            <collision><geometry><sphere radius="0.1"/></geometry></collision>
+            <visual><geometry><sphere radius="0.1"/></geometry></visual>
+          </link>
+          <link name="link2">
+            <collision><geometry><sphere radius="0.1"/></geometry></collision>
+            <visual><geometry><sphere radius="0.1"/></geometry></visual>
+          </link>
+          <joint name="j1" type="revolute">
+            <parent link="link1"/>
+            <child link="link2"/>
+            <axis xyz="0 0 1"/>
+            <limit lower="-1" upper="1" effort="10" velocity="1"/>
+          </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_urdf(urdf, enable_self_collisions=False)
+
+        colliding = {i for i in range(builder.shape_count) if builder.shape_flags[i] & newton.ShapeFlags.COLLIDE_SHAPES}
+        self.assertEqual(len(colliding), 2)
+        filter_pairs = set(builder.shape_collision_filter_pairs)
+        self.assertIn(tuple(sorted(colliding)), filter_pairs)
+        for pair in filter_pairs:
+            self.assertLessEqual(set(pair), colliding)
+
     def test_revolute_joint_urdf(self):
         # Test a simple revolute joint with axis and limits
         builder = newton.ModelBuilder()

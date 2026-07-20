@@ -188,6 +188,12 @@ def build_dynamic_static_sphere_scene(
 
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 

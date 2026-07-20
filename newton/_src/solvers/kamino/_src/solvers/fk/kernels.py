@@ -68,7 +68,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -531,7 +531,7 @@ def mul_mask_float(mask: wp.int32, value: wp.float32) -> wp.float32:
 
 @cache
 def create_eval_min_num_iterations_kernel(TILE_SIZE: int):
-    @wp.kernel(module="unique", enable_backward=False)
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _eval_min_num_iterations(
         # Inputs
         world_actuated_coord_offsets: wp.array[wp.int32],
@@ -1294,7 +1294,7 @@ def create_2d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
 
     # Create separate warp module for compiling kernels in this factory
     module = wp.get_module(__name__ + "_tile_2d")
-    module.options.update({"enable_backward": False})
+    module.options.update({"enable_backward": False, "default_grid_stride": False})
 
     @wp.func
     def clip_to_one(x: wp.float32):
@@ -1485,7 +1485,7 @@ def create_1d_tile_based_kernels(TILE_SIZE_CTS: wp.int32, TILE_SIZE_VRS: wp.int3
 
     # Create separate warp module for compiling kernels in this factory
     module = wp.get_module(__name__ + "_tile_1d")
-    module.options.update({"enable_backward": False})
+    module.options.update({"enable_backward": False, "default_grid_stride": False})
 
     @wp.func
     def _isnan(x: wp.float32) -> wp.int32:
