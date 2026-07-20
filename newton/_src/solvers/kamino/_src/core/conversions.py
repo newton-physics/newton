@@ -18,9 +18,11 @@ from .bodies import (
     convert_body_origin_to_com,
     convert_geom_offset_origin_to_com,
 )
-from .builder import JointActuationType
 from .geometry import GeometriesModel
 from .joints import (
+    JOINT_QMAX,
+    JOINT_QMIN,
+    JointActuationType,
     JointDoFType,
     JointsModel,
 )
@@ -39,17 +41,48 @@ if TYPE_CHECKING:
 __all__ = [
     "convert_geometries",
     "convert_joints",
+    "convert_model_joint_actuation",
     "convert_model_joint_transforms",
     "convert_model_materials",
     "convert_rigid_bodies",
     "convert_target_coords_to_target_dofs",
     "convert_target_dofs_to_target_coords",
+    "validate_model_joint_updates",
 ]
 
 
 ###
 # Kernels
 ###
+
+
+@wp.func
+def joint_actuation_type_from_dofs(
+    dof_start: int,
+    dof_end: int,
+    target_mode: wp.array[wp.int32],
+) -> int:
+    """Aggregate Newton's per-DoF target modes into a Kamino joint actuation type."""
+    joint_target_mode = int(0)
+    for dof in range(dof_start, dof_end):
+        joint_target_mode = max(joint_target_mode, target_mode[dof])
+    return JointActuationType.from_newton_wp(joint_target_mode)
+
+
+@wp.func
+def joint_requires_dynamic_constraints(
+    dof_start: int,
+    dof_end: int,
+    armature: wp.array[wp.float32],
+    damping: wp.array[wp.float32],
+    target_ke: wp.array[wp.float32],
+    target_kd: wp.array[wp.float32],
+) -> bool:
+    """Return whether any DoF makes a joint dynamic."""
+    dynamic = bool(False)
+    for dof in range(dof_start, dof_end):
+        dynamic = dynamic or (armature[dof] > 0.0 or damping[dof] > 0.0 or target_ke[dof] > 0.0 or target_kd[dof] > 0.0)
+    return dynamic
 
 
 @wp.kernel
@@ -89,6 +122,126 @@ def world_max_contacts_kernel(
     if max_contacts_per_pair >= 0:
         num_contacts = min(num_contacts, max_contacts_per_pair)
     wp.atomic_add(world_max_contacts, world_id, num_contacts)
+
+
+@wp.kernel
+def material_first_shape_kernel(
+    geom_material: wp.array[wp.int32],
+    first_shape: wp.array[wp.int32],
+):
+    shape = wp.tid()
+    material = geom_material[shape]
+    if material >= 0:
+        wp.atomic_min(first_shape, material, shape)
+
+
+@wp.kernel
+def validate_material_update_kernel(
+    shape_friction: wp.array[wp.float32],
+    shape_restitution: wp.array[wp.float32],
+    geom_material: wp.array[wp.int32],
+    first_shape: wp.array[wp.int32],
+    conflict_material: wp.array[wp.int32],
+):
+    shape = wp.tid()
+    material = geom_material[shape]
+    if material < 0:
+        return
+    representative = first_shape[material]
+    if (
+        shape_friction[shape] != shape_friction[representative]
+        or shape_restitution[shape] != shape_restitution[representative]
+    ):
+        wp.atomic_min(conflict_material, 0, material)
+
+
+@wp.kernel
+def update_materials_kernel(
+    shape_friction: wp.array[wp.float32],
+    shape_restitution: wp.array[wp.float32],
+    first_shape: wp.array[wp.int32],
+    shape_count: int,
+    restitution: wp.array[wp.float32],
+    static_friction: wp.array[wp.float32],
+    dynamic_friction: wp.array[wp.float32],
+    pair_restitution: wp.array[wp.float32],
+    pair_static_friction: wp.array[wp.float32],
+    pair_dynamic_friction: wp.array[wp.float32],
+):
+    material = wp.tid()
+    shape = first_shape[material]
+    if shape < shape_count:
+        friction = shape_friction[shape]
+        restitution[material] = shape_restitution[shape]
+        static_friction[material] = friction
+        dynamic_friction[material] = friction
+        if material == 0:
+            pair_restitution[0] = shape_restitution[shape]
+            pair_static_friction[0] = friction
+            pair_dynamic_friction[0] = friction
+
+
+@wp.kernel
+def validate_joint_updates_kernel(
+    joint_qd_start: wp.array[wp.int32],
+    joint_armature: wp.array[wp.float32],
+    joint_damping: wp.array[wp.float32],
+    joint_target_ke: wp.array[wp.float32],
+    joint_target_kd: wp.array[wp.float32],
+    joint_target_mode: wp.array[wp.int32],
+    joint_limit_lower: wp.array[wp.float32],
+    joint_limit_upper: wp.array[wp.float32],
+    built_limit_finite: wp.array[wp.int32],
+    num_dynamic_cts: wp.array[wp.int32],
+    act_type: wp.array[wp.int32],
+    joint_count: int,
+    dof_count: int,
+    check_dynamic: int,
+    check_limits: int,
+    check_actuation: int,
+    violations: wp.array[wp.int32],
+):
+    tid = wp.tid()
+
+    if tid < joint_count and (check_dynamic != 0 or check_actuation != 0):
+        dof_start = joint_qd_start[tid]
+        dof_end = joint_qd_start[tid + 1]
+
+        if check_dynamic != 0 and joint_requires_dynamic_constraints(
+            dof_start,
+            dof_end,
+            joint_armature,
+            joint_damping,
+            joint_target_ke,
+            joint_target_kd,
+        ) != (num_dynamic_cts[tid] > 0):
+            wp.atomic_min(violations, 0, tid)
+
+        if check_actuation != 0:
+            current_actuation = joint_actuation_type_from_dofs(dof_start, dof_end, joint_target_mode)
+            if current_actuation < 0:
+                wp.atomic_min(violations, 3, tid)
+            elif (current_actuation == JointActuationType.PASSIVE) != (act_type[tid] == JointActuationType.PASSIVE):
+                wp.atomic_min(violations, 2, tid)
+
+    if tid < dof_count and check_limits != 0:
+        current_finite = joint_limit_lower[tid] > JOINT_QMIN or joint_limit_upper[tid] < JOINT_QMAX
+        if current_finite != (built_limit_finite[tid] != 0):
+            wp.atomic_min(violations, 1, tid)
+
+
+@wp.kernel
+def update_joint_actuation_kernel(
+    joint_qd_start: wp.array[wp.int32],
+    joint_target_mode: wp.array[wp.int32],
+    act_type: wp.array[wp.int32],
+):
+    joint = wp.tid()
+    act_type[joint] = joint_actuation_type_from_dofs(
+        joint_qd_start[joint],
+        joint_qd_start[joint + 1],
+        joint_target_mode,
+    )
 
 
 @wp.kernel
@@ -183,21 +336,19 @@ def joint_conversion_kernel(
     joint_num_dofs[joint_id] = ndofs_j
 
     # Determine Kamino actuation mode for joint
-    joint_dofs_target_mode_j = int(0)
-    for dof_id in range(ndofs_j):
-        joint_dofs_target_mode_j = max(joint_dofs_target_mode_j, model_joint_target_mode[dofs_start_j + dof_id])
-    act_type_j = JointActuationType.from_newton_wp(joint_dofs_target_mode_j)
+    act_type_j = joint_actuation_type_from_dofs(dofs_start_j, dofs_start_j + ndofs_j, model_joint_target_mode)
     assert act_type_j >= 0, "Joint actuation type must be valid"
     joint_act_type[joint_id] = act_type_j
 
-    is_dynamic_j = bool(False)
     # Infer if the joint requires dynamic constraints
-    for dof_id in range(ndofs_j):
-        a_j = model_joint_armature[dofs_start_j + dof_id]
-        b_j = model_joint_damping[dofs_start_j + dof_id]
-        ke_j = model_joint_target_ke[dofs_start_j + dof_id]
-        kd_j = model_joint_target_kd[dofs_start_j + dof_id]
-        is_dynamic_j = is_dynamic_j or (a_j > 0.0) or (b_j > 0.0) or (ke_j > 0.0) or (kd_j > 0.0)
+    is_dynamic_j = joint_requires_dynamic_constraints(
+        dofs_start_j,
+        dofs_start_j + ndofs_j,
+        model_joint_armature,
+        model_joint_damping,
+        model_joint_target_ke,
+        model_joint_target_kd,
+    )
 
     # Set joint dimensions
     joint_num_kinematic_cts[joint_id] = ncts_j
@@ -616,6 +767,65 @@ def compute_required_contact_capacity(
     return int(np.sum(world_max_contacts)), world_max_contacts.astype(int).tolist()
 
 
+def validate_model_joint_updates(
+    model: Model,
+    joints: JointsModel,
+    built_limit_finite: wp.array[wp.int32],
+    violations: wp.array[wp.int32],
+    check_dof: bool,
+    check_actuation: bool,
+) -> np.ndarray:
+    """Validate that runtime joint edits preserve Kamino's structural layout."""
+    dim = max(model.joint_count, model.joint_dof_count)
+    violations.fill_(dim)
+    if dim > 0:
+        wp.launch(
+            kernel=validate_joint_updates_kernel,
+            dim=dim,
+            inputs=[
+                # Inputs:
+                model.joint_qd_start,
+                model.joint_armature,
+                model.joint_damping,
+                model.joint_target_ke,
+                model.joint_target_kd,
+                model.joint_target_mode,
+                model.joint_limit_lower,
+                model.joint_limit_upper,
+                built_limit_finite,
+                joints.num_dynamic_cts,
+                joints.act_type,
+                model.joint_count,
+                model.joint_dof_count,
+                int(check_dof),
+                int(check_dof),
+                int(check_actuation),
+                # Outputs:
+                violations,
+            ],
+            device=model.device,
+        )
+    return violations.numpy()
+
+
+def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
+    """Update Kamino's per-joint actuation types from Newton target modes."""
+    if model.joint_count == 0:
+        return
+    wp.launch(
+        kernel=update_joint_actuation_kernel,
+        dim=model.joint_count,
+        inputs=[
+            # Inputs:
+            model.joint_qd_start,
+            model.joint_target_mode,
+            # Outputs:
+            joints.act_type,
+        ],
+        device=model.device,
+    )
+
+
 def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     """
     Converts the joint model parameterization of Newton's to Kamino's format.
@@ -655,7 +865,12 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     )
 
 
-def convert_model_materials(model: Model, model_kamino: ModelKamino) -> None:
+def convert_model_materials(
+    model: Model,
+    model_kamino: ModelKamino,
+    first_shape: wp.array[wp.int32],
+    conflict: wp.array[wp.int32],
+) -> None:
     """Update Kamino's material properties in place from Newton shape materials.
 
     Recomputes per-material friction and restitution from
@@ -665,38 +880,68 @@ def convert_model_materials(model: Model, model_kamino: ModelKamino) -> None:
     Args:
         model: Newton model containing the updated shape materials.
         model_kamino: Kamino model whose material tables are updated.
+        first_shape: Per-material scratch array for selecting representative shapes.
+        conflict: Scratch scalar for reporting conflicting material updates.
 
     Raises:
         RuntimeError: If shapes assigned to the same material ID have different
             material properties and would require splitting that material.
     """
-    shape_friction = model.shape_material_mu.numpy()
-    shape_restitution = model.shape_material_restitution.numpy()
-    geom_material = model_kamino.geoms.material.numpy()
     materials = model_kamino.materials
+    first_shape.fill_(model.shape_count)
+    conflict.fill_(materials.num_materials)
+    wp.launch(
+        kernel=material_first_shape_kernel,
+        dim=model.shape_count,
+        inputs=[
+            # Inputs:
+            model_kamino.geoms.material,
+            # Outputs:
+            first_shape,
+        ],
+        device=model.device,
+    )
+    wp.launch(
+        kernel=validate_material_update_kernel,
+        dim=model.shape_count,
+        inputs=[
+            # Inputs:
+            model.shape_material_mu,
+            model.shape_material_restitution,
+            model_kamino.geoms.material,
+            first_shape,
+            # Outputs:
+            conflict,
+        ],
+        device=model.device,
+    )
 
-    updated_friction = materials.static_friction.numpy()
-    updated_restitution = materials.restitution.numpy()
-    material_written = np.zeros(materials.num_materials, dtype=bool)
-    for shape, material_id in enumerate(geom_material):
-        if material_written[material_id]:
-            if (
-                updated_friction[material_id] != shape_friction[shape]
-                or updated_restitution[material_id] != shape_restitution[shape]
-            ):
-                raise RuntimeError(
-                    f"Multiple shapes assigned to contact material {material_id} attempted to update it with "
-                    "different friction or restitution values; recreate SolverKamino to split the material."
-                )
-            continue
+    conflict_material = int(conflict.numpy()[0])
+    if conflict_material < materials.num_materials:
+        raise RuntimeError(
+            f"Multiple shapes assigned to contact material {conflict_material} attempted to update it with "
+            "different friction or restitution values; recreate SolverKamino to split the material."
+        )
 
-        updated_friction[material_id] = shape_friction[shape]
-        updated_restitution[material_id] = shape_restitution[shape]
-        material_written[material_id] = True
-
-    materials.restitution.assign(updated_restitution)
-    materials.static_friction.assign(updated_friction)
-    materials.dynamic_friction.assign(updated_friction)
+    wp.launch(
+        kernel=update_materials_kernel,
+        dim=materials.num_materials,
+        inputs=[
+            # Inputs:
+            model.shape_material_mu,
+            model.shape_material_restitution,
+            first_shape,
+            model.shape_count,
+            # Outputs:
+            materials.restitution,
+            materials.static_friction,
+            materials.dynamic_friction,
+            model_kamino.material_pairs.restitution,
+            model_kamino.material_pairs.static_friction,
+            model_kamino.material_pairs.dynamic_friction,
+        ],
+        device=model.device,
+    )
 
 
 def convert_rigid_bodies(
