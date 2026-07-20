@@ -117,6 +117,16 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
 
         self.assertEqual(resolved, {"armature": 0.0})
 
+        self.assertEqual(
+            create_schema_resolution([SchemaResolverPhysx()]).resolve(
+                PrimType.JOINT,
+                {},
+                schemas="PhysxJointAPI",
+                keys=("armature",),
+            ),
+            {"armature": 0.0},
+        )
+
     def test_applied_schema_without_available_fallback_raises(self):
         class CustomResolver(SchemaResolver):
             name = "custom"
@@ -125,7 +135,7 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
 
         resolution = create_schema_resolution([CustomResolver()])
 
-        with self.assertRaisesRegex(RuntimeError, "CustomJointAPI.*custom:armature"):
+        with self.assertRaisesRegex(RuntimeError, "CustomJointAPI.*custom:armature") as caught:
             resolution.resolve(
                 PrimType.JOINT,
                 {},
@@ -133,6 +143,8 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
                 defaults={"armature": 0.3},
                 keys=("armature",),
             )
+        self.assertIn("Supply schema_fallbacks", str(caught.exception))
+        self.assertNotIn("Register the schema plugin", str(caught.exception))
 
     def test_unapplied_schema_does_not_supply_fallback(self):
         resolution = create_schema_resolution([SchemaResolverPhysx()])
@@ -170,6 +182,20 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
 
         self.assertEqual(requirements, ("physxJoint:armature",))
         self.assertEqual(resolved, {"armature": 0.25})
+        self.assertEqual(
+            resolution.resolve(PrimType.JOINT, {"physxJoint:armature": 0.25}, keys="armature"),
+            {"armature": 0.25},
+        )
+
+    def test_unknown_keys_raise(self):
+        resolution = create_schema_resolution([SchemaResolverNewton()])
+
+        with self.assertRaisesRegex(ValueError, "Unknown joint schema resolver keys: unknown"):
+            resolution.requirements(PrimType.JOINT, keys=("unknown",))
+        with self.assertRaisesRegex(ValueError, "Unknown joint schema resolver keys: unknown"):
+            resolution.schemas(PrimType.JOINT, keys=("unknown",))
+        with self.assertRaisesRegex(ValueError, "Unknown joint schema resolver keys: unknown"):
+            resolution.resolve(PrimType.JOINT, {}, keys=("unknown",))
 
     def test_multi_apply_instance_owns_matching_attribute(self):
         resolution = create_schema_resolution([SchemaResolverPhysx()])

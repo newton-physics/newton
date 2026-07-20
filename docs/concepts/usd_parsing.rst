@@ -330,7 +330,8 @@ Schema resolvers bridge the gap between solver-specific USD schemas and Newton's
 
 .. experimental::
 
-   The ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
+   The ``schema_resolvers`` and ``schema_resolution`` arguments in
+   :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
 
 Solver Attribute Remapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

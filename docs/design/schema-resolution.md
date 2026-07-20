@@ -16,9 +16,9 @@ representations from reusing the same behavior.
 This proposal separates attribute access from scalar resolution while keeping
 the current `ModelBuilder.add_usd()` construction path and resolver behavior by
 default. The first implementation adds an opt-in source-neutral engine shared
-by PXR and non-PXR consumers. Applied
-schema identity is part of the input: an applied schema owns the properties it
-defines, including its USD fallbacks. Resolver definitions identify ownership
+by PXR and non-PXR consumers. Applied schema identity is part of the input: an
+applied schema owns the properties it defines, including its USD fallbacks.
+Resolver definitions identify ownership
 and conversion. A private catalog supplies built-in Newton, PhysX, and MuJoCo
 fallbacks when their schema plugins are unavailable. Batched resolution, Warp
 functions, and direct ModelBuilder buffer population are deliberately deferred.

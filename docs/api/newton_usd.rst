@@ -30,6 +30,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    :toctree: _generated
    :signatures: long
 
+   create_schema_resolution
    find_tetmesh_prims
    get_attribute
    get_attributes_in_namespace
