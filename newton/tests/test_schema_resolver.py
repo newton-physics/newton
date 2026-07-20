@@ -41,6 +41,7 @@ from typing import Any
 import warp as wp
 
 from newton import Model, ModelBuilder
+from newton._src.usd._schema_fallbacks import _SCHEMA_FALLBACKS
 from newton._src.usd.schema_resolver import SchemaResolverManager
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
@@ -49,6 +50,7 @@ from newton.usd import (
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
+    create_schema_resolution,
 )
 
 AttributeFrequency = Model.AttributeFrequency
@@ -75,6 +77,93 @@ class TestSchemaResolver(unittest.TestCase):
         test_dir = Path(__file__).parent
         self.ant_usda_path = test_dir / "assets" / "ant.usda"
         self.assertTrue(self.ant_usda_path.exists(), f"Ant USDA file not found: {self.ant_usda_path}")
+
+    def test_builtin_resolver_fallback_catalog_is_complete(self):
+        for resolver_type in (SchemaResolverNewton, SchemaResolverPhysx, SchemaResolverMjc):
+            resolver = resolver_type()
+            for prim_type, mapping in resolver.mapping.items():
+                for key, spec in mapping.items():
+                    schema_name = resolver._schema_name(prim_type, key)
+                    if schema_name is None:
+                        continue
+                    self.assertIn(schema_name, _SCHEMA_FALLBACKS)
+                    for name in spec.attribute_names or (spec.name,):
+                        self.assertIn(name, _SCHEMA_FALLBACKS[schema_name], f"{schema_name}:{name}")
+
+    def test_newton_owned_properties_have_registered_fallbacks(self):
+        registry = Usd.SchemaRegistry()
+        resolver = SchemaResolverNewton()
+        for prim_type, mapping in resolver.mapping.items():
+            for key, spec in mapping.items():
+                schema_name = resolver._schema_name(prim_type, key)
+                if schema_name is None:
+                    continue
+                definition = registry.FindAppliedAPIPrimDefinition(schema_name)
+                self.assertIsNotNone(definition, schema_name)
+                properties = set(definition.GetPropertyNames())
+                for name in spec.attribute_names or (spec.name,):
+                    self.assertIn(name, properties, f"{schema_name}:{name}")
+                    self.assertEqual(
+                        definition.GetAttributeFallbackValue(name),
+                        _SCHEMA_FALLBACKS[schema_name][name],
+                        f"{schema_name}:{name}",
+                    )
+
+    def test_schema_application_controls_fallback_ownership(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        resolver = SchemaResolverManager(resolution=create_schema_resolution([SchemaResolverPhysx()]))
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 12.0)
+
+        joint.AddAppliedSchema("PhysxLimitAPI:angular")
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 0.0)
+
+        stiffness = joint.CreateAttribute("physxLimit:angular:stiffness", Sdf.ValueTypeNames.Float)
+        stiffness.Set(0.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 0.0)
+
+        stiffness.Set(7.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 7.0)
+
+    def test_applied_schema_fallbacks_follow_resolver_priority(self):
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/scene").GetPrim()
+        scene.AddAppliedSchema("NewtonSceneAPI")
+        scene.AddAppliedSchema("MjcSceneAPI")
+
+        mjc_first = SchemaResolverManager(
+            resolution=create_schema_resolution([SchemaResolverMjc(), SchemaResolverNewton()])
+        )
+        newton_first = SchemaResolverManager(
+            resolution=create_schema_resolution([SchemaResolverNewton(), SchemaResolverMjc()])
+        )
+
+        self.assertEqual(mjc_first.get_value(scene, PrimType.SCENE, "max_solver_iterations"), 100)
+        self.assertEqual(newton_first.get_value(scene, PrimType.SCENE, "max_solver_iterations"), -1)
+
+    def test_registered_schema_fallback_precedes_supplied_table(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("NewtonJointAPI")
+        resolver = SchemaResolverManager(
+            resolution=create_schema_resolution(
+                [SchemaResolverNewton()],
+                schema_fallbacks={"NewtonJointAPI": {"newton:armature": 9.0}},
+            )
+        )
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 0.0)
+
+    def test_legacy_and_composed_resolution_are_mutually_exclusive(self):
+        stage = Usd.Stage.CreateInMemory()
+
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            ModelBuilder().add_usd(
+                stage,
+                schema_resolvers=[SchemaResolverNewton()],
+                schema_resolution=create_schema_resolution([SchemaResolverNewton()]),
+            )
 
     def test_basic_newton_physx_priority(self):
         """

@@ -326,7 +326,8 @@ Schema resolvers bridge the gap between solver-specific USD schemas and Newton's
 
 .. experimental::
 
-   The ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
+   The ``schema_resolvers`` and ``schema_resolution`` arguments in
+   :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
 
 Solver Attribute Remapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -470,7 +471,29 @@ The attribute resolution process follows a three-layer fallback hierarchy to det
 
 1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
-3. **Approximated Schema Defaults**: If neither an authored value nor an importer default is available, Newton falls back to a hardcoded approximation of each solver's schema default, defined in Newton's resolver mapping. These approximations will be replaced by actual USD schema defaults in a future release.
+3. **Approximated Schema Defaults**: If neither an authored value nor an importer default is available, Newton falls back to a hardcoded approximation of each solver's schema default, defined in Newton's resolver mapping. These values remain for compatibility; use composed resolution for USD schema fallbacks.
+
+This is the compatibility behavior of ``schema_resolvers=``. Callers that need
+USD applied-schema ownership can opt into composed resolution instead:
+
+.. testcode::
+   :skipif: True
+
+   from newton import ModelBuilder
+   from newton.usd import SchemaResolverNewton, create_schema_resolution
+
+   resolution = create_schema_resolution([SchemaResolverNewton()])
+   builder = ModelBuilder()
+   builder.add_usd("robot.usda", schema_resolution=resolution)
+
+For each property, composed resolution checks resolvers in priority order. An
+authored value wins. If the resolver's owning schema is applied but the property
+is unauthored, that schema's USD fallback wins and stops the search; a
+lower-priority resolver or builder default does not override it. The PXR importer
+reads registered schema fallbacks first and otherwise uses Newton's built-in
+Newton, PhysX, and MuJoCo fallback catalog. ``schema_fallbacks=`` passed to
+:func:`newton.usd.create_schema_resolution` can extend or override the catalog
+for custom or newer schema versions.
 
 **Configuring Resolver Priority:**
 

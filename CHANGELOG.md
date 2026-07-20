@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add opt-in composed USD schema resolution through `newton.usd.create_schema_resolution()` and `ModelBuilder.add_usd(schema_resolution=...)`, honoring applied-schema ownership and USD fallbacks while preserving the legacy resolver path.
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
 
 ### Changed
