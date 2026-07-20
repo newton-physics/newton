@@ -582,10 +582,12 @@ class Model:
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_COORD,
             compaction_policy="start",
         ),
         "joint_qd_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_DOF,
             compaction_policy="start",
         ),
         "joint_world_start": AttributeSpec(
@@ -625,6 +627,7 @@ class Model:
         # articulations and mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
+            references=AttributeFrequency.JOINT,
             compaction_policy="start",
         ),
         "articulation_end": AttributeSpec(

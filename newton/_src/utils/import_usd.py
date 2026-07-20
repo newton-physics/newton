@@ -298,9 +298,7 @@ def parse_usd(
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes: If True, collision shapes on bodies that already
             have visual-only geometry are hidden unconditionally, regardless of
-            whether the collider has authored PBR material data. Collision
-            shapes on bodies without visual-only geometry remain visible as a
-            rendering fallback. Default is False.
+            whether the collider has authored PBR material data. Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
@@ -3242,6 +3240,7 @@ def parse_usd(
                     margin_val = newton_margin
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
+                model_has_visual_shapes = load_visual_shapes and bool(bodies_with_visual_shapes)
                 material_props = _get_material_props_cached(prim)
                 collider_has_visual_material = (
                     key == UsdPhysics.ObjectType.MeshShape and _has_visual_material_properties(material_props)
@@ -3252,7 +3251,7 @@ def parse_usd(
                 hide_collider_for_body = hide_collision_shapes and has_body_visual_shapes
                 show_collider_by_policy = should_show_collider(
                     force_show_colliders,
-                    has_visual_shapes=has_body_visual_shapes,
+                    model_has_visual_shapes=model_has_visual_shapes,
                 )
                 collider_is_visible = (
                     show_collider_by_policy or collider_has_visual_material

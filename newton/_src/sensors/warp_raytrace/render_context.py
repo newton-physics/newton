@@ -54,6 +54,9 @@ class RenderContext:
         self.up_axis: Axis = Axis.Z
 
         self.triangle_mesh: wp.Mesh | None = None
+        self.triangle_mesh_group_roots: wp.array[wp.int32] = wp.full(
+            self.world_count + 1, value=-1, dtype=wp.int32, device=self.device
+        )
 
         self.__triangle_points: wp.array[wp.vec3f] | None = None
         self.__triangle_indices: wp.array[wp.int32] | None = None
@@ -72,6 +75,8 @@ class RenderContext:
 
         self.mesh_data: wp.array[MeshData] | None = None
         self.texture_data: wp.array[TextureData] | None = None
+
+        self.particle_world: wp.array[wp.int32] | None = None
 
         self.lights_active: wp.array[wp.bool] | None = None
         self.lights_type: wp.array[wp.int32] | None = None
@@ -99,6 +104,7 @@ class RenderContext:
         self.world_count = model.world_count
         self.up_axis = Axis.from_any(model.up_axis)
         self.triangle_mesh = None
+        self.triangle_mesh_group_roots = wp.full(self.world_count + 1, value=-1, dtype=wp.int32, device=self.device)
         self.__triangle_points = None
         self.__triangle_indices = None
         self.__topology_particle_mask = None
@@ -136,6 +142,7 @@ class RenderContext:
             if model.tri_indices is not None and model.tri_indices.shape[0]:
                 self.triangle_points = model.particle_q
                 self.triangle_indices = model.tri_indices.flatten()
+                self.particle_world = model.particle_world
                 # Deformable-owned vertices render through the triangle mesh; tet indices catch
                 # interior volume particles that are not referenced by boundary triangles.
                 mask_topology_particles(model.tri_indices)
@@ -365,6 +372,7 @@ class RenderContext:
                     self.__topology_particle_mask if has_particles else None,
                     # Triangle Mesh
                     self.triangle_mesh.id if self.triangle_mesh is not None else 0,
+                    self.triangle_mesh_group_roots,
                     # Meshes
                     self.mesh_data,
                     # Gaussians
@@ -408,7 +416,7 @@ class RenderContext:
 
     @property
     def has_triangle_mesh(self) -> bool:
-        return self.__triangle_points is not None
+        return self.__triangle_points is not None and self.__triangle_indices is not None
 
     @property
     def has_gaussians(self) -> bool:
@@ -436,9 +444,29 @@ class RenderContext:
 
     def _sync_triangle_mesh(self):
         if self.triangle_mesh is None:
-            self.triangle_mesh = wp.Mesh(self.triangle_points, self.triangle_indices)
+            triangle_indices_np = self.triangle_indices.reshape((-1, 3)).numpy()
+            particle_world_np = self.particle_world.numpy()
+            triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
+            triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
+            triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
+
+            self.triangle_mesh = wp.Mesh(
+                self.triangle_points, self.triangle_indices, groups=triangle_groups, bvh_constructor="sah"
+            )
+
+            wp.launch(
+                kernel=RenderContext._compute_mesh_group_roots,
+                dim=self.world_count + 1,
+                inputs=[self.triangle_mesh.id, self.triangle_mesh_group_roots],
+                device=self.device,
+            )
         else:
             self.triangle_mesh.refit()
+
+    @wp.kernel(enable_backward=False)
+    def _compute_mesh_group_roots(mesh_id: wp.uint64, out_group_roots: wp.array[wp.int32]):
+        group = wp.tid()
+        out_group_roots[group] = wp.mesh_get_group_root(mesh_id, group)
 
     @property
     def gaussians_data(self) -> wp.array[Gaussian.Data]:
