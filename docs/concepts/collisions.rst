@@ -1715,6 +1715,16 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
    :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
    the solver constructor before ``restitution`` takes effect.
 
+.. note::
+   For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
+   ``solreffriction`` when the solver uses elliptic friction cones (``cone="elliptic"``)
+   with Newton contacts (``use_mujoco_contacts=False``); it targets the force-space
+   friction slope ``f = -kf * v`` below the Coulomb limit (exact when MuJoCo's
+   ``body_invweight0`` matches the contact's effective mass). Very large ``kf`` saturates
+   at MuJoCo's refsafe stability bound (reference time constant clamped to twice the
+   timestep). Set ``kf`` to ``0`` on a shape to fall back to MuJoCo's default friction
+   impedance.
+
 Example:
 
 .. testcode:: material-config
