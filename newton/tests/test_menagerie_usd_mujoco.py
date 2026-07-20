@@ -45,7 +45,7 @@ from newton.tests.test_menagerie_mujoco import (
     compare_inertia_tensors,
     run_newton_eval_fk,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_schema_fallback_migration
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 # =============================================================================
@@ -72,12 +72,13 @@ def create_newton_model_from_usd(
     robot_builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
-    robot_builder.add_usd(
-        str(usd_path),
-        collapse_fixed_joints=False,
-        enable_self_collisions=False,
-        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-    )
+    with assert_schema_fallback_migration():
+        robot_builder.add_usd(
+            str(usd_path),
+            collapse_fixed_joints=False,
+            enable_self_collisions=False,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+        )
 
     builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(builder)
@@ -150,13 +151,14 @@ class TestMenagerieUsdImport(unittest.TestCase):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
-        builder.add_usd(
-            str(usd_path),
-            collapse_fixed_joints=False,
-            enable_self_collisions=False,
-            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
-            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
-        )
+        with assert_schema_fallback_migration():
+            builder.add_usd(
+                str(usd_path),
+                collapse_fixed_joints=False,
+                enable_self_collisions=False,
+                schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+                convert_mjc_equality_constraints=convert_mjc_equality_constraints,
+            )
 
         model = builder.finalize()
         return builder, model

@@ -22,7 +22,11 @@ from pathlib import Path
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    assert_schema_fallback_migration,
+    get_selected_cuda_test_devices,
+)
 
 CUBE_POINTS = [
     (-0.5, -0.5, -0.5),
@@ -226,7 +230,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            with assert_schema_fallback_migration():
+                result = builder.add_usd(str(usd_path))
             psm = result["path_shape_map"]
 
             s1 = psm["/World/Body1/CollisionMesh"]
@@ -327,7 +332,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            with assert_schema_fallback_migration():
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertTrue(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
@@ -361,7 +367,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            with assert_schema_fallback_migration():
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertAlmostEqual(builder.shape_sdf_padding[s1], 0.03, places=5)
@@ -389,7 +396,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            with assert_schema_fallback_migration():
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
@@ -584,7 +592,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "physics:approximation.*ignored"):
+            with assert_schema_fallback_migration((UserWarning, ".*physics:approximation.*ignored")):
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             # SDF configuration must survive the ignored approximation.
@@ -610,7 +618,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with self.assertWarnsRegex(UserWarning, "independent collision representations"):
+            with assert_schema_fallback_migration((UserWarning, ".*independent collision representations")):
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
@@ -638,7 +646,8 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             builder.default_shape_cfg.is_hydroelastic = True
-            result = builder.add_usd(str(usd_path))
+            with assert_schema_fallback_migration():
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)
@@ -664,7 +673,8 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             # Must not raise: target_voxel_size and max_resolution are mutually exclusive.
-            result = builder.add_usd(str(usd_path))
+            with assert_schema_fallback_migration():
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertIsNone(builder.shape_sdf_max_resolution[s1])
@@ -694,7 +704,8 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            result = builder.add_usd(str(usd_path))
+            with assert_schema_fallback_migration():
+                result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
             self.assertFalse(builder.shape_flags[s1] & newton.ShapeFlags.HYDROELASTIC)

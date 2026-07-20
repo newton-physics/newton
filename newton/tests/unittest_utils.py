@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -43,6 +44,37 @@ strict_warnings = False
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
+
+_SCHEMA_FALLBACK_MIGRATION = r"^This import retained legacy values for applied but unauthored USD schema properties;"
+
+
+@contextlib.contextmanager
+def assert_schema_fallback_migration(*additional_warnings: tuple[type[Warning], str]):
+    """Require the schema-fallback migration warning without hiding others."""
+    expected = ((DeprecationWarning, _SCHEMA_FALLBACK_MIGRATION), *additional_warnings)
+    with warnings.catch_warnings(record=True) as caught:
+        for category, message in expected:
+            warnings.filterwarnings("always", message=message, category=category)
+        yield
+
+    for category, message in expected:
+        matches = [
+            warning
+            for warning in caught
+            if issubclass(warning.category, category) and re.match(message, str(warning.message))
+        ]
+        if not matches:
+            raise AssertionError(f"Expected {category.__name__} matching {message!r}")
+    unexpected = [
+        warning
+        for warning in caught
+        if not any(
+            issubclass(warning.category, category) and re.match(message, str(warning.message))
+            for category, message in expected
+        )
+    ]
+    if unexpected:
+        raise AssertionError(f"Unexpected warnings: {[str(warning.message) for warning in unexpected]}")
 
 
 @contextlib.contextmanager

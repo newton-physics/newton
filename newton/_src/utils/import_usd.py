@@ -4889,11 +4889,17 @@ def parse_usd(
             }
         )
 
-    if R._legacy_fallback_properties:
-        properties = ", ".join(sorted(R._legacy_fallback_properties))
+    if R._legacy_fallback_properties or R._legacy_fallback_failures:
+        details = []
+        if R._legacy_fallback_properties:
+            properties = ", ".join(sorted(R._legacy_fallback_properties))
+            details.append(f"schema fallbacks will take precedence for {properties}")
+        if R._legacy_fallback_failures:
+            failures = ", ".join(sorted(R._legacy_fallback_failures))
+            details.append(f"schema fallbacks could not be audited for {failures}")
         warnings.warn(
-            "This import retained legacy values for applied but unauthored USD schema properties: "
-            f"{properties}. Their schema fallbacks will take precedence in a future release; "
+            "This import retained legacy values for applied but unauthored USD schema properties; "
+            f"{' and '.join(details)}. In a future release, applied schemas will require their fallbacks; "
             "author the intended values explicitly to preserve them.",
             DeprecationWarning,
             stacklevel=2,

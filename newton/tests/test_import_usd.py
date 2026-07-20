@@ -32,7 +32,13 @@ from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton._src.usd.schema_resolver import _FallbackPolicy
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
+from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
+    assert_np_equal,
+    assert_schema_fallback_migration,
+    get_test_devices,
+    patch_sys_module,
+)
 
 devices = get_test_devices()
 
@@ -6698,7 +6704,8 @@ def Xform "Articulation" (
 
         # Import the USD
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with assert_schema_fallback_migration():
+            result = builder.add_usd(stage)
         model = builder.finalize()
 
         # Verify the material properties were parsed correctly
@@ -7501,7 +7508,8 @@ def Xform "Articulation" (
         builder.default_shape_cfg.margin = 0.0
         builder.default_shape_cfg.gap = 0.01
         builder.rigid_gap = 0.01
-        result = builder.add_usd(stage)
+        with assert_schema_fallback_migration():
+            result = builder.add_usd(stage)
         model = builder.finalize()
 
         shape1_idx = result["path_shape_map"]["/Articulation/Body/Collider1"]
@@ -7559,7 +7567,8 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(col3_prim)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        with assert_schema_fallback_migration():
+            result = builder.add_usd(stage)
         model = builder.finalize()
 
         idx_all = result["path_shape_map"]["/Articulation/Body/ColAll"]
@@ -7748,7 +7757,8 @@ def Xform "Articulation" (
         # MuJoCo resolver first -> solref wins over material ke/kd
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+        with assert_schema_fallback_migration():
+            result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
         model = builder.finalize()
         idx = result["path_shape_map"]["/Articulation/Body/Col"]
 
@@ -7763,7 +7773,8 @@ def Xform "Articulation" (
         # Newton resolver first -> material wins over solref
         builder2 = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder2)
-        result2 = builder2.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        with assert_schema_fallback_migration():
+            result2 = builder2.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
         model2 = builder2.finalize()
         idx2 = result2["path_shape_map"]["/Articulation/Body/Col"]
 
@@ -8597,7 +8608,8 @@ def Xform "Articulation" (
         # Set max_hull_vertices to 32 on the mesh prim
         mesh_prim.GetAttribute("newton:maxHullVertices").Set(32)
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, mesh_maxhullvert=20)
+        with assert_schema_fallback_migration():
+            builder.add_usd(stage, mesh_maxhullvert=20)
         # the authored value should override the builder value
         self.assertEqual(builder.shape_source[0].maxhullvert, 32)
 

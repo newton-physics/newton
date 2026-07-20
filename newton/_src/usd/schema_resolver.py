@@ -30,6 +30,22 @@ if TYPE_CHECKING:
 _MISSING_FALLBACK = object()
 
 
+class _SchemaFallbackError(Exception):
+    """Base class for expected composed-fallback audit failures."""
+
+    def __init__(self, message: str, label: str):
+        super().__init__(message)
+        self.label = label
+
+
+class _MissingSchemaFallbackError(_SchemaFallbackError, RuntimeError):
+    """An applied schema has no available fallback."""
+
+
+class _PXRValueGetterError(_SchemaFallbackError, TypeError):
+    """A PXR-only resolver getter cannot consume source-neutral values."""
+
+
 class _FallbackPolicy(IntEnum):
     AUDIT_LEGACY = 0
     COMPOSED = 1
@@ -67,7 +83,7 @@ class SchemaResolver:
 
         Args:
             name: The name of the USD attribute (or primary attribute when using a getter).
-            default: Legacy fallback used by the existing resolver path.
+            default: Compatibility fallback used while legacy resolution is active.
             usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
             usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
             attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
@@ -165,9 +181,12 @@ class SchemaResolver:
                 v = reader_value_getter(read_attribute)
             elif spec.usd_value_getter is not None:
                 if legacy_prim is None:
-                    raise TypeError(
+                    schema_name = self._schema_name(prim_type, key)
+                    names = ", ".join(spec.attribute_names or (spec.name,))
+                    raise _PXRValueGetterError(
                         f"Schema resolver '{self.name}' key '{prim_type.name.lower()}:{key}' uses a "
-                        "PXR-only usd_value_getter and cannot resolve schema fallbacks."
+                        "PXR-only usd_value_getter and cannot resolve schema fallbacks.",
+                        f"{schema_name} ({names})",
                     )
                 v = spec.usd_value_getter(legacy_prim)
             else:
@@ -273,6 +292,17 @@ def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: Sequence[str]) -> di
     return out
 
 
+def _registered_attribute_fallbacks(prim_definition: Any) -> dict[str, Any]:
+    if prim_definition is None:
+        return {}
+    fallbacks = {}
+    for name in prim_definition.GetPropertyNames():
+        value = prim_definition.GetAttributeFallbackValue(name)
+        if value is not None:
+            fallbacks[name] = value
+    return fallbacks
+
+
 class _SchemaResolution:
     """Applied-schema resolution policy for one ordered resolver set."""
 
@@ -317,9 +347,10 @@ class _SchemaResolution:
                 if value is _MISSING_FALLBACK:
                     schema_name = resolver._schema_name(prim_type, key)
                     names = ", ".join(spec.attribute_names or (spec.name,))
-                    raise RuntimeError(
+                    raise _MissingSchemaFallbackError(
                         f"Cannot resolve USD fallback for applied schema '{schema_name}' property '{names}'. "
-                        "Register the schema plugin or add the fallback to Newton's built-in catalog."
+                        "Register the schema plugin or add the fallback to Newton's built-in catalog.",
+                        f"{schema_name} ({names})",
                     )
                 return _ResolvedValue(value, resolver, False)
 
@@ -371,6 +402,7 @@ class SchemaResolverManager:
         self._resolution = _SchemaResolution(self.resolvers, fallback_policy=_fallback_policy)
         self._pxr_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
         self._legacy_fallback_properties: set[str] = set()
+        self._legacy_fallback_failures: set[str] = set()
 
         # Dictionary to accumulate schema attributes as prims are encountered
         # Pre-initialize maps for each configured resolver
@@ -531,7 +563,8 @@ class SchemaResolverManager:
 
         try:
             resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
-        except (RuntimeError, TypeError):
+        except _SchemaFallbackError as error:
+            self._legacy_fallback_failures.add(error.label)
             return
         if resolved.resolver is None or resolved.authored:
             return
@@ -602,11 +635,7 @@ class SchemaResolverManager:
                 prim_definition = registry.FindConcretePrimDefinition(schema_name)
             else:
                 prim_definition = registry.BuildComposedPrimDefinition(prim_type_name, [schema_name])
-            self._pxr_schema_fallbacks[cache_key] = (
-                {name: prim_definition.GetAttributeFallbackValue(name) for name in prim_definition.GetPropertyNames()}
-                if prim_definition is not None
-                else {}
-            )
+            self._pxr_schema_fallbacks[cache_key] = _registered_attribute_fallbacks(prim_definition)
 
         fallbacks = self._pxr_schema_fallbacks[cache_key]
         value = resolver._get_fallback_with_reader(
