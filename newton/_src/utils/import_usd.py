@@ -194,7 +194,6 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
-    schema_resolution: Any | None = None,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
@@ -320,11 +319,7 @@ def parse_usd(
 
             .. experimental::
 
-                The ``schema_resolvers`` and ``schema_resolution`` arguments may
-                change without prior notice.
-        schema_resolution: An opt-in applied-schema policy created by
-            :func:`newton.usd.create_schema_resolution`. It is mutually
-            exclusive with ``schema_resolvers``.
+                The ``schema_resolvers`` argument may change without prior notice.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -422,11 +417,7 @@ def parse_usd(
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
 
-    if schema_resolvers is not None and schema_resolution is not None:
-        raise ValueError("schema_resolvers and schema_resolution are mutually exclusive")
-    if schema_resolution is not None:
-        schema_resolvers = list(schema_resolution._resolvers)
-    elif schema_resolvers is None:
+    if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
 
@@ -531,11 +522,7 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
 
     # Initialize schema resolver according to precedence
-    R = (
-        SchemaResolverManager(resolution=schema_resolution)
-        if schema_resolution is not None
-        else SchemaResolverManager(schema_resolvers)
-    )
+    R = SchemaResolverManager(schema_resolvers)
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
     # fallback to the canonical physics: deformable schema. Empty unless a
@@ -655,17 +642,22 @@ def parse_usd(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
-        if R._resolution is not None:
-            resolved = R._resolve_value(prim, PrimType.JOINT, key, default=builder_default)
-            if resolved.resolver is None or resolved.resolver.name != "mjc":
-                return resolved.value, "force"
-            R._collect_on_first_use(resolved.resolver, prim)
-            if not resolved.authored:
-                spec = resolved.resolver.mapping[PrimType.JOINT][key]
-                if usd.get_attribute(prim, spec.name) is not None:
-                    return builder_default, "mjc_authored"
-            source = "mjc_authored" if resolved.authored else "mjc_default"
-            return builder_default if resolved.value is None else resolved.value, source
+
+        def finish(
+            value: float,
+            source: Literal["force", "mjc_authored", "mjc_default"],
+            resolver: SchemaResolver | None = None,
+        ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
+            R._record_legacy_fallback(
+                prim,
+                PrimType.JOINT,
+                key,
+                builder_default,
+                value,
+                resolver,
+                compare_resolver=False,
+            )
+            return value, source
 
         for resolver in R.resolvers:
             spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
@@ -681,22 +673,22 @@ def parse_usd(
                     spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
                 )
                 if authored_value is not None:
-                    return authored_value, "mjc_authored"
+                    return finish(authored_value, "mjc_authored", resolver)
                 mjc_default = _get_mjc_joint_limit_default(prim, key)
                 if mjc_default is not None:
-                    return mjc_default, "mjc_authored"
-                return builder_default, "mjc_authored"
+                    return finish(mjc_default, "mjc_authored", resolver)
+                return finish(builder_default, "mjc_authored", resolver)
 
             authored_value = resolver.get_value(prim, PrimType.JOINT, key)
             if authored_value is not None:
                 R._collect_on_first_use(resolver, prim)
-                return authored_value, "force"
+                return finish(authored_value, "force", resolver)
 
         if mjc_resolver is not None:
             mjc_default = _get_mjc_joint_limit_default(prim, key)
             if mjc_default is not None:
-                return mjc_default, "mjc_default"
-        return builder_default, "force"
+                return finish(mjc_default, "mjc_default")
+        return finish(builder_default, "force")
 
     def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
         """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
@@ -1433,8 +1425,17 @@ def parse_usd(
             default=None,
             verbose=verbose,
         )
-        # Legacy resolution treats the schema's unlimited sentinel as unspecified.
-        if R._resolution is None and joint_velocity_limit == float("inf"):
+        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
+        if joint_velocity_limit == float("inf"):
+            R._record_legacy_fallback(
+                joint_prim,
+                PrimType.JOINT,
+                "velocity_limit",
+                None,
+                default_joint_velocity_limit,
+                None,
+                compare_resolver=False,
+            )
             joint_velocity_limit = None
         limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
         limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
@@ -1965,7 +1966,16 @@ def parse_usd(
             j_velocity_limit = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
-            if R._resolution is None and j_velocity_limit == float("inf"):
+            if j_velocity_limit == float("inf"):
+                R._record_legacy_fallback(
+                    jp_prim,
+                    PrimType.JOINT,
+                    "velocity_limit",
+                    None,
+                    default_joint_velocity_limit,
+                    None,
+                    compare_resolver=False,
+                )
                 j_velocity_limit = None
 
             limit_key = "limit_angular" if is_revolute else "limit_linear"
@@ -4866,6 +4876,16 @@ def parse_usd(
                 "path_attachment_map": path_attachment_map,
                 "path_attachment_attrs": path_attachment_attrs,
             }
+        )
+
+    if R._legacy_fallback_properties:
+        properties = ", ".join(sorted(R._legacy_fallback_properties))
+        warnings.warn(
+            "This import retained legacy values for applied but unauthored USD schema properties: "
+            f"{properties}. Their schema fallbacks will take precedence in a future release; "
+            "author the intended values explicitly to preserve them.",
+            DeprecationWarning,
+            stacklevel=2,
         )
 
     return result

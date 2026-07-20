@@ -1638,11 +1638,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_applied_newton_joint_api_uses_schema_defaults(self):
+    def test_applied_newton_joint_api_warns_before_fallback_change(self):
         from pxr import Usd, UsdGeom, UsdPhysics
-
-        from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
-        from newton.usd import create_schema_resolution  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         root = UsdGeom.Xform.Define(stage, "/World")
@@ -1663,23 +1660,21 @@ def Xform "Articulation" (
         builder.default_joint_cfg.velocity_limit = 123.0
         builder.default_joint_cfg.limit_ke = 7.0
         builder.default_joint_cfg.limit_kd = 8.0
-        builder.add_usd(stage, schema_resolution=create_schema_resolution([SchemaResolverNewton()]))
+        with self.assertWarnsRegex(DeprecationWarning, "NewtonJointAPI"):
+            builder.add_usd(stage)
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
-        self.assertEqual(float(model.joint_armature.numpy()[dof]), 0.0)
-        self.assertEqual(float(model.joint_damping.numpy()[dof]), 0.0)
-        self.assertEqual(float(model.joint_friction.numpy()[dof]), 0.0)
-        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), float("inf"))
+        self.assertAlmostEqual(float(model.joint_armature.numpy()[dof]), 0.7)
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[dof]), 0.8)
+        self.assertAlmostEqual(float(model.joint_friction.numpy()[dof]), 0.9)
+        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
         self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
         self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_merged_joint_uses_newton_velocity_schema_default(self):
+    def test_merged_joint_warns_before_velocity_fallback_change(self):
         from pxr import Usd, UsdGeom, UsdPhysics
-
-        from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
-        from newton.usd import create_schema_resolution  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         root = UsdGeom.Xform.Define(stage, "/World")
@@ -1699,15 +1694,12 @@ def Xform "Articulation" (
 
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.velocity_limit = 123.0
-        builder.add_usd(
-            stage,
-            load_visual_shapes=False,
-            schema_resolution=create_schema_resolution([SchemaResolverNewton()]),
-        )
+        with self.assertWarnsRegex(DeprecationWarning, "newton:velocityLimit"):
+            builder.add_usd(stage, load_visual_shapes=False)
         model = builder.finalize()
 
         self.assertEqual(builder.joint_type, [newton.JointType.D6])
-        self.assertEqual(model.joint_velocity_limit.numpy().tolist(), [float("inf"), float("inf")])
+        self.assertEqual(model.joint_velocity_limit.numpy().tolist(), [123.0, 123.0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_limit_sentinel_precedence_over_mjc(self):
@@ -3303,11 +3295,10 @@ def Xform "Articulation" (
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_applied_physx_limit_api_uses_schema_defaults(self):
+    def test_applied_physx_limit_api_warns_before_fallback_change(self):
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
-        from newton.usd import create_schema_resolution  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(
@@ -3327,23 +3318,13 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.limit_ke = 4321.0
         builder.default_joint_cfg.limit_kd = 43.0
-        builder.add_usd(
-            stage,
-            schema_resolution=create_schema_resolution(
-                [SchemaResolverPhysx()],
-                schema_fallbacks={
-                    "PhysxLimitAPI:linear": {
-                        "physxLimit:linear:stiffness": 0.0,
-                        "physxLimit:linear:damping": 0.0,
-                    }
-                },
-            ),
-        )
+        with self.assertWarnsRegex(DeprecationWarning, "PhysxLimitAPI:linear"):
+            builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
-        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 0.0)
-        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 4321.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 43.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_mode_respects_resolver_priority(self):
@@ -8546,9 +8527,6 @@ def Xform "Articulation" (
         """Test that max_hull_vertices is parsed correctly from mesh collision."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-        from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
-        from newton.usd import create_schema_resolution  # noqa: PLC0415
-
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -8572,19 +8550,10 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(mesh_prim)
         mesh_prim.ApplyAPI("NewtonMeshCollisionAPI")
 
-        # Legacy resolution preserves the explicit builder override.
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, mesh_maxhullvert=20)
+        with self.assertWarnsRegex(DeprecationWarning, "newton:maxHullVertices"):
+            builder.add_usd(stage, mesh_maxhullvert=20)
         self.assertEqual(builder.shape_source[0].maxhullvert, 20)
-
-        # Composed resolution gives the applied schema ownership.
-        builder = newton.ModelBuilder()
-        builder.add_usd(
-            stage,
-            mesh_maxhullvert=20,
-            schema_resolution=create_schema_resolution([SchemaResolverNewton()]),
-        )
-        self.assertEqual(builder.shape_source[0].maxhullvert, -1)
 
         # Set max_hull_vertices to 32 on the mesh prim
         mesh_prim.GetAttribute("newton:maxHullVertices").Set(32)

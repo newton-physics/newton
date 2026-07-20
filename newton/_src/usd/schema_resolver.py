@@ -11,13 +11,15 @@ types from :mod:`newton.usd`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
+from numbers import Real
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from . import utils as usd
-from ._schema_fallbacks import _schema_fallbacks
+from ._schema_fallbacks import _SCHEMA_FALLBACKS
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -266,17 +268,12 @@ def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: Sequence[str]) -> di
 class _SchemaResolution:
     """Applied-schema resolution policy for one ordered resolver set."""
 
-    def __init__(
-        self,
-        resolvers: Sequence[SchemaResolver],
-        schema_fallbacks: Mapping[str, Mapping[str, Any]] | None = None,
-    ):
+    def __init__(self, resolvers: Sequence[SchemaResolver]):
         self._resolvers = tuple(resolvers)
-        self._schema_fallbacks = _schema_fallbacks(schema_fallbacks)
 
     def _mapping_fallback(self, resolver: SchemaResolver, prim_type: PrimType, key: str) -> Any:
         schema_name = resolver._schema_name(prim_type, key)
-        values = self._schema_fallbacks.get(schema_name, {}) if schema_name is not None else {}
+        values = _SCHEMA_FALLBACKS.get(schema_name, {}) if schema_name is not None else {}
         return resolver._get_fallback_with_reader(
             lambda name: values.get(name, _MISSING_FALLBACK),
             prim_type,
@@ -308,7 +305,7 @@ class _SchemaResolution:
                     names = ", ".join(spec.attribute_names or (spec.name,))
                     raise RuntimeError(
                         f"Cannot resolve USD fallback for applied schema '{schema_name}' property '{names}'. "
-                        "Register the schema plugin or supply schema_fallbacks."
+                        "Register the schema plugin or add the fallback to Newton's built-in catalog."
                     )
                 return _ResolvedValue(value, resolver, False)
 
@@ -339,51 +336,22 @@ class _ResolvedValue:
     authored: bool
 
 
-def create_schema_resolution(
-    resolvers: Sequence[SchemaResolver],
-    *,
-    schema_fallbacks: Mapping[str, Mapping[str, Any]] | None = None,
-):
-    """Create an applied-schema resolution policy for :meth:`ModelBuilder.add_usd`.
-
-    Args:
-        resolvers: Resolver instances in priority order.
-        schema_fallbacks: Overrides or additions to the built-in USD fallback
-            catalog, keyed first by schema name and then by attribute name.
-
-    Returns:
-        An opaque policy to pass to ``ModelBuilder.add_usd(schema_resolution=...)``.
-    """
-    return _SchemaResolution(resolvers, schema_fallbacks)
-
-
 class SchemaResolverManager:
     """
     Manager for resolving multiple USD schemas in a priority order.
     """
 
-    def __init__(
-        self,
-        resolvers: Sequence[SchemaResolver] | None = None,
-        resolution: _SchemaResolution | None = None,
-    ):
+    def __init__(self, resolvers: Sequence[SchemaResolver]):
         """
         Initialize resolver manager with resolver instances in priority order.
 
         Args:
             resolvers: List of instantiated resolvers in priority order.
-            resolution: Optional applied-schema resolution policy.
         """
-        if resolution is not None:
-            if resolvers is not None:
-                raise ValueError("resolvers and resolution are mutually exclusive")
-            self.resolvers = list(resolution._resolvers)
-        elif resolvers is not None:
-            self.resolvers = list(resolvers)
-        else:
-            raise ValueError("resolvers or resolution is required")
-        self._resolution = resolution
+        self.resolvers = list(resolvers)
+        self._resolution = _SchemaResolution(self.resolvers)
         self._pxr_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
+        self._legacy_fallback_properties: set[str] = set()
 
         # Dictionary to accumulate schema attributes as prims are encountered
         # Pre-initialize maps for each configured resolver
@@ -413,52 +381,116 @@ class SchemaResolverManager:
         Returns:
             Resolved value according to the precedence above.
         """
-        value, _ = self.get_value_with_resolver(prim, prim_type, key, default, verbose)
+        value, resolver = self._get_legacy_value(prim, prim_type, key, default)
+        self._record_legacy_fallback(prim, prim_type, key, default, value, resolver, compare_resolver=False)
+        self._report_missing(prim, prim_type, key, value, verbose)
         return value
 
     def get_value_with_resolver(
         self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
     ) -> tuple[Any, SchemaResolver | None]:
         """Resolve a value and return the resolver that supplied it."""
-        if self._resolution is None:
-            for resolver in self.resolvers:
-                value = resolver.get_value(prim, prim_type, key)
-                if value is None:
-                    continue
-                self._collect_on_first_use(resolver, prim)
-                return value, resolver
+        value, resolver = self._get_legacy_value(prim, prim_type, key, default)
+        self._record_legacy_fallback(prim, prim_type, key, default, value, resolver, compare_resolver=True)
+        self._report_missing(prim, prim_type, key, value, verbose)
+        return value, resolver
 
-            if default is not None:
-                return default, None
+    def _get_legacy_value(
+        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any
+    ) -> tuple[Any, SchemaResolver | None]:
+        for resolver in self.resolvers:
+            value = resolver.get_value(prim, prim_type, key)
+            if value is None:
+                continue
+            self._collect_on_first_use(resolver, prim)
+            return value, resolver
 
+        if default is not None:
+            return default, None
+
+        for resolver in self.resolvers:
+            spec = resolver.mapping.get(prim_type, {}).get(key)
+            if spec is None or spec.default is None:
+                continue
+            value = spec.default
+            if spec.usd_value_transformer is not None:
+                value = spec.usd_value_transformer(value)
+            return value, None
+
+        return None, None
+
+    @staticmethod
+    def _values_equal(left: Any, right: Any) -> bool:
+        if left is right:
+            return True
+        if isinstance(left, Real) and isinstance(right, Real):
+            return math.isclose(float(left), float(right), rel_tol=1.0e-7, abs_tol=1.0e-12)
+        try:
+            equal = left == right
+            if isinstance(equal, bool):
+                if equal:
+                    return True
+                if isinstance(left, (str, bytes)) or isinstance(right, (str, bytes)):
+                    return False
+                return len(left) == len(right) and all(
+                    SchemaResolverManager._values_equal(a, b) for a, b in zip(left, right, strict=True)
+                )
+            if hasattr(equal, "all"):
+                return bool(equal.all())
+            return all(equal)
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+    def _record_legacy_fallback(
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any,
+        legacy_value: Any,
+        legacy_resolver: SchemaResolver | None,
+        *,
+        compare_resolver: bool,
+    ) -> None:
+        if legacy_resolver is not None:
             for resolver in self.resolvers:
-                spec = resolver.mapping.get(prim_type, {}).get(key)
-                if spec is None or spec.default is None:
-                    continue
-                value = spec.default
-                if spec.usd_value_transformer is not None:
-                    value = spec.usd_value_transformer(value)
-                return value, None
-        else:
+                if resolver is legacy_resolver:
+                    return
+                if resolver._schema_is_applied(prim, prim_type, key):
+                    break
+            else:
+                return
+        elif not any(resolver._schema_is_applied(prim, prim_type, key) for resolver in self.resolvers):
+            return
+
+        try:
             resolved = self._resolve_value(prim, prim_type, key, default=default)
-            if resolved.resolver is not None:
-                self._collect_on_first_use(resolved.resolver, prim)
-                return resolved.value, resolved.resolver
-            if resolved.value is not None:
-                return resolved.value, None
+        except RuntimeError:
+            return
+        if resolved.resolver is None or resolved.authored:
+            return
+        values_differ = not self._values_equal(legacy_value, resolved.value)
+        resolvers_differ = compare_resolver and legacy_resolver is not resolved.resolver
+        if not values_differ and not resolvers_differ:
+            return
 
-        # Nothing found
+        spec = resolved.resolver.mapping[prim_type][key]
+        schema_name = resolved.resolver._schema_name(prim_type, key)
+        names = ", ".join(spec.attribute_names or (spec.name,))
+        self._legacy_fallback_properties.add(f"{schema_name} ({names})")
+
+    @staticmethod
+    def _report_missing(prim: Usd.Prim, prim_type: PrimType, key: str, value: Any, verbose: bool) -> None:
+        if value is not None or not verbose:
+            return
         try:
             prim_path = str(prim.GetPath()) if prim is not None else "<None>"
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
-        if verbose:
-            error_message = (
-                f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-                + "no authored value, explicit default, or applicable resolver fallback."
-            )
-            print(error_message)
-        return None, None
+        print(
+            f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
+            "no authored value, explicit default, or applicable resolver fallback."
+        )
 
     def _resolve_value(
         self,
@@ -469,8 +501,6 @@ class SchemaResolverManager:
         default: Any = None,
     ) -> _ResolvedValue:
         """Resolve a value while retaining source provenance."""
-        if self._resolution is None:
-            raise RuntimeError("composed schema resolution is not enabled")
         return self._resolution._resolve_value(
             lambda resolver, key: resolver.get_value(prim, prim_type, key),
             lambda resolver, key: resolver._schema_is_applied(prim, prim_type, key),

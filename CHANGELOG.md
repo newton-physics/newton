@@ -4,10 +4,11 @@
 
 ### Added
 
-- Add opt-in composed USD schema resolution through `newton.usd.create_schema_resolution()` and `ModelBuilder.add_usd(schema_resolution=...)`, honoring applied-schema ownership and USD fallbacks while preserving the legacy resolver path.
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
 
 ### Changed
+
+- Detect applied but unauthored USD schema properties whose fallbacks will change resolver results in a future release, while retaining the current values during the compatibility period.
 
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).

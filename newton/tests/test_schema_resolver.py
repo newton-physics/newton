@@ -37,6 +37,7 @@ import unittest
 import warnings
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import warp as wp
 
@@ -50,7 +51,6 @@ from newton.usd import (
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
-    create_schema_resolution,
 )
 
 AttributeFrequency = Model.AttributeFrequency
@@ -112,12 +112,17 @@ class TestSchemaResolver(unittest.TestCase):
     def test_schema_application_controls_fallback_ownership(self):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
-        resolver = SchemaResolverManager(resolution=create_schema_resolution([SchemaResolverPhysx()]))
+        resolver = SchemaResolverManager([SchemaResolverPhysx()])
 
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 12.0)
 
         joint.AddAppliedSchema("PhysxLimitAPI:angular")
-        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 0.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 12.0)
+        self.assertEqual(resolver._resolve_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0).value, 0.0)
+        self.assertEqual(
+            resolver._legacy_fallback_properties,
+            {"PhysxLimitAPI:angular (physxLimit:angular:stiffness)"},
+        )
 
         stiffness = joint.CreateAttribute("physxLimit:angular:stiffness", Sdf.ValueTypeNames.Float)
         stiffness.Set(0.0)
@@ -132,38 +137,20 @@ class TestSchemaResolver(unittest.TestCase):
         scene.AddAppliedSchema("NewtonSceneAPI")
         scene.AddAppliedSchema("MjcSceneAPI")
 
-        mjc_first = SchemaResolverManager(
-            resolution=create_schema_resolution([SchemaResolverMjc(), SchemaResolverNewton()])
-        )
-        newton_first = SchemaResolverManager(
-            resolution=create_schema_resolution([SchemaResolverNewton(), SchemaResolverMjc()])
-        )
+        mjc_first = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        newton_first = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
 
-        self.assertEqual(mjc_first.get_value(scene, PrimType.SCENE, "max_solver_iterations"), 100)
-        self.assertEqual(newton_first.get_value(scene, PrimType.SCENE, "max_solver_iterations"), -1)
+        self.assertEqual(mjc_first._resolve_value(scene, PrimType.SCENE, "max_solver_iterations").value, 100)
+        self.assertEqual(newton_first._resolve_value(scene, PrimType.SCENE, "max_solver_iterations").value, -1)
 
-    def test_registered_schema_fallback_precedes_supplied_table(self):
+    def test_registered_schema_fallback_precedes_builtin_table(self):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("NewtonJointAPI")
-        resolver = SchemaResolverManager(
-            resolution=create_schema_resolution(
-                [SchemaResolverNewton()],
-                schema_fallbacks={"NewtonJointAPI": {"newton:armature": 9.0}},
-            )
-        )
+        resolver = SchemaResolverManager([SchemaResolverNewton()])
 
-        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 0.0)
-
-    def test_legacy_and_composed_resolution_are_mutually_exclusive(self):
-        stage = Usd.Stage.CreateInMemory()
-
-        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
-            ModelBuilder().add_usd(
-                stage,
-                schema_resolvers=[SchemaResolverNewton()],
-                schema_resolution=create_schema_resolution([SchemaResolverNewton()]),
-            )
+        with patch.dict(_SCHEMA_FALLBACKS["NewtonJointAPI"], {"newton:armature": 9.0}):
+            self.assertEqual(resolver._resolve_value(joint, PrimType.JOINT, "armature").value, 0.0)
 
     def test_basic_newton_physx_priority(self):
         """

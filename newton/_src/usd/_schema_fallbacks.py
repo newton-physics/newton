@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import struct
-from collections.abc import Mapping
-from copy import deepcopy
 from typing import Any
 
 _PHYSX_LIMIT_AXES = ("linear", "angular", "transX", "transY", "transZ", "rotX", "rotY", "rotZ")
@@ -146,13 +144,3 @@ _SCHEMA_FALLBACKS: dict[str, dict[str, Any]] = {
         "mjc:gear": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     },
 }
-
-
-def _schema_fallbacks(
-    overrides: Mapping[str, Mapping[str, Any]] | None = None,
-) -> dict[str, dict[str, Any]]:
-    fallbacks = deepcopy(_SCHEMA_FALLBACKS)
-    if overrides is not None:
-        for schema_name, values in overrides.items():
-            fallbacks.setdefault(schema_name, {}).update(values)
-    return fallbacks
