@@ -57,6 +57,7 @@ def create_kernel(
         out_index: wp.int32,
         out_color: wp.array[wp.uint32],
         out_depth: wp.array[wp.float32],
+        out_forward_depth: wp.array[wp.float32],
         out_shape_index: wp.array[wp.uint32],
         out_normal: wp.array[wp.vec3f],
         out_albedo: wp.array[wp.uint32],
@@ -70,6 +71,8 @@ def create_kernel(
             out_hdr_color[out_index] = wp.vec3f(0.0)
         if wp.static(state.render_depth):
             out_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
+        if wp.static(state.render_forward_depth):
+            out_forward_depth[out_index] = wp.float32(wp.static(clear_data.clear_depth))
         if wp.static(state.render_normal):
             out_normal[out_index] = wp.vec3f(
                 wp.static(clear_data.clear_normal[0]),
@@ -113,6 +116,7 @@ def create_kernel(
         topology_particle_mask: wp.array[wp.bool],
         # Triangle Mesh:
         triangle_mesh_id: wp.uint64,
+        triangle_mesh_group_roots: wp.array[wp.int32],
         # Meshes
         mesh_data: wp.array[MeshData],
         # Gaussians
@@ -128,6 +132,7 @@ def create_kernel(
         # Outputs
         out_color: wp.array[wp.uint32],
         out_depth: wp.array[wp.float32],
+        out_forward_depth: wp.array[wp.float32],
         out_shape_index: wp.array[wp.uint32],
         out_normal: wp.array[wp.vec3f],
         out_albedo: wp.array[wp.uint32],
@@ -165,7 +170,16 @@ def create_kernel(
             camera_forward = wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0))
 
         if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
-            write_clear_outputs(out_index, out_color, out_depth, out_shape_index, out_normal, out_albedo, out_hdr_color)
+            write_clear_outputs(
+                out_index,
+                out_color,
+                out_depth,
+                out_forward_depth,
+                out_shape_index,
+                out_normal,
+                out_albedo,
+                out_hdr_color,
+            )
             return
 
         closest_hit = raytrace_closest_hit(
@@ -188,6 +202,7 @@ def create_kernel(
             particles_radius,
             topology_particle_mask,
             triangle_mesh_id,
+            triangle_mesh_group_roots,
             gaussians_data,
             ray_origin_world,
             ray_dir_world,
@@ -195,11 +210,24 @@ def create_kernel(
         )
 
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
-            write_clear_outputs(out_index, out_color, out_depth, out_shape_index, out_normal, out_albedo, out_hdr_color)
+            write_clear_outputs(
+                out_index,
+                out_color,
+                out_depth,
+                out_forward_depth,
+                out_shape_index,
+                out_normal,
+                out_albedo,
+                out_hdr_color,
+            )
             return
 
         if wp.static(state.render_depth):
             out_depth[out_index] = closest_hit.distance
+
+        if wp.static(state.render_forward_depth):
+            forward_depth_axis_world = wp.normalize(wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0)))
+            out_forward_depth[out_index] = closest_hit.distance * wp.dot(ray_dir_world, forward_depth_axis_world)
 
         if wp.static(state.render_normal):
             out_normal[out_index] = closest_hit.normal
@@ -297,6 +325,7 @@ def create_kernel(
                     particles_radius,
                     topology_particle_mask,
                     triangle_mesh_id,
+                    triangle_mesh_group_roots,
                     closest_hit.normal,
                     hit_point,
                 )

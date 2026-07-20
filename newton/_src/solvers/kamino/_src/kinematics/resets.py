@@ -10,7 +10,6 @@ from typing import Any
 import warp as wp
 
 from ..core.joints import JointDoFType
-from ..core.math import quat_from_x_rot, quat_from_y_rot, screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..kinematics.joints import (
@@ -18,7 +17,7 @@ from ..kinematics.joints import (
     convert_angular_vel_to_universal_joint_intermediary_frame,
     get_joint_coords_mapping_function,
 )
-from ..solvers.fk.kernels import _correct_joint_angle, _correct_joint_quaternion, read_quat_from_array
+from ..solvers.fk.kernels import _correct_joint_angle, _correct_joint_quaternion
 
 ###
 # Module interface
@@ -198,138 +197,11 @@ def _compute_and_write_joint_coords_and_vel(
         wp.static(make_compute_and_write_joint_vel(JointDoFType.UNIVERSAL))(q_j, u_j, dofs_offset, joint_u)
 
 
-@wp.func
-def _get_joint_rel_transform_from_coords(
-    dof_type: wp.int32,
-    coord_offset: wp.int32,
-    joint_q: wp.array[wp.float32],
-) -> wp.transformf:
-    """Compute the joint-frame relative body pose at a joint, from the joint coords."""
-    # Initialize transform to identity
-    t = wp.vec3f(0.0, 0.0, 0.0)
-    q = wp.quatf(0.0, 0.0, 0.0, 1.0)
-
-    # Overwrite transform base on joint type and coords
-    if dof_type == JointDoFType.CARTESIAN:
-        t[0] = joint_q[coord_offset]
-        t[1] = joint_q[coord_offset + 1]
-        t[2] = joint_q[coord_offset + 2]
-    elif dof_type == JointDoFType.CYLINDRICAL:
-        t[0] = joint_q[coord_offset]
-        q = quat_from_x_rot(joint_q[coord_offset + 1])
-    elif dof_type == JointDoFType.FIXED:
-        pass  # No dofs to apply
-    elif dof_type == JointDoFType.FREE:
-        t[0] = joint_q[coord_offset]
-        t[1] = joint_q[coord_offset + 1]
-        t[2] = joint_q[coord_offset + 2]
-        q = read_quat_from_array(joint_q, coord_offset + 3, True)
-    elif dof_type == JointDoFType.PRISMATIC:
-        t[0] = joint_q[coord_offset]
-    elif dof_type == JointDoFType.REVOLUTE:
-        q = quat_from_x_rot(joint_q[coord_offset])
-    elif dof_type == JointDoFType.SPHERICAL:
-        q = read_quat_from_array(joint_q, coord_offset, True)
-    elif dof_type == JointDoFType.UNIVERSAL:
-        q_x = quat_from_x_rot(joint_q[coord_offset])
-        q_y = quat_from_y_rot(joint_q[coord_offset + 1])
-        q = q_x * q_y
-    else:
-        assert False, "Unexpected joint dof type"  # noqa: B011
-
-    return wp.transformf(t, q)
-
-
-@wp.func
-def convert_angular_vel_from_universal_joint_intermediary_frame(
-    j_q_j: wp.quatf, j_u_j: wp.spatial_vectorf
-) -> wp.spatial_vectorf:
-    """
-    Convert the angular part of a relative body velocity at a universal joint, from the
-    intermediary frame to the joint frame on the base body.
-    """
-    # Compute intermediary body axes, in the joint frame on the base body
-    e_x = wp.vec3f(1.0, 0.0, 0.0)
-    e_y = wp.vec3f(0.0, 1.0, 0.0)
-    a_x = e_x  # x axis on base
-    a_y_raw = wp.quat_rotate(j_q_j, e_y)  #  y axis on follower (constrained to be orthogonal to a_x)
-    a_y = a_y_raw - wp.dot(a_y_raw, a_x) * a_x  # orthogonalize (in case of constraint violations)
-    a_y = wp.normalize(a_y)
-    a_z = wp.cross(a_x, a_y)
-
-    # Transform angular velocity by rotation corresponding to intermediary frame
-    omega = screw_angular(j_u_j)
-    return screw(screw_linear(j_u_j), omega[0] * a_x + omega[1] * a_y + omega[2] * a_z)
-
-
-def make_typed_get_joint_rel_velocity_from_dofs(dof_type: JointDoFType):
-    """
-    Generate a function computing the joint-frame relative body velocity from the dof-space
-    joint velocity (and from the joint-frame relative body orientation, for universal joints).
-    """
-    num_dofs = dof_type.num_dofs
-    assert num_dofs > 0
-    dof_axes = dof_type.dofs_axes
-
-    @wp.func
-    def _get_joint_rel_velocity_from_dofs(
-        q_j: wp.quatf,
-        dofs_offset: wp.int32,
-        joint_u: wp.array[wp.float32],
-    ) -> wp.spatial_vectorf:
-        # Expand dof-space velocity to 6D screw (with zero along constrained axes)
-        u_j = wp.spatial_vectorf(0.0)
-        for i in range(num_dofs):
-            u_j[dof_axes[i]] = joint_u[dofs_offset + i]
-
-        # Convert back angular velocity from intermediary body frame for universal joint
-        if wp.static(dof_type == JointDoFType.UNIVERSAL):
-            u_j = convert_angular_vel_from_universal_joint_intermediary_frame(q_j, u_j)
-
-        return u_j
-
-    return _get_joint_rel_velocity_from_dofs
-
-
-@wp.func
-def _get_joint_rel_velocity_from_dofs(
-    dof_type: wp.int32,
-    q_j: wp.quatf,
-    dofs_offset: wp.int32,
-    joint_u: wp.array[wp.float32],
-) -> wp.spatial_vectorf:
-    """
-    Compute the joint-frame relative body velocity at a joint, from the dof-space velocity.
-    For universal joints, also requires the joint_frame relative body orientation.
-    """
-    if dof_type == JointDoFType.CARTESIAN:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.CARTESIAN))(q_j, dofs_offset, joint_u)
-    elif dof_type == JointDoFType.CYLINDRICAL:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.CYLINDRICAL))(
-            q_j, dofs_offset, joint_u
-        )
-    elif dof_type == JointDoFType.FIXED:
-        return wp.spatial_vectorf(0.0)
-    elif dof_type == JointDoFType.FREE:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.FREE))(q_j, dofs_offset, joint_u)
-    elif dof_type == JointDoFType.PRISMATIC:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.PRISMATIC))(q_j, dofs_offset, joint_u)
-    elif dof_type == JointDoFType.REVOLUTE:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.REVOLUTE))(q_j, dofs_offset, joint_u)
-    elif dof_type == JointDoFType.SPHERICAL:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.SPHERICAL))(q_j, dofs_offset, joint_u)
-    elif dof_type == JointDoFType.UNIVERSAL:
-        return wp.static(make_typed_get_joint_rel_velocity_from_dofs(JointDoFType.UNIVERSAL))(q_j, dofs_offset, joint_u)
-    else:
-        assert False, "Unexpected joint dof type"  # noqa: B011
-
-
 @wp.kernel
 def _get_base_q_from_joint_q_and_body_q(
     # Inputs:
     model_base_joint_index: wp.array[wp.int32],
     model_base_body_index: wp.array[wp.int32],
-    model_joint_dof_type: wp.array[wp.int32],
     model_joint_coords_offset: wp.array[wp.int32],
     state_joint_q: wp.array[wp.float32],
     state_body_q: wp.array[wp.transformf],
@@ -347,15 +219,23 @@ def _get_base_q_from_joint_q_and_body_q(
     # Read base_q from joint_q if a base joint was set for this world
     base_joint_id = model_base_joint_index[wid]
     if base_joint_id >= 0:
-        dof_type = model_joint_dof_type[base_joint_id]
         coords_offset = model_joint_coords_offset[base_joint_id]
-        base_q[wid] = _get_joint_rel_transform_from_coords(dof_type, coords_offset, state_joint_q)
+        assert model_joint_coords_offset[base_joint_id + 1] - coords_offset == 7  # Base joint must be free
+        base_q[wid] = wp.transformf(
+            state_joint_q[coords_offset],
+            state_joint_q[coords_offset + 1],
+            state_joint_q[coords_offset + 2],
+            state_joint_q[coords_offset + 3],
+            state_joint_q[coords_offset + 4],
+            state_joint_q[coords_offset + 5],
+            state_joint_q[coords_offset + 6],
+        )
 
     # Otherwise read base_q from body_q if a base body was set for this world
     else:
         base_body_id = model_base_body_index[wid]
-        assert base_body_id >= 0
-        base_q[wid] = state_body_q[base_body_id]
+        if base_body_id >= 0:
+            base_q[wid] = state_body_q[base_body_id]
 
 
 @wp.kernel
@@ -363,7 +243,6 @@ def _get_base_u_from_joint_u_and_body_u(
     # Inputs:
     model_base_joint_index: wp.array[wp.int32],
     model_base_body_index: wp.array[wp.int32],
-    model_joint_dof_type: wp.array[wp.int32],
     model_joint_dofs_offset: wp.array[wp.int32],
     state_joint_u: wp.array[wp.float32],
     state_body_u: wp.array[wp.spatial_vectorf],
@@ -382,17 +261,21 @@ def _get_base_u_from_joint_u_and_body_u(
     base_joint_id = model_base_joint_index[wid]
     if base_joint_id >= 0:
         dofs_offset = model_joint_dofs_offset[base_joint_id]
-        dof_type = model_joint_dof_type[base_joint_id]
-        assert dof_type != JointDoFType.UNIVERSAL  # Universal base joints are not supported
-        # Relative body orientation would be needed to interpret dof-space velocity,
-        # complicating the code significantly for a corner case without clear usecase.
-        base_u[wid] = _get_joint_rel_velocity_from_dofs(dof_type, wp.quatf(), dofs_offset, state_joint_u)
+        assert model_joint_dofs_offset[base_joint_id + 1] - dofs_offset == 6  # Base joint must be free
+        base_u[wid] = wp.spatial_vectorf(
+            state_joint_u[dofs_offset],
+            state_joint_u[dofs_offset + 1],
+            state_joint_u[dofs_offset + 2],
+            state_joint_u[dofs_offset + 3],
+            state_joint_u[dofs_offset + 4],
+            state_joint_u[dofs_offset + 5],
+        )
 
     # Otherwise read base_u from body_u if a base body was set for this world
     else:
         base_body_id = model_base_body_index[wid]
-        assert base_body_id >= 0
-        base_u[wid] = state_body_u[base_body_id]
+        if base_body_id >= 0:
+            base_u[wid] = state_body_u[base_body_id]
 
 
 @wp.kernel
@@ -573,6 +456,8 @@ def _eval_floating_base_relative_transform(
     # Determine new pose of the base body (= follower of the base joint if there is a base joint)
     base_joint_id = model_base_joint_index[wid]
     base_body_id = model_base_body_index[wid]
+    if base_body_id < 0:  # No floating base prescribed
+        return
     base_body_curr_pose = body_q[base_body_id]
     if not base_q:  # No prescribed base_q: take new base body pose as its current pose
         base_body_pose = base_body_curr_pose
@@ -587,7 +472,7 @@ def _eval_floating_base_relative_transform(
         T_F = wp.transformf(r_F, wp.quat_from_matrix(X_F))
         T_F_inv = wp.transform_inverse(T_F)
         base_body_pose = wp.transform_multiply(wp.transform_multiply(T_B, base_q[wid]), T_F_inv)
-    else:  # Directly interpret base_q as the new base body pose if no base joint
+    else:  # Directly interpret base_q as the new base body pose if base body but not base joint
         base_body_pose = base_q[wid]
     new_base_pos[wid] = wp.transform_get_translation(base_body_pose)
 
@@ -638,6 +523,7 @@ def _eval_floating_base_relative_transform(
 @wp.kernel
 def _apply_floating_base_transform(
     # Inputs:
+    model_base_body_index: wp.array[wp.int32],
     body_world_id: wp.array[wp.int32],
     rel_transform: wp.array[wp.transformf],
     rel_velocity: wp.array[wp.spatial_vectorf],
@@ -650,9 +536,9 @@ def _apply_floating_base_transform(
     # Get thread id as body id
     body_id = wp.tid()
 
-    # Early return based on mask
+    # Early return based on mask or absence of floating base
     wid = body_world_id[body_id]
-    if not world_mask[wid]:
+    if not world_mask[wid] or model_base_body_index[wid] < 0:
         return
 
     # Transform body pose
@@ -723,7 +609,6 @@ def get_base_q_from_joint_q_and_body_q(
         inputs=[
             model.info.base_joint_index,
             model.info.base_body_index,
-            model.joints.dof_type,
             model.joints.coords_offset,
             joint_q,
             body_q,
@@ -758,7 +643,6 @@ def get_base_u_from_joint_u_and_body_u(
         inputs=[
             model.info.base_joint_index,
             model.info.base_body_index,
-            model.joints.dof_type,
             model.joints.dofs_offset,
             joint_u,
             body_u,
@@ -854,6 +738,7 @@ def set_floating_base(
         _apply_floating_base_transform,
         dim=model.size.sum_of_num_bodies,
         inputs=[
+            model.info.base_body_index,
             model.bodies.wid,
             rel_transform,
             rel_velocity,

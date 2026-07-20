@@ -13,6 +13,7 @@ from .core.bodies import (
 from .core.control import ControlKamino
 from .core.conversions import convert_model_joint_transforms
 from .core.gravity import convert_model_gravity
+from .core.joints import JOINT_QMAX, JOINT_QMIN, JointActuationType
 from .core.model import ModelKamino
 from .core.state import StateKamino
 from .geometry.contacts import (
@@ -29,9 +30,12 @@ from .utils import logger as msg
 ###
 
 __all__ = [
+    "JOINT_QMAX",
+    "JOINT_QMIN",
     "CollisionDetector",
     "ContactsKamino",
     "ControlKamino",
+    "JointActuationType",
     "ModelKamino",
     "SolverKaminoImpl",
     "StateKamino",

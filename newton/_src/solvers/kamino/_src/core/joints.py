@@ -1025,6 +1025,16 @@ class JointDescriptor(Descriptor):
     act_type: JointActuationType = JointActuationType.PASSIVE
     """Actuation type of the joint."""
 
+    fk_act_flag: int = -1
+    """
+    Integer flag indicating whether this joint should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
+    """
+
     dof_type: JointDoFType = JointDoFType.FREE
     """DoF type of the joint."""
 
@@ -1499,6 +1509,7 @@ class JointDescriptor(Descriptor):
             f"uid: {self.uid},\n"
             "----------------------------------------------\n"
             f"act_type: {self.act_type},\n"
+            f"fk_act_flag: {self.fk_act_flag},\n"
             f"dof_type: {self.dof_type},\n"
             "----------------------------------------------\n"
             f"bid_B: {self.bid_B},\n"
@@ -1683,6 +1694,17 @@ class JointsModel:
     """
     Joint actuation type ID of each joint.
     Shape of ``(num_joints,)``.
+    """
+
+    fk_act_flag: wp.array[wp.int32] | None = None
+    """
+    Integer flag per joint, indicating whether it should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+    Shape of ``(num_joints,)`` if set; else considered to be -1 for all joints.
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
     """
 
     bid_B: wp.array[wp.int32] | None = None
