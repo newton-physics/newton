@@ -628,14 +628,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     friction[4],
                 )
 
-        # Newton kf is a force-space friction damping [N·s/m]; MuJoCo friction rows
-        # are velocity-level and realize f = D*(aref - A*f), so the slope is
-        # D*beta/(1+D*A). Choosing beta = kf*(1/D + A) with MuJoCo's A ~= invweight0
-        # approximation makes the slope kf below the Coulomb limit (elliptic
-        # cones only — pyramidal never reads solreffriction). Differs from the
-        # static-targeting FORCE_SPACE ke/kd block, where f = D*aref is exact.
-        # Standard (timeconst, dampratio) format so refsafe bounds large kf at
-        # the stability limit; dampratio only feeds the zero position term.
+        # Newton kf is force-space friction damping [N·s/m]. Friction rows realize
+        # f = D*(aref - A*f), so beta = kf*(1/D + A) (MuJoCo's A ~= invweight0
+        # approximation) yields slope kf below the Coulomb limit; pyramidal cones
+        # never read solreffriction. Standard solref format so refsafe bounds
+        # large kf; dampratio only feeds the zero position term.
         if shape_material_kf:
             kf1 = shape_material_kf[shape_a]
             kf2 = shape_material_kf[shape_b]

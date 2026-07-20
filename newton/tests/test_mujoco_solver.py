@@ -4711,8 +4711,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         for i in range(nacon):
             invw = body_invweight0[geom_bodyid[geom[i][0]]][0] + body_invweight0[geom_bodyid[geom[i][1]]][0]
             dmax = solimp[i][1]
-            # beta = kf*(1/D + A) with A ~= invw; timeconst = 2/(dmax*beta),
-            # ir = impratio_invsqrt; at impratio 1 this collapses to 2/(kf*invw)
+            # beta = kf*(1/D + A) with A ~= invw; timeconst = 2/(dmax*beta)
             expected.append(2.0 / (kf_pair * invw * ((1.0 - dmax) * ir * ir + dmax)))
         return expected
 
@@ -4765,10 +4764,9 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         builder.default_shape_cfg.mu = 2.0
         builder.add_ground_plane()
         radius = 0.1
-        # add_body() auto-creates a free joint; use add_link()+add_articulation() so the
-        # prismatic joint is the body's sole (tree, not loop) connection to the world.
-        # The joint's parent_xform (not the link's xform) places the body -- default
-        # identity would put the sphere center at the plane (z=0, full-radius overlap).
+        # add_body() would auto-create a free joint; add_link()+add_articulation()
+        # keeps the prismatic joint as the body's sole (tree) connection, and the
+        # joint's parent_xform (not the link xform) is what places the body.
         body = builder.add_link()
         cfg = newton.ModelBuilder.ShapeConfig(density=density, ke=1.0e5, kd=1.0e3, kf=kf, mu=2.0)
         builder.add_shape_sphere(body=body, radius=radius, cfg=cfg)
@@ -4798,7 +4796,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         control = model.control()
         contacts = model.contacts()
         joint_qd = state_0.joint_qd.numpy()
-        joint_qd[0] = 0.05  # single prismatic DOF
+        joint_qd[0] = 0.05
         state_0.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
         for _ in range(num_steps):
@@ -4806,8 +4804,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
             model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
             state_0, state_1 = state_1, state_0
-        # solver.step() only auto-syncs body_qd for free-joint bodies; the single
-        # prismatic DOF's velocity is already correct in joint_qd every step.
+        # step() only auto-syncs body_qd for free-joint bodies; read the DOF velocity
         return float(state_0.joint_qd.numpy()[0])
 
     def test_kf_force_space_mass_dependence(self):

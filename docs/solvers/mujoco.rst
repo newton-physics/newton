@@ -290,12 +290,20 @@ For :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
 ``solreffriction`` when the solver uses elliptic friction cones (``cone="elliptic"``)
 with Newton contacts (``use_mujoco_contacts=False``); it targets the force-space
 friction slope ``f = -kf * v`` below the Coulomb limit (exact when MuJoCo's
-``body_invweight0`` matches the contact's effective mass). Very large ``kf`` saturates
-at MuJoCo's refsafe stability bound (reference time constant clamped to twice the
-timestep). Set ``kf`` to ``0`` on a shape to fall back to MuJoCo's default friction
-impedance. This mapping is always on for elliptic cones with Newton contacts,
-independent of the shape's ``solref_mode`` above (which only governs the
-normal-direction ``solref``).
+``body_invweight0`` matches the contact's effective mass and the contact operates at
+its maximum impedance ``dmax``). Very large ``kf`` saturates at MuJoCo's refsafe
+stability bound (reference time constant clamped to twice the timestep). Set ``kf``
+to ``0`` on a shape to fall back to MuJoCo's default friction impedance. This mapping
+is always on for elliptic cones with Newton contacts, independent of the shape's
+``solref_mode`` above (which only governs the normal-direction ``solref``).
+
+The two shapes' ``kf`` values combine with the same priority/``solmix`` weighting as
+other contact parameters, except that ``kf = 0`` on either shape disables the mapping
+regardless of geom priority. The slope is calibrated for the sliding friction rows;
+with ``condim > 3``, the torsional and rolling rows share the same per-contact
+``solreffriction`` and MuJoCo scales their regularization by the corresponding
+friction-coefficient ratios, so their effective damping deviates from ``kf``
+accordingly.
 
 Actuators
 ---------
