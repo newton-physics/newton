@@ -15,8 +15,7 @@ sys.path.append(parent_dir)
 
 from benchmark_metrics import (
     _SimulationMetricTracksUnparameterized,
-    collect_simulation_metrics_synchronized,
-    compute_gpu_memory_usage,
+    collect_simulation_metrics,
     validate_simulation_state,
 )
 
@@ -73,16 +72,14 @@ class FastMetricsExampleAnymalPretrained(_SimulationMetricTracksUnparameterized)
     world_count = 1
 
     def setup_cache(self):
-        wp.synchronize_device()
-        device = wp.get_device()
-        free_memory_before = device.free_memory
-        return collect_simulation_metrics_synchronized(
+        if wp.get_cuda_device_count() == 0:
+            return None
+        return collect_simulation_metrics(
             create_workload=lambda: _create_example(self.num_frames),
             world_count=self.world_count,
             num_frames=self.num_frames,
             samples=self.samples,
             synchronize=wp.synchronize_device,
-            memory_usage_bytes=lambda workload: compute_gpu_memory_usage(device, free_memory_before),
             validate=_validate_workload,
         )
 

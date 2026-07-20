@@ -23,6 +23,8 @@ class SimulationMetrics:
     gpu_memory_mib: float
     sim_dt: float
     sim_substeps: int
+    solver_niter_mean: float | None = None
+    solver_niter_max: float | None = None
 
 
 class _SimulationMetricTracks:
@@ -117,17 +119,6 @@ class _SimulationMetricTracksUnparameterized:
     track_sim_substeps.unit = "simulation-steps/frame"
 
 
-def _percentile(values: Sequence[float], percentile: float) -> float:
-    ordered = sorted(values)
-    rank = (len(ordered) - 1) * percentile / 100.0
-    lower = math.floor(rank)
-    upper = math.ceil(rank)
-    if lower == upper:
-        return ordered[lower]
-    fraction = rank - lower
-    return ordered[lower] + fraction * (ordered[upper] - ordered[lower])
-
-
 def compute_simulation_metrics(
     frame_times: Sequence[float],
     sim_dt: float,
@@ -159,19 +150,11 @@ def compute_simulation_metrics(
         mean_world_step_time_ms=total_time * 1000.0 / world_steps,
         world_steps_per_second=world_steps / experience_total_time,
         real_time_factor=world_steps * sim_dt / experience_total_time,
-        p95_frame_time_ms=_percentile(experience_frame_times, 95.0) * 1000.0,
+        p95_frame_time_ms=float(np.percentile(experience_frame_times, 95.0)) * 1000.0,
         gpu_memory_mib=gpu_memory_bytes / 1024**2,
         sim_dt=sim_dt,
         sim_substeps=sim_substeps,
     )
-
-
-def compute_gpu_memory_usage(device: Any, free_memory_before: int) -> int:
-    """Compute the change in total device memory usage from a free-memory baseline."""
-    used_memory = free_memory_before - device.free_memory
-    if used_memory < 0:
-        raise RuntimeError("GPU free memory increased after workload initialization")
-    return used_memory
 
 
 def validate_simulation_state(
@@ -208,31 +191,25 @@ def validate_simulation_state(
         )
 
 
-def validate_simulation_workload(workload: Any, max_linear_speed: float, max_angular_speed: float):
-    """Run generic state validation followed by a workload's specialized checks."""
-    validate_simulation_state(
-        workload.state_0,
-        max_linear_speed=max_linear_speed,
-        max_angular_speed=max_angular_speed,
-    )
-    workload.test_final()
-
-
 def collect_simulation_metrics(
     create_workload: Callable[[], Any],
     world_count: int,
     num_frames: int,
     samples: int,
-    memory_usage_bytes: Callable[[Any], int],
+    synchronize: Callable[[], None] | None = None,
     validate: Callable[[Any], None] | None = None,
     timer: Callable[[], float] = time.perf_counter,
 ) -> SimulationMetrics:
-    """Collect internal physics timing and complete synchronized step timing."""
+    """Collect simulation metrics using internal or synchronized wall timing."""
     frame_times = []
     experience_frame_times = []
     gpu_memory_bytes = None
     sim_dt = None
     sim_substeps = None
+
+    wp.synchronize_device()
+    device = wp.get_device()
+    free_memory_before = device.free_memory
 
     for sample_index in range(samples):
         workload = create_workload()
@@ -242,15 +219,27 @@ def collect_simulation_metrics(
         elif workload.sim_dt != sim_dt or workload.sim_substeps != sim_substeps:
             raise ValueError("simulation parameters changed between samples")
 
+        if synchronize is not None:
+            synchronize()
         for _ in range(num_frames):
-            start_time = workload.benchmark_time
             experience_start_time = timer()
+            benchmark_start_time = workload.benchmark_time if synchronize is None else None
             workload.step()
-            frame_times.append(workload.benchmark_time - start_time)
-            experience_frame_times.append(timer() - experience_start_time)
+            if synchronize is not None:
+                synchronize()
+            experience_frame_time = timer() - experience_start_time
+            experience_frame_times.append(experience_frame_time)
+            frame_times.append(
+                experience_frame_time
+                if benchmark_start_time is None
+                else workload.benchmark_time - benchmark_start_time
+            )
 
         if sample_index == 0:
-            gpu_memory_bytes = memory_usage_bytes(workload)
+            wp.synchronize_device()
+            gpu_memory_bytes = free_memory_before - device.free_memory
+            if gpu_memory_bytes < 0:
+                raise RuntimeError("GPU free memory increased after workload initialization")
         if validate is not None:
             validate(workload)
 
@@ -261,49 +250,4 @@ def collect_simulation_metrics(
         world_count=world_count,
         gpu_memory_bytes=gpu_memory_bytes,
         experience_frame_times=experience_frame_times,
-    )
-
-
-def collect_simulation_metrics_synchronized(
-    create_workload: Callable[[], Any],
-    world_count: int,
-    num_frames: int,
-    samples: int,
-    synchronize: Callable[[], None],
-    memory_usage_bytes: Callable[[Any], int],
-    validate: Callable[[Any], None] | None = None,
-    timer: Callable[[], float] = time.perf_counter,
-) -> SimulationMetrics:
-    """Collect metrics for workloads without an internal synchronized timer."""
-    frame_times = []
-    gpu_memory_bytes = None
-    sim_dt = None
-    sim_substeps = None
-
-    for sample_index in range(samples):
-        workload = create_workload()
-        if sim_dt is None:
-            sim_dt = workload.sim_dt
-            sim_substeps = workload.sim_substeps
-        elif workload.sim_dt != sim_dt or workload.sim_substeps != sim_substeps:
-            raise ValueError("simulation parameters changed between samples")
-
-        synchronize()
-        for _ in range(num_frames):
-            start_time = timer()
-            workload.step()
-            synchronize()
-            frame_times.append(timer() - start_time)
-
-        if sample_index == 0:
-            gpu_memory_bytes = memory_usage_bytes(workload)
-        if validate is not None:
-            validate(workload)
-
-    return compute_simulation_metrics(
-        frame_times=frame_times,
-        sim_dt=sim_dt,
-        sim_substeps=sim_substeps,
-        world_count=world_count,
-        gpu_memory_bytes=gpu_memory_bytes,
     )

@@ -15,9 +15,8 @@ sys.path.append(parent_dir)
 
 from benchmark_metrics import (
     _SimulationMetricTracksUnparameterized,
-    collect_simulation_metrics_synchronized,
-    compute_gpu_memory_usage,
-    validate_simulation_workload,
+    collect_simulation_metrics,
+    validate_simulation_state,
 )
 
 import newton
@@ -54,21 +53,24 @@ class FastMetricsExampleQuadrupedXPBD(_SimulationMetricTracksUnparameterized):
     world_count = 200
 
     def setup_cache(self):
-        wp.synchronize_device()
-        device = wp.get_device()
-        free_memory_before = device.free_memory
-        return collect_simulation_metrics_synchronized(
+        if wp.get_cuda_device_count() == 0:
+            return None
+
+        def validate_workload(workload):
+            validate_simulation_state(
+                workload.state_0,
+                max_linear_speed=0.3,
+                max_angular_speed=0.3,
+            )
+            workload.test_final()
+
+        return collect_simulation_metrics(
             create_workload=lambda: _create_example(self.num_frames, self.world_count),
             world_count=self.world_count,
             num_frames=self.num_frames,
             samples=self.samples,
             synchronize=wp.synchronize_device,
-            memory_usage_bytes=lambda workload: compute_gpu_memory_usage(device, free_memory_before),
-            validate=lambda workload: validate_simulation_workload(
-                workload,
-                max_linear_speed=0.3,
-                max_angular_speed=0.3,
-            ),
+            validate=validate_workload,
         )
 
 

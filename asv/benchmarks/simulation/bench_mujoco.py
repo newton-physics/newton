@@ -5,7 +5,10 @@ import math
 import os
 import sys
 import time
+from dataclasses import replace
+from functools import partial
 
+import numpy as np
 import warp as wp
 
 wp.config.enable_backward = False
@@ -19,14 +22,29 @@ sys.path.append(parent_dir)
 from benchmark_metrics import (
     _SimulationMetricTracks,
     collect_simulation_metrics,
-    compute_gpu_memory_usage,
 )
 from benchmark_mujoco import Example
 
 from newton.utils import EventTracer
 
 
-class _KpiBenchmark(_SimulationMetricTracks):
+class _SimulationMetricTracksMuJoCo(_SimulationMetricTracks):
+    """MuJoCo-specific tracked metrics."""
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_solver_niter_mean(self, metrics, world_count):
+        return metrics[world_count].solver_niter_mean
+
+    track_solver_niter_mean.unit = "iterations"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_solver_niter_max(self, metrics, world_count):
+        return metrics[world_count].solver_niter_max
+
+    track_solver_niter_max.unit = "iterations"
+
+
+class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     """Utility base class for KPI benchmarks."""
 
     param_names = ["world_count"]
@@ -37,13 +55,46 @@ class _KpiBenchmark(_SimulationMetricTracks):
     ls_iteration = None
     random_init = None
     environment = "None"
+    expected_bodies_per_world = None
+
+    def _create_workload(self, builder):
+        workload = Example(
+            stage_path=None,
+            robot=self.robot,
+            randomize=self.random_init,
+            headless=True,
+            actuation="random",
+            use_cuda_graph=True,
+            builder=builder,
+            ls_iteration=self.ls_iteration,
+            environment=self.environment,
+        )
+        if workload.graph is None:
+            raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
+        wp.synchronize_device()
+        return workload
+
+    def _validate_workload(self, workload):
+        workload.test_final()
+        if self.expected_bodies_per_world is None:
+            return
+        expected_body_count = self.expected_bodies_per_world * workload.world_count
+        if workload.model.body_count != expected_body_count:
+            raise RuntimeError(
+                f"Expected {self.expected_bodies_per_world} bodies per world for {self.environment}, "
+                f"got {workload.model.body_count / workload.world_count:g}"
+            )
+
+    def _validate_metrics_workload(self, workload, solver_niter_samples):
+        self._validate_workload(workload)
+        solver_niter_samples.append(workload.solver.mjw_data.solver_niter.numpy())
 
     def _collect_metrics(self):
+        if wp.get_cuda_device_count() == 0:
+            return None
+
         metrics = {}
         for world_count in self.params[0]:
-            wp.synchronize_device()
-            device = wp.get_device()
-            free_memory_before = device.free_memory
             builder = Example.create_model_builder(
                 self.robot,
                 world_count,
@@ -51,31 +102,23 @@ class _KpiBenchmark(_SimulationMetricTracks):
                 randomize=self.random_init,
                 seed=123,
             )
+            solver_niter_samples = []
 
             def create_workload(builder=builder):
-                example = Example(
-                    stage_path=None,
-                    robot=self.robot,
-                    randomize=self.random_init,
-                    headless=True,
-                    actuation="random",
-                    use_cuda_graph=True,
-                    builder=builder,
-                    ls_iteration=self.ls_iteration,
-                    environment=self.environment,
-                )
-                wp.synchronize_device()
-                return example
+                return self._create_workload(builder)
 
-            metrics[world_count] = collect_simulation_metrics(
+            world_metrics = collect_simulation_metrics(
                 create_workload=create_workload,
                 world_count=world_count,
                 num_frames=self.num_frames,
                 samples=self.samples,
-                memory_usage_bytes=lambda workload, device=device, free_memory_before=free_memory_before: (
-                    compute_gpu_memory_usage(device, free_memory_before)
-                ),
-                validate=lambda workload: workload.test_final(),
+                validate=partial(self._validate_metrics_workload, solver_niter_samples=solver_niter_samples),
+            )
+            solver_niter = np.concatenate([np.asarray(values).reshape(-1) for values in solver_niter_samples])
+            metrics[world_count] = replace(
+                world_metrics,
+                solver_niter_mean=float(np.mean(solver_niter)),
+                solver_niter_max=float(np.max(solver_niter)),
             )
         return metrics
 
@@ -297,6 +340,7 @@ class FastKitchenG1(_KpiBenchmark):
     ls_iteration = 10
     random_init = True
     environment = "kitchen"
+    expected_bodies_per_world = 111
 
     def setup_cache(self):
         return self._collect_metrics()

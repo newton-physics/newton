@@ -5,6 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 import numpy as np
 
@@ -15,11 +16,8 @@ sys.path.insert(0, str(BENCHMARK_DIR))
 
 from benchmark_metrics import (  # noqa: E402
     collect_simulation_metrics,
-    collect_simulation_metrics_synchronized,
-    compute_gpu_memory_usage,
     compute_simulation_metrics,
     validate_simulation_state,
-    validate_simulation_workload,
 )
 
 
@@ -46,6 +44,17 @@ class TestBenchmarkMetrics(unittest.TestCase):
         events = []
         timer_values = iter((0.0, 0.02, 0.02, 0.06, 0.06, 0.08, 0.08, 0.12))
 
+        class FakeDevice:
+            free_memory_values = iter((20 * 1024**2, 12 * 1024**2))
+
+            @property
+            def free_memory(self):
+                if workloads:
+                    self_test.assertEqual(workloads[0].step_count, 2)
+                return next(self.free_memory_values)
+
+        self_test = self
+
         class FakeWorkload:
             sim_dt = 0.01
             sim_substeps = 2
@@ -63,38 +72,43 @@ class TestBenchmarkMetrics(unittest.TestCase):
             workloads.append(workload)
             return workload
 
-        def memory_usage_bytes(workload):
-            self.assertIs(workload, workloads[0])
-            self.assertEqual(workload.step_count, 2)
-            events.append(("memory", workload))
-            return 8 * 1024**2
-
         def validate(workload):
             events.append(("validate", workload))
 
-        metrics = collect_simulation_metrics(
-            create_workload=create_workload,
-            world_count=4,
-            num_frames=2,
-            samples=2,
-            memory_usage_bytes=memory_usage_bytes,
-            validate=validate,
-            timer=lambda: next(timer_values),
-        )
+        with (
+            patch("benchmark_metrics.wp.get_device", return_value=FakeDevice()),
+            patch("benchmark_metrics.wp.synchronize_device") as synchronize_device,
+        ):
+            metrics = collect_simulation_metrics(
+                create_workload=create_workload,
+                world_count=4,
+                num_frames=2,
+                samples=2,
+                validate=validate,
+                timer=lambda: next(timer_values),
+            )
 
         self.assertEqual(len(workloads), 2)
-        self.assertEqual(events, [("memory", workloads[0]), ("validate", workloads[0]), ("validate", workloads[1])])
+        self.assertEqual(events, [("validate", workloads[0]), ("validate", workloads[1])])
+        self.assertEqual(synchronize_device.call_count, 2)
         self.assertAlmostEqual(metrics.mean_world_step_time_ms, 1.875)
         self.assertAlmostEqual(metrics.world_steps_per_second, 32 / 0.12)
         self.assertAlmostEqual(metrics.real_time_factor, 32 * 0.01 / 0.12)
         self.assertAlmostEqual(metrics.p95_frame_time_ms, 40.0)
         self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
 
-    def test_collect_simulation_metrics_synchronized(self):
+    def test_collect_simulation_metrics_with_synchronization(self):
         workloads = []
         events = []
         sync_calls = []
         timer_values = iter((0.0, 0.01, 0.01, 0.03))
+
+        class FakeDevice:
+            free_memory_values = iter((16 * 1024**2, 8 * 1024**2))
+
+            @property
+            def free_memory(self):
+                return next(self.free_memory_values)
 
         class FakeWorkload:
             sim_dt = 0.01
@@ -111,39 +125,59 @@ class TestBenchmarkMetrics(unittest.TestCase):
             workloads.append(workload)
             return workload
 
-        def memory_usage_bytes(workload):
-            events.append(("memory", workload))
-            return 8 * 1024**2
-
         def validate(workload):
             events.append(("validate", workload))
 
-        metrics = collect_simulation_metrics_synchronized(
-            create_workload=create_workload,
-            world_count=4,
-            num_frames=2,
-            samples=1,
-            synchronize=lambda: sync_calls.append(None),
-            timer=lambda: next(timer_values),
-            memory_usage_bytes=memory_usage_bytes,
-            validate=validate,
-        )
+        with (
+            patch("benchmark_metrics.wp.get_device", return_value=FakeDevice()),
+            patch("benchmark_metrics.wp.synchronize_device") as synchronize_device,
+        ):
+            metrics = collect_simulation_metrics(
+                create_workload=create_workload,
+                world_count=4,
+                num_frames=2,
+                samples=1,
+                synchronize=lambda: sync_calls.append(None),
+                timer=lambda: next(timer_values),
+                validate=validate,
+            )
 
         self.assertEqual(len(sync_calls), 3)
-        self.assertEqual(events, [("memory", workloads[0]), ("validate", workloads[0])])
+        self.assertEqual(events, [("validate", workloads[0])])
+        self.assertEqual(synchronize_device.call_count, 2)
         self.assertAlmostEqual(metrics.mean_world_step_time_ms, 1.875)
         self.assertAlmostEqual(metrics.world_steps_per_second, 16 / 0.03)
         self.assertAlmostEqual(metrics.real_time_factor, 16 * 0.01 / 0.03)
+        self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
 
-    def test_compute_gpu_memory_usage(self):
+    def test_collect_simulation_metrics_rejects_increased_free_memory(self):
         class FakeDevice:
-            free_memory = 700
+            free_memory_values = iter((1000, 1100))
 
-        self.assertEqual(compute_gpu_memory_usage(FakeDevice(), free_memory_before=1000), 300)
+            @property
+            def free_memory(self):
+                return next(self.free_memory_values)
 
-        FakeDevice.free_memory = 1100
-        with self.assertRaisesRegex(RuntimeError, "increased"):
-            compute_gpu_memory_usage(FakeDevice(), free_memory_before=1000)
+        class FakeWorkload:
+            sim_dt = 0.01
+            sim_substeps = 1
+            benchmark_time = 0.0
+
+            def step(self):
+                self.benchmark_time += 0.01
+
+        with (
+            patch("benchmark_metrics.wp.get_device", return_value=FakeDevice()),
+            patch("benchmark_metrics.wp.synchronize_device"),
+            self.assertRaisesRegex(RuntimeError, "increased"),
+        ):
+            collect_simulation_metrics(
+                create_workload=FakeWorkload,
+                world_count=1,
+                num_frames=1,
+                samples=1,
+                timer=iter((0.0, 0.01)).__next__,
+            )
 
     def test_validate_simulation_state(self):
         class FakeArray:
@@ -170,23 +204,10 @@ class TestBenchmarkMetrics(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "quaternion"):
             validate_simulation_state(FakeState(), max_linear_speed=10.0, max_angular_speed=10.0)
 
-        specialized_checks = []
         FakeState.body_q = FakeArray([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]])
         FakeState.joint_qd = FakeArray([np.nan])
         with self.assertRaisesRegex(RuntimeError, "state.joint_qd"):
             validate_simulation_state(FakeState(), max_linear_speed=10.0, max_angular_speed=10.0)
-
-        FakeState.joint_qd = FakeArray([0.0])
-
-        class FakeWorkload:
-            state_0 = FakeState()
-
-            def test_final(self):
-                specialized_checks.append(self)
-
-        workload = FakeWorkload()
-        validate_simulation_workload(workload, max_linear_speed=10.0, max_angular_speed=10.0)
-        self.assertEqual(specialized_checks, [workload])
 
     def test_run_benchmark_with_setup_cache(self):
         cache_events = []

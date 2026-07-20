@@ -818,7 +818,8 @@ seconds, and ``T_physics`` the workload's synchronized internal physics time. Th
 * simulation throughput: ``F * S * W / T`` in ``world-steps/s``;
 * real-time factor: ``F * S * W * dt / T``;
 * p95 step time: the 95th percentile of synchronized complete-step times in ``ms/frame``; and
-* steady-state GPU memory in ``MiB``.
+* steady-state GPU memory in ``MiB``; and
+* mean and maximum MuJoCo solver iteration counts across worlds at the final frame of each measured sample.
 
 The existing KPI mean world-step series keeps its ``track_simulate`` name and definition, and existing
 ``time_simulate`` aggregate series remain unchanged. ``world_count`` remains an ASV parameter where applicable,
@@ -827,13 +828,13 @@ configuration needed to interpret throughput and real-time factor. The existing 
 each workload's internal physics timer. Throughput, real-time factor, and p95 metrics time and synchronize the
 complete ``step()`` operation, including any policy or control work it performs.
 
-GPU memory is the decrease in ``Device.free_memory`` between a baseline immediately before model construction
-and a measurement after initialization, CUDA graph capture, and the first complete measured sample, while that
-sample's workload is still live. This device-level delta includes allocations from Warp, PyTorch, solver support,
-and CUDA graphs. Because the measurement is device-wide, runners must provide exclusive GPU access during the
-measurement interval. The remaining samples do not affect this measurement. A benchmark fails instead of
-publishing metrics if its final simulation state is invalid, has non-normalized body rotations, or exceeds the
-workload's body-speed bounds.
+GPU memory is the decrease in ``Device.free_memory`` between a baseline immediately before the first finalized
+workload is created and a measurement after initialization, CUDA graph capture, and the first complete measured
+sample, while that sample's workload is still live. This device-level delta includes allocations from Warp,
+PyTorch, solver support, and CUDA graphs. Because the measurement is device-wide, runners must provide exclusive
+GPU access during the measurement interval. The remaining samples do not affect this measurement. A benchmark
+fails instead of publishing metrics if its final simulation state is invalid, has non-normalized body rotations,
+or exceeds the workload's body-speed bounds.
 
 Benchmarks can also be run against a range of commits using the ``commit1..commit2`` syntax.
 This is useful for comparing performance across several recent changes:
