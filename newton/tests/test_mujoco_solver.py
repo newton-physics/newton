@@ -4703,12 +4703,13 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
     def _step_and_read_solreffriction(self, model, solver):
         state_0, state_1 = model.state(), model.state()
         control = model.control()
-        contacts = model.contacts()
-        model.collide(state_0, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
         nacon = int(solver.mjw_data.nacon.numpy()[0])
         self.assertGreater(nacon, 0)
-        return nacon, contacts, (state_0, state_1, control)
+        return nacon, (collision_pipeline, contacts), (state_0, state_1, control)
 
     def _expected_solreffriction(self, solver, nacon, kf_pair, impratio=1.0):
         solimp = solver.mjw_data.contact.solimp.numpy()[:nacon]
@@ -4744,10 +4745,12 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
 
     def test_kf_runtime_update(self):
         model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0)
-        nacon, contacts, (state_0, state_1, control) = self._step_and_read_solreffriction(model, solver)
+        nacon, (collision_pipeline, contacts), (state_0, state_1, control) = self._step_and_read_solreffriction(
+            model, solver
+        )
         model.shape_material_kf.fill_(400.0)
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
         nacon = int(solver.mjw_data.nacon.numpy()[0])
         self.assertGreater(nacon, 0)
@@ -4803,14 +4806,15 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
         state_0, state_1 = model.state(), model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         joint_qd = state_0.joint_qd.numpy()
         joint_qd[0] = 0.05
         state_0.joint_qd.assign(joint_qd)
         newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
         for _ in range(num_steps):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
             state_0, state_1 = state_1, state_0
         # step() only auto-syncs body_qd for free-joint bodies; read the DOF velocity
