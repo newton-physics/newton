@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import warnings
 from typing import Any, Literal
 
@@ -452,10 +453,10 @@ class SensorContact:
         self,
         model: Model,
         *,
-        sensing_bodies: str | list[str] | list[int] | None = None,
-        sensing_shapes: str | list[str] | list[int] | None = None,
-        counterpart_bodies: str | list[str] | list[int] | None = None,
-        counterpart_shapes: str | list[str] | list[int] | None = None,
+        sensing_bodies: str | re.Pattern[str] | list[str | re.Pattern[str]] | list[int] | None = None,
+        sensing_shapes: str | re.Pattern[str] | list[str | re.Pattern[str]] | list[int] | None = None,
+        counterpart_bodies: str | re.Pattern[str] | list[str | re.Pattern[str]] | list[int] | None = None,
+        counterpart_shapes: str | re.Pattern[str] | list[str | re.Pattern[str]] | list[int] | None = None,
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
@@ -470,14 +471,14 @@ class SensorContact:
 
         Args:
             model: The simulation model providing shape/body definitions and world layout.
-            sensing_bodies: List of body indices, single pattern to match against body labels, or list of patterns where
-                any one matches.
-            sensing_shapes: List of shape indices, single pattern to match against shape labels, or list of patterns
-                where any one matches.
-            counterpart_bodies: List of body indices, single pattern to match
-                against body labels, or list of patterns where any one matches.
-            counterpart_shapes: List of shape indices, single pattern to match
-                against shape labels, or list of patterns where any one matches.
+            sensing_bodies: List of body indices, glob or compiled regular-expression pattern to match against body
+                labels, or list of patterns where any one matches. Regular expressions use full matching.
+            sensing_shapes: List of shape indices, glob or compiled regular-expression pattern to match against shape
+                labels, or list of patterns where any one matches. Regular expressions use full matching.
+            counterpart_bodies: List of body indices, glob or compiled regular-expression pattern to match against body
+                labels, or list of patterns where any one matches. Regular expressions use full matching.
+            counterpart_shapes: List of shape indices, glob or compiled regular-expression pattern to match against
+                shape labels, or list of patterns where any one matches. Regular expressions use full matching.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
             verbose: If True, print details. If False, suppress details. If None, print details when

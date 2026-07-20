@@ -79,15 +79,25 @@ support label matching accept one of the following:
 - A **list of integer indices** -- selects directly by index.
 - A **single string pattern** -- selects all entries whose label matches the pattern via :func:`fnmatch.fnmatch`
   (supports ``*`` and ``?`` wildcards).
-- A **list of string patterns** -- selects all entries whose label matches at least one of the patterns.
+- A **compiled string regular expression** -- selects all entries whose complete label matches via
+  :meth:`re.Pattern.fullmatch`.
+- A **list of string and/or compiled patterns** -- selects all entries whose label matches at least one pattern.
 
-Examples::
+Ordinary strings always use glob syntax. Compile a pattern with :func:`re.compile` to opt into regular-expression
+syntax. Callers who want a regular expression to match a substring can add ``.*`` around that substring explicitly.
+
+.. code-block:: python
+
+   import re
 
    # single pattern: all shapes whose label starts with "foot_"
    SensorIMU(model, sites="foot_*")
 
+   # compiled regular expression: full-match an environment and object label
+   SensorIMU(model, sites=re.compile(r"/World/envs/env_[0-9]+/imu_(left|right)"))
+
    # list of patterns: union of two groups
-   SensorContact(model, sensing_shapes=["*Plate*", "*Flap*"])
+   SensorContact(model, sensing_shapes=["*Plate*", re.compile(r"Flap_[AB]")])
 
    # list of indices: explicit selection
    SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])

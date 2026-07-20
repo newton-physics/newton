@@ -3,6 +3,7 @@
 
 """Tests for match_labels utility."""
 
+import re
 import unittest
 
 from newton._src.utils.selection import match_labels
@@ -27,6 +28,41 @@ class TestMatchLabels(unittest.TestCase):
         labels = ["a", "b", "c"]
         self.assertEqual(match_labels(labels, "*"), [0, 1, 2])
 
+    def test_compiled_regex_matches_full_labels(self):
+        labels = [
+            "/World/envs/env_0/Object_A",
+            "/World/envs/env_12/Object_B",
+            "/World/envs/env_12/Object_D",
+            "/World/envs/env_x/Object_A",
+        ]
+        pattern = re.compile(r"/World/envs/env_[0-9]+/Object_(A|B)")
+
+        self.assertEqual(match_labels(labels, pattern), [0, 1])
+
+    def test_compiled_regex_supports_negative_lookahead(self):
+        labels = ["base", "LF_FOOT", "RF_FOOT", "fixed_mount"]
+
+        self.assertEqual(match_labels(labels, re.compile(r"(?!base$).*")), [1, 2, 3])
+
+    def test_compiled_regex_preserves_flags(self):
+        labels = ["Robot_A", "robot_b", "PROP"]
+
+        self.assertEqual(match_labels(labels, re.compile(r"robot_[ab]", re.IGNORECASE)), [0, 1])
+
+    def test_compiled_regex_requires_full_match(self):
+        labels = ["robot", "robot_arm"]
+
+        self.assertEqual(match_labels(labels, re.compile(r"robot")), [0])
+
+    def test_regex_looking_string_remains_a_glob(self):
+        labels = [
+            "/World/envs/env_0/Object_A",
+            "/World/envs/env_12/Object_B",
+        ]
+        pattern = r"/World/envs/env_[0-9]+/Object_(A|B)"
+
+        self.assertEqual(match_labels(labels, pattern), [])
+
     def test_list_str_union(self):
         labels = ["alpha", "beta", "gamma", "delta"]
         self.assertEqual(match_labels(labels, ["alpha", "gamma"]), [0, 2])
@@ -39,6 +75,12 @@ class TestMatchLabels(unittest.TestCase):
         labels = ["arm_left", "arm_right", "leg_left", "leg_right"]
         result = match_labels(labels, ["arm_*", "leg_left"])
         self.assertEqual(result, [0, 1, 2])
+
+    def test_list_glob_and_compiled_regex_union_deduplicates(self):
+        labels = ["robot_0", "robot_1", "prop_A", "prop_B", "other"]
+        patterns = ["robot_*", re.compile(r"(robot_1|prop_[AB])")]
+
+        self.assertEqual(match_labels(labels, patterns), [0, 1, 2, 3])
 
     def test_empty_list_returns_empty(self):
         labels = ["a", "b", "c"]
@@ -53,6 +95,28 @@ class TestMatchLabels(unittest.TestCase):
         labels = ["a", "b"]
         with self.assertRaises(TypeError):
             match_labels(labels, [None])
+
+    def test_compiled_byte_pattern_is_validated_before_matching(self):
+        labels = ["robot"]
+        patterns = ["robot", re.compile(b"robot")]
+
+        with self.assertRaisesRegex(TypeError, "must match strings"):
+            match_labels(labels, patterns)
+
+    def test_compiled_byte_pattern_is_rejected_for_nonempty_labels(self):
+        with self.assertRaisesRegex(TypeError, "must match strings"):
+            match_labels(["robot"], re.compile(b"robot"))
+
+    def test_compiled_byte_pattern_is_rejected_for_empty_labels(self):
+        with self.assertRaisesRegex(TypeError, "must match strings"):
+            match_labels([], re.compile(b"robot"))
+
+    def test_mixed_indices_and_patterns_are_rejected(self):
+        labels = ["robot"]
+
+        for patterns in ([0, re.compile(r"robot")], [re.compile(r"robot"), 0]):
+            with self.subTest(patterns=patterns), self.assertRaises(TypeError):
+                match_labels(labels, patterns)
 
     def test_int_out_of_bounds_passthrough(self):
         """int indices are passed through without bounds checking."""
