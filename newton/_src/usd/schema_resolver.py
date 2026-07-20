@@ -303,7 +303,103 @@ class _SchemaResolution:
     def __init__(self, resolvers: Sequence[SchemaResolver]):
         self._resolvers = tuple(resolvers)
 
-    def _resolve_value(
+        if compatibility_changes:
+            properties = ", ".join(sorted(compatibility_changes))
+            warnings.warn(
+                "This resolution retained legacy values for applied but unauthored USD schema properties: "
+                f"{properties}. Their schema fallbacks will take precedence in a future release; "
+                "author the intended values explicitly to preserve them.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return resolved
+
+    def _resolve_legacy_value(
+        self,
+        read_value: Callable[[SchemaResolver, str], Any | None],
+        prim_type: PrimType,
+        key: str,
+        *,
+        default: Any = None,
+    ) -> _ResolvedValue:
+        for resolver in self._resolvers:
+            value = read_value(resolver, key)
+            if value is not None:
+                return _ResolvedValue(value, resolver, True)
+
+        if default is not None:
+            return _ResolvedValue(default, None, False)
+
+        for resolver in self._resolvers:
+            spec = resolver.mapping.get(prim_type, {}).get(key)
+            if spec is None or spec.default is None:
+                continue
+            value = spec.default
+            if spec.usd_value_transformer is not None:
+                value = spec.usd_value_transformer(value)
+            return _ResolvedValue(value, None, False)
+
+        return _ResolvedValue(None, None, False)
+
+    def _resolve_with_policy(
+        self,
+        read_value: Callable[[SchemaResolver, str], Any | None],
+        schema_is_applied: Callable[[SchemaResolver, str], bool],
+        prim_type: PrimType,
+        key: str,
+        *,
+        default: Any = None,
+        read_fallback: Callable[[SchemaResolver, str], Any] | None = None,
+        compare_resolver: bool = False,
+    ) -> _ResolutionResult:
+        value_cache: dict[tuple[int, str], Any | None] = {}
+
+        def cached_read_value(resolver: SchemaResolver, key: str) -> Any | None:
+            cache_key = (id(resolver), key)
+            if cache_key not in value_cache:
+                value_cache[cache_key] = read_value(resolver, key)
+            return value_cache[cache_key]
+
+        if self._fallback_policy == _FallbackPolicy.COMPOSED:
+            return _ResolutionResult(
+                self._resolve_composed_value(
+                    cached_read_value,
+                    schema_is_applied,
+                    prim_type,
+                    key,
+                    default=default,
+                    read_fallback=read_fallback,
+                )
+            )
+
+        legacy = self._resolve_legacy_value(cached_read_value, prim_type, key, default=default)
+        try:
+            composed = self._resolve_composed_value(
+                cached_read_value,
+                schema_is_applied,
+                prim_type,
+                key,
+                default=default,
+                read_fallback=read_fallback,
+            )
+        except (RuntimeError, TypeError):
+            return _ResolutionResult(legacy)
+
+        values_differ = not _values_equal(legacy.value, composed.value)
+        resolvers_differ = compare_resolver and legacy.resolver is not composed.resolver
+        if composed.resolver is None or composed.from_source or not (values_differ or resolvers_differ):
+            composed = None
+        return _ResolutionResult(legacy, composed)
+
+    @staticmethod
+    def _fallback_label(resolver: SchemaResolver | None, prim_type: PrimType, key: str) -> str:
+        assert resolver is not None
+        spec = resolver.mapping[prim_type][key]
+        schema_name = resolver._schema_name(prim_type, key)
+        names = ", ".join(spec.attribute_names or (spec.name,))
+        return f"{schema_name} ({names})"
+
+    def _resolve_composed_value(
         self,
         read_value: Callable[[SchemaResolver, str], Any | None],
         schema_is_applied: Callable[[SchemaResolver, str], bool],
@@ -680,9 +776,7 @@ class SchemaResolverManager:
         default: Any = None,
     ) -> _ResolvedValue:
         """Resolve a value while retaining source provenance."""
-        if self._resolution is None:
-            raise RuntimeError("composed schema resolution is not enabled")
-        return self._resolution._resolve_value(
+        return self._resolution._resolve_composed_value(
             lambda resolver, key: resolver.get_value(prim, prim_type, key),
             lambda resolver, key: resolver._schema_is_applied(prim, prim_type, key),
             prim_type,

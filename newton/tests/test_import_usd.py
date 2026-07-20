@@ -29,6 +29,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.usd.schema_resolver import _FallbackPolicy
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import (
@@ -39,6 +40,14 @@ from newton.tests.unittest_utils import (
 )
 
 devices = get_test_devices()
+
+
+def _composed_resolution(*args, **kwargs):
+    with mock.patch(
+        "newton._src.usd.schema_resolver._DEFAULT_FALLBACK_POLICY",
+        _FallbackPolicy.COMPOSED,
+    ):
+        return SchemaResolution(*args, **kwargs)
 
 
 _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
@@ -9372,7 +9381,6 @@ def Xform "Articulation" (
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
-        from newton.usd import create_schema_resolution  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -9402,12 +9410,12 @@ def Xform "Articulation" (
             builder.add_usd(stage, mesh_maxhullvert=20)
         self.assertEqual(builder.shape_source[0].maxhullvert, 20)
 
-        # Composed resolution gives the applied schema ownership.
+        # The future policy gives the applied schema ownership.
         builder = newton.ModelBuilder()
         builder.add_usd(
             stage,
             mesh_maxhullvert=20,
-            schema_resolution=create_schema_resolution([SchemaResolverNewton()]),
+            schema_resolution=_composed_resolution([SchemaResolverNewton()]),
         )
         self.assertEqual(builder.shape_source[0].maxhullvert, -1)
 

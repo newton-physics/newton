@@ -51,7 +51,7 @@ from ..solvers.mujoco.utils import (
 )
 from ..usd import require_newton_usd_schemas
 from ..usd import utils as usd
-from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from ..usd.schema_resolver import PrimType, SchemaResolution, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
 from .import_usd_deformable_attachments import (
     _deformable_import_attachments,
@@ -452,10 +452,12 @@ def parse_usd(
 
     if schema_resolvers is not None and schema_resolution is not None:
         raise ValueError("schema_resolvers and schema_resolution are mutually exclusive")
-    if schema_resolution is not None:
+    if schema_resolution is None:
+        if schema_resolvers is None:
+            schema_resolvers = [SchemaResolverNewton()]
+        schema_resolution = SchemaResolution(schema_resolvers)
+    else:
         schema_resolvers = list(schema_resolution._resolvers)
-    elif schema_resolvers is None:
-        schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
