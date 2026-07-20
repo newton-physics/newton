@@ -146,11 +146,16 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
         joint.AddAppliedSchema("PhysxLimitAPI:angular")
+        legacy = SchemaResolverManager(
+            [SchemaResolverPhysx()],
+            use_applied_schema_fallbacks=False,
+        )
         resolver = SchemaResolverManager(
             [SchemaResolverPhysx()],
             use_applied_schema_fallbacks=True,
         )
 
+        self.assertEqual(legacy.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 12.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 0.0)
         self.assertFalse(resolver._legacy_fallback_properties)
 
