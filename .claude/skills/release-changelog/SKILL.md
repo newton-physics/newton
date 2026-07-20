@@ -74,18 +74,26 @@ changes, dependency constraints, and migration guidance.
 
 ## Post-release reconciliation
 
-When bringing a dated release section from the release branch back to `main`:
+After a release branch finalizes its changelog, merge that release section back
+to `main` through a dedicated feature branch and a changelog-only PR:
 
-1. Start from the current `main` branch and import the dated release section;
-   do not replace `main`'s changelog wholesale.
-2. Keep a fresh `[Unreleased]` section at the top of `main`.
-3. Preserve entries added to `main` after the release branch was cut but not
-   shipped in the release. Move them into the new `[Unreleased]` section under
-   the correct categories.
-4. Keep shipped entries only in the dated release section. Resolve semantic
-   overlap between that section and `[Unreleased]` so the same user-facing
-   change is not recorded twice.
-5. Verify that older released sections remain unchanged.
+1. Fetch the canonical remote and create the feature branch from the latest
+   `upstream/main`, not from the release branch.
+2. Treat the final tag (or `upstream/release-X.Y` before the tag is available)
+   as the source of truth for the complete `## [X.Y.Z] - YYYY-MM-DD` section.
+3. Keep a fresh `## [Unreleased]` section as the first version header on
+   `main`. Preserve every post-cut entry not shipped in the release under the
+   correct category; do not replace the whole file with the release-branch
+   copy.
+4. Insert the finalized release section immediately below `[Unreleased]` and
+   keep shipped entries only in that dated section. Resolve semantic overlap so
+   the same user-facing change is not recorded twice.
+5. Verify the PR changes only `CHANGELOG.md`, the dated section matches the
+   final tag, and older released sections remain unchanged.
+
+If another maintainer is already preparing the merge-back, do not create a
+competing changelog edit. Confirm the current `upstream/main` and coordinate on
+the existing branch or PR instead.
 
 ## Checks
 

@@ -51,6 +51,14 @@ what users should know. Do not reproduce the full changelog; link to it.
    consumer-relevant items. Omit CI, workflow, README layout, release-link
    pinning, and other internal/docs polish unless the user explicitly asks or it
    affects library users.
+8. Before the final tag, keep a review-ready draft based on the latest release
+   branch. After the tag is pushed, refresh the draft against the final tag so
+   late RC fixes, dependency versions, changelog anchors, and PR references are
+   not stale.
+9. The tag-triggered release workflow creates a draft GitHub Release. Inspect
+   its current body and draft state before editing it; do not assume a local
+   release-notes file is newer. Publish only after the final artifact and links
+   have been verified according to `docs/guide/release.rst`.
 
 ## Linking Rules
 

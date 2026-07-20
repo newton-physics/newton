@@ -52,6 +52,33 @@ reflected in ``CHANGELOG.md`` and the API documentation, and that
 deprecations emit a runtime ``DeprecationWarning`` where applicable.
 
 
+Release workspace and progress record
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use dedicated Git worktrees once the release branch is cut: keep the primary
+worktree on ``main`` and use separate worktrees for release-branch preparation,
+stabilization, and GA changes.  This avoids switching a dirty worktree between
+``main`` and ``release-X.Y`` and makes the source branch of every operation
+explicit.
+
+At the start of the release, create a top-level working checklist such as
+``RELEASE_X_Y_PROGRESS.md``.  Keep it uncommitted unless the maintainers want
+the operational record in the repository.  Update it after every branch, PR,
+merge, workflow, tag, approval, and publication transition.  At minimum record:
+
+- the target version, previous release, canonical remote, branch cut commit,
+  release branch, and preparation PRs;
+- selected and excluded backports, including source commits and PR numbers;
+- validation commands, workflow run IDs, results, and approved exceptions;
+- each tag's exact target commit and the PyPI approval state; and
+- the GitHub Release and documentation URLs plus remaining owner actions.
+
+Suggested sections are Release information, Pre-release planning, Branch
+creation, one section per RC, Stabilization/backports, GA, and Post-release.
+The checklist is the handoff record when release work spans multiple sessions
+or maintainers; do not rely on chat history as the only state record.
+
+
 Pre-release planning
 --------------------
 
@@ -61,6 +88,11 @@ Pre-release planning
 
    * - ☐
      - Determine target version (``X.Y.Z``).
+   * - ☐
+     - Read this guide and inspect the previous release branch, preparation
+       PRs, and lightweight tags so the new branch/tag sequence follows the
+       repository's established convention.  Record the chosen refs in the
+       release progress checklist.
    * - ☐
      - Select release dependency versions and confirm their availability on
        public PyPI: warp-lang, mujoco, mujoco-warp, newton-usd-schemas.  Land
@@ -90,12 +122,19 @@ Pre-release planning
 Code freeze and release branch creation
 ---------------------------------------
 
+Fetch the canonical ``upstream`` remote immediately before cutting the branch.
+Create the release branch from the verified ``upstream/main`` commit, record
+that commit as the branch point, and push the branch to the canonical
+repository.  Use feature branches and pull requests for subsequent release
+changes; never commit directly to ``main`` or ``release-X.Y``.
+
 .. list-table::
    :widths: 5 95
    :header-rows: 0
 
    * - ☐
-     - Create ``release-X.Y`` branch from ``main`` and push it.
+     - Create ``release-X.Y`` from the verified ``upstream/main`` branch point
+       in a dedicated worktree, record the exact commit, and push it.
    * - ☐
      - On **main**: bump the version in ``pyproject.toml`` to ``X.(Y+1).0.dev0`` and run
        ``uv run docs/generate_api.py``, then regenerate ``uv.lock`` (``uv lock``).
@@ -143,6 +182,23 @@ Bug fixes merge to ``main`` first, then are cherry-picked to
 branch and open a pull request targeting ``release-X.Y`` — never push
 directly to the release branch.
 
+Before selecting backports, fetch the latest ``upstream/main`` and enumerate
+all commits since the recorded branch point.  PRs assigned to the release
+milestone are mandatory unless maintainers explicitly decide otherwise.
+Review unmarked, later-release, dependency, and revert commits with the
+maintainers, then record the approved set and explicit exclusions in the
+release progress checklist before changing the release branch.
+
+Apply approved commits sequentially in their order on ``main``.  Keep one
+source commit per cherry-pick commit and preserve the original subject, PR
+number, and source SHA (``git cherry-pick -x`` provides the source trailer).
+Do not squash the backport PR: the one-to-one history is the audit trail.  When
+an approved range contains a temporary change and its later revert, either
+include both in order or exclude both; never include only one side.  Prefer
+cherry-picks over a bulk merge because ``main`` normally already contains the
+next development version and unrelated post-cut work.  Use a bulk merge only
+when every intervening commit has been explicitly approved.
+
 The final changelog is an exception to the main-first flow.  Prepare it from
 the current ``release-X.Y`` branch and merge its dedicated pull request
 directly into ``release-X.Y``.  Reconcile the dated release section back to
@@ -150,9 +206,19 @@ directly into ``release-X.Y``.  Reconcile the dated release section back to
 
 For each new RC (``rc2``, ``rc3``, …) bump the version in
 ``pyproject.toml``, run ``uv run docs/generate_api.py``, and regenerate
-``uv.lock`` (``uv lock``), then tag and push.  Resolve any cherry-pick
-conflicts or missing dependent cherry-picks that cause CI failures before
-tagging.
+``uv.lock`` (``uv lock``).  Run pre-commit, focused tests, and a clean package
+build before opening the RC preparation PR.  After it merges, run the required
+release-branch workflows on the merge commit.  Create and push the next
+lightweight RC tag only after the required validations pass, and record the tag
+target and workflow run IDs.  Resolve any cherry-pick conflicts or missing
+dependent cherry-picks that cause CI failures before tagging.
+
+ASV comparison jobs execute the benchmark definition against both the base and
+head revisions.  A newly added benchmark can therefore fail on the base when
+it calls an API that exists only on the head.  Do not ignore the job result:
+inspect the per-revision logs, confirm that the head benchmark completed, and
+document the base incompatibility in the progress checklist and PR.  Treat any
+head failure or unexplained comparison failure as a real release failure.
 
 .. _testing-criteria:
 
@@ -171,9 +237,9 @@ As a guideline, an RC is typically ready for GA when:
 - Testing covers **Windows and Linux**, **all supported Python versions**,
   and both **latest and minimum-spec CUDA drivers** (see
   :ref:`system requirements <system-requirements>` in the installation guide).
-- PyPI installation of the RC works in a clean environment: ``pip install``
-  succeeds, ``import newton`` works, and examples and tests can be run from
-  the installed wheel (``pip install newton==X.Y.ZrcN``).
+- PyPI installation of the RC works in a clean, isolated ``uv`` environment:
+  dependency resolution succeeds, ``import newton`` works, and package
+  metadata plus ``newton.__version__`` both report ``X.Y.ZrcN``.
 - No unexpected regressions compared to the previous release have been
   identified.
 
@@ -237,14 +303,25 @@ otherwise.
        changes and verify that no pre-release dependencies remain in the lock
        file.
    * - ☐
-     - Commit and push tag ``vX.Y.Z``.  Automated workflows trigger:
+     - Run pre-commit, focused release tests, and a clean wheel/source build.
+       Verify the built metadata reports exactly ``X.Y.Z``.
+   * - ☐
+     - Confirm programmatically that ``X.Y.Z`` is unused on PyPI and that
+       ``vX.Y.Z`` does not exist locally or on the canonical remote.
+   * - ☐
+     - Merge the GA preparation PR, then create lightweight tag ``vX.Y.Z`` at
+       that exact merge commit.  Verify the tag target before pushing it to the
+       canonical repository.  Automated workflows trigger:
 
        - ``release.yml``: builds wheel, publishes to PyPI (requires manual
          approval), creates a draft GitHub Release.
        - ``docs-release.yml``: deploys docs to ``/X.Y.Z/`` and ``/stable/``
          on gh-pages, updates ``switcher.json``.
    * - ☐
-     - PyPI publish approved and verified: ``pip install newton==X.Y.Z``.
+     - In the tag-triggered Release workflow, open the waiting **Publish Python
+       distribution to PyPI** job, choose **Review deployments**, select the
+       ``pypi`` environment, and approve it.  Verify publication with a clean,
+       isolated ``uv`` install.
    * - ☐
      - Review the draft GitHub Release notes before publishing.  Keep them
        concise: summary, a few highlights, link to ``CHANGELOG.md``,
@@ -256,6 +333,28 @@ otherwise.
        switcher.
    * - ☐
      - Release announcement posted.
+
+List the versions known to PyPI before tagging with its JSON API rather than
+relying on the package web page:
+
+.. code-block:: bash
+
+   uv run --no-project --isolated --python 3.12 python -c \
+     "import json, urllib.request; print(sorted(json.load(urllib.request.urlopen('https://pypi.org/pypi/newton/json'))['releases']))"
+
+After approval, verify that the published artifact is actually imported from a
+clean environment rather than from the release worktree:
+
+.. code-block:: bash
+
+   uv run --no-project --isolated --python 3.12 --with newton==X.Y.Z \
+     python -c "import importlib.metadata as m, newton; print(m.version('newton')); print(newton.__version__); print(newton.__file__)"
+
+The documentation workflow may finish before the GitHub Pages CDN and browser
+caches update.  If the workflow passed but ``/stable/`` still shows the prior
+release, wait a few minutes and retry the public versioned page, stable page,
+and ``switcher.json``.  If needed, inspect the canonical ``gh-pages`` branch to
+distinguish a deployment failure from propagation delay.
 
 
 .. _post-release:
@@ -269,12 +368,13 @@ Post-release
 
    * - ☐
      - Reconcile the released changelog back to ``main`` in a dedicated
-       changelog-only pull request.  Start from the current ``main`` branch
-       and run the ``.claude/skills/release-changelog`` skill using the dated
+       changelog-only pull request.  Start a dedicated feature branch from the
+       latest ``upstream/main`` and run the
+       ``.claude/skills/release-changelog`` skill using the dated
        ``[X.Y.Z] - YYYY-MM-DD`` section from ``release-X.Y`` and the current
        ``main`` changelog as inputs.  Preserve a fresh ``[Unreleased]`` section
-       for changes not shipped in ``X.Y.Z``; do not replace ``main``'s
-       changelog wholesale.  Target this pull request to ``main``.
+       and every post-cut entry not shipped in ``X.Y.Z``; do not replace
+       ``main``'s changelog wholesale.  Target this pull request to ``main``.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐
