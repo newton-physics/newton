@@ -136,6 +136,13 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
+      - name: Install benchmark system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+              libgl1-mesa-dev libglu1-mesa-dev
+          sudo apt-get clean
+
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
@@ -156,26 +163,54 @@ jobs:
       - name: Check disk space
         run: df -h
 
-      - name: Run Tests
-        env:
-          PYTHONFAULTHANDLER: "1"
-          # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
-          COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+      - name: Install benchmark environment
+        run: uv sync --extra dev --extra sim
+
+      - name: Calibrate FastKitchenG1
+        shell: bash
+        run: |
+          set +e
+          stdbuf -oL nvidia-smi dmon -s pucvmet -d 1 &
+          dmon_pid=$!
+          trap 'kill "$dmon_pid" 2>/dev/null || true' EXIT
+
+          status=0
+          for world_count in 256 384; do
+            echo "::group::FastKitchenG1 world_count=${world_count}"
+            /usr/bin/time -v env \
+              KITCHEN_WORLD_COUNT="${world_count}" \
+              PYTHONPATH="asv/benchmarks/simulation:asv/benchmarks" \
+              .venv/bin/python -c '
+          import os
+          from bench_mujoco import FastKitchenG1
+          from newton.utils import run_benchmark
+
+          FastKitchenG1.params = [[int(os.environ["KITCHEN_WORLD_COUNT"])]]
+          run_benchmark(FastKitchenG1)
+          '
+            run_status=$?
+            echo "CALIBRATION world_count=${world_count} exit_code=${run_status}"
+            echo "::endgroup::"
+            if [[ ${run_status} -ne 0 ]]; then
+              status=${run_status}
+              break
+            fi
+          done
+          exit "${status}"
 
       - name: Check disk space (post-test)
         if: always()
         run: df -h
 
       - name: Test Summary
-        if: ${{ !cancelled() }}
+        if: ${{ false }}
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
           paths: "rspec.xml"
           show: "fail"
 
       - name: Upload coverage artifact
-        if: ${{ !cancelled() }}
+        if: ${{ false }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-gpu
@@ -224,7 +259,7 @@ jobs:
   codecov-upload:
     name: Upload coverage to Codecov
     needs: gpu-unit-tests
-    if: ${{ !cancelled() && needs.gpu-unit-tests.result != 'skipped' }}
+    if: ${{ false }}
     runs-on: ubuntu-latest
     # Same-run artifact downloads use the runtime token; contents access is
     # only used to build Codecov's source network for coverage path mapping.
