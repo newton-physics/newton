@@ -349,7 +349,9 @@ class SchemaResolverPhysx(SchemaResolver):
                 for gain in ("ke", "kd")
             },
             **{
-                f"limit_trans{axis}_{gain}": "PhysxLimitAPI:linear" for axis in ("X", "Y", "Z") for gain in ("ke", "kd")
+                f"limit_{axis}_{gain}": f"PhysxLimitAPI:{axis}"
+                for axis in ("transX", "transY", "transZ")
+                for gain in ("ke", "kd")
             },
             **{
                 f"{axis}_{quantity}": f"PhysicsJointStateAPI:{axis}"

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from numbers import Real
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -44,14 +44,6 @@ class _MissingSchemaFallbackError(_SchemaFallbackError, RuntimeError):
 
 class _PXRValueGetterError(_SchemaFallbackError, TypeError):
     """A PXR-only resolver getter cannot consume source-neutral values."""
-
-
-class _FallbackPolicy(IntEnum):
-    AUDIT_LEGACY = 0
-    COMPOSED = 1
-
-
-_DEFAULT_FALLBACK_POLICY = _FallbackPolicy.AUDIT_LEGACY
 
 
 class PrimType(IntEnum):
@@ -94,6 +86,12 @@ class SchemaResolver:
         usd_value_transformer: Callable[[Any], Any] | None = None
         usd_value_getter: Callable[[Usd.Prim], Any] | None = None
         attribute_names: Sequence[str] = ()
+        _reader_value_getter: Callable[[Callable[[str], Any | None]], Any] | None = field(
+            default=None,
+            init=False,
+            repr=False,
+            compare=False,
+        )
 
     # mapping is a dictionary for known variables in Newton. Its purpose is to map USD attributes to existing Newton data.
     # PrimType -> Newton variable -> Attribute
@@ -176,9 +174,8 @@ class SchemaResolver:
     ) -> Any | None:
         spec = self.mapping.get(prim_type, {}).get(key)
         if spec is not None:
-            reader_value_getter = getattr(spec, "_reader_value_getter", None)
-            if reader_value_getter is not None:
-                v = reader_value_getter(read_attribute)
+            if spec._reader_value_getter is not None:
+                v = spec._reader_value_getter(read_attribute)
             elif spec.usd_value_getter is not None:
                 if legacy_prim is None:
                     schema_name = self._schema_name(prim_type, key)
@@ -306,14 +303,8 @@ def _registered_attribute_fallbacks(prim_definition: Any) -> dict[str, Any]:
 class _SchemaResolution:
     """Applied-schema resolution policy for one ordered resolver set."""
 
-    def __init__(
-        self,
-        resolvers: Sequence[SchemaResolver],
-        *,
-        fallback_policy: _FallbackPolicy | None = None,
-    ):
+    def __init__(self, resolvers: Sequence[SchemaResolver]):
         self._resolvers = tuple(resolvers)
-        self._fallback_policy = _DEFAULT_FALLBACK_POLICY if fallback_policy is None else fallback_policy
 
     def _mapping_fallback(self, resolver: SchemaResolver, prim_type: PrimType, key: str) -> Any:
         schema_name = resolver._schema_name(prim_type, key)
@@ -401,8 +392,8 @@ class SchemaResolverManager:
                 before importer defaults. Defaults to False.
         """
         self.resolvers = list(resolvers)
-        fallback_policy = _FallbackPolicy.COMPOSED if use_applied_schema_fallbacks else None
-        self._resolution = _SchemaResolution(self.resolvers, fallback_policy=fallback_policy)
+        self._use_applied_schema_fallbacks = use_applied_schema_fallbacks
+        self._resolution = _SchemaResolution(self.resolvers)
         self._pxr_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
         self._legacy_fallback_properties: set[str] = set()
         self._legacy_fallback_failures: set[str] = set()
@@ -449,7 +440,7 @@ class SchemaResolverManager:
 
     @property
     def _uses_composed_fallbacks(self) -> bool:
-        return self._resolution._fallback_policy == _FallbackPolicy.COMPOSED
+        return self._use_applied_schema_fallbacks
 
     def _get_value_with_policy(
         self,
@@ -551,6 +542,7 @@ class SchemaResolverManager:
         compare_resolver: bool,
         read_value: Callable[[SchemaResolver, str], Any | None] | None = None,
     ) -> None:
+        """Record properties whose legacy and composed resolution diverge."""
         if self._uses_composed_fallbacks:
             return
         if legacy_resolver is not None:

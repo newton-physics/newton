@@ -652,8 +652,22 @@ def parse_usd(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
+        value_cache: dict[int, Any | None] = {}
+
+        def read_value(resolver: SchemaResolver, _key: str) -> Any | None:
+            resolver_id = id(resolver)
+            if resolver_id not in value_cache:
+                value_cache[resolver_id] = resolver.get_value(prim, PrimType.JOINT, key)
+            return value_cache[resolver_id]
+
         if R._uses_composed_fallbacks:
-            resolved = R._resolve_value(prim, PrimType.JOINT, key, default=builder_default)
+            resolved = R._resolve_value(
+                prim,
+                PrimType.JOINT,
+                key,
+                default=builder_default,
+                read_value=read_value,
+            )
             if resolved.resolver is None or resolved.resolver.name != "mjc":
                 return resolved.value, "force"
             R._collect_on_first_use(resolved.resolver, prim)
@@ -677,6 +691,7 @@ def parse_usd(
                 value,
                 resolver,
                 compare_resolver=False,
+                read_value=read_value,
             )
             return value, source
 
@@ -690,9 +705,7 @@ def parse_usd(
                 if raw_value is None:
                     continue
                 R._collect_on_first_use(resolver, prim)
-                authored_value = (
-                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
-                )
+                authored_value = read_value(resolver, key)
                 if authored_value is not None:
                     return finish(authored_value, "mjc_authored", resolver)
                 mjc_default = _get_mjc_joint_limit_default(prim, key)
@@ -700,7 +713,7 @@ def parse_usd(
                     return finish(mjc_default, "mjc_authored", resolver)
                 return finish(builder_default, "mjc_authored", resolver)
 
-            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
+            authored_value = read_value(resolver, key)
             if authored_value is not None:
                 R._collect_on_first_use(resolver, prim)
                 return finish(authored_value, "force", resolver)
@@ -710,6 +723,27 @@ def parse_usd(
             if mjc_default is not None:
                 return finish(mjc_default, "mjc_default")
         return finish(builder_default, "force")
+
+    def _resolve_joint_velocity_limit(prim: Usd.Prim) -> float | None:
+        value = R.get_value(
+            prim,
+            prim_type=PrimType.JOINT,
+            key="velocity_limit",
+            default=None,
+            verbose=verbose,
+        )
+        if value != float("inf") or R._uses_composed_fallbacks:
+            return value
+        R._record_legacy_fallback(
+            prim,
+            PrimType.JOINT,
+            "velocity_limit",
+            None,
+            default_joint_velocity_limit,
+            None,
+            compare_resolver=False,
+        )
+        return None
 
     def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
         """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
@@ -1439,25 +1473,7 @@ def parse_usd(
         )
         joint_damping_authored = _joint_damping_usd is not None
         joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
-        joint_velocity_limit = R.get_value(
-            joint_prim,
-            prim_type=PrimType.JOINT,
-            key="velocity_limit",
-            default=None,
-            verbose=verbose,
-        )
-        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-        if joint_velocity_limit == float("inf") and not R._uses_composed_fallbacks:
-            R._record_legacy_fallback(
-                joint_prim,
-                PrimType.JOINT,
-                "velocity_limit",
-                None,
-                default_joint_velocity_limit,
-                None,
-                compare_resolver=False,
-            )
-            joint_velocity_limit = None
+        joint_velocity_limit = _resolve_joint_velocity_limit(joint_prim)
         limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
         limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
 
@@ -1984,20 +2000,7 @@ def parse_usd(
             )
             j_damping_authored = _j_damping_usd is not None
             j_damping = _j_damping_usd if j_damping_authored else default_joint_damping
-            j_velocity_limit = R.get_value(
-                jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
-            )
-            if j_velocity_limit == float("inf") and not R._uses_composed_fallbacks:
-                R._record_legacy_fallback(
-                    jp_prim,
-                    PrimType.JOINT,
-                    "velocity_limit",
-                    None,
-                    default_joint_velocity_limit,
-                    None,
-                    compare_resolver=False,
-                )
-                j_velocity_limit = None
+            j_velocity_limit = _resolve_joint_velocity_limit(jp_prim)
 
             limit_key = "limit_angular" if is_revolute else "limit_linear"
             j_newton_limit_ke = R.get_value(
@@ -4913,7 +4916,7 @@ def parse_usd(
             "pass use_applied_schema_fallbacks=True to adopt that behavior now, or author the intended values "
             "explicitly to preserve them.",
             DeprecationWarning,
-            stacklevel=2,
+            stacklevel=_external_stacklevel(),
         )
 
     return result

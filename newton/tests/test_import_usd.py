@@ -1666,8 +1666,9 @@ def Xform "Articulation" (
         builder.default_joint_cfg.velocity_limit = 123.0
         builder.default_joint_cfg.limit_ke = 7.0
         builder.default_joint_cfg.limit_kd = 8.0
-        with self.assertWarnsRegex(DeprecationWarning, "NewtonJointAPI"):
+        with self.assertWarnsRegex(DeprecationWarning, "NewtonJointAPI") as warning:
             builder.add_usd(stage)
+        self.assertEqual(warning.filename, __file__)
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
