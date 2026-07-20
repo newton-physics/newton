@@ -629,10 +629,12 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Scratch array for notify validation
         self._notify_violations = wp.empty(4, dtype=wp.int32, device=model.device)
 
-        # Scratch arrays for material update validation
-        self._material_update_first_shape = wp.empty(
-            self._model_kamino.materials.num_materials, dtype=wp.int32, device=model.device
+        # Cache one representative shape per material.
+        self._material_first_shape = self._kamino.compute_material_first_shape(
+            self._model_kamino.geoms.material,
+            self._model_kamino.materials.num_materials,
         )
+        # Scratch scalar for material update validation
         self._material_update_conflict = wp.empty(1, dtype=wp.int32, device=model.device)
 
         # Create a collision detector if enabled in the config, otherwise
@@ -1144,19 +1146,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         if not check_dof and not check_actuation:
             return
 
-        dim = max(self.model.joint_count, self.model.joint_dof_count)
-        if dim == 0:
-            return
-
-        sentinel = dim
-        dynamic_joint, limit_dof, actuation_joint, invalid_joint = self._kamino.validate_model_joint_updates(
-            model=self.model,
-            joints=self._model_kamino.joints,
-            built_limit_finite=self._built_limit_finite,
-            violations=self._notify_violations,
+        sentinel = self._kamino.validate_model_joint_updates(
+            self.model,
+            self._model_kamino.joints,
+            self._built_limit_finite,
+            self._notify_violations,
             check_dof=check_dof,
             check_actuation=check_actuation,
         )
+        dynamic_joint, limit_dof, actuation_joint, invalid_joint = self._notify_violations.numpy()
 
         if dynamic_joint != sentinel:
             joint = int(dynamic_joint)
@@ -1174,16 +1172,16 @@ class SolverKamino(SolverBase, CouplingInterface):
                 f"is not supported; recreate SolverKamino to apply the change."
             )
 
-        if invalid_joint != sentinel:
-            joint = int(invalid_joint)
-            raise ValueError(f"Unsupported joint target mode for joint {joint}")
-
         if actuation_joint != sentinel:
             joint = int(actuation_joint)
             raise RuntimeError(
                 f"Changing the actuation partition for joint {joint} "
                 f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
             )
+
+        if invalid_joint != sentinel:
+            joint = int(invalid_joint)
+            raise ValueError(f"Unsupported joint target mode for joint {joint}")
 
     def _update_actuation_types(self) -> None:
         """Refresh actuation modes without changing the passive/actuated layout."""
@@ -1215,10 +1213,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._kamino.convert_model_joint_transforms(self.model, self._model_kamino.joints)
 
     def _update_materials(self) -> None:
-        """Refresh Kamino contact-material tables from Newton shape materials."""
+        """Refresh Kamino contact-material tables using cached representative shapes."""
         self._kamino.convert_model_materials(
             self.model,
             self._model_kamino,
-            self._material_update_first_shape,
+            self._material_first_shape,
             self._material_update_conflict,
         )

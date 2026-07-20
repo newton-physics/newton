@@ -24,6 +24,7 @@ def _build_revolute(
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
     body_com: wp.vec3f | None = None,
     shape_materials: tuple[tuple[float, float], ...] | None = None,
+    has_shape_collision: bool = True,
 ) -> newton.Model:
     """Build a tiny world-to-body revolute model for notify tests."""
     builder = newton.ModelBuilder()
@@ -39,7 +40,14 @@ def _build_revolute(
         lock_inertia=True,
     )
     if shape_materials is None:
-        builder.add_shape_box(label="box", body=bid, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(
+            label="box",
+            body=bid,
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=has_shape_collision),
+        )
     else:
         for shape, (mu, restitution) in enumerate(shape_materials):
             builder.add_shape_box(
@@ -52,7 +60,11 @@ def _build_revolute(
                 hx=0.1,
                 hy=0.1,
                 hz=0.1,
-                cfg=newton.ModelBuilder.ShapeConfig(mu=mu, restitution=restitution),
+                cfg=newton.ModelBuilder.ShapeConfig(
+                    mu=mu,
+                    restitution=restitution,
+                    has_shape_collision=has_shape_collision,
+                ),
             )
 
     jid = builder.add_joint_revolute(
@@ -389,7 +401,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_shape_without_material_is_ignored(self):
         """Shapes without a Kamino material mapping do not modify material tables."""
-        model = _build_revolute(shape_materials=((0.2, 0.1),))
+        model = _build_revolute(shape_materials=((0.2, 0.1),), has_shape_collision=False)
         solver = SolverKamino(model)
         materials = solver._model_kamino.materials
         before = (
@@ -397,9 +409,8 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             materials.static_friction.numpy().copy(),
             materials.dynamic_friction.numpy().copy(),
         )
-        # Non-collidable shapes use -1 to indicate that they need no contact material;
-        # material updates must skip this sentinel instead of treating it as an array index.
-        solver._model_kamino.geoms.material.fill_(-1)
+        # Non-collidable shapes use -1 to indicate that they need no contact material.
+        np.testing.assert_array_equal(solver._model_kamino.geoms.material.numpy(), [-1])
         model.shape_material_mu.assign([0.7])
         model.shape_material_restitution.assign([0.8])
 

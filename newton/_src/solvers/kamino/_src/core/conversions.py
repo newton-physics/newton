@@ -126,9 +126,12 @@ def world_max_contacts_kernel(
 
 @wp.kernel
 def material_first_shape_kernel(
+    # Inputs:
     geom_material: wp.array[wp.int32],
+    # Outputs:
     first_shape: wp.array[wp.int32],
 ):
+    """Record the first shape index associated with each material."""
     shape = wp.tid()
     material = geom_material[shape]
     if material >= 0:
@@ -143,6 +146,7 @@ def validate_material_update_kernel(
     first_shape: wp.array[wp.int32],
     conflict_material: wp.array[wp.int32],
 ):
+    """Find the first material whose shapes have conflicting properties."""
     shape = wp.tid()
     material = geom_material[shape]
     if material < 0:
@@ -157,10 +161,12 @@ def validate_material_update_kernel(
 
 @wp.kernel
 def update_materials_kernel(
+    # Inputs:
     shape_friction: wp.array[wp.float32],
     shape_restitution: wp.array[wp.float32],
     first_shape: wp.array[wp.int32],
     shape_count: int,
+    # Outputs:
     restitution: wp.array[wp.float32],
     static_friction: wp.array[wp.float32],
     dynamic_friction: wp.array[wp.float32],
@@ -168,6 +174,10 @@ def update_materials_kernel(
     pair_static_friction: wp.array[wp.float32],
     pair_dynamic_friction: wp.array[wp.float32],
 ):
+    """Update Kamino material properties from cached representative shapes.
+
+    The material-zero properties are also copied to the default material pair.
+    """
     material = wp.tid()
     shape = first_shape[material]
     if shape < shape_count:
@@ -182,32 +192,28 @@ def update_materials_kernel(
 
 
 @wp.kernel
-def validate_joint_updates_kernel(
+def validate_joint_dof_updates_kernel(
+    # Inputs:
     joint_qd_start: wp.array[wp.int32],
     joint_armature: wp.array[wp.float32],
     joint_damping: wp.array[wp.float32],
     joint_target_ke: wp.array[wp.float32],
     joint_target_kd: wp.array[wp.float32],
-    joint_target_mode: wp.array[wp.int32],
+    num_dynamic_cts: wp.array[wp.int32],
     joint_limit_lower: wp.array[wp.float32],
     joint_limit_upper: wp.array[wp.float32],
     built_limit_finite: wp.array[wp.int32],
-    num_dynamic_cts: wp.array[wp.int32],
-    act_type: wp.array[wp.int32],
     joint_count: int,
     dof_count: int,
-    check_dynamic: int,
-    check_limits: int,
-    check_actuation: int,
+    # Outputs:
     violations: wp.array[wp.int32],
 ):
+    """Find the first structural change to joint degree-of-freedom properties."""
     tid = wp.tid()
-
-    if tid < joint_count and (check_dynamic != 0 or check_actuation != 0):
+    if tid < joint_count:
         dof_start = joint_qd_start[tid]
         dof_end = joint_qd_start[tid + 1]
-
-        if check_dynamic != 0 and joint_requires_dynamic_constraints(
+        if joint_requires_dynamic_constraints(
             dof_start,
             dof_end,
             joint_armature,
@@ -217,25 +223,43 @@ def validate_joint_updates_kernel(
         ) != (num_dynamic_cts[tid] > 0):
             wp.atomic_min(violations, 0, tid)
 
-        if check_actuation != 0:
-            current_actuation = joint_actuation_type_from_dofs(dof_start, dof_end, joint_target_mode)
-            if current_actuation < 0:
-                wp.atomic_min(violations, 3, tid)
-            elif (current_actuation == JointActuationType.PASSIVE) != (act_type[tid] == JointActuationType.PASSIVE):
-                wp.atomic_min(violations, 2, tid)
-
-    if tid < dof_count and check_limits != 0:
+    if tid < dof_count:
         current_finite = joint_limit_lower[tid] > JOINT_QMIN or joint_limit_upper[tid] < JOINT_QMAX
         if current_finite != (built_limit_finite[tid] != 0):
             wp.atomic_min(violations, 1, tid)
 
 
 @wp.kernel
-def update_joint_actuation_kernel(
+def validate_joint_actuation_updates_kernel(
+    # Inputs:
     joint_qd_start: wp.array[wp.int32],
     joint_target_mode: wp.array[wp.int32],
     act_type: wp.array[wp.int32],
+    # Outputs:
+    violations: wp.array[wp.int32],
 ):
+    """Find the first joint with an invalid or structurally changed actuation type."""
+    joint = wp.tid()
+    current_actuation = joint_actuation_type_from_dofs(
+        joint_qd_start[joint],
+        joint_qd_start[joint + 1],
+        joint_target_mode,
+    )
+    if current_actuation < 0:
+        wp.atomic_min(violations, 3, joint)
+    elif (current_actuation == JointActuationType.PASSIVE) != (act_type[joint] == JointActuationType.PASSIVE):
+        wp.atomic_min(violations, 2, joint)
+
+
+@wp.kernel
+def update_joint_actuation_kernel(
+    # Inputs:
+    joint_qd_start: wp.array[wp.int32],
+    joint_target_mode: wp.array[wp.int32],
+    # Outputs:
+    act_type: wp.array[wp.int32],
+):
+    """Update each joint's Kamino actuation type from its target modes."""
     joint = wp.tid()
     act_type[joint] = joint_actuation_type_from_dofs(
         joint_qd_start[joint],
@@ -772,15 +796,38 @@ def validate_model_joint_updates(
     joints: JointsModel,
     built_limit_finite: wp.array[wp.int32],
     violations: wp.array[wp.int32],
+    *,
     check_dof: bool,
     check_actuation: bool,
-) -> np.ndarray:
-    """Validate that runtime joint edits preserve Kamino's structural layout."""
+) -> int:
+    """Validate that runtime joint edits preserve Kamino's structural layout.
+
+    ``violations`` is a four-entry array containing the first index for each
+    violation type:
+       0: a joint whose dynamic-constraint topology changed
+       1: a DoF whose finite-limit state changed
+       2: a joint whose passive/actuated partition changed
+       3: a joint with an unsupported combination of target modes
+
+    An entry equal to the maximum of the joint and DoF counts indicates that no
+    violation of that type was found.
+
+    Args:
+        model: The Newton model to validate.
+        joints: The JointsModel to validate.
+        built_limit_finite: The built finite limit state for each DoF.
+        violations: The array to store the violations.
+        check_dof: Whether to check the DoF updates.
+        check_actuation: Whether to check the actuation updates.
+
+    Returns:
+        The sentinel value indicating no violations.
+    """
     dim = max(model.joint_count, model.joint_dof_count)
     violations.fill_(dim)
-    if dim > 0:
+    if check_dof and dim > 0:
         wp.launch(
-            kernel=validate_joint_updates_kernel,
+            kernel=validate_joint_dof_updates_kernel,
             dim=dim,
             inputs=[
                 # Inputs:
@@ -789,23 +836,33 @@ def validate_model_joint_updates(
                 model.joint_damping,
                 model.joint_target_ke,
                 model.joint_target_kd,
-                model.joint_target_mode,
+                joints.num_dynamic_cts,
                 model.joint_limit_lower,
                 model.joint_limit_upper,
                 built_limit_finite,
-                joints.num_dynamic_cts,
-                joints.act_type,
                 model.joint_count,
                 model.joint_dof_count,
-                int(check_dof),
-                int(check_dof),
-                int(check_actuation),
                 # Outputs:
                 violations,
             ],
             device=model.device,
         )
-    return violations.numpy()
+    if check_actuation and model.joint_count > 0:
+        wp.launch(
+            kernel=validate_joint_actuation_updates_kernel,
+            dim=model.joint_count,
+            inputs=[
+                # Inputs:
+                model.joint_qd_start,
+                model.joint_target_mode,
+                joints.act_type,
+                # Outputs:
+                violations,
+            ],
+            device=model.device,
+        )
+
+    return dim
 
 
 def convert_model_joint_actuation(model: Model, joints: JointsModel) -> None:
@@ -865,6 +922,38 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
     )
 
 
+def compute_material_first_shape(
+    geom_material: wp.array[wp.int32],
+    num_materials: int,
+) -> wp.array[wp.int32]:
+    """Compute the first shape associated with each fixed material ID.
+
+    Args:
+        geom_material: Material ID for each shape.
+        num_materials: Number of registered materials.
+
+    Returns:
+        Per-material shape indices. Materials without an associated shape use
+        the shape count as a sentinel.
+    """
+    shape_count = geom_material.shape[0]
+    first_shape = wp.empty(num_materials, dtype=wp.int32, device=geom_material.device)
+    first_shape.fill_(shape_count)
+    if shape_count > 0:
+        wp.launch(
+            kernel=material_first_shape_kernel,
+            dim=shape_count,
+            inputs=[
+                # Inputs:
+                geom_material,
+                # Outputs:
+                first_shape,
+            ],
+            device=geom_material.device,
+        )
+    return first_shape
+
+
 def convert_model_materials(
     model: Model,
     model_kamino: ModelKamino,
@@ -880,7 +969,7 @@ def convert_model_materials(
     Args:
         model: Newton model containing the updated shape materials.
         model_kamino: Kamino model whose material tables are updated.
-        first_shape: Per-material scratch array for selecting representative shapes.
+        first_shape: Cached first shape associated with each fixed material ID.
         conflict: Scratch scalar for reporting conflicting material updates.
 
     Raises:
@@ -888,19 +977,9 @@ def convert_model_materials(
             material properties and would require splitting that material.
     """
     materials = model_kamino.materials
-    first_shape.fill_(model.shape_count)
     conflict.fill_(materials.num_materials)
-    wp.launch(
-        kernel=material_first_shape_kernel,
-        dim=model.shape_count,
-        inputs=[
-            # Inputs:
-            model_kamino.geoms.material,
-            # Outputs:
-            first_shape,
-        ],
-        device=model.device,
-    )
+
+    # Check each shape against the cached representative for its material.
     wp.launch(
         kernel=validate_material_update_kernel,
         dim=model.shape_count,
@@ -923,6 +1002,7 @@ def convert_model_materials(
             "different friction or restitution values; recreate SolverKamino to split the material."
         )
 
+    # Once conflicts have been ruled out, update the material properties in place.
     wp.launch(
         kernel=update_materials_kernel,
         dim=materials.num_materials,

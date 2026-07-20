@@ -13,6 +13,7 @@ from .core.bodies import (
 )
 from .core.control import ControlKamino
 from .core.conversions import (
+    compute_material_first_shape,
     convert_model_joint_actuation,
     convert_model_joint_transforms,
     convert_model_materials,
@@ -45,6 +46,7 @@ __all__ = [
     "ModelKamino",
     "SolverKaminoImpl",
     "StateKamino",
+    "compute_material_first_shape",
     "convert_base_origin_to_com",
     "convert_body_com_to_origin",
     "convert_body_origin_to_com",
