@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import os
 import sys
 
@@ -214,6 +215,43 @@ class FastKitchenG1(_KpiBenchmark):
 
     def setup_cache(self):
         return self._collect_metrics()
+
+
+class _CalibrationKitchenG1(_KpiBenchmark):
+    """Temporary isolated calibration for replicated kitchen memory scaling."""
+
+    class _Metrics(dict):
+        def __init__(self, simulation_metrics, host_peak_rss_mib):
+            super().__init__(simulation_metrics)
+            self.host_peak_rss_mib = host_peak_rss_mib
+
+    num_frames = 50
+    robot = "g1"
+    timeout = 900
+    samples = 2
+    ls_iteration = 10
+    random_init = True
+    environment = "kitchen"
+
+    def setup_cache(self):
+        resource = importlib.import_module("resource")
+        simulation_metrics = self._collect_metrics()
+        host_peak_rss_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        return self._Metrics(simulation_metrics, host_peak_rss_mib)
+
+    def track_host_peak_rss(self, metrics, world_count):
+        return metrics.host_peak_rss_mib
+
+    track_host_peak_rss.unit = "MiB"
+
+
+# Separate classes make ASV release all process memory between world counts.
+class FastCalibrationKitchenG1Worlds256(_CalibrationKitchenG1):
+    params = [[256]]
+
+
+class FastCalibrationKitchenG1Worlds384(_CalibrationKitchenG1):
+    params = [[384]]
 
 
 if __name__ == "__main__":
