@@ -3276,6 +3276,8 @@ def parse_usd(
                     default=builder.default_shape_cfg.margin,
                     verbose=verbose,
                 )
+                if margin_val is None:
+                    margin_val = builder.default_shape_cfg.margin
                 gap_val = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,

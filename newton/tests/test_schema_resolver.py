@@ -91,6 +91,16 @@ class TestSchemaResolver(unittest.TestCase):
                     for name in spec.attribute_names or (spec.name,):
                         self.assertIn(name, _SCHEMA_FALLBACKS[schema_name], f"{schema_name}:{name}")
 
+    def test_builtin_physx_joint_velocity_fallback_matches_schema(self):
+        resolver = SchemaResolverPhysx()
+        fallback = SchemaResolverManager([resolver])._resolution._mapping_fallback(
+            resolver,
+            PrimType.JOINT,
+            "velocity_limit",
+        )
+
+        self.assertEqual(fallback, 1_000_000.0)
+
     def test_newton_owned_properties_have_registered_fallbacks(self):
         registry = Usd.SchemaRegistry()
         resolver = SchemaResolverNewton()
@@ -220,6 +230,25 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertIsNone(resolved.value)
         self.assertIsInstance(resolved.resolver, SchemaResolverPhysx)
         self.assertFalse(resolved.authored)
+
+    def test_composed_physx_engine_default_margin_uses_builder_default(self):
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().AddAppliedSchema("PhysxCollisionAPI")
+
+        builder = ModelBuilder()
+        builder.default_shape_cfg.margin = 0.125
+        result = builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_applied_schema_fallbacks=True,
+        )
+
+        shape = result["path_shape_map"]["/cube"]
+        self.assertEqual(builder.shape_margin[shape], builder.default_shape_cfg.margin)
 
     def test_applied_schema_fallbacks_follow_resolver_priority(self):
         stage = Usd.Stage.CreateInMemory()

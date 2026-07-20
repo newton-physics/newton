@@ -73,7 +73,7 @@ _SCHEMA_FALLBACKS: dict[str, dict[str, Any]] = {
     },
     "PhysxJointAPI": {
         "physxJoint:armature": 0.0,
-        "physxJoint:maxJointVelocity": float("inf"),
+        "physxJoint:maxJointVelocity": 1_000_000.0,
     },
     "PhysxConvexHullCollisionAPI": {
         "physxConvexHullCollision:hullVertexLimit": 64,
