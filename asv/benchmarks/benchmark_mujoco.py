@@ -562,8 +562,6 @@ class Example:
         nconmax=None,
         cone=None,
     ):
-        solver_iteration = solver_iteration if solver_iteration is not None else 100
-        ls_iteration = ls_iteration if ls_iteration is not None else 50
         solver = solver if solver is not None else ROBOT_CONFIGS[robot]["solver"]
         integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]
