@@ -29,6 +29,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
+from newton._src.usd.schema_resolver import _FallbackPolicy
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
@@ -1669,6 +1670,44 @@ def Xform "Articulation" (
         self.assertAlmostEqual(float(model.joint_damping.numpy()[dof]), 0.8)
         self.assertAlmostEqual(float(model.joint_friction.numpy()[dof]), 0.9)
         self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_composed_fallback_policy_covers_joint_special_cases(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateLowerLimitAttr().Set(-45.0)
+        joint.CreateUpperLimitAttr().Set(45.0)
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.armature = 0.7
+        builder.default_joint_cfg.damping = 0.8
+        builder.default_joint_cfg.friction = 0.9
+        builder.default_joint_cfg.velocity_limit = 123.0
+        builder.default_joint_cfg.limit_ke = 7.0
+        builder.default_joint_cfg.limit_kd = 8.0
+        with mock.patch(
+            "newton._src.usd.schema_resolver._DEFAULT_FALLBACK_POLICY",
+            _FallbackPolicy.COMPOSED,
+        ):
+            builder.add_usd(stage)
+        model = builder.finalize()
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+
+        self.assertEqual(float(model.joint_armature.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_damping.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_friction.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), float("inf"))
         self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
         self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
 

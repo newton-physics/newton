@@ -642,6 +642,17 @@ def parse_usd(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
+        if R._uses_composed_fallbacks:
+            resolved = R._resolve_value(prim, PrimType.JOINT, key, default=builder_default)
+            if resolved.resolver is None or resolved.resolver.name != "mjc":
+                return resolved.value, "force"
+            R._collect_on_first_use(resolved.resolver, prim)
+            if not resolved.authored:
+                spec = resolved.resolver.mapping[PrimType.JOINT][key]
+                if usd.get_attribute(prim, spec.name) is not None:
+                    return builder_default, "mjc_authored"
+            source = "mjc_authored" if resolved.authored else "mjc_default"
+            return builder_default if resolved.value is None else resolved.value, source
 
         def finish(
             value: float,
@@ -1426,7 +1437,7 @@ def parse_usd(
             verbose=verbose,
         )
         # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-        if joint_velocity_limit == float("inf"):
+        if joint_velocity_limit == float("inf") and not R._uses_composed_fallbacks:
             R._record_legacy_fallback(
                 joint_prim,
                 PrimType.JOINT,
@@ -1966,7 +1977,7 @@ def parse_usd(
             j_velocity_limit = R.get_value(
                 jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
-            if j_velocity_limit == float("inf"):
+            if j_velocity_limit == float("inf") and not R._uses_composed_fallbacks:
                 R._record_legacy_fallback(
                     jp_prim,
                     PrimType.JOINT,

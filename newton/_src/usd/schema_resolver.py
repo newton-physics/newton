@@ -30,6 +30,14 @@ if TYPE_CHECKING:
 _MISSING_FALLBACK = object()
 
 
+class _FallbackPolicy(IntEnum):
+    AUDIT_LEGACY = 0
+    COMPOSED = 1
+
+
+_DEFAULT_FALLBACK_POLICY = _FallbackPolicy.AUDIT_LEGACY
+
+
 class PrimType(IntEnum):
     """Enumeration of USD prim types that can be resolved by schema resolvers."""
 
@@ -268,8 +276,14 @@ def _collect_attrs_by_namespace(prim: Usd.Prim, namespaces: Sequence[str]) -> di
 class _SchemaResolution:
     """Applied-schema resolution policy for one ordered resolver set."""
 
-    def __init__(self, resolvers: Sequence[SchemaResolver]):
+    def __init__(
+        self,
+        resolvers: Sequence[SchemaResolver],
+        *,
+        fallback_policy: _FallbackPolicy | None = None,
+    ):
         self._resolvers = tuple(resolvers)
+        self._fallback_policy = _DEFAULT_FALLBACK_POLICY if fallback_policy is None else fallback_policy
 
     def _mapping_fallback(self, resolver: SchemaResolver, prim_type: PrimType, key: str) -> Any:
         schema_name = resolver._schema_name(prim_type, key)
@@ -341,7 +355,12 @@ class SchemaResolverManager:
     Manager for resolving multiple USD schemas in a priority order.
     """
 
-    def __init__(self, resolvers: Sequence[SchemaResolver]):
+    def __init__(
+        self,
+        resolvers: Sequence[SchemaResolver],
+        *,
+        _fallback_policy: _FallbackPolicy | None = None,
+    ):
         """
         Initialize resolver manager with resolver instances in priority order.
 
@@ -349,7 +368,7 @@ class SchemaResolverManager:
             resolvers: List of instantiated resolvers in priority order.
         """
         self.resolvers = list(resolvers)
-        self._resolution = _SchemaResolution(self.resolvers)
+        self._resolution = _SchemaResolution(self.resolvers, fallback_policy=_fallback_policy)
         self._pxr_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
         self._legacy_fallback_properties: set[str] = set()
 
@@ -381,8 +400,7 @@ class SchemaResolverManager:
         Returns:
             Resolved value according to the precedence above.
         """
-        value, resolver = self._get_legacy_value(prim, prim_type, key, default)
-        self._record_legacy_fallback(prim, prim_type, key, default, value, resolver, compare_resolver=False)
+        value, _ = self._get_value_with_policy(prim, prim_type, key, default, compare_resolver=False)
         self._report_missing(prim, prim_type, key, value, verbose)
         return value
 
@@ -390,9 +408,39 @@ class SchemaResolverManager:
         self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
     ) -> tuple[Any, SchemaResolver | None]:
         """Resolve a value and return the resolver that supplied it."""
-        value, resolver = self._get_legacy_value(prim, prim_type, key, default)
-        self._record_legacy_fallback(prim, prim_type, key, default, value, resolver, compare_resolver=True)
+        value, resolver = self._get_value_with_policy(prim, prim_type, key, default, compare_resolver=True)
         self._report_missing(prim, prim_type, key, value, verbose)
+        return value, resolver
+
+    @property
+    def _uses_composed_fallbacks(self) -> bool:
+        return self._resolution._fallback_policy == _FallbackPolicy.COMPOSED
+
+    def _get_value_with_policy(
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any,
+        *,
+        compare_resolver: bool,
+    ) -> tuple[Any, SchemaResolver | None]:
+        if self._uses_composed_fallbacks:
+            resolved = self._resolve_value(prim, prim_type, key, default=default)
+            if resolved.resolver is not None:
+                self._collect_on_first_use(resolved.resolver, prim)
+            return resolved.value, resolved.resolver
+
+        value, resolver = self._get_legacy_value(prim, prim_type, key, default)
+        self._record_legacy_fallback(
+            prim,
+            prim_type,
+            key,
+            default,
+            value,
+            resolver,
+            compare_resolver=compare_resolver,
+        )
         return value, resolver
 
     def _get_legacy_value(
@@ -452,6 +500,8 @@ class SchemaResolverManager:
         *,
         compare_resolver: bool,
     ) -> None:
+        if self._uses_composed_fallbacks:
+            return
         if legacy_resolver is not None:
             for resolver in self.resolvers:
                 if resolver is legacy_resolver:

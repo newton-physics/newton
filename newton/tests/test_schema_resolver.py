@@ -43,7 +43,7 @@ import warp as wp
 
 from newton import Model, ModelBuilder
 from newton._src.usd._schema_fallbacks import _SCHEMA_FALLBACKS
-from newton._src.usd.schema_resolver import SchemaResolverManager
+from newton._src.usd.schema_resolver import SchemaResolverManager, _FallbackPolicy
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.usd import (
@@ -130,6 +130,18 @@ class TestSchemaResolver(unittest.TestCase):
 
         stiffness.Set(7.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 7.0)
+
+    def test_composed_fallback_policy_selects_schema_default(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("PhysxLimitAPI:angular")
+        resolver = SchemaResolverManager(
+            [SchemaResolverPhysx()],
+            _fallback_policy=_FallbackPolicy.COMPOSED,
+        )
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 0.0)
+        self.assertFalse(resolver._legacy_fallback_properties)
 
     def test_applied_schema_fallbacks_follow_resolver_priority(self):
         stage = Usd.Stage.CreateInMemory()
