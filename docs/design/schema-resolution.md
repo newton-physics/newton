@@ -10,8 +10,8 @@ Status: design proposal
 Newton's schema resolvers currently read `Usd.Prim` objects, transform raw
 attributes, choose between configured schemas, and provide mapping defaults.
 Some source-sensitive precedence remains in `import_usd.py`. This couples the
-resolution policy to the PXR importer and prevents other populated scene
-representations from reusing the same behavior.
+resolution policy to the PXR importer and prevents scene representations that
+do not expose PXR prims from reusing the same behavior.
 
 This proposal separates attribute access from scalar resolution while keeping
 the current `ModelBuilder.add_usd()` construction path and resolver behavior by
@@ -33,13 +33,14 @@ functions, and direct ModelBuilder buffer population are deliberately deferred.
 - Let callers override or extend the fallback catalog for other schema versions.
 - Keep the external mechanism small and hide resolver definitions and storage.
 - Make the scalar contract suitable for later columnar and Warp execution.
-- Allow ovnewton to adopt the resolver without changing its current build loop.
+- Let non-PXR scene consumers reuse the resolver without changing their
+  construction loops.
 
 ## Non-goals
 
 - Changing canonical USDPhysics discovery, topology, or geometry parsing.
 - Replacing `ModelBuilder.add_*()` with direct array construction.
-- Defining an ovstage column layout or public batch API.
+- Defining an external scene representation or public batch API.
 - Making arbitrary downstream resolver definitions device-capable.
 - Introducing a scene intermediate representation.
 
@@ -82,7 +83,7 @@ fallback(schema_name, attribute_name) -> raw USD value or missing
 
 The PXR adapter reads authored values and applied/type metadata, then asks
 `Usd.SchemaRegistry` for the composed prim definition and its attribute
-fallbacks. A populated source provides already-composed values and recorded
+fallbacks. A non-PXR source provides already-composed values and recorded
 schema identity; the resolver uses Newton's private fallback catalog. Resolver
 priority, transformations, and selected-source provenance are shared. If an
 applied schema owns a requested property but neither the registry nor catalog
@@ -167,16 +168,16 @@ The first implementation does not move every higher-level rule out of
 material-versus-shape contact precedence, and legacy margin handling migrate in
 small behavior-preserving changes after the common scalar engine is established.
 
-## Ovnewton migration
+## Non-PXR source integration
 
-Ovnewton supplies populated columns plus `usd-schemas` and `usd-prim-type`
-identity to the facade inside its existing body, shape, and joint loops. It uses
-Newton's built-in fallback catalog, so it owns no schema-default table. Its
-topology discovery, ordering, and `ModelBuilder.add_*()` calls remain unchanged.
-Equivalent local precedence and conversion code is removed as each entity
-family moves to the shared engine.
+A schema-aware scene source supplies attribute values plus typed and applied
+schema identities to the facade inside its existing body, shape, and joint
+loops. It uses Newton's built-in fallback catalog, so it owns no schema-default
+table. Topology discovery, ordering, and `ModelBuilder.add_*()` calls remain
+source concerns. Equivalent local precedence and conversion code can be
+removed as each entity family moves to the shared engine.
 
-A populated source must preserve the USD fallback semantics expected by the
+A non-PXR source must preserve the USD fallback semantics expected by the
 resolver. A source that substitutes an engine descriptor default for a USD
 fallback cannot provide exact parity for that property without provenance or a
 source-contract change. Any temporary value normalization belongs in the source
@@ -213,20 +214,20 @@ host to report after execution. Diagnostic representation is not public.
 - Registered Newton schema fallbacks match the catalog exactly.
 - Legacy PXR-only callbacks continue to work and fail explicitly through the
   source-neutral facade.
-- Later ovnewton differential tests compare final builder/model fields against
+- Later cross-source tests compare final builder/model fields against
   `add_usd()` for the same asset.
 
 ## Alternatives
 
-### Duplicate the mappings in ovnewton
+### Duplicate mappings in each scene integration
 
 This keeps the implementations independent but guarantees semantic drift and
 duplicates every future schema fix.
 
-### Make ovnewton construct temporary USD prims
+### Construct temporary USD prims in non-PXR integrations
 
 This retains the current resolver but restores the PXR dependency and defeats
-the populated-stage architecture.
+the source-neutral boundary.
 
 ### Standardize a scene IR first
 
@@ -247,7 +248,7 @@ contracts exist. An opaque facade leaves those choices open.
 3. Add an explicit `add_usd()` opt-in to the engine.
 4. Expose the opt-in opaque facade and source-neutral tests.
 5. Move higher-level `add_usd()` resolver policy into shared entity helpers.
-6. Adopt those helpers incrementally in ovnewton.
+6. Adopt those helpers incrementally in non-PXR scene integrations.
 7. Design batch column binding and ModelBuilder reservation separately.
 
 ## Open questions
