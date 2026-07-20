@@ -78,8 +78,7 @@ feature branch and changelog-only PR:
 
 1. Fetch the canonical remote and create the feature branch from the latest
    `upstream/main`, not from the release branch.
-2. Use the final tag as the source of truth. Before tagging, use
-   `upstream/release-X.Y` temporarily.
+2. Use the final tag as the source of truth.
 3. Keep `## [Unreleased]` first and preserve all post-cut entries not shipped
    in the release. Do not replace the whole file with the release-branch copy.
 4. Insert the finalized release section immediately below `[Unreleased]` and
@@ -87,8 +86,6 @@ feature branch and changelog-only PR:
    the same user-facing change is not recorded twice.
 5. Verify that only `CHANGELOG.md` changes, the dated section matches the final
    tag, and older released sections remain unchanged.
-
-If another maintainer owns the merge-back, coordinate on the existing PR.
 
 ## Checks
 
