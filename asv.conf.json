@@ -15,11 +15,9 @@
   "default_benchmark_timeout": 600,
   "build_command": ["python -m build --wheel -o {build_cache_dir} {build_dir}"],
   "install_command": [
-    "python -m pip install -U numpy",
-    "python -m pip install -U --pre warp-lang==1.15.0.dev20260626 --index-url=https://pypi.nvidia.com/",
-    "python -m pip install -U mujoco==3.10.0",
-    "python -m pip install -U mujoco-warp==3.10.0.1",
-    "python -m pip install -U torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130",
-    "in-dir={env_dir} python -m pip install {wheel_file}[dev]"
+    "in-dir={env_dir} python -m pip install {wheel_file}[dev] --extra-index-url=https://pypi.nvidia.com/",
+    "in-dir={env_dir} python -m pip install {wheel_file}[sim] warp-lang==1.16.0.dev20260716 mujoco==3.10.0 mujoco-warp==3.10.0.2 --extra-index-url=https://pypi.nvidia.com/",
+    "python -m pip install torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130",
+    "python -m pip check"
   ]
 }

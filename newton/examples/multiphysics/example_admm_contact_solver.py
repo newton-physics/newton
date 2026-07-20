@@ -49,7 +49,7 @@ class Example:
         self.track_gap = args.test
         self.particle_radius = 0.025
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         (
             self.falling_particles_a,
             self.falling_particles_b,

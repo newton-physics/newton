@@ -111,7 +111,9 @@ _ROW_COLORS = (
 
 
 def build_friction_grid(device, mus, angles_deg):
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for row, mu in enumerate(mus):
@@ -218,7 +220,9 @@ def build_stopping_distance_scene(device):
     give effective mu = (mu_box + mu_patch) / 2. Per-box patches keep the
     effective mu equal to the per-box value.
     """
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for i, mu in enumerate(STOPPING_MUS):

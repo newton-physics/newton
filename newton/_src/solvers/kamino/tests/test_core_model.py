@@ -675,9 +675,9 @@ class TestModelConversions(unittest.TestCase):
         )
         builder_newton.add_shape_box(label="box2", body=bid2, hx=0.05, hy=0.05, hz=0.05)
 
-        # Fix body 0 to world
+        # Add free joint to body 0
         if with_base_joint:
-            builder_newton.add_joint_fixed(
+            builder_newton.add_joint_free(
                 label="world_to_body0",
                 parent=-1,
                 child=bid0,

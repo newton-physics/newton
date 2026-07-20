@@ -976,7 +976,6 @@ def parse_mjcf(
                 mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
-                assert len(geom_size) == 3, "need to specify size for mesh geom"
 
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
@@ -1373,11 +1372,11 @@ def parse_mjcf(
 
         show_colliders = should_show_collider(
             force_show_colliders,
-            has_visual_shapes=len(visuals) > 0 and parse_visuals,
+            model_has_visual_shapes=True,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
         )
 
-        parse_shapes(
+        collider_shape_indices = parse_shapes(
             defaults,
             body_name,
             link,
@@ -1387,6 +1386,7 @@ def parse_mjcf(
             incoming_xform=incoming_xform,
             label_prefix=label_prefix,
         )
+        collider_shapes.extend(collider_shape_indices)
 
         return visual_shape_indices
 
@@ -1836,7 +1836,11 @@ def parse_mjcf(
             joint_label_name = "_".join(joint_name)
             joint_label = f"{body_label_path}/{joint_label_name}"
             if joint_type == JointType.FREE:
-                assert parent == -1, "Free joints must have the world body as parent"
+                if parent != -1:
+                    raise ValueError(
+                        f"Free joints must have the world body as parent; "
+                        f"joint '{joint_label}' on body '{body_label_path}' has parent body index {parent}."
+                    )
                 joint_idx = builder.add_joint_free(
                     link,
                     label=joint_label,
@@ -1934,14 +1938,27 @@ def parse_mjcf(
             com = inertial_frame.p
             if inertial_attrib.get("diaginertia") is not None:
                 diaginertia = parse_vec(inertial_attrib, "diaginertia", (0.0, 0.0, 0.0))
+                if len(diaginertia) != 3:
+                    raise ValueError(
+                        f"MJCF diaginertia for body '{body_label_path}' must contain 3 values; got {len(diaginertia)}."
+                    )
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = diaginertia[0] * scale**2
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
                 fullinertia = inertial_attrib.get("fullinertia")
-                assert fullinertia is not None
+                if fullinertia is None:
+                    raise ValueError(
+                        f"MJCF inertial element for body '{body_label_path}' must define "
+                        "either diaginertia or fullinertia."
+                    )
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
+                if fullinertia.shape[0] != 6:
+                    raise ValueError(
+                        f"MJCF fullinertia for body '{body_label_path}' must contain 6 values; "
+                        f"got {fullinertia.shape[0]}."
+                    )
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = fullinertia[0] * scale**2
                 I_m[1, 1] = fullinertia[1] * scale**2
@@ -2300,6 +2317,7 @@ def parse_mjcf(
     # start articulation
 
     visual_shapes = []
+    collider_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
@@ -2356,7 +2374,7 @@ def parse_mjcf(
         # `parse_visuals_as_colliders=True` apply uniformly to worldbody
         # geoms too (not just geoms inside bodies).
 
-        _process_body_geoms(
+        world_visual_shapes = _process_body_geoms(
             geoms=world.findall("geom"),
             defaults=world_defaults,
             body_name="world",
@@ -2364,6 +2382,7 @@ def parse_mjcf(
             incoming_xform=xform,
             label_prefix=root_label_path,
         )
+        visual_shapes.extend(world_visual_shapes)
 
         if parse_sites:
             _parse_sites_impl(
@@ -2991,6 +3010,10 @@ def parse_mjcf(
         parse_actuators(actuator_section)
 
     # -----------------
+
+    if not visual_shapes:
+        for shape_idx in collider_shapes:
+            builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
 
     end_shape_count = len(builder.shape_type)
 
