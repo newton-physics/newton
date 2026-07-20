@@ -131,33 +131,30 @@ class Simulation:
 
     Construct with :func:`load_usd` and advance with :func:`step`. All fields are public;
     external control is opt-in by writing into ``control`` or ``state.body_f`` between steps.
-
-    Attributes:
-        stage: The USD stage the simulation was derived from.
-        model: The finalized :class:`newton.Model`.
-        solvers: Solvers driving the simulation; ``solvers[0]`` is exposed as :attr:`solver`.
-        state: Current simulation state, updated in place by :func:`step`.
-        control: Control inputs applied on the next :func:`step`.
-        contacts: Contacts used by Newton's collision pipeline, or ``None`` when the solver
-            handles collision internally.
-        dt: Simulation timestep [s], resolved from the scene.
-        collision_interval: Number of steps between contact re-detection.
-        usd_info: Metadata returned by :meth:`newton.ModelBuilder.add_usd`.
-        time: Accumulated simulation time [s].
-        step_count: Number of steps taken so far.
     """
 
     stage: Usd.Stage
+    """The USD stage the simulation was derived from."""
     model: newton.Model
+    """The finalized :class:`newton.Model`."""
     solvers: list[SolverBase]
+    """Solvers driving the simulation; ``solvers[0]`` is exposed as :attr:`solver`."""
     state: newton.State
+    """Current simulation state, updated in place by :func:`step`."""
     control: newton.Control
+    """Control inputs applied on the next :func:`step`."""
     contacts: newton.Contacts | None
+    """Contacts used by Newton's collision pipeline, or ``None`` when the solver handles collision internally."""
     dt: float
+    """Simulation timestep [s], resolved from the scene."""
     collision_interval: int
+    """Number of steps between contact re-detection."""
     usd_info: dict
+    """Metadata returned by :meth:`newton.ModelBuilder.add_usd`."""
     time: float = 0.0
+    """Accumulated simulation time [s]."""
     step_count: int = 0
+    """Number of steps taken so far."""
     _graphs: tuple | None = field(default=None, repr=False)
 
     @property
@@ -191,7 +188,11 @@ def load_usd(source: str | Usd.Stage, *, requires_grad: bool = False, use_graph:
     entry = _resolve_solver_entry(scene_prim)
 
     builder = newton.ModelBuilder()
-    entry.cls.register_custom_attributes(builder)
+    if entry.cls is SolverVBD:
+        # Dahl cable friction stays off unless the stage authors positive values.
+        entry.cls.register_custom_attributes(builder, dahl_defaults_enabled=False)
+    else:
+        entry.cls.register_custom_attributes(builder)
     usd_info = builder.add_usd(
         stage,
         schema_resolvers=[
@@ -246,7 +247,7 @@ def _maybe_capture(sim: Simulation, use_graph: bool | None) -> None:
             graph_no_collide = capture2.graph
     except RuntimeError:
         if use_graph:
-            raise  # capture explicitly requested but unsupported
+            raise
         return
     if capture.graph is None:
         return

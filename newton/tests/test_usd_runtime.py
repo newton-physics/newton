@@ -294,12 +294,18 @@ class TestUsdRuntime(unittest.TestCase):
                 self.assertTrue(np.isfinite(sim.state.body_q.numpy()).all())
                 self.assertEqual(sim.step_count, 10)
 
+    def _load_with_capture(self, runtime, stage):
+        try:
+            return runtime.load_usd(stage, use_graph=True)
+        except RuntimeError:
+            self.skipTest("graph capture unsupported on this device")
+
     def test_capture_does_not_advance_sim(self):
         import warp as wp  # noqa: PLC0415
 
         import newton.usd.runtime as runtime  # noqa: PLC0415
 
-        sim_graph = runtime.load_usd(_make_stage(), use_graph=True)
+        sim_graph = self._load_with_capture(runtime, _make_stage())
         sim_plain = runtime.load_usd(_make_stage(), use_graph=False)
         self.assertEqual(sim_graph.time, 0.0)
         self.assertEqual(sim_graph.step_count, 0)
@@ -311,7 +317,7 @@ class TestUsdRuntime(unittest.TestCase):
     def test_graph_and_direct_trajectories_match(self):
         import newton.usd.runtime as runtime  # noqa: PLC0415
 
-        sim_graph = runtime.load_usd(_make_stage(), use_graph=True)
+        sim_graph = self._load_with_capture(runtime, _make_stage())
         sim_plain = runtime.load_usd(_make_stage(), use_graph=False)
         for _ in range(50):
             runtime.step(sim_graph)
@@ -324,7 +330,7 @@ class TestUsdRuntime(unittest.TestCase):
         import newton.usd.runtime as runtime  # noqa: PLC0415
 
         attrs = {"newton:collisionInterval": (Sdf.ValueTypeNames.Int, 4)}
-        sim_graph = runtime.load_usd(_make_stage(scene_attrs=attrs), use_graph=True)
+        sim_graph = self._load_with_capture(runtime, _make_stage(scene_attrs=attrs))
         sim_plain = runtime.load_usd(_make_stage(scene_attrs=attrs), use_graph=False)
         self.assertIsNotNone(sim_graph._graphs)
         self.assertIsNotNone(sim_graph._graphs[0])
