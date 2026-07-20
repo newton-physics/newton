@@ -35,7 +35,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.enums import JointTargetMode
+from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
 from ..solvers.mujoco.constants import (
     SOLREF_MODE_FORCE_SPACE,
@@ -1276,6 +1276,7 @@ def parse_usd(
         prim: Usd.Prim,
         xform: wp.transform,
         label: str,
+        body_qd: wp.spatial_vector,
         articulation_root_xform: wp.transform | None = None,
         is_kinematic: bool = False,
     ) -> int:
@@ -1291,6 +1292,7 @@ def parse_usd(
             is_kinematic=is_kinematic,
             custom_attributes=body_custom_attrs,
         )
+        builder.body_qd[b] = body_qd
         path_body_map[label] = b
         if load_sites or load_visual_shapes:
             for child in prim.GetChildren():
@@ -1306,7 +1308,7 @@ def parse_usd(
     ) -> int | dict[str, Any]:
         """Parses a rigid body description.
         If `add_body_to_builder` is True, adds it to the builder and returns the resulting body index.
-        Otherwise returns a dictionary of body data that can be passed to ModelBuilder.add_body()."""
+        Otherwise returns deferred arguments for the local `add_body` helper."""
         nonlocal path_body_map
         nonlocal physics_scene_prim
 
@@ -1320,6 +1322,12 @@ def parse_usd(
         path = str(prim.GetPath())
 
         is_kinematic = rigid_body_desc.kinematicBody
+        linear_velocity = wp.transform_vector(origin, wp.vec3(*rigid_body_desc.linearVelocity))
+        angular_velocity = wp.transform_vector(
+            origin,
+            DegreesToRadian * wp.vec3(*rigid_body_desc.angularVelocity),
+        )
+        body_qd = wp.spatial_vector(*linear_velocity, *angular_velocity)
 
         if add_body_to_builder:
             return add_body(
@@ -1328,6 +1336,7 @@ def parse_usd(
                 path,
                 articulation_root_xform=articulation_root_xform,
                 is_kinematic=is_kinematic,
+                body_qd=body_qd,
             )
         else:
             result = {
@@ -1335,6 +1344,7 @@ def parse_usd(
                 "xform": origin,
                 "label": path,
                 "is_kinematic": is_kinematic,
+                "body_qd": body_qd,
             }
             if articulation_root_xform is not None:
                 result["articulation_root_xform"] = articulation_root_xform
@@ -4037,6 +4047,38 @@ def parse_usd(
                 else:
                     builder.add_articulation([joint_id], label=body_path)
 
+    def initialize_free_joint_velocities() -> None:
+        imported_bodies = set(path_body_map.values())
+        for joint_id, joint_type in enumerate(builder.joint_type):
+            if joint_type != JointType.FREE:
+                continue
+            child = builder.joint_child[joint_id]
+            if child not in imported_bodies:
+                continue
+
+            child_qd = builder.body_qd[child]
+            linear_velocity = wp.spatial_top(child_qd)
+            angular_velocity = wp.spatial_bottom(child_qd)
+            parent = builder.joint_parent[joint_id]
+            parent_xform = builder.joint_X_p[joint_id]
+            if parent >= 0:
+                parent_xform = builder.body_q[parent] * parent_xform
+                parent_qd = builder.body_qd[parent]
+                parent_angular_velocity = wp.spatial_bottom(parent_qd)
+                child_com = wp.transform_point(builder.body_q[child], builder.body_com[child])
+                parent_com = wp.transform_point(builder.body_q[parent], builder.body_com[parent])
+                parent_linear_velocity = wp.spatial_top(parent_qd) + wp.cross(
+                    parent_angular_velocity, child_com - parent_com
+                )
+                linear_velocity -= parent_linear_velocity
+                angular_velocity -= parent_angular_velocity
+
+            parent_rotation = wp.transform_get_rotation(parent_xform)
+            linear_velocity = wp.quat_rotate_inv(parent_rotation, linear_velocity)
+            angular_velocity = wp.quat_rotate_inv(parent_rotation, angular_velocity)
+            qd_start = builder.joint_qd_start[joint_id]
+            builder.joint_qd[qd_start : qd_start + 6] = [*linear_velocity, *angular_velocity]
+
     # Build deformables (cables/cloth/volume) after rigid bodies, their collider-mass computation,
     # and the floating-body base-joint pass above. The importer wraps each cable into its own
     # articulation, so building deformables last keeps those articulations after any
@@ -4447,6 +4489,8 @@ def parse_usd(
             )
             if old_label is not None and old_label in new_label_to_idx:
                 path_joint_map[path] = new_label_to_idx[old_label]
+
+    initialize_free_joint_velocities()
 
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)

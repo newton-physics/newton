@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from collections import Counter
 from enum import IntFlag, auto
 
@@ -239,6 +240,36 @@ devices = get_cuda_test_devices(mode="basic")
 
 
 class TestCollisionPipeline(unittest.TestCase):
+    def test_model_collision_helpers_deprecated(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            contacts = model.contacts(collision_pipeline=pipeline)
+            returned_contacts = model.collide(state, contacts, collision_pipeline=pipeline)
+
+        self.assertIs(returned_contacts, contacts)
+        self.assertIs(model._collision_pipeline, pipeline)
+        self.assertEqual(len(caught), 2)
+        self.assertTrue(all(item.category is DeprecationWarning for item in caught))
+        self.assertTrue(all(item.filename == __file__ for item in caught))
+        self.assertIn("pipeline.contacts()", str(caught[0].message))
+        self.assertIn("pipeline.collide(state, contacts)", str(caught[1].message))
+
+    def test_deprecated_model_collide_allocates_contacts(self):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+
+        with self.assertWarnsRegex(DeprecationWarning, r"pipeline\.collide"):
+            contacts = model.collide(model.state())
+
+        self.assertIsInstance(contacts, newton.Contacts)
+
     def test_soft_contact_max_zero_disables_soft_contact_generation(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane()
@@ -262,6 +293,31 @@ class TestCollisionPipeline(unittest.TestCase):
 
         self.assertEqual(disabled_contacts.soft_contact_max, 0)
         self.assertEqual(int(disabled_contacts.soft_contact_count.numpy()[0]), 0)
+
+
+def test_collision_pipeline_first_call_capture(test, device):
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+    builder.add_shape_sphere(body, radius=1.0)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state = model.state()
+
+    with wp.ScopedCapture(device=device) as capture:
+        pipeline.collide(state, contacts)
+
+    wp.capture_launch(capture.graph)
+    test.assertGreater(contacts.rigid_contact_count.numpy()[0], 0)
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_collision_pipeline_first_call_capture",
+    test_collision_pipeline_first_call_capture,
+    devices=get_cuda_test_devices(mode="basic"),
+)
 
 
 # Collision pipeline tests - now supports both MESH and CONVEX_MESH
@@ -1362,9 +1418,11 @@ class TestParticleShapeContacts(unittest.TestCase):
         builder.add_world(shape_builder)
         model = builder.finalize(device="cpu")
 
-        contacts = model.collide(model.state())
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
 
-        self.assertEqual(model._collision_pipeline.soft_rigid_contact_pair_count, 0)
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 0)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
 
     def test_global_shape_contacts_particles_in_all_worlds(self):
@@ -1377,10 +1435,11 @@ class TestParticleShapeContacts(unittest.TestCase):
         builder.add_world(particle_builder)
         model = builder.finalize(device="cpu")
 
-        contacts = model.contacts()
-        model.collide(model.state(), contacts)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
 
-        self.assertEqual(model._collision_pipeline.soft_rigid_contact_pair_count, 2)
+        self.assertEqual(pipeline.soft_rigid_contact_pair_count, 2)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 2)
 
 
