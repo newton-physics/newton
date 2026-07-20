@@ -407,7 +407,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 solver.reset(state=state, config=reset_config)
 
                 # Advanced reset with custom configuration
-                # E.g. here, set custom actuator coords and base pose, and reset velocities to their defaults
+                # E.g. here, set custom actuator coords and base pose, and reset velocities to default (=zero)
                 reset_config = newton.solvers.SolverKamino.ResetConfig(
                     body_poses=newton.solvers.SolverKamino.ResetConfig.FromActuatorQ(new_actuator_coords),
                     body_velocities=newton.solvers.SolverKamino.ResetConfig.ToDefault(),
@@ -419,7 +419,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         @dataclass(frozen=True)
         class ToDefault:
-            """Reset option, to reset to initial pose and velocity values."""
+            """Reset option, to reset to default values (e.g., initial pose and zero velocity)."""
 
         @dataclass(frozen=True)
         class Preserve:
@@ -509,7 +509,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         Reset option for body velocities:
 
-        - ToDefault: reset velocities to their initial values.
+        - ToDefault: reset velocities to zero.
         - Preserve: if body poses are preserved, preserve velocities in the state container, assuming
           they are consistent. Otherwise, behaves like FromJointU, transferring current joint velocities
           in the state container, to the extent possible, to the new body poses.

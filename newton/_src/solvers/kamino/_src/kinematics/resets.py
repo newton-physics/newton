@@ -485,7 +485,6 @@ def _reset_joints_state_from_bodies_state(
 def _reset_body_velocities(
     # Inputs
     body_world_id: wp.array[wp.int32],
-    body_u_0: wp.array[wp.spatial_vectorf],
     world_mask: wp.array[wp.bool],
     # Outputs
     body_u: wp.array[wp.spatial_vectorf],
@@ -498,7 +497,8 @@ def _reset_body_velocities(
     if not world_mask[wid]:
         return
 
-    body_u[body_id] = body_u_0[body_id]
+    # Reset velocities to zero
+    body_u[body_id] = wp.spatial_vectorf(0.0)
 
 
 @wp.kernel
@@ -914,7 +914,7 @@ def reset_body_velocities(
     world_mask: wp.array[wp.bool],
 ):
     """
-    Reset body velocities in the state to their initial values.
+    Reset body velocities in the state to zero.
 
     Args:
         model: Kamino model.
@@ -924,7 +924,7 @@ def reset_body_velocities(
     wp.launch(
         _reset_body_velocities,
         dim=model.size.sum_of_num_bodies,
-        inputs=[model.bodies.wid, model.bodies.u_i_0, world_mask, state.u_i],
+        inputs=[model.bodies.wid, world_mask, state.u_i],
         device=model.device,
     )
 
