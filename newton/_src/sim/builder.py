@@ -6335,6 +6335,8 @@ class ModelBuilder:
         if cfg.has_shape_collision:
             # no contacts between shapes of the same body
             for same_body_shape in self.body_shapes[body]:
+                if not self.shape_flags[same_body_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
                 self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
@@ -6384,11 +6386,15 @@ class ModelBuilder:
                 if not self.joint_collision_filter_parent[joint_idx]:
                     continue
                 for parent_shape in self.body_shapes[parent_body]:
+                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                        continue
                     self.add_shape_collision_filter_pair(parent_shape, shape)
             for child_body, joint_idx in self.joint_children.get(body, ()):
                 if not self.joint_collision_filter_parent[joint_idx]:
                     continue
                 for child_shape in self.body_shapes[child_body]:
+                    if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                        continue
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
@@ -8043,7 +8049,11 @@ class ModelBuilder:
                             # Already filtered by add_joint_cable(collision_filter_parent=True).
                             continue
                         for si in self.body_shapes.get(bi, []):
+                            if not self.shape_flags[si] & ShapeFlags.COLLIDE_SHAPES:
+                                continue
                             for sj in self.body_shapes.get(bj, []):
+                                if not self.shape_flags[sj] & ShapeFlags.COLLIDE_SHAPES:
+                                    continue
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
 
         return edge_bodies, all_joints
