@@ -108,8 +108,9 @@ Code freeze and release branch creation
    :header-rows: 0
 
    * - ☐
-     - Create and push ``release-X.Y`` from the current ``upstream/main``;
-       record the branch point.
+     - Fetch ``upstream/main`` immediately before creating ``release-X.Y``,
+       then create and push the branch from that ref.  Verify and record the
+       branch point.
    * - ☐
      - On **main**: bump the version in ``pyproject.toml`` to ``X.(Y+1).0.dev0`` and run
        ``uv run docs/generate_api.py``, then regenerate ``uv.lock`` (``uv lock``).
