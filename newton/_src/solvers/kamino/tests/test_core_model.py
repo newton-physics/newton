@@ -470,39 +470,42 @@ class TestModelConversions(unittest.TestCase):
         ]
         test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino, excluded=excluded)
 
-    def test_05_model_conversions_base_assignment_non_free_root(self):
+    def test_05_model_conversions_base_assignment_non_floating_root(self):
         """
-        Test per-world base assignment when articulations have non-free root joints.
+        Test per-world base assignment when articulation roots are not unary free joints.
 
         A free-rooted articulation following a fixed-rooted one still provides the
-        world's floating base without warning; a world whose only articulation is
-        fixed-rooted gets no base and warns that floating base resets are disabled.
+        world's floating base without warning; a world whose articulations are
+        fixed-rooted or rooted by a free joint with a body parent gets no base and
+        warns that floating base resets are disabled.
         """
 
-        def build_model(with_free_articulation: bool) -> Model:
+        def build_model(free_root: str | None) -> Model:
             builder: ModelBuilder = ModelBuilder()
             SolverKamino.register_custom_attributes(builder)
             body_fixed = builder.add_link()
             builder.add_shape_box(body_fixed)
             joint_fixed = builder.add_joint_fixed(parent=-1, child=body_fixed)
             builder.add_articulation([joint_fixed])
-            if with_free_articulation:
+            if free_root is not None:
                 body_free = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()))
                 builder.add_shape_box(body_free)
-                joint_free = builder.add_joint_free(child=body_free)
+                parent = -1 if free_root == "world" else body_fixed
+                joint_free = builder.add_joint_free(child=body_free, parent=parent)
                 builder.add_articulation([joint_free])
             return builder.finalize(device=self.default_device)
 
         with self.assertNoLogs(level="WARNING"):
-            model_kamino = ModelKamino.from_newton(build_model(with_free_articulation=True))
+            model_kamino = ModelKamino.from_newton(build_model(free_root="world"))
         self.assertEqual(model_kamino.info.base_body_index.numpy().tolist(), [1])
         self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [1])
 
-        with self.assertLogs(level="WARNING") as logs:
-            model_kamino = ModelKamino.from_newton(build_model(with_free_articulation=False))
-        self.assertTrue(any("non-free joint as root" in message for message in logs.output))
-        self.assertEqual(model_kamino.info.base_body_index.numpy().tolist(), [-1])
-        self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [-1])
+        for free_root in (None, "body"):
+            with self.assertLogs(level="WARNING") as logs:
+                model_kamino = ModelKamino.from_newton(build_model(free_root=free_root))
+            self.assertTrue(any("not a free joint attached to the world" in message for message in logs.output))
+            self.assertEqual(model_kamino.info.base_body_index.numpy().tolist(), [-1])
+            self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [-1])
 
     def test_10_model_conversions_arbitrary_axis(self):
         """
