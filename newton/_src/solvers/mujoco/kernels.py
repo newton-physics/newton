@@ -418,6 +418,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_damping: wp.array[wp.float32],
     rigid_contact_friction: wp.array[wp.float32],
     shape_margin: wp.array[float],
+    shape_material_kf: wp.array[float],
+    opt_impratio_invsqrt: wp.array[float],
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array[wp.int32],
     # Mujoco warp contacts
@@ -625,6 +627,24 @@ def convert_newton_contacts_to_mjwarp_kernel(
                     friction[3],
                     friction[4],
                 )
+
+        # Newton kf is a force-space friction damping [N·s/m]; MuJoCo friction rows
+        # are velocity-level and realize f = D*(aref - A*f), so the slope is
+        # D*beta/(1+D*A). Choosing beta = kf*(1/D + A) with MuJoCo's A ~= invweight0
+        # approximation makes the slope kf below the Coulomb limit (elliptic
+        # cones only — pyramidal never reads solreffriction). Differs from the
+        # static-targeting FORCE_SPACE ke/kd block, where f = D*aref is exact.
+        # Standard (timeconst, dampratio) format so refsafe bounds large kf at
+        # the stability limit; dampratio only feeds the zero position term.
+        if shape_material_kf:
+            kf1 = shape_material_kf[shape_a]
+            kf2 = shape_material_kf[shape_b]
+            if kf1 > 0.0 and kf2 > 0.0:
+                kf = mix * kf1 + (1.0 - mix) * kf2
+                invw = body_invweight0[worldid, mj_body_a][0] + body_invweight0[worldid, mj_body_b][0]
+                ir = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+                imp = solimp[1]
+                solreffriction = wp.vec2(2.0 / (kf * invw * ((1.0 - imp) * ir * ir + imp)), 1.0)
 
         cid = wp.atomic_add(nacon_out, 0, 1)
         if cid >= naconmax:
