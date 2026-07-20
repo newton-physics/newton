@@ -12,37 +12,27 @@ changes, dependency constraints, and migration guidance.
 
 ## Workflow
 
-1. Protect released history before doing anything else. Resolve the latest
-   stable tag, diff its `CHANGELOG.md` against the working ref, and inspect
-   every hunk beneath any dated `## [X.Y.Z]` header. Treat any later addition,
-   removal, rewording, or move inside a released section as misfiled until
-   proven intentional. This commonly happens when a PR written before the
-   release lands afterward and inserts its entry beneath the former
-   `[Unreleased]` categories, which now belong to `X.Y.Z`. Move such entries to
-   the current `[Unreleased]` section before continuing. Only change released
-   history for a deliberate correction with explicit maintainer approval.
+1. Protect released history first. Diff `CHANGELOG.md` from the latest stable
+   tag and inspect every hunk under a dated version header. Move late PR entries
+   accidentally added to a released section into the current `[Unreleased]`
+   section. Change released history only with explicit maintainer approval.
 2. Identify the release ref and comparison base. For final releases, use the
    final tag or release branch. For RC prep, use the latest RC tag as temporary
    ground truth and verify against the previous released tag.
 3. Read the current `CHANGELOG.md` section being edited, the release audit if
    one exists, and PRs behind unclear entries. Do not rely only on commit
    subjects for migration guidance.
-4. Check completeness against every merged change from the previous GA or
-   micro release through the release ref, including fixes merged during RC
-   stabilization. Compare the commit and PR range with both the release audit
-   and the current changelog; add user-visible changes that were missed.
+4. Check completeness from the previous GA or micro release through the release
+   ref, including RC fixes. Compare the range with the release audit and add
+   missed user-visible changes.
 5. Preserve information. Rephrase, split, merge, and regroup entries only when
    the facts remain intact. Ask before deleting information, omitting a
    questionable entry, or downgrading a user-visible change to silence.
-6. Keep the changelog detail-oriented and use the existing canonical
-   Keep-a-Changelog categories (`Added`, `Changed`, `Deprecated`, `Removed`,
-   `Fixed`). Do not add a separate upgrade-notes or release-summary block;
-   release notes and announcements carry the summary, while migration and
-   retesting guidance belongs in the affected changelog entries.
-7. Within each category, group related entries by user-facing feature area or
-   migration theme when simple reordering improves readability. Derive those
-   groups from the current release instead of carrying subsystem examples from
-   an older release forward.
+6. Use the existing Keep-a-Changelog categories (`Added`, `Changed`,
+   `Deprecated`, `Removed`, `Fixed`). Keep migration and retesting guidance in
+   the affected entries; release notes carry the summary.
+7. Within each category, group entries by the current release's user-facing
+   feature areas or migration themes when this improves readability.
 8. Remove exact and semantic duplicates within the release, not only identical
    wording. If a feature and a fix for that feature both landed during the same
    release cycle, consolidate the entries around the final user-visible
@@ -83,26 +73,22 @@ changes, dependency constraints, and migration guidance.
 
 ## Post-release reconciliation
 
-After a release branch finalizes its changelog, merge that release section back
-to `main` through a dedicated feature branch and a changelog-only PR:
+Merge a release branch's finalized changelog back to `main` through a dedicated
+feature branch and changelog-only PR:
 
 1. Fetch the canonical remote and create the feature branch from the latest
    `upstream/main`, not from the release branch.
-2. Treat the final tag (or `upstream/release-X.Y` before the tag is available)
-   as the source of truth for the complete `## [X.Y.Z] - YYYY-MM-DD` section.
-3. Keep a fresh `## [Unreleased]` section as the first version header on
-   `main`. Preserve every post-cut entry not shipped in the release under the
-   correct category; do not replace the whole file with the release-branch
-   copy.
+2. Use the final tag as the source of truth. Before tagging, use
+   `upstream/release-X.Y` temporarily.
+3. Keep `## [Unreleased]` first and preserve all post-cut entries not shipped
+   in the release. Do not replace the whole file with the release-branch copy.
 4. Insert the finalized release section immediately below `[Unreleased]` and
    keep shipped entries only in that dated section. Resolve semantic overlap so
    the same user-facing change is not recorded twice.
-5. Verify the PR changes only `CHANGELOG.md`, the dated section matches the
-   final tag, and older released sections remain unchanged.
+5. Verify that only `CHANGELOG.md` changes, the dated section matches the final
+   tag, and older released sections remain unchanged.
 
-If another maintainer is already preparing the merge-back, do not create a
-competing changelog edit. Confirm the current `upstream/main` and coordinate on
-the existing branch or PR instead.
+If another maintainer owns the merge-back, coordinate on the existing PR.
 
 ## Checks
 
@@ -115,9 +101,6 @@ rg -n "removed|removal|deprecated|will be removed|in favor of|use .* instead|ren
 git diff -- CHANGELOG.md
 ```
 
-Review every changelog hunk since the latest release tag and confirm none lands
-inside that or any older released section. Then review the release range for
-missing entries and the working diff for accidental deletion, semantic
-duplicates within or across release sections, stale fixed-version removal
-targets, and upgrade-impact entries that lack migration guidance or a PR
-reference.
+Confirm that no new hunk lands in a released section, then check for missing or
+duplicate entries, accidental deletions, stale removal targets, and missing
+migration guidance or PR references.

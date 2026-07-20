@@ -51,14 +51,9 @@ what users should know. Do not reproduce the full changelog; link to it.
    consumer-relevant items. Omit CI, workflow, README layout, release-link
    pinning, and other internal/docs polish unless the user explicitly asks or it
    affects library users.
-8. Before the final tag, keep a review-ready draft based on the latest release
-   branch. After the tag is pushed, refresh the draft against the final tag so
-   late RC fixes, dependency versions, changelog anchors, and PR references are
-   not stale.
-9. The tag-triggered release workflow creates a draft GitHub Release. Inspect
-   its current body and draft state before editing it; do not assume a local
-   release-notes file is newer. Publish only after the final artifact and links
-   have been verified according to `docs/guide/release.rst`.
+8. Keep a review-ready release-branch draft. After tagging, refresh it against
+   the final tag and inspect the workflow-created draft GitHub Release. Publish
+   only after verifying the final artifact and links per `docs/guide/release.rst`.
 
 ## Linking Rules
 
@@ -113,9 +108,7 @@ what users should know. Do not reproduce the full changelog; link to it.
 - For patch releases, say whether the release is intended to be API-compatible
   with the previous patch/minor when that is true.
 - Avoid em dashes in rendered prose.
-- Keep raw Markdown soft-wrapped: use one physical line per paragraph and per
-  list item. Do not hard-wrap prose at a fixed column; let GitHub, gist, and
-  local viewers wrap it to their window width.
+- Keep raw Markdown soft-wrapped: use one physical line per paragraph and list item; let viewers wrap it to their window width.
 
 ## Dependency Updates
 
