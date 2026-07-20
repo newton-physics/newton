@@ -19,11 +19,13 @@
 ### Fixed
 
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
+- Fix `SchemaResolverPhysx` reading every D6 translational limit gain from the `linear` instance instead of its `transX`, `transY`, or `transZ` instance.
 - Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
 - Fix builder merging (`ModelBuilder.add_builder()`, `add_world()`, `replicate()`) offsetting negative reference sentinels in custom attribute values stored as NumPy or Warp integer scalars.
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Report malformed MJCF free-joint and inertial inputs with deterministic validation errors, and ignore MJCF mesh geom `size` lengths consistently.
 - Fix Style3D solver divergence caused by isolated vertices.
+- Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
