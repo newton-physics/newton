@@ -124,7 +124,7 @@ class TestKinematicLinks(unittest.TestCase):
         sim_dt = 1.0 / 60.0
         applied_wrench = np.array([200.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
-        builder = ModelBuilder(gravity=0.0)
+        builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
@@ -257,7 +257,7 @@ def _configure_contact_defaults(builder: ModelBuilder) -> None:
 
 
 def _build_contact_pair(shape_a: str, shape_b: str) -> newton.Model:
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     def add_sphere(kind: str, x: float) -> None:
@@ -299,7 +299,7 @@ def _rigid_contact_count(
 
 
 def _build_free_root_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     kinematic_body = builder.add_body(
@@ -324,7 +324,7 @@ def _build_free_root_scene(device):
 
 
 def _build_revolute_root_pendulum_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     root = builder.add_link(mass=1.0, is_kinematic=True, label="kinematic_root")
@@ -368,7 +368,7 @@ def _build_revolute_root_pendulum_scene(device):
 
 
 def _build_fixed_root_scene(device):
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _configure_contact_defaults(builder)
 
     static_body = builder.add_link(
@@ -644,7 +644,7 @@ def test_kinematic_runtime_toggle(
     sim_dt = 1.0 / 240.0
     phase_steps = 60
 
-    builder = ModelBuilder(gravity=0.0)
+    builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,

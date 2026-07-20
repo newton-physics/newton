@@ -1383,13 +1383,14 @@ def eval_articulation_inverse_dynamics_force_kernel(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],
     articulation_count: int,
+    articulation_mask: wp.array[bool],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_qd_start: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     body_q: wp.array[wp.transform],
-    H: wp.array3d[float],
-    qddot: wp.array[float],
+    mass_matrix: wp.array3d[float],
+    joint_qdd: wp.array[float],
     coriolis_force: wp.array[float],
     gravity_force: wp.array[float],
     # outputs
@@ -1397,15 +1398,12 @@ def eval_articulation_inverse_dynamics_force_kernel(
 ):
     """Compute the manipulator-equation joint force per articulation.
 
-    Evaluates ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)`` per DOF, with the
-    ``M(q)*qddot`` term taken from ``H @ qddot`` and the bias terms from the
-    values :func:`eval_inverse_dynamics` populates into
-    :attr:`InverseDynamics.coriolis_force` and
-    :attr:`InverseDynamics.gravity_force`.
+    Evaluates ``tau = M(q)*joint_qdd + C(q,q_dot)*q_dot + g(q)`` per DOF,
+    with the mass-matrix term and bias terms supplied explicitly.
 
-    For any FREE/DISTANCE joint, ``H`` is in the joint's parent frame while the
-    bias terms are in world frame, so the six ``H @ qddot`` components are
-    rotated to world before summing.
+    For any FREE/DISTANCE joint, the mass matrix is in the joint's parent frame
+    while the bias terms are in world frame, so the six ``M @ joint_qdd``
+    components are rotated to world before summing.
 
     Per-articulation DOF counts are recovered from ``joint_qd_start``, so a
     mix of fixed-root (1+ internal DOFs) and floating-root (6 root DOFs +
@@ -1421,17 +1419,24 @@ def eval_articulation_inverse_dynamics_force_kernel(
     dof_start = joint_qd_start[joint_start]
     dof_end = joint_qd_start[joint_end]
     dof_count = dof_end - dof_start
+    gap_end = joint_qd_start[articulation_start[art_idx + 1]]
 
-    # Mass-matrix term M(q)*qddot, stored into tau as scratch.
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            for k in range(dof_start, gap_end):
+                tau[k] = float(0.0)
+            return
+
+    # Mass-matrix term M(q)*joint_qdd, stored into tau as scratch.
     for i in range(dof_count):
         sum_val = float(0.0)
         for j in range(dof_count):
-            sum_val += H[art_idx, i, j] * qddot[dof_start + j]
+            sum_val += mass_matrix[art_idx, i, j] * joint_qdd[dof_start + j]
         tau[dof_start + i] = sum_val
 
     # Rotate every FREE/DISTANCE wrench from parent frame to world so it
-    # matches the world-frame bias terms. H @ qddot is conjugate to the
-    # parent-frame qddot convention used internally; coriolis_force and
+    # matches the world-frame bias terms. M @ joint_qdd is conjugate to the
+    # parent-frame joint_qdd convention used internally; coriolis_force and
     # gravity_force already use the world-frame CoM-wrench convention of
     # Control.joint_f. Any FREE/DISTANCE joint in the articulation tree
     # (not only the root) needs this rotation.
@@ -1461,7 +1466,6 @@ def eval_articulation_inverse_dynamics_force_kernel(
     # articulation start). Non-empty when loop-closing joints carry
     # generalized coordinates; articulation_start has a sentinel entry so
     # art_idx + 1 is always in bounds.
-    gap_end = joint_qd_start[articulation_start[art_idx + 1]]
     for k in range(dof_end, gap_end):
         tau[k] = float(0.0)
 
@@ -1469,62 +1473,101 @@ def eval_articulation_inverse_dynamics_force_kernel(
 def eval_inverse_dynamics_force(
     model: Model,
     state: State,
-    H: wp.array3d[wp.float32],
-    qddot: wp.array[wp.float32],
+    *,
+    mass_matrix: wp.array3d[wp.float32],
+    joint_qdd: wp.array[wp.float32],
     coriolis_force: wp.array[wp.float32],
     gravity_force: wp.array[wp.float32],
-    tau: wp.array[wp.float32],
+    joint_f: wp.array[wp.float32],
+    mask: wp.array[bool] | None = None,
 ) -> None:
-    """Evaluate the manipulator-equation joint force ``tau = M(q)*qddot + C(q,q_dot)*q_dot + g(q)``.
+    """Evaluate ``tau = M(q)*joint_qdd + C(q,q_dot)*q_dot + g(q)``.
 
     Combines a per-articulation mass-matrix-times-acceleration product with
     the Coriolis and gravity forces to produce the full joint force
-    required to realize ``qddot`` at the current ``(q, q_dot)`` under
-    gravity, writing the result into ``tau`` in place. The two force
-    inputs follow the standard manipulator-equation sign convention
+    required to realize ``joint_qdd`` at the current ``(q, q_dot)`` under
+    gravity, writing the result to ``joint_f`` in place. The two force inputs
+    follow the standard manipulator-equation sign convention
     (``+C(q,q_dot)*q_dot`` and ``+g(q) = +∂U/∂q``, the buffers populated by
-    :func:`eval_inverse_dynamics`) and are added directly. Per-articulation
-    DOF counts are recovered from :attr:`Model.joint_qd_start`, so a mix of
-    fixed-root and floating-root articulations across multiple worlds is
-    handled uniformly.
+    :func:`~newton.eval_inverse_dynamics_passive`) and are added directly.
+    Per-articulation DOF counts are recovered from
+    :attr:`~newton.Model.joint_qd_start`, so a mix of fixed-root and
+    floating-root articulations across multiple worlds is handled uniformly.
 
-    For any FREE/DISTANCE joint in the articulation tree the mass matrix ``H``
-    is expressed in the joint's parent frame while
-    ``coriolis_force``/``gravity_force`` are in the world-frame CoM-wrench
-    convention of :attr:`Control.joint_f`; each such joint's ``H @ qddot``
-    wrench is rotated to world (using ``state.body_q`` for the
-    parent-frame-in-world rotation) before the sum, so ``tau`` is entirely in
-    that world convention.
+    For any FREE/DISTANCE joint in the articulation tree, the mass matrix in
+    ``mass_matrix`` is expressed in the joint's parent frame while the bias
+    forces are in the world-frame CoM-wrench convention of
+    :attr:`~newton.Control.joint_f`. Each such joint's
+    mass-matrix-times-acceleration wrench is rotated to world (using
+    ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
+    ``joint_f`` is entirely in that world convention.
+
+    :attr:`~newton.JointType.CABLE` joints are not supported because their DOF
+    slots are constraints rather than generalized coordinates for this
+    inverse-dynamics formulation.
+
+    .. experimental::
 
     Args:
         model: The model containing articulation definitions.
         state: State providing ``body_q``, used to rotate the FREE/DISTANCE
-            root ``H @ qddot`` wrench into the world frame. Must be consistent
-            with the ``H`` and bias buffers (i.e. the state passed to
-            :func:`eval_inverse_dynamics`).
-        H: Joint-space mass matrix ``M(q)`` [kg, kg·m, or kg·m^2, depending
-            on the joint types of the row/column DOFs], shape
-            ``(articulation_count, max_dofs_per_articulation,
-            max_dofs_per_articulation)``, dtype float, typically produced
-            by :func:`eval_mass_matrix`.
-        qddot: Joint accelerations [m/s^2 or rad/s^2, depending on joint
-            type], shape ``(joint_dof_count,)``, dtype float.
-        coriolis_force: Coriolis force ``C(q, q_dot)*q_dot`` [N or N·m,
-            depending on joint type], shape ``(joint_dof_count,)``, dtype
-            float, e.g. :attr:`InverseDynamics.coriolis_force`.
+            root mass-matrix-times-acceleration wrench into the world frame.
+            Must be consistent with the mass-matrix and bias-force buffers in
+            this call (i.e. the state passed to
+            :func:`~newton.eval_inverse_dynamics_passive`).
+        mass_matrix: Joint-space mass matrix, shape
+            ``(model.articulation_count, model.max_dofs_per_articulation,
+            model.max_dofs_per_articulation)``, dtype float. Entry units depend
+            on the row and column DOF types: [kg] for two translational DOFs,
+            [kg·m] for mixed translational/rotational DOFs, and [kg·m²] for two
+            rotational DOFs.
+        joint_qdd: Generalized joint accelerations [m/s² or rad/s²,
+            depending on joint type], shape ``(model.joint_dof_count,)``,
+            dtype float.
+        coriolis_force: Coriolis + centrifugal force
+            ``C(q, q_dot)*q_dot`` [N or N·m, depending on joint type], shape
+            ``(model.joint_dof_count,)``, dtype float.
         gravity_force: Gravity force ``g(q) = ∂U/∂q`` [N or N·m, depending
-            on joint type], shape ``(joint_dof_count,)``, dtype float,
-            e.g. :attr:`InverseDynamics.gravity_force`.
-        tau: Output joint forces [N or N·m, depending on joint type],
-            shape ``(joint_dof_count,)``, dtype float, written in place.
-            Typically :attr:`InverseDynamics.tau`.
+            on joint type], shape ``(model.joint_dof_count,)``, dtype float.
+        joint_f: Output generalized joint force :math:`\tau` [N or N·m,
+            depending on joint type], shape ``(model.joint_dof_count,)``,
+            dtype float. Uses the same layout and convention as
+            :attr:`~newton.Control.joint_f`.
+        mask: Optional ``wp.array[bool]`` of shape
+            ``(articulation_count,)`` selecting which articulations to
+            compute. Unselected joint-force entries are zeroed without
+            reading their mass-matrix, acceleration, or bias-force inputs.
+
+    Raises:
+        ValueError: If the model contains a :attr:`~newton.JointType.CABLE`
+            joint or an input, output, or mask has an unexpected shape.
     """
+    if model._has_cable_joints:  # pyright: ignore[reportPrivateUsage]
+        raise ValueError("eval_inverse_dynamics_force() does not support JointType.CABLE joints.")
+
     if model.articulation_count == 0:
         return
 
-    expected_shape = (model.joint_dof_count,)
-    if tau.shape != expected_shape:
-        raise ValueError(f"tau has shape {tau.shape}, expected {expected_shape}.")
+    expected_dof_shape = (model.joint_dof_count,)
+    expected_mass_matrix_shape = (
+        model.articulation_count,
+        model.max_dofs_per_articulation,
+        model.max_dofs_per_articulation,
+    )
+    if mass_matrix.shape != expected_mass_matrix_shape:
+        raise ValueError(f"mass_matrix has shape {mass_matrix.shape}, expected {expected_mass_matrix_shape}.")
+    for name, array in (
+        ("joint_qdd", joint_qdd),
+        ("coriolis_force", coriolis_force),
+        ("gravity_force", gravity_force),
+        ("joint_f", joint_f),
+    ):
+        if array.shape != expected_dof_shape:
+            raise ValueError(f"{name} has shape {array.shape}, expected {expected_dof_shape}.")
+
+    expected_mask_shape = (model.articulation_count,)
+    if mask is not None and mask.shape != expected_mask_shape:
+        raise ValueError(f"mask has shape {mask.shape}, expected {expected_mask_shape}.")
 
     wp.launch(
         kernel=eval_articulation_inverse_dynamics_force_kernel,
@@ -1533,17 +1576,18 @@ def eval_inverse_dynamics_force(
             model.articulation_start,
             model.articulation_end,
             model.articulation_count,
+            mask,
             model.joint_type,
             model.joint_parent,
             model.joint_qd_start,
             model.joint_X_p,
             state.body_q,
-            H,
-            qddot,
+            mass_matrix,
+            joint_qdd,
             coriolis_force,
             gravity_force,
         ],
-        outputs=[tau],
+        outputs=[joint_f],
         device=model.device,
     )
 

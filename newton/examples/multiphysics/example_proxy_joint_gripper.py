@@ -62,7 +62,7 @@ class Example:
         if hasattr(self.viewer, "set_camera"):
             self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
         SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
         builder.default_particle_radius = 0.01

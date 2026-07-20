@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sensors.warp_raytrace.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID
 from newton.sensors import SensorTiledCamera
 
 
@@ -118,6 +119,27 @@ class TestSensorTiledCamera(unittest.TestCase):
             fix_top=True,
         )
         builder.add_particle(pos=wp.vec3(0.0, 0.0, -2.0), vel=wp.vec3(0.0), mass=1.0, radius=0.25)
+        return builder.finalize(device="cpu")
+
+    @staticmethod
+    def _build_soft_grid_scene() -> newton.Model:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_soft_grid(
+            pos=wp.vec3(-0.1, -0.1, -2.1),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            dim_z=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            cell_z=0.1,
+            density=1000.0,
+            k_mu=1.0,
+            k_lambda=1.0,
+            k_damp=0.0,
+            particle_radius=0.25,
+        )
         return builder.finalize(device="cpu")
 
     @staticmethod
@@ -261,12 +283,54 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         self.assertGreater(depth_image.numpy()[0, 0, 0, 0], 0.0)
 
+    def test_forward_depth_image_matches_utility(self) -> None:
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -5.0), q=wp.quat_identity()))
+        builder.add_shape_box(body, hx=10.0, hy=10.0, hz=0.1, color=(0.25, 0.5, 0.75))
+        model = builder.finalize(device="cpu")
+
+        sensor = SensorTiledCamera(model=model)
+        width, height = 5, 5
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(90.0))
+        depth_image = sensor.utils.create_depth_image_output(width, height)
+        forward_depth_image = sensor.utils.create_forward_depth_image_output(width, height)
+
+        state = model.state()
+        sensor.update(
+            state,
+            camera_transforms,
+            camera_rays,
+            depth_image=depth_image,
+            forward_depth_image=forward_depth_image,
+        )
+
+        converted_depth = sensor.utils.convert_ray_depth_to_forward_depth(depth_image, camera_transforms, camera_rays)
+        np.testing.assert_allclose(forward_depth_image.numpy(), converted_depth.numpy(), rtol=1.0e-5, atol=1.0e-5)
+
+        depth_np = depth_image.numpy()[0, 0]
+        forward_depth_np = forward_depth_image.numpy()[0, 0]
+        self.assertLess(float(forward_depth_np[0, 0]), float(depth_np[0, 0]))
+        self.assertAlmostEqual(
+            float(forward_depth_np[height // 2, width // 2]), float(depth_np[height // 2, width // 2])
+        )
+
+        forward_depth_only_image = sensor.utils.create_forward_depth_image_output(width, height)
+        sensor.update(state, camera_transforms, camera_rays, forward_depth_image=forward_depth_only_image)
+        np.testing.assert_allclose(
+            forward_depth_only_image.numpy(), forward_depth_image.numpy(), rtol=1.0e-5, atol=1.0e-5
+        )
+
     def test_cloth_renders_via_triangle_mesh_construction(self) -> None:
         """wp.Mesh must be lazily constructed on the first render call for cloth models.
 
         Cloth models have both ``particle_q`` and ``tri_indices``, which routes rendering
         through RenderContext's triangle-mesh path. The first ``update`` then constructs
-        a :class:`wp.Mesh` from those geometry arrays.
+        a grouped :class:`wp.Mesh` from those geometry arrays.
         """
         # Cloth is the minimal model with both particle_q and tri_indices. During
         # init_from_model, RenderContext maps those to triangle_points and
@@ -313,6 +377,71 @@ class TestSensorTiledCamera(unittest.TestCase):
         # Depth hits prove the mesh was passed into the render kernel, not just created.
         self.assertGreater(int(np.sum(depth_image.numpy() > 0.0)), 0)
 
+    def test_cloth_triangle_mesh_respects_particle_worlds(self) -> None:
+        """Triangle mesh rendering must not leak cloth triangles across worlds."""
+        world_count = 2
+        spacing = 10.0
+
+        blueprint = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        blueprint.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+            fix_top=True,
+        )
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        for world_index in range(world_count):
+            builder.add_world(
+                blueprint,
+                xform=wp.transform(wp.vec3(float(world_index) * spacing, 0.0, 0.0), wp.quat_identity()),
+            )
+        model = builder.finalize(device="cpu")
+
+        sensor = SensorTiledCamera(
+            model=model,
+            default_render_config=SensorTiledCamera.RenderConfig(
+                enable_backface_culling=False,
+                max_distance=5.0,
+            ),
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+
+        own_camera_transforms = wp.array(
+            [
+                [
+                    wp.transformf(wp.vec3f(float(world_index) * spacing, 0.0, 0.5), wp.quatf(0.0, 0.0, 0.0, 1.0))
+                    for world_index in range(world_count)
+                ]
+            ],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        own_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        sensor.update(model.state(), own_camera_transforms, camera_rays, depth_image=own_depth_image)
+        own_depth = own_depth_image.numpy()[:, 0, 0, 0]
+        self.assertTrue(np.all(own_depth > 0.0), f"Expected own-world cloth hits, got {own_depth.tolist()}")
+
+        cross_camera_transforms = wp.array(
+            [
+                [
+                    wp.transformf(wp.vec3f(spacing, 0.0, 0.5), wp.quatf(0.0, 0.0, 0.0, 1.0)),
+                    wp.transformf(wp.vec3f(0.0, 0.0, 0.5), wp.quatf(0.0, 0.0, 0.0, 1.0)),
+                ]
+            ],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        cross_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        sensor.update(model.state(), cross_camera_transforms, camera_rays, depth_image=cross_depth_image)
+        cross_depth = cross_depth_image.numpy()[:, 0, 0, 0]
+        np.testing.assert_array_equal(cross_depth, np.zeros(world_count, dtype=np.float32))
+
     def test_render_config_can_enable_particles_with_triangle_mesh(self) -> None:
         model = self._build_mixed_cloth_particle_scene()
         sensor = SensorTiledCamera(
@@ -333,14 +462,76 @@ class TestSensorTiledCamera(unittest.TestCase):
         self.assertEqual(disabled_depth_image.numpy()[0, 0, 0, 0], 0.0)
 
         enabled_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        enabled_shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
         sensor.update(
             state,
             camera_transforms,
             camera_rays,
             depth_image=enabled_depth_image,
+            shape_index_image=enabled_shape_index_image,
             render_config=SensorTiledCamera.RenderConfig(enable_particles=True, max_distance=10.0),
         )
         self.assertGreater(enabled_depth_image.numpy()[0, 0, 0, 0], 0.0)
+        self.assertEqual(int(enabled_shape_index_image.numpy()[0, 0, 0, 0]), int(PARTICLES_SHAPE_ID))
+
+        cloth_vertex = model.particle_q.numpy()[0]
+        cloth_camera_transforms = wp.array(
+            [
+                [
+                    wp.transformf(
+                        wp.vec3f(float(cloth_vertex[0]), float(cloth_vertex[1]), float(cloth_vertex[2] + 0.5)),
+                        wp.quatf(0.0, 0.0, 0.0, 1.0),
+                    )
+                ]
+            ],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        cloth_depth_image = sensor.utils.create_depth_image_output(1, 1)
+        cloth_shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+        sensor.update(
+            state,
+            cloth_camera_transforms,
+            camera_rays,
+            depth_image=cloth_depth_image,
+            shape_index_image=cloth_shape_index_image,
+            render_config=SensorTiledCamera.RenderConfig(
+                enable_backface_culling=False,
+                enable_particles=True,
+                max_distance=10.0,
+            ),
+        )
+        self.assertGreater(cloth_depth_image.numpy()[0, 0, 0, 0], 0.0)
+        self.assertEqual(int(cloth_shape_index_image.numpy()[0, 0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
+
+    def test_render_config_masks_volume_deformable_particles(self) -> None:
+        model = self._build_soft_grid_scene()
+        sensor = SensorTiledCamera(model=model)
+
+        camera_transforms = wp.array(
+            [[wp.transformf(wp.vec3f(0.0), wp.quatf(0.0, 0.0, 0.0, 1.0))]],
+            dtype=wp.transformf,
+            device="cpu",
+        )
+        camera_rays = sensor.utils.compute_camera_rays_pinhole(1, 1, camera_fovs=math.radians(30.0))
+        depth_image = sensor.utils.create_depth_image_output(1, 1)
+        shape_index_image = sensor.utils.create_shape_index_image_output(1, 1)
+
+        sensor.update(
+            model.state(),
+            camera_transforms,
+            camera_rays,
+            depth_image=depth_image,
+            shape_index_image=shape_index_image,
+            render_config=SensorTiledCamera.RenderConfig(
+                enable_backface_culling=False,
+                enable_particles=True,
+                max_distance=10.0,
+            ),
+        )
+
+        self.assertGreater(depth_image.numpy()[0, 0, 0, 0], 0.0)
+        self.assertEqual(int(shape_index_image.numpy()[0, 0, 0, 0]), int(TRIANGLE_MESH_SHAPE_ID))
 
     def test_checkerboard_material_requires_keyword_arguments(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
