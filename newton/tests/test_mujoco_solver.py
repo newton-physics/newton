@@ -4672,7 +4672,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 class TestMuJoCoSolverContactKf(unittest.TestCase):
     """shape_material_kf -> per-contact solreffriction (elliptic cones, Newton contacts)."""
 
-    def _make_sphere_scene(self, kf_sphere, kf_plane):
+    def _make_sphere_scene(self, kf_sphere, kf_plane, impratio=None):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1.0e4
         builder.default_shape_cfg.kd = 100.0
@@ -4684,7 +4684,9 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
         model = builder.finalize()
         try:
-            solver = SolverMuJoCo(model, use_mujoco_contacts=False, cone="elliptic", nconmax=32, njmax=128)
+            solver = SolverMuJoCo(
+                model, use_mujoco_contacts=False, cone="elliptic", nconmax=32, njmax=128, impratio=impratio
+            )
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
         return model, solver
@@ -4699,17 +4701,19 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         self.assertGreater(nacon, 0)
         return nacon, contacts, (state_0, state_1, control)
 
-    def _expected_solreffriction(self, solver, nacon, kf_pair):
+    def _expected_solreffriction(self, solver, nacon, kf_pair, impratio=1.0):
         solimp = solver.mjw_data.contact.solimp.numpy()[:nacon]
         geom = solver.mjw_data.contact.geom.numpy()[:nacon]
         geom_bodyid = solver.mjw_model.geom_bodyid.numpy()
         body_invweight0 = solver.mjw_model.body_invweight0.numpy()[0]
+        ir = 1.0 / math.sqrt(impratio)
         expected = []
         for i in range(nacon):
             invw = body_invweight0[geom_bodyid[geom[i][0]]][0] + body_invweight0[geom_bodyid[geom[i][1]]][0]
+            dmax = solimp[i][1]
             # beta = kf*(1/D + A) with A ~= invw; timeconst = 2/(dmax*beta),
-            # at impratio 1 this is 2/(kf*invw) exactly
-            expected.append(2.0 / (kf_pair * invw * ((1.0 - solimp[i][1]) + solimp[i][1])))
+            # ir = impratio_invsqrt; at impratio 1 this collapses to 2/(kf*invw)
+            expected.append(2.0 / (kf_pair * invw * ((1.0 - dmax) * ir * ir + dmax)))
         return expected
 
     def test_kf_sets_contact_solreffriction(self):
@@ -4741,6 +4745,14 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
         self.assertGreater(nacon, 0)
         solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
         expected = self._expected_solreffriction(solver, nacon, kf_pair=400.0)
+        for i in range(nacon):
+            self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
+
+    def test_kf_impratio_scaling(self):
+        model, solver = self._make_sphere_scene(kf_sphere=800.0, kf_plane=200.0, impratio=4.0)
+        nacon, _, _ = self._step_and_read_solreffriction(model, solver)
+        solreffriction = solver.mjw_data.contact.solreffriction.numpy()[:nacon]
+        expected = self._expected_solreffriction(solver, nacon, kf_pair=500.0, impratio=4.0)
         for i in range(nacon):
             self.assertAlmostEqual(float(solreffriction[i][0]) / expected[i], 1.0, places=5)
 
