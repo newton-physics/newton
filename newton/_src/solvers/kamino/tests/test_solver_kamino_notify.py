@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.core.gravity import GRAVITY_DIREC_DEFAULT
 from newton._src.solvers.kamino._src.core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
@@ -220,7 +221,8 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
 
-        np.testing.assert_array_equal(solver._model_kamino.gravity.g_dir_acc.numpy(), [[0.0, 0.0, -1.0, 0.0]])
+        expected_g_dir_acc = np.append(np.asarray(GRAVITY_DIREC_DEFAULT), 0.0)[None, :]
+        np.testing.assert_array_equal(solver._model_kamino.gravity.g_dir_acc.numpy(), expected_g_dir_acc)
         np.testing.assert_array_equal(solver._model_kamino.gravity.vector.numpy(), [[0.0, 0.0, 0.0, 0.0]])
 
     def test_joint_transform_update(self):

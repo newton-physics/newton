@@ -48,7 +48,7 @@ The default gravitational acceleration in m/s^2.
 Equal to Earth's standard gravity of approximately 9.8067 m/s^2.
 """
 
-GRAVITY_DIREC_DEFAULT = [0.0, 0.0, -1.0]
+GRAVITY_DIREC_DEFAULT = wp.constant(wp.vec3f(wp.float32(0.0), wp.float32(0.0), wp.float32(-1.0)))
 """The default direction of gravity defined as -Z."""
 
 
@@ -195,7 +195,7 @@ def _convert_model_gravity_kernel(
     world = wp.tid()
     gravity_vector = gravity[world]
     acceleration = wp.length(gravity_vector)
-    direction = wp.vec3f(0.0, 0.0, -1.0)
+    direction = GRAVITY_DIREC_DEFAULT
     enabled = 0.0
     if acceleration > 0.0:
         direction = gravity_vector / acceleration
