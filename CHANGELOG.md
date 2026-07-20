@@ -17,6 +17,25 @@
 ### Deprecated
 
 - Deprecate scalar `ModelBuilder.gravity`; pass a three-component gravity vector instead.
+- Deprecate per-DOF `newton:{axis}:limitStiffness` and `newton:{axis}:limitDamping` attributes (where `{axis}` is `linear`, `angular`, `rotX`, `rotY`, or `rotZ`). Use the broadcast `newton:limitStiffness` and `newton:limitDamping` attributes from `NewtonJointAPI` instead; the broadcast value applies uniformly to all DOFs on the joint. For joints requiring per-DOF variance, split into separate 1-DOF (revolute / prismatic) joints.
+- Deprecate passing solver constructor options positionally after stable positional inputs such as `model` and explicit solver configs; migrate calls such as `SolverVBD(model, 10)` to `SolverVBD(model, iterations=10)`.
+- Deprecate `Model.contacts()` and `Model.collide()` in favor of explicitly creating a `CollisionPipeline`, allocating with `pipeline.contacts()`, and detecting collisions with `pipeline.collide(state, contacts)`.
+- Deprecate `ModelBuilder.find_shape_contact_pairs()`; shape contact pairs are generated automatically by `ModelBuilder.finalize()`, so configure collision filters before finalization instead of rebuilding contact pairs manually.
+- Deprecate `newton.EqType` in favor of `newton.solvers.SolverMuJoCo.EqType`; migrate equality-constraint type references to the MuJoCo-scoped enum.
+- Deprecate `newton.geometry.MATCH_BROKEN` and `newton.geometry.MATCH_NOT_FOUND` without replacement; do not rely on or import these values.
+- Deprecate unsorted integer indices for `ArticulationView.include_joints` and `ArticulationView.include_links`, and reject out-of-range indices; sort indices in ascending order and ensure they are within the articulation's joint or link range.
+- Deprecate `State.body_q_prev` without replacement because solvers now manage previous body transforms internally; applications that need pose history should clone `State.body_q` explicitly.
+- Deprecate passing option-heavy helper API parameters positionally, including `ModelBuilder.ShapeConfig`, `ModelBuilder.JointDofConfig`, `Contacts`, `ArticulationView`, and selected `ModelBuilder` body, joint, shape, rod, cloth, soft-body, and FEM helpers. Keep stable identifiers such as `body`, `parent`/`child`, capacity counts, and topology indices positional; migrate calls such as `add_shape_box(body, xform, hx=...)` to `add_shape_box(body, xform=xform, hx=...)`.
+- Deprecate loading TorchScript (`torch.jit.save`) and dict (`torch.save`) neural-network checkpoints in `ControllerNeuralMLP` and `ControllerNeuralLSTM` in favor of pt2 archives saved via `torch.export.save`.
+- Deprecate omitting `body_frame_origin` in `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()`; the implicit behavior still uses the existing start-node body-frame convention during the deprecation window, but the implicit default will change to `body_frame_origin="com"` in a future release. Pass `body_frame_origin="start"` to preserve the legacy frame or `body_frame_origin="com"` to opt into the future COM-centered frame.
+- Deprecate mutating `Model.shape_collision_filter_pairs`; modify `ModelBuilder.shape_collision_filter_pairs` before calling `finalize()` and rebuild the model instead, because mutating finalized collision filters does not rebuild `Model.shape_contact_pairs`.
+- Deprecate reading legacy vendor-namespaced deformable material attributes (`omniphysics:`, `physxDeformableBody:`) off any bound material in `newton.usd.get_tetmesh()`, `newton.TetMesh.create_from_usd()`, and `ModelBuilder.add_usd()`. They are still read during the deprecation window, with a `DeprecationWarning`; a future release will read only canonical `physics:` attributes from a material applying `PhysicsVolumeDeformableMaterialAPI`. Migrate by authoring the canonical attributes, or keep the old behavior without the warning via `compat_namespaces=newton.usd.DEFORMABLE_LEGACY_NAMESPACES` (`get_tetmesh` / `create_from_usd`) or `schema_resolvers=[..., SchemaResolverPhysx()]` (`add_usd`). `compat_namespaces` is now keyword-only; pass `()` to opt into the canonical-only behavior today.
+- Deprecate the `indices` argument of `MeshAdjacency` in favor of `tri_indices`
+- Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
+- Deprecate implicit render-config updates in `SensorTiledCamera.utils.create_default_light()` and `SensorTiledCamera.utils.assign_checkerboard_material()`; set `sensor.default_render_config.enable_shadows` or `sensor.default_render_config.enable_textures` explicitly instead.
+- Deprecate `SensorTiledCamera(..., config=...)` in favor of `SensorTiledCamera(..., default_render_config=...)`; migrate constructor calls that pass a render config to the new keyword.
+- Deprecate `SensorTiledCamera.render_config` in favor of `SensorTiledCamera.default_render_config`; migrate `sensor.render_config.enable_shadows = True` to `sensor.default_render_config.enable_shadows = True`.
+- Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
 
 ### Fixed
 
@@ -29,6 +48,7 @@
 - Fix Style3D solver divergence caused by isolated vertices.
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
+- Fix masked PID state reset to execute on the integral-state device. (#3447)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.

@@ -658,7 +658,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         return model, state, contacts
 
     @staticmethod
@@ -1134,7 +1136,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         nc_orig = int(contacts.rigid_contact_count.numpy()[0])
         self.assertEqual(nc_orig, 9 + 9 + 4, f"Expected 22 contacts (9+9+4), got {nc_orig}")
 
@@ -1229,7 +1233,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
                 state = model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                contacts = model.collide(state)
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
                 contact_count = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertEqual(contact_count, 1)
 

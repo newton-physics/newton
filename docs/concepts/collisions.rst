@@ -166,11 +166,7 @@ Basic usage:
 
 .. testcode:: pipeline-basics
 
-    # Default: creates CollisionPipeline with EXPLICIT broad phase (precomputed pairs)
-    contacts = model.contacts()
-    model.collide(state, contacts)
-
-    # Or create a pipeline explicitly to choose broad phase mode
+    # Create a pipeline with the desired broad phase mode
     from newton import CollisionPipeline
 
     pipeline = CollisionPipeline(
@@ -207,13 +203,14 @@ solver (see also the :doc:`Introduction tutorial </tutorials/00_introduction>` a
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
 
     dt = 1.0 / 60.0 / 10.0
     for frame in range(120):
         for substep in range(10):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt)
             state_0, state_1 = state_1, state_0
 
@@ -1206,7 +1203,7 @@ There are two common patterns for when to call ``collide`` relative to the subst
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    contacts = pipeline.contacts()
     num_frames = 2
     sim_substeps = 3
     sim_dt = 1.0 / 60.0 / sim_substeps
@@ -1218,7 +1215,7 @@ There are two common patterns for when to call ``collide`` relative to the subst
 
     for frame in range(num_frames):
         for substep in range(sim_substeps):
-            model.collide(state_0, contacts)
+            pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt=sim_dt)
             state_0, state_1 = state_1, state_0
 
@@ -1227,7 +1224,7 @@ There are two common patterns for when to call ``collide`` relative to the subst
 .. testcode:: sim-loop
 
     for frame in range(num_frames):
-        contacts = model.collide(state_0, collision_pipeline=pipeline)
+        pipeline.collide(state_0, contacts)
         for substep in range(sim_substeps):
             solver.step(state_0, state_1, control, contacts, dt=sim_dt)
             state_0, state_1 = state_1, state_0
@@ -1374,8 +1371,9 @@ Example usage:
 
 .. testcode:: contact-data
 
-    contacts = model.contacts()
-    model.collide(state, contacts)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
     
     n = contacts.rigid_contact_count.numpy()[0]
     points0 = contacts.rigid_contact_point0.numpy()[:n]
@@ -1473,9 +1471,8 @@ treated as a frozen constant.
 Creating and Populating Contacts
 --------------------------------
 
-:meth:`~Model.contacts` creates a :class:`~Contacts` buffer using a default
-:class:`~CollisionPipeline` (EXPLICIT broad phase, cached on first call).
-:meth:`~Model.collide` populates it and returns the :class:`~Contacts` object:
+Create a :class:`~CollisionPipeline` explicitly, then allocate and populate a
+:class:`~Contacts` buffer through that pipeline:
 
 .. testsetup:: creating-contacts
 
@@ -1491,13 +1488,13 @@ Creating and Populating Contacts
 
 .. testcode:: creating-contacts
 
-    contacts = model.contacts()
-    model.collide(state, contacts)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 The contacts buffer can be reused across steps -- ``collide`` clears it each time.
-
-Both methods accept an optional ``collision_pipeline`` keyword to override the default
-pipeline. When ``contacts`` is omitted from ``collide``, a buffer is allocated automatically:
+Construct the pipeline and contacts before CUDA graph capture so all collision
+storage is allocated explicitly.
 
 .. testcode:: creating-contacts
 
@@ -1509,16 +1506,8 @@ pipeline. When ``contacts`` is omitted from ``collide``, a buffer is allocated a
         rigid_contact_max=50000,
     )
 
-    # Option A: explicit buffer
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
-
-    # Option B: use model helpers with a custom pipeline
-    contacts = model.contacts(collision_pipeline=pipeline)
-    model.collide(state, contacts)
-
-    # Option C: let collide allocate the buffer for you
-    contacts = model.collide(state, collision_pipeline=pipeline)
 
 .. _Hydroelastic Contacts:
 
@@ -1997,15 +1986,16 @@ captured region so it is replayed each frame:
 
 .. code-block:: python
 
-    with wp.ScopedCapture() as capture:
-        model.collide(state_0, contacts)
-        for _ in range(sim_substeps):
-            solver.step(state_0, state_1, control, contacts, dt)
-            state_0, state_1 = state_1, state_0
-    graph = capture.graph
+    if wp.get_device().is_cuda:
+        with wp.ScopedCapture() as capture:
+            pipeline.collide(state_0, contacts)
+            for _ in range(sim_substeps):
+                solver.step(state_0, state_1, control, contacts, dt)
+                state_0, state_1 = state_1, state_0
+        graph = capture.graph
 
-    # Each frame:
-    wp.capture_launch(graph)
+        # Each frame:
+        wp.capture_launch(graph)
 
 .. _Solver Integration:
 
@@ -2207,8 +2197,8 @@ See Also
 
 **API Reference:**
 
-- :meth:`~Model.contacts` - Create a contacts buffer (accepts ``collision_pipeline=``)
-- :meth:`~Model.collide` - Run collision detection (accepts ``collision_pipeline=``, returns :class:`~Contacts`)
+- :meth:`~CollisionPipeline.contacts` - Create a compatible contacts buffer
+- :meth:`~CollisionPipeline.collide` - Run collision detection
 - :class:`~CollisionPipeline` - Collision pipeline with configurable broad phase
 - ``broad_phase`` - Broad phase algorithm: ``"nxn"``, ``"sap"``, or ``"explicit"``
 - :class:`~Contacts` - Contact data container
@@ -2216,7 +2206,6 @@ See Also
 - :class:`~ModelBuilder.ShapeConfig` - Shape configuration options
 - :meth:`~ModelBuilder.ShapeConfig.configure_sdf` - Set SDF and hydroelastic options in one call
 - :class:`~geometry.HydroelasticSDF.Config` - Hydroelastic contact configuration
-- :meth:`~CollisionPipeline.contacts` - Allocate a contacts buffer for a custom pipeline
 - :meth:`~Mesh.build_sdf` - Precompute SDF for a mesh
 - :meth:`~ModelBuilder.approximate_meshes` - Replace mesh collision shapes with simpler geometry
 - :meth:`~ModelBuilder.replicate` - Stamp out multi-world copies of a template builder

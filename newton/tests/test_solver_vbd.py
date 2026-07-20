@@ -1031,40 +1031,40 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
         pipeline = contacts = None
         if pipeline_first:
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
-            contacts = model.contacts(collision_pipeline=pipeline)
+            contacts = pipeline.contacts()
 
         solver = newton.solvers.SolverVBD(model, iterations=1, rigid_contact_history=True)
 
         if not pipeline_first:
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
-            contacts = model.contacts(collision_pipeline=pipeline)
+            contacts = pipeline.contacts()
 
         state_in = model.state()
         state_out = model.state()
         control = model.control()
         if rigid_contact_max > 0:
-            model.collide(state_in, contacts)
-        return model, solver, contacts, state_in, state_out, control
+            pipeline.collide(state_in, contacts)
+        return pipeline, solver, contacts, state_in, state_out, control
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
     with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before CUDA graph capture"):
         with wp.ScopedCapture(device=device):
             solver.step(state_in, state_out, control, contacts, 1.0e-3)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_in, state_out, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True, rigid_contact_max=0)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True, rigid_contact_max=0)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_in, state_out, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
     test.assertIsNone(solver._prev_contact_lambda)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
     solver.step(state_in, state_out, control, contacts, 1.0e-3)
-    model.collide(state_out, contacts)
+    pipeline.collide(state_out, contacts)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_out, state_in, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
@@ -2455,7 +2455,8 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         init_qd = state_0.body_qd.numpy().copy()
         init_qd[0] = [0.0, 0.0, 0.0, omega_init, 0.0, 0.0]
@@ -2464,7 +2465,7 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True)
         sim_dt = 1.0e-3
         for _ in range(500):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
 
@@ -2534,7 +2535,8 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         masses = model.body_mass.numpy()
         inertias = model.body_inertia.numpy()
@@ -2554,7 +2556,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         for frame in range(num_frames):
             for _ in range(substeps):
                 state_0.clear_forces()
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
                 solver.step(state_0, state_1, control, contacts, sim_dt)
                 state_0, state_1 = state_1, state_0
             if frame >= settle_frames:
@@ -2590,9 +2592,10 @@ def _collect_rigid_contact_forces_reports_surface_points(test, device):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         body_q_prev_snapshot = wp.clone(solver.body_q_prev)
         solver.step(state_0, state_1, control, contacts, 1.0e-3)
 

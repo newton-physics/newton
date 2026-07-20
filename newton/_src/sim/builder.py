@@ -202,11 +202,12 @@ class ModelBuilder:
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         solver = SolverXPBD(model)
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         for i in range(10):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt=1.0 / 60.0)
             state_0, state_1 = state_1, state_0
 
