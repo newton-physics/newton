@@ -881,6 +881,15 @@ class TestSchemaResolver(unittest.TestCase):
         stiffness.Set(7.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 7.0)
 
+    def test_physx_d6_limit_uses_matching_axis_instance(self):
+        stage = Usd.Stage.CreateInMemory()
+        joint = stage.DefinePrim("/joint", "PhysicsJoint")
+        joint.CreateAttribute("physxLimit:transX:stiffness", Sdf.ValueTypeNames.Float).Set(7.0)
+        resolver = SchemaResolverPhysx()
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_transX_ke"), 7.0)
+        self.assertIsNone(resolver.get_value(joint, PrimType.JOINT, "limit_transY_ke"))
+
     def test_registered_schema_fallback_precedes_supplied_table(self):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
