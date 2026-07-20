@@ -57,7 +57,7 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     environment = "None"
     expected_bodies_per_world = None
 
-    def _create_workload(self, builder):
+    def _create_workload(self, builder, world_count):
         workload = Example(
             stage_path=None,
             robot=self.robot,
@@ -66,6 +66,7 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
             actuation="random",
             use_cuda_graph=True,
             builder=builder,
+            world_count=world_count,
             ls_iteration=self.ls_iteration,
             environment=self.environment,
         )
@@ -74,19 +75,19 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
         wp.synchronize_device()
         return workload
 
-    def _validate_workload(self, workload):
+    def _validate_workload(self, workload, world_count):
         workload.test_final()
         if self.expected_bodies_per_world is None:
             return
-        expected_body_count = self.expected_bodies_per_world * workload.world_count
+        expected_body_count = self.expected_bodies_per_world * world_count
         if workload.model.body_count != expected_body_count:
             raise RuntimeError(
                 f"Expected {self.expected_bodies_per_world} bodies per world for {self.environment}, "
-                f"got {workload.model.body_count / workload.world_count:g}"
+                f"got {workload.model.body_count / world_count:g}"
             )
 
-    def _validate_metrics_workload(self, workload, solver_niter_samples):
-        self._validate_workload(workload)
+    def _validate_metrics_workload(self, workload, world_count, solver_niter_samples):
+        self._validate_workload(workload, world_count)
         solver_niter_samples.append(workload.solver.mjw_data.solver_niter.numpy())
 
     def _collect_metrics(self):
@@ -104,15 +105,19 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
             )
             solver_niter_samples = []
 
-            def create_workload(builder=builder):
-                return self._create_workload(builder)
+            def create_workload(builder=builder, world_count=world_count):
+                return self._create_workload(builder, world_count)
 
             world_metrics = collect_simulation_metrics(
                 create_workload=create_workload,
                 world_count=world_count,
                 num_frames=self.num_frames,
                 samples=self.samples,
-                validate=partial(self._validate_metrics_workload, solver_niter_samples=solver_niter_samples),
+                validate=partial(
+                    self._validate_metrics_workload,
+                    world_count=world_count,
+                    solver_niter_samples=solver_niter_samples,
+                ),
             )
             solver_niter = np.concatenate([np.asarray(values).reshape(-1) for values in solver_niter_samples])
             metrics[world_count] = replace(
@@ -330,8 +335,8 @@ class FastAllegro(_KpiBenchmark):
 
 
 class FastKitchenG1(_KpiBenchmark):
-    # Leave headroom for replicated kitchen construction on 64 GiB CI runners.
-    params = [[128]]
+    # #3574 bounds replicated filter pairs to colliding shapes so 512 worlds fit on CI hosts.
+    params = [[512]]
     num_frames = 50
     robot = "g1"
     timeout = 900

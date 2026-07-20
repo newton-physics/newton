@@ -54,18 +54,16 @@ class TestSimulationBenchmarks(unittest.TestCase):
         kitchen_workload = SimpleNamespace(
             model=SimpleNamespace(body_count=benchmark.expected_bodies_per_world * world_count),
             test_final=Mock(),
-            world_count=world_count,
         )
-        benchmark._validate_workload(kitchen_workload)
+        benchmark._validate_workload(kitchen_workload, world_count)
         kitchen_workload.test_final.assert_called_once_with()
 
         incomplete_kitchen_workload = SimpleNamespace(
             model=SimpleNamespace(body_count=(benchmark.expected_bodies_per_world - 1) * world_count),
             test_final=Mock(),
-            world_count=world_count,
         )
         with self.assertRaisesRegex(RuntimeError, "bodies per world for kitchen"):
-            benchmark._validate_workload(incomplete_kitchen_workload)
+            benchmark._validate_workload(incomplete_kitchen_workload, world_count)
 
     def test_mujoco_step_falls_back_when_cuda_graph_is_unavailable(self):
         example = bench_mujoco.Example.__new__(bench_mujoco.Example)
@@ -95,7 +93,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             patch.object(bench_mujoco, "Example", return_value=SimpleNamespace(graph=None)),
             self.assertRaisesRegex(RuntimeError, "requires CUDA graph capture"),
         ):
-            benchmark._create_workload(Mock())
+            benchmark._create_workload(Mock(), world_count=1)
 
     def test_mujoco_metrics_include_solver_iterations(self):
         benchmark = bench_mujoco.FastCartpole()
