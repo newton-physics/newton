@@ -36,7 +36,7 @@ import math
 import unittest
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import warp as wp
@@ -48,6 +48,7 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.usd import (
     PrimType,
+    SchemaResolver,
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
@@ -142,6 +143,27 @@ class TestSchemaResolver(unittest.TestCase):
 
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 0.0)
         self.assertFalse(resolver._legacy_fallback_properties)
+
+    def test_pxr_only_getter_remains_compatible_during_audit(self):
+        class LegacyResolver(SchemaResolver):
+            name = "legacy"
+            _schema_names: ClassVar = {PrimType.JOINT: "LegacyJointAPI"}
+            mapping: ClassVar = {
+                PrimType.JOINT: {
+                    "armature": SchemaResolver.SchemaAttribute(
+                        "legacy:armature",
+                        0.25,
+                        usd_value_getter=lambda _prim: None,
+                    )
+                }
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
+        joint.AddAppliedSchema("LegacyJointAPI")
+        resolver = SchemaResolverManager([LegacyResolver()])
+
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 0.25)
 
     def test_applied_schema_fallbacks_follow_resolver_priority(self):
         stage = Usd.Stage.CreateInMemory()

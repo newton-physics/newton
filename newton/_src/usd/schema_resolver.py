@@ -425,13 +425,21 @@ class SchemaResolverManager:
         *,
         compare_resolver: bool,
     ) -> tuple[Any, SchemaResolver | None]:
+        value_cache: dict[tuple[int, str], Any | None] = {}
+
+        def read_value(resolver: SchemaResolver, key: str) -> Any | None:
+            cache_key = (id(resolver), key)
+            if cache_key not in value_cache:
+                value_cache[cache_key] = resolver.get_value(prim, prim_type, key)
+            return value_cache[cache_key]
+
         if self._uses_composed_fallbacks:
-            resolved = self._resolve_value(prim, prim_type, key, default=default)
+            resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
             if resolved.resolver is not None:
                 self._collect_on_first_use(resolved.resolver, prim)
             return resolved.value, resolved.resolver
 
-        value, resolver = self._get_legacy_value(prim, prim_type, key, default)
+        value, resolver = self._get_legacy_value(prim, prim_type, key, default, read_value=read_value)
         self._record_legacy_fallback(
             prim,
             prim_type,
@@ -440,14 +448,21 @@ class SchemaResolverManager:
             value,
             resolver,
             compare_resolver=compare_resolver,
+            read_value=read_value,
         )
         return value, resolver
 
     def _get_legacy_value(
-        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any,
+        *,
+        read_value: Callable[[SchemaResolver, str], Any | None],
     ) -> tuple[Any, SchemaResolver | None]:
         for resolver in self.resolvers:
-            value = resolver.get_value(prim, prim_type, key)
+            value = read_value(resolver, key)
             if value is None:
                 continue
             self._collect_on_first_use(resolver, prim)
@@ -499,6 +514,7 @@ class SchemaResolverManager:
         legacy_resolver: SchemaResolver | None,
         *,
         compare_resolver: bool,
+        read_value: Callable[[SchemaResolver, str], Any | None] | None = None,
     ) -> None:
         if self._uses_composed_fallbacks:
             return
@@ -514,8 +530,8 @@ class SchemaResolverManager:
             return
 
         try:
-            resolved = self._resolve_value(prim, prim_type, key, default=default)
-        except RuntimeError:
+            resolved = self._resolve_value(prim, prim_type, key, default=default, read_value=read_value)
+        except (RuntimeError, TypeError):
             return
         if resolved.resolver is None or resolved.authored:
             return
@@ -549,10 +565,15 @@ class SchemaResolverManager:
         key: str,
         *,
         default: Any = None,
+        read_value: Callable[[SchemaResolver, str], Any | None] | None = None,
     ) -> _ResolvedValue:
         """Resolve a value while retaining source provenance."""
+
+        def read_from_prim(resolver: SchemaResolver, key: str) -> Any | None:
+            return resolver.get_value(prim, prim_type, key)
+
         return self._resolution._resolve_value(
-            lambda resolver, key: resolver.get_value(prim, prim_type, key),
+            read_from_prim if read_value is None else read_value,
             lambda resolver, key: resolver._schema_is_applied(prim, prim_type, key),
             lambda resolver, key: self._pxr_fallback(resolver, prim, prim_type, key),
             prim_type,
