@@ -321,13 +321,14 @@ class _SchemaResolution:
         key: str,
         *,
         default: Any = None,
+        has_default: bool = False,
     ) -> _ResolvedValue:
         for resolver in self._resolvers:
             value = read_value(resolver, key)
             if value is not None:
                 return _ResolvedValue(value, resolver, True)
 
-        if default is not None:
+        if has_default or default is not None:
             return _ResolvedValue(default, None, False)
 
         for resolver in self._resolvers:
@@ -349,6 +350,7 @@ class _SchemaResolution:
         key: str,
         *,
         default: Any = None,
+        has_default: bool = False,
         read_fallback: Callable[[SchemaResolver, str], Any] | None = None,
         compare_resolver: bool = False,
     ) -> _ResolutionResult:
@@ -368,6 +370,7 @@ class _SchemaResolution:
                     prim_type,
                     key,
                     default=default,
+                    has_default=has_default,
                     read_fallback=read_fallback,
                 )
             )
@@ -380,6 +383,7 @@ class _SchemaResolution:
                 prim_type,
                 key,
                 default=default,
+                has_default=has_default,
                 read_fallback=read_fallback,
             )
         except (RuntimeError, TypeError):
@@ -425,7 +429,7 @@ class _SchemaResolution:
                 else:
                     return _ResolvedValue(value, resolver, False)
 
-        if default is not None:
+        if has_default or default is not None:
             return _ResolvedValue(default, None, False)
 
         for resolver in self._resolvers:

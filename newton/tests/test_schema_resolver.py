@@ -92,6 +92,18 @@ class TestSourceNeutralSchemaResolution(unittest.TestCase):
 
         self.assertEqual(resolved, {"armature": 0.1})
 
+    def test_explicit_none_suppresses_legacy_resolver_default(self):
+        resolution = SchemaResolution([SchemaResolverNewton()])
+
+        resolved = resolution.resolve(
+            PrimType.JOINT,
+            {},
+            defaults={"velocity_limit": None},
+            keys=("velocity_limit",),
+        )
+
+        self.assertEqual(resolved, {"velocity_limit": None})
+
     def test_owned_legacy_defaults_do_not_affect_composed_resolution(self):
         resolution = _composed_resolution([SchemaResolverNewton()])
 
