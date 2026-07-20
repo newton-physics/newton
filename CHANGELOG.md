@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Detect applied but unauthored USD schema properties whose fallbacks will change resolver results in a future release, while retaining the current values during the compatibility period.
+- Detect applied but unauthored USD schema properties whose fallbacks will change resolver results in a future release, while retaining the current values during the compatibility period; pass ``use_applied_schema_fallbacks=True`` to opt into the future behavior.
 
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).

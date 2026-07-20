@@ -194,6 +194,7 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
+    use_applied_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
@@ -320,6 +321,11 @@ def parse_usd(
             .. experimental::
 
                 The ``schema_resolvers`` argument may change without prior notice.
+        use_applied_schema_fallbacks: If True, an applied schema's fallback
+            takes precedence over importer defaults and lower-priority resolvers.
+            This opts into the future default behavior and suppresses schema
+            fallback migration warnings. Defaults to False during the
+            compatibility period.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -522,7 +528,10 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
 
     # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(schema_resolvers)
+    R = SchemaResolverManager(
+        schema_resolvers,
+        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+    )
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
     # fallback to the canonical physics: deformable schema. Empty unless a
@@ -4900,7 +4909,8 @@ def parse_usd(
         warnings.warn(
             "This import retained legacy values for applied but unauthored USD schema properties; "
             f"{' and '.join(details)}. In a future release, applied schemas will require their fallbacks; "
-            "author the intended values explicitly to preserve them.",
+            "pass use_applied_schema_fallbacks=True to adopt that behavior now, or author the intended values "
+            "explicitly to preserve them.",
             DeprecationWarning,
             stacklevel=2,
         )

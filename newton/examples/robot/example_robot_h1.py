@@ -48,6 +48,7 @@ class Example:
             asset_file,
             ignore_paths=["/GroundPlane"],
             enable_self_collisions=False,
+            use_applied_schema_fallbacks=True,
         )
         # approximate meshes for faster collision detection
         h1.approximate_meshes("bounding_box")

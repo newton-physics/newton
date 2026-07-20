@@ -390,16 +390,19 @@ class SchemaResolverManager:
         self,
         resolvers: Sequence[SchemaResolver],
         *,
-        _fallback_policy: _FallbackPolicy | None = None,
+        use_applied_schema_fallbacks: bool = False,
     ):
         """
         Initialize resolver manager with resolver instances in priority order.
 
         Args:
             resolvers: List of instantiated resolvers in priority order.
+            use_applied_schema_fallbacks: Use the owning applied schema's fallback
+                before importer defaults.
         """
         self.resolvers = list(resolvers)
-        self._resolution = _SchemaResolution(self.resolvers, fallback_policy=_fallback_policy)
+        fallback_policy = _FallbackPolicy.COMPOSED if use_applied_schema_fallbacks else None
+        self._resolution = _SchemaResolution(self.resolvers, fallback_policy=fallback_policy)
         self._pxr_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
         self._legacy_fallback_properties: set[str] = set()
         self._legacy_fallback_failures: set[str] = set()

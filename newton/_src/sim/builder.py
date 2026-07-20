@@ -3384,6 +3384,7 @@ class ModelBuilder:
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
+        use_applied_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
@@ -3509,6 +3510,11 @@ class ModelBuilder:
                 .. experimental::
 
                     The ``schema_resolvers`` argument may change without prior notice.
+            use_applied_schema_fallbacks: If True, an applied schema's fallback
+                takes precedence over importer defaults and lower-priority resolvers.
+                This opts into the future default behavior and suppresses schema
+                fallback migration warnings. Defaults to False during the
+                compatibility period.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -3628,6 +3634,7 @@ class ModelBuilder:
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
+            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,

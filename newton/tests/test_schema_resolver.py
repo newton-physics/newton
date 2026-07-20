@@ -43,11 +43,7 @@ import warp as wp
 
 from newton import Model, ModelBuilder
 from newton._src.usd._schema_fallbacks import _SCHEMA_FALLBACKS
-from newton._src.usd.schema_resolver import (
-    SchemaResolverManager,
-    _FallbackPolicy,
-    _registered_attribute_fallbacks,
-)
+from newton._src.usd.schema_resolver import SchemaResolverManager, _registered_attribute_fallbacks
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_schema_fallback_migration
 from newton.usd import (
@@ -152,7 +148,7 @@ class TestSchemaResolver(unittest.TestCase):
         joint.AddAppliedSchema("PhysxLimitAPI:angular")
         resolver = SchemaResolverManager(
             [SchemaResolverPhysx()],
-            _fallback_policy=_FallbackPolicy.COMPOSED,
+            use_applied_schema_fallbacks=True,
         )
 
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "limit_angular_ke", default=12.0), 0.0)
@@ -211,7 +207,7 @@ class TestSchemaResolver(unittest.TestCase):
         collider.AddAppliedSchema("PhysxCollisionAPI")
         resolver = SchemaResolverManager(
             [SchemaResolverPhysx()],
-            _fallback_policy=_FallbackPolicy.COMPOSED,
+            use_applied_schema_fallbacks=True,
         )
 
         resolved = resolver._resolve_value(collider, PrimType.SHAPE, "gap")

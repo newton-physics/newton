@@ -29,7 +29,6 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
-from newton._src.usd.schema_resolver import _FallbackPolicy
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import (
@@ -1702,11 +1701,9 @@ def Xform "Articulation" (
         builder.default_joint_cfg.velocity_limit = 123.0
         builder.default_joint_cfg.limit_ke = 7.0
         builder.default_joint_cfg.limit_kd = 8.0
-        with mock.patch(
-            "newton._src.usd.schema_resolver._DEFAULT_FALLBACK_POLICY",
-            _FallbackPolicy.COMPOSED,
-        ):
-            builder.add_usd(stage)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            builder.add_usd(stage, use_applied_schema_fallbacks=True)
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 

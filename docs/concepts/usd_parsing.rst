@@ -477,7 +477,9 @@ schema will give it ownership of its properties: an unauthored property will use
 the schema's USD fallback before a lower-priority resolver or importer default.
 Newton emits a :class:`DeprecationWarning` when that rule would select a
 different resolver value or source. Author the intended property value
-explicitly to preserve it across the transition.
+explicitly to preserve it across the transition, or pass
+``use_applied_schema_fallbacks=True`` to adopt the future behavior now without
+migration warnings.
 
 **Configuring Resolver Priority:**
 
