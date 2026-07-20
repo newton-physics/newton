@@ -40,6 +40,7 @@ __all__ = [
     "convert_geometries",
     "convert_joints",
     "convert_model_joint_transforms",
+    "convert_model_materials",
     "convert_rigid_bodies",
     "convert_target_coords_to_target_dofs",
     "convert_target_dofs_to_target_coords",
@@ -652,6 +653,50 @@ def convert_model_joint_transforms(model: Model, joints: JointsModel) -> None:
         ],
         device=model.device,
     )
+
+
+def convert_model_materials(model: Model, model_kamino: ModelKamino) -> None:
+    """Update Kamino's material properties in place from Newton shape materials.
+
+    Recomputes per-material friction and restitution from
+    ``model.shape_material_mu`` and ``model.shape_material_restitution`` while
+    preserving the material arrays referenced by Kamino's collision detector.
+
+    Args:
+        model: Newton model containing the updated shape materials.
+        model_kamino: Kamino model whose material tables are updated.
+
+    Raises:
+        RuntimeError: If shapes assigned to the same material ID have different
+            material properties and would require splitting that material.
+    """
+    shape_friction = model.shape_material_mu.numpy()
+    shape_restitution = model.shape_material_restitution.numpy()
+    geom_material = model_kamino.geoms.material.numpy()
+    materials = model_kamino.materials
+
+    updated_friction = materials.static_friction.numpy()
+    updated_restitution = materials.restitution.numpy()
+    material_written = np.zeros(materials.num_materials, dtype=bool)
+    for shape, material_id in enumerate(geom_material):
+        if material_written[material_id]:
+            if (
+                updated_friction[material_id] != shape_friction[shape]
+                or updated_restitution[material_id] != shape_restitution[shape]
+            ):
+                raise RuntimeError(
+                    f"Multiple shapes assigned to contact material {material_id} attempted to update it with "
+                    "different friction or restitution values; recreate SolverKamino to split the material."
+                )
+            continue
+
+        updated_friction[material_id] = shape_friction[shape]
+        updated_restitution[material_id] = shape_restitution[shape]
+        material_written[material_id] = True
+
+    materials.restitution.assign(updated_restitution)
+    materials.static_friction.assign(updated_friction)
+    materials.dynamic_friction.assign(updated_friction)
 
 
 def convert_rigid_bodies(

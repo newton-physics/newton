@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
@@ -22,6 +23,7 @@ def _build_revolute(
     limited: bool = False,
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
     body_com: wp.vec3f | None = None,
+    shape_materials: tuple[tuple[float, float], ...] | None = None,
 ) -> newton.Model:
     """Build a tiny world-to-body revolute model for notify tests."""
     builder = newton.ModelBuilder()
@@ -36,7 +38,22 @@ def _build_revolute(
         com=body_com,
         lock_inertia=True,
     )
-    builder.add_shape_box(label="box", body=bid, hx=0.1, hy=0.1, hz=0.1)
+    if shape_materials is None:
+        builder.add_shape_box(label="box", body=bid, hx=0.1, hy=0.1, hz=0.1)
+    else:
+        for shape, (mu, restitution) in enumerate(shape_materials):
+            builder.add_shape_box(
+                label=f"box_{shape}",
+                body=bid,
+                xform=wp.transformf(
+                    wp.vec3f(0.3 * shape, 0.0, 0.0),
+                    wp.quat_identity(dtype=wp.float32),
+                ),
+                hx=0.1,
+                hy=0.1,
+                hz=0.1,
+                cfg=newton.ModelBuilder.ShapeConfig(mu=mu, restitution=restitution),
+            )
 
     jid = builder.add_joint_revolute(
         label="world_to_link",
@@ -294,6 +311,73 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         # Reset goes through a body pose -> com pose -> body pose conversion. Check that the conversion is correct.
         solver.reset(state)
         np.testing.assert_allclose(state.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
+
+    def test_material_value_update_propagates(self):
+        """Two shapes sharing one material can update it together and keep sharing it."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        material_pairs = solver._model_kamino.material_pairs
+        arrays = (
+            materials.restitution,
+            materials.static_friction,
+            materials.dynamic_friction,
+            material_pairs.restitution,
+            material_pairs.static_friction,
+            material_pairs.dynamic_friction,
+        )
+        pointers = tuple(array.ptr for array in arrays)
+        pair_values = tuple(array.numpy().copy() for array in arrays[3:])
+
+        model.shape_material_mu.assign(np.array([0.4, 0.4], dtype=np.float32))
+        model.shape_material_restitution.assign(np.array([0.3, 0.3], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        self.assertEqual(tuple(array.ptr for array in arrays), pointers)
+        np.testing.assert_allclose(materials.static_friction.numpy(), [DEFAULT_FRICTION, 0.4])
+        np.testing.assert_allclose(materials.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.4])
+        np.testing.assert_allclose(materials.restitution.numpy(), [DEFAULT_RESTITUTION, 0.3])
+        for actual, expected in zip(arrays[3:], pair_values, strict=True):
+            np.testing.assert_array_equal(actual.numpy(), expected)
+
+    def test_material_ids_can_converge_to_same_values(self):
+        """Distinct material IDs remain valid when their coefficients become equal."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.6, 0.5)))
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        geoms = solver._model_kamino.geoms
+        material_mapping = geoms.material.numpy().copy()
+
+        model.shape_material_mu.assign(np.array([0.4, 0.4], dtype=np.float32))
+        model.shape_material_restitution.assign(np.array([0.3, 0.3], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_array_equal(geoms.material.numpy(), material_mapping)
+        np.testing.assert_allclose(materials.static_friction.numpy(), [DEFAULT_FRICTION, 0.4, 0.4])
+        np.testing.assert_allclose(materials.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.4, 0.4])
+        np.testing.assert_allclose(materials.restitution.numpy(), [DEFAULT_RESTITUTION, 0.3, 0.3])
+
+    def test_material_structural_change_raises(self):
+        """Two shapes sharing one material cannot update it to different values."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        before = (
+            materials.restitution.numpy().copy(),
+            materials.static_friction.numpy().copy(),
+            materials.dynamic_friction.numpy().copy(),
+        )
+        model.shape_material_mu.assign(np.array([0.2, 0.4], dtype=np.float32))
+
+        with self.assertRaisesRegex(RuntimeError, "recreate"):
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        for actual, expected in zip(
+            (materials.restitution, materials.static_friction, materials.dynamic_friction),
+            before,
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual.numpy(), expected)
 
     def test_dynamic_constraint_toggle_raises(self):
         """Adding or removing a joint's dynamic constraints requires solver recreation."""

@@ -896,10 +896,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._update_geom_offsets()
 
         if flags & ModelFlags.SHAPE_PROPERTIES:
-            pass  # TODO: contact materials.
-
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            pass
+            self._update_materials()
 
         if flags & (ModelFlags.CONSTRAINT_PROPERTIES | ModelFlags.TENDON_PROPERTIES):
             # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
@@ -1246,3 +1243,7 @@ class SolverKamino(SolverBase, CouplingInterface):
     def _update_joint_transforms(self):
         """Re-derive Kamino joint anchors and axes from Newton's joint transforms."""
         self._kamino.convert_model_joint_transforms(self.model, self._model_kamino.joints)
+
+    def _update_materials(self) -> None:
+        """Refresh Kamino contact-material tables from Newton shape materials."""
+        self._kamino.convert_model_materials(self.model, self._model_kamino)
