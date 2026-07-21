@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-from typing import get_type_hints
 from types import SimpleNamespace
+from typing import get_type_hints
 from unittest import mock
 
 import numpy as np
