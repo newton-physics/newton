@@ -165,8 +165,8 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.collision_pipeline.contacts()
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -278,7 +278,7 @@ class Example:
             self._apply_command()
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.set_rigid_history_update(True)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0

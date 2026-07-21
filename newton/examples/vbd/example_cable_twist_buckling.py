@@ -194,6 +194,9 @@ class Example:
         self.model = builder.finalize()
         hard_contact = self.contact_mode in ("hard", "hard-history")
         contact_history = self.contact_mode == "hard-history"
+        contact_matching = "latest" if contact_history else "disabled"
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching=contact_matching)
+        self.contacts = self.collision_pipeline.contacts()
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -208,11 +211,6 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        if contact_history:
-            pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
-            self.contacts = self.model.contacts(collision_pipeline=pipeline)
-        else:
-            self.contacts = self.model.contacts()
 
         body_q = self.state_0.body_q.numpy()
         self.rest_pos = np.asarray([node_xyz(body_q[b], self.SEGMENT_LENGTH) for b in self.bodies], dtype=np.float64)
@@ -336,7 +334,7 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             if self.contact_enabled:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.set_rigid_history_update(True)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
