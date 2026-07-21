@@ -228,7 +228,7 @@ class SensorTiledCamera:
         """
 
         with wp.ScopedTimer(
-            "Newton::SensorTiledCamera::update", active=PROFILE_ENABLED, use_nvtx=True, print=False, synchronize=True
+            "Newton::SensorTiledCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True
         ):
             self.sync_transforms(state)
 
