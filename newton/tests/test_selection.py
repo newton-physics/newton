@@ -52,7 +52,7 @@ class TestSelection(unittest.TestCase):
             model,
             pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_(A|B|C)"),
             include_links=re.compile(r"(LF|RF)_FOOT"),
-            exclude_joints=[re.compile(r"fixed_.*")],
+            exclude_joints=re.compile(r"fixed_.*"),
         )
 
         assert_np_equal(view.articulation_ids.numpy(), [[0, 1, 2]])

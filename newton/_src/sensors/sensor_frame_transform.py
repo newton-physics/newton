@@ -122,8 +122,8 @@ class SensorFrameTransform:
     def __init__(
         self,
         model: Model,
-        shapes: str | re.Pattern[str] | list[str | re.Pattern[str]] | list[int],
-        reference_sites: str | re.Pattern[str] | list[str | re.Pattern[str]] | list[int],
+        shapes: str | re.Pattern[str] | list[str] | list[int],
+        reference_sites: str | re.Pattern[str] | list[str] | list[int],
         *,
         verbose: bool | None = None,
     ):
@@ -131,12 +131,12 @@ class SensorFrameTransform:
 
         Args:
             model: The model to measure.
-            shapes: List of shape indices, glob or compiled regular-expression pattern
-                to match against shape labels, or list of patterns where any one matches.
-                Regular expressions use full matching.
-            reference_sites: List of site indices, glob or compiled regular-expression
-                pattern to match against site labels, or list of patterns where any one
-                matches. Must expand to one site or the same number as ``shapes``.
+            shapes: Glob pattern, compiled regular-expression pattern, list of glob
+                patterns to match against shape labels, or list of shape indices. Regular
+                expressions use full matching.
+            reference_sites: Glob pattern, compiled regular-expression pattern, list of glob
+                patterns to match against site labels, or list of site indices. Must expand
+                to one site or the same number as ``shapes``.
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.
 

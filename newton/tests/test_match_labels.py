@@ -76,12 +76,6 @@ class TestMatchLabels(unittest.TestCase):
         result = match_labels(labels, ["arm_*", "leg_left"])
         self.assertEqual(result, [0, 1, 2])
 
-    def test_list_glob_and_compiled_regex_union_deduplicates(self):
-        labels = ["robot_0", "robot_1", "prop_A", "prop_B", "other"]
-        patterns = ["robot_*", re.compile(r"(robot_1|prop_[AB])")]
-
-        self.assertEqual(match_labels(labels, patterns), [0, 1, 2, 3])
-
     def test_empty_list_returns_empty(self):
         labels = ["a", "b", "c"]
         self.assertEqual(match_labels(labels, []), [])
@@ -96,13 +90,6 @@ class TestMatchLabels(unittest.TestCase):
         with self.assertRaises(TypeError):
             match_labels(labels, [None])
 
-    def test_compiled_byte_pattern_is_validated_before_matching(self):
-        labels = ["robot"]
-        patterns = ["robot", re.compile(b"robot")]
-
-        with self.assertRaisesRegex(TypeError, "must match strings"):
-            match_labels(labels, patterns)
-
     def test_compiled_byte_pattern_is_rejected_for_nonempty_labels(self):
         with self.assertRaisesRegex(TypeError, "must match strings"):
             match_labels(["robot"], re.compile(b"robot"))
@@ -110,13 +97,6 @@ class TestMatchLabels(unittest.TestCase):
     def test_compiled_byte_pattern_is_rejected_for_empty_labels(self):
         with self.assertRaisesRegex(TypeError, "must match strings"):
             match_labels([], re.compile(b"robot"))
-
-    def test_mixed_indices_and_patterns_are_rejected(self):
-        labels = ["robot"]
-
-        for patterns in ([0, re.compile(r"robot")], [re.compile(r"robot"), 0]):
-            with self.subTest(patterns=patterns), self.assertRaises(TypeError):
-                match_labels(labels, patterns)
 
     def test_int_out_of_bounds_passthrough(self):
         """int indices are passed through without bounds checking."""
