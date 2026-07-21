@@ -7023,7 +7023,7 @@ def Xform "Articulation" (
         cases = {
             "authored mass": ([(0.05, None, True)], 0.05),
             "authored density": ([(None, 500.0, True)], 4.0),
-            "zero mass falls back to density": ([(0.0, None, True)], 8.0),
+            "zero mass falls back to density": ([(0.0, 500.0, True)], 4.0),
             "disabled collider still contributes": ([(0.05, None, False), (None, None, True)], 8.05),
         }
         for name, (collider_specs, expected_mass) in cases.items():
