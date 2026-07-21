@@ -13,17 +13,7 @@ import warp as wp
 
 from ..core.data import DataKamino
 from ..core.joints import JointActuationType, JointCorrectionMode, JointDoFType
-from ..core.math import (
-    FLOAT32_MAX,
-    TWO_PI,
-    quat_log,
-    quat_to_vec4,
-    quat_twist_angle,
-    screw,
-    screw_angular,
-    screw_linear,
-    squared_norm,
-)
+from ..core.math import FLOAT32_MAX, quat_log, quat_twist_angle
 from ..core.model import ModelKamino
 from ..core.types import (
     vec1f,
@@ -45,7 +35,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -72,7 +62,7 @@ def correct_rotational_coord(
     """
     Corrects a rotational joint coordinate to be as close as possible to a reference coordinate.
     """
-    q_j_in += wp.round((q_j_ref - q_j_in) / TWO_PI) * TWO_PI
+    q_j_in += wp.round((q_j_ref - q_j_in) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
     q_j_in = wp.mod(q_j_in, q_j_limit)
     return q_j_in
 
@@ -86,7 +76,7 @@ def correct_quat_vector_coord(q_j_in: wp.vec4f, q_j_ref: wp.vec4f) -> wp.vec4f:
     closer to the reference quaternion `q_j_ref`, accounting for the fact
     that quaternions `q` and `-q` represent the same rotation.
     """
-    if squared_norm(q_j_in + q_j_ref) < squared_norm(q_j_in - q_j_ref):
+    if wp.length_sq(q_j_in + q_j_ref) < wp.length_sq(q_j_in - q_j_ref):
         q_j_in *= -1.0
     return q_j_in
 
@@ -227,7 +217,7 @@ def map_to_joint_coords_universal(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec2f:
 @wp.func
 def map_to_joint_coords_spherical(j_r_j: wp.vec3f, j_q_j: wp.quatf) -> wp.vec4f:
     """Returns the 4D unit-quaternion representing the joint rotation."""
-    return quat_to_vec4(j_q_j)
+    return wp.vec4f(*j_q_j)
 
 
 @wp.func
@@ -344,8 +334,10 @@ def convert_angular_vel_to_universal_joint_intermediary_frame(
     a_z = wp.cross(a_x, a_y)
 
     # Project angular velocity into intermediary body frame
-    omega = screw_angular(j_u_j)
-    return screw(screw_linear(j_u_j), wp.vec3f(wp.dot(omega, a_x), wp.dot(omega, a_y), wp.dot(omega, a_z)))
+    omega = wp.spatial_bottom(j_u_j)
+    return wp.spatial_vectorf(
+        *wp.spatial_top(j_u_j), *wp.vec3f(wp.dot(omega, a_x), wp.dot(omega, a_y), wp.dot(omega, a_z))
+    )
 
 
 ###
@@ -400,7 +392,7 @@ def make_typed_write_joint_data(dof_type: JointDoFType, correction: JointCorrect
         if wp.static(num_cts > 0):
             # Construct a 6D residual vector
             j_theta_j = wp.static(get_joint_constraint_angular_residual_function(dof_type))(j_q_j)
-            j_p_j = screw(j_r_j, j_theta_j)
+            j_p_j = wp.spatial_vectorf(*j_r_j, *j_theta_j)
             # Store the joint constraint residuals
             for j in range(num_cts):
                 r_j_out[cts_offset + j] = j_p_j[cts_axes[j]]
@@ -636,14 +628,14 @@ def compute_joint_pose_and_relative_motion(
     # Extract the decomposed state of the Base body
     r_B_j = wp.transform_get_translation(T_B_j)
     q_B_j = wp.transform_get_rotation(T_B_j)
-    v_B_j = screw_linear(u_B_j)
-    omega_B_j = screw_angular(u_B_j)
+    v_B_j = wp.spatial_top(u_B_j)
+    omega_B_j = wp.spatial_bottom(u_B_j)
 
     # Extract the decomposed state of the Follower body
     r_F_j = wp.transform_get_translation(T_F_j)
     q_F_j = wp.transform_get_rotation(T_F_j)
-    v_F_j = screw_linear(u_F_j)
-    omega_F_j = screw_angular(u_F_j)
+    v_F_j = wp.spatial_top(u_F_j)
+    omega_F_j = wp.spatial_bottom(u_F_j)
 
     # Local joint frame quantities
     r_Bj = wp.quat_rotate(q_B_j, B_r_Bj)
@@ -666,7 +658,7 @@ def compute_joint_pose_and_relative_motion(
     # TODO: How can we simplify this expression and make it more efficient?
     j_v_j = wp.quat_rotate_inv(q_Bj, v_F_j - v_B_j + wp.cross(omega_F_j, r_Fj) - wp.cross(omega_B_j, r_Bj + r_j))
     j_omega_j = wp.quat_rotate_inv(q_Bj, omega_F_j - omega_B_j)
-    j_u_j = screw(j_v_j, j_omega_j)
+    j_u_j = wp.spatial_vectorf(*j_v_j, *j_omega_j)
 
     # Return the computed joint frame pose and relative motion vectors
     return p_j, j_r_j, j_q_j, j_u_j

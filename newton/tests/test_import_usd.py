@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import builtins
 import functools
 import hashlib
 import math
 import os
 import posixpath
 import tempfile
+import types
 import unittest
 import warnings
 from unittest import mock
@@ -29,7 +31,7 @@ from newton._src.solvers.mujoco.constants import (
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
 
 devices = get_test_devices()
 
@@ -2458,6 +2460,97 @@ def Xform "Articulation" (
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rigid_body_velocity(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        body = UsdGeom.Cube.Define(stage, "/World/Body")
+        body.AddRotateYOp().Set(90.0)
+        UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+        rigid_body = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        rigid_body.CreateVelocityAttr().Set(Gf.Vec3f(1.0, 2.0, 3.0))
+        rigid_body.CreateAngularVelocityAttr().Set(Gf.Vec3f(90.0, 0.0, 0.0))
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass.CreateMassAttr().Set(1.0)
+        mass.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.0, 1.0, 0.0))
+        mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0))
+
+        scene_xform = wp.transform(
+            (10.0, 20.0, 30.0),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi),
+        )
+        for bodies_follow_joint_ordering in (False, True):
+            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(
+                    stage,
+                    xform=scene_xform,
+                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                )
+                body_id = result["path_body_map"]["/World/Body"]
+                model = builder.finalize()
+                expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
+
+                assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+                assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
+
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def add_body(path, position, center_of_mass, velocity):
+            body = UsdGeom.Cube.Define(stage, path)
+            body.AddTranslateOp().Set(position)
+            rigid_body = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            rigid_body.CreateVelocityAttr().Set(velocity)
+            rigid_body.CreateAngularVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 90.0))
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr().Set(1.0)
+            mass.CreateCenterOfMassAttr().Set(center_of_mass)
+            mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0))
+            return body
+
+        root = add_body("/World/Root", Gf.Vec3d(0.0), Gf.Vec3f(0.0), Gf.Vec3f(0.0))
+        child = add_body(
+            "/World/Child",
+            Gf.Vec3d(2.0, 0.0, 0.0),
+            Gf.Vec3f(0.5, 0.0, 0.0),
+            Gf.Vec3f(0.0, 1.25 * np.pi, 0.0),
+        )
+        joint = UsdPhysics.FixedJoint.Define(stage, "/World/Joint")
+        joint.CreateBody0Rel().SetTargets([root.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(2.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, collapse_fixed_joints=True)
+        body_id = result["path_body_map"]["/World/Root"]
+        self.assertEqual(body_id, result["path_body_map"]["/World/Child"])
+        model = builder.finalize()
+        expected = np.asarray((0.0, 0.625 * np.pi, 0.0, 0.0, 0.0, 0.5 * np.pi))
+
+        assert_np_equal(model.body_com.numpy()[body_id], np.asarray((1.25, 0.0, 0.0)), tol=1.0e-6)
+        assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-6)
+        assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-6)
+
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mass_calculations(self):
         builder = newton.ModelBuilder()
 
@@ -2698,6 +2791,58 @@ class TestImportUsdPhysics(unittest.TestCase):
         assert_np_equal(npsorted(builder.shape_scale[3]), npsorted(scale), tol=1.0e-5)
         # only compare the position since the rotation is not guaranteed to be the same
         assert_np_equal(np.array(builder.shape_transform[3].p), np.array(tf.p), tol=1.0e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mesh_approximation_cfg(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def create_collision_mesh(name, approximation_method):
+            box = newton.Mesh.create_box(
+                1.0,
+                1.0,
+                1.0,
+                duplicate_vertices=False,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*p) for p in box.vertices.tolist()])
+            meshColAPI = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+            meshColAPI.GetApproximationAttr().Set(approximation_method)
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        create_collision_mesh("/meshDecomposition", UsdPhysics.Tokens.convexDecomposition)
+        create_collision_mesh("/meshConvexHull", UsdPhysics.Tokens.convexHull)
+
+        self.assertEqual(newton.ModelBuilder().default_mesh_approximation_cfg.coacd_threshold, 0.05)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.05)
+
+            captured.clear()
+            builder = newton.ModelBuilder()
+            builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+            builder.add_usd(stage)
+            self.assertEqual(captured["threshold"], 0.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_visual_match_collision_shapes(self):
@@ -4369,7 +4514,7 @@ def Xform "Root" (
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
     """Verify model based on the UsdPhysics Parsing Utils"""
     # [1] https://openusd.org/release/api/usd_physics_page_front.html
-    from pxr import Sdf, Usd, UsdPhysics
+    from pxr import Gf, Sdf, Usd, UsdPhysics
 
     stage = Usd.Stage.Open(file)
     parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
@@ -4402,17 +4547,25 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
         prim = stage.GetPrimAtPath(body_path)
         if prim.HasAPI(UsdPhysics.MassAPI):
             mass_api = UsdPhysics.MassAPI(prim)
-            # Parents' explicit total masses override any mass properties specified further down in the subtree. [1]
-            if mass_api.GetMassAttr().HasAuthoredValue():
-                mass = mass_api.GetMassAttr().Get()
+            # Parents' effective total masses override mass properties further down the subtree. [1]
+            mass = mass_api.GetMassAttr().Get()
+            if mass is not None and math.isfinite(mass) and mass > 0.0:
                 test.assertAlmostEqual(body_mass[body_idx], mass, places=5)
-            if mass_api.GetDiagonalInertiaAttr().HasAuthoredValue():
-                diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
-                principal_axes = mass_api.GetPrincipalAxesAttr().Get().Normalize()
+            diag_inertia = mass_api.GetDiagonalInertiaAttr().Get()
+            if (
+                diag_inertia is not None
+                and any(v != 0.0 for v in diag_inertia)
+                and all(math.isfinite(v) and v >= 0.0 for v in diag_inertia)
+            ):
+                principal_axes = mass_api.GetPrincipalAxesAttr().Get()
+                if principal_axes is None or principal_axes == Gf.Quatf(0.0):
+                    principal_axes = Gf.Quatf(1.0)
+                else:
+                    principal_axes = principal_axes.GetNormalized()
                 p = np.array(wp.quat_to_matrix(wp.quat(*principal_axes.imaginary, principal_axes.real))).reshape((3, 3))
                 inertia = p @ np.diag(diag_inertia) @ p.T
                 assert_np_equal(body_inertia[body_idx], inertia, tol=1e-5)
-    # Rigid bodies that don't have mass and inertia parameters authored will not be checked
+    # Rigid bodies without effective mass and inertia values will not be checked.
     # TODO: check bodies with CollisionAPI children that have MassAPI specified
 
     joint_mapping = {
@@ -5834,6 +5987,52 @@ def Xform "Body" (
 
 class TestImportSampleAssetsParsing(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_add_usd_mjc_schemas_without_mujoco(self):
+        asset_path = os.path.join(os.path.dirname(__file__), "assets", "mjc_schema_import.usda")
+        original_import = builtins.__import__
+        optional_runtime_imports = []
+
+        def track_optional_runtime_imports(name, *args, **kwargs):
+            if name.partition(".")[0] in {"mujoco", "mujoco_warp"}:
+                optional_runtime_imports.append(name)
+            return original_import(name, *args, **kwargs)
+
+        for register_mujoco, convert_equalities in (
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ):
+            with self.subTest(register_mujoco=register_mujoco, convert_equalities=convert_equalities):
+                builder = newton.ModelBuilder()
+                if register_mujoco:
+                    SolverMuJoCo.register_custom_attributes(builder)
+
+                optional_runtime_imports.clear()
+                with mock.patch.object(builtins, "__import__", side_effect=track_optional_runtime_imports):
+                    builder.add_usd(
+                        asset_path,
+                        convert_mjc_equality_constraints=convert_equalities,
+                        schema_resolvers=[usd.SchemaResolverMjc()],
+                    )
+                self.assertEqual(optional_runtime_imports, [])
+
+                model = builder.finalize()
+                self.assertEqual(model.mujoco.equality_constraint_count, 3)
+                self.assertEqual(model.constraint_mimic_count, int(convert_equalities))
+                self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), int(register_mujoco))
+
+                if register_mujoco:
+                    np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_gaintype.numpy(), [0])
+                    np.testing.assert_array_equal(model.mujoco.actuator_biastype.numpy(), [1])
+                    self.assertIn(int(newton.JointTargetMode.POSITION), builder.joint_target_mode)
+                    self.assertEqual(
+                        set(model.mujoco.solreflimit_mode.numpy().tolist()),
+                        {SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_RAW, SOLREF_MODE_MJCF_DEFAULT},
+                    )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_jnt_actgravcomp_parsing(self):
         """Test that jnt_actgravcomp attribute is parsed correctly from USD."""
         from pxr import Usd
@@ -7017,6 +7216,494 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_fallback_values_are_ignored(self):
+        """Explicitly authored MassAPI schema fallbacks behave like unauthored values."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        fallback_authors = {
+            "Mass": lambda api: api.CreateMassAttr().Set(0.0),
+            "Density": lambda api: api.CreateDensityAttr().Set(0.0),
+            "Inertia": lambda api: api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.0)),
+            "CenterOfMass": lambda api: api.CreateCenterOfMassAttr().Set(Gf.Vec3f(-math.inf)),
+            "PrincipalAxes": lambda api: api.CreatePrincipalAxesAttr().Set(Gf.Quatf(0.0)),
+        }
+
+        body_pairs = []
+        for name, author_fallback in fallback_authors.items():
+            pair = []
+            for suffix in ("Unauthored", "Authored"):
+                body_path = f"/World/{name}{suffix}"
+                body = UsdGeom.Xform.Define(stage, body_path)
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                if suffix == "Authored":
+                    author_fallback(mass_api)
+
+                collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                collider.CreateSizeAttr().Set(0.2)
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                pair.append(body_path)
+            body_pairs.append((name, pair))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        for name, (unauthored_path, authored_path) in body_pairs:
+            with self.subTest(attribute=name):
+                unauthored = result["path_body_map"][unauthored_path]
+                authored = result["path_body_map"][authored_path]
+                self.assertAlmostEqual(builder.body_mass[authored], builder.body_mass[unauthored], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[authored], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
+                )
+                np.testing.assert_allclose(
+                    builder.body_com[authored], builder.body_com[unauthored], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_zero_inertia_with_authored_mass_scales_accumulated(self):
+        """A zero diagonalInertia sentinel must not disable inertia scaling to authored mass."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        for name, author_zero_inertia in (("MassOnly", False), ("MassAndZeroInertia", True)):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass_api.CreateMassAttr().Set(5.0)
+            if author_zero_inertia:
+                mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.0))
+
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        mass_only = result["path_body_map"]["/World/MassOnly"]
+        zero_inertia = result["path_body_map"]["/World/MassAndZeroInertia"]
+        self.assertAlmostEqual(builder.body_mass[zero_inertia], builder.body_mass[mass_only], places=6)
+        np.testing.assert_allclose(
+            builder.body_inertia[zero_inertia], builder.body_inertia[mass_only], atol=1e-6, rtol=1e-6
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_non_finite_mass_and_density_are_ignored(self):
+        """Non-finite authored body mass/density values fall back like the 0.0 sentinel."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        invalid_authors = {
+            "Mass": lambda api: api.CreateMassAttr().Set(math.inf),
+            "Density": lambda api: api.CreateDensityAttr().Set(math.inf),
+        }
+
+        body_pairs = []
+        for name, author_invalid in invalid_authors.items():
+            pair = []
+            for suffix in ("Unauthored", "Authored"):
+                body_path = f"/World/{name}{suffix}"
+                body = UsdGeom.Xform.Define(stage, body_path)
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                if suffix == "Authored":
+                    author_invalid(mass_api)
+
+                collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                collider.CreateSizeAttr().Set(0.2)
+                UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                pair.append(body_path)
+            body_pairs.append((name, pair))
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage)
+
+        for name, (unauthored_path, authored_path) in body_pairs:
+            with self.subTest(attribute=name):
+                unauthored = result["path_body_map"][unauthored_path]
+                authored = result["path_body_map"][authored_path]
+                self.assertAlmostEqual(builder.body_mass[authored], builder.body_mass[unauthored], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[authored], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_finite_material_density_uses_default(self):
+        """A non-finite physics material density warns and falls back to the importer default."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        for invalid_density in (math.inf, math.nan):
+            with self.subTest(density=invalid_density):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                body = UsdGeom.Xform.Define(stage, "/World/Body")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+                collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+                collider.CreateSizeAttr().Set(2.0)  # side length = 2.0 -> volume = 8.0
+                collider_prim = collider.GetPrim()
+                UsdPhysics.CollisionAPI.Apply(collider_prim)
+
+                material = UsdShade.Material.Define(stage, "/World/Materials/Invalid")
+                UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDensityAttr().Set(invalid_density)
+                UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, materialPurpose="physics")
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"material density must be finite"):
+                    result = builder.add_usd(stage)
+
+                body_idx = result["path_body_map"]["/World/Body"]
+                expected_mass = builder.default_shape_cfg.density * 8.0
+                self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collider_massapi_invalid_mass_warns_and_uses_geometry(self):
+        """Invalid non-fallback collider mass warns; the 0.0 fallback stays silent."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        def make_stage(collider_mass, collider_diag):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim())  # incomplete -> compute fallback
+
+            collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+            collider_mass_api.CreateMassAttr().Set(collider_mass)
+            collider_mass_api.CreateDiagonalInertiaAttr().Set(collider_diag)
+            return stage
+
+        for invalid_mass in (-1.0, math.inf, math.nan):
+            with self.subTest(mass=invalid_mass):
+                with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(make_stage(invalid_mass, Gf.Vec3f(0.1)))
+                # The collider falls back to geometry-derived mass information.
+                body_idx = result["path_body_map"]["/World/Body"]
+                expected_mass = builder.default_shape_cfg.density * 0.2**3
+                self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+
+        # Invalid mass warns even when the authored diagonal inertia is the zero fallback.
+        with self.assertWarnsRegex(UserWarning, r"mass must be positive and finite"):
+            newton.ModelBuilder().add_usd(make_stage(-1.0, Gf.Vec3f(0.0)))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            newton.ModelBuilder().add_usd(make_stage(0.0, Gf.Vec3f(0.1)))
+        self.assertFalse([w for w in caught if "must be positive and finite" in str(w.message)])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_diag_inertia_is_unspecified_and_warns(self):
+        """Negative or non-finite body diagonalInertia warns and falls back like unauthored."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for label, invalid_diag in (
+            ("Negative", Gf.Vec3f(-1e-6, 2e-6, 3e-6)),
+            ("Inf", Gf.Vec3f(math.inf, 2e-6, 3e-6)),
+            ("NaN", Gf.Vec3f(math.nan, 2e-6, 3e-6)),
+        ):
+            with self.subTest(value=label):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                for name, author_invalid in (("Control", False), ("Invalid", True)):
+                    body_path = f"/World/{name}"
+                    body = UsdGeom.Xform.Define(stage, body_path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                    mass_api.CreateMassAttr().Set(5.0)
+                    mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.01, 0.02, 0.03))
+                    if author_invalid:
+                        mass_api.CreateDiagonalInertiaAttr().Set(invalid_diag)
+
+                    collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                    collider.CreateSizeAttr().Set(0.2)
+                    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"diagonalInertia must have finite, nonnegative components"):
+                    result = builder.add_usd(stage)
+
+                control = result["path_body_map"]["/World/Control"]
+                invalid = result["path_body_map"]["/World/Invalid"]
+                self.assertAlmostEqual(builder.body_mass[invalid], builder.body_mass[control], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[invalid], builder.body_inertia[control], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_collider_diag_inertia_is_unspecified_and_warns(self):
+        """Negative or non-finite collider diagonalInertia warns and falls back like unauthored."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        for label, invalid_diag in (
+            ("Negative", Gf.Vec3f(-1e-6, 2e-6, 3e-6)),
+            ("Inf", Gf.Vec3f(math.inf, 2e-6, 3e-6)),
+            ("NaN", Gf.Vec3f(math.nan, 2e-6, 3e-6)),
+        ):
+            with self.subTest(value=label):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                for name, author_invalid in (("Control", False), ("Invalid", True)):
+                    body_path = f"/World/{name}"
+                    body = UsdGeom.Xform.Define(stage, body_path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.MassAPI.Apply(body.GetPrim())  # incomplete -> compute fallback
+
+                    collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                    collider.CreateSizeAttr().Set(0.2)
+                    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                    collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+                    collider_mass_api.CreateMassAttr().Set(5.0)
+                    if author_invalid:
+                        collider_mass_api.CreateDiagonalInertiaAttr().Set(invalid_diag)
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"diagonalInertia must have finite, nonnegative components"):
+                    result = builder.add_usd(stage)
+
+                control = result["path_body_map"]["/World/Control"]
+                invalid = result["path_body_map"]["/World/Invalid"]
+                self.assertAlmostEqual(builder.body_mass[invalid], builder.body_mass[control], places=6)
+                invalid_inertia = np.array(builder.body_inertia[invalid])
+                self.assertTrue(np.isfinite(invalid_inertia).all())
+                if label == "Negative":
+                    # Non-finite values also reach OpenUSD's aggregation directly from the
+                    # stage and alter its result; fixing that is a deferred follow-up.
+                    np.testing.assert_allclose(invalid_inertia, builder.body_inertia[control], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_blocked_attributes_are_unspecified(self):
+        """Blocked MassAPI attributes resolve to no value and behave like unauthored ones."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        for name in ("Unauthored", "Blocked", "BlockedCom", "BlockedCollider"):
+            body_path = f"/World/{name}"
+            body = UsdGeom.Xform.Define(stage, body_path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            if name in ("Blocked", "BlockedCom"):
+                mass_api.CreateMassAttr().Set(5.0)
+                mass_api.CreateDensityAttr().Set(2000.0)
+                mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0))
+                mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(1.0))
+                blocked_attrs = [
+                    mass_api.GetMassAttr(),
+                    mass_api.GetDensityAttr(),
+                    mass_api.GetDiagonalInertiaAttr(),
+                    mass_api.GetPrincipalAxesAttr(),
+                ]
+                if name == "BlockedCom":
+                    mass_api.CreateCenterOfMassAttr().Set(Gf.Vec3f(1.0, 0.0, 0.0))
+                    blocked_attrs.append(mass_api.GetCenterOfMassAttr())
+                for attr in blocked_attrs:
+                    attr.Block()
+
+            collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            if name == "BlockedCollider":
+                collider_mass_api = UsdPhysics.MassAPI.Apply(collider.GetPrim())
+                collider_mass_api.CreateMassAttr().Set(5.0)
+                collider_mass_api.GetMassAttr().Block()
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        unauthored = result["path_body_map"]["/World/Unauthored"]
+        for name in ("Blocked", "BlockedCom", "BlockedCollider"):
+            body_idx = result["path_body_map"][f"/World/{name}"]
+            self.assertAlmostEqual(builder.body_mass[body_idx], builder.body_mass[unauthored], places=6)
+            np.testing.assert_allclose(
+                builder.body_inertia[body_idx], builder.body_inertia[unauthored], atol=1e-6, rtol=1e-6
+            )
+            np.testing.assert_allclose(builder.body_com[body_idx], builder.body_com[unauthored], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_blocked_attribute_preserves_mass_precedence(self):
+        """A blocked fallback must not let density rescale inertia when mass wins."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        for name, block_principal_axes in (("Control", False), ("Blocked", True)):
+            body_path = f"/World/{name}"
+            body = UsdGeom.Xform.Define(stage, body_path)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass_api.CreateMassAttr().Set(5.0)
+            mass_api.CreateDensityAttr().Set(2000.0)
+            if block_principal_axes:
+                mass_api.CreatePrincipalAxesAttr().Block()
+
+            collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Body /World/(Control|Blocked): authored mass and density without authored diagonalInertia",
+                category=UserWarning,
+            )
+            result = builder.add_usd(stage)
+
+        control = result["path_body_map"]["/World/Control"]
+        blocked = result["path_body_map"]["/World/Blocked"]
+        self.assertAlmostEqual(builder.body_mass[blocked], builder.body_mass[control], places=6)
+        np.testing.assert_allclose(builder.body_inertia[blocked], builder.body_inertia[control], atol=1e-6, rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_body_values_warn(self):
+        """Invalid non-fallback body mass/density warn when the authored override is dropped."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        def make_stage(author):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            author(UsdPhysics.MassAPI.Apply(body.GetPrim()))
+            collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+            collider.CreateSizeAttr().Set(0.2)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            return stage
+
+        for invalid_mass in (-5.0, math.inf, math.nan):
+            with self.subTest(mass=invalid_mass):
+                with self.assertWarnsRegex(UserWarning, r"authored mass is not positive and finite"):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        make_stage(lambda api, value=invalid_mass: api.CreateMassAttr().Set(value))
+                    )
+                body_idx = result["path_body_map"]["/World/Body"]
+                self.assertGreater(builder.body_mass[body_idx], 0.0)
+
+        control_builder = newton.ModelBuilder()
+        control_result = control_builder.add_usd(make_stage(lambda api: None))
+        control_idx = control_result["path_body_map"]["/World/Body"]
+        for invalid_density in (-1.0, math.inf, math.nan):
+            with self.subTest(density=invalid_density):
+                with self.assertWarnsRegex(UserWarning, r"MassAPI density must be positive and finite"):
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        make_stage(lambda api, value=invalid_density: api.CreateDensityAttr().Set(value))
+                    )
+                body_idx = result["path_body_map"]["/World/Body"]
+                self.assertAlmostEqual(builder.body_mass[body_idx], control_builder.body_mass[control_idx], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[body_idx], control_builder.body_inertia[control_idx], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_invalid_collider_density_warns(self):
+        """Invalid collider density warns and falls back like an unspecified value."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        for invalid_density in (-1.0, math.inf, math.nan):
+            with self.subTest(density=invalid_density):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+                for name, density in (("Control", None), ("Invalid", invalid_density)):
+                    body_path = f"/World/{name}"
+                    body = UsdGeom.Xform.Define(stage, body_path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.MassAPI.Apply(body.GetPrim())
+
+                    collider = UsdGeom.Cube.Define(stage, f"{body_path}/Collider")
+                    collider.CreateSizeAttr().Set(0.2)
+                    UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+                    if density is not None:
+                        UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateDensityAttr().Set(density)
+
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, r"MassAPI density must be positive and finite"):
+                    result = builder.add_usd(stage)
+
+                control = result["path_body_map"]["/World/Control"]
+                invalid = result["path_body_map"]["/World/Invalid"]
+                self.assertAlmostEqual(builder.body_mass[invalid], builder.body_mass[control], places=6)
+                np.testing.assert_allclose(
+                    builder.body_inertia[invalid], builder.body_inertia[control], atol=1e-6, rtol=1e-6
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_density_rescale_keeps_inverse_inertia_consistent(self):
+        """The accumulated-property fallback rescales inertia and its inverse together."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateDensityAttr().Set(2000.0)
+
+        # A non-finite collider mass drives ComputeMassProperties to a non-finite
+        # result, entering the accumulated-property fallback with a density rescale.
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(0.2)
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+        UsdPhysics.MassAPI.Apply(collider.GetPrim()).CreateMassAttr().Set(math.inf)
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            result = builder.add_usd(stage)
+
+        body_idx = result["path_body_map"]["/World/Body"]
+        self.assertAlmostEqual(builder.body_mass[body_idx], 2000.0 * 0.2**3, places=4)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        inv_inertia = np.array(builder.body_inv_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), atol=1e-5, rtol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
         """Authored mass without inertia should produce inertia consistent with a uniform-density body.
 
@@ -8170,7 +8857,7 @@ def Xform "Articulation" (
         builder.add_usd(stage)
 
         # Gravity should be enabled (non-zero)
-        self.assertNotEqual(builder.gravity, 0.0)
+        self.assertGreater(np.linalg.norm(np.asarray(builder.gravity)), 0.0)
 
         # Test with gravity disabled via newton:gravityEnabled
         stage2 = Usd.Stage.CreateInMemory()
@@ -8189,7 +8876,7 @@ def Xform "Articulation" (
         builder2.add_usd(stage2)
 
         # Gravity should be disabled (zero)
-        self.assertEqual(builder2.gravity, 0.0)
+        np.testing.assert_allclose(builder2.gravity, (0.0, 0.0, 0.0))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_non_unit_linear_unit(self):
@@ -8211,7 +8898,59 @@ def Xform "Articulation" (
         with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
             builder.add_usd(stage)
 
-        self.assertAlmostEqual(builder.gravity, -12.34, places=6)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -12.34), atol=1.0e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_gravity_direction(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(3.0, 4.0, 0.0))
+        scene.CreateGravityMagnitudeAttr().Set(10.0)
+
+        body = UsdGeom.Cube.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-6)
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.begin_world()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+        )
+        np.testing.assert_allclose(builder.world_gravity[0], (-8.0, 6.0, 0.0), atol=1.0e-5)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi)),
+            override_root_xform=True,
+        )
+        np.testing.assert_allclose(builder.gravity, (6.0, 8.0, 0.0), atol=1.0e-5)
+
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        scene.GetGravityDirectionAttr().Set(Gf.Vec3f(0.0, -1.0, 0.0))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -10.0), atol=1.0e-5)
+
+        # Unauthored direction/magnitude sentinels resolve to standard gravity along -up_axis
+        stage2 = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage2, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage2, 1.0)
+        UsdPhysics.Scene.Define(stage2, "/physicsScene")
+        body2 = UsdGeom.Cube.Define(stage2, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body2.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body2.GetPrim())
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage2)
+        np.testing.assert_allclose(builder.gravity, (0.0, 0.0, -9.81), atol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_time_steps_per_second_parsing(self):
@@ -9663,11 +10402,11 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_with_visual & ShapeFlags.COLLIDE_SHAPES)
         self.assertFalse(flags_with_visual & ShapeFlags.VISIBLE)
 
-        # Collision shapes on bodies WITHOUT visuals should auto-get VISIBLE
+        # Collision shapes on bodies WITHOUT visuals should remain hidden by default
         collision_no_visual = path_shape_map["/BodyWithoutVisuals/CollisionSphere"]
         flags_no_visual = builder.shape_flags[collision_no_visual]
         self.assertTrue(flags_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags_no_visual & ShapeFlags.VISIBLE)
+        self.assertFalse(flags_no_visual & ShapeFlags.VISIBLE)
 
         # force_show_colliders=True: collision shapes always get VISIBLE
         builder2 = newton.ModelBuilder()
@@ -9679,8 +10418,7 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
 
-        # hide_collision_shapes=True: hide colliders on bodies that have visuals
-        # but keep colliders visible on bodies with no visual-only geometry.
+        # hide_collision_shapes=True keeps colliders hidden by default.
         builder3 = newton.ModelBuilder()
         result3 = builder3.add_usd(stage, hide_collision_shapes=True)
         path_shape_map3 = result3["path_shape_map"]
@@ -9691,9 +10429,10 @@ def Xform "BodyWithoutVisuals" (
 
         flags_fallback_no_visual = builder3.shape_flags[path_shape_map3["/BodyWithoutVisuals/CollisionSphere"]]
         self.assertTrue(flags_fallback_no_visual & ShapeFlags.COLLIDE_SHAPES)
-        self.assertTrue(flags_fallback_no_visual & ShapeFlags.VISIBLE)
+        self.assertFalse(flags_fallback_no_visual & ShapeFlags.VISIBLE)
 
-        # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
+        # load_visual_shapes=False: collision shapes remain visible because no
+        # visual geometry is loaded for this import.
         builder4 = newton.ModelBuilder()
         result4 = builder4.add_usd(stage, load_visual_shapes=False)
         path_shape_map4 = result4["path_shape_map"]
@@ -9702,6 +10441,148 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collision_only_asset_keeps_colliders_visible(self):
+        """Collision-only USD assets must remain visible by default."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    def Sphere "CollisionSphere" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        collision_flags = builder.shape_flags[result["path_shape_map"]["/Body/CollisionSphere"]]
+        self.assertTrue(collision_flags & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_flags & ShapeFlags.VISIBLE)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_guide_purpose_shapes_not_visible(self):
+        """Guide-purpose prims (e.g. collision geometry authored by MuJoCo-USD
+        converters) should not be loaded as visible visual shapes."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "Body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+
+    def Sphere "ProxySphere"
+    {
+        uniform token purpose = "proxy"
+        double radius = 0.3
+    }
+
+    def Sphere "RenderSphere"
+    {
+        uniform token purpose = "render"
+        double radius = 0.3
+    }
+
+    def Sphere "GuideVisualSphere"
+    {
+        uniform token purpose = "guide"
+        double radius = 0.3
+    }
+
+    def Cube "GuideCollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token purpose = "guide"
+        bool physics:collisionEnabled = false
+        double size = 1.0
+    }
+
+    def Cube "EnabledGuideCollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        uniform token purpose = "guide"
+        double size = 1.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        # Regular visual shapes stay visible.
+        flags_visual = builder.shape_flags[path_shape_map["/Body/VisualSphere"]]
+        self.assertTrue(flags_visual & ShapeFlags.VISIBLE)
+
+        # Proxy-purpose prims are the intended preview representation and stay visible.
+        flags_proxy = builder.shape_flags[path_shape_map["/Body/ProxySphere"]]
+        self.assertTrue(flags_proxy & ShapeFlags.VISIBLE)
+
+        # Render-purpose prims are offline-renderer content: viewports (which Newton's
+        # viewer is) draw default + proxy and hide guide + render.
+        flags_render = builder.shape_flags[path_shape_map["/Body/RenderSphere"]]
+        self.assertFalse(flags_render & ShapeFlags.VISIBLE)
+
+        # The most direct case: a pure visual guide mesh, no collision API involved.
+        flags_guide_visual = builder.shape_flags[path_shape_map["/Body/GuideVisualSphere"]]
+        self.assertFalse(flags_guide_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_guide_visual & ShapeFlags.VISIBLE)
+
+        # A disabled guide-purpose collider is loaded as a visual-only shape but must not be drawn.
+        flags_guide = builder.shape_flags[path_shape_map["/Body/GuideCollisionBox"]]
+        self.assertFalse(flags_guide & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_guide & ShapeFlags.VISIBLE)
+
+        # An enabled guide-purpose collider still collides; its display keeps following
+        # the collider policy (hidden here because the body has visual shapes).
+        flags_enabled_guide = builder.shape_flags[path_shape_map["/Body/EnabledGuideCollisionBox"]]
+        self.assertTrue(flags_enabled_guide & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_enabled_guide & ShapeFlags.VISIBLE)
+
+        # force_show_colliders still reveals guide-purpose colliders for debugging. A
+        # *disabled* guide collider is no collider at all (it imported as guide visual
+        # content), so the collider policy does not apply and it stays hidden — like any
+        # USD viewport would hide it; reveal it by changing purpose/visibility on the stage.
+        builder2 = newton.ModelBuilder()
+        result2 = builder2.add_usd(stage, force_show_colliders=True)
+        flags_forced = builder2.shape_flags[result2["path_shape_map"]["/Body/EnabledGuideCollisionBox"]]
+        self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
+        flags_disabled_forced = builder2.shape_flags[result2["path_shape_map"]["/Body/GuideCollisionBox"]]
+        self.assertFalse(flags_disabled_forced & ShapeFlags.VISIBLE)
 
     @staticmethod
     def _create_stage_with_pbr_collision_mesh(color, roughness, metallic, *, add_visual_sphere=False):
@@ -9947,7 +10828,7 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_invisible_visual_sibling_does_not_suppress_collider_visibility(self):
-        """An invisible visual shape must not prevent fallback-visible colliders."""
+        """An invisible visual shape must not suppress fallback-visible colliders."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -9989,8 +10870,8 @@ def Xform "Body" (
         vis_shape = path_shape_map["/Body/InvisibleVisual"]
         self.assertFalse(builder.shape_flags[vis_shape] & ShapeFlags.VISIBLE)
 
-        # Collider must remain visible because no *visible* visual shapes
-        # exist for this body.
+        # The collider remains visible because the import has no effectively
+        # visible visual shapes.
         collision_shape = path_shape_map["/Body/CollisionBox"]
         flags = builder.shape_flags[collision_shape]
         self.assertTrue(flags & ShapeFlags.COLLIDE_SHAPES)
@@ -11552,13 +12433,14 @@ def Xform "World"
         temperature = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
         region_id = np.array([7], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 
@@ -11570,6 +12452,37 @@ def Xform "World"
         arr, freq = tm.custom_attributes["regionId"]
         assert_np_equal(arr, region_id)
         self.assertEqual(freq, newton.Model.AttributeFrequency.TETRAHEDRON)
+
+    def test_tetmesh_custom_attributes_infer_once(self):
+        """Test that length-1 arrays are inferred as ONCE when unambiguous."""
+        vertices = np.array(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0.5]],
+            dtype=np.float32,
+        )
+        tet_indices = np.array([0, 1, 2, 3, 0, 1, 2, 4], dtype=np.int32)
+        constant = np.array([42.0], dtype=np.float32)
+
+        tm = newton.TetMesh(
+            vertices,
+            tet_indices,
+            custom_attributes={"constant": constant},
+        )
+
+        arr, freq = tm.custom_attributes["constant"]
+        assert_np_equal(arr, constant)
+        self.assertEqual(freq, newton.Model.AttributeFrequency.ONCE)
+
+    def test_tetmesh_custom_attributes_ambiguous_once(self):
+        """Test that length-1 arrays raise when tet_count is also 1."""
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        tet_indices = np.array([0, 1, 2, 3], dtype=np.int32)
+
+        with self.assertRaisesRegex(ValueError, "ONCE"):
+            newton.TetMesh(
+                vertices,
+                tet_indices,
+                custom_attributes={"ambig": np.array([1.0], dtype=np.float32)},
+            )
 
     def test_tetmesh_custom_attributes_empty_by_default(self):
         """Test TetMesh has empty custom_attributes when none are provided."""
@@ -11616,13 +12529,14 @@ def Xform "World"
         temperature = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
         region_id = np.array([3], dtype=np.int32)
 
-        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency
+        # Single tet: vertex_count == tri_count == 4, so temperature needs explicit frequency.
+        # regionId also needs explicit frequency because tet_count == 1 is ambiguous with ONCE.
         tm = newton.TetMesh(
             vertices,
             tet_indices,
             custom_attributes={
                 "temperature": (temperature, newton.Model.AttributeFrequency.PARTICLE),
-                "regionId": region_id,
+                "regionId": (region_id, newton.Model.AttributeFrequency.TETRAHEDRON),
             },
         )
 

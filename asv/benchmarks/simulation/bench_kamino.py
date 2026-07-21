@@ -8,6 +8,8 @@ from typing import ClassVar
 import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
+import newton
+
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
@@ -113,6 +115,69 @@ class KpiDRLegs(_KpiBenchmark):
     samples = 2
 
 
+class NotifyDRLegs:
+    """Benchmark Kamino model notifications for 2048 DR Legs worlds."""
+
+    number = 10
+    repeat = 7
+    rounds = 1
+    timeout = 3600
+    world_count = 2048
+
+    def setup(self):
+        builder = DRLegsBenchmarkWorkload.create_model_builder("dr_legs", self.world_count)
+        model = builder.finalize(skip_validation_joints=True)
+        self._solver = newton.solvers.SolverKamino(model)
+        for flag in (
+            newton.ModelFlags.MODEL_PROPERTIES,
+            newton.ModelFlags.BODY_PROPERTIES,
+            newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
+            newton.ModelFlags.SHAPE_PROPERTIES,
+            newton.ModelFlags.JOINT_PROPERTIES,
+            newton.ModelFlags.JOINT_DOF_PROPERTIES,
+            newton.ModelFlags.ACTUATOR_PROPERTIES,
+            newton.ModelFlags.ALL,
+        ):
+            self._solver.notify_model_changed(flag)
+        wp.synchronize_device()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_actuator_properties(self):
+        self._notify(newton.ModelFlags.ACTUATOR_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_all(self):
+        self._notify(newton.ModelFlags.ALL)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_body_inertial_properties(self):
+        self._notify(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_body_properties(self):
+        self._notify(newton.ModelFlags.BODY_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_joint_dof_properties(self):
+        self._notify(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_joint_properties(self):
+        self._notify(newton.ModelFlags.JOINT_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_model_properties(self):
+        self._notify(newton.ModelFlags.MODEL_PROPERTIES)
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_notify_shape_properties(self):
+        self._notify(newton.ModelFlags.SHAPE_PROPERTIES)
+
+    def _notify(self, flag):
+        self._solver.notify_model_changed(flag)
+        wp.synchronize_device()
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -121,6 +186,7 @@ if __name__ == "__main__":
     benchmark_list = {
         "FastDRLegs": FastDRLegs,
         "KpiDRLegs": KpiDRLegs,
+        "NotifyDRLegs": NotifyDRLegs,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

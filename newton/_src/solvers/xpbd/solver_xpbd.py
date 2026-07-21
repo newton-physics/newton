@@ -341,8 +341,9 @@ class SolverXPBD(SolverBase, CouplingInterface):
             state_in: State at the beginning of the time step.
             state_out: State that receives the simulation result.
             control: Control inputs. If ``None``, the model's default control values are used.
-            contacts: Contact data produced by :meth:`~newton.Model.collide`. If ``None``, rigid and particle-shape
-                contact handling is skipped; particle-particle contacts and model constraints are still solved.
+            contacts: Contact data populated by :meth:`~newton.CollisionPipeline.collide` and allocated with
+                :meth:`~newton.CollisionPipeline.contacts`. If ``None``, rigid and particle-shape contact handling
+                is skipped; particle-particle contacts and model constraints are still solved.
             dt: Time step size [s].
         """
         self._apply_module_options()
@@ -480,6 +481,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
 
                         # particle-rigid body contacts (besides ground plane)
                         if model.shape_count and contacts is not None:
+                            contacts._assert_particle_only_soft_contacts("SolverXPBD")
                             wp.launch(
                                 kernel=solve_particle_shape_contacts,
                                 dim=contacts.soft_contact_max,

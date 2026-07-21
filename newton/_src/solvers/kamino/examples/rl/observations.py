@@ -14,6 +14,12 @@ from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton._src.solvers.kamino.examples.rl.utils import StackedIndices, periodic_encoding
 
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
 # ---------------------------------------------------------------------------
 # Warp helpers for BipedalObservation
 # ---------------------------------------------------------------------------

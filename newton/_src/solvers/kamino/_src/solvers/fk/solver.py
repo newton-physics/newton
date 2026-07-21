@@ -182,9 +182,27 @@ class ForwardKinematicsSolver:
         num_joints_prev = self.model.info.num_joints.numpy().copy()  # Number of joints per world
         first_joint_id_prev = np.concatenate(([0], num_joints_prev.cumsum()))  # Index of first joint per world
 
+        # Resolve custom actuation types
+        joints_act_type_prev = self.model.joints.act_type.numpy().copy()
+        if self.model.joints.fk_act_flag is not None:
+            joints_fk_act_flag = self.model.joints.fk_act_flag.numpy()
+            mapping = np.array([-1, JointActuationType.PASSIVE, JointActuationType.FORCE])
+            joints_fk_act_type = mapping[joints_fk_act_flag + 1]  # Map 0/1 flags to enum constants
+            overwrite_mask = joints_fk_act_flag != -1
+            joints_act_type_prev[overwrite_mask] = joints_fk_act_type[overwrite_mask]
+
         # Retrieve / compute dimensions - Actuated coordinates/dofs (main model)
-        actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
-        actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
+        if self.model.joints.fk_act_flag is None:
+            actuated_coord_offsets_prev = self.model.joints.actuated_coords_offset.numpy().copy()
+            actuated_dof_offsets_prev = self.model.joints.actuated_dofs_offset.numpy().copy()
+        else:
+            num_act_coords = self.model.joints.num_coords.numpy()
+            num_act_dofs = self.model.joints.num_dofs.numpy()
+            passive_mask = joints_act_type_prev == JointActuationType.PASSIVE
+            num_act_coords[passive_mask] = 0
+            num_act_dofs[passive_mask] = 0
+            actuated_coord_offsets_prev = np.concatenate(([0], num_act_coords.cumsum()))
+            actuated_dof_offsets_prev = np.concatenate(([0], num_act_dofs.cumsum()))
 
         # Determine which worlds are equivalent for FK (at least discrete data)
         classes = compute_fk_equivalence_classes(self.model)
@@ -194,7 +212,6 @@ class ForwardKinematicsSolver:
         # - actuated free joints to reset the base position/orientation
         # - axis joints to factor out superfluous DoFs at tie rods
         joints_dof_type_prev = self.model.joints.dof_type.numpy().copy()
-        joints_act_type_prev = self.model.joints.act_type.numpy().copy()
         joints_bid_B_prev = self.model.joints.bid_B.numpy().copy()
         joints_bid_F_prev = self.model.joints.bid_F.numpy().copy()
         joints_B_r_Bj_prev = self.model.joints.B_r_Bj.numpy().copy()
@@ -1909,7 +1926,7 @@ class ForwardKinematicsSolver:
 
         Args:
             actuators_u: Array of actuated joint velocities.
-                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_dofs,)``.
             bodies_q: Array of rigid body poses. Must be the solution of FK given the position-control transforms.
                 Expects shape of ``(num_bodies,)``.
             bodies_u: Array of rigid body velocities (twists), written out by the solver.
@@ -1972,7 +1989,7 @@ class ForwardKinematicsSolver:
 
         Args:
             actuators_q: Array of actuated joint coordinates.
-                Expects shape of ``(sum_of_num_actuated_joint_coords,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_coords,)``.
             bodies_q: Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
                 solver setting is False.
                 Expects shape of ``(num_bodies,)``.
@@ -1984,7 +2001,7 @@ class ForwardKinematicsSolver:
             actuators_u: Array of actuated joint velocities.
                 Must be provided when solving for body velocities, i.e. if bodies_u is provided.
                 If this function is captured in a graph, must be either always or never provided.
-                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_dofs,)``.
             base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
                 absolute otherwise.
                 If not provided, will default to zero. Ignored if no base body or joint was set for this model.
@@ -2096,7 +2113,7 @@ class ForwardKinematicsSolver:
 
         Args:
             actuators_q: Array of actuated joint coordinates.
-                Expects shape of ``(sum_of_num_actuated_joint_coords,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_coords,)``.
             bodies_q: Array of rigid body poses, written out by the solver and read in as initial guess if the reset_state
                 solver setting is False.
                 Expects shape of ``(num_bodies,)``.
@@ -2106,7 +2123,7 @@ class ForwardKinematicsSolver:
                 Expects shape of ``(num_worlds,)``.
             actuators_u: Array of actuated joint velocities.
                 Must be provided when solving for body velocities, i.e. if bodies_u is provided.
-                Expects shape of ``(sum_of_num_actuated_joint_dofs,)``.
+                Expects shape of ``(sum_of_num_fk_actuated_joint_dofs,)``.
             base_u: Velocity (twist) of the base body for each world, in the frame of the base joint if it was set, or
                 absolute otherwise.
                 If not provided, will default to zero. Ignored if no base body or joint was set for this model.
@@ -2205,14 +2222,23 @@ def compute_fk_equivalence_classes(model: ModelKamino) -> list[list[int]]:
         world_delta=model.info.joints_offset,
         ignore_negative=True,
     )
-    return compute_equivalence_classes(
-        [
-            sig_num_bodies,
-            sig_joint_act_type,
-            sig_joint_dof_type,
-            sig_joint_bid_B,
-            sig_joint_bid_F,
-            sig_base_body,
-            sig_base_joint,
-        ]
-    )
+    signatures = [
+        sig_num_bodies,
+        sig_joint_act_type,
+        sig_joint_dof_type,
+        sig_joint_bid_B,
+        sig_joint_bid_F,
+        sig_base_body,
+        sig_base_joint,
+    ]
+
+    if model.joints.fk_act_flag is not None:
+        sig_joint_fk_act_flag = DiscreteSignature(
+            num_worlds=model.size.num_worlds,
+            data=model.joints.fk_act_flag,
+            world_offset=model.info.joints_offset,
+            world_size=model.info.num_joints,
+        )
+        signatures.append(sig_joint_fk_act_flag)
+
+    return compute_equivalence_classes(signatures)
