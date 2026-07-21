@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from typing import Any
 
@@ -18,6 +19,8 @@ from .warp_raytrace import (
     RenderOrder,
     Utils,
 )
+
+PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 _RENDER_CONFIG_DEPRECATION_MSG = (
     "SensorTiledCamera.render_config is deprecated as of Newton 1.4; "
@@ -224,24 +227,27 @@ class SensorTiledCamera:
                 for the render megakernel.
         """
 
-        self.sync_transforms(state)
+        with wp.ScopedTimer(
+            "Newton::SensorTiledCamera::update", active=PROFILE_ENABLED, use_nvtx=True, print=False, synchronize=True
+        ):
+            self.sync_transforms(state)
 
-        self.__render_context.render(
-            self.model,
-            state,
-            camera_transforms=camera_transforms,
-            camera_rays=camera_rays,
-            color_image=color_image,
-            hdr_color_image=hdr_color_image,
-            depth_image=depth_image,
-            forward_depth_image=forward_depth_image,
-            shape_index_image=shape_index_image,
-            normal_image=normal_image,
-            albedo_image=albedo_image,
-            clear_data=clear_data if clear_data is not None else self.default_clear_data,
-            config=render_config if render_config is not None else self.default_render_config,
-            kernel_block_dim=kernel_block_dim,
-        )
+            self.__render_context.render(
+                self.model,
+                state,
+                camera_transforms=camera_transforms,
+                camera_rays=camera_rays,
+                color_image=color_image,
+                hdr_color_image=hdr_color_image,
+                depth_image=depth_image,
+                forward_depth_image=forward_depth_image,
+                shape_index_image=shape_index_image,
+                normal_image=normal_image,
+                albedo_image=albedo_image,
+                clear_data=clear_data if clear_data is not None else self.default_clear_data,
+                config=render_config if render_config is not None else self.default_render_config,
+                kernel_block_dim=kernel_block_dim,
+            )
 
     @property
     def render_config(self) -> RenderConfig:
