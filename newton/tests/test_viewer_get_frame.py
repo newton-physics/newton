@@ -27,6 +27,7 @@ class _FakeGL:
     GL_STREAM_READ = 0x88E1
     GL_PACK_ALIGNMENT = 0x0D05
     GL_FRAMEBUFFER = 0x8D40
+    GL_COLOR_ATTACHMENT0 = 0x8CE0
     GL_RGB = 0x1907
     GL_UNSIGNED_BYTE = 0x1401
 
@@ -36,6 +37,8 @@ class _FakeGL:
     def __init__(self, pixels: np.ndarray):
         self.pixels = pixels
         self.bound_buffer = 0
+        self.bound_framebuffer = 0
+        self.read_buffer = None
         self.readback_count = 0
 
     def glGenBuffers(self, count, buffers):
@@ -51,10 +54,13 @@ class _FakeGL:
         pass
 
     def glBindFramebuffer(self, target, framebuffer):
-        pass
+        self.bound_framebuffer = int(framebuffer)
 
     def glReadPixels(self, x, y, width, height, pixel_format, pixel_type, data):
         pass
+
+    def glReadBuffer(self, buffer):
+        self.read_buffer = buffer
 
     def glGetBufferSubData(self, target, offset, size, data):
         if self.bound_buffer == 0:
@@ -128,7 +134,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         viewer.renderer = SimpleNamespace(
             _screen_width=2,
             _screen_height=2,
-            _frame_fbo=3,
+            _last_frame_fbo=7,
         )
         viewer.gui = None
         viewer._pbo = None
@@ -157,6 +163,8 @@ class TestViewerGLGetFrame(unittest.TestCase):
         )
         self.assertEqual(frame.device, wp.get_device("cpu"))
         self.assertEqual(fake_gl.readback_count, 1)
+        self.assertEqual(fake_gl.bound_framebuffer, 0)
+        self.assertEqual(fake_gl.read_buffer, fake_gl.GL_COLOR_ATTACHMENT0)
 
 
 if __name__ == "__main__":

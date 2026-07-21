@@ -113,6 +113,50 @@ Warp array on the viewer device:
     # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
     frame = viewer.get_frame()
 
+**OpenGL post-processing:**
+
+:meth:`~newton.viewer.ViewerGL.register_post_process` registers an OpenGL callback that runs after
+the scene color and depth have been resolved and before the UI is rendered. Multiple callbacks run
+in registration order, with Newton ping-ponging both color and depth between passes. The final pass
+is used for window presentation and :meth:`~newton.viewer.ViewerGL.get_frame`.
+
+The OpenGL context is current when the callback runs. Newton binds the input framebuffer for reading,
+the output framebuffer for drawing, and ``context.viewport`` in physical framebuffer pixels. A pass
+must restore every other OpenGL state it modifies before returning. A pass that makes no visual change
+must still copy both color and depth:
+
+.. code-block:: python
+
+    from pyglet import gl
+
+    def post_process(context):
+        gl.glBlitFramebuffer(
+            0,
+            0,
+            context.width,
+            context.height,
+            0,
+            0,
+            context.width,
+            context.height,
+            gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT,
+            gl.GL_NEAREST,
+        )
+
+    registration = viewer.register_post_process(post_process)
+
+    # Unregister explicitly, or let viewer.close() do it before destroying
+    # the OpenGL context.
+    registration.close()
+
+Input and output color attachments are single-sample ``GL_RGB8`` textures containing display-encoded
+RGB. Depth attachments use ``GL_DEPTH_COMPONENT32`` and standard non-reversed OpenGL window depth in
+``[0, 1]``. The origin is bottom-left and UI rendering is excluded. Input attachments are read-only,
+output contents are initially undefined, and their identifiers are valid only for the current callback;
+resizing may change them. ``context.camera`` is an immutable snapshot of the camera values and matrices
+used to render the scene. Its field of view is in degrees, clipping distances are in meters, and its
+immutable float32 matrices have shape ``(16,)`` in OpenGL column-major upload order.
+
 **Custom UI panels:**
 
 :meth:`~newton.viewer.ViewerGL.register_ui_callback` adds custom imgui UI elements to the viewer.
