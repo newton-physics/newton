@@ -2460,6 +2460,97 @@ def Xform "Articulation" (
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rigid_body_velocity(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.Xform.Define(stage, "/World")
+        body = UsdGeom.Cube.Define(stage, "/World/Body")
+        body.AddRotateYOp().Set(90.0)
+        UsdPhysics.ArticulationRootAPI.Apply(body.GetPrim())
+        rigid_body = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        rigid_body.CreateVelocityAttr().Set(Gf.Vec3f(1.0, 2.0, 3.0))
+        rigid_body.CreateAngularVelocityAttr().Set(Gf.Vec3f(90.0, 0.0, 0.0))
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+        mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+        mass.CreateMassAttr().Set(1.0)
+        mass.CreateCenterOfMassAttr().Set(Gf.Vec3f(0.0, 1.0, 0.0))
+        mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0))
+
+        scene_xform = wp.transform(
+            (10.0, 20.0, 30.0),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi),
+        )
+        for bodies_follow_joint_ordering in (False, True):
+            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(
+                    stage,
+                    xform=scene_xform,
+                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
+                )
+                body_id = result["path_body_map"]["/World/Body"]
+                model = builder.finalize()
+                expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
+
+                assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+                assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
+
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        articulation = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        def add_body(path, position, center_of_mass, velocity):
+            body = UsdGeom.Cube.Define(stage, path)
+            body.AddTranslateOp().Set(position)
+            rigid_body = UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            rigid_body.CreateVelocityAttr().Set(velocity)
+            rigid_body.CreateAngularVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 90.0))
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr().Set(1.0)
+            mass.CreateCenterOfMassAttr().Set(center_of_mass)
+            mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.0))
+            return body
+
+        root = add_body("/World/Root", Gf.Vec3d(0.0), Gf.Vec3f(0.0), Gf.Vec3f(0.0))
+        child = add_body(
+            "/World/Child",
+            Gf.Vec3d(2.0, 0.0, 0.0),
+            Gf.Vec3f(0.5, 0.0, 0.0),
+            Gf.Vec3f(0.0, 1.25 * np.pi, 0.0),
+        )
+        joint = UsdPhysics.FixedJoint.Define(stage, "/World/Joint")
+        joint.CreateBody0Rel().SetTargets([root.GetPath()])
+        joint.CreateBody1Rel().SetTargets([child.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(2.0, 0.0, 0.0))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, collapse_fixed_joints=True)
+        body_id = result["path_body_map"]["/World/Root"]
+        self.assertEqual(body_id, result["path_body_map"]["/World/Child"])
+        model = builder.finalize()
+        expected = np.asarray((0.0, 0.625 * np.pi, 0.0, 0.0, 0.0, 0.5 * np.pi))
+
+        assert_np_equal(model.body_com.numpy()[body_id], np.asarray((1.25, 0.0, 0.0)), tol=1.0e-6)
+        assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-6)
+        assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-6)
+
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mass_calculations(self):
         builder = newton.ModelBuilder()
 

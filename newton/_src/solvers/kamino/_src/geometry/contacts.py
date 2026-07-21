@@ -68,7 +68,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -867,7 +867,7 @@ def make_convert_contacts_newton_to_kamino(
         A kernel function that converts Newton contacts to the Kamino format.
     """
 
-    @wp.kernel(module="unique", enable_backward=False)
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _convert_contacts_newton_to_kamino(
         # Inputs:
         num_worlds: wp.int32,

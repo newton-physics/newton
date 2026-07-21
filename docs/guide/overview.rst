@@ -96,7 +96,7 @@ Core Concepts
   store derived quantities such as rigid-body accelerations for
   sensors.
 - :class:`~newton.Contacts`: Stores the active contact set produced by
-  :meth:`Model.collide <newton.Model.collide>`, with optional extended
+  :meth:`CollisionPipeline.collide <newton.CollisionPipeline.collide>`, with optional extended
   attributes such as contact forces for sensing and analysis.
 - :class:`~newton.Control`: Encodes control inputs such as joint targets
   and forces applied during the simulation loop.
@@ -120,10 +120,10 @@ Simulation Loop
 
 1. Build or import a model with :class:`~newton.ModelBuilder`.
 2. Finalize the builder into a :class:`~newton.Model`.
-3. Create any sensors, then allocate one or more
-   :class:`~newton.State` objects plus :class:`~newton.Control` inputs
-   and :class:`~newton.Contacts`.
-4. Call :meth:`Model.collide <newton.Model.collide>` to populate the
+3. Create any sensors and a :class:`~newton.CollisionPipeline`, then
+   allocate one or more :class:`~newton.State` objects plus
+   :class:`~newton.Control` inputs and :class:`~newton.Contacts`.
+4. Call :meth:`CollisionPipeline.collide <newton.CollisionPipeline.collide>` to populate the
    contact set for the current state.
 5. Step a :doc:`solver </solvers/index>` using the current
    state, control, and contacts.
