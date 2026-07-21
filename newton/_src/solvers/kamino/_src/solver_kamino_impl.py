@@ -702,7 +702,13 @@ class SolverKaminoImpl(SolverBase):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        pass  # TODO: Migrate implementation when we fully integrate with Newton
+        if self._solver_fk is not None:
+            self._solver_fk.notify_model_changed(flags)
+
+    def validate_model_changed(self, flags: ModelFlags | int) -> None:
+        """Validate solver-specific structural invariants before model updates."""
+        if self._solver_fk is not None:
+            self._solver_fk.validate_model_changed(flags)
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:

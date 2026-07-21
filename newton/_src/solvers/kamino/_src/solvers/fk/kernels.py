@@ -31,6 +31,9 @@ from .types import FKJointDoFType
 __all__ = [
     "_add_regularizer_to_diagonal",
     "_apply_line_search_step",
+    "_compute_base_q_default",
+    "_compute_fk_axis_joint_frames",
+    "_compute_fk_joint_frames",
     "_correct_actuator_coords",
     "_correct_universal_constraint_velocities",
     "_eval_actuator_coords",
@@ -51,6 +54,7 @@ __all__ = [
     "_newton_check",
     "_reset_state",
     "_reset_state_base_q",
+    "_resolve_fk_actuation_types",
     "_update_cg_tolerance_kernel",
     "create_1d_tile_based_kernels",
     "create_2d_tile_based_kernels",
@@ -59,6 +63,7 @@ __all__ = [
     "create_eval_joint_constraints_sparse_jacobian_kernel",
     "create_eval_min_num_iterations_kernel",
     "read_quat_from_array",
+    "validate_fk_actuation_updates",
 ]
 
 
@@ -94,9 +99,150 @@ def read_quat_from_array(array: wp.array[wp.float32], offset: int, normalize: bo
     return q
 
 
+@wp.func
+def _resolve_fk_actuation_type(act_type: wp.int32, fk_act_flag: wp.int32) -> wp.int32:
+    """Apply an optional FK actuation override to a model actuation type."""
+    if fk_act_flag == 0:
+        return JointActuationType.PASSIVE
+    if fk_act_flag == 1:
+        return JointActuationType.FORCE
+    return act_type
+
+
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def _resolve_fk_actuation_types(
+    # Inputs
+    model_act_type: wp.array[wp.int32],
+    model_fk_act_flag: wp.array[wp.int32],
+    # Outputs
+    fk_act_type: wp.array[wp.int32],
+):
+    """Resolve effective FK actuation types for the main model joints."""
+    joint = wp.tid()
+    flag = wp.int32(-1)
+    if model_fk_act_flag:
+        flag = model_fk_act_flag[joint]
+    fk_act_type[joint] = _resolve_fk_actuation_type(model_act_type[joint], flag)
+
+
+@wp.kernel
+def validate_fk_actuation_updates(
+    # Inputs
+    model_act_type: wp.array[wp.int32],
+    model_fk_act_flag: wp.array[wp.int32],
+    built_fk_actuated: wp.array[wp.int32],
+    # Outputs
+    violations: wp.array[wp.int32],
+):
+    """Find invalid FK overrides and changes to the effective actuation partition."""
+    joint = wp.tid()
+    flag = wp.int32(-1)
+    if model_fk_act_flag:
+        flag = model_fk_act_flag[joint]
+        if flag < -1 or flag > 1:
+            wp.atomic_min(violations, 1, joint)
+            return
+
+    act_type = _resolve_fk_actuation_type(model_act_type[joint], flag)
+    if (act_type != JointActuationType.PASSIVE) != (built_fk_actuated[joint] != 0):
+        wp.atomic_min(violations, 0, joint)
+
+
+@wp.kernel
+def _compute_fk_joint_frames(
+    # Inputs
+    source_joint: wp.array[wp.int32],
+    model_B_r_Bj: wp.array[wp.vec3f],
+    model_F_r_Fj: wp.array[wp.vec3f],
+    model_X_Bj: wp.array[wp.mat33f],
+    model_X_Fj: wp.array[wp.mat33f],
+    # Outputs
+    fk_B_r_Bj: wp.array[wp.vec3f],
+    fk_F_r_Fj: wp.array[wp.vec3f],
+    fk_X_Bj: wp.array[wp.mat33f],
+    fk_X_Fj: wp.array[wp.mat33f],
+):
+    """Compute FK joint frames from the current model data."""
+    fk_joint = wp.tid()
+    model_joint = source_joint[fk_joint]
+    if model_joint >= 0:
+        fk_B_r_Bj[fk_joint] = model_B_r_Bj[model_joint]
+        fk_F_r_Fj[fk_joint] = model_F_r_Fj[model_joint]
+        fk_X_Bj[fk_joint] = model_X_Bj[model_joint]
+        fk_X_Fj[fk_joint] = model_X_Fj[model_joint]
+    else:
+        fk_B_r_Bj[fk_joint] = wp.vec3f(0.0)
+        fk_F_r_Fj[fk_joint] = wp.vec3f(0.0)
+        identity = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        fk_X_Bj[fk_joint] = identity
+        fk_X_Fj[fk_joint] = identity
+
+
+@wp.kernel
+def _compute_fk_axis_joint_frames(
+    # Inputs
+    axis_fk_joint: wp.array[wp.int32],
+    axis_body: wp.array[wp.int32],
+    axis_joint_0: wp.array[wp.int32],
+    axis_joint_1: wp.array[wp.int32],
+    model_joint_bid_B: wp.array[wp.int32],
+    model_joint_B_r_Bj: wp.array[wp.vec3f],
+    model_joint_F_r_Fj: wp.array[wp.vec3f],
+    model_body_q_0: wp.array[wp.transformf],
+    # Outputs
+    fk_X_Bj: wp.array[wp.mat33f],
+    fk_X_Fj: wp.array[wp.mat33f],
+):
+    """Compute synthetic axis-joint frames from the model data."""
+    axis_joint = wp.tid()
+    fk_joint = axis_fk_joint[axis_joint]
+    body = axis_body[axis_joint]
+    joint_0 = axis_joint_0[axis_joint]
+    joint_1 = axis_joint_1[axis_joint]
+    body_q = model_body_q_0[body]
+
+    local_0 = model_joint_F_r_Fj[joint_0]
+    if model_joint_bid_B[joint_0] == body:
+        local_0 = model_joint_B_r_Bj[joint_0]
+    local_1 = model_joint_F_r_Fj[joint_1]
+    if model_joint_bid_B[joint_1] == body:
+        local_1 = model_joint_B_r_Bj[joint_1]
+
+    pos_0 = wp.transform_point(body_q, local_0)
+    pos_1 = wp.transform_point(body_q, local_1)
+    a_x = wp.normalize(pos_1 - pos_0)
+    if wp.abs(a_x[2]) < 0.99:
+        a_y = wp.normalize(wp.cross(wp.vec3f(0.0, 0.0, 1.0), a_x))
+    else:
+        a_y = wp.normalize(wp.cross(wp.vec3f(0.0, 1.0, 0.0), a_x))
+    a_z = wp.normalize(wp.cross(a_x, a_y))
+    X_Bj = wp.matrix_from_cols(a_x, a_y, a_z)
+    fk_X_Bj[fk_joint] = X_Bj
+    fk_X_Fj[fk_joint] = wp.quat_to_matrix(wp.transform_get_rotation(body_q)) * X_Bj
+
+
+@wp.kernel
+def _compute_base_q_default(
+    # Inputs
+    model_base_joint: wp.array[wp.int32],
+    model_base_body: wp.array[wp.int32],
+    model_body_q_0: wp.array[wp.transformf],
+    # Outputs
+    base_q_default: wp.array[wp.transformf],
+):
+    """Compute the default FK base pose from the model data."""
+    world = wp.tid()
+    if model_base_joint[world] >= 0:
+        base_q_default[world] = wp.transform_identity()
+    else:
+        body = model_base_body[world]
+        if body >= 0:
+            base_q_default[world] = model_body_q_0[body]
 
 
 @wp.kernel
