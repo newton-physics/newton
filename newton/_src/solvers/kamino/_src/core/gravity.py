@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import warp as wp
 
 from .....core.types import override
@@ -49,7 +48,7 @@ The default gravitational acceleration in m/s^2.
 Equal to Earth's standard gravity of approximately 9.8067 m/s^2.
 """
 
-GRAVITY_DIREC_DEFAULT = [0.0, 0.0, -1.0]
+GRAVITY_DIREC_DEFAULT = wp.constant(wp.vec3f(wp.float32(0.0), wp.float32(0.0), wp.float32(-1.0)))
 """The default direction of gravity defined as -Z."""
 
 
@@ -187,7 +186,24 @@ class GravityModel:
 ###
 
 
-# TODO: Re-implement using kernels
+@wp.kernel
+def _convert_model_gravity_kernel(
+    gravity: wp.array[wp.vec3f],
+    g_dir_acc: wp.array[wp.vec4f],
+    vector: wp.array[wp.vec4f],
+):
+    world = wp.tid()
+    gravity_vector = gravity[world]
+    acceleration = wp.length(gravity_vector)
+    direction = GRAVITY_DIREC_DEFAULT
+    enabled = 0.0
+    if acceleration > 0.0:
+        direction = gravity_vector / acceleration
+        enabled = 1.0
+    g_dir_acc[world] = wp.vec4f(direction[0], direction[1], direction[2], acceleration)
+    vector[world] = wp.vec4f(gravity_vector[0], gravity_vector[1], gravity_vector[2], enabled)
+
+
 def convert_model_gravity(model_in: Model, gravity_out: GravityModel | None = None) -> GravityModel:
     """
     Converts the gravity representation from the Newton model to the Kamino format.
@@ -199,49 +215,31 @@ def convert_model_gravity(model_in: Model, gravity_out: GravityModel | None = No
             If the arrays within `gravity_out` are not already allocated
             with the appropriate shapes, this function will allocate them.
     """
-    # Capture the necessary properties from source model
-    gravity_np = model_in.gravity.numpy().copy()
-
-    # Allocate data for the conversion
-    g_dir_acc_np = np.zeros((model_in.world_count, 4), dtype=np.float32)
-    vector_np = np.zeros((model_in.world_count, 4), dtype=np.float32)
-
-    # Convert each world's gravity vector into direction
-    # and acceleration, and pack into the output arrays
-    for w in range(model_in.world_count):
-        g_vec = gravity_np[w, :]
-        accel = float(np.linalg.norm(g_vec))
-        if accel > 0.0:
-            direction = g_vec / accel
-        else:
-            direction = np.array([0.0, 0.0, -1.0])
-        g_dir_acc_np[w, :3] = direction
-        g_dir_acc_np[w, 3] = accel
-        vector_np[w, :3] = g_vec
-        vector_np[w, 3] = 1.0 if accel > 0.0 else 0.0
-
-    # If the output gravity model is not provided, create a new one with allocated arrays;
     if gravity_out is None:
         with wp.ScopedDevice(model_in.device):
             gravity_out = GravityModel(
-                g_dir_acc=wp.array(g_dir_acc_np, dtype=wp.vec4f),
-                vector=wp.array(vector_np, dtype=wp.vec4f),
+                g_dir_acc=wp.empty(model_in.world_count, dtype=wp.vec4f),
+                vector=wp.empty(model_in.world_count, dtype=wp.vec4f),
             )
-
-    # Otherwise, ensure the provided model has allocated arrays of the
-    # correct shape and type, and copy the converted data into them.
     else:
-        # Ensure that the output GravityModel has allocated arrays of the correct shape and type
         if gravity_out.g_dir_acc is None or gravity_out.g_dir_acc.shape != (model_in.world_count,):
             msg.warning("Output `GravityModel.g_dir_acc` array does not have matching shape. Allocating a new array.")
-            gravity_out.g_dir_acc = wp.array(g_dir_acc_np, dtype=wp.vec4f, device=model_in.device)
-        else:
-            gravity_out.g_dir_acc.assign(g_dir_acc_np)
+            gravity_out.g_dir_acc = wp.empty(model_in.world_count, dtype=wp.vec4f, device=model_in.device)
         if gravity_out.vector is None or gravity_out.vector.shape != (model_in.world_count,):
             msg.warning("Output `GravityModel.vector` array does not have matching shape. Allocating a new array.")
-            gravity_out.vector = wp.array(vector_np, dtype=wp.vec4f, device=model_in.device)
-        else:
-            gravity_out.vector.assign(vector_np)
+            gravity_out.vector = wp.empty(model_in.world_count, dtype=wp.vec4f, device=model_in.device)
 
-    # Return the output gravity model
+    wp.launch(
+        kernel=_convert_model_gravity_kernel,
+        dim=model_in.world_count,
+        inputs=[
+            # Inputs:
+            model_in.gravity,
+            # Outputs:
+            gravity_out.g_dir_acc,
+            gravity_out.vector,
+        ],
+        device=model_in.device,
+    )
+
     return gravity_out
