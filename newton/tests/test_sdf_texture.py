@@ -17,6 +17,7 @@ import warp as wp
 import newton
 from newton import GeoType, Mesh
 from newton._src.geometry.sdf_texture import (
+    SIGN_MODE_NORMAL,
     QuantizationMode,
     TextureSDFData,
     compute_isomesh_from_texture_sdf,
@@ -607,7 +608,7 @@ def test_texture_sdf_multi_resolution(test, device):
 
 def test_texture_sdf_in_model(test, device):
     """Build a scene with 2 mesh shapes with SDFs and verify model._texture_sdf_data."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
 
     for i in range(2):
         body = builder.add_body(xform=wp.transform(wp.vec3(float(i) * 2.0, 0.0, 0.0)))
@@ -1361,6 +1362,61 @@ def test_create_texture_sdf_from_mesh_validates_target_voxel_size(test, device):
         )
 
 
+def test_texture_sdf_sign_mode_normal_open_mesh(test, device):
+    """SIGN_MODE_NORMAL bakes pseudo-normal signs valid for an open mesh.
+
+    Open unit box with the top face removed: parity ray-casts leak through
+    the opening and wrongly sign interior points, while the pseudo-normal
+    signs by the local side of the nearest wall. Probes sit just inside and
+    just outside the +x wall, within the narrow band. The mesh is built
+    without winding-number support, which the normal query must not require.
+    """
+    vertices = np.array(
+        [
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.5, 0.5, -0.5],
+            [-0.5, 0.5, -0.5],
+            [-0.5, -0.5, 0.5],
+            [0.5, -0.5, 0.5],
+            [0.5, 0.5, 0.5],
+            [-0.5, 0.5, 0.5],
+        ],
+        dtype=np.float32,
+    )
+    # Outward-facing (CCW) triangles for every face except the top (4, 5, 6, 7).
+    faces = np.array(
+        [[0, 2, 1], [0, 3, 2], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]],
+        dtype=np.int32,
+    )
+    wp_mesh = wp.Mesh(
+        points=wp.array(vertices, dtype=wp.vec3, device=device),
+        indices=wp.array(faces.reshape(-1), dtype=wp.int32, device=device),
+    )
+
+    tex_sdf, _coarse_tex, _subgrid_tex = create_texture_sdf_from_mesh(
+        wp_mesh,
+        margin=0.05,
+        narrow_band_range=(-0.1, 0.1),
+        max_resolution=32,
+        quantization_mode=QuantizationMode.FLOAT32,
+        sign_mode=SIGN_MODE_NORMAL,
+        device=device,
+    )
+
+    query_points = wp.array(
+        [wp.vec3(0.42, 0.0, 0.0), wp.vec3(0.58, 0.0, 0.0)],
+        dtype=wp.vec3,
+        device=device,
+    )
+    results = wp.zeros(2, dtype=float, device=device)
+    wp.launch(_sample_texture_sdf_kernel, dim=2, inputs=[tex_sdf, query_points, results], device=device)
+
+    values = results.numpy()
+    test.assertLess(float(values[0]), 0.0, f"interior probe should be inside, got {values[0]}")
+    test.assertGreater(float(values[1]), 0.0, f"exterior probe should be outside, got {values[1]}")
+
+
 # Register tests for CUDA devices
 devices = get_cuda_test_devices()
 add_function_test(TestTextureSDF, "test_texture_sdf_construction", test_texture_sdf_construction, devices=devices)
@@ -1422,6 +1478,12 @@ add_function_test(
     TestTextureSDF,
     "test_create_texture_sdf_from_mesh_validates_target_voxel_size",
     test_create_texture_sdf_from_mesh_validates_target_voxel_size,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_texture_sdf_sign_mode_normal_open_mesh",
+    test_texture_sdf_sign_mode_normal_open_mesh,
     devices=devices,
 )
 add_function_test(

@@ -111,6 +111,7 @@ class Example:
         self.rigid_solver = getattr(args, "rigid_solver", "mujoco")
 
         builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 2.0e4
         _register_rigid_solver_custom_attributes(builder, self.rigid_solver)
         builder.add_ground_plane()
 
@@ -134,12 +135,7 @@ class Example:
 
         # Contact parameters
         self.model.soft_contact_ke = 1.0e5
-        self.model.soft_contact_kd = 0.0
         self.model.soft_contact_mu = 0.5
-        # VBD now damps body-particle contacts from full relative body/particle
-        # motion. Keep material damping disabled here so proxy impact forces stay
-        # close to the pre-rebase penalty-contact behavior.
-        self.model.shape_material_kd.fill_(0.0)
 
         vbd_kwargs = {
             "iterations": 10,
@@ -147,18 +143,6 @@ class Example:
             "particle_enable_self_contact": True,
             "particle_self_contact_radius": 0.01,
             "particle_self_contact_margin": 0.01,
-            # Match the pre-AVBD-hard-constraint defaults used by this scene by
-            # default, while allowing hard-contact experiments from the CLI.
-            "rigid_contact_hard": args.rigid_contact_hard,
-            "rigid_avbd_beta": 1.0e5,
-            "rigid_avbd_gamma": 0.99,
-            "rigid_contact_k_start": 1.0e2,
-            "rigid_joint_linear_k_start": 1.0e4,
-            "rigid_joint_angular_k_start": 1.0e1,
-            "rigid_joint_linear_ke": 1.0e9,
-            "rigid_joint_angular_ke": 1.0e9,
-            "rigid_joint_linear_kd": 1.0e2,
-            "rigid_joint_angular_kd": 0.0,
         }
 
         if self.use_coupled:
@@ -214,7 +198,8 @@ class Example:
         # Simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
@@ -227,7 +212,7 @@ class Example:
         self.graph = _capture_frame_graph(self.model, self.simulate)
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
@@ -400,11 +385,6 @@ class Example:
             help="Number of proxy relaxation passes per substep",
             type=int,
             default=1,
-        )
-        parser.add_argument(
-            "--rigid-contact-hard",
-            help="Use VBD hard augmented-Lagrangian rigid contacts instead of soft penalty contacts",
-            action="store_true",
         )
         return parser
 
