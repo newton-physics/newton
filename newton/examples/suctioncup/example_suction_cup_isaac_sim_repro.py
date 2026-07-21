@@ -29,7 +29,7 @@
 ###########################################################################
 
 import csv
-import math
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -96,6 +96,67 @@ GRIPPER_PADS = (
     (0.3213, -0.0018, 0.0232),
     (0.3213, 0.0182, 0.0032),
     (0.3213, -0.0018, -0.0168),
+)
+
+
+@dataclass(frozen=True)
+class GripperParams:
+    """Per-pad suction-seal tuning (see :class:`~newton.examples.suctioncup.surface_gripper.SurfaceGripper`).
+
+    Field-for-field the ``SurfaceGripper`` keyword arguments except the runtime ``body_id`` / ``xform``,
+    so it unpacks straight into the constructor (``SurfaceGripper(body_id=..., xform=..., **asdict(...))``).
+    """
+
+    k_normal: float  # normal stiffness [N/m]
+    d_normal: float  # normal damping [N.s/m]
+    f_normal_max: float  # per-pad break threshold [N]
+    f_grip_max: float  # per-pad suction preload [N]
+    k_shear_x: float  # shear stiffness [N/m]
+    k_shear_y: float
+    mu_x: float  # shear friction coefficient
+    mu_y: float
+    d_peel_x: float  # peel damping [N.m.s/rad]
+    d_peel_y: float
+    shape: int  # PadShape
+    dim_a: float  # pad radius (CIRCLE) [m]
+    dim_b: float
+    d_shear_x: float = 0.0  # shear damping [N.s/m]; not in gripper.pdf, kept at 0
+    d_shear_y: float = 0.0
+
+
+# Tuned for the light pick box (~1 kg, weight ~10 N). Preload ~= box weight so the box rests against
+# the pads (constant contact); the break threshold is well above the carry loads so the seal holds.
+# Damped springs so the four redundant pads settle, not ring. Stiff seal so the box tracks the flange
+# rigidly (a soft seal lets it swing like a pendulum under the fast arm). The seal forces are applied
+# explicitly, so with the small box (m = 1, I ~ 4e-3) at 240 Hz: near-critical damping keeps k stable
+# up to ~m/dt^2, but the angular d_peel must stay tiny (dt < 2*I/d_peel) or it diverges. Seal
+# stiffness is bounded by explicit stability at 240 Hz (omega*dt must stay well below 2, or the seal
+# rings): k ~ 6000 tracks the box with ~mm lag while staying smooth.
+GRIPPER_PARAMS = GripperParams(
+    k_normal=6000.0,
+    d_normal=110.0,
+    f_normal_max=100.0,  # high: release is by the ro command, not a break
+    f_grip_max=5.0,  # 4 pads ~= box weight ~20 N
+    k_shear_x=6000.0,
+    k_shear_y=6000.0,
+    # High friction: when the arm holds the flange with the suction axis near-horizontal, the box
+    # weight is a pure shear load, and shear capacity = mu * |holding force|. High mu keeps ample
+    # margin through the arm's fast reorientation so the box doesn't slip and dangle.
+    mu_x=16.0,
+    mu_y=16.0,
+    # Peel damping kept small: it is bounded by dt < 2*inertia/d_peel, and the box inertia is tiny,
+    # so at 240 Hz a large value diverges.
+    d_peel_x=0.5,
+    d_peel_y=0.5,
+    # Larger pad radius -> larger peel-moment capacity (N_f * R/4) and peel/torsion stiffness, so the
+    # overhanging box is held flush instead of peeling off and dangling.
+    shape=int(PadShape.CIRCLE),
+    dim_a=0.03,
+    dim_b=0.03,
+    # Shear damping is not part of the original gripper.pdf model; keep it at 0 (the maths stays in
+    # eval_shear_friction but contributes nothing).
+    d_shear_x=0.0,
+    d_shear_y=0.0,
 )
 
 
@@ -324,7 +385,7 @@ class Example:
         # RECORDING_JSONL contains time-stamped joint drive target positions and suction pad engagement
         # states. Load and extract the time-stamps, the joint drive target positions and the
         # suction pad engagement states.
-        # Apply gaussian smoothing to the raw drive targets.
+        # Apply gaussian smoothing to the raw drive target after loading.
         rec_times, rec_targets, rec_engaged, self.rec_duration = load_playback(RECORDING_JSONL)
         rec_targets = gaussian_smooth(rec_times, rec_targets, SMOOTHING_SIGMA)  # smooth the coarse waypoints
         self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)
@@ -332,11 +393,11 @@ class Example:
         self.rec_engaged_wp = wp.array(rec_engaged, dtype=wp.bool)  # [N]; suction engagement command per frame
 
         # Load the Fanuc robot arm on a ground plane.
-        self.initial_arm_q = rec_targets[0].astype(np.float32)  # drive target at t=0, the start pose
+        initial_arm_q = rec_targets[0].astype(np.float32)  # drive target at t=0, the start pose
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.restitution = 0.0  # low restitution: the held box shouldn't bounce
         builder.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
-        self.ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
+        ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
         builder.add_ground_plane()
 
         # Static support box (1x1x1, collidable) at the pick pose -- the pallet the pick box sits on.
@@ -353,7 +414,7 @@ class Example:
         ixx = PICK_BOX_MASS / 3.0 * (hy * hy + hz * hz)
         iyy = PICK_BOX_MASS / 3.0 * (hx * hx + hz * hz)
         izz = PICK_BOX_MASS / 3.0 * (hx * hx + hy * hy)
-        self.pick_box = builder.add_body(
+        pick_box = builder.add_body(
             xform=wp.transform(wp.vec3(*PICK_BOX_CENTER), wp.quat_identity()),
             mass=PICK_BOX_MASS,
             inertia=wp.mat33(ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz),
@@ -362,14 +423,14 @@ class Example:
         pick_cfg = builder.default_shape_cfg.copy()
         pick_cfg.density = 0.0
         pick_box_shape = builder.add_shape_box(
-            self.pick_box, hx=PICK_BOX_HALF[0], hy=PICK_BOX_HALF[1], hz=PICK_BOX_HALF[2], cfg=pick_cfg
+            pick_box, hx=PICK_BOX_HALF[0], hy=PICK_BOX_HALF[1], hz=PICK_BOX_HALF[2], cfg=pick_cfg
         )
 
         # Filter out pick-box <-> gripper-geometry contact: the bidirectional suction seal is a stiff
         # bilateral hold (it provides the lip reaction itself), so a rigid pad<->box contact is
         # redundant and just fights the seal. The box still collides with the pallet and ground.
         for shape in range(len(builder.shape_body)):
-            if builder.shape_body[shape] == self.ee_body:
+            if builder.shape_body[shape] == ee_body:
                 builder.add_shape_collision_filter_pair(pick_box_shape, shape)
 
         self.model = builder.finalize()
@@ -386,44 +447,11 @@ class Example:
         # recorded finger offsets, suction axis along the flange +x (pad local +z rotated onto +x).
         # Driven by the recorded ro[0] command -- all four pads engage/release together, sealing the
         # dynamic pick box.
-        pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 2.0)  # pad +z -> flange +x
+        pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # pad +z -> flange +x
         gripper = SurfaceGripper(
-            body_id=self.ee_body,
+            body_id=ee_body,
             xform=wp.transform_identity(),  # gripper frame == flange body frame
-            # Tuned for the light pick box (~1 kg, weight ~10 N). Preload ~= box weight so the box
-            # rests against the pads (constant contact); the break threshold is well above the carry
-            # loads so the seal holds. Damped springs so the four redundant pads settle, not ring.
-            # Stiff seal so the box tracks the flange rigidly (a soft seal lets it swing like a
-            # pendulum under the fast arm). The seal forces are applied explicitly, so with the small
-            # box (m = 1, I ~ 4e-3) at 240 Hz: near-critical damping keeps k stable up to ~m/dt^2, but
-            # the angular d_peel must stay tiny (dt < 2*I/d_peel) or it diverges.
-            # Seal stiffness is bounded by explicit stability at 240 Hz (omega*dt must stay well below
-            # 2, or the seal rings): k ~ 6000 tracks the box with ~mm lag while staying smooth. Damping
-            # is near-critical for each mode.
-            k_normal=6000.0,
-            d_normal=110.0,
-            f_normal_max=100.0,  # per-pad break threshold [N] (high: release is by the ro command)
-            f_grip_max=5.0,  # per-pad suction preload [N] (4 pads ~= box weight ~20 N)
-            k_shear_x=6000.0,
-            k_shear_y=6000.0,
-            # Shear damping is not part of the original gripper.pdf model; keep it at 0 (the maths stays
-            # in eval_shear_friction but contributes nothing).
-            d_shear_x=0.0,
-            d_shear_y=0.0,
-            # High friction: when the arm holds the flange with the suction axis near-horizontal, the
-            # box weight is a pure shear load, and shear capacity = mu * |holding force|. High mu keeps
-            # ample margin through the arm's fast reorientation so the box doesn't slip and dangle.
-            mu_x=16.0,
-            mu_y=16.0,
-            # Peel damping kept small: it is bounded by dt < 2*inertia/d_peel, and the box inertia is
-            # tiny, so at 240 Hz a large value diverges.
-            d_peel_x=0.5,
-            d_peel_y=0.5,
-            # Larger pad radius -> larger peel-moment capacity (N_f * R/4) and peel/torsion stiffness,
-            # so the overhanging box is held flush instead of peeling off and dangling.
-            shape=int(PadShape.CIRCLE),
-            dim_a=0.03,
-            dim_b=0.03,
+            **asdict(GRIPPER_PARAMS),
         )
         for px, py, pz in GRIPPER_PADS:
             gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
@@ -434,12 +462,12 @@ class Example:
         self.gripper_control = self.gripper_model.control()
         self.gripper_control.pad_grip_control.fill_(1.0)  # full suction command
         self.seal_engaged = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)
-        self.seal_body_b = wp.full(len(GRIPPER_PADS), self.pick_box, dtype=wp.int32)
+        self.seal_body_b = wp.full(len(GRIPPER_PADS), pick_box, dtype=wp.int32)
 
         # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
         # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
         joint_q = self.state_0.joint_q.numpy()
-        joint_q[:NUM_ARM_DOFS] = self.initial_arm_q
+        joint_q[:NUM_ARM_DOFS] = initial_arm_q
         self.state_0.joint_q.assign(joint_q)
         self.state_0.joint_qd.zero_()
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
@@ -455,7 +483,7 @@ class Example:
 
         # Record the EE acceleration and the smoothed drive targets over the 1st engaged window to CSV
         if RECORD_DEBUG and not wp.get_device().is_cuda:
-            self.accel_recorder = EndEffectorAccelerationRecorder(self.ee_body, self.sim_dt)
+            self.accel_recorder = EndEffectorAccelerationRecorder(ee_body, self.sim_dt)
             self.drive_target_recorder = DriveTargetRecorder(self.sim_dt, NUM_ARM_DOFS)
 
     def capture(self):
