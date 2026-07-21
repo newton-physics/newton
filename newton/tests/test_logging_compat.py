@@ -219,7 +219,7 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            configure_logging()
+            configure_logging(verbose=True)
             logging.getLogger("newton.test").info("visible test info")
             logging.getLogger("newton.test").warning("visible test warning")
             logging.getLogger("other.test").info("hidden third-party info")

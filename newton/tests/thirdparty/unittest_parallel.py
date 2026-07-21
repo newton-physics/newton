@@ -111,7 +111,8 @@ def _configure_logging(verbose: bool = False) -> None:
     """Configure default logging for Newton test entry points."""
     logging.captureWarnings(True)
     logging.basicConfig(level=logging.WARNING, handlers=[_entry_point_stderr_handler()])
-    _install_below_warning_stdout_handler(logging.getLogger("newton"), force_level=verbose)
+    if verbose:
+        _install_below_warning_stdout_handler(logging.getLogger("newton"), force_level=True)
 
 
 def _enable_strict_warnings():
