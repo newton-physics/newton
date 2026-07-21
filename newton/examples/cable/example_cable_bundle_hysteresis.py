@@ -290,6 +290,7 @@ class Example:
             self.model.vbd.dahl_eps_max.fill_(float(eps_max))
             self.model.vbd.dahl_tau.fill_(float(tau))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -300,7 +301,6 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
         self.viewer.set_model(self.model)
 

@@ -115,6 +115,7 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -123,7 +124,6 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
 
         if self.state_0.body_q is None:

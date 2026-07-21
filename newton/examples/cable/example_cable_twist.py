@@ -208,13 +208,13 @@ class Example:
         self.model = builder.finalize()
 
         # Use full hard-contact correction (contact alpha 0.0) for stronger repulsion with low iterations.
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)

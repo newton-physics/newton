@@ -762,6 +762,7 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, 0.0))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
@@ -772,7 +773,6 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
 
         # Device arrays used by kernels during simulation and CUDA graph replay.
