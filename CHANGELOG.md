@@ -60,7 +60,7 @@
 - Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
 - Fix builder merging (`ModelBuilder.add_builder()`, `add_world()`, `replicate()`) offsetting negative reference sentinels in custom attribute values stored as NumPy or Warp integer scalars.
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
-- Fix `ModelBuilder.add_usd()` ignoring collider-authored mass and density when the rigid body has no `PhysicsMassAPI`. (#3591)
+- Fix `ModelBuilder.add_usd()` ignoring collider-authored mass and density when the rigid body has no `PhysicsMassAPI`. (#3594)
 - Report malformed MJCF free-joint and inertial inputs with deterministic validation errors, and ignore MJCF mesh geom `size` lengths consistently.
 - Fix Style3D solver divergence caused by isolated vertices.
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
