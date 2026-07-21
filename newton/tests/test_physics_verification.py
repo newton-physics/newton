@@ -621,7 +621,8 @@ def test_restitution(test, device, solver_fn):
         model = builder.finalize(device=device)
 
         solver = solver_fn(model)
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         state_0 = model.state()
         state_1 = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -633,7 +634,7 @@ def test_restitution(test, device, solver_fn):
         y_positions = []
         for _ in range(num_steps):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
             y_positions.append(float(state_0.body_q.numpy()[0, 1]))

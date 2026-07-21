@@ -51,6 +51,9 @@ what users should know. Do not reproduce the full changelog; link to it.
    consumer-relevant items. Omit CI, workflow, README layout, release-link
    pinning, and other internal/docs polish unless the user explicitly asks or it
    affects library users.
+8. Keep a review-ready release-branch draft. After tagging, refresh it against
+   the final tag and inspect the workflow-created draft GitHub Release. Publish
+   only after verifying the final artifact and links per `docs/guide/release.rst`.
 
 ## Linking Rules
 
@@ -105,6 +108,7 @@ what users should know. Do not reproduce the full changelog; link to it.
 - For patch releases, say whether the release is intended to be API-compatible
   with the previous patch/minor when that is true.
 - Avoid em dashes in rendered prose.
+- Keep raw Markdown soft-wrapped: use one physical line per paragraph and list item; let viewers wrap it to their window width.
 
 ## Dependency Updates
 
