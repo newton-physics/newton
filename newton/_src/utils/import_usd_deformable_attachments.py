@@ -11,12 +11,15 @@ index remap. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import warp as wp
+
+from newton._src.utils.diagnostics import log_verbose
 
 from .import_usd_deformable_utils import (
     _attachment_vec3_list,
@@ -27,6 +30,8 @@ from .import_usd_deformable_utils import (
     _is_ignored_path,
     _mark_attachment_unsupported,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junction_attachment_paths: set[str]) -> None:
@@ -245,7 +250,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, consumed_junct
             path_attachment_map[path] = joints
             attrs["joint_indices"] = list(joints)
             if verbose:
-                print(f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
+                log_verbose(_logger, f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
 
 
 def _deformable_remap_collapsed(
@@ -487,4 +492,4 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         if skip:
             continue
         if verbose:
-            print(f"Applied PhysicsElementCollisionFilter {path}: {len(seen_pairs)} shape pair(s).")
+            log_verbose(_logger, f"Applied PhysicsElementCollisionFilter {path}: {len(seen_pairs)} shape pair(s).")

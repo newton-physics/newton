@@ -10,11 +10,14 @@ surface material onto the isotropic membrane. Driven by :func:`.import_usd.parse
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 
 import numpy as np
 import warp as wp
+
+from newton._src.utils.diagnostics import log_verbose
 
 from .import_usd_deformable_utils import (
     _DEFAULT_CLOTH_THICKNESS,
@@ -35,6 +38,8 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
@@ -251,4 +256,4 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             "resolved_density": resolved_cloth_density,
         }
         if verbose:
-            print(f"Added cloth {path} with {builder.particle_count - p0} particles.")
+            log_verbose(_logger, f"Added cloth {path} with {builder.particle_count - p0} particles.")

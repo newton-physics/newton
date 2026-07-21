@@ -59,6 +59,7 @@ class LoggingStateMixin:
 class TestLibraryLoggingDefaults(LoggingStateMixin, unittest.TestCase):
     def test_newton_warning_logs_remain_visible_without_logging_config(self):
         self._root_logger.handlers[:] = []
+        self._newton_logger.handlers[:] = []
         self._root_logger.setLevel(logging.WARNING)
         self._newton_logger.setLevel(logging.NOTSET)
         self._newton_logger.propagate = True
@@ -179,10 +180,12 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
 
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            configure_logging(args)
-            wp.get_logger().info("hidden configured warp info")
-            wp.get_logger().warning("visible configured warp warning")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("always", message="visible configured warp warning", category=UserWarning)
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                configure_logging(args)
+                wp.get_logger().info("hidden configured warp info")
+                wp.get_logger().warning("visible configured warp warning")
 
         self.assertNotIn("hidden configured warp info", stdout.getvalue())
         self.assertNotIn("hidden configured warp info", stderr.getvalue())
@@ -216,7 +219,7 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            configure_logging(verbose=True)
+            configure_logging()
             logging.getLogger("newton.test").info("visible test info")
             logging.getLogger("newton.test").warning("visible test warning")
             logging.getLogger("other.test").info("hidden third-party info")
@@ -296,7 +299,9 @@ class TestFailfastProxyWarnings(LoggingStateMixin, unittest.TestCase):
             coverage_branch=False,
             failfast=True,
             junit_report_xml=None,
+            strict_warnings=False,
             verbose=0,
+            warp_config=[],
         )
         manager.temp_dir = tempfile.gettempdir()
         manager.failfast = failfast

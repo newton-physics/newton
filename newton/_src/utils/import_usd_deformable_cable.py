@@ -12,11 +12,14 @@ curves. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 from dataclasses import replace
 
 import warp as wp
+
+from newton._src.utils.diagnostics import log_verbose
 
 from .import_usd_deformable_utils import (
     _DEFAULT_CABLE_RADIUS,
@@ -39,6 +42,8 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
@@ -455,7 +460,9 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             _apply_cable_masses(builder, rec.prim, key_bodies, [(0, n, key_bodies)], rec.closed, deformable_read, n)
             consumed_curves.add(key)
         if verbose:
-            print(f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves.")
+            log_verbose(
+                _logger, f"Added cable graph {cid} with {len(body_ids)} segments across {len(comp_paths)} curves."
+            )
         return True
 
     for cid, comp_curves in components.items():
@@ -757,4 +764,4 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 "closed": closed,
             }
             if verbose:
-                print(f"Added cable {path} with {len(cable_bodies)} segments.")
+                log_verbose(_logger, f"Added cable {path} with {len(cable_bodies)} segments.")
