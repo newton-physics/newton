@@ -2491,7 +2491,7 @@ def parse_usd(
             body_specs[body_path] = rigid_body_desc
             prim = stage.GetPrimAtPath(prim_path)
 
-    # Bodies with MassAPI that need ComputeMassProperties fallback (missing mass, inertia, or CoM).
+    # Bodies that need ComputeMassProperties fallback (no MassAPI, or missing mass, inertia, or CoM).
     bodies_requiring_mass_properties_fallback: set[str] = set()
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
@@ -2505,6 +2505,14 @@ def parse_usd(
             prim = stage.GetPrimAtPath(prim_path)
             mass_api = UsdPhysics.MassAPI(prim)
             if not mass_api:
+                descendants = iter(Usd.PrimRange(prim))
+                for descendant in descendants:
+                    if descendant != prim and descendant.HasAPI(UsdPhysics.RigidBodyAPI):
+                        descendants.PruneChildren()
+                        continue
+                    if descendant.HasAPI(UsdPhysics.CollisionAPI) and descendant.HasAPI(UsdPhysics.MassAPI):
+                        bodies_requiring_mass_properties_fallback.add(body_path)
+                        break
                 continue
 
             has_effective_mass = _mass_api_effective_mass(mass_api) is not None
@@ -3897,22 +3905,22 @@ def parse_usd(
             warned_missing_collider_mass_info.add(collider_path)
         return rigid_body_mass_info_map.get(collider_path, zero_mass_information)
 
-    # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
+    # Resolve body inertial properties from authored values and collider aggregation.
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
         for path, rigid_body_desc in zip(paths, rigid_body_descs, strict=False):
             prim = stage.GetPrimAtPath(path)
             mass_api = UsdPhysics.MassAPI(prim)
-            if not mass_api:
-                continue
             body_path = str(path)
+            if not mass_api and body_path not in bodies_requiring_mass_properties_fallback:
+                continue
             body_id = path_body_map.get(body_path, -1)
             if body_id == -1:
                 continue
-            effective_mass = _mass_api_effective_mass(mass_api)
-            effective_density = _mass_api_effective_density(mass_api, warn_invalid=True)
-            effective_diag_inertia = _mass_api_effective_diag_inertia(mass_api)
-            effective_com = _mass_api_effective_com(mass_api)
+            effective_mass = _mass_api_effective_mass(mass_api) if mass_api else None
+            effective_density = _mass_api_effective_density(mass_api, warn_invalid=True) if mass_api else None
+            effective_diag_inertia = _mass_api_effective_diag_inertia(mass_api) if mass_api else None
+            effective_com = _mass_api_effective_com(mass_api) if mass_api else None
             has_effective_mass = effective_mass is not None
             has_effective_inertia = effective_diag_inertia is not None
             has_effective_com = effective_com is not None
@@ -4045,7 +4053,7 @@ def parse_usd(
                     builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * scale)
                     builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
             else:
-                raw_mass = mass_api.GetMassAttr().Get()
+                raw_mass = mass_api.GetMassAttr().Get() if mass_api else None
                 if raw_mass is not None and raw_mass != 0.0:
                     warnings.warn(
                         f"Body {body_path}: authored mass is not positive and finite. "
@@ -4086,7 +4094,7 @@ def parse_usd(
                         print(
                             f"Applied default inertia matrix for body {body_path}: diagonal elements = [{I_default[0, 0]}, {I_default[1, 1]}, {I_default[2, 2]}]"
                         )
-                else:
+                elif mass_api:
                     warnings.warn(
                         f"Body {body_path} has zero mass and zero inertia despite having the MassAPI USD schema applied.",
                         stacklevel=2,

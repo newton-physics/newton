@@ -6989,6 +6989,58 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collider_massapi_without_body_massapi(self):
+        """Test collider MassAPI aggregation when the rigid body has no MassAPI."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        def import_body(collider_specs):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            body = UsdGeom.Xform.Define(stage, "/World/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+            for index, (mass, density, enabled) in enumerate(collider_specs):
+                collider = UsdGeom.Cube.Define(stage, f"/World/Body/Collider{index}")
+                collider.CreateSizeAttr().Set(0.2)
+                collider_prim = collider.GetPrim()
+                collision_api = UsdPhysics.CollisionAPI.Apply(collider_prim)
+                collision_api.CreateCollisionEnabledAttr().Set(enabled)
+                mass_api = UsdPhysics.MassAPI.Apply(collider_prim)
+                if mass is not None:
+                    mass_api.CreateMassAttr().Set(mass)
+                if density is not None:
+                    mass_api.CreateDensityAttr().Set(density)
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(stage)
+            body_idx = result["path_body_map"]["/World/Body"]
+            inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+            return builder.body_mass[body_idx], inertia
+
+        cases = {
+            "authored mass": ([(0.05, None, True)], 0.05),
+            "authored density": ([(None, 500.0, True)], 4.0),
+            "zero mass falls back to density": ([(0.0, None, True)], 8.0),
+            "disabled collider still contributes": ([(0.05, None, False), (None, None, True)], 8.05),
+        }
+        for name, (collider_specs, expected_mass) in cases.items():
+            with self.subTest(name=name):
+                mass, inertia = import_body(collider_specs)
+                self.assertAlmostEqual(mass, expected_mass, places=5)
+                if name == "disabled collider still contributes":
+                    continue
+                expected_diag = (1.0 / 6.0) * expected_mass * (0.2**2)
+                np.testing.assert_allclose(
+                    inertia,
+                    np.diag([expected_diag, expected_diag, expected_diag]),
+                    atol=1e-6,
+                    rtol=1e-5,
+                )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_without_massapi_uses_shape_material(self):
         """Test that non-MassAPI bodies use collider material density for mass accumulation."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
