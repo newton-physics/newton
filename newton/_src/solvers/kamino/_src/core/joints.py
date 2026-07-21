@@ -15,7 +15,7 @@ from warp._src.types import Any, Int, Vector
 
 from .....core.types import MAXVAL, override
 from .....sim import JointTargetMode, JointType
-from .math import FLOAT32_MAX, FLOAT32_MIN, PI, TWO_PI
+from .math import FLOAT32_MAX, FLOAT32_MIN
 from .types import (
     ArrayLike,
     Descriptor,
@@ -225,11 +225,11 @@ class JointCorrectionMode(IntEnum):
         Returns the numerical bound imposed by the correction mode.
         """
         if self.value == self.TWOPI:
-            return float(TWO_PI)
+            return float(wp.tau)  # Note: wp.tau is 2 * pi
         elif self.value == self.CONTINUOUS:
             return float(JOINT_QMAX)
         elif self.value == self.NONE:
-            return float(PI)
+            return float(wp.pi)
         else:
             raise ValueError(f"Unknown joint correction mode: {self.value}")
 

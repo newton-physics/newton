@@ -14,6 +14,12 @@ from ..._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacob
 from ..._src.kinematics.limits import LimitsKamino
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Helper functions
 ###
 
