@@ -54,8 +54,14 @@ def _validate_hollow_thickness(
     thickness = float(thickness)
     if not math.isfinite(thickness):
         raise ValueError(f"thickness must be finite for a hollow {shape_name} geom; got {thickness}")
-    if thickness <= 0.0:
-        raise ValueError(f"thickness must be > 0 for a hollow {shape_name} geom; got {thickness}")
+    if thickness < 0.0:
+        raise ValueError(f"thickness must be >= 0 for a hollow {shape_name} geom; got {thickness}")
+    if thickness == 0.0:
+        warnings.warn(
+            f"A hollow {shape_name} geom with zero thickness has zero mass and inertia.",
+            stacklevel=2,
+        )
+        return thickness
 
     for dim_name, dim_value in limits:
         dim_limit = float(dim_value)
@@ -609,6 +615,8 @@ def compute_inertia_shape(
             return solid
         else:
             thickness = _validate_hollow_thickness("sphere", thickness, (("radius", scale[0]),))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_sphere(density, scale[0] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.BOX:
@@ -620,6 +628,8 @@ def compute_inertia_shape(
             thickness = _validate_hollow_thickness(
                 "box", thickness, (("hx", scale[0]), ("hy", scale[1]), ("hz", scale[2]))
             )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_box(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CAPSULE:
@@ -631,6 +641,8 @@ def compute_inertia_shape(
             thickness = _validate_hollow_thickness(
                 "capsule", thickness, (("radius", scale[0]), ("half_height", scale[1]))
             )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CYLINDER:
@@ -642,6 +654,8 @@ def compute_inertia_shape(
             thickness = _validate_hollow_thickness(
                 "cylinder", thickness, (("radius", scale[0]), ("half_height", scale[1]))
             )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cylinder(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CONE:
@@ -651,6 +665,8 @@ def compute_inertia_shape(
             return solid
         else:
             thickness = _validate_hollow_thickness("cone", thickness, (("radius", scale[0]), ("half_height", scale[1])))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cone(density, scale[0] - thickness, scale[1] - thickness)
             m_shell = solid[0] - hollow[0]
             if m_shell <= 0.0:
@@ -683,6 +699,8 @@ def compute_inertia_shape(
             thickness = _validate_hollow_thickness(
                 "ellipsoid", thickness, (("rx", scale[0]), ("ry", scale[1]), ("rz", scale[2]))
             )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_ellipsoid(
                 density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness
             )

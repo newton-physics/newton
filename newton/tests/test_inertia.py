@@ -404,18 +404,41 @@ class TestInertia(unittest.TestCase):
                         thickness=thickness,
                     )
 
-    def test_hollow_primitive_thickness_must_be_positive(self):
-        for thickness in (0.0, -0.01):
-            with self.subTest(thickness=thickness):
-                with self.assertRaisesRegex(ValueError, "thickness must be > 0"):
-                    compute_inertia_shape(
-                        GeoType.SPHERE,
-                        (0.5, 0.0, 0.0),
+    def test_hollow_primitive_zero_thickness_returns_zero_inertia(self):
+        cases = [
+            (GeoType.SPHERE, (0.5, 0.0, 0.0)),
+            (GeoType.BOX, (0.5, 0.4, 0.3)),
+            (GeoType.CAPSULE, (0.5, 0.2, 0.0)),
+            (GeoType.CYLINDER, (0.5, 0.2, 0.0)),
+            (GeoType.CONE, (0.5, 0.2, 0.0)),
+            (GeoType.ELLIPSOID, (0.5, 0.4, 0.3)),
+        ]
+
+        for geo_type, scale in cases:
+            with self.subTest(geo_type=geo_type):
+                with self.assertWarnsRegex(UserWarning, "zero mass and inertia"):
+                    mass, _, inertia = compute_inertia_shape(
+                        geo_type,
+                        scale,
                         None,
                         1000.0,
                         is_solid=False,
-                        thickness=thickness,
+                        thickness=0.0,
                     )
+
+                self.assertEqual(mass, 0.0)
+                assert_np_equal(np.array(inertia), np.zeros(9), tol=0.0)
+
+    def test_hollow_primitive_thickness_must_not_be_negative(self):
+        with self.assertRaisesRegex(ValueError, "thickness must be >= 0"):
+            compute_inertia_shape(
+                GeoType.SPHERE,
+                (0.5, 0.0, 0.0),
+                None,
+                1000.0,
+                is_solid=False,
+                thickness=-0.01,
+            )
 
     def test_hollow_primitive_thickness_must_be_finite(self):
         for thickness in (float("nan"), float("inf"), float("-inf")):

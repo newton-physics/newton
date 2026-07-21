@@ -64,6 +64,7 @@
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
 - Fix masked PID state reset to execute on the integral-state device. (#3447)
+- Reject invalid hollow primitive shell thickness before computing inertia.
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.
@@ -213,7 +214,6 @@
   - Correct `SolverFeatherstone` Coriolis/centrifugal forces so torque-free bodies conserve angular momentum.
   - Correct `newton.eval_fk()` / `newton.eval_ik()` rotations and joint velocities when three angular axes form a left-handed orthonormal basis.
 - Fix mesh inertia computation to produce deterministic results across repeated CUDA runs. (#3136)
-- Reject invalid hollow primitive shell thickness before computing inertia.
 - Fix `SolverXPBD.step()` rejecting `contacts=None` for particle models with shapes, and align its optional control and contact annotations with `SolverBase.step()`.
 - Fix `ModelBuilder.add_builder()` and `ModelBuilder.finalize()` time and memory scaling for large replicated scenes with collision filter pairs. (#1675)
 - Fix mesh-SDF contacts with positive contact gaps by making contact reduction prefer margin-depth contacts over gap-only directional fallbacks. (#3490)
