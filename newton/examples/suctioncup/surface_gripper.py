@@ -483,14 +483,16 @@ def eval_normal_force(
         vz: Normal relative velocity of the seal point [m/s].
 
     Returns:
-        ``(fz, fz_unclamped)``: the applied normal force [N] (clamped to ``[-f_normal_max,
-        f_normal_max]``; positive is tension/suction, negative is the push) and the raw unclamped
-        value [N] -- the latter feeds the brittle break envelope.
+        ``(fz, fz_elastic)``: the applied normal force [N] (clamped to ``[-f_normal_max,
+        f_normal_max]``; positive is tension/suction, negative is the push) and the *elastic*
+        (preload + spring, no damping) demand [N] -- the latter feeds the brittle break envelope, so
+        fracture tracks seal stretch rather than transient damping spikes during fast motion.
     """
     f_min = grip_control * f_grip_max
-    fz_unclamped = f_min + k_normal * pz + d_normal * vz
+    fz_elastic = f_min + k_normal * pz  # elastic (preload + spring) demand; drives the brittle break
+    fz_unclamped = fz_elastic + d_normal * vz
     fz = wp.clamp(fz_unclamped, -f_normal_max, f_normal_max)
-    return fz, fz_unclamped
+    return fz, fz_elastic
 
 
 @wp.func
@@ -617,7 +619,7 @@ def eval_peel_moment(
 
 @wp.func
 def eval_break_metric(
-    fz_unclamped: float,
+    fz_elastic: float,
     f_normal_max: float,
     k_peel_x: float,
     k_peel_y: float,
@@ -630,12 +632,12 @@ def eval_break_metric(
 
     ``env = (F_normal/F_max)^2 + (M_peel_x/M_peel_x_max)^2 + (M_peel_y/M_peel_y_max)^2``; ``env
     > 1`` means the seal exceeded its brittle capacity. Only the brittle DOFs contribute --
-    shear/twist yield (return-mapping) rather than break. The normal term uses the *unclamped*
-    demand and only in tension; the peel terms use the *elastic* (spring-only) moments, since
-    fracture is driven by elastic stress, not transient damping.
+    shear/twist yield (return-mapping) rather than break. Both the normal and peel terms use the
+    *elastic* (preload + spring, no damping) demand and the normal term only in tension, since
+    fracture is driven by elastic stress, not transient damping spikes during fast motion.
 
     Args:
-        fz_unclamped: Unclamped normal force demand [N].
+        fz_elastic: Elastic (preload + spring, no damping) normal force demand [N].
         f_normal_max: Maximum (break-threshold) normal force [N].
         k_peel_x: Peel stiffness about x [N.m/rad].
         k_peel_y: Peel stiffness about y [N.m/rad].
@@ -648,8 +650,8 @@ def eval_break_metric(
         The break envelope ``env`` (dimensionless); ``> 1`` signals a broken seal.
     """
     env = float(0.0)
-    if f_normal_max > 0.0 and fz_unclamped > 0.0:  # only tension loads the seal
-        rn = fz_unclamped / f_normal_max
+    if f_normal_max > 0.0 and fz_elastic > 0.0:  # only tension loads the seal
+        rn = fz_elastic / f_normal_max
         env += rn * rn
     mpx_elastic = k_peel_x * theta_x
     mpy_elastic = k_peel_y * theta_y
@@ -761,7 +763,7 @@ def eval_pad_force(
 
     # --- normal (z): controllable preload + spring-damper, bidirectional ---
     f_normal_max = gripper_f_normal_max[g]
-    fz, fz_unclamped = eval_normal_force(
+    fz, fz_elastic = eval_normal_force(
         pad_grip_control[pad],
         gripper_f_grip_max[g],
         gripper_k_normal[g],
@@ -828,7 +830,7 @@ def eval_pad_force(
 
     # --- brittle break envelope: reported for the external disengage policy (see gripper.pdf) ---
     pad_break_metric[pad] = eval_break_metric(
-        fz_unclamped,
+        fz_elastic,
         f_normal_max,
         k_peel_x,
         k_peel_y,
