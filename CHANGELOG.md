@@ -67,6 +67,7 @@
   - Import `PhysicsElementCollisionFilter` prims for cable, rigid-body, and collider element groups. Group counts pair elements in order; a count of `0` or an empty counts array selects all elements. Unsupported cloth/volume element sources warn and are skipped.
   - Add `newton.usd.DEFORMABLE_LEGACY_NAMESPACES` for explicitly retaining legacy deformable material namespace compatibility during migration.
 - Add scalar value-based OpenCV, F-theta, and Kannala-Brandt fisheye camera ray helpers to `SensorTiledCamera.utils`, plus pinhole aperture/focal-length parameters, `compute_camera_transforms_usd()`, `compute_camera_rays_usd_pinhole()`, and optional preallocated ray output writes. (#3026)
+- Add the `conveyor_force` example with constant and pivot velocity fields that apply Coulomb-limited tangential body forces from reported rigid-contact forces across `SolverXPBD`, `SolverVBD`, and `SolverMuJoCo`.
 - Add `cloth_stiff_material_hanging` and `cloth_stiff_material_stretch` examples regression-guarding the new Neo-Hookean triangle material (stability under gravity at extreme stiffness, and bulk area-preservation across a Poisson-ratio sweep)
 - Add `ViewerUSD(points_as_spheres=...)` to render `log_points` particles as a `UsdGeom.PointInstancer` of sphere prototypes; enabled by default (opt out with `points_as_spheres=False` for flat `UsdGeom.Points` splats). (#2990)
 - Add `ViewerBase.camera_speed` to configure keyboard translation speed for interactive viewers. (#3478)
