@@ -44,6 +44,7 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
@@ -202,11 +203,12 @@ class ModelBuilder:
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         solver = SolverXPBD(model)
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         for i in range(10):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt=1.0 / 60.0)
             state_0, state_1 = state_1, state_0
 
@@ -5555,6 +5557,7 @@ class ModelBuilder:
         body_remap = {-1: -1}
         body_merged_parent = {}
         body_merged_transform = {}
+        velocity_updated_bodies: set[int] = set()
 
         # Joints already retained as loop-closing edges (by original id), so a joint
         # reachable through several traversal paths is kept exactly once.
@@ -5671,7 +5674,15 @@ class ModelBuilder:
                     body_data[last_dynamic_body]["mass"] += m
                     total_mass = m + source_m
                     if total_mass > 0.0:
-                        body_data[last_dynamic_body]["com"] = (m * com + source_m * source_com) / total_mass
+                        merged_com = (m * com + source_m * source_com) / total_mass
+                        qd = body_data[last_dynamic_body]["qd"]
+                        angular_velocity = wp.spatial_bottom(qd)
+                        # Preserve the velocity field when shifting the COM reference.
+                        com_offset = wp.transform_vector(body_data[last_dynamic_body]["q"], merged_com - source_com)
+                        linear_velocity = wp.spatial_top(qd) + wp.cross(angular_velocity, com_offset)
+                        body_data[last_dynamic_body]["qd"] = wp.spatial_vector(*linear_velocity, *angular_velocity)
+                        body_data[last_dynamic_body]["com"] = merged_com
+                        velocity_updated_bodies.add(last_dynamic_body)
                     # else: both bodies massless; keep parent COM (avoids 0/0).
                     # indicate to recompute inverse mass, inertia for this body
                     body_data[last_dynamic_body]["inv_mass"] = None
@@ -5746,6 +5757,33 @@ class ModelBuilder:
             body_data[original_id]["id"] = new_id
             for shape in body_data[original_id]["shapes"]:
                 self.shape_body[shape] = new_id
+
+        for joint in retained_joints:
+            if joint["child"] not in velocity_updated_bodies or joint["type"] not in (
+                JointType.FREE,
+                JointType.DISTANCE,
+            ):
+                continue
+
+            child = joint["child"]
+            child_qd = body_data[child]["qd"]
+            linear_velocity = wp.spatial_top(child_qd)
+            angular_velocity = wp.spatial_bottom(child_qd)
+            parent = joint["parent"]
+            parent_xform = joint["parent_xform"]
+            if parent >= 0:
+                parent_xform = body_data[parent]["q"] * parent_xform
+                parent_qd = body_data[parent]["qd"]
+                parent_angular_velocity = wp.spatial_bottom(parent_qd)
+                child_com = wp.transform_point(body_data[child]["q"], body_data[child]["com"])
+                parent_com = wp.transform_point(body_data[parent]["q"], body_data[parent]["com"])
+                linear_velocity -= wp.spatial_top(parent_qd) + wp.cross(parent_angular_velocity, child_com - parent_com)
+                angular_velocity -= parent_angular_velocity
+
+            parent_rotation = wp.transform_get_rotation(parent_xform)
+            linear_velocity = wp.quat_rotate_inv(parent_rotation, linear_velocity)
+            angular_velocity = wp.quat_rotate_inv(parent_rotation, angular_velocity)
+            joint["qd"] = [*linear_velocity, *angular_velocity]
 
         # repopulate the model
         # save original body groups before clearing
@@ -6383,6 +6421,8 @@ class ModelBuilder:
         if cfg.has_shape_collision:
             # no contacts between shapes of the same body
             for same_body_shape in self.body_shapes[body]:
+                if not self.shape_flags[same_body_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
                 self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_label.append(label or f"shape_{shape}")
@@ -6432,11 +6472,15 @@ class ModelBuilder:
                 if not self.joint_collision_filter_parent[joint_idx]:
                     continue
                 for parent_shape in self.body_shapes[parent_body]:
+                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                        continue
                     self.add_shape_collision_filter_pair(parent_shape, shape)
             for child_body, joint_idx in self.joint_children.get(body, ()):
                 if not self.joint_collision_filter_parent[joint_idx]:
                     continue
                 for child_shape in self.body_shapes[child_body]:
+                    if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                        continue
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
@@ -8138,7 +8182,11 @@ class ModelBuilder:
                             # Already filtered by add_joint_cable(collision_filter_parent=True).
                             continue
                         for si in self.body_shapes.get(bi, []):
+                            if not self.shape_flags[si] & ShapeFlags.COLLIDE_SHAPES:
+                                continue
                             for sj in self.body_shapes.get(bj, []):
+                                if not self.shape_flags[sj] & ShapeFlags.COLLIDE_SHAPES:
+                                    continue
                                 self.add_shape_collision_filter_pair(int(si), int(sj))
 
         return edge_bodies, all_joints
@@ -11002,8 +11050,26 @@ class ModelBuilder:
                 finalized_geos_by_identity[geo_identity] = finalized_geo
                 geo_sources.append(finalized_geo)
 
+            # Mesh properties consumed by the collision kernels: watertightness
+            # is checked once per unique collidable mesh (content-keyed like
+            # finalized_geos above); visual-only shapes are skipped.
+            shape_mesh_properties = []
+            mesh_properties_by_geo_hash: dict[int, int] = {}
+            for shape_type, geo, shape_flags in zip(
+                self.shape_type, generated_shape_sources, self.shape_flags, strict=True
+            ):
+                mesh_properties = 0
+                is_collidable = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
+                if is_collidable and shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and isinstance(geo, Mesh):
+                    mesh_properties = mesh_properties_by_geo_hash.get(hash(geo))
+                    if mesh_properties is None:
+                        mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
+                        mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
+                shape_mesh_properties.append(mesh_properties)
+
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)

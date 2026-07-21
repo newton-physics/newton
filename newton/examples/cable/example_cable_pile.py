@@ -166,8 +166,8 @@ class Example:
 
         self.model = builder.finalize()
         # Size persistent contact history before CUDA graph capture.
-        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.collision_pipeline.contacts()
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -204,7 +204,7 @@ class Example:
         for _substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(
                 self.state_0,

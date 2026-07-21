@@ -36,7 +36,9 @@ def kernel_test_geom(
     tid = wp.tid()
     if geomtype == GeoType.MESH or geomtype == GeoType.CONVEX_MESH or geomtype == GeoType.HFIELD:
         ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction, size)
-        t, n_local, _u, _v, _f = ray_intersect_mesh(ray_origin_local, ray_direction_local, size, mesh_id, False, 1.0e6)
+        t, n_local, _u, _v, _f = ray_intersect_mesh(
+            ray_origin_local, ray_direction_local, size, mesh_id, False, 1.0e6, -1
+        )
         n = wp.vec3(0.0)
         if t >= 0.0:
             n = wp.normalize(wp.transform_vector(geom_to_world, n_local))
@@ -57,7 +59,7 @@ def kernel_test_mesh(
 ):
     tid = wp.tid()
     ray_origin_local, ray_direction_local = map_ray_to_local(geom_to_world, ray_origin, ray_direction, size)
-    t, _n, _u, _v, _f = ray_intersect_mesh(ray_origin_local, ray_direction_local, size, mesh_id, False, 1.0e6)
+    t, _n, _u, _v, _f = ray_intersect_mesh(ray_origin_local, ray_direction_local, size, mesh_id, False, 1.0e6, -1)
     out_t[tid] = t
 
 

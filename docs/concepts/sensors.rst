@@ -148,7 +148,7 @@ Some sensors depend on extended attributes that are not allocated by default:
   ``model.state()`` calls allocate it automatically.
 - ``SensorContact`` requires ``Contacts.force`` (per-contact spatial force
   wrenches). By default it requests this from the model at construction, so
-  subsequent ``model.contacts()`` calls allocate it automatically. The solver
+  subsequent :meth:`CollisionPipeline.contacts <newton.CollisionPipeline.contacts>` calls allocate it automatically. The solver
   must also support populating contact forces.
 
 Performance Considerations

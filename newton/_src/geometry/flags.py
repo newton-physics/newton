@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 
 
 # Particle flags
@@ -45,7 +45,25 @@ class ShapeFlags(IntEnum):
     """Indicates that the shape uses hydroelastic collision."""
 
 
+class MeshSignMethod(IntEnum):
+    """Method used to determine the inside/outside sign of a mesh point query."""
+
+    NORMAL = 0
+    """Angle-weighted closest-face pseudo-normal; robust for open surfaces."""
+    PARITY = 1
+    """Ray-crossing parity; correct and cheap for watertight (closed) meshes."""
+
+
+class MeshProperties(IntFlag):
+    """Per-shape mesh properties consumed by the collision kernels."""
+
+    WATERTIGHT = 1 << 0
+    """The source mesh is closed (every edge shared by exactly two triangles)."""
+
+
 __all__ = [
+    "MeshProperties",
+    "MeshSignMethod",
     "ParticleFlags",
     "ShapeFlags",
 ]

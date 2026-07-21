@@ -47,6 +47,12 @@ __all__ = [
 
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 
@@ -742,7 +748,7 @@ def convert_rigid_bodies(
         i_I_i=model.body_inertia,
         inv_i_I_i=model.body_inv_inertia,
         q_i_0=q_i_0,
-        u_i_0=wp.clone(model.body_qd, device=model.device),
+        u_i_0=model.body_qd,
     )
     return model_bodies
 

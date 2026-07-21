@@ -36,7 +36,7 @@ __all__ = ["LimitsKamino", "LimitsKaminoData"]
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
