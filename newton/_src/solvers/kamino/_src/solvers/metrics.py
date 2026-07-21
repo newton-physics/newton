@@ -79,7 +79,6 @@ from dataclasses import dataclass
 import warp as wp
 
 from ..core.data import DataKamino
-from ..core.math import screw, screw_angular, screw_linear
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..core.types import vec6f
@@ -620,18 +619,18 @@ def _compute_eom_residual(
     g = gravity.w * wp.vec3f(gravity.x, gravity.y, gravity.z)
 
     # Decompose into linear and angular parts
-    f_i = screw_linear(w_i)
-    v_i = screw_linear(u_i)
-    v_i_p = screw_linear(u_i_p)
-    tau_i = screw_angular(w_i)
-    omega_i = screw_angular(u_i)
-    omega_i_p = screw_angular(u_i_p)
+    f_i = wp.spatial_top(w_i)
+    v_i = wp.spatial_top(u_i)
+    v_i_p = wp.spatial_top(u_i_p)
+    tau_i = wp.spatial_bottom(w_i)
+    omega_i = wp.spatial_bottom(u_i)
+    omega_i_p = wp.spatial_bottom(u_i_p)
     S_i = wp.skew(omega_i_p)
 
     # Compute the per-body EoM residual over linear and angular parts
     r_linear_i = wp.abs(m_i * (v_i - v_i_p) - dt * (m_i * g + f_i))
     r_angular_i = wp.abs(I_i @ (omega_i - omega_i_p) - dt * (tau_i - S_i @ (I_i @ omega_i_p)))
-    r_i = screw(r_linear_i, r_angular_i)
+    r_i = wp.spatial_vectorf(*r_linear_i, *r_angular_i)
 
     # Compute the per-body maximum residual and argmax index
     r_eom_i = wp.max(r_i)
