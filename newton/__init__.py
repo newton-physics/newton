@@ -97,6 +97,8 @@ from ._src.sim import (  # noqa: E402
     StateFlags,
     eval_fk,
     eval_ik,
+    eval_inverse_dynamics_force,
+    eval_inverse_dynamics_passive,
     eval_jacobian,
     eval_mass_matrix,
 )
@@ -116,6 +118,8 @@ __all__ += [
     "StateFlags",
     "eval_fk",
     "eval_ik",
+    "eval_inverse_dynamics_force",
+    "eval_inverse_dynamics_passive",
     "eval_jacobian",
     "eval_mass_matrix",
 ]

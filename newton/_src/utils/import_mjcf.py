@@ -199,6 +199,7 @@ def parse_mjcf(
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
     override_root_xform: bool = False,
+    legacy_margin_gap: bool = False,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -313,6 +314,10 @@ def parse_mjcf(
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
         path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+        legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
+            where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
+            Use for MJCF files authored against MuJoCo <= 3.8. Defaults
+            to False (identity translation matching MuJoCo 3.9 semantics).
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -432,9 +437,6 @@ def parse_mjcf(
     class_children = {}
     class_defaults = {"__all__": {}}
 
-    def get_class(element) -> str:
-        return element.get("class", "__all__")
-
     def parse_default(node, parent):
         nonlocal class_parent
         nonlocal class_children
@@ -480,6 +482,22 @@ def parse_mjcf(
 
     resolve_defaults("__all__")
 
+    def is_ignored_class(name: str) -> bool:
+        return any(re.match(pattern, name) for pattern in ignore_classes)
+
+    def resolve_class_defaults(element_class: str | None, ambient_defaults: dict) -> dict:
+        """Merge an element's default class (pre-resolved by resolve_defaults) over the ambient defaults."""
+        if element_class is not None and element_class in class_defaults:
+            return merge_attrib(ambient_defaults, class_defaults[element_class])
+        return ambient_defaults
+
+    def resolve_element_attrib(element, tag: str, ambient_defaults: dict | None = None) -> dict:
+        """Merge an element's attributes over its class defaults for `tag`; explicit attributes win."""
+        if ambient_defaults is None:
+            ambient_defaults = class_defaults["__all__"]
+        defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
+        return merge_attrib(defaults.get(tag, {}), element.attrib)
+
     mesh_assets = {}
     texture_assets = {}
     material_assets = {}
@@ -492,9 +510,7 @@ def parse_mjcf(
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
                 # resolve mesh element's class defaults
-                mesh_class = mesh.attrib.get("class", "__all__")
-                mesh_defaults = class_defaults.get(mesh_class, {}).get("mesh", {})
-                mesh_attrib = merge_attrib(mesh_defaults, mesh.attrib)
+                mesh_attrib = resolve_element_attrib(mesh, "mesh")
                 name = mesh.attrib.get("name", ".".join(os.path.basename(fname).split(".")[:-1]))
                 s = mesh_attrib.get("scale", "1.0 1.0 1.0")
                 s = np.array(s.split(), dtype=np.float32)
@@ -681,22 +697,11 @@ def parse_mjcf(
     ):
         shapes = []
         for geo_count, geom in enumerate(geoms):
-            geom_defaults = defaults
-            if "class" in geom.attrib:
-                geom_class = geom.attrib["class"]
-                ignore_geom = False
-                for pattern in ignore_classes:
-                    if re.match(pattern, geom_class):
-                        ignore_geom = True
-                        break
-                if ignore_geom:
-                    continue
-                if geom_class in class_defaults:
-                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
-            if "geom" in geom_defaults:
-                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
-            else:
-                geom_attrib = geom.attrib
+            geom_class = geom.attrib.get("class")
+            if geom_class is not None and is_ignored_class(geom_class):
+                continue
+            geom_defaults = resolve_class_defaults(geom_class, defaults)
+            geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib)
 
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
             geom_type = geom_attrib.get("type", "sphere")
@@ -776,24 +781,23 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin and gap for collision.
-            # MuJoCo -> Newton conversion: newton_margin = mj_margin - mj_gap.
-            # When gap is absent, mj_gap defaults to 0 for the margin conversion.
-            # When margin is absent but gap is present, shape_cfg.margin keeps its
-            # default (matching MuJoCo's default margin=0 minus gap would produce a
-            # negative value, which is invalid).
+            # MuJoCo 3.9 margin/gap match shape_margin/shape_gap (identity import).
+            # legacy_margin_gap=True restores the pre-3.9 mj_margin - mj_gap form.
             mj_gap = float(geom_attrib.get("gap", "0")) * scale
             if "margin" in geom_attrib:
                 mj_margin = float(geom_attrib["margin"]) * scale
-                newton_margin = mj_margin - mj_gap
-                if newton_margin < 0.0:
-                    warnings.warn(
-                        f"Geom '{geom_name}': MuJoCo gap ({mj_gap}) exceeds margin ({mj_margin}), "
-                        f"resulting Newton margin is negative ({newton_margin}). "
-                        f"This may indicate an invalid MuJoCo model.",
-                        stacklevel=2,
-                    )
-                shape_cfg.margin = newton_margin
+                if legacy_margin_gap:
+                    newton_margin = mj_margin - mj_gap
+                    if newton_margin < 0.0:
+                        warnings.warn(
+                            f"Geom '{geom_name}': legacy translation yields "
+                            f"negative margin (mj_margin={mj_margin}, "
+                            f"mj_gap={mj_gap}).",
+                            stacklevel=2,
+                        )
+                    shape_cfg.margin = newton_margin
+                else:
+                    shape_cfg.margin = mj_margin
             if "gap" in geom_attrib:
                 shape_cfg.gap = mj_gap
 
@@ -980,7 +984,6 @@ def parse_mjcf(
                 mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
-                assert len(geom_size) == 3, "need to specify size for mesh geom"
 
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
@@ -1203,23 +1206,10 @@ def parse_mjcf(
 
         site_shapes = []
         for site_count, site in enumerate(sites):
-            site_defaults = defaults
-            if "class" in site.attrib:
-                site_class = site.attrib["class"]
-                ignore_site = False
-                for pattern in ignore_classes:
-                    if re.match(pattern, site_class):
-                        ignore_site = True
-                        break
-                if ignore_site:
-                    continue
-                if site_class in class_defaults:
-                    site_defaults = merge_attrib(defaults, class_defaults[site_class])
-
-            if "site" in site_defaults:
-                site_attrib = merge_attrib(site_defaults["site"], site.attrib)
-            else:
-                site_attrib = site.attrib
+            site_class = site.attrib.get("class")
+            if site_class is not None and is_ignored_class(site_class):
+                continue
+            site_attrib = resolve_element_attrib(site, "site", defaults)
 
             site_name = site_attrib.get("name", f"{body_name}_site_{site_count}")
 
@@ -1326,23 +1316,10 @@ def parse_mjcf(
         required_colliders = []
 
         for geo_count, geom in enumerate(geoms):
-            geom_defaults = defaults
-            geom_class = None
-            if "class" in geom.attrib:
-                geom_class = geom.attrib["class"]
-                ignore_geom = False
-                for pattern in ignore_classes:
-                    if re.match(pattern, geom_class):
-                        ignore_geom = True
-                        break
-                if ignore_geom:
-                    continue
-                if geom_class in class_defaults:
-                    geom_defaults = merge_attrib(defaults, class_defaults[geom_class])
-            if "geom" in geom_defaults:
-                geom_attrib = merge_attrib(geom_defaults["geom"], geom.attrib)
-            else:
-                geom_attrib = geom.attrib
+            geom_class = geom.attrib.get("class")
+            if geom_class is not None and is_ignored_class(geom_class):
+                continue
+            geom_attrib = resolve_element_attrib(geom, "geom", defaults)
 
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}")
 
@@ -1408,11 +1385,11 @@ def parse_mjcf(
 
         show_colliders = should_show_collider(
             force_show_colliders,
-            has_visual_shapes=len(visuals) > 0 and parse_visuals,
+            model_has_visual_shapes=True,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
         )
 
-        parse_shapes(
+        collider_shape_indices = parse_shapes(
             defaults,
             body_name,
             link,
@@ -1422,6 +1399,7 @@ def parse_mjcf(
             incoming_xform=incoming_xform,
             label_prefix=label_prefix,
         )
+        collider_shapes.extend(collider_shape_indices)
 
         return visual_shape_indices
 
@@ -1467,10 +1445,7 @@ def parse_mjcf(
             _childclass = frame.get("childclass") or frame_childclass
 
             # Compute merged defaults for this frame's children
-            if _childclass is None:
-                _defaults = frame_defaults
-            else:
-                _defaults = merge_attrib(frame_defaults, class_defaults.get(_childclass, {}))
+            _defaults = resolve_class_defaults(_childclass, frame_defaults)
 
             # Process child bodies (need world transform)
             for child_body in frame.findall("body"):
@@ -1553,14 +1528,10 @@ def parse_mjcf(
             body_class = childclass
             defaults = incoming_defaults
         else:
-            for pattern in ignore_classes:
-                if re.match(pattern, body_class):
-                    return
-            defaults = merge_attrib(incoming_defaults, class_defaults[body_class])
-        if "body" in defaults:
-            body_attrib = merge_attrib(defaults["body"], body.attrib)
-        else:
-            body_attrib = body.attrib
+            if is_ignored_class(body_class):
+                return
+            defaults = resolve_class_defaults(body_class, incoming_defaults)
+        body_attrib = merge_attrib(defaults.get("body", {}), body.attrib)
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
         body_name = sanitize_name(body_name)
         # Build XPath-style hierarchical label path for this body
@@ -1618,15 +1589,7 @@ def parse_mjcf(
             ball_friction = 0.0
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
-                joint_defaults = defaults
-                if "class" in joint.attrib:
-                    joint_class = joint.attrib["class"]
-                    if joint_class in class_defaults:
-                        joint_defaults = merge_attrib(joint_defaults, class_defaults[joint_class])
-                if "joint" in joint_defaults:
-                    joint_attrib = merge_attrib(joint_defaults["joint"], joint.attrib)
-                else:
-                    joint_attrib = joint.attrib
+                joint_attrib = resolve_element_attrib(joint, "joint", defaults)
 
                 # default to hinge if not specified
                 joint_type_str = joint_attrib.get("type", "hinge")
@@ -1887,7 +1850,11 @@ def parse_mjcf(
             joint_label_name = "_".join(joint_name)
             joint_label = f"{body_label_path}/{joint_label_name}"
             if joint_type == JointType.FREE:
-                assert parent == -1, "Free joints must have the world body as parent"
+                if parent != -1:
+                    raise ValueError(
+                        f"Free joints must have the world body as parent; "
+                        f"joint '{joint_label}' on body '{body_label_path}' has parent body index {parent}."
+                    )
                 joint_idx = builder.add_joint_free(
                     link,
                     label=joint_label,
@@ -1985,14 +1952,27 @@ def parse_mjcf(
             com = inertial_frame.p
             if inertial_attrib.get("diaginertia") is not None:
                 diaginertia = parse_vec(inertial_attrib, "diaginertia", (0.0, 0.0, 0.0))
+                if len(diaginertia) != 3:
+                    raise ValueError(
+                        f"MJCF diaginertia for body '{body_label_path}' must contain 3 values; got {len(diaginertia)}."
+                    )
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = diaginertia[0] * scale**2
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
                 fullinertia = inertial_attrib.get("fullinertia")
-                assert fullinertia is not None
+                if fullinertia is None:
+                    raise ValueError(
+                        f"MJCF inertial element for body '{body_label_path}' must define "
+                        "either diaginertia or fullinertia."
+                    )
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
+                if fullinertia.shape[0] != 6:
+                    raise ValueError(
+                        f"MJCF fullinertia for body '{body_label_path}' must contain 6 values; "
+                        f"got {fullinertia.shape[0]}."
+                    )
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = fullinertia[0] * scale**2
                 I_m[1, 1] = fullinertia[1] * scale**2
@@ -2031,7 +2011,7 @@ def parse_mjcf(
                 _childclass = childclass
                 _incoming_defaults = defaults
             else:
-                _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
+                _incoming_defaults = resolve_class_defaults(_childclass, defaults)
             parse_body(
                 child,
                 link,
@@ -2044,9 +2024,7 @@ def parse_mjcf(
         # Process frame elements within this body
         # Use body's childclass if declared, otherwise inherit from parent
         frame_childclass = body.get("childclass") or childclass
-        frame_defaults = (
-            merge_attrib(defaults, class_defaults.get(frame_childclass, {})) if frame_childclass else defaults
-        )
+        frame_defaults = resolve_class_defaults(frame_childclass, defaults)
         process_frames(
             body.findall("frame"),
             parent_body=link,
@@ -2058,16 +2036,6 @@ def parse_mjcf(
         )
 
     def parse_equality_constraints(equality):
-        def merge_equality_defaults(element):
-            """Merge <default><equality .../></default> attributes into the element's attrib.
-
-            Supports a per-element ``class="..."`` override like other defaults.
-            Explicit element attributes take precedence over defaults.
-            """
-            cls = element.attrib.get("class", "__all__")
-            defaults = class_defaults.get(cls, {}).get("equality", {})
-            return merge_attrib(defaults, element.attrib)
-
         def parse_common_attributes(attribs):
             return {
                 "name": attribs.get("name"),
@@ -2131,7 +2099,7 @@ def parse_mjcf(
                 return
 
         for connect in equality.findall("connect"):
-            attribs = merge_equality_defaults(connect)
+            attribs = resolve_element_attrib(connect, "equality")
             common = parse_common_attributes(attribs)
             custom_attrs = parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf")
             body1_name = sanitize_name(attribs.get("body1", "")) if attribs.get("body1") else None
@@ -2218,7 +2186,7 @@ def parse_mjcf(
                         )
 
         for weld in equality.findall("weld"):
-            attribs = merge_equality_defaults(weld)
+            attribs = resolve_element_attrib(weld, "equality")
             common = parse_common_attributes(attribs)
             custom_attrs = parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf")
             body1_name = sanitize_name(attribs.get("body1", "")) if attribs.get("body1") else None
@@ -2319,7 +2287,7 @@ def parse_mjcf(
                         )
 
         for joint in equality.findall("joint"):
-            attribs = merge_equality_defaults(joint)
+            attribs = resolve_element_attrib(joint, "equality")
             common = parse_common_attributes(attribs)
             custom_attrs = parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf")
             joint1_name = attribs.get("joint1")
@@ -2371,6 +2339,7 @@ def parse_mjcf(
     # start articulation
 
     visual_shapes = []
+    collider_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
@@ -2396,8 +2365,7 @@ def parse_mjcf(
 
     # Process all worldbody elements (MuJoCo allows multiple, e.g. from includes)
     for world in root.findall("worldbody"):
-        world_class = get_class(world)
-        world_defaults = merge_attrib(class_defaults["__all__"], class_defaults.get(world_class, {}))
+        world_defaults = resolve_class_defaults(world.get("class"), class_defaults["__all__"])
 
         # -----------------
         # add bodies
@@ -2428,7 +2396,7 @@ def parse_mjcf(
         # `parse_visuals_as_colliders=True` apply uniformly to worldbody
         # geoms too (not just geoms inside bodies).
 
-        _process_body_geoms(
+        world_visual_shapes = _process_body_geoms(
             geoms=world.findall("geom"),
             defaults=world_defaults,
             body_name="world",
@@ -2436,6 +2404,7 @@ def parse_mjcf(
             incoming_xform=xform,
             label_prefix=root_label_path,
         )
+        visual_shapes.extend(world_visual_shapes)
 
         if parse_sites:
             _parse_sites_impl(
@@ -2704,10 +2673,7 @@ def parse_mjcf(
         for spatial in tendon_section.findall("spatial"):
             # Apply default class inheritance for spatial tendon attributes.
             # MuJoCo defaults use <tendon> tag for both <fixed> and <spatial> tendons.
-            elem_class = get_class(spatial)
-            elem_defaults = class_defaults.get(elem_class, {}).get("tendon", {})
-            all_defaults = class_defaults.get("__all__", {}).get("tendon", {})
-            merged_attrib = merge_attrib(merge_attrib(all_defaults, elem_defaults), dict(spatial.attrib))
+            merged_attrib = resolve_element_attrib(spatial, "tendon")
 
             tendon_name = merged_attrib.get("name", "")
 
@@ -2827,10 +2793,7 @@ def parse_mjcf(
 
             # Merge class defaults for this actuator element
             # This handles MJCF class inheritance (e.g., <general class="size3" .../>)
-            elem_class = get_class(actuator_elem)
-            elem_defaults = class_defaults.get(elem_class, {}).get(actuator_type, {})
-            all_defaults = class_defaults.get("__all__", {}).get(actuator_type, {})
-            merged_attrib = merge_attrib(merge_attrib(all_defaults, elem_defaults), dict(actuator_elem.attrib))
+            merged_attrib = resolve_element_attrib(actuator_elem, actuator_type)
 
             joint_name = merged_attrib.get("joint")
             body_name = merged_attrib.get("body")
@@ -3083,15 +3046,19 @@ def parse_mjcf(
 
     # -----------------
 
+    if not visual_shapes:
+        for shape_idx in collider_shapes:
+            builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
+
     end_shape_count = len(builder.shape_type)
 
-    for i in range(start_shape_count, end_shape_count):
-        for j in visual_shapes:
-            builder.add_shape_collision_filter_pair(i, j)
-
     if not enable_self_collisions:
-        for i in range(start_shape_count, end_shape_count):
-            for j in range(i + 1, end_shape_count):
+        # The broad phase only ever tests colliding shapes, so visual-only shapes need no filter pairs.
+        colliding_shapes = [
+            i for i in range(start_shape_count, end_shape_count) if builder.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+        ]
+        for a, i in enumerate(colliding_shapes):
+            for j in colliding_shapes[a + 1 :]:
                 builder.add_shape_collision_filter_pair(i, j)
 
     # Create articulations from collected joints

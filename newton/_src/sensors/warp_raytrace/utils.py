@@ -12,27 +12,26 @@ import numpy as np
 import warp as wp
 
 from ...core import MAXVAL
-from .types import RenderLightType, TextureData
+from . import camera_utils
+from .types import RenderConfig, RenderLightType, TextureData
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
 
 
-@wp.kernel(enable_backward=False)
-def compute_pinhole_camera_rays(
-    width: int,
-    height: int,
-    camera_fovs: wp.array[wp.float32],
-    out_rays: wp.array4d[wp.vec3f],
-):
-    camera_index, py, px = wp.tid()
-    aspect_ratio = float(width) / float(height)
-    u = (float(px) + 0.5) / float(width) - 0.5
-    v = (float(py) + 0.5) / float(height) - 0.5
-    h = wp.tan(camera_fovs[camera_index] / 2.0)
-    ray_direction_camera_space = wp.vec3f(u * 2.0 * h * aspect_ratio, -v * 2.0 * h, -1.0)
-    out_rays[camera_index, py, px, 0] = wp.vec3f(0.0)
-    out_rays[camera_index, py, px, 1] = wp.normalize(ray_direction_camera_space)
+def _resolve_fisheye_image_size(
+    axis: str,
+    image_size: float | None,
+    nominal_size: float | None,
+    default_size: int,
+) -> float:
+    if image_size is not None and nominal_size is not None and image_size != nominal_size:
+        raise ValueError(f"image_{axis} and nominal_{axis} must match when both are provided.")
+    if image_size is not None:
+        return float(image_size)
+    if nominal_size is not None:
+        return float(nominal_size)
+    return float(default_size)
 
 
 @wp.kernel(enable_backward=False)
@@ -142,6 +141,10 @@ def convert_ray_depth_to_forward_depth_kernel(
     camera_ray = camera_rays[camera_index, py, px, 1]
     ray_dir_world = wp.transform_vector(camera_transform, camera_ray)
     cam_forward_world = wp.normalize(wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0)))
+
+    if ray_depth <= 0.0 or wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
+        out_depth[world_index, camera_index, py, px] = ray_depth
+        return
 
     out_depth[world_index, camera_index, py, px] = ray_depth * wp.dot(ray_dir_world, cam_forward_world)
 
@@ -275,8 +278,18 @@ def _validate_rgba_out_buffer(
 class Utils:
     """Utility functions for the RenderContext."""
 
-    def __init__(self, render_context: RenderContext):
+    def __init__(self, render_context: RenderContext, render_config: RenderConfig | None = None):
         self.__render_context = render_context
+        self.__render_config = render_config
+
+    def __warn_implicit_render_config_update(self, method_name: str, config_field: str, value: bool) -> None:
+        warnings.warn(
+            f"SensorTiledCamera.utils.{method_name}() changed SensorTiledCamera.default_render_config.{config_field}. "
+            "This side effect is deprecated as of Newton 1.4 and will be removed in a future release. "
+            f"Set sensor.default_render_config.{config_field} = {value!r} explicitly.",
+            category=DeprecationWarning,
+            stacklevel=3,
+        )
 
     def create_color_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a color output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
@@ -311,6 +324,21 @@ class Utils:
             dtype=wp.float32,
             device=self.__render_context.device,
         )
+
+    def create_forward_depth_image_output(
+        self, width: int, height: int, camera_count: int = 1
+    ) -> wp.array4d[wp.float32]:
+        """Create a forward-depth output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_count: Number of cameras.
+
+        Returns:
+            Array of shape ``(world_count, camera_count, height, width)``, dtype ``float32``.
+        """
+        return self.create_depth_image_output(width, height, camera_count)
 
     def create_shape_index_image_output(self, width: int, height: int, camera_count: int = 1) -> wp.array4d[wp.uint32]:
         """Create a shape-index output array for :meth:`~newton.sensors.SensorTiledCamera.update`.
@@ -380,46 +408,570 @@ class Utils:
             device=self.__render_context.device,
         )
 
-    def compute_pinhole_camera_rays(
-        self, width: int, height: int, camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32]
+    def compute_camera_rays_pinhole(
+        self,
+        width: int,
+        height: int,
+        *,
+        camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        focal_length: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        horizontal_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        vertical_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        horizontal_aperture_offset: float | list[float] | np.ndarray | wp.array[wp.float32] = 0.0,
+        vertical_aperture_offset: float | list[float] | np.ndarray | wp.array[wp.float32] = 0.0,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
     ) -> wp.array4d[wp.vec3f]:
         """Compute camera-space ray directions for pinhole cameras.
 
-        Generates rays in camera space (origin at the camera center, direction normalized) for each pixel based on the
-        vertical field of view.
+        Generates rays in camera space (origin at the camera center,
+        direction normalized) for each pixel. Use either vertical field of
+        view values or aperture/focal-length values.
+
+        Physical camera parameters accept any consistent length unit, such as
+        USD-style millimeters. The unit must match across *focal_length*,
+        apertures, and aperture offsets.
+
+        Leave *focal_length*, *horizontal_aperture*, and
+        *vertical_aperture* as ``None`` to use *camera_fovs*. Supplying any of
+        those aperture parameters selects aperture mode, requires all three,
+        and ignores *camera_fovs*.
 
         Args:
             width: Image width [px].
             height: Image height [px].
-            camera_fovs: Vertical FOV angles [rad], shape ``(camera_count,)``.
+            camera_fovs: Vertical FOV angles [rad], scalar or shape
+                ``(camera_count,)``. If ``None``, aperture mode must be used;
+                if no aperture parameters are provided, raises
+                ``ValueError``.
+            focal_length: Focal length [mm or any consistent unit]. If
+                ``None`` and the other aperture parameters are also ``None``,
+                uses *camera_fovs*.
+            horizontal_aperture: Horizontal aperture [mm or any consistent
+                unit]. If ``None`` and the other aperture parameters are
+                also ``None``, uses *camera_fovs*.
+            vertical_aperture: Vertical aperture [mm or any consistent unit].
+                If ``None`` and the other aperture parameters are also
+                ``None``, uses *camera_fovs*.
+            horizontal_aperture_offset: Horizontal aperture offset [mm or any
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
+            vertical_aperture_offset: Vertical aperture offset [mm or any
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* at which to start
+                writing. Ignored when *out_rays* is ``None``.
 
         Returns:
-            camera_rays: Shape ``(camera_count, height, width, 2)``, dtype ``vec3f``.
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(camera_count, height, width, 2)`` and dtype
+                ``vec3f``.
         """
-        if isinstance(camera_fovs, float):
-            camera_fovs = wp.array([camera_fovs], dtype=wp.float32, device=self.__render_context.device)
-        elif isinstance(camera_fovs, list):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.__render_context.device)
-        elif isinstance(camera_fovs, np.ndarray):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.__render_context.device)
+        use_aperture = focal_length is not None or horizontal_aperture is not None or vertical_aperture is not None
+        if use_aperture:
+            if focal_length is None or horizontal_aperture is None or vertical_aperture is None:
+                raise ValueError("focal_length, horizontal_aperture, and vertical_aperture must be provided together.")
 
-        camera_count = camera_fovs.size
+            camera_count = max(
+                camera_utils._camera_param_count(focal_length),
+                camera_utils._camera_param_count(horizontal_aperture),
+                camera_utils._camera_param_count(vertical_aperture),
+                camera_utils._camera_param_count(horizontal_aperture_offset),
+                camera_utils._camera_param_count(vertical_aperture_offset),
+            )
+            focal_lengths = camera_utils._camera_param_array(
+                "focal_length", focal_length, camera_count, self.__render_context.device
+            )
+            horizontal_apertures = camera_utils._camera_param_array(
+                "horizontal_aperture", horizontal_aperture, camera_count, self.__render_context.device
+            )
+            vertical_apertures = camera_utils._camera_param_array(
+                "vertical_aperture", vertical_aperture, camera_count, self.__render_context.device
+            )
+            horizontal_aperture_offsets = camera_utils._camera_param_array(
+                "horizontal_aperture_offset", horizontal_aperture_offset, camera_count, self.__render_context.device
+            )
+            vertical_aperture_offsets = camera_utils._camera_param_array(
+                "vertical_aperture_offset", vertical_aperture_offset, camera_count, self.__render_context.device
+            )
+            out_rays, camera_index = camera_utils._validate_camera_ray_output(
+                width, height, camera_count, out_rays, camera_index, self.__render_context.device
+            )
 
-        camera_rays = wp.empty((camera_count, height, width, 2), dtype=wp.vec3f, device=self.__render_context.device)
+            wp.launch(
+                kernel=camera_utils.compute_camera_rays_pinhole_from_aperture_kernel,
+                dim=(camera_count, height, width),
+                inputs=[
+                    width,
+                    height,
+                    focal_lengths,
+                    horizontal_apertures,
+                    vertical_apertures,
+                    horizontal_aperture_offsets,
+                    vertical_aperture_offsets,
+                    camera_index,
+                    out_rays,
+                ],
+                device=self.__render_context.device,
+            )
+
+            return out_rays
+
+        if camera_fovs is None:
+            raise ValueError("camera_fovs must be provided when aperture parameters are not used.")
+
+        camera_count = camera_utils._camera_param_count(camera_fovs)
+        camera_fovs = camera_utils._camera_param_array(
+            "camera_fovs", camera_fovs, camera_count, self.__render_context.device
+        )
+        out_rays, camera_index = camera_utils._validate_camera_ray_output(
+            width, height, camera_count, out_rays, camera_index, self.__render_context.device
+        )
 
         wp.launch(
-            kernel=compute_pinhole_camera_rays,
+            kernel=camera_utils.compute_camera_rays_pinhole,
             dim=(camera_count, height, width),
             inputs=[
                 width,
                 height,
                 camera_fovs,
-                camera_rays,
+                camera_index,
+                out_rays,
             ],
             device=self.__render_context.device,
         )
 
-        return camera_rays
+        return out_rays
+
+    def compute_pinhole_camera_rays(
+        self,
+        width: int,
+        height: int,
+        camera_fovs: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        *,
+        focal_length: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        horizontal_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        vertical_aperture: float | list[float] | np.ndarray | wp.array[wp.float32] | None = None,
+        horizontal_aperture_offset: float | list[float] | np.ndarray | wp.array[wp.float32] = 0.0,
+        vertical_aperture_offset: float | list[float] | np.ndarray | wp.array[wp.float32] = 0.0,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space ray directions for pinhole cameras.
+
+        .. deprecated:: 1.4
+            Use :meth:`compute_camera_rays_pinhole` instead.
+
+        Physical camera parameters accept any consistent length unit, such as
+        USD-style millimeters. The unit must match across *focal_length*,
+        apertures, and aperture offsets.
+
+        Leave *focal_length*, *horizontal_aperture*, and
+        *vertical_aperture* as ``None`` to use *camera_fovs*. Supplying any of
+        those aperture parameters selects aperture mode, requires all three,
+        and ignores *camera_fovs*.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            camera_fovs: Vertical FOV angles [rad], scalar or shape
+                ``(camera_count,)``. If ``None``, aperture mode must be used;
+                if no aperture parameters are provided, raises
+                ``ValueError``.
+            focal_length: Focal length [mm or any consistent unit]. If
+                ``None`` and the other aperture parameters are also ``None``,
+                uses *camera_fovs*.
+            horizontal_aperture: Horizontal aperture [mm or any consistent
+                unit]. If ``None`` and the other aperture parameters are
+                also ``None``, uses *camera_fovs*.
+            vertical_aperture: Vertical aperture [mm or any consistent unit].
+                If ``None`` and the other aperture parameters are also
+                ``None``, uses *camera_fovs*.
+            horizontal_aperture_offset: Horizontal aperture offset [mm or any
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
+            vertical_aperture_offset: Vertical aperture offset [mm or any
+                consistent unit]. Defaults to ``0.0`` for a centered aperture.
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* at which to start
+                writing. Ignored when *out_rays* is ``None``.
+
+        Returns:
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(camera_count, height, width, 2)`` and dtype
+                ``vec3f``.
+        """
+        warnings.warn(
+            "``SensorTiledCamera.utils.compute_pinhole_camera_rays`` is deprecated. "
+            "Use ``SensorTiledCamera.utils.compute_camera_rays_pinhole`` instead.",
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.compute_camera_rays_pinhole(
+            width,
+            height,
+            camera_fovs=camera_fovs,
+            focal_length=focal_length,
+            horizontal_aperture=horizontal_aperture,
+            vertical_aperture=vertical_aperture,
+            horizontal_aperture_offset=horizontal_aperture_offset,
+            vertical_aperture_offset=vertical_aperture_offset,
+            out_rays=out_rays,
+            camera_index=camera_index,
+        )
+
+    def compute_camera_rays_usd_pinhole(
+        self,
+        width: int,
+        height: int,
+        cameras: camera_utils.UsdCameraInput,
+        *,
+        time: camera_utils.UsdTime | None = None,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space ray directions for USD pinhole cameras.
+
+        Reads standard ``UsdGeom.Camera`` perspective attributes and forwards
+        them to :meth:`compute_camera_rays_pinhole`. The returned
+        ``camera_rays`` array has no world axis, so rays are shared by every
+        world in a render call. Pair these rays with per-world camera
+        transforms only when the cameras at each camera index have matching
+        intrinsics across all worlds.
+
+        Args:
+            width: Image width [px].
+            height: Image height [px].
+            cameras: USD camera prim, ``UsdGeom.Camera``, or a flat sequence
+                of either. Per-world camera grids are not accepted because
+                camera rays cannot vary by world.
+            time: Optional USD time code or numeric frame used for camera
+                attributes.
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* at which to start
+                writing. Ignored when *out_rays* is ``None``.
+
+        Returns:
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(camera_count, height, width, 2)`` and dtype
+                ``vec3f``.
+        """
+        return camera_utils.compute_camera_rays_usd_pinhole(
+            width,
+            height,
+            cameras,
+            device=self.__render_context.device,
+            time=time,
+            out_rays=out_rays,
+            camera_index=camera_index,
+        )
+
+    def compute_camera_rays_fisheye_opencv(
+        self,
+        width: int,
+        height: int,
+        fx: float,
+        fy: float,
+        cx: float,
+        cy: float,
+        *,
+        image_width: float | None = None,
+        image_height: float | None = None,
+        k1: float = 0.0,
+        k2: float = 0.0,
+        k3: float = 0.0,
+        k4: float = 0.0,
+        max_fov: float = 2.0 * math.pi,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space ray directions for OpenCV fisheye cameras.
+
+        The distorted radius polynomial
+        ``r = theta * (1 + k1 theta^2 + k2 theta^4 + k3 theta^6 + k4 theta^8)``
+        must be monotonically increasing over the supported field of view,
+        ``[0, min(max_fov / 2, pi)]``.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            fx: Horizontal focal length [px].
+            fy: Vertical focal length [px].
+            cx: Principal point x-coordinate [px].
+            cy: Principal point y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses
+                *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *height*.
+            k1: First OpenCV fisheye distortion coefficient.
+            k2: Second OpenCV fisheye distortion coefficient.
+            k3: Third OpenCV fisheye distortion coefficient.
+            k4: Fourth OpenCV fisheye distortion coefficient.
+            max_fov: Maximum field of view [rad]. Pixels whose undistorted
+                angle exceeds ``max_fov / 2`` receive a zero ray.
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* to write. Ignored when
+                *out_rays* is ``None``.
+
+        Returns:
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(1, height, width, 2)`` and dtype ``vec3f``.
+        """
+        image_width = width if image_width is None else image_width
+        image_height = height if image_height is None else image_height
+        out_rays, camera_index = camera_utils._validate_camera_ray_output(
+            width, height, 1, out_rays, camera_index, self.__render_context.device
+        )
+
+        wp.launch(
+            kernel=camera_utils.compute_camera_rays_fisheye_opencv_kernel,
+            dim=(height, width),
+            inputs=[
+                width,
+                height,
+                image_width,
+                image_height,
+                fx,
+                fy,
+                cx,
+                cy,
+                k1,
+                k2,
+                k3,
+                k4,
+                max_fov,
+                camera_index,
+                out_rays,
+            ],
+            device=self.__render_context.device,
+        )
+
+        return out_rays
+
+    def compute_camera_rays_fisheye_ftheta(
+        self,
+        width: int,
+        height: int,
+        optical_center_x: float,
+        optical_center_y: float,
+        *,
+        image_width: float | None = None,
+        image_height: float | None = None,
+        nominal_width: float | None = None,
+        nominal_height: float | None = None,
+        k0: float = 0.0,
+        k1: float = 1.0,
+        k2: float = 0.0,
+        k3: float = 0.0,
+        k4: float = 0.0,
+        max_fov: float = 2.0 * math.pi,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space ray directions for F-theta fisheye cameras.
+
+        The F-theta radius polynomial
+        ``r = k0 + k1 theta + k2 theta^2 + k3 theta^3 + k4 theta^4``
+        must be monotonically increasing over the supported field of view,
+        ``[0, min(max_fov / 2, pi)]``.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            optical_center_x: Optical center x-coordinate [px].
+            optical_center_y: Optical center y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses
+                *nominal_width*, then *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *nominal_height*, then *height*.
+            nominal_width: Alias for *image_width* using F-theta model
+                terminology. If both are provided, they must match.
+            nominal_height: Alias for *image_height* using F-theta model
+                terminology. If both are provided, they must match.
+            k0: Constant F-theta polynomial coefficient [px].
+            k1: Linear F-theta polynomial coefficient [px/rad].
+            k2: Quadratic F-theta polynomial coefficient [px/rad^2].
+            k3: Cubic F-theta polynomial coefficient [px/rad^3].
+            k4: Quartic F-theta polynomial coefficient [px/rad^4].
+            max_fov: Maximum field of view [rad].
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* to write. Ignored when
+                *out_rays* is ``None``.
+
+        Returns:
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(1, height, width, 2)`` and dtype ``vec3f``.
+        """
+        image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
+        image_height = _resolve_fisheye_image_size("height", image_height, nominal_height, height)
+        out_rays, camera_index = camera_utils._validate_camera_ray_output(
+            width, height, 1, out_rays, camera_index, self.__render_context.device
+        )
+
+        wp.launch(
+            kernel=camera_utils.compute_camera_rays_fisheye_ftheta_kernel,
+            dim=(height, width),
+            inputs=[
+                width,
+                height,
+                image_width,
+                image_height,
+                optical_center_x,
+                optical_center_y,
+                k0,
+                k1,
+                k2,
+                k3,
+                k4,
+                max_fov,
+                camera_index,
+                out_rays,
+            ],
+            device=self.__render_context.device,
+        )
+
+        return out_rays
+
+    def compute_camera_rays_fisheye_kannala_brandt(
+        self,
+        width: int,
+        height: int,
+        optical_center_x: float,
+        optical_center_y: float,
+        *,
+        image_width: float | None = None,
+        image_height: float | None = None,
+        nominal_width: float | None = None,
+        nominal_height: float | None = None,
+        k0: float = 1.0,
+        k1: float = 0.0,
+        k2: float = 0.0,
+        k3: float = 0.0,
+        max_fov: float = 2.0 * math.pi,
+        out_rays: wp.array4d[wp.vec3f] | None = None,
+        camera_index: int = 0,
+    ) -> wp.array4d[wp.vec3f]:
+        """Compute camera-space ray directions for Kannala-Brandt fisheye cameras.
+
+        Uses the ``r = k0 theta + k1 theta^3 + k2 theta^5 + k3 theta^7``
+        polynomial form.
+
+        The radius polynomial must be monotonically increasing over the
+        supported field of view, ``[0, min(max_fov / 2, pi)]``.
+
+        Args:
+            width: Output image width [px].
+            height: Output image height [px].
+            optical_center_x: Optical center x-coordinate [px].
+            optical_center_y: Optical center y-coordinate [px].
+            image_width: Calibration image width [px]. If ``None``, uses
+                *nominal_width*, then *width*.
+            image_height: Calibration image height [px]. If ``None``, uses
+                *nominal_height*, then *height*.
+            nominal_width: Alias for *image_width* using Kannala-Brandt model
+                terminology. If both are provided, they must match.
+            nominal_height: Alias for *image_height* using Kannala-Brandt model
+                terminology. If both are provided, they must match.
+            k0: Linear Kannala-Brandt coefficient [px/rad].
+            k1: Cubic Kannala-Brandt coefficient [px/rad^3].
+            k2: Quintic Kannala-Brandt coefficient [px/rad^5].
+            k3: Septic Kannala-Brandt coefficient [px/rad^7].
+            max_fov: Maximum field of view [rad].
+            out_rays: Optional output array to write into, shape
+                ``(out_camera_count, height, width, 2)``. If ``None``,
+                allocates a new array.
+            camera_index: Camera index in *out_rays* to write. Ignored when
+                *out_rays* is ``None``.
+
+        Returns:
+            camera_rays: *out_rays* if provided, otherwise a new array with
+                shape ``(1, height, width, 2)`` and dtype ``vec3f``.
+        """
+        image_width = _resolve_fisheye_image_size("width", image_width, nominal_width, width)
+        image_height = _resolve_fisheye_image_size("height", image_height, nominal_height, height)
+        out_rays, camera_index = camera_utils._validate_camera_ray_output(
+            width, height, 1, out_rays, camera_index, self.__render_context.device
+        )
+
+        wp.launch(
+            kernel=camera_utils.compute_camera_rays_fisheye_kannala_brandt_kernel,
+            dim=(height, width),
+            inputs=[
+                width,
+                height,
+                image_width,
+                image_height,
+                optical_center_x,
+                optical_center_y,
+                k0,
+                k1,
+                k2,
+                k3,
+                max_fov,
+                camera_index,
+                out_rays,
+            ],
+            device=self.__render_context.device,
+        )
+
+        return out_rays
+
+    def compute_camera_transforms_usd(
+        self,
+        cameras: camera_utils.UsdCameraGridInput,
+        *,
+        time: camera_utils.UsdTime | None = None,
+        xform: Any | None = None,
+    ) -> wp.array2d[wp.transformf]:
+        """Compute camera-to-world transforms from USD camera prims.
+
+        Transforms are rotated from each USD camera's stage up-axis into the
+        associated :class:`~newton.Model` up-axis. Pass the same *xform* used
+        for :meth:`~newton.ModelBuilder.add_usd` when the USD scene was
+        imported with a placement transform.
+
+        The returned transform array may vary by world, but
+        :meth:`compute_camera_rays_usd_pinhole` and
+        :meth:`~newton.sensors.SensorTiledCamera.update` use ``camera_rays``
+        without a world axis. When using a 2D per-world camera layout, every
+        camera at the same camera index must therefore share the same
+        intrinsics across worlds.
+
+        Args:
+            cameras: One or more USD camera prims or ``UsdGeom.Camera``
+                schemas. A 1D sequence shares the same transforms across all
+                worlds. A 2D sequence indexed ``cameras[world_index][camera_index]``
+                assigns a distinct camera per world; the outer dimension must
+                equal ``world_count`` and each row must have the same length.
+                Note: the input is world-major (outer = world) but the returned
+                array is camera-major (outer = camera), i.e., shape
+                ``(camera_count, world_count)``.
+            time: Optional USD time code or numeric frame used for authored
+                camera attributes and transforms.
+            xform: Optional scene placement transform to compose with each
+                camera transform. Use the same value passed as
+                ``ModelBuilder.add_usd(..., xform=xform)`` so cameras and
+                imported geometry share the same model-space placement.
+
+        Returns:
+            Camera-to-world transforms, shape ``(camera_count, world_count)``.
+        """
+        return camera_utils.compute_camera_transforms_usd(
+            cameras,
+            world_count=self.__render_context.world_count,
+            device=self.__render_context.device,
+            target_up_axis=self.__render_context.up_axis,
+            time=time,
+            xform=xform,
+        )
 
     def convert_ray_depth_to_forward_depth(
         self,
@@ -442,8 +994,8 @@ class Utils:
             camera_transforms: World-space camera transforms, shape
                 ``(camera_count, world_count)``.
             camera_rays: Camera-space rays from
-                :meth:`compute_pinhole_camera_rays`, shape
-                ``(camera_count, height, width, 2)``.
+                :meth:`compute_camera_rays_pinhole` or the fisheye camera ray
+                helpers, shape ``(camera_count, height, width, 2)``.
             out_depth: Output forward-depth array [m] with the same shape as
                 *depth_image*. If ``None``, allocates a new one.
 
@@ -793,7 +1345,11 @@ class Utils:
         )
         return out_buffer
 
-    def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
+    def create_default_light(
+        self,
+        enable_shadows: bool = True,
+        direction: wp.vec3f | None = None,
+    ):
         """Create a default directional light oriented at ``(-1, 1, -1)``.
 
         Args:
@@ -801,12 +1357,17 @@ class Utils:
             direction: Normalized light direction. If ``None``, defaults to
                 (normalized ``(-1, 1, -1)``).
         """
-        self.__render_context.config.enable_shadows = enable_shadows
+        if self.__render_config is not None:
+            if self.__render_config.enable_shadows != enable_shadows:
+                self.__warn_implicit_render_config_update("create_default_light", "enable_shadows", enable_shadows)
+            self.__render_config.enable_shadows = enable_shadows
         self.__render_context.lights_active = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
         self.__render_context.lights_type = wp.array(
             [RenderLightType.DIRECTIONAL], dtype=wp.int32, device=self.__render_context.device
         )
-        self.__render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
+        self.__render_context.lights_cast_shadow = wp.array(
+            [enable_shadows], dtype=wp.bool, device=self.__render_context.device
+        )
         self.__render_context.lights_position = wp.array(
             [wp.vec3f(0.0)], dtype=wp.vec3f, device=self.__render_context.device
         )
@@ -857,7 +1418,10 @@ class Utils:
 
         self.__checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
-        self.__render_context.config.enable_textures = True
+        if self.__render_config is not None:
+            if not self.__render_config.enable_textures:
+                self.__warn_implicit_render_config_update("assign_checkerboard_material", "enable_textures", True)
+            self.__render_config.enable_textures = True
         self.__render_context.texture_data = wp.array(
             [self.__checkerboard_data], dtype=TextureData, device=self.__render_context.device
         )

@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import warnings
+from typing import Any
+
 import warp as wp
 
 from ..sim import Model, State
@@ -16,15 +19,34 @@ from .warp_raytrace import (
     Utils,
 )
 
+_RENDER_CONFIG_DEPRECATION_MSG = (
+    "SensorTiledCamera.render_config is deprecated as of Newton 1.4; "
+    "use SensorTiledCamera.default_render_config instead. "
+    "The alias will be removed in a future release."
+)
+_CONFIG_DEPRECATION_MSG = (
+    "SensorTiledCamera(..., config=...) is deprecated as of Newton 1.4; use default_render_config=... instead. "
+    "The alias will be removed in a future release."
+)
+
+
+class _ConfigUnset:
+    def __repr__(self) -> str:
+        return "_DEPRECATED_CONFIG_UNSET"
+
+
+_DEPRECATED_CONFIG_UNSET: Any = _ConfigUnset()
+
 
 class SensorTiledCamera:
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
-    Renders up to six image channels per (world, camera) pair:
+    Renders up to seven image channels per (world, camera) pair:
 
     - **color** -- RGBA shaded image (``uint32``).
     - **hdr_color** -- linear shaded RGB image (``vec3f``).
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
+    - **forward_depth** -- ray-hit distance projected onto camera forward [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
     - **albedo** -- unshaded surface color (``uint32``).
     - **shape_index** -- shape id per pixel (``uint32``).
@@ -42,7 +64,7 @@ class SensorTiledCamera:
         ::
 
             sensor = SensorTiledCamera(model)
-            rays = sensor.utils.compute_pinhole_camera_rays(width, height, fov)
+            rays = sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=fov)
             color = sensor.utils.create_color_image_output(width, height)
 
             # BVHs are built for the initial state by ModelBuilder.finalize().
@@ -67,7 +89,14 @@ class SensorTiledCamera:
     DEFAULT_CLEAR_DATA = ClearData()
     GRAY_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
-    def __init__(self, model: Model, *, config: RenderConfig | None = None, load_textures: bool = True):
+    def __init__(
+        self,
+        model: Model,
+        *,
+        default_render_config: RenderConfig | None = None,
+        config: RenderConfig | None = _DEPRECATED_CONFIG_UNSET,
+        load_textures: bool = True,
+    ):
         """Initialize the tiled camera sensor from a simulation model.
 
         Builds the internal :class:`RenderContext`, loads shape geometry (and
@@ -76,25 +105,51 @@ class SensorTiledCamera:
 
         Args:
             model: Simulation model whose shapes will be rendered.
-            config: Rendering configuration. Pass a :class:`RenderConfig` to
+            default_render_config: Rendering configuration. Pass a :class:`RenderConfig` to
                 control raytrace settings directly, or ``None`` to use
                 defaults. Use ``RenderConfig.output_color_space`` to control
                 whether packed ``color`` and ``albedo`` outputs are
                 display-encoded or left linear.
+            config: Deprecated as of Newton 1.4; use ``default_render_config`` instead.
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
         self.model = model
 
-        render_config = config if config is not None else RenderConfig()
+        if config is not _DEPRECATED_CONFIG_UNSET:
+            warnings.warn(_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if default_render_config is not None:
+                raise TypeError("Specify only one of `default_render_config` and deprecated `config`.")
+            default_render_config = config
+
+        self.__default_render_config = default_render_config if default_render_config is not None else RenderConfig()
+        self.__default_clear_data = ClearData()
 
         self.__render_context = RenderContext(
             world_count=self.model.world_count,
-            config=render_config,
             device=self.model.device,
         )
+        self.__utils = Utils(self.__render_context, self.default_render_config)
 
         self.__render_context.init_from_model(self.model, load_textures)
+
+    @property
+    def default_render_config(self) -> RenderConfig:
+        """The default render config to use if none is passed to :meth:`update`.
+
+        Returns:
+            The default :class:`RenderConfig` instance.
+        """
+        return self.__default_render_config
+
+    @property
+    def default_clear_data(self) -> ClearData:
+        """The default clear data to use if none is passed to :meth:`update`.
+
+        Returns:
+            The default :class:`ClearData` instance.
+        """
+        return self.__default_clear_data
 
     def sync_transforms(self, state: State):
         """Synchronize triangle-mesh points from the simulation state.
@@ -120,12 +175,14 @@ class SensorTiledCamera:
         camera_rays: wp.array4d[wp.vec3f] | None = None,
         *,
         color_image: wp.array4d[wp.uint32] | None = None,
+        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         depth_image: wp.array4d[wp.float32] | None = None,
+        forward_depth_image: wp.array4d[wp.float32] | None = None,
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
-        clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
-        hdr_color_image: wp.array4d[wp.vec3f] | None = None,
+        clear_data: ClearData | None = None,
+        render_config: RenderConfig | None = None,
         kernel_block_dim: int = 64,
     ):
         """Render output images for all worlds and cameras.
@@ -143,13 +200,15 @@ class SensorTiledCamera:
         Args:
             state: Simulation state with body and particle transforms.
             camera_transforms: Camera-to-world transforms, shape ``(camera_count, world_count)``.
-            camera_rays: Camera-space rays from :meth:`compute_pinhole_camera_rays`, shape
+            camera_rays: Camera-space rays from ``SensorTiledCamera.utils`` ray helpers, shape
                 ``(camera_count, height, width, 2)``.
             color_image: Output for packed RGBA color. The bytes are
                 display/sRGB by default, or linear when
-                ``self.render_config.output_color_space`` is
+                ``self.default_render_config.output_color_space`` is
                 ``newton.utils.ColorSpace.LINEAR``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
+            forward_depth_image: Output for ray-hit distance projected onto
+                camera forward [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for packed unshaded surface color, using the
@@ -159,6 +218,8 @@ class SensorTiledCamera:
                 converted to linear when linear output is requested. See
                 :attr:`DEFAULT_CLEAR_DATA`, :attr:`GRAY_CLEAR_DATA`.
             hdr_color_image: Output for linear HDR color. None to skip.
+            render_config: Render settings for this update. If ``None``, uses
+                :attr:`default_render_config`.
             kernel_block_dim: Thread block dimension forwarded to ``wp.launch``
                 for the render megakernel.
         """
@@ -168,33 +229,34 @@ class SensorTiledCamera:
         self.__render_context.render(
             self.model,
             state,
-            camera_transforms,
-            camera_rays,
-            color_image,
-            depth_image,
-            shape_index_image,
-            normal_image,
-            albedo_image,
-            clear_data=clear_data,
+            camera_transforms=camera_transforms,
+            camera_rays=camera_rays,
+            color_image=color_image,
             hdr_color_image=hdr_color_image,
+            depth_image=depth_image,
+            forward_depth_image=forward_depth_image,
+            shape_index_image=shape_index_image,
+            normal_image=normal_image,
+            albedo_image=albedo_image,
+            clear_data=clear_data if clear_data is not None else self.default_clear_data,
+            config=render_config if render_config is not None else self.default_render_config,
             kernel_block_dim=kernel_block_dim,
         )
 
     @property
     def render_config(self) -> RenderConfig:
-        """Low-level raytrace settings on the internal :class:`RenderContext`.
+        """Deprecated alias for :attr:`default_render_config`.
 
-        Populated at construction from fixed defaults (for example global
-        world and shadow flags on the context). Attributes may be modified to
-        change behavior for subsequent :meth:`update` calls.
+        .. deprecated:: 1.4
+            Use :attr:`default_render_config` instead.
 
         Returns:
-            The live :class:`RenderConfig` instance (same object as
-            ``render_context.config`` without triggering deprecation warnings).
+            The live default :class:`RenderConfig` instance.
         """
-        return self.__render_context.config
+        warnings.warn(_RENDER_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        return self.default_render_config
 
     @property
     def utils(self) -> Utils:
         """Utility helpers for creating output buffers, computing rays, and assigning materials/lights."""
-        return self.__render_context.utils
+        return self.__utils

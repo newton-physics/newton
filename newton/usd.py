@@ -11,6 +11,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
 # USD utility functions
 # ==================================================================================
 from ._src.usd.utils import (
+    DEFORMABLE_LEGACY_NAMESPACES,
     find_tetmesh_prims,
     get_attribute,
     get_attributes_in_namespace,
@@ -30,6 +31,7 @@ from ._src.usd.utils import (
 )
 
 __all__ = [
+    "DEFORMABLE_LEGACY_NAMESPACES",
     "find_tetmesh_prims",
     "get_attribute",
     "get_attributes_in_namespace",

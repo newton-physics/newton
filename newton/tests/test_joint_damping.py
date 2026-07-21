@@ -15,7 +15,7 @@ class TestJointDamping(unittest.TestCase):
 
 
 def _build_revolute_model(device, damping: float):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
@@ -42,7 +42,7 @@ def _build_revolute_model(device, damping: float):
 
 
 def _build_ball_model(device, damping: float):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
@@ -122,6 +122,7 @@ devices = get_test_devices()
 solvers = {
     "featherstone": (lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0), False),
     "semi_implicit": (lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0), True),
+    "kamino": (newton.solvers.SolverKamino, False),
 }
 
 for device in devices:

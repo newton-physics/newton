@@ -164,14 +164,15 @@ required dependencies installed by ``pip install newton``:
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     # Step the simulation
     for step in range(120):
         state_0.clear_forces()
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
         state_0, state_1 = state_1, state_0
 
@@ -229,9 +230,9 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``examples``
      - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt`` / ``.pth`` policies (includes ``examples``)
+     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``torch-cu13``
-     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt`` / ``.pth`` policies (includes ``examples``)
+     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``

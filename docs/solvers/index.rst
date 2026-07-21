@@ -35,7 +35,8 @@ via the :meth:`~newton.solvers.SolverBase.step` method:
       STEP --> SO
 
 See the :doc:`solver API reference </api/newton_solvers>` for constructor and
-method details.
+method details. For symptom-driven diagnosis and parameter tuning, start with
+:ref:`Simulation Tuning`.
 
 Choosing a Solver
 -----------------

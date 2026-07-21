@@ -43,7 +43,7 @@ For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.S
 use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
 use maximal coordinates.
-Note that collision detection, e.g., via :meth:`newton.Model.collide` requires the maximal coordinates to be current in the state.
+Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
 Cable joints
 ^^^^^^^^^^^^
@@ -707,6 +707,150 @@ recovered generalized velocities are rotated back into the joint parent frame.
 .. autofunction:: newton.eval_ik
    :noindex:
 
+
+.. _Inverse Dynamics:
+
+Inverse Dynamics
+----------------
+
+.. experimental::
+
+Newton can evaluate the **manipulator equation** for an articulated rigid-body system:
+
+.. math::
+
+   \tau = M(q)\, \ddot{q} + C(q, \dot{q})\, \dot{q} + g(q)
+
+.. list-table:: Manipulator-equation terms
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Symbol
+     - Description
+   * - :math:`q`
+     - Generalized joint coordinates (:attr:`State.joint_q`).
+   * - :math:`\dot{q}`
+     - Generalized joint velocities (:attr:`State.joint_qd`).
+   * - :math:`\ddot{q}`
+     - Generalized joint accelerations (user-supplied ``joint_qdd``).
+   * - :math:`\tau`
+     - Generalized joint forces / torques, same layout as :attr:`Control.joint_f`.
+   * - :math:`M(q)`
+     - Joint-space mass matrix, shape ``(articulation_count, max_dofs_per_articulation, max_dofs_per_articulation)``.
+   * - :math:`g(q) = \partial U / \partial q`
+     - Gravity force, where :math:`U(q) = \sum_i -m_i\, \mathbf{g} \cdot \mathbf{x}_{\text{com},i}` is the system's gravitational potential energy (sum over bodies of mass × gravity-vector · CoM position). Equivalently, the feed-forward joint-space force a controller must apply to hold the articulation static under gravity.
+   * - :math:`C(q, \dot{q})\, \dot{q}`
+     - Coriolis + centrifugal force.
+
+:func:`newton.eval_inverse_dynamics_passive` populates any requested
+combination of :math:`M(q)`, :math:`g(q)`, and
+:math:`C(q, \dot{q})\, \dot{q}` into caller-allocated arrays. An output set to
+``None`` is not computed.
+:func:`newton.eval_inverse_dynamics_force` then combines them with a
+user-supplied :math:`\ddot{q}` to produce :math:`\tau`.
+
+Both functions require ``state.body_q`` to be consistent with
+``state.joint_q``: callers must invoke :func:`newton.eval_fk` (or
+otherwise update ``state.body_q``) first.
+
+.. testcode:: articulation-view
+
+    # bring state.body_q in sync with state.joint_q (precondition of
+    # eval_inverse_dynamics_passive)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    # allocate the requested outputs
+    mass_matrix = wp.empty(
+        (
+            model.articulation_count,
+            model.max_dofs_per_articulation,
+            model.max_dofs_per_articulation,
+        ),
+        dtype=wp.float32,
+        device=model.device,
+    )
+    gravity_force = wp.empty_like(state.joint_qd)
+    coriolis_force = wp.empty_like(state.joint_qd)
+    joint_f = wp.empty_like(state.joint_qd)
+
+    # populate M(q), g(q), and C(q, q_dot)*q_dot in one call
+    newton.eval_inverse_dynamics_passive(
+        model,
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
+    )
+
+    # combine into the generalized joint force tau = M*joint_qdd + C*qdot + g
+    joint_qdd = wp.zeros_like(state.joint_qd)
+    newton.eval_inverse_dynamics_force(
+        model,
+        state,
+        mass_matrix=mass_matrix,
+        joint_qdd=joint_qdd,
+        coriolis_force=coriolis_force,
+        gravity_force=gravity_force,
+        joint_f=joint_f,
+    )
+
+Pass only the output arrays you need. For example, supplying
+``gravity_force=`` and ``coriolis_force=`` while leaving ``mass_matrix=None``
+skips the mass-matrix Jacobian pass.
+
+Restricting evaluation with the selection API
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`newton.selection.ArticulationView` exposes
+:meth:`~newton.selection.ArticulationView.eval_inverse_dynamics_passive`, which
+masks the computation to a label-matched (and optionally per-world)
+subset of articulations. Output buffers stay sized for the whole model;
+slots belonging to unselected articulations and DOFs come back as zero,
+mirroring the convention :func:`newton.eval_mass_matrix` uses for its
+own ``mask=`` argument.
+
+.. testcode:: articulation-view
+
+    # only compute M(q), g(q), and C*q_dot for selected articulations
+    view = newton.selection.ArticulationView(model, pattern="robot*")
+    view.eval_inverse_dynamics_passive(
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
+    )
+
+    # optionally narrow further with a per-world submask (shape [world_count])
+    per_world_mask = wp.array([True], dtype=bool, device=model.device)
+    view.eval_inverse_dynamics_passive(
+        state,
+        mass_matrix=mass_matrix,
+        gravity_force=gravity_force,
+        coriolis_force=coriolis_force,
+        mask=per_world_mask,
+    )
+
+The view also applies the same selection when combining the populated arrays
+with a desired acceleration:
+
+.. testcode:: articulation-view
+
+    view.eval_inverse_dynamics_force(
+        state,
+        mass_matrix=mass_matrix,
+        joint_qdd=joint_qdd,
+        coriolis_force=coriolis_force,
+        gravity_force=gravity_force,
+        joint_f=joint_f,
+        mask=per_world_mask,
+    )
+
+
+.. autofunction:: newton.eval_inverse_dynamics_passive
+   :noindex:
+
+.. autofunction:: newton.eval_inverse_dynamics_force
+   :noindex:
 
 .. _Orphan joints:
 

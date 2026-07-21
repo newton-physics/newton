@@ -188,6 +188,12 @@ def build_dynamic_static_sphere_scene(
 
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 
@@ -652,7 +658,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         return model, state, contacts
 
     @staticmethod
@@ -1128,7 +1136,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         nc_orig = int(contacts.rigid_contact_count.numpy()[0])
         self.assertEqual(nc_orig, 9 + 9 + 4, f"Expected 22 contacts (9+9+4), got {nc_orig}")
 
@@ -1202,7 +1212,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         for margin in (0.0, 0.05):
             with self.subTest(margin=margin):
                 sphere = ModelBuilder()
-                body = sphere.add_link()
+                body = sphere.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()))
                 sphere.add_shape_sphere(
                     body,
                     radius=radius,
@@ -1211,7 +1221,7 @@ class TestGeometryContactConversions(unittest.TestCase):
                 joint = sphere.add_joint_free(
                     parent=-1,
                     child=body,
-                    parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()),
+                    parent_xform=wp.transform_identity(),
                     child_xform=wp.transform_identity(),
                 )
                 sphere.add_articulation([joint])
@@ -1223,7 +1233,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
                 state = model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                contacts = model.collide(state)
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
                 contact_count = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertEqual(contact_count, 1)
 

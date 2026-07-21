@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
+import hashlib
 import math
 import os
 import warnings
@@ -1502,38 +1503,55 @@ class Mesh:
             The hash value for the mesh.
         """
         if self._cached_hash is None:
-            self._cached_hash = hash(
-                (
-                    tuple(np.array(self.vertices).flatten()),
-                    tuple(np.array(self.indices).flatten()),
-                    self.is_solid,
-                    self._compute_texture_hash(),
-                    self._roughness,
-                    self._metallic,
-                )
+            digest = hashlib.sha256()
+            material = np.array(
+                [
+                    np.nan if self._roughness is None else float(self._roughness),
+                    np.nan if self._metallic is None else float(self._metallic),
+                ],
+                dtype=np.float64,
             )
+            for name, values in ((b"vertices", self._vertices), (b"indices", self._indices), (b"material", material)):
+                dtype = values.dtype.str.encode("ascii")
+                digest.update(len(name).to_bytes(1, "big"))
+                digest.update(name)
+                digest.update(len(dtype).to_bytes(1, "big"))
+                digest.update(dtype)
+                digest.update(values.ndim.to_bytes(1, "big"))
+                for dimension in values.shape:
+                    digest.update(int(dimension).to_bytes(8, "big"))
+                digest.update(values.tobytes())
+            digest.update(bytes([bool(self.is_solid)]))
+            self._cached_hash = int.from_bytes(digest.digest()[:8], "big") ^ hash(self._compute_texture_hash())
         return self._cached_hash
 
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim, **kwargs) -> "Mesh":
-        """Load a Mesh from a USD prim with the ``UsdGeom.Mesh`` schema.
+    def create_from_usd(source=None, *, prim=None, **kwargs) -> "Mesh":
+        """Load a Mesh from a USD mesh prim, stage, file path, or URL.
 
         This is a convenience wrapper around :func:`newton.usd.get_mesh`.
         See that function for full documentation.
 
         Args:
-            prim: The USD prim to load the mesh from.
+            source: USD mesh prim, stage, file path, or URL to load the mesh
+                from.
+            prim: Legacy keyword alias for ``source`` when loading a USD prim.
             **kwargs: Additional arguments passed to :func:`newton.usd.get_mesh`
-                (e.g. ``load_normals``, ``load_uvs``).
+                (e.g. ``root_path``, ``load_normals``, ``load_uvs``).
 
         Returns:
             Mesh: A new Mesh instance.
         """
         from ..usd.utils import get_mesh  # noqa: PLC0415
 
-        result = get_mesh(prim, **kwargs)
+        if prim is not None:
+            if source is not None:
+                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
+            source = prim
+
+        result = get_mesh(source, **kwargs)
         if isinstance(result, tuple):
             return result[0]
         return result
@@ -1700,11 +1718,15 @@ class TetMesh:
         first_dim = arr.shape[0] if arr.ndim >= 1 else 1
         counts = {"vertex_count": vertex_count, "tet_count": tet_count, "tri_count": tri_count}
         matches = [label for label, c in counts.items() if first_dim == c and c > 0]
+        if first_dim == 1:
+            matches.append("ONCE")
         if len(matches) > 1:
             raise ValueError(
                 f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches "
                 f"{', '.join(matches)}. Pass an explicit (array, frequency) tuple instead."
             )
+        if "ONCE" in matches:
+            return Model.AttributeFrequency.ONCE
         if first_dim == vertex_count and vertex_count > 0:
             return Model.AttributeFrequency.PARTICLE
         if first_dim == tet_count and tet_count > 0:
@@ -1821,17 +1843,35 @@ class TetMesh:
     # ---- Factory methods ---------------------------------------------------
 
     @staticmethod
-    def create_from_usd(prim) -> "TetMesh":
+    def create_from_usd(prim, *, compat_namespaces: Sequence[str] | None = None) -> "TetMesh":
         """Load a tetrahedral mesh from a USD prim with the ``UsdGeom.TetMesh`` schema.
 
         Reads vertex positions from the ``points`` attribute and tetrahedral
         connectivity from ``tetVertexIndices``. If a physics material is bound
         to the prim (via ``material:binding:physics``) and contains
-        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes
-        (under the ``omniphysics:`` or ``physxDeformableBody:`` namespaces),
+        ``youngsModulus``, ``poissonsRatio``, or ``density`` attributes (canonical
+        ``physics:`` namespace, with ``compat_namespaces`` as a fallback),
         those values are read and converted to Lame parameters (``k_mu``,
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
+
+        Custom primvars use their resolved interpolation to determine attribute
+        frequency. Other custom arrays use length-based inference; arrays whose
+        frequency is ambiguous or cannot be inferred emit a warning and are
+        omitted without preventing the TetMesh from loading.
+
+        Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
+        (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)
+        are read off any bound material, matching the pre-canonical behavior. That default is
+        deprecated and emits a ``DeprecationWarning`` when it is load-bearing: the bound material
+        authors vendor-namespaced deformable attributes, or canonical ``physics:`` attributes
+        without ``PhysicsVolumeDeformableMaterialAPI`` (API-applied canonical or render-only
+        materials do not warn); a future
+        release will default to canonical ``physics:``-only. Pass ``compat_namespaces=()`` to adopt
+        the canonical-only behavior now -- moduli are then read only from a material that applies
+        ``PhysicsVolumeDeformableMaterialAPI`` -- or pass an explicit list (e.g.
+        ``newton.usd.DEFORMABLE_LEGACY_NAMESPACES``) to keep reading vendor namespaces without the
+        warning.
 
         Example:
 
@@ -1849,13 +1889,17 @@ class TetMesh:
 
         Args:
             prim: The USD prim to load the tetrahedral mesh from.
+            compat_namespaces: Vendor attribute namespaces accepted as a fallback to the canonical
+                ``physics:`` material attributes, lifting the ``PhysicsVolumeDeformableMaterialAPI``
+                gate. ``None`` (the default) selects the deprecated legacy namespaces; pass ``()`` for
+                canonical-only.
 
         Returns:
             TetMesh: A :class:`newton.TetMesh` with vertex positions and tet connectivity.
         """
         from ..usd.utils import get_tetmesh  # noqa: PLC0415
 
-        return get_tetmesh(prim)
+        return get_tetmesh(prim, compat_namespaces=compat_namespaces)
 
     @staticmethod
     def create_from_file(filename: str) -> "TetMesh":

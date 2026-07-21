@@ -393,22 +393,7 @@ class JointDoFType(IntEnum):
         3D vector: {`T_x`, `T_y`, `T_z`}
     """
 
-    GIMBAL = 6
-    """
-    A 3-DoF gimbal joint, with rotational DoFs along {`R_x`, `R_y`, `R_z`}.
-
-    **DISCLAIMER**: This joint is not yet fully supported, and currently behaves
-    identically to the SPHERICAL joint. We do not recommend using it at present time.
-
-    Coordinates:
-        3D euler angles: {`R_x`, `R_y`, `R_z`}
-    DoFs:
-        3D angular velocities: {`R_x`, `R_y`, `R_z`}
-    Constraints:
-        3D vector: {`T_x`, `T_y`, `T_z`}
-    """
-
-    CARTESIAN = 7
+    CARTESIAN = 6
     """
     A 3-DoF Cartesian joint, with translational DoFs along {`T_x`, `T_y`, `T_z`}.
 
@@ -420,7 +405,7 @@ class JointDoFType(IntEnum):
         3D vector: {`R_x`, `R_y`, `R_z`}
     """
 
-    FIXED = 8
+    FIXED = 7
     """
     A 0-DoF fixed joint, fully constraining the relative motion between the connected bodies.
 
@@ -463,8 +448,6 @@ class JointDoFType(IntEnum):
             return 2  # 2D angles
         elif self.value == self.SPHERICAL:
             return 4  # 4D unit-quaternion
-        elif self.value == self.GIMBAL:
-            return 3  # 3D euler angles
         elif self.value == self.CARTESIAN:
             return 3  # 3D distances
         elif self.value == self.FIXED:
@@ -488,8 +471,6 @@ class JointDoFType(IntEnum):
         elif self.value == self.UNIVERSAL:
             return 2  # 2D angular velocities
         elif self.value == self.SPHERICAL:
-            return 3  # 3D angular velocities
-        elif self.value == self.GIMBAL:
             return 3  # 3D angular velocities
         elif self.value == self.CARTESIAN:
             return 3  # 3D linear velocities
@@ -515,8 +496,6 @@ class JointDoFType(IntEnum):
             return 4  # 4D vector for `{R_x, R_y, R_z, R_w}`
         elif self.value == self.SPHERICAL:
             return 3  # 3D vector for `{R_x, R_y, R_z}`
-        elif self.value == self.GIMBAL:
-            return 3  # 3D vector for `{R_x, R_y, R_z}`
         elif self.value == self.CARTESIAN:
             return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif self.value == self.FIXED:
@@ -540,8 +519,6 @@ class JointDoFType(IntEnum):
         elif self.value == self.UNIVERSAL:
             return wp.constant(wp.vec4i(0, 1, 2, 5))
         elif self.value == self.SPHERICAL:
-            return wp.constant(wp.vec3i(0, 1, 2))
-        elif self.value == self.GIMBAL:
             return wp.constant(wp.vec3i(0, 1, 2))
         elif self.value == self.CARTESIAN:
             return wp.constant(wp.vec3i(3, 4, 5))
@@ -567,8 +544,6 @@ class JointDoFType(IntEnum):
             return wp.constant(wp.vec2i(3, 4))
         elif self.value == self.SPHERICAL:
             return wp.constant(wp.vec3i(3, 4, 5))
-        elif self.value == self.GIMBAL:
-            return wp.constant(wp.vec3i(3, 4, 5))
         elif self.value == self.CARTESIAN:
             return wp.constant(wp.vec3i(0, 1, 2))
         elif self.value == self.FIXED:
@@ -593,8 +568,6 @@ class JointDoFType(IntEnum):
             return wp.vec2f
         elif self.value == self.SPHERICAL:
             return wp.vec4f
-        elif self.value == self.GIMBAL:
-            return wp.vec3f
         elif self.value == self.CARTESIAN:
             return wp.vec3f
         elif self.value == self.FIXED:
@@ -619,8 +592,6 @@ class JointDoFType(IntEnum):
             return wp.vec2f
         elif self.value == self.SPHERICAL:
             return wp.quatf
-        elif self.value == self.GIMBAL:
-            return wp.vec3f
         elif self.value == self.CARTESIAN:
             return wp.vec3f
         elif self.value == self.FIXED:
@@ -645,8 +616,6 @@ class JointDoFType(IntEnum):
             return [0.0, 0.0]
         elif self.value == self.SPHERICAL:
             return [0.0, 0.0, 0.0, 1.0]
-        elif self.value == self.GIMBAL:
-            return [0.0, 0.0, 0.0]
         elif self.value == self.CARTESIAN:
             return [0.0, 0.0, 0.0]
         elif self.value == self.FIXED:
@@ -673,8 +642,6 @@ class JointDoFType(IntEnum):
             return [rotation_bound, rotation_bound]
         elif self.value == self.SPHERICAL:
             return [JOINT_QMAX] * 4
-        elif self.value == self.GIMBAL:
-            return [rotation_bound] * 3
         elif self.value == self.CARTESIAN:
             return [JOINT_QMAX] * 3
         elif self.value == self.FIXED:
@@ -708,7 +675,6 @@ class JointDoFType(IntEnum):
             JointDoFType.CARTESIAN: JointType.D6,
             JointDoFType.CYLINDRICAL: JointType.D6,
             JointDoFType.UNIVERSAL: JointType.D6,
-            JointDoFType.GIMBAL: JointType.D6,
         }
         joint_type = _MAP_TO_NEWTON.get(dof_type, None)
         if joint_type is None:
@@ -803,7 +769,6 @@ class JointDoFType(IntEnum):
             elif q_count == 3 and qd_count == 3 and dof_dim == (3, 0):
                 dof_type = JointDoFType.CARTESIAN
             elif q_count == 3 and qd_count == 3 and dof_dim == (0, 3):
-                # TODO: dof_type = JointDoFType.GIMBAL
                 raise ValueError("Unsupported joint type: GIMBAL joints are not currently supported.")
             elif q_count == 4 and qd_count == 3 and dof_dim == (0, 3):
                 dof_type = JointDoFType.SPHERICAL
@@ -885,7 +850,6 @@ class JointDoFType(IntEnum):
         elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(3, 0):
             return JointDoFType.CARTESIAN
         elif q_count == 3 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
-            # TODO: dof_type = JointDoFType.GIMBAL
             return -1
         elif q_count == 4 and qd_count == 3 and dof_dim == wp.vec2i(0, 3):
             return JointDoFType.SPHERICAL
@@ -924,8 +888,6 @@ class JointDoFType(IntEnum):
             return 2  # 2D angles
         elif dof_type == JointDoFType.SPHERICAL:
             return 4  # 4D unit-quaternion
-        elif dof_type == JointDoFType.GIMBAL:
-            return 3  # 3D euler angles
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D distances
         elif dof_type == JointDoFType.FIXED:
@@ -957,8 +919,6 @@ class JointDoFType(IntEnum):
             return 2  # 2D angular velocities
         elif dof_type == JointDoFType.SPHERICAL:
             return 3  # 3D angular velocities
-        elif dof_type == JointDoFType.GIMBAL:
-            return 3  # 3D angular velocities
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D linear velocities
         elif dof_type == JointDoFType.FIXED:
@@ -989,8 +949,6 @@ class JointDoFType(IntEnum):
         elif dof_type == JointDoFType.UNIVERSAL:
             return 4  # 4D vector for `{R_x, R_y, R_z, R_w}`
         elif dof_type == JointDoFType.SPHERICAL:
-            return 3  # 3D vector for `{R_x, R_y, R_z}`
-        elif dof_type == JointDoFType.GIMBAL:
             return 3  # 3D vector for `{R_x, R_y, R_z}`
         elif dof_type == JointDoFType.CARTESIAN:
             return 3  # 3D vector for `{T_x, T_y, T_z}`
@@ -1066,6 +1024,16 @@ class JointDescriptor(Descriptor):
 
     act_type: JointActuationType = JointActuationType.PASSIVE
     """Actuation type of the joint."""
+
+    fk_act_flag: int = -1
+    """
+    Integer flag indicating whether this joint should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
+    """
 
     dof_type: JointDoFType = JointDoFType.FREE
     """DoF type of the joint."""
@@ -1541,6 +1509,7 @@ class JointDescriptor(Descriptor):
             f"uid: {self.uid},\n"
             "----------------------------------------------\n"
             f"act_type: {self.act_type},\n"
+            f"fk_act_flag: {self.fk_act_flag},\n"
             f"dof_type: {self.dof_type},\n"
             "----------------------------------------------\n"
             f"bid_B: {self.bid_B},\n"
@@ -1725,6 +1694,17 @@ class JointsModel:
     """
     Joint actuation type ID of each joint.
     Shape of ``(num_joints,)``.
+    """
+
+    fk_act_flag: wp.array[wp.int32] | None = None
+    """
+    Integer flag per joint, indicating whether it should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+    Shape of ``(num_joints,)`` if set; else considered to be -1 for all joints.
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
     """
 
     bid_B: wp.array[wp.int32] | None = None
@@ -2140,8 +2120,13 @@ class JointsData:
     Internal effective inertia of each joint (as flat array),
     used for implicit integration of joint dynamics.
 
-    ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,
-    where dt is the simulation time step.
+    Let ``m_j_0 := a_j + dt * b_j``, where ``dt`` is the simulation time step.
+    The actuation mode determines the remaining terms:
+
+    - ``PASSIVE`` or ``FORCE``: ``m_j := m_j_0``
+    - ``VELOCITY``: ``m_j := m_j_0 + dt * k_d_j``
+    - ``POSITION``, ``POSITION_VELOCITY``, or ``POSITION_VELOCITY_FORCE``:
+      ``m_j := m_j_0 + dt * k_d_j + dt^2 * k_p_j``
 
     A non-zero minimum mass is enforced to avoid a
     division-by-zero failure.
@@ -2154,9 +2139,7 @@ class JointsData:
     Internal effective inverse inertia of each joint (as flat
     array), used for implicit integration of joint dynamics.
 
-    ``inv_m_j := 1 / m_j``, computed element-wise,
-    where ``m_j := a_j + dt * (b_j + k_d_j) + dt^2 * k_p_j``,
-    and dt is the simulation time step.
+    ``inv_m_j := 1 / m_j``, computed element-wise.
 
     Note that all ``inv_m_j>0`` due to a minimum non-zero mass
     being enforced.
@@ -2170,7 +2153,7 @@ class JointsData:
 
     Each joint has local actuation and PD control dynamics:
     ```
-    m_j * dq_j^{+} = a_j * dq_j^{-} + dt * h_j
+    m_j * dq_j^{+} = h_j
     ```
     and is contributes to the dynamics of the system through the constraint equation:
     ```
@@ -2185,17 +2168,28 @@ class JointsData:
 
     This results in the following dynamic constraint equation for each joint `j`:
     ```
-    dq_j^{+} + m_j^{-1} * lambda_q_j = m_j^{-1} * (a_j * dq_j^{-} + dt * h_j)
+    dq_j^{+} + m_j^{-1} * lambda_q_j = m_j^{-1} * h_j
     dq_j^{+} + m_j^{-1} * lambda_q_j = dq_b_j
     J_q_j * u^{+} + m_j^{-1} * lambda_q_j = dq_b_j
     ```
     and thus the velocity bias term of the joint-space dynamics of each joint `j` is computed as:
     ```
-    tau_j_tot := dt * ( tau_j + tau_j_ff + k_p_j * (q_j_ref - q_j^{-} ) + k_d_j * dq_j_ref )
     h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
-    where dt is the simulation time step.
+    The actuation mode determines ``tau_j_tot``:
+
+    - ``PASSIVE``: ``tau_j``
+    - ``FORCE``: ``tau_j + tau_j_ff``
+    - ``POSITION``: ``tau_j + k_p_j * (q_j_ref - q_j^{-})``
+    - ``VELOCITY``: ``tau_j + k_d_j * dq_j_ref``
+    - ``POSITION_VELOCITY``:
+      ``tau_j + k_p_j * (q_j_ref - q_j^{-}) + k_d_j * dq_j_ref``
+    - ``POSITION_VELOCITY_FORCE``:
+      ``tau_j + tau_j_ff + k_p_j * (q_j_ref - q_j^{-}) + k_d_j * dq_j_ref``
+
+    For ``POSITION``, the ``dt * k_d_j`` term in :attr:`m_j` supplies derivative
+    damping toward zero velocity without consuming ``dq_j_ref``.
 
     Shape of ``(sum_of_num_dynamic_joint_cts,)``.
     """

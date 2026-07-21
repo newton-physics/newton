@@ -198,7 +198,6 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
-        all_cable_bodies = [body for cable_bodies in self.cable_bodies_list for body in cable_bodies]
 
         # Use full hard-contact correction (contact alpha 0.0) for stronger repulsion with low iterations.
         self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_avbd_contact_alpha=0.0)
@@ -207,10 +206,10 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
-        self.viewer.set_picking_linear_only_bodies(all_cable_bodies)
 
         # Twist rates for first segments (radians per second)
         twist_rates = np.full(len(kinematic_body_indices), 0.5, dtype=np.float32)
@@ -246,7 +245,7 @@ class Example:
             # Collision detection and contact refresh cadence.
             refresh_contacts = (substep % self.update_step_interval) == 0
             if refresh_contacts:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.set_rigid_history_update(refresh_contacts)
             self.solver.step(
