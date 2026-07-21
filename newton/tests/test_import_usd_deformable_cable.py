@@ -198,7 +198,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertEqual(model.body_count, 5)
 
     def test_welded_cable_material_maps_to_rod_graph_stiffness(self):
-        """A welded cable graph imports all four stiffness moduli from its representative material."""
+        """Verify a welded cable graph imports all four stiffness moduli from its representative material."""
         stage = self._author_attached_cable_pair(gap=0.0)
         thickness, stretch_mod, shear_mod, bend_mod, twist_mod = 0.02, 2.0e6, 3.0, 3.0e5, 4.0
         for suffix in ("A", "B"):
@@ -233,7 +233,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 4], expected, rtol=1.0e-3)
 
     def test_cable_material_maps_to_rod_stiffness(self):
-        """Bound curve-deformable material -> radius + four per-joint stiffnesses.
+        """Verify a bound curve-deformable material maps to radius and four per-joint stiffnesses.
 
         Authored zero stiffness (range [0, inf)) is preserved rather than replaced by
         ``add_rod`` defaults, and all four moduli remain available in ``path_cable_attrs``.
