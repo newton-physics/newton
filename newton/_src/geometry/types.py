@@ -18,7 +18,7 @@ from ..utils.texture import compute_texture_hash
 
 if TYPE_CHECKING:
     from ..sim.model import Model
-    from .sdf_utils import SDF
+    from .sdf_utils import SDF, SignMethod
 
 
 def _resolve_relative_or_absolute(
@@ -771,6 +771,7 @@ class Mesh:
         shape_margin: float = 0.0,
         scale: tuple[float, float, float] | None = None,
         texture_format: str = "uint16",
+        sign_method: "SignMethod" = "auto",
         cache_dir: str | os.PathLike[str] | None = None,
         edge_lower_angle_threshold_rad: float = math.radians(0.1),
         edge_upper_angle_threshold_rad: float = math.radians(10.0),
@@ -805,6 +806,12 @@ class Mesh:
             texture_format: Subgrid texture storage: ``"uint16"`` (default,
                 half the memory of float32), ``"float32"`` (full precision),
                 or ``"uint8"`` (minimum memory, lower precision).
+            sign_method: Inside/outside sign strategy for the bake.
+                ``"auto"`` (default) uses parity rays if
+                :attr:`is_watertight` else winding numbers; ``"parity"``,
+                ``"winding"``, and ``"normal"`` (angle-weighted
+                pseudo-normal, for open sheets) force the respective
+                method.
             cache_dir: Optional directory for on-disk caching of the cooked
                 sparse SDF. Keyed by mesh content and build parameters
                 (``shape_margin`` is applied at sample time and is *not*
@@ -876,6 +883,7 @@ class Mesh:
             shape_margin=shape_margin,
             scale=scale,
             texture_format=texture_format,
+            sign_method=sign_method,
             cache_dir=cache_dir,
         )
 
@@ -1718,11 +1726,15 @@ class TetMesh:
         first_dim = arr.shape[0] if arr.ndim >= 1 else 1
         counts = {"vertex_count": vertex_count, "tet_count": tet_count, "tri_count": tri_count}
         matches = [label for label, c in counts.items() if first_dim == c and c > 0]
+        if first_dim == 1:
+            matches.append("ONCE")
         if len(matches) > 1:
             raise ValueError(
                 f"Cannot infer frequency for custom attribute '{name}': array length {first_dim} matches "
                 f"{', '.join(matches)}. Pass an explicit (array, frequency) tuple instead."
             )
+        if "ONCE" in matches:
+            return Model.AttributeFrequency.ONCE
         if first_dim == vertex_count and vertex_count > 0:
             return Model.AttributeFrequency.PARTICLE
         if first_dim == tet_count and tet_count > 0:
@@ -1850,6 +1862,11 @@ class TetMesh:
         those values are read and converted to Lame parameters (``k_mu``,
         ``k_lambda``) and density on the returned TetMesh. Material properties
         are set to ``None`` if not present.
+
+        Custom primvars use their resolved interpolation to determine attribute
+        frequency. Other custom arrays use length-based inference; arrays whose
+        frequency is ambiguous or cannot be inferred emit a warning and are
+        omitted without preventing the TetMesh from loading.
 
         Material-attribute namespaces (deprecated default): with ``compat_namespaces=None``
         (the default) the legacy vendor namespaces (``omniphysics:`` / ``physxDeformableBody:``)

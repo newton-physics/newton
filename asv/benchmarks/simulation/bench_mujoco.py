@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 import os
 import sys
+import time
 
 import warp as wp
 
@@ -17,56 +19,6 @@ sys.path.append(parent_dir)
 from benchmark_mujoco import Example
 
 from newton.utils import EventTracer
-
-
-class _FastBenchmark:
-    """Utility base class for fast benchmarks."""
-
-    num_frames = None
-    robot = None
-    number = 1
-    rounds = 2
-    repeat = None
-    world_count = None
-    random_init = None
-    environment = "None"
-
-    def setup(self):
-        if not hasattr(self, "builder") or self.builder is None:
-            self.builder = Example.create_model_builder(
-                self.robot, self.world_count, randomize=self.random_init, seed=123
-            )
-
-        self.example = Example(
-            stage_path=None,
-            robot=self.robot,
-            randomize=self.random_init,
-            headless=True,
-            actuation="None",
-            use_cuda_graph=True,
-            builder=self.builder,
-            environment=self.environment,
-        )
-
-        wp.synchronize_device()
-
-        # Recapture the graph with control application included
-        cuda_graph_comp = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
-        if not cuda_graph_comp:
-            raise SkipNotImplemented
-        else:
-            self.example.init_waypoint_control()
-            with wp.ScopedCapture() as capture:
-                self.example.apply_waypoint_control()
-                self.example.simulate()
-            self.graph = capture.graph
-
-        wp.synchronize_device()
-
-    def time_simulate(self):
-        for _ in range(self.num_frames):
-            wp.capture_launch(self.graph)
-        wp.synchronize_device()
 
 
 class _KpiBenchmark:
@@ -114,6 +66,84 @@ class _KpiBenchmark:
         return total_time * 1000 / (self.num_frames * example.sim_substeps * world_count * self.samples)
 
     track_simulate.unit = "ms/world-step"
+
+
+class _RealtimePhysicsBenchmark:
+    """Report single-world physics throughput, stability, and real-time factor."""
+
+    robot = None
+    physics_hz = 200
+    num_steps = 300
+    warmup_steps = 60
+    repeat = 3
+    number = 1
+    rounds = 2
+    timeout = 600
+
+    def setup(self):
+        if wp.get_cuda_device_count() == 0:
+            raise SkipNotImplemented
+        with wp.ScopedDevice("cuda:0"):
+            if not wp.is_mempool_enabled(wp.get_device()):
+                raise SkipNotImplemented
+            builder = Example.create_model_builder(self.robot, 1, randomize=True, seed=123)
+            self.example = Example(
+                stage_path=None,
+                robot=self.robot,
+                randomize=True,
+                headless=True,
+                actuation="None",
+                use_cuda_graph=True,
+                builder=builder,
+                fps=self.physics_hz,
+                sim_substeps=1,
+            )
+            for _ in range(self.warmup_steps):
+                self.example.step()
+
+    def track_mean_step_ms(self) -> float:
+        return 1000.0 * self._mean(self._measure_step_durations())
+
+    track_mean_step_ms.unit = "ms/step"
+
+    def track_p95_step_ms(self) -> float:
+        durations = sorted(self._measure_step_durations())
+        p95_index = min(len(durations) - 1, int(math.ceil(0.95 * len(durations))) - 1)
+        return 1000.0 * durations[p95_index]
+
+    track_p95_step_ms.unit = "ms/step"
+
+    def track_step_rate_hz(self) -> float:
+        return 1.0 / self._mean(self._measure_step_durations())
+
+    track_step_rate_hz.unit = "Hz"
+
+    def track_step_time_cv_pct(self) -> float:
+        durations = self._measure_step_durations()
+        mean = self._mean(durations)
+        variance = sum((duration - mean) ** 2 for duration in durations) / len(durations)
+        return 100.0 * math.sqrt(variance) / mean
+
+    track_step_time_cv_pct.unit = "%"
+
+    def track_real_time_factor(self) -> float:
+        mean_step_s = self._mean(self._measure_step_durations())
+        return self.example.sim_dt / mean_step_s
+
+    track_real_time_factor.unit = "x"
+
+    def _measure_step_durations(self) -> list[float]:
+        durations = []
+        with wp.ScopedDevice("cuda:0"):
+            for _ in range(self.num_steps):
+                start = time.perf_counter()
+                self.example.step()
+                durations.append(time.perf_counter() - start)
+        return durations
+
+    @staticmethod
+    def _mean(values: list[float]) -> float:
+        return sum(values) / len(values)
 
 
 class _NewtonOverheadBenchmark:
@@ -165,16 +195,7 @@ class _NewtonOverheadBenchmark:
     track_simulate.unit = "%"
 
 
-class FastCartpole(_FastBenchmark):
-    num_frames = 50
-    robot = "cartpole"
-    repeat = 8
-    world_count = 256
-    random_init = True
-    environment = "None"
-
-
-class KpiCartpole(_KpiBenchmark):
+class FastCartpole(_KpiBenchmark):
     params = [[8192]]
     num_frames = 50
     robot = "cartpole"
@@ -184,16 +205,7 @@ class KpiCartpole(_KpiBenchmark):
     environment = "None"
 
 
-class FastG1(_FastBenchmark):
-    num_frames = 25
-    robot = "g1"
-    repeat = 2
-    world_count = 256
-    random_init = True
-    environment = "None"
-
-
-class KpiG1(_KpiBenchmark):
+class FastG1(_KpiBenchmark):
     params = [[8192]]
     num_frames = 50
     robot = "g1"
@@ -205,15 +217,6 @@ class KpiG1(_KpiBenchmark):
 
 
 class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
-    params = [[256]]
-    num_frames = 25
-    robot = "g1"
-    repeat = 2
-    samples = 1
-    random_init = True
-
-
-class KpiNewtonOverheadG1(_NewtonOverheadBenchmark):
     params = [[8192]]
     num_frames = 50
     robot = "g1"
@@ -223,16 +226,7 @@ class KpiNewtonOverheadG1(_NewtonOverheadBenchmark):
     random_init = True
 
 
-class FastHumanoid(_FastBenchmark):
-    num_frames = 50
-    robot = "humanoid"
-    repeat = 8
-    world_count = 256
-    random_init = True
-    environment = "None"
-
-
-class KpiHumanoid(_KpiBenchmark):
+class FastHumanoid(_KpiBenchmark):
     params = [[8192]]
     num_frames = 100
     robot = "humanoid"
@@ -240,18 +234,15 @@ class KpiHumanoid(_KpiBenchmark):
     ls_iteration = 15
     random_init = True
     environment = "None"
+
+
+class RealtimeHumanoidPhysics(_RealtimePhysicsBenchmark):
+    """Single highly articulated humanoid in physics-only mode."""
+
+    robot = "humanoid"
 
 
 class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
-    params = [[256]]
-    num_frames = 50
-    robot = "humanoid"
-    repeat = 8
-    samples = 1
-    random_init = True
-
-
-class KpiNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
     params = [[8192]]
     num_frames = 100
     robot = "humanoid"
@@ -260,35 +251,18 @@ class KpiNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
     random_init = True
 
 
-class FastAllegro(_FastBenchmark):
-    num_frames = 100
-    robot = "allegro"
-    repeat = 2
-    world_count = 256
-    random_init = False
-    environment = "None"
-
-
-class KpiAllegro(_KpiBenchmark):
+class FastAllegro(_KpiBenchmark):
     params = [[8192]]
     num_frames = 300
     robot = "allegro"
+    timeout = 900
     samples = 2
     ls_iteration = 10
     random_init = False
     environment = "None"
 
 
-class FastKitchenG1(_FastBenchmark):
-    num_frames = 25
-    robot = "g1"
-    repeat = 2
-    world_count = 32
-    random_init = True
-    environment = "kitchen"
-
-
-class KpiKitchenG1(_KpiBenchmark):
+class FastKitchenG1(_KpiBenchmark):
     params = [[512]]
     num_frames = 50
     robot = "g1"
@@ -312,13 +286,7 @@ if __name__ == "__main__":
         "FastKitchenG1": FastKitchenG1,
         "FastNewtonOverheadG1": FastNewtonOverheadG1,
         "FastNewtonOverheadHumanoid": FastNewtonOverheadHumanoid,
-        "KpiCartpole": KpiCartpole,
-        "KpiG1": KpiG1,
-        "KpiHumanoid": KpiHumanoid,
-        "KpiAllegro": KpiAllegro,
-        "KpiKitchenG1": KpiKitchenG1,
-        "KpiNewtonOverheadG1": KpiNewtonOverheadG1,
-        "KpiNewtonOverheadHumanoid": KpiNewtonOverheadHumanoid,
+        "RealtimeHumanoidPhysics": RealtimeHumanoidPhysics,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

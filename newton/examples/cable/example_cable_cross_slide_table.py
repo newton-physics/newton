@@ -765,8 +765,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Device arrays used by kernels during simulation and CUDA graph replay.
         self.kinematic_body_indices = wp.array(
@@ -857,7 +857,7 @@ class Example:
             )
 
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

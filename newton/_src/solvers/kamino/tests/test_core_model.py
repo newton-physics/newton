@@ -675,9 +675,9 @@ class TestModelConversions(unittest.TestCase):
         )
         builder_newton.add_shape_box(label="box2", body=bid2, hx=0.05, hy=0.05, hz=0.05)
 
-        # Fix body 0 to world
+        # Add free joint to body 0
         if with_base_joint:
-            builder_newton.add_joint_fixed(
+            builder_newton.add_joint_free(
                 label="world_to_body0",
                 parent=-1,
                 child=bid0,
@@ -1019,7 +1019,7 @@ class TestModelConversions(unittest.TestCase):
         #       pair properties based on the list of materials, using the average of the material
         #       properties. The Newton-to-Kamino conversion will leave the material pair properties
         #       uninitialized, leaving the choice of how to combine materials for a pair to the
-        #       runtime material resolution system (see :class:`MaterialMuxMode`).
+        #       runtime material resolution system (see :class:`MaterialMixMode`).
         # test_util_checks.assert_model_material_pairs_equal(self, model_kamino_converted.material_pairs, model_kamino.material_pairs)
 
     def test_30_state_conversions(self):

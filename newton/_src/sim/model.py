@@ -18,7 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, override
-from ..utils.mesh import MeshAdjacency
+from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
 from .state import State
@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
-    from .inverse_dynamics import InverseDynamics
 
 
 _HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
@@ -512,6 +511,7 @@ class Model:
         ),
         "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
@@ -583,10 +583,12 @@ class Model:
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_COORD,
             compaction_policy="start",
         ),
         "joint_qd_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_DOF,
             compaction_policy="start",
         ),
         "joint_world_start": AttributeSpec(
@@ -626,6 +628,7 @@ class Model:
         # articulations and mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
+            references=AttributeFrequency.JOINT,
             compaction_policy="start",
         ),
         "articulation_end": AttributeSpec(
@@ -931,6 +934,8 @@ class Model:
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
+        self._shape_mesh_properties: wp.array[wp.int32] | None = None
+        """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed
@@ -1010,6 +1015,9 @@ class Model:
         """Lagrange multipliers for edge constraints (internal use)."""
         self.soft_mesh_adjacency: MeshAdjacency | None = None
         """Soft mesh topology and solver adjacency, or ``None`` before finalization."""
+        self.soft_mesh_adjacency_device: MeshAdjacencyData | None = None
+        """Device-uploaded :attr:`soft_mesh_adjacency`, built once at finalization and shared by all
+        consumers (VBD solver, collision pipeline). ``None`` before finalization."""
 
         self.tet_indices: wp.array[wp.int32] | None = None
         """Tetrahedral element indices, shape [tet_count*4], int."""
@@ -1102,6 +1110,7 @@ class Model:
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type: wp.array[wp.int32] | None = None
         """Joint type, shape [joint_count], int."""
+        self._has_cable_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent: wp.array[wp.int32] | None = None
@@ -2177,46 +2186,6 @@ class Model:
         )
         return c
 
-    def inverse_dynamics(self) -> InverseDynamics:
-        """Create an inverse-dynamics container sized for this model's topology.
-
-        The container holds the public output buffers (mass matrix,
-        compensation forces, and :attr:`~newton.InverseDynamics.tau`) and owns
-        the internal RNEA/Jacobian scratch privately, so callers only manage the
-        one object.
-
-        Returns:
-            An :class:`~newton.InverseDynamics` to pass to
-            :func:`~newton.eval_inverse_dynamics`.
-
-        Raises:
-            ValueError: If the model contains a ``JointType.CABLE`` joint.
-                Inverse dynamics has no motion-subspace implementation for
-                CABLE (``jcalc_motion`` / ``jcalc_motion_subspace``) and
-                ``eval_fk`` does not reconstruct it, so its results would be
-                undefined. The check runs here, at container-creation time,
-                rather than in the graph-capturable
-                :func:`~newton.eval_inverse_dynamics`.
-        """
-        from .enums import JointType  # noqa: PLC0415
-        from .inverse_dynamics import InverseDynamics  # noqa: PLC0415
-
-        if self.joint_count > 0 and np.any(self.joint_type.numpy() == int(JointType.CABLE)):
-            raise ValueError(
-                "Inverse dynamics does not support JointType.CABLE joints. Remove "
-                "them from the model before calling Model.inverse_dynamics()."
-            )
-
-        return InverseDynamics(
-            articulation_count=self.articulation_count,
-            joint_dof_count=self.joint_dof_count,
-            max_dofs_per_articulation=self.max_dofs_per_articulation,
-            body_count=self.body_count,
-            max_joints_per_articulation=self.max_joints_per_articulation,
-            world_count=self.world_count,
-            device=self.device,
-        )
-
     def set_gravity(
         self,
         gravity: tuple[float, float, float] | list | wp.vec3 | np.ndarray,
@@ -2252,17 +2221,24 @@ class Model:
                 raise ValueError(f"Expected {self.world_count} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
 
-    def _init_collision_pipeline(self):
+    def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
         """
         Initialize a :class:`CollisionPipeline` for this model.
 
         This method creates a default collision pipeline for the model. The pipeline is cached on
         the model for subsequent use by :meth:`collide`.
 
+        Args:
+            enable_rigid_soft_full_surface_contact: Size the soft-contact buffer for the full-surface
+                EDGE/FACE passes (see :meth:`collide`).
         """
         from .collide import CollisionPipeline  # noqa: PLC0415
 
-        self._collision_pipeline = CollisionPipeline(self, broad_phase="explicit")
+        self._collision_pipeline = CollisionPipeline(
+            self,
+            broad_phase="explicit",
+            enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact,
+        )
 
     def contacts(
         self: Model,
@@ -2270,6 +2246,11 @@ class Model:
     ) -> Contacts:
         """
         Create and return a :class:`Contacts` object for this model.
+
+        .. deprecated:: 1.5
+
+            Create a :class:`CollisionPipeline` and call
+            :meth:`CollisionPipeline.contacts` instead.
 
         This method initializes a collision pipeline with default arguments (when not already
         cached) and allocates a contacts buffer suitable for storing collision detection results.
@@ -2283,6 +2264,11 @@ class Model:
         Returns:
             The contact object containing collision information.
         """
+        warnings.warn(
+            "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
@@ -2296,21 +2282,53 @@ class Model:
         contacts: Contacts | None = None,
         *,
         collision_pipeline: CollisionPipeline | None = None,
+        enable_rigid_soft_full_surface_contact: bool = False,
     ) -> Contacts:
         """
         Generate contact points for the particles and rigid bodies in the model using the default collision
         pipeline.
+
+        .. deprecated:: 1.5
+
+            Create a :class:`CollisionPipeline` and call
+            :meth:`CollisionPipeline.collide` instead.
 
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
                 contacts buffer is allocated via :meth:`contacts`.
             collision_pipeline: Optional collision pipeline override.
+            enable_rigid_soft_full_surface_contact: When ``True``, additionally run the triangle-driven
+                soft EDGE/FACE passes that detect soft edge / face vs rigid contacts the per-particle
+                SDF path misses, written into the E/F ranges of ``Contacts.soft_contact_*``. Default
+                ``False`` reproduces the per-particle behaviour bit-for-bit. This flag is applied when
+                the collision pipeline is allocated (its soft-contact buffer must be sized for the extra
+                records), so it takes effect only on the first ``collide()``/``contacts()`` call that
+                creates the pipeline. Passing ``True`` once a pipeline sized without it is cached raises
+                ``ValueError``. Participating mesh/convex shapes must also have volume SDFs provisioned via
+                :meth:`ModelBuilder.ShapeConfig.configure_sdf` (e.g. ``configure_sdf(force_sdf=True)`` on
+                ``default_shape_cfg``) before finalize, or pipeline construction raises.
         """
+        warnings.warn(
+            "Model.collide() is deprecated; create a CollisionPipeline and call "
+            "pipeline.collide(state, contacts) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
-            self._init_collision_pipeline()
+            self._init_collision_pipeline(enable_rigid_soft_full_surface_contact=enable_rigid_soft_full_surface_contact)
+        elif (
+            enable_rigid_soft_full_surface_contact
+            and not self._collision_pipeline.enable_rigid_soft_full_surface_contact
+        ):
+            raise ValueError(
+                "enable_rigid_soft_full_surface_contact=True requires a collision pipeline initialized with "
+                "the flag so its soft-contact buffer is sized for the edge/face passes, but the cached "
+                "pipeline was built with it disabled. Pass a fresh collision_pipeline=, or enable the flag "
+                "on the first collide()/contacts() call that allocates the pipeline."
+            )
 
         if contacts is None:
             contacts = self._collision_pipeline.contacts()
