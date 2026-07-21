@@ -813,8 +813,8 @@ def validate_model_joint_updates(
     violation of that type was found.
 
     Args:
-        model: The Newton model to validate.
-        joints: The JointsModel to validate.
+        model: The Newton model containing the updated joints to validate.
+        joints: The current Kamino joint model, before applying the updates.
         built_limit_finite: The built finite limit state for each DoF.
         violations: The array to store the violations.
         check_dof: Whether to check the DoF updates.
@@ -937,8 +937,7 @@ def compute_material_first_shape(
         the shape count as a sentinel.
     """
     shape_count = geom_material.shape[0]
-    first_shape = wp.empty(num_materials, dtype=wp.int32, device=geom_material.device)
-    first_shape.fill_(shape_count)
+    first_shape = wp.full(num_materials, shape_count, dtype=wp.int32, device=geom_material.device)
     if shape_count > 0:
         wp.launch(
             kernel=material_first_shape_kernel,
