@@ -7,6 +7,7 @@ from unittest import mock
 
 import numpy as np
 import warp as wp
+import warp.fem as fem
 
 import newton
 from newton._src.solvers.implicit_mpm.solver_implicit_mpm import ImplicitMPMScratchpad
@@ -59,8 +60,24 @@ def test_rebuildable_sparse_s2_is_enabled(test, device):
 
 def test_rebuildable_sparse_rejects_grid_warmstart(test, device):
     model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
-    with test.assertRaisesRegex(ValueError, "warmstart_mode='grid'"):
-        _make_sparse_solver(model, max_active_cell_count=4, warmstart_mode="grid")
+    for warmstart_mode in ("grid", "smoothed"):
+        with (
+            test.subTest(warmstart_mode=warmstart_mode),
+            test.assertRaisesRegex(ValueError, f"warmstart_mode={warmstart_mode!r}"),
+        ):
+            _make_sparse_solver(model, max_active_cell_count=4, warmstart_mode=warmstart_mode)
+
+
+def test_rebuildable_sparse_auto_uses_particle_warmstart(test, device):
+    model = _make_particle_model(device, [(0.01, 0.01, 0.01)])
+
+    rebuildable = _make_sparse_solver(model, max_active_cell_count=4, warmstart_mode="auto")
+    test.assertTrue(rebuildable._sparse_rebuildable)
+    test.assertEqual(rebuildable._stress_warmstart, "particles")
+
+    allocating = _make_sparse_solver(model, max_active_cell_count=-1, warmstart_mode="auto")
+    test.assertFalse(allocating._sparse_rebuildable)
+    test.assertEqual(allocating._stress_warmstart, "grid")
 
 
 def test_rebuildable_sparse_refreshes_retained_topologies(test, device):
@@ -155,6 +172,79 @@ def test_rebuildable_sparse_grid_excludes_inactive_particles(test, device):
     test.assertTrue(solver._sparse_rebuildable)
     test.assertEqual(solver._scratchpad.grid.cell_grid.get_active_stats().voxel_count, 1)
     solver.check_status()
+
+
+def test_rebuildable_sparse_grid_excludes_deformable_collider_particles(test, device):
+    positions = (
+        (0.01, 0.01, 0.01),
+        (0.02, 0.01, 0.01),
+        (0.01, 0.02, 0.01),
+        (0.02, 0.02, 0.01),
+    )
+    model = _make_particle_model(device, positions)
+    solver = _make_sparse_solver(model, max_active_cell_count=1)
+    collider_points = wp.array(positions[:3], dtype=wp.vec3, device=device)
+    collider_mesh = wp.Mesh(
+        points=collider_points,
+        indices=wp.array((0, 1, 2), dtype=wp.int32, device=device),
+        velocities=wp.zeros_like(collider_points),
+    )
+    solver.setup_collider(collider_meshes=[collider_mesh], collider_particle_ids=[[1, 2, 3]])
+
+    active = int(newton.ParticleFlags.ACTIVE)
+    test.assertTrue(np.all(model.particle_flags.numpy() & active))
+    np.testing.assert_array_equal(solver._mpm_model.particle_flags.numpy() & active, [active, 0, 0, 0])
+
+    moved_positions = np.asarray(positions, dtype=np.float32)
+    moved_positions[1:] = ((1000.01, 0.01, 0.01), (0.01, 1000.01, 0.01), (0.01, 0.01, 1000.01))
+    moved_positions = wp.array(moved_positions, dtype=wp.vec3, device=device)
+    observed_point_masks = []
+
+    class _StopAfterMask(RuntimeError):
+        pass
+
+    def observe_rebuild(*args, **kwargs):
+        observed_point_masks.append(kwargs["point_mask"].numpy().copy())
+        raise _StopAfterMask
+
+    with (
+        mock.patch.object(fem.Nanogrid, "rebuild", autospec=True, side_effect=observe_rebuild),
+        test.assertRaises(_StopAfterMask),
+    ):
+        solver._particles_to_cells(moved_positions)
+
+    test.assertEqual(len(observed_point_masks), 1)
+    np.testing.assert_array_equal(observed_point_masks[0], [1, 0, 0, 0])
+
+
+def test_rebuildable_sparse_grid_excludes_nonfinite_particles_before_rebuild(test, device):
+    model = _make_particle_model(
+        device,
+        [(0.01, 0.01, 0.01), (1.01, 1.01, 1.01), (2.01, 2.01, 2.01), (3.01, 3.01, 3.01)],
+        (3,),
+    )
+    solver = _make_sparse_solver(model, max_active_cell_count=8)
+    positions = model.particle_q.numpy()
+    positions[1] = (np.nan, 1.01, 1.01)
+    positions[2] = (2.01, np.inf, -np.inf)
+    poisoned_positions = wp.array(positions, dtype=wp.vec3, device=device)
+    observed_point_masks = []
+
+    class _StopAfterMask(RuntimeError):
+        pass
+
+    def observe_rebuild(*args, **kwargs):
+        observed_point_masks.append(kwargs["point_mask"].numpy().copy())
+        raise _StopAfterMask
+
+    with (
+        mock.patch.object(fem.Nanogrid, "rebuild", autospec=True, side_effect=observe_rebuild),
+        test.assertRaises(_StopAfterMask),
+    ):
+        solver._particles_to_cells(poisoned_positions)
+
+    test.assertEqual(len(observed_point_masks), 1)
+    np.testing.assert_array_equal(observed_point_masks[0], [1, 0, 0, 0])
 
 
 def test_rebuildable_sparse_rebuild_uses_mpm_transfer_flags(test, device):
@@ -322,13 +412,20 @@ add_function_test(
     TestImplicitMPMRebuildableSparse,
     "test_rebuildable_sparse_refreshes_retained_topologies",
     test_rebuildable_sparse_refreshes_retained_topologies,
-    devices=devices,
+    devices=None,
     check_output=False,
 )
 add_function_test(
     TestImplicitMPMRebuildableSparse,
     "test_rebuildable_sparse_rejects_grid_warmstart",
     test_rebuildable_sparse_rejects_grid_warmstart,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_rebuildable_sparse_auto_uses_particle_warmstart",
+    test_rebuildable_sparse_auto_uses_particle_warmstart,
     devices=devices,
     check_output=False,
 )
@@ -371,6 +468,20 @@ add_function_test(
     TestImplicitMPMRebuildableSparse,
     "test_rebuildable_sparse_grid_excludes_inactive_particles",
     test_rebuildable_sparse_grid_excludes_inactive_particles,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_rebuildable_sparse_grid_excludes_deformable_collider_particles",
+    test_rebuildable_sparse_grid_excludes_deformable_collider_particles,
+    devices=devices,
+    check_output=False,
+)
+add_function_test(
+    TestImplicitMPMRebuildableSparse,
+    "test_rebuildable_sparse_grid_excludes_nonfinite_particles_before_rebuild",
+    test_rebuildable_sparse_grid_excludes_nonfinite_particles_before_rebuild,
     devices=devices,
     check_output=False,
 )

@@ -730,7 +730,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         warmstart solvers left-to-right, e.g. ``("cr", "gs")`` or
         ``("cg", "jacobi", "gs")``."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
-        """Warmstart mode to use for the rheology solver."""
+        """Warmstart mode to use for the rheology solver.
+
+        ``"auto"`` uses particle-backed stress for rebuildable sparse grids
+        and ``P1d``/``Q1d`` strain bases, and grid-backed stress otherwise.
+        Grid-backed ``"grid"`` and ``"smoothed"`` modes are not supported for
+        rebuildable sparse grids because their topology changes in place.
+        """
         collider_velocity_mode: Literal["forward", "backward"] = "forward"
         """Collider velocity computation mode. ``'forward'`` uses the current velocity,
         ``'backward'`` uses the previous timestep position."""
@@ -1060,22 +1066,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
         self.collider_velocity_mode = config.collider_velocity_mode
 
-        if config.warmstart_mode == "none":
-            self._stress_warmstart = ""
-        elif config.warmstart_mode == "auto":
-            if self.strain_basis in ("P1d", "Q1d"):
-                self._stress_warmstart = "particles"
-            else:
-                self._stress_warmstart = "grid"
-        else:
-            if config.warmstart_mode not in ("particles", "grid", "smoothed"):
-                raise ValueError(f"Invalid warmstart mode: {config.warmstart_mode}")
-            if self._sparse_rebuildable and config.warmstart_mode == "grid":
-                raise ValueError(
-                    "Config.warmstart_mode='grid' is not supported with rebuildable sparse grids because "
-                    "their topology changes in place; use 'none', 'auto', or 'particles'."
-                )
-            self._stress_warmstart = config.warmstart_mode
+        warmstart_mode = config.warmstart_mode
+        if warmstart_mode not in ("none", "auto", "particles", "grid", "smoothed"):
+            raise ValueError(f"Invalid warmstart mode: {warmstart_mode}")
+        if warmstart_mode == "auto":
+            warmstart_mode = "particles" if self._sparse_rebuildable or self.strain_basis in ("P1d", "Q1d") else "grid"
+        if self._sparse_rebuildable and warmstart_mode in ("grid", "smoothed"):
+            raise ValueError(
+                f"Config.warmstart_mode={config.warmstart_mode!r} is not supported with rebuildable sparse grids "
+                "because their topology changes in place; use 'none', 'auto', or 'particles'."
+            )
+        self._stress_warmstart = "" if warmstart_mode == "none" else warmstart_mode
 
         self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
 
@@ -1682,7 +1683,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     if self._grid_status is None:
                         self._grid_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
                         self._grid_accumulated_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
-                    point_mask = self._update_grid_point_mask(particle_flags)
+                    point_mask = self._update_grid_point_mask(positions, particle_flags)
                 volume = allocate_by_voxels(
                     positions,
                     voxel_size,
@@ -1744,7 +1745,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         return grid
 
-    def _update_grid_point_mask(self, particle_flags: wp.array) -> wp.array:
+    def _update_grid_point_mask(
+        self,
+        positions: wp.array[wp.vec3],
+        particle_flags: wp.array[wp.int32],
+    ) -> wp.array[wp.int32]:
         if self._grid_point_mask is None:
             self._grid_point_mask = wp.empty(
                 shape=particle_flags.shape,
@@ -1757,7 +1762,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         wp.launch(
             build_active_particle_mask,
             dim=particle_flags.shape[0],
-            inputs=[particle_flags, self._grid_point_mask],
+            inputs=[positions, particle_flags, self._grid_point_mask],
             device=particle_flags.device,
         )
         return self._grid_point_mask
@@ -1839,7 +1844,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if self._scratchpad is not None and (self.grid_type == "fixed" or self._sparse_rebuildable):
             grid = self._scratchpad.grid
             if self._sparse_rebuildable:
-                point_mask = self._update_grid_point_mask(self._mpm_model.particle_flags)
+                point_mask = self._update_grid_point_mask(positions, self._mpm_model.particle_flags)
                 grid.rebuild(positions, status=self._grid_status, point_mask=point_mask)
                 wp.launch(
                     record_volume_rebuild_status,

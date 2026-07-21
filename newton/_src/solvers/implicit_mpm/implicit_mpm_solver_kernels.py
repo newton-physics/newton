@@ -884,10 +884,16 @@ def clamp_coordinates(
 
 
 @wp.kernel
-def build_active_particle_mask(particle_flags: wp.array[wp.int32], point_mask: wp.array[wp.int32]):
+def build_active_particle_mask(
+    particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    point_mask: wp.array[wp.int32],
+):
     particle_index = wp.tid()
+    position = particle_q[particle_index]
+    position_is_finite = wp.isfinite(position[0]) and wp.isfinite(position[1]) and wp.isfinite(position[2])
     point_mask[particle_index] = wp.where(
-        particle_flags[particle_index] & newton.ParticleFlags.ACTIVE,
+        (particle_flags[particle_index] & newton.ParticleFlags.ACTIVE) != 0 and position_is_finite,
         wp.int32(1),
         wp.int32(0),
     )
