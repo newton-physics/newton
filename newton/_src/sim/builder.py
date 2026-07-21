@@ -11192,28 +11192,6 @@ class ModelBuilder:
 
             # ---------------------
             # Compute and compact texture SDF resources (shared table + per-shape index indirection)
-            from ..geometry.types import Mesh as NewtonMesh  # noqa: PLC0415
-
-            def _create_primitive_mesh(stype: int, scale: Sequence[float] | None) -> NewtonMesh | None:
-                """Create a watertight mesh from a primitive shape for texture SDF construction."""
-                from ..core.types import Axis  # noqa: PLC0415
-
-                sx, sy, sz = scale if scale is not None else (1.0, 1.0, 1.0)
-                common_kw = {"compute_normals": False, "compute_uvs": False, "compute_inertia": False}
-                if stype == GeoType.BOX:
-                    return NewtonMesh.create_box(sx, sy, sz, duplicate_vertices=False, **common_kw)
-                elif stype == GeoType.SPHERE:
-                    return NewtonMesh.create_sphere(sx, **common_kw)
-                elif stype == GeoType.CAPSULE:
-                    return NewtonMesh.create_capsule(sx, sy, up_axis=Axis.Z, **common_kw)
-                elif stype == GeoType.CYLINDER:
-                    return NewtonMesh.create_cylinder(sx, sy, up_axis=Axis.Z, **common_kw)
-                elif stype == GeoType.CONE:
-                    return NewtonMesh.create_cone(sx, sy, up_axis=Axis.Z, **common_kw)
-                elif stype == GeoType.ELLIPSOID:
-                    return NewtonMesh.create_ellipsoid(sx, sy, sz, **common_kw)
-                return None
-
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
@@ -11257,6 +11235,7 @@ class ModelBuilder:
                 TextureSDFData,
                 create_empty_texture_sdf_data,
                 create_texture_sdf_from_mesh,
+                create_texture_sdf_from_primitive,
             )
 
             _tex_fmt_map = {
@@ -11375,44 +11354,39 @@ class ModelBuilder:
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
                         else:
-                            prim_mesh = _create_primitive_mesh(shape_type, shape_scale)
-                            if prim_mesh is not None:
-                                prim_wp_mesh = wp.Mesh(
-                                    points=wp.array(prim_mesh.vertices, dtype=wp.vec3, device=device),
-                                    indices=wp.array(prim_mesh.indices.flatten(), dtype=wp.int32, device=device),
-                                    support_winding_number=True,
+                            try:
+                                tex_data, c_tex, s_tex = create_texture_sdf_from_primitive(
+                                    shape_type,
+                                    shape_scale,
+                                    margin=sdf_gen_margin,
+                                    narrow_band_range=tuple(sdf_narrow_band_range),
+                                    max_resolution=effective_max_resolution,
+                                    target_voxel_size=sdf_target_voxel_size,
+                                    quantization_mode=_tex_fmt_map[sdf_tex_fmt],
+                                    scale_baked=True,
+                                    device=device,
                                 )
-                                try:
-                                    tex_data, c_tex, s_tex = create_texture_sdf_from_mesh(
-                                        prim_wp_mesh,
-                                        margin=sdf_gen_margin,
-                                        narrow_band_range=tuple(sdf_narrow_band_range),
-                                        max_resolution=effective_max_resolution,
-                                        target_voxel_size=sdf_target_voxel_size,
-                                        quantization_mode=_tex_fmt_map[sdf_tex_fmt],
-                                        scale_baked=True,
-                                        device=device,
-                                    )
-                                except Exception as e:
-                                    warnings.warn(
-                                        f"Texture SDF construction failed for shape {i} "
-                                        f"(type={shape_type}): {e}. Falling back to BVH.",
-                                        stacklevel=2,
-                                    )
-                                    tex_data = create_empty_texture_sdf_data()
-                                    c_tex = None
-                                    s_tex = None
-                                compact_texture_sdf_data.append(tex_data)
-                                compact_texture_sdf_coarse_textures.append(c_tex)
-                                compact_texture_sdf_subgrid_textures.append(s_tex)
-                                compact_texture_sdf_subgrid_start_slots.append(
-                                    tex_data.subgrid_start_slots if c_tex is not None else None
-                                )
-                            else:
+                            except NotImplementedError:
                                 compact_texture_sdf_data.append(create_empty_texture_sdf_data())
                                 compact_texture_sdf_coarse_textures.append(None)
                                 compact_texture_sdf_subgrid_textures.append(None)
                                 compact_texture_sdf_subgrid_start_slots.append(None)
+                                continue
+                            except Exception as e:
+                                warnings.warn(
+                                    f"Texture SDF construction failed for shape {i} "
+                                    f"(type={shape_type}): {e}. Falling back to BVH.",
+                                    stacklevel=2,
+                                )
+                                tex_data = create_empty_texture_sdf_data()
+                                c_tex = None
+                                s_tex = None
+                            compact_texture_sdf_data.append(tex_data)
+                            compact_texture_sdf_coarse_textures.append(c_tex)
+                            compact_texture_sdf_subgrid_textures.append(s_tex)
+                            compact_texture_sdf_subgrid_start_slots.append(
+                                tex_data.subgrid_start_slots if c_tex is not None else None
+                            )
 
             # Build volume SDFs for participating MESH/CONVEX_MESH shapes that still lack one, when a
             # per-shape SDF is requested -- ShapeConfig.configure_sdf(force_sdf=True), or an sdf

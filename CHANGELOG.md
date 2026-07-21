@@ -54,6 +54,7 @@
 
 ### Fixed
 
+- Fix hydroelastic primitive texture SDF generation to sample analytic primitive distances instead of temporary tessellated meshes. (#3239)
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
 - Fix `SchemaResolverPhysx` reading every D6 translational limit gain from the `linear` instance instead of its `transX`, `transY`, or `transZ` instance.
 - Fix `ViewerUSD` texture consumers observing partially written PNGs by publishing generated textures atomically (#3288)
@@ -192,10 +193,12 @@
 - Fix `SensorTiledCamera.utils.convert_ray_depth_to_forward_depth()` to preserve the clear-depth sentinel for zero-direction rays and non-positive depths.
 - Fix `SolverMuJoCo` placing articulations whose root is a fully-locked D6 joint (e.g. imported from a generic USD `PhysicsJoint`) at the first world's root pose in every world; such roots now become mocap bodies like fixed-joint roots. (#3499; fixes #3430)
 - Fix `SensorTiledCamera` rendering cloth and volume deformable vertices as particle spheres while preserving standalone particle rendering in mixed scenes. (#3518)
+- Fix the USD importer loading `guide`- and `render`-purpose prims as visible visual shapes; visual shapes and Gaussian splats now follow USD viewport semantics and are drawn only for the `default` and `proxy` purposes.
 - Fix `ViewerGL.get_frame()` crashing when a CPU model is rendered while a CUDA context is active.
 - Fix `ViewerUSD` leaving stale particle geometry visible when the active particle count drops to zero. (#2992)
 - Fix `eval_inverse_dynamics_passive()` and `SolverFeatherstone` intermittently dropping descendant wrench contributions during the articulated-body backward pass on CUDA. (#3443)
 - Fix XPBD particle-particle contacts to avoid non-finite particle state for exact-overlap contacts. (#1562)
+- Fix `ModelBuilder.add_usd()` treating explicitly authored USD `MassAPI` schema fallback values (zero mass, density, inertia, or principal axes; non-finite center of mass) as overrides; per the schema's value semantics they now behave like unauthored attributes, while negative or non-finite mass, density, and diagonal inertia values are ignored with a warning.
 - Refer to `kf` consistently as contact friction gain in public documentation. (#2988)
 - Fix `SolverMuJoCo` dropping the authored `actuator_ctrlrange`/`actuator_ctrllimited`/`actuator_forcerange`/`actuator_forcelimited` when rebuilding USD/MJCF position/velocity actuators imported as `JOINT_TARGET`, so the compiled `mj_model` now clamps control targets and actuator forces like native MuJoCo.
 - Fix `SolverVBD` rigid contact injecting kinetic energy for yawed finite-radius contacts (e.g. small-radius cables blowing up). The normal response now acts at the geometric skeleton point rather than the rotating surface anchor, which was non-conservative under reorientation; friction still uses the surface anchor to preserve finite-radius slip. (#3125)
