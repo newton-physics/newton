@@ -45,6 +45,7 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
@@ -10974,8 +10975,26 @@ class ModelBuilder:
                 finalized_geos_by_identity[geo_identity] = finalized_geo
                 geo_sources.append(finalized_geo)
 
+            # Mesh properties consumed by the collision kernels: watertightness
+            # is checked once per unique collidable mesh (content-keyed like
+            # finalized_geos above); visual-only shapes are skipped.
+            shape_mesh_properties = []
+            mesh_properties_by_geo_hash: dict[int, int] = {}
+            for shape_type, geo, shape_flags in zip(
+                self.shape_type, generated_shape_sources, self.shape_flags, strict=True
+            ):
+                mesh_properties = 0
+                is_collidable = bool(shape_flags & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES))
+                if is_collidable and shape_type in (GeoType.MESH, GeoType.CONVEX_MESH) and isinstance(geo, Mesh):
+                    mesh_properties = mesh_properties_by_geo_hash.get(hash(geo))
+                    if mesh_properties is None:
+                        mesh_properties = MeshProperties.WATERTIGHT if geo.is_watertight else 0
+                        mesh_properties_by_geo_hash[hash(geo)] = mesh_properties
+                shape_mesh_properties.append(mesh_properties)
+
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
+            m._shape_mesh_properties = wp.array(shape_mesh_properties, dtype=wp.int32, device=device)
             m.heightfield_meshes = heightfield_meshes
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
