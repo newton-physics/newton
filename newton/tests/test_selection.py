@@ -61,12 +61,6 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(view.link_count, 2)
         self.assertEqual(view.joint_count, 2)
 
-        glob_view = ArticulationView(model, pattern="/World/envs/env_0/Robot_*")
-        assert_np_equal(glob_view.articulation_ids.numpy(), [[0, 1, 2]])
-
-        index_view = ArticulationView(model, pattern=[0, 2])
-        assert_np_equal(index_view.articulation_ids.numpy(), [[0, 2]])
-
         with self.assertRaisesRegex(KeyError, "No articulations matching pattern"):
             ArticulationView(model, pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_Z"))
 

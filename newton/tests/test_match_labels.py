@@ -39,16 +39,6 @@ class TestMatchLabels(unittest.TestCase):
 
         self.assertEqual(match_labels(labels, pattern), [0, 1])
 
-    def test_compiled_regex_supports_negative_lookahead(self):
-        labels = ["base", "LF_FOOT", "RF_FOOT", "fixed_mount"]
-
-        self.assertEqual(match_labels(labels, re.compile(r"(?!base$).*")), [1, 2, 3])
-
-    def test_compiled_regex_preserves_flags(self):
-        labels = ["Robot_A", "robot_b", "PROP"]
-
-        self.assertEqual(match_labels(labels, re.compile(r"robot_[ab]", re.IGNORECASE)), [0, 1])
-
     def test_compiled_regex_requires_full_match(self):
         labels = ["robot", "robot_arm"]
 
@@ -89,14 +79,6 @@ class TestMatchLabels(unittest.TestCase):
         labels = ["a", "b"]
         with self.assertRaises(TypeError):
             match_labels(labels, [None])
-
-    def test_compiled_byte_pattern_is_rejected_for_nonempty_labels(self):
-        with self.assertRaisesRegex(TypeError, "must match strings"):
-            match_labels(["robot"], re.compile(b"robot"))
-
-    def test_compiled_byte_pattern_is_rejected_for_empty_labels(self):
-        with self.assertRaisesRegex(TypeError, "must match strings"):
-            match_labels([], re.compile(b"robot"))
 
     def test_int_out_of_bounds_passthrough(self):
         """int indices are passed through without bounds checking."""

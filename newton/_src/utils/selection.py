@@ -423,17 +423,6 @@ def find_matching_ids(
     return grouped_ids, global_ids
 
 
-def _matches_label_pattern(label: str, pattern: str | re.Pattern[str]) -> bool:
-    if isinstance(pattern, str):
-        return fnmatch(label, pattern)
-    return pattern.fullmatch(label) is not None
-
-
-def _validate_label_pattern(pattern: str | re.Pattern[str]) -> None:
-    if isinstance(pattern, re.Pattern) and not isinstance(pattern.pattern, str):
-        raise TypeError("Compiled label patterns must match strings")
-
-
 def match_labels(labels: list[str], pattern: str | re.Pattern[str] | list[str] | list[int]) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
@@ -449,11 +438,14 @@ def match_labels(labels: list[str], pattern: str | re.Pattern[str] | list[str] |
         Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
 
     Raises:
-        TypeError: If a compiled pattern matches bytes or selector families are mixed.
+        TypeError: If the selector type is unsupported or list elements are not all
+            strings or all integers.
     """
-    if isinstance(pattern, (str, re.Pattern)):
-        _validate_label_pattern(pattern)
-        return [idx for idx, label in enumerate(labels) if _matches_label_pattern(label, pattern)]
+    if isinstance(pattern, str):
+        return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
+
+    if isinstance(pattern, re.Pattern):
+        return [idx for idx, label in enumerate(labels) if pattern.fullmatch(label) is not None]
 
     if not isinstance(pattern, list):
         raise TypeError(
