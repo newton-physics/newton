@@ -182,7 +182,7 @@ def test_semi_implicit_ball_joint_damping_decays_velocity(test: TestJointDamping
 
 
 def test_add_joint_ball_sets_passive_damping(test: TestJointDamping, device):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
