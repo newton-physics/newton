@@ -497,10 +497,11 @@ class ArticulationView:
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
 
-    Methods that accept a mask support per-world Boolean masks with shape
-    ``(world_count,)`` and per-articulation Boolean masks with shape
+    Methods that select articulations with a mask support per-world Boolean masks
+    with shape ``(world_count,)`` and per-articulation Boolean masks with shape
     ``(world_count, count_per_world)``. Per-world masks select all articulations
-    in each selected world. Masks provided as Warp arrays must be on the view's device.
+    in each selected world. :meth:`set_actuator_parameter` accepts only the
+    per-world layout. Masks provided as Warp arrays must be on the view's device.
 
     Example:
 
