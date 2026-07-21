@@ -1944,26 +1944,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
     # SolverBase interface
     # ------------------------------------------------------------------
 
-    @property
-    def supports_graph_capture(self) -> bool:
-        """Return whether every entry that advertises a capture capability supports it."""
-        return all(bool(getattr(entry.solver, "supports_graph_capture", True)) for entry in self._entries.values())
-
-    def prepare_graph_capture(self, contacts: Contacts | None = None) -> None:
-        """Prepare entry contact buffers and recursively prepare sub-solvers."""
-        self.prepare_contacts(contacts)
-        for entry in self._entries.values():
-            prepare = getattr(entry.solver, "prepare_graph_capture", None)
-            if callable(prepare):
-                prepare(self.entry_contacts(entry.name, contacts))
-
-    def check_status(self) -> None:
-        """Raise an asynchronous failure reported by any entry solver."""
-        for entry in self._entries.values():
-            check_status = getattr(entry.solver, "check_status", None)
-            if callable(check_status):
-                check_status()
-
     def step(
         self,
         state_in: State,

@@ -355,8 +355,8 @@ shape, guard width, alignment, storage addresses, and declared capacities are
 structural invariants. Explicit caller-provided offsets do not move
 automatically, so the caller must keep their packed bounds disjoint.
 
-Outer graph-capture lifecycle
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Outer graph capture
+^^^^^^^^^^^^^^^^^^^
 
 An isolated multi-world step can be captured in an outer graph when all of
 the following conditions hold:
@@ -378,10 +378,10 @@ the following conditions hold:
   may change within those fixed total capacities.
 - Every selected sparse basis provides rebuildable topology.
 
-Check :attr:`~newton.solvers.SolverImplicitMPM.supports_graph_capture`
-before recording, then call
-:meth:`~newton.solvers.SolverImplicitMPM.prepare_graph_capture` to
-materialize persistent buffers without advancing the simulation. Model
+Construction materializes graph-persistent MPM topology and buffers internally;
+no separate capture-preparation call is required. For solver modes that build
+an inner solve graph lazily, such as Gauss-Seidel, run one uncaptured warm-up
+step on disposable state buffers before recording the outer graph. Model
 topology, world and particle ordering, array shapes, fixed-grid bounds,
 capacities, solver configuration, captured state-buffer sequence, and captured
 step arguments must remain unchanged across replays. Particle state, active
@@ -393,7 +393,6 @@ graph so every replay finishes with the buffers in the same roles:
 
 .. code-block:: python
 
-   solver.prepare_graph_capture()
    with wp.ScopedCapture(device=model.device) as capture:
        solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
        solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
@@ -401,12 +400,14 @@ graph so every replay finishes with the buffers in the same roles:
    wp.capture_launch(capture.graph)
    solver.check_status()
 
-Call :meth:`~newton.solvers.SolverImplicitMPM.check_status` at an explicit
-safe host boundary after replay. Coupled solvers forward this check recursively
-to their entries. For rebuildable sparse grids, capacity failures accumulate in
-a sticky device status so a later successful rebuild cannot hide an earlier overflow.
-The check synchronizes and raises a descriptive capacity error. A valid solver
-reset establishes a new status boundary.
+Call :meth:`~newton.solvers.SolverImplicitMPM.check_status` on the concrete MPM
+solver at an explicit safe host boundary after replay. When MPM is an entry in a
+:class:`~newton.solvers.experimental.coupled.SolverCoupled`, retrieve that entry with
+``coupled.solver(name)`` and call its ``check_status()`` directly. For
+rebuildable sparse grids, capacity failures accumulate in a sticky device status
+so a later successful rebuild cannot hide an earlier overflow. The check
+synchronizes and raises a descriptive capacity error. A valid solver reset
+establishes a new status boundary.
 
 Keep resets outside the captured graph. Calling
 :meth:`~newton.solvers.SolverImplicitMPM.reset` with ``world_mask`` restores MPM

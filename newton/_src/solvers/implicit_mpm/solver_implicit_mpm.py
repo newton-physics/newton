@@ -1213,7 +1213,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         self._timers_use_nvtx = False
 
-        # Pre-allocate scratchpad and last step data so that step() can be graph-captured
+        # Materialize graph-persistent topology and buffers before callers can capture step().
         self._scratchpad = None
         self._last_step_data = LastStepData()
         with wp.ScopedDevice(model.device):
@@ -1304,63 +1304,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def voxel_size(self) -> float:
         """Grid voxel size used by the solver."""
         return self._mpm_model.voxel_size
-
-    @property
-    def supports_graph_capture(self) -> bool:
-        """Return whether this solver uses a validated graph-capture configuration."""
-        return self._graph_capture_unsupported_reason() is None
-
-    def _graph_capture_unsupported_reason(self) -> str | None:
-        device = self.model.device
-        if not device.is_cuda:
-            if self.grid_type == "sparse":
-                return "Rebuildable sparse-grid graph capture currently requires CUDA."
-            return "CPU graph capture is not currently supported for SolverImplicitMPM."
-        if not wp.is_mempool_enabled(device):
-            return "CUDA graph capture requires the Warp memory pool to be enabled."
-        if not wp.is_conditional_graph_supported():
-            return "CUDA graph capture requires Warp conditional graph support."
-        if self.enable_timers:
-            return "Graph capture requires enable_timers=False."
-
-        if self.grid_type == "fixed":
-            if self.max_active_cell_count <= 0:
-                return "Fixed-grid graph capture requires Config.max_active_cell_count > 0."
-            return None
-        if self.grid_type == "sparse":
-            if not self._sparse_rebuildable:
-                return (
-                    "Sparse-grid graph capture requires a rebuildable sparse grid with positive "
-                    "Config.max_active_cell_count, Config.grid_padding=0, velocity_basis='Q1', and supported "
-                    "strain and collider bases."
-                )
-            return None
-        return f"Graph capture does not support Config.grid_type={self.grid_type!r}."
-
-    def prepare_graph_capture(self, contacts: newton.Contacts | None = None) -> None:
-        """Materialize graph-persistent MPM topology and buffers without stepping.
-
-        Args:
-            contacts: Unused. Implicit MPM manages collisions internally.
-
-        Raises:
-            RuntimeError: If the resolved solver configuration is not supported
-                inside an outer graph.
-        """
-        del contacts
-        unsupported_reason = self._graph_capture_unsupported_reason()
-        if unsupported_reason is not None:
-            raise RuntimeError(f"SolverImplicitMPM does not support outer graph capture. {unsupported_reason}")
-
-        with wp.ScopedDevice(self.model.device):
-            scratch = self._scratchpad
-            if isinstance(scratch.grid, fem.Nanogrid) and (
-                self.strain_basis in ("S2", "S3") or self.collider_basis in ("S2", "S3")
-            ):
-                _ = scratch.grid.edge_grid
-            self._require_velocity_space_fields(scratch, self._mpm_model.has_compliant_particles)
-            self._require_collision_space_fields(scratch, self._last_step_data)
-            self._require_strain_space_fields(scratch, self._last_step_data)
 
     def _check_sparse_grid_rebuild_status(self) -> None:
         """Raise if a rebuildable sparse grid exceeded its reserved capacity.

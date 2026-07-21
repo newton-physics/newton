@@ -4,7 +4,6 @@
 """Smoke tests for the coupled solver prototype."""
 
 import unittest
-from types import SimpleNamespace
 from typing import ClassVar
 from unittest import mock
 
@@ -343,26 +342,6 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
-class _GraphCaptureRecordingSolver(_StepCountingCopySolver):
-    """Copy solver with configurable graph support and preparation recording."""
-
-    def __init__(self, model, supported: bool = True):
-        super().__init__(model)
-        self.supported = supported
-        self.prepared_contacts = []
-        self.status_check_count = 0
-
-    @property
-    def supports_graph_capture(self) -> bool:
-        return self.supported
-
-    def prepare_graph_capture(self, contacts=None) -> None:
-        self.prepared_contacts.append(contacts)
-
-    def check_status(self) -> None:
-        self.status_check_count += 1
-
-
 class _ContactRecordingCopySolver(_StepCountingCopySolver):
     """Copy solver that records rigid contact shape ids seen by step()."""
 
@@ -684,52 +663,18 @@ class TestModelView(unittest.TestCase):
         self.assertIsNone(view.body_inv_mass)
 
 
-class TestSolverCoupledGraphCapture(unittest.TestCase):
-    """Test graph capability aggregation and preparation forwarding."""
+class TestSolverCoupledContactsAndMPM(unittest.TestCase):
+    """Test coupled contact preparation and implicit MPM integration."""
 
-    @staticmethod
-    def _recording_factory(record, name: str, *, supported: bool = True):
-        def factory(model):
-            solver = _GraphCaptureRecordingSolver(model, supported=supported)
-            record[name] = solver
-            return solver
+    def test_graph_capture_setup_stays_solver_specific(self):
+        """Verify coupled solvers do not expose a generic graph protocol."""
+        for name in ("supports_graph_capture", "prepare_graph_capture", "check_status"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(SolverCoupled, name))
 
-        return factory
-
-    def test_nested_graph_capability_is_aggregated(self):
-        """Verify an unsupported nested leaf rejects capture for every parent."""
-        model = newton.ModelBuilder().finalize(device="cpu")
-        leaves = {}
-        nested_solvers = []
-
-        def nested_factory(view):
-            nested = SolverCoupled(
-                model=view,
-                entries=[
-                    SolverCoupled.Entry(
-                        name="supported",
-                        solver=self._recording_factory(leaves, "supported"),
-                    ),
-                    SolverCoupled.Entry(
-                        name="unsupported",
-                        solver=self._recording_factory(leaves, "unsupported", supported=False),
-                    ),
-                ],
-            )
-            nested_solvers.append(nested)
-            return nested
-
-        coupled = SolverCoupled(
-            model=model,
-            entries=[SolverCoupled.Entry(name="nested", solver=nested_factory)],
-        )
-
-        self.assertFalse(nested_solvers[0].supports_graph_capture)
-        self.assertFalse(coupled.supports_graph_capture)
-
-        coupled.check_status()
-        self.assertEqual(leaves["supported"].status_check_count, 1)
-        self.assertEqual(leaves["unsupported"].status_check_count, 1)
+        self.assertFalse(hasattr(SolverImplicitMPM, "supports_graph_capture"))
+        self.assertFalse(hasattr(SolverImplicitMPM, "prepare_graph_capture"))
+        self.assertTrue(hasattr(SolverImplicitMPM, "check_status"))
 
     def test_filtered_contact_generation_increments_once_and_wraps(self):
         """Verify filtered contact generation increments once and wraps."""
@@ -742,7 +687,7 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(
                     name="entry",
-                    solver=_GraphCaptureRecordingSolver,
+                    solver=_StepCountingCopySolver,
                     bodies=[body],
                     shapes=[shape],
                 )
@@ -765,8 +710,8 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
         self.assertIs(coupled.entry_contacts("entry", contacts), filtered)
         self.assertEqual(int(filtered.contact_generation.numpy()[0]), 0)
 
-    def test_prepare_graph_capture_forwards_filtered_contacts_recursively(self):
-        """Verify preparation passes exact filtered buffers without stepping or changing state."""
+    def test_prepare_contacts_filters_recursively_when_called_explicitly(self):
+        """Verify explicit nested contact preparation preserves buffers and state."""
         builder = newton.ModelBuilder()
         body_left = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         body_right = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -774,7 +719,6 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
         shape_right = builder.add_shape_sphere(body=body_right, radius=0.1)
         model = builder.finalize(device="cpu")
 
-        leaves = {}
         nested_solvers = []
 
         def nested_factory(view):
@@ -783,13 +727,13 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
                 entries=[
                     SolverCoupled.Entry(
                         name="left",
-                        solver=self._recording_factory(leaves, "left"),
+                        solver=_StepCountingCopySolver,
                         bodies=[body_left],
                         shapes=[shape_left],
                     ),
                     SolverCoupled.Entry(
                         name="right",
-                        solver=self._recording_factory(leaves, "right"),
+                        solver=_StepCountingCopySolver,
                         bodies=[body_right],
                         shapes=[shape_right],
                     ),
@@ -810,6 +754,7 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
             ],
         )
         nested = nested_solvers[0]
+        leaves = {name: nested.solver(name) for name in ("left", "right")}
         contacts = newton.Contacts(rigid_contact_max=4, soft_contact_max=0, device=model.device)
         contacts.rigid_contact_count.fill_(2)
         contacts.rigid_contact_shape0.assign(np.array([shape_left, shape_right, -1, -1], dtype=np.int32))
@@ -821,14 +766,12 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
             name: nested.entry_state(name, "input").body_q.numpy().copy() for name in ("left", "right")
         }
 
-        coupled.prepare_graph_capture(contacts)
-
+        coupled.prepare_contacts(contacts)
         outer_filtered = coupled.entry_contacts("nested", contacts)
+        nested.prepare_contacts(outer_filtered)
         outer_generation = int(outer_filtered.contact_generation.numpy()[0])
         left_filtered = nested.entry_contacts("left", outer_filtered)
         right_filtered = nested.entry_contacts("right", outer_filtered)
-        self.assertIs(leaves["left"].prepared_contacts[0], left_filtered)
-        self.assertIs(leaves["right"].prepared_contacts[0], right_filtered)
         self.assertEqual(int(left_filtered.rigid_contact_count.numpy()[0]), 1)
         self.assertEqual(int(right_filtered.rigid_contact_count.numpy()[0]), 1)
         self.assertEqual(int(left_filtered.rigid_contact_shape0.numpy()[0]), shape_left)
@@ -845,10 +788,12 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
         replacement_contacts.rigid_contact_shape0.assign(np.array([shape_right, -1, -1, -1], dtype=np.int32))
         replacement_contacts.rigid_contact_shape1.assign(np.array([shape_right, -1, -1, -1], dtype=np.int32))
 
-        coupled.prepare_graph_capture(replacement_contacts)
-
-        self.assertIs(leaves["left"].prepared_contacts[1], left_filtered)
-        self.assertIs(leaves["right"].prepared_contacts[1], right_filtered)
+        coupled.prepare_contacts(replacement_contacts)
+        replacement_outer = coupled.entry_contacts("nested", replacement_contacts)
+        self.assertIs(replacement_outer, outer_filtered)
+        nested.prepare_contacts(replacement_outer)
+        self.assertIs(nested.entry_contacts("left", replacement_outer), left_filtered)
+        self.assertIs(nested.entry_contacts("right", replacement_outer), right_filtered)
         self.assertGreater(int(outer_filtered.contact_generation.numpy()[0]), outer_generation)
         self.assertEqual(int(left_filtered.rigid_contact_count.numpy()[0]), 0)
         self.assertEqual(int(right_filtered.rigid_contact_count.numpy()[0]), 1)
@@ -858,54 +803,14 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
         replacement_contacts.rigid_contact_shape0.assign(np.array([shape_left, -1, -1, -1], dtype=np.int32))
         replacement_contacts.rigid_contact_shape1.assign(np.array([shape_left, -1, -1, -1], dtype=np.int32))
 
-        coupled.prepare_graph_capture(replacement_contacts)
+        coupled.prepare_contacts(replacement_contacts)
+        replacement_outer = coupled.entry_contacts("nested", replacement_contacts)
+        nested.prepare_contacts(replacement_outer)
+        self.assertIs(nested.entry_contacts("left", replacement_outer), left_filtered)
+        self.assertIs(nested.entry_contacts("right", replacement_outer), right_filtered)
 
         self.assertEqual(int(left_filtered.rigid_contact_count.numpy()[0]), 1)
         self.assertEqual(int(right_filtered.rigid_contact_count.numpy()[0]), 0)
-
-    def test_implicit_mpm_graph_capability_requires_safe_sequence_and_topology(self):
-        """Verify MPM advertises persistent-topology configurations across rheology solvers."""
-        solver = SolverImplicitMPM.__new__(SolverImplicitMPM)
-        solver.model = SimpleNamespace(device=SimpleNamespace(is_cuda=True))
-        solver.enable_timers = False
-        solver.solver = ("jacobi",)
-        solver.max_active_cell_count = 16
-        solver._sparse_rebuildable = True
-
-        cases = (
-            ("fixed", 16, True, ("jacobi",), True),
-            ("fixed", -1, True, ("jacobi",), False),
-            ("sparse", 16, True, ("jacobi",), True),
-            ("sparse", 16, False, ("jacobi",), False),
-            ("dense", 16, False, ("jacobi",), False),
-            ("fixed", 16, True, ("cg",), True),
-            ("fixed", 16, True, ("cr",), True),
-            ("fixed", 16, True, ("gmres",), True),
-            ("fixed", 16, True, ("gs",), True),
-            ("fixed", 16, True, ("cg", "gs"), True),
-        )
-        with (
-            mock.patch.object(wp, "is_mempool_enabled", return_value=True),
-            mock.patch.object(wp, "is_conditional_graph_supported", return_value=True),
-        ):
-            for grid_type, capacity, rebuildable, solver_sequence, expected in cases:
-                with self.subTest(
-                    grid_type=grid_type,
-                    capacity=capacity,
-                    rebuildable=rebuildable,
-                    solver_sequence=solver_sequence,
-                ):
-                    solver.grid_type = grid_type
-                    solver.max_active_cell_count = capacity
-                    solver._sparse_rebuildable = rebuildable
-                    solver.solver = solver_sequence
-                    self.assertEqual(solver.supports_graph_capture, expected)
-
-            solver.grid_type = "fixed"
-            solver.max_active_cell_count = 16
-            solver.solver = ("jacobi",)
-            solver.enable_timers = True
-            self.assertFalse(solver.supports_graph_capture)
 
     def test_implicit_mpm_reset_syncs_namespaced_non_in_place_state(self):
         """Verify coupled reset mirrors MPM history into the non-in-place output state."""

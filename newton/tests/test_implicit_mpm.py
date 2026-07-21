@@ -475,9 +475,6 @@ def test_multiworld_fixed_outer_graph_matches_eager(test, device):
     captured_model, captured_solver, captured_state_0, captured_state_1, captured_world_starts = (
         _make_multiworld_fixed_outer_graph_case(device)
     )
-    test.assertTrue(captured_solver.supports_graph_capture)
-    captured_solver.prepare_graph_capture()
-
     np.testing.assert_array_equal(captured_world_starts, world_starts)
     initial_q = eager_state_0.particle_q.numpy().copy()
     initial_qd_grad = eager_state_0.mpm.particle_qd_grad.numpy().copy()

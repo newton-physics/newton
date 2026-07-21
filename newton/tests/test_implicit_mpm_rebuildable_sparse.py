@@ -322,13 +322,13 @@ def _check_rebuildable_sparse_auto_gs_cuda_graph(test, device, collider_basis):
         solver="auto",
     )
     test.assertEqual(solver.solver, ("gs",))
-    test.assertTrue(solver.supports_graph_capture)
-    solver.prepare_graph_capture()
+    grid = solver._scratchpad.grid
+    if collider_basis == "S2":
+        test.assertIsNotNone(grid._edge_grid)
 
-    # Materialize persistent topology and the GS solve graph before outer capture.
+    # Build the inner GS solve graph before recording the outer graph.
     solver.step(state_0, state_1, None, None, 0.005)
     state_0, state_1 = state_1, state_0
-    grid = solver._scratchpad.grid
     cell_grid_id = grid.cell_grid.id
     initial_cell_count = grid.cell_grid.get_active_stats().voxel_count
     initial_cells = {tuple(ijk) for ijk in grid.cell_grid.get_voxels().numpy()[:initial_cell_count]}

@@ -4,7 +4,6 @@
 """Integration tests for coupled multi-world implicit MPM."""
 
 import unittest
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -371,7 +370,6 @@ def test_sparse_multiworld_constructs_environment_grid(test, device):
     test.assertTrue(solver._separate_worlds)
     test.assertTrue(solver._sparse_rebuildable)
     test.assertEqual(grid.environment_count(), 2)
-    test.assertTrue(solver.supports_graph_capture)
     test.assertEqual(solver.max_active_cell_count, 128)
 
 
@@ -411,103 +409,17 @@ def test_sparse_multiworld_pic_cache_distinguishes_partition_types(test, device)
     test.assertEqual(int(rebuildable_solver._grid_status.numpy()[0]), wp.Volume.REBUILD_SUCCESS)
 
 
-def test_graph_capture_capability_and_preparation(test, device):
-    """Verify graph capture capability and preparation."""
-    model, solver, state_0, state_1 = _make_sparse_capture_case(device)
-    test.assertTrue(solver.supports_graph_capture)
+def test_graph_capture_resources_are_materialized_internally(test, device):
+    """Verify graph-capture resources are materialized during construction."""
+    model = _make_two_world_particle_model(device)
+    config = _make_sparse_capture_config()
+    config.collider_basis = "S2"
+    solver = SolverImplicitMPM(model, config=config, enable_timers=False)
 
-    for solver_name in ("auto", "cg", "cr", "gmres"):
-        config = _make_sparse_capture_config()
-        config.solver = solver_name
-        compatible_solver = SolverImplicitMPM(model, config=config, enable_timers=False)
-        test.assertEqual(compatible_solver._environment_count, 2)
-        test.assertTrue(compatible_solver._sparse_rebuildable)
-        test.assertTrue(compatible_solver.supports_graph_capture, solver_name)
-        compatible_solver.prepare_graph_capture()
-
-    fixed_config = _make_mpm_config()
-    fixed_config.max_active_cell_count = 128
-    fixed_solver = SolverImplicitMPM(model, config=fixed_config, enable_timers=False)
-    test.assertTrue(fixed_solver.supports_graph_capture)
-
-    uncapped_fixed_config = _make_mpm_config()
-    uncapped_fixed_config.max_active_cell_count = -1
-    uncapped_fixed_solver = SolverImplicitMPM(model, config=uncapped_fixed_config, enable_timers=False)
-    test.assertFalse(uncapped_fixed_solver.supports_graph_capture)
-    with test.assertRaisesRegex(RuntimeError, "max_active_cell_count > 0"):
-        uncapped_fixed_solver.prepare_graph_capture()
-
-    incompatible_sparse_configs = []
-    plain_sparse_config = _make_sparse_capture_config()
-    plain_sparse_config.max_active_cell_count = -1
-    incompatible_sparse_configs.append(("plain", plain_sparse_config))
-    padded_sparse_config = _make_sparse_capture_config()
-    padded_sparse_config.grid_padding = 1
-    incompatible_sparse_configs.append(("padding", padded_sparse_config))
-    unsupported_basis_config = _make_sparse_capture_config()
-    unsupported_basis_config.velocity_basis = "B2"
-    incompatible_sparse_configs.append(("basis", unsupported_basis_config))
-    for reason, config in incompatible_sparse_configs:
-        incompatible_solver = SolverImplicitMPM(model, config=config, enable_timers=False)
-        test.assertFalse(incompatible_solver._sparse_rebuildable, reason)
-        test.assertFalse(incompatible_solver.supports_graph_capture, reason)
-        with test.assertRaisesRegex(RuntimeError, "rebuildable sparse grid"):
-            incompatible_solver.prepare_graph_capture()
-
-    state_before = {
-        name: array.numpy().copy()
-        for name, array in {
-            **_sparse_case_state_arrays(state_0),
-            "particle_q_out": state_1.particle_q,
-            "particle_qd_out": state_1.particle_qd,
-        }.items()
-    }
-    grid = solver._scratchpad.grid
-    scratchpad = solver._scratchpad
-    vertex_grid = grid.vertex_grid
-
-    solver.prepare_graph_capture()
-
-    test.assertIs(solver._scratchpad, scratchpad)
-    test.assertIs(grid.vertex_grid, vertex_grid)
-    for name, expected in state_before.items():
-        if name == "particle_q_out":
-            actual = state_1.particle_q.numpy()
-        elif name == "particle_qd_out":
-            actual = state_1.particle_qd.numpy()
-        else:
-            actual = _sparse_case_state_arrays(state_0)[name].numpy()
-        np.testing.assert_array_equal(actual, expected)
-
-    solver.enable_timers = True
-    test.assertFalse(solver.supports_graph_capture)
-    with test.assertRaisesRegex(RuntimeError, "enable_timers=False"):
-        solver.prepare_graph_capture()
-    solver.enable_timers = False
-
-    with mock.patch.object(wp, "is_mempool_enabled", return_value=False):
-        test.assertFalse(solver.supports_graph_capture)
-        with test.assertRaisesRegex(RuntimeError, "memory pool"):
-            solver.prepare_graph_capture()
-
-    with mock.patch.object(wp, "is_conditional_graph_supported", return_value=False):
-        test.assertFalse(solver.supports_graph_capture)
-        with test.assertRaisesRegex(RuntimeError, "conditional graph"):
-            solver.prepare_graph_capture()
-
-    solver.grid_type = "dense"
-    test.assertFalse(solver.supports_graph_capture)
-    with test.assertRaisesRegex(RuntimeError, "grid_type='dense'"):
-        solver.prepare_graph_capture()
-    solver.grid_type = "sparse"
-
-    cpu_model = _make_two_world_particle_model("cpu")
-    cpu_config = _make_mpm_config()
-    cpu_config.max_active_cell_count = 128
-    cpu_solver = SolverImplicitMPM(cpu_model, config=cpu_config, enable_timers=False)
-    test.assertFalse(cpu_solver.supports_graph_capture)
-    with test.assertRaisesRegex(RuntimeError, "CPU graph capture is not currently supported"):
-        cpu_solver.prepare_graph_capture()
+    test.assertTrue(solver._sparse_rebuildable)
+    test.assertIsNotNone(solver._scratchpad.grid._edge_grid)
+    test.assertIsNotNone(solver._last_step_data.ws_impulse_field)
+    test.assertIsNotNone(solver._last_step_data.ws_stress_field)
 
 
 def test_sparse_status_is_sticky_until_explicitly_cleared(test, device):
@@ -785,8 +697,8 @@ def test_coupled_mpm_non_in_place_capture_replays_after_reset(test, device):
             ),
         ),
     )
-    test.assertTrue(coupled.supports_graph_capture)
-    coupled.prepare_graph_capture()
+    mpm_solver = coupled.solver("mpm")
+    test.assertIsInstance(mpm_solver, SolverImplicitMPM)
 
     state_0 = model.state()
     state_1 = model.state()
@@ -797,10 +709,12 @@ def test_coupled_mpm_non_in_place_capture_replays_after_reset(test, device):
         coupled.step(state_1, state_0, control=None, contacts=None, dt=1.0e-4)
         coupled.step(state_0, state_1, control=None, contacts=None, dt=1.0e-4)
 
-    wp.capture_launch(capture.graph)
-    wp.capture_launch(capture.graph)
+    for _ in range(2):
+        wp.capture_launch(capture.graph)
+        mpm_solver.check_status()
     coupled.reset(state_1, world_mask=wp.array((True, False, False), dtype=wp.bool, device=device))
     wp.capture_launch(capture.graph)
+    mpm_solver.check_status()
 
     test.assertTrue(np.isfinite(state_0.particle_q.numpy()).all())
     test.assertTrue(np.isfinite(state_1.particle_q.numpy()).all())
@@ -1018,8 +932,8 @@ add_function_test(
 )
 add_function_test(
     TestImplicitMPMMultiworldSparse,
-    "test_graph_capture_capability_and_preparation",
-    test_graph_capture_capability_and_preparation,
+    "test_graph_capture_resources_are_materialized_internally",
+    test_graph_capture_resources_are_materialized_internally,
     devices=devices,
 )
 add_function_test(
