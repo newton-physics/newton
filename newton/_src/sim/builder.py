@@ -10430,7 +10430,6 @@ class ModelBuilder:
                     f"{next_start[idx]}."
                 )
 
-        # Validate array length consistency
         particle_count = self.particle_count
         particle_arrays = (
             ("particle_qd", self.particle_qd),
