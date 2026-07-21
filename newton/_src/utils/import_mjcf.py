@@ -1621,6 +1621,10 @@ def parse_mjcf(
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
         body_name = sanitize_name(body_name)
         has_inertial_definition = body.find("inertial") is not None
+        if inertia_from_geom == "false" and not ignore_inertial_definitions and not has_inertial_definition:
+            raise ValueError(
+                f"MJCF body '{body_name}' requires an <inertial> element when compiler inertiafromgeom=\"false\"."
+            )
         infer_body_inertia_from_geoms = ignore_inertial_definitions or inertia_from_geom == "true"
         if inertia_from_geom == "auto" and not has_inertial_definition:
             infer_body_inertia_from_geoms = True
