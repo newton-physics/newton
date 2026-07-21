@@ -1496,7 +1496,11 @@ class RendererGL:
         self._resize_callbacks.append(callback)
 
     def register_close(self, callback):
-        """Register a callback that runs before the OpenGL context closes."""
+        """Register a callback that runs before the OpenGL context closes.
+
+        Args:
+            callback: Function to invoke during renderer shutdown.
+        """
         self._close_callbacks.append(callback)
 
     def register_update(self, callback):

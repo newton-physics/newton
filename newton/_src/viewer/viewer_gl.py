@@ -248,7 +248,7 @@ class ViewerGL(ViewerBase):
             cleanup: Callable[[], None] | None,
         ):
             self._viewer = weakref.ref(viewer)
-            self._callback = callback
+            self._callback: Callable[[ViewerGL.PostProcessContext], None] | None = callback
             self._cleanup = cleanup
             self._closed = False
 
@@ -264,6 +264,8 @@ class ViewerGL(ViewerBase):
             viewer = self._viewer()
             if viewer is None:
                 self._closed = True
+                self._callback = None
+                self._cleanup = None
                 return
             viewer._close_post_process_registration(self)
 
@@ -491,9 +493,12 @@ class ViewerGL(ViewerBase):
 
         cleanup = registration._cleanup
         registration._cleanup = None
-        if cleanup is not None:
-            self.renderer._make_current()
-            cleanup()
+        try:
+            if cleanup is not None:
+                self.renderer._make_current()
+                cleanup()
+        finally:
+            registration._callback = None
 
     def _close_post_processes(self) -> None:
         if self._post_process_closed:
@@ -574,6 +579,9 @@ class ViewerGL(ViewerBase):
         for registration in tuple(self._post_process_registrations):
             if registration.closed:
                 continue
+            callback = registration._callback
+            if callback is None:
+                continue
             context = self.PostProcessContext(
                 width=width,
                 height=height,
@@ -591,7 +599,7 @@ class ViewerGL(ViewerBase):
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, output_target[0])
             gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
             gl.glViewport(*viewport)
-            registration._callback(context)
+            callback(context)
             input_target, output_target = output_target, input_target
 
         return input_target

@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import unittest
+import weakref
 from types import SimpleNamespace
 from typing import get_type_hints
 from unittest import mock
@@ -10,6 +12,10 @@ import numpy as np
 
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+
+
+class _CapturedResource:
+    pass
 
 
 class _FakeGL:
@@ -94,6 +100,56 @@ class TestViewerGLPostProcessRegistration(unittest.TestCase):
         self.assertEqual(cleanup_count, 1)
         self.assertEqual(viewer._post_process_registrations, [])
         self.assertEqual(viewer.renderer.make_current_count, 1)
+
+    def test_registration_close_releases_callback_captures(self):
+        viewer = _make_viewer()
+        resource = _CapturedResource()
+        resource_ref = weakref.ref(resource)
+
+        def callback(context, captured=resource):
+            pass
+
+        registration = viewer.register_post_process(callback)
+        del callback
+        del resource
+        self.assertIsNotNone(resource_ref())
+
+        registration.close()
+        gc.collect()
+
+        self.assertIsNone(resource_ref())
+        self.assertIsNone(registration._callback)
+
+    def test_close_without_viewer_releases_callback_and_cleanup(self):
+        viewer = _make_viewer()
+        registration = viewer.register_post_process(lambda context: None, cleanup=lambda: None)
+        viewer_ref = weakref.ref(viewer)
+        del viewer
+        gc.collect()
+        self.assertIsNone(viewer_ref())
+
+        registration.close()
+
+        self.assertTrue(registration.closed)
+        self.assertIsNone(registration._callback)
+        self.assertIsNone(registration._cleanup)
+
+    def test_cleanup_failure_still_releases_callback(self):
+        viewer = _make_viewer()
+
+        def cleanup():
+            raise RuntimeError("cleanup failed")
+
+        registration = viewer.register_post_process(lambda context: None, cleanup=cleanup)
+
+        with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+            registration.close()
+
+        self.assertTrue(registration.closed)
+        self.assertIsNone(registration._callback)
+        self.assertIsNone(registration._cleanup)
+        self.assertEqual(viewer._post_process_registrations, [])
+        registration.close()
 
     def test_viewer_cleanup_closes_registrations_in_reverse_order(self):
         viewer = _make_viewer()
