@@ -395,7 +395,7 @@ def get_name_from_label(label: str):
 
 
 def find_matching_ids(
-    pattern: str | re.Pattern[str] | list[str] | list[int],
+    pattern: str | list[str] | re.Pattern[str] | list[int],
     labels: list[str],
     world_ids,
     world_count: int,
@@ -423,14 +423,14 @@ def find_matching_ids(
     return grouped_ids, global_ids
 
 
-def match_labels(labels: list[str], pattern: str | re.Pattern[str] | list[str] | list[int]) -> list[int]:
+def match_labels(labels: list[str], pattern: str | list[str] | re.Pattern[str] | list[int]) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
     See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
 
     Args:
         labels: List of label strings to match against.
-        pattern: Glob string, compiled string regular expression, list of glob strings,
+        pattern: Glob string, list of glob strings, compiled string regular expression,
             or list of integer indices. Regular expressions use full matching. Integer
             indices are returned as-is.
 
@@ -449,7 +449,7 @@ def match_labels(labels: list[str], pattern: str | re.Pattern[str] | list[str] |
 
     if not isinstance(pattern, list):
         raise TypeError(
-            "Expected a glob string, compiled string pattern, list of glob strings, "
+            "Expected a glob string, list of glob strings, compiled string pattern, "
             f"or list of int indices, got: {type(pattern)}"
         )
 
@@ -533,19 +533,19 @@ class ArticulationView:
 
     Args:
         model: The model containing the articulations.
-        pattern: Glob pattern, compiled regular-expression pattern, list of glob patterns,
+        pattern: Glob pattern, list of glob patterns, compiled regular-expression pattern,
             or list of absolute articulation indices. Regular expressions use full matching.
             Indices must be unique and in ascending order.
-        include_joints: Glob pattern, compiled regular-expression pattern, list of glob
-            patterns, or list of joint indices to include. Unsorted integer indices are
+        include_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to include. Unsorted integer indices are
             deprecated and will be rejected in a future release.
-        exclude_joints: Glob pattern, compiled regular-expression pattern, list of glob
-            patterns, or list of joint indices to exclude.
-        include_links: Glob pattern, compiled regular-expression pattern, list of glob
-            patterns, or list of link indices to include. Unsorted integer indices are
+        exclude_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to exclude.
+        include_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to include. Unsorted integer indices are
             deprecated and will be rejected in a future release.
-        exclude_links: Glob pattern, compiled regular-expression pattern, list of glob
-            patterns, or list of link indices to exclude.
+        exclude_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to exclude.
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
@@ -556,12 +556,12 @@ class ArticulationView:
     def __init__(
         self,
         model: Model,
-        pattern: str | re.Pattern[str] | list[str] | list[int],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
-        include_joints: str | re.Pattern[str] | list[str] | list[int] | None = None,
-        exclude_joints: str | re.Pattern[str] | list[str] | list[int] | None = None,
-        include_links: str | re.Pattern[str] | list[str] | list[int] | None = None,
-        exclude_links: str | re.Pattern[str] | list[str] | list[int] | None = None,
+        include_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        include_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,

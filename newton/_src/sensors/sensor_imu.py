@@ -116,7 +116,7 @@ class SensorIMU:
     def __init__(
         self,
         model: Model,
-        sites: str | re.Pattern[str] | list[str] | list[int],
+        sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
         request_state_attributes: bool = True,
@@ -128,8 +128,8 @@ class SensorIMU:
 
         Args:
             model: The model to use.
-            sites: Glob pattern, compiled regular-expression pattern, list of glob
-                patterns to match against site labels, or list of site indices. Regular
+            sites: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against site labels, or list of site indices. Regular
                 expressions use full matching.
             verbose: If True, print details. If False, suppress details. If None, print details when
                 ``wp.config.log_level`` is configured for debug logging.

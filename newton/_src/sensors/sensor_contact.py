@@ -453,10 +453,10 @@ class SensorContact:
         self,
         model: Model,
         *,
-        sensing_bodies: str | re.Pattern[str] | list[str] | list[int] | None = None,
-        sensing_shapes: str | re.Pattern[str] | list[str] | list[int] | None = None,
-        counterpart_bodies: str | re.Pattern[str] | list[str] | list[int] | None = None,
-        counterpart_shapes: str | re.Pattern[str] | list[str] | list[int] | None = None,
+        sensing_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        sensing_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        counterpart_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        counterpart_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
@@ -471,13 +471,13 @@ class SensorContact:
 
         Args:
             model: The simulation model providing shape/body definitions and world layout.
-            sensing_bodies: Glob pattern, compiled regular-expression pattern, list of glob patterns to match against
+            sensing_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
                 body labels, or list of body indices. Regular expressions use full matching.
-            sensing_shapes: Glob pattern, compiled regular-expression pattern, list of glob patterns to match against
+            sensing_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
                 shape labels, or list of shape indices. Regular expressions use full matching.
-            counterpart_bodies: Glob pattern, compiled regular-expression pattern, list of glob patterns to match
+            counterpart_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
                 against body labels, or list of body indices. Regular expressions use full matching.
-            counterpart_shapes: Glob pattern, compiled regular-expression pattern, list of glob patterns to match
+            counterpart_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
                 against shape labels, or list of shape indices. Regular expressions use full matching.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
