@@ -175,7 +175,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         model = builder.finalize()
 
         collision_pipeline = newton.CollisionPipeline(model)
-        contacts = model.contacts(collision_pipeline=collision_pipeline)
+        contacts = collision_pipeline.contacts()
 
         solver = newton.solvers.SolverVBD(model)
 
