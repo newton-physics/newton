@@ -6,9 +6,9 @@
 This module provides a GPU-accelerated sparse SDF implementation using 3D CUDA textures.
 Construction mirrors the NanoVDB sparse-volume pattern in ``sdf_utils.py``:
 
-1. Check subgrid occupancy by querying mesh SDF at subgrid centers
-2. Build background/coarse SDF by querying mesh at subgrid corner positions
-3. Populate only occupied subgrid textures by querying mesh at each texel
+1. Check subgrid occupancy by querying the source SDF at subgrid centers
+2. Build the background/coarse SDF by querying the source at subgrid corner positions
+3. Populate only occupied subgrid textures by querying the source at each texel
 
 The format uses:
 - A coarse 3D texture for background/far-field sampling
@@ -352,7 +352,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         min_corner: wp.vec3,
         cell_size: wp.vec3,
     ):
-        """Mark subgrids that overlap the narrow band by checking mesh SDF at center."""
+        """Mark subgrids that overlap the narrow band by checking the source SDF at the center."""
         tid = wp.tid()
         coords = _id_to_xyz(tid, num_subgrids_x, num_subgrids_y)
         sample_pos = min_corner + wp.vec3(
@@ -386,7 +386,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         bg_size_y: int,
         bg_size_z: int,
     ):
-        """Sample mesh SDF at every fine-grid point of every occupied subgrid and
+        """Sample the source SDF at every fine-grid point of every occupied subgrid and
         accumulate the maximum absolute deviation from the trilinearly interpolated
         coarse SDF via ``wp.atomic_max``.
 
@@ -461,7 +461,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         bg_size_z: int,
         winding_threshold: float,
     ):
-        """Populate background SDF by querying mesh at subgrid corner positions."""
+        """Populate the background SDF by querying the source at subgrid corner positions."""
         tid = wp.tid()
 
         total_bg = bg_size_x * bg_size_y * bg_size_z
@@ -500,7 +500,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         tex_blocks_per_dim: int,
         tex_size: int,
     ):
-        """Populate subgrid texture by querying mesh SDF (float32 version)."""
+        """Populate the subgrid texture by querying the source SDF (float32 version)."""
         tid = wp.tid()
 
         total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
@@ -569,7 +569,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         sdf_min: float,
         sdf_range_inv: float,
     ):
-        """Populate subgrid texture by querying mesh SDF (uint16 quantized version)."""
+        """Populate the subgrid texture by querying the source SDF (uint16 quantized version)."""
         tid = wp.tid()
 
         total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
@@ -639,7 +639,7 @@ def _create_source_kernels(source_kind: int, sign_mode: int):
         sdf_min: float,
         sdf_range_inv: float,
     ):
-        """Populate subgrid texture by querying mesh SDF (uint8 quantized version)."""
+        """Populate the subgrid texture by querying the source SDF (uint8 quantized version)."""
         tid = wp.tid()
 
         total_subgrids = num_subgrids_x * num_subgrids_y * num_subgrids_z
@@ -1449,10 +1449,10 @@ def _build_sparse_sdf(
     if linearization_error_threshold > 0.0:
         # Per-sample launch so the 9^3 inner loop is parallelized across
         # threads; atomic_max accumulates the per-subgrid linearity error.
-        # We deliberately do NOT cache the mesh samples for reuse in the
+        # We deliberately do NOT cache the source samples for reuse in the
         # populate pass: an empirical test showed the cache (one float32
         # per sample, total_subgrids * 9^3 bytes transient) costs more in
-        # global-memory traffic than re-querying the mesh BVH, both for
+        # global-memory traffic than re-querying the source SDF. This was measured for
         # small meshes (cube: 12 tris) and medium meshes (icosphere:
         # 5120 tris) at resolutions up to 256.
         samples_per_dim = subgrid_size + 1
