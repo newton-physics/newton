@@ -974,7 +974,7 @@ class TestSolverCoupledGraphCapture(unittest.TestCase):
 
         parent_state_0 = model.state()
         parent_state_1 = model.state()
-        coupled.reset(parent_state_0, world_mask=wp.array((True, False), dtype=wp.bool, device=model.device))
+        coupled.reset(parent_state_0, world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device))
 
         for name, values in expected.items():
             np.testing.assert_array_equal(history(entry.state_0)[name], values)

@@ -608,7 +608,7 @@ def test_masked_reset_restores_only_selected_world_history(test, device):
     solver._grid_status.fill_(wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
     solver._grid_accumulated_status.fill_(wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED)
 
-    world_mask = wp.array((True, False), dtype=wp.bool, device=device)
+    world_mask = wp.array((True, False, False), dtype=wp.bool, device=device)
     solver.reset(state, world_mask=world_mask)
 
     after = _mpm_history_snapshot(state)
@@ -685,11 +685,17 @@ def test_masked_reset_clears_selected_fixed_dense_and_allocating_sparse_warmstar
                 field.dof_values.assign(values)
                 before.append(values)
 
-            solver.reset(state, world_mask=wp.array((True, False), dtype=wp.bool, device=device))
+            solver.reset(state, world_mask=wp.array((True, False, False), dtype=wp.bool, device=device))
 
             for field, scratch_field, values in zip(fields, scratch_fields, before, strict=True):
                 expected = _expected_grid_warmstart_after_mask(field, scratch_field, values, environment=0)
                 np.testing.assert_array_equal(field.dof_values.numpy(), expected)
+
+            for field, values in zip(fields, before, strict=True):
+                field.dof_values.assign(values)
+            solver.reset(state, world_mask=wp.array((False, False, True), dtype=wp.bool, device=device))
+            for field, values in zip(fields, before, strict=True):
+                np.testing.assert_array_equal(field.dof_values.numpy(), values)
 
 
 def test_masked_reset_rejects_shared_grid_warmstarts_before_mutation(test, device):
@@ -710,7 +716,7 @@ def test_masked_reset_rejects_shared_grid_warmstarts_before_mutation(test, devic
         field_values.append(values)
 
     with test.assertRaisesRegex(RuntimeError, "cannot selectively clear grid-backed warm starts"):
-        solver.reset(state, world_mask=wp.array((True, False), dtype=wp.bool, device=device))
+        solver.reset(state, world_mask=wp.array((True, False, False), dtype=wp.bool, device=device))
 
     for name, expected in history_before.items():
         np.testing.assert_array_equal(_mpm_history_snapshot(state)[name], expected)
@@ -738,7 +744,7 @@ def test_masked_reset_clears_only_selected_point_warmstarts(test, device):
     selected = slice(starts[0], starts[1])
     unselected = slice(starts[1], starts[2])
 
-    solver.reset(state, world_mask=wp.array((True, False), dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array((True, False, False), dtype=wp.bool, device=device))
 
     impulse_after = impulse.dof_values.numpy()
     stress_after = stress.dof_values.numpy()
@@ -793,7 +799,7 @@ def test_coupled_mpm_non_in_place_capture_replays_after_reset(test, device):
 
     wp.capture_launch(capture.graph)
     wp.capture_launch(capture.graph)
-    coupled.reset(state_1, world_mask=wp.array((True, False), dtype=wp.bool, device=device))
+    coupled.reset(state_1, world_mask=wp.array((True, False, False), dtype=wp.bool, device=device))
     wp.capture_launch(capture.graph)
 
     test.assertTrue(np.isfinite(state_0.particle_q.numpy()).all())
@@ -813,8 +819,9 @@ def test_reset_validates_state_and_world_mask_before_mutation(test, device):
 
     invalid_masks = (
         wp.array((True,), dtype=wp.bool, device=device),
-        wp.array((1, 0), dtype=wp.int32, device=device),
-        wp.array((True, False), dtype=wp.bool, device="cpu"),
+        wp.array((True, False), dtype=wp.bool, device=device),
+        wp.array((1, 0, 0), dtype=wp.int32, device=device),
+        wp.array((True, False, False), dtype=wp.bool, device="cpu"),
     )
     for world_mask in invalid_masks:
         with test.subTest(shape=world_mask.shape, dtype=world_mask.dtype, device=str(world_mask.device)):
@@ -824,7 +831,7 @@ def test_reset_validates_state_and_world_mask_before_mutation(test, device):
                 np.testing.assert_array_equal(_mpm_history_snapshot(state)[name], values)
             test.assertNotEqual(int(solver._grid_accumulated_status.numpy()[0]), wp.Volume.REBUILD_SUCCESS)
 
-    valid_mask = wp.array((True, False), dtype=wp.bool, device=device)
+    valid_mask = wp.array((True, False, False), dtype=wp.bool, device=device)
     original_jp = state.mpm.particle_Jp
     state.mpm.particle_Jp = wp.zeros(model.particle_count + 1, dtype=float, device=device)
     with test.assertRaisesRegex(ValueError, "particle_Jp.*shape"):

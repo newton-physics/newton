@@ -412,6 +412,9 @@ Keep resets outside the captured graph. Calling
 :meth:`~newton.solvers.SolverImplicitMPM.reset` with ``world_mask`` restores MPM
 history and grid-backed warm starts only for selected isolated worlds and
 preserves unselected worlds; a valid reset also clears sparse rebuild status.
+The mask has ``model.world_count + 1`` entries: the first entries select local
+worlds by index, while the final entry selects global objects assigned to world
+``-1``.
 A masked reset on a shared multi-world grid is rejected because one warm-start
 node may combine contributions from several worlds. Use ``separate_worlds=True``
 for selective reset, or omit ``world_mask`` to reset the shared grid in full.

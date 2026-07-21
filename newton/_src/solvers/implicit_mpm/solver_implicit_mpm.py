@@ -1482,7 +1482,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             return
         if not isinstance(world_mask, wp.array):
             raise TypeError("world_mask must be a Warp array with dtype wp.bool.")
-        expected_shape = (self._initial_world_count,)
+        expected_shape = (self._initial_world_count + 1,)
         if world_mask.shape != expected_shape:
             raise ValueError(f"world_mask has shape {world_mask.shape}, expected {expected_shape}.")
         if world_mask.dtype != wp.bool:
@@ -1590,13 +1590,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         masked reset because their warm-start nodes may combine worlds. A full
         reset clears every warm-start field. Sparse-grid rebuild status is
         always cleared at a valid reset boundary, and the previous-collider-pose
-        cache is refreshed from ``state``. Global particle-backed history and
-        collider poses are reset whenever the mask selects at least one world.
+        cache is refreshed from ``state``. The final mask entry selects global
+        particle-backed history and collider poses whose world index is ``-1``.
 
         Args:
             state: Simulation state whose MPM history is modified in place.
-            world_mask: Optional boolean mask of shape ``(model.world_count,)``
-                selecting worlds to reset. If ``None``, reset all worlds.
+            world_mask: Optional boolean mask of shape
+                ``(model.world_count + 1,)`` selecting worlds to reset. Entries
+                before the last select local worlds by index, and the last
+                entry selects global objects whose world index is ``-1``. If
+                ``None``, reset all worlds and global objects.
 
                 .. experimental::
 

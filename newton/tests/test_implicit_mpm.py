@@ -648,8 +648,30 @@ def test_multiworld_global_particles_rejected(test, device):
 def test_single_world_global_particles_supported(test, device):
     """Verify single world global particles supported."""
     model = _make_mpm_particle_builder().finalize(device=device)
-    _solver, state = _step_mpm(model, _make_mpm_config(), step_count=1)
+    config = _make_mpm_config()
+    config.collider_basis = "pic"
+    config.strain_basis = "pic"
+    config.warmstart_mode = "particles"
+    solver, state = _step_mpm(model, config, step_count=1)
     test.assertTrue(np.isfinite(state.particle_q.numpy()).all())
+    np.testing.assert_array_equal(model.particle_world.numpy(), -1)
+
+    impulse = solver._last_step_data.ws_impulse_field.dof_values
+    stress = solver._last_step_data.ws_stress_field.dof_values
+    impulse_values = np.ones((model.particle_count, 3), dtype=np.float32)
+    stress_values = np.ones((model.particle_count, 6), dtype=np.float32)
+    impulse.assign(impulse_values)
+    stress.assign(stress_values)
+    state.mpm.particle_Jp.fill_(2.0)
+    solver.reset(state, world_mask=wp.array((True, False), dtype=wp.bool, device=device))
+    np.testing.assert_array_equal(state.mpm.particle_Jp.numpy(), 2.0)
+    np.testing.assert_array_equal(impulse.numpy(), impulse_values)
+    np.testing.assert_array_equal(stress.numpy(), stress_values)
+
+    solver.reset(state, world_mask=wp.array((False, True), dtype=wp.bool, device=device))
+    np.testing.assert_array_equal(state.mpm.particle_Jp.numpy(), 1.0)
+    np.testing.assert_array_equal(impulse.numpy(), np.zeros_like(impulse_values))
+    np.testing.assert_array_equal(stress.numpy(), np.zeros_like(stress_values))
 
 
 def test_multiworld_default_shared_grid_accepts_global_particles(test, device):
@@ -1007,22 +1029,24 @@ def test_multiworld_masked_reset_refreshes_global_kinematic_collider_history(tes
 
     test.assertEqual(int(model.body_world.numpy()[body]), -1)
 
+    expected_previous = solver._last_step_data.body_q_prev.numpy()[body].copy()
     body_q = state.body_q.numpy()
     body_q[body, :3] = (1.0, 2.0, 3.0)
     state.body_q.assign(body_q)
-    solver.reset(state, world_mask=wp.array((True, True), dtype=wp.bool, device=device))
-    np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy()[body], body_q[body])
+    solver.reset(state, world_mask=wp.array((True, True, False), dtype=wp.bool, device=device))
+    np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy()[body], expected_previous)
 
-    body_q[body, :3] = (4.0, 5.0, 6.0)
-    state.body_q.assign(body_q)
-    solver.reset(state, world_mask=wp.array((False, True), dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array((False, False, True), dtype=wp.bool, device=device))
     np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy()[body], body_q[body])
 
     expected_previous = body_q[body].copy()
-    body_q[body, :3] = (7.0, 8.0, 9.0)
+    body_q[body, :3] = (4.0, 5.0, 6.0)
     state.body_q.assign(body_q)
-    solver.reset(state, world_mask=wp.array((False, False), dtype=wp.bool, device=device))
+    solver.reset(state, world_mask=wp.array((False, False, False), dtype=wp.bool, device=device))
     np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy()[body], expected_previous)
+
+    solver.reset(state, world_mask=wp.array((True, True, True), dtype=wp.bool, device=device))
+    np.testing.assert_array_equal(solver._last_step_data.body_q_prev.numpy()[body], body_q[body])
 
 
 def test_multiworld_local_dynamic_collider_and_mass_override(test, device):

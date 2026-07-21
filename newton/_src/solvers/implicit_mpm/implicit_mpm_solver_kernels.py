@@ -912,12 +912,11 @@ def record_volume_rebuild_status(status: wp.array[wp.uint32], accumulated_status
 @wp.func
 def reset_mpm_world_is_selected(world: int, world_mask: wp.array[wp.bool]):
     selected = bool(False)
-    if world >= 0 and world < world_mask.shape[0]:
+    global_world_index = world_mask.shape[0] - 1
+    if world >= 0 and world < global_world_index:
         selected = world_mask[world]
-    elif world < 0:
-        for world_index in range(world_mask.shape[0]):
-            if world_mask[world_index]:
-                selected = True
+    elif world == -1:
+        selected = world_mask[global_world_index]
     return selected
 
 
@@ -983,7 +982,7 @@ def reset_mpm_grid_warmstart(
 ):
     """Clear whole-space warm-start values for selected environments."""
     partition_index = wp.tid()
-    environment_count = world_mask.shape[0]
+    environment_count = world_mask.shape[0] - 1
     if partition_index >= environment_offsets[environment_count]:
         return
 
