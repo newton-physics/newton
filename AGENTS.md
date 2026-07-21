@@ -40,7 +40,7 @@ uv run --extra dev --extra torch-cu12 -m newton.tests                  # with Py
 
 ### Testing guidelines
 
-- Give every test function or method a concise one- or two-line docstring using triple double quotes (`"""..."""`).
+- Give every test function or method a docstring using triple double quotes (`"""..."""`). Start with a concise one-line summary in imperative mood that states what the test verifies. For a particularly complex test, add a body that elaborates on the tested behavior, separated from the summary by a blank line following Google-style docstring conventions.
 - Never call `wp.synchronize()` or `wp.synchronize_device()` right before `.numpy()` on a Warp array. This is redundant as `.numpy()` performs a synchronous device-to-host copy that completes all outstanding work.
 
 ```bash
