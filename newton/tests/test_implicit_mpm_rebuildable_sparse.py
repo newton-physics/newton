@@ -101,6 +101,7 @@ def test_rebuildable_sparse_refreshes_retained_topologies(test, device):
             strain_basis_str="P0",
             collider_basis_str="S2",
             max_cell_count=8,
+            environment_first=False,
             temporary_store=None,
         )
 
