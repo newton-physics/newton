@@ -1790,7 +1790,7 @@ def create_sparse_sdf_textures(
     """Create TextureSDFData struct with GPU textures from sparse data.
 
     Args:
-        sparse_data: dictionary from :func:`build_sparse_sdf_from_mesh`.
+        sparse_data: Dictionary produced by a sparse SDF builder.
         device: Warp device string.
 
     Returns:
