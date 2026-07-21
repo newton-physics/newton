@@ -1511,12 +1511,12 @@ class TestImportMjcfGeometry(unittest.TestCase):
         # Body 6: mass="0" should also have zero inertia
         self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
 
-    def test_explicit_mesh_geom_mass(self):
-        """Test that a positive mass on a mesh geom sets body mass and inertia."""
+    def test_explicit_small_mesh_geom_mass(self):
+        """Test that a positive mass on a small mesh geom sets body mass and inertia."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="explicit_mesh_mass_test">
     <asset>
-        <mesh name="box_mesh" file="box.obj"/>
+        <mesh name="box_mesh" file="box.obj" scale="0.005 0.005 0.005"/>
     </asset>
     <worldbody>
         <body name="body">
@@ -1565,8 +1565,8 @@ f 4 5 8
         np.testing.assert_allclose(builder.body_com[0], np.zeros(3), atol=1e-7)
         np.testing.assert_allclose(
             np.array(builder.body_inertia[0]).reshape(3, 3),
-            np.diag([0.002, 0.002, 0.002]),
-            atol=1e-7,
+            np.diag([5.0e-8, 5.0e-8, 5.0e-8]),
+            atol=1e-11,
             rtol=1e-6,
         )
 

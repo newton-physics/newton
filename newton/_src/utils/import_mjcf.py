@@ -991,7 +991,7 @@ def parse_mjcf(
                 explicit_mesh_density = None
                 if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
                     unit_density_mass = sum(float(m_mesh.mass) for m_mesh in m_meshes)
-                    if unit_density_mass > 1.0e-6:
+                    if unit_density_mass > 0.0:
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
                 for m_mesh in m_meshes:
