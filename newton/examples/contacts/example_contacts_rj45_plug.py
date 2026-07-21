@@ -240,7 +240,7 @@ class Example:
         plug_mesh, pc = _load_mesh(stage, "/World/Plug")
         latch_mesh, lc = _load_mesh(stage, "/World/Latch")
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
         builder.rigid_gap = 0.005
 
@@ -386,13 +386,13 @@ class Example:
             pitch=-10.0,
             yaw=180.0,
         )
-        if hasattr(self.viewer, "_cam_speed"):
-            self.viewer._cam_speed = 0.2
+        self.viewer.camera_speed = 0.2
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self._initial_body_q = self.state_0.body_q.numpy().copy()
 
@@ -456,7 +456,7 @@ class Example:
                 ),
                 device=self.model.device,
             )
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

@@ -117,7 +117,7 @@ class Example:
         self.use_graph = bool(args.graph_capture)
         self.world_count = max(1, int(args.world_count))
 
-        template = newton.ModelBuilder(gravity=-9.81)
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         SolverKamino.register_custom_attributes(template)
         self._joint_checks: list[tuple[int, np.ndarray, int, np.ndarray]] = []
         self._emit_four_bar(template)
@@ -125,13 +125,15 @@ class Example:
         bodies_per_world = template.body_count
         joints_per_world = template.joint_count
 
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.replicate(template, world_count=self.world_count)
         builder.add_ground_plane()
         self._expand_world_indices(bodies_per_world, joints_per_world)
 
         builder.color()
         self.model = builder.finalize()
+        self.model.rigid_contact_max = 96
+
         self.device = self.model.device
 
         kamino_config = _make_kamino_config()
@@ -171,7 +173,8 @@ class Example:
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
