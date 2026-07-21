@@ -725,6 +725,7 @@ def parse_mjcf(
 
             geom_density = parse_float(geom_attrib, "density", density)
             geom_mass_explicit = None
+            explicit_mass_handled = False
 
             # MuJoCo: explicit mass attribute (from <geom mass="..."> or class defaults).
             # Skip density-based mass contribution and compute inertia directly from mass.
@@ -987,6 +988,12 @@ def parse_mjcf(
                     override_color=material_color,
                     override_texture=texture,
                 )
+                explicit_mesh_density = None
+                if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
+                    unit_density_mass = sum(float(m_mesh.mass) for m_mesh in m_meshes)
+                    if unit_density_mass > 1.0e-6:
+                        explicit_mesh_density = geom_mass_explicit / unit_density_mass
+                        explicit_mass_handled = True
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
@@ -998,6 +1005,8 @@ def parse_mjcf(
                     mesh_cfg.sdf_max_resolution = None
                     mesh_cfg.sdf_target_voxel_size = None
                     mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    if explicit_mesh_density is not None:
+                        mesh_cfg.density = explicit_mesh_density
                     mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = builder.add_shape_mesh(
                         xform=tf,
@@ -1133,7 +1142,7 @@ def parse_mjcf(
 
             # Handle explicit mass: compute inertia using existing functions, add to body.
             # Visual geoms can still contribute authored mass when parse_visuals=True.
-            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
+            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0 and not explicit_mass_handled:
                 from ..geometry.inertia import (  # noqa: PLC0415
                     compute_inertia_box_from_mass,
                     compute_inertia_capsule,
