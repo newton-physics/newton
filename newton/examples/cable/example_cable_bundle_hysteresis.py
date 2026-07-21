@@ -179,7 +179,7 @@ class Example:
         # Dahl plasticity parameters live on the Model as VBD custom attributes.
         if with_dahl:
             newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
-        builder.gravity = -9.81
+        builder.gravity = (0.0, 0.0, -9.81)
 
         # Set default material properties for cables (cable-to-cable contact)
         builder.default_shape_cfg.ke = 1.0e5  # Contact stiffness
@@ -294,7 +294,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.viewer.set_model(self.model)
 
         # Obstacle kinematics parameters
@@ -368,7 +369,7 @@ class Example:
             # Collision detection and contact refresh cadence.
             refresh_contacts = (substep % self.update_step_interval) == 0
             if refresh_contacts:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.set_rigid_history_update(refresh_contacts)
             self.solver.step(

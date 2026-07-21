@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import ctypes
 import ctypes.util
 import dataclasses
@@ -42,6 +43,22 @@ strict_warnings = False
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
+
+
+@contextlib.contextmanager
+def patch_sys_module(name: str, module: Any):
+    """Temporarily replace one module entry without rolling back unrelated imports."""
+    missing = object()
+    original = sys.modules.get(name, missing)
+    sys.modules[name] = module
+    try:
+        yield
+    finally:
+        if original is missing:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
+
 
 try:
     if sys.platform == "win32":
@@ -410,14 +427,16 @@ class NewtonTestCase(unittest.TestCase):
         output_capture = self._require_output_capture()
         stdout = getattr(result, "stdout", None)
         stderr = getattr(result, "stderr", None)
-        output_capture.record("stdout", stdout)
-        output_capture.record("stderr", stderr)
 
         if result.returncode != 0:
+            # The primary failure already includes both streams, so leave no output for cleanup to report again.
             command_text = _format_command(command)
             self.fail(
                 f"Failed with return code {result.returncode}, command: {command_text}\n\nOutput:\n{stdout}\n{stderr}"
             )
+
+        output_capture.record("stdout", stdout)
+        output_capture.record("stderr", stderr)
 
     def _finish_output_capture(self):
         output_capture = self._output_capture

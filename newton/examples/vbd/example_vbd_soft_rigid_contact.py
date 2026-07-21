@@ -55,7 +55,7 @@ PARAMS = {
     "soft_contact_ke": 1e5,
     "soft_contact_kd": 1e2,
     "soft_contact_mu": 0.8,
-    "gravity": -9.8,
+    "gravity": (0.0, 0.0, -9.8),
     "initial_paused": False,
     "body_drop_offset": 0.04,
     "rigid_body_particle_contact_buffer_size": 1024,

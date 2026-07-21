@@ -289,8 +289,6 @@ class TestAnymalReset(unittest.TestCase):
 
 
 def test_reset_functionality(test: TestAnymalReset, device, cone_type):
-    if cone_type == "elliptic" and device.is_cuda:
-        test.skipTest("Flaky on CUDA (GH-3397), pending google-deepmind/mujoco_warp#1512")
     test.device = device
     with wp.ScopedDevice(device):
         test._run_reset_test(cone_type)
