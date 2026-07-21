@@ -143,6 +143,7 @@ class SurfaceGripper:
         dim_b: float,
         d_shear_x: float = 0.0,
         d_shear_y: float = 0.0,
+        peel_capacity_scale: float = 1.0,
     ):
         self.body_id = body_id
         self.xform = xform
@@ -161,12 +162,186 @@ class SurfaceGripper:
         self.shape = shape
         self.dim_a = dim_a
         self.dim_b = dim_b
+        self.peel_capacity_scale = peel_capacity_scale  # multiplies the geometric peel capacity
         self.pads: list[wp.transform] = []  # pad poses in the gripper frame
 
     def add_pad(self, xform: wp.transform) -> int:
         """Add a pad at ``xform`` (gripper frame). Returns its index within this gripper."""
         self.pads.append(xform)
         return len(self.pads) - 1
+
+    def _tilt_mode(self, inertia: float, mass: float, com_offset: float) -> tuple[int, float, float, float]:
+        """Tilt (peel) mode constants for a picked object held by this gripper's pads.
+
+        The object tilting on the pads is a torsional oscillator ``I_tilt*th'' + D*th' + K*th = 0``.
+        Returns ``(n_pads, k_tilt, d_couple, i_tilt)``: ``k_tilt`` sums the per-pad peel springs and
+        the normal-force couple across the pad separation, ``d_couple`` is that couple's damping
+        contribution, and ``i_tilt`` is the object's tilt inertia about the grip plane. Requires the
+        pads to have been added (see :meth:`add_pad`).
+        """
+        n = len(self.pads)
+        f = _pad_geometry_factors(self.shape, self.dim_a, self.dim_b)
+        k_peel = self.k_normal * 0.5 * (f[0] + f[1])  # mean peel stiffness over the two tilt axes
+        ys = [float(wp.transform_get_translation(t)[1]) for t in self.pads]  # pad y in the seal plane
+        zs = [float(wp.transform_get_translation(t)[2]) for t in self.pads]  # pad z in the seal plane
+        cy = sum(ys) / n
+        cz = sum(zs) / n
+        sum_r2 = sum((y - cy) ** 2 + (z - cz) ** 2 for y, z in zip(ys, zs, strict=True))  # couple lever^2
+        i_tilt = inertia + mass * com_offset * com_offset  # parallel-axis from COM to the grip plane
+        k_tilt = n * k_peel + self.k_normal * sum_r2
+        d_couple = self.d_normal * sum_r2
+        return n, k_tilt, d_couple, i_tilt
+
+    def peel_damping_for_ratio(self, inertia: float, mass: float, damping_ratio: float, com_offset: float = 0.0) -> float:
+        """Per-pad ``d_peel`` [N.m.s/rad] giving a target tilt-mode damping ratio for a picked object.
+
+        Inverts ``zeta = D / (2*sqrt(K*I_tilt))`` for the tilt (peel) mode (:meth:`_tilt_mode`). Call
+        after the pads are added.
+
+        Args:
+            inertia: Object tilt inertia about its COM [kg.m^2].
+            mass: Object mass [kg].
+            damping_ratio: Target zeta (1 = critical; <1 underdamped/wobbly, >1 overdamped/sluggish).
+            com_offset: COM depth below the grip plane [m] (0 if the COM lies in the grip plane).
+
+        Returns:
+            The per-pad peel damping [N.m.s/rad] to set on both peel axes (>= 0).
+        """
+        n, k_tilt, d_couple, i_tilt = self._tilt_mode(inertia, mass, com_offset)
+        d_total = 2.0 * damping_ratio * math.sqrt(k_tilt * i_tilt)
+        return max(0.0, (d_total - d_couple) / n)
+
+    def peel_damping_ratio(self, inertia: float, mass: float, d_peel: float, com_offset: float = 0.0) -> float:
+        """Effective tilt-mode damping ratio a per-pad ``d_peel`` produces for a picked object.
+
+        Forward of :meth:`peel_damping_for_ratio`. Call after the pads are added.
+
+        Args:
+            inertia: Object tilt inertia about its COM [kg.m^2].
+            mass: Object mass [kg].
+            d_peel: Per-pad peel damping [N.m.s/rad].
+            com_offset: COM depth below the grip plane [m].
+
+        Returns:
+            The effective damping ratio zeta of the peel/tilt mode.
+        """
+        n, k_tilt, d_couple, i_tilt = self._tilt_mode(inertia, mass, com_offset)
+        return (n * d_peel + d_couple) / (2.0 * math.sqrt(k_tilt * i_tilt))
+
+    def peel_natural_frequency(self, inertia: float, mass: float, com_offset: float = 0.0) -> float:
+        """Undamped natural frequency [rad/s] of the tilt (peel) mode for a picked object.
+
+        ``omega_n = sqrt(K / I_tilt)`` for the tilt mode (:meth:`_tilt_mode`); divide by ``2*pi`` for
+        Hz. Call after the pads are added.
+
+        Args:
+            inertia: Object tilt inertia about its COM [kg.m^2].
+            mass: Object mass [kg].
+            com_offset: COM depth below the grip plane [m].
+
+        Returns:
+            The undamped natural frequency [rad/s].
+        """
+        _, k_tilt, _, i_tilt = self._tilt_mode(inertia, mass, com_offset)
+        return math.sqrt(k_tilt / i_tilt)
+
+    def normal_damping_for_ratio(self, mass: float, damping_ratio: float) -> float:
+        """Per-pad ``d_normal`` [N.s/m] giving a target normal-mode damping ratio for a picked object.
+
+        The object bouncing on the pad normal springs is ``m*z'' + D*z' + K*z = 0`` with
+        ``K = n*k_normal`` and ``D = n*d_normal``; inverts ``zeta = D / (2*sqrt(K*m))``. Call after the
+        pads are added.
+
+        Args:
+            mass: Object mass [kg].
+            damping_ratio: Target zeta (1 = critical).
+
+        Returns:
+            The per-pad normal damping [N.s/m] to set (>= 0).
+        """
+        n = len(self.pads)
+        d_total = 2.0 * damping_ratio * math.sqrt(n * self.k_normal * mass)
+        return max(0.0, d_total / n)
+
+    def normal_damping_ratio(self, mass: float, d_normal: float) -> float:
+        """Effective normal-mode damping ratio a per-pad ``d_normal`` produces for a picked object.
+
+        Forward of :meth:`normal_damping_for_ratio`. Call after the pads are added.
+
+        Args:
+            mass: Object mass [kg].
+            d_normal: Per-pad normal damping [N.s/m].
+
+        Returns:
+            The effective damping ratio zeta of the normal (bounce) mode.
+        """
+        n = len(self.pads)
+        return n * d_normal / (2.0 * math.sqrt(n * self.k_normal * mass))
+
+    def normal_natural_frequency(self, mass: float) -> float:
+        """Undamped natural frequency [rad/s] of the normal (bounce) mode for a picked object.
+
+        ``omega_n = sqrt(n*k_normal / m)``; divide by ``2*pi`` for Hz. Call after the pads are added.
+
+        Args:
+            mass: Object mass [kg].
+
+        Returns:
+            The undamped natural frequency [rad/s].
+        """
+        n = len(self.pads)
+        return math.sqrt(n * self.k_normal / mass)
+
+    def shear_damping_for_ratio(self, mass: float, damping_ratio: float) -> float:
+        """Per-pad ``d_shear`` [N.s/m] giving a target shear-mode damping ratio for a picked object.
+
+        The object sliding laterally on the pad shear springs is ``m*x'' + D*x' + K*x = 0`` with
+        ``K = n*k_shear`` and ``D = n*d_shear`` (``k_shear`` the mean of the two shear axes); inverts
+        ``zeta = D / (2*sqrt(K*m))``. Call after the pads are added.
+
+        Args:
+            mass: Object mass [kg].
+            damping_ratio: Target zeta (1 = critical).
+
+        Returns:
+            The per-pad shear damping [N.s/m] to set on both shear axes (>= 0).
+        """
+        n = len(self.pads)
+        k_shear = 0.5 * (self.k_shear_x + self.k_shear_y)  # mean over the two shear axes
+        d_total = 2.0 * damping_ratio * math.sqrt(n * k_shear * mass)
+        return max(0.0, d_total / n)
+
+    def shear_damping_ratio(self, mass: float, d_shear: float) -> float:
+        """Effective shear-mode damping ratio a per-pad ``d_shear`` produces for a picked object.
+
+        Forward of :meth:`shear_damping_for_ratio`. Call after the pads are added.
+
+        Args:
+            mass: Object mass [kg].
+            d_shear: Per-pad shear damping [N.s/m].
+
+        Returns:
+            The effective damping ratio zeta of the shear (lateral) mode.
+        """
+        n = len(self.pads)
+        k_shear = 0.5 * (self.k_shear_x + self.k_shear_y)  # mean over the two shear axes
+        return n * d_shear / (2.0 * math.sqrt(n * k_shear * mass))
+
+    def shear_natural_frequency(self, mass: float) -> float:
+        """Undamped natural frequency [rad/s] of the shear (lateral) mode for a picked object.
+
+        ``omega_n = sqrt(n*k_shear / m)`` with ``k_shear`` the mean of the two shear axes; divide by
+        ``2*pi`` for Hz. Call after the pads are added.
+
+        Args:
+            mass: Object mass [kg].
+
+        Returns:
+            The undamped natural frequency [rad/s].
+        """
+        n = len(self.pads)
+        k_shear = 0.5 * (self.k_shear_x + self.k_shear_y)  # mean over the two shear axes
+        return math.sqrt(n * k_shear / mass)
 
 
 class SurfaceGripperBuilder:
@@ -218,8 +393,12 @@ class SurfaceGripperBuilder:
             dtype=wp.float32,
             device=device,
         )
-        m.gripper_peel_capacity_x = wp.array([f[2] for f in factors], dtype=wp.float32, device=device)
-        m.gripper_peel_capacity_y = wp.array([f[3] for f in factors], dtype=wp.float32, device=device)
+        m.gripper_peel_capacity_x = wp.array(
+            [f[2] * x.peel_capacity_scale for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
+        )
+        m.gripper_peel_capacity_y = wp.array(
+            [f[3] * x.peel_capacity_scale for x, f in zip(g, factors, strict=True)], dtype=wp.float32, device=device
+        )
         m.gripper_tw_x = wp.array([f[4] for f in factors], dtype=wp.float32, device=device)
         m.gripper_tw_y = wp.array([f[5] for f in factors], dtype=wp.float32, device=device)
         # per-pad arrays: flatten each gripper's pads, recording the owning gripper id
@@ -773,8 +952,12 @@ def eval_pad_force(
         vz,
     )
     # shear/peel/twist capacity scales with the holding force magnitude, so it stays non-zero in both
-    # tension and compression (the bidirectional normal) rather than collapsing at the anchor.
-    f_hold = wp.abs(fz)
+    # tension and compression (the bidirectional normal) rather than collapsing at the anchor. Floor it
+    # at the suction preload: the vacuum always holds the lip down with at least f_min, so the capacity
+    # must not collapse to zero when the bidirectional normal transiently crosses zero (vz reversal),
+    # which otherwise makes the brittle break metric spike spuriously.
+    f_min_hold = pad_grip_control[pad] * gripper_f_grip_max[g]
+    f_hold = wp.max(wp.abs(fz), f_min_hold)
 
     # --- shear (x, y): tangential spring from stick anchor, elliptical friction cone ---
     k_shear_x = gripper_k_shear_x[g]
