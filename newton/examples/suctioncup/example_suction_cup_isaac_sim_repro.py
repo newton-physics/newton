@@ -28,6 +28,8 @@
 # Command: python -m newton.examples suction_cup_isaac_sim_repro
 ###########################################################################
 
+import csv
+import math
 from pathlib import Path
 
 import numpy as np
@@ -36,27 +38,65 @@ import warp as wp
 import newton
 import newton.examples
 from newton.examples.suctioncup.robot_playback import load_recording, recorded_times
+from newton.examples.suctioncup.surface_gripper import (
+    PadShape,
+    SurfaceGripper,
+    SurfaceGripperBuilder,
+    evaluate_gripper_force,
+    latch_engagement,
+)
 
 # assets live alongside this example
 ASSETS = Path(__file__).parent / "Assets"
-# robot USD with convex-hull collision added to the suction-gripper meshes (see add_gripper_collision.py)
-ROBOT_USD = ASSETS / "robot_with_gripper_collision.usda"
+# robot USD with convex-hull collision added to the suction-gripper (EOAT) meshes
+ROBOT_USD = ASSETS / "fanuc_arm_flattened_collision.usda"
 # recording with the leading idle removed (truncated from robot_recording.jsonl); it starts just
 # before the first joint motion, so the arm moves right away.
 RECORDING_JSONL = ASSETS / "robot_recording_truncated.jsonl"
+
+# Gaussian smoothing of the recorded drive targets [s]. The recording is a coarse waypoint staircase
+# (values held, then stepped ~17 deg), so smoothing recovers a continuous motion. 0 = raw recording;
+# larger = smoother (and further from the exact recorded knots). ~1 waypoint interval (~0.08 s) is a
+# reasonable start.
+SMOOTHING_SIGMA = 0.06
 
 FPS = 60  # rendered frames per second
 SIM_HZ = 240  # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
 NUM_ARM_DOFS = 6  # J1-J6; recorded joints 6-8 are unused finger DOFs
 BOX_HALF = 0.5  # half-extent of the static support box (size [1, 1, 1]) [m]
-PICK_BOX_HALF = (0.5, 0.5, 0.05)  # half-extents of the dynamic pick box (size [1, 1, 0.1]) [m]
-PICK_BOX_DENSITY = 100.0  # density of the dynamic pick box [kg/m^3]
+PICK_BOX_HALF = (0.1, 0.1, 0.02)  # half-extents of the dynamic pick box (size [0.2, 0.2, 0.04]) [m]
+PICK_BOX_MASS = 1.0  # mass of the dynamic pick box [kg] (set on the body; shape density is 0)
 
 # Box centers at the arm's first-engagement pick pose, precomputed (centered under the end-effector,
 # with the pick box's top face 1 cm below the gripper geometry; the static box's top is the pick
 # box's bottom). Hard-coded here so the scene builds in one pass -- no forward-kinematics probe.
-STATIC_BOX_CENTER = (-0.494, 1.589, 0.772)  # 1x1x1 support box (pallet) [m]
-PICK_BOX_CENTER = (-0.494, 1.589, 1.322)  # 1x1x0.1 dynamic pick box [m]
+# Sized to the gripper: a small box the 4 cm pad cluster grips within its footprint, so the grip has
+# leverage to control it (a 1x1 m slab would wobble about the near-point grip). Flat on purpose --
+# the tilt torque from lateral motion is mass * accel * (COM depth below the grip plane), so a thin
+# box (COM near the pads) barely rocks, whereas a tall one tilts because k_normal (hence the seal's
+# angular stiffness) is capped by explicit stability at 240 Hz. The box top sits at the pad tips.
+STATIC_BOX_CENTER = (-0.494, 1.589, 0.842)  # 1x1x1 support box (pallet); top at pick-box bottom [m]
+PICK_BOX_CENTER = (-0.494, 1.589, 1.362)  # 0.2x0.2x0.04 dynamic pick box; top at the pad tips [m]
+
+# Set False to disable the suction cup: the seal wrench is never applied, so the arm plays back the
+# recorded trajectory and the pick box just sits on the pallet (useful for inspecting the bare arm
+# motion). Read at graph-capture time, so set it before constructing the example.
+ENABLE_GRIPPER = True
+
+# Set False to disable the debug CSV recording -- the end-effector acceleration and the smoothed
+# runtime drive targets (see EndEffectorAccelerationRecorder / DriveTargetRecorder). Recording is
+# host-side, so it only takes effect on CPU regardless.
+RECORD_DEBUG = False
+
+# Suction gripper on the end-effector (body EE_BODY / J6_link). Four pads at the recorded finger
+# offsets, seal points placed on the box-top surface; the suction axis is the flange +x (world-down
+# at the pick), so each pad's local +z is rotated onto +x. Positions in the EE body frame [m].
+GRIPPER_PADS = (
+    (0.3213, -0.0218, 0.0032),
+    (0.3213, -0.0018, 0.0232),
+    (0.3213, 0.0182, 0.0032),
+    (0.3213, -0.0018, -0.0168),
+)
 
 
 def arm_targets_rad(frame) -> np.ndarray:
@@ -86,12 +126,29 @@ def load_playback(path):
     return rec_times, rec_targets, rec_engaged, float(rec_times[-1])
 
 
+def gaussian_smooth(times, values, sigma):
+    """Gaussian-smooth ``values`` ([N, D]) over the non-uniform sample ``times`` ([N]).
+
+    Each output sample is a Gaussian-weighted average of all samples by *time* distance
+    (``w_ij = exp(-((t_i - t_j) / sigma)^2 / 2)``), so it correctly handles the non-uniform sample
+    rate. ``sigma <= 0`` returns the input unchanged.
+    """
+    if sigma <= 0.0:
+        return values
+    dt = times[:, None] - times[None, :]  # [N, N] pairwise time differences [s]
+    weights = np.exp(-0.5 * (dt / sigma) ** 2)  # Gaussian weights by time distance
+    weights /= weights.sum(axis=1, keepdims=True)  # normalize per output sample
+    return weights @ values  # [N, D] smoothed targets
+
+
 @wp.kernel
 def sample_playback_kernel(
     rec_times: wp.array[float],  # [N] recorded sample times [s], monotonic
     rec_targets: wp.array2d[float],  # [N, num_dofs] coupled arm targets [rad]
     rec_engaged: wp.array[wp.bool],  # [N] suction-cup engagement command (ro[0]) per frame
-    sim_step_count: wp.array[int],  # in/out: device sub-step counter (current time = sim_step_count[0] * dt); advanced in place
+    sim_step_count: wp.array[
+        int
+    ],  # in/out: device sub-step counter (current time = sim_step_count[0] * dt); advanced in place
     last_lo: wp.array[int],  # in/out: cached lower sample index; the forward search resumes from here
     dt: float,  # physics sub-step [s]; sim time = sim_step_count * dt
     # outputs
@@ -130,8 +187,119 @@ def sample_playback_kernel(
         joint_target_q[dof] = rec_targets[n - 1, dof]  # past the end: hold the last recorded pose
         return
 
+    # Cubic (Catmull-Rom) interpolation through the four surrounding knots. It passes through the two
+    # bracketing knots (p1, p2) with tangents estimated from their neighbors, so the target is
+    # C1-continuous (no slope kink at the knots) -- unlike linear interpolation, whose kinks inject
+    # jerk that the stiff drives ring on.
     frac = (t - rec_times[lo]) / (rec_times[lo + 1] - rec_times[lo])
-    joint_target_q[dof] = rec_targets[lo, dof] * (1.0 - frac) + rec_targets[lo + 1, dof] * frac
+    p0 = rec_targets[wp.max(lo - 1, 0), dof]
+    p1 = rec_targets[lo, dof]
+    p2 = rec_targets[lo + 1, dof]
+    p3 = rec_targets[wp.min(lo + 2, n - 1), dof]
+    f2 = frac * frac
+    f3 = f2 * frac
+    joint_target_q[dof] = 0.5 * (
+        (2.0 * p1)
+        + (-p0 + p2) * frac
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * f2
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * f3
+    )
+
+
+@wp.kernel
+def broadcast_engaged_kernel(engaged: wp.array[wp.bool], seal_engaged: wp.array[wp.bool]):
+    """Command every suction pad's seal state from the single recorded engagement signal (ro[0])."""
+    seal_engaged[wp.tid()] = engaged[0]
+
+
+class EndEffectorAccelerationRecorder:
+    """Records the end-effector acceleration each sim step while the suction is engaged, then writes it
+    to CSV at the first disengagement.
+
+    Gated by the caller (see the record calls in ``simulate``). Recording is host-side (reads state
+    each sub-step), so it only runs on CPU -- on CUDA it is skipped to avoid breaking graph capture.
+    """
+
+    def __init__(self, ee_body, sim_dt):
+        self.ee_body = ee_body
+        self.sim_dt = sim_dt
+        self.accel_log = []  # [ang_x, ang_y, ang_z, lin_x, lin_y, lin_z], EE frame
+        self.time_log = []  # matching sim time [s]
+        self.done = False  # set True at the first disengagement -> record no more
+
+    def record(self, prev_state, curr_state, engaged, sim_step_count):
+        """Record one sub-step. Call after the solver step, before the state swap.
+
+        ``prev_state`` / ``curr_state`` are the pre-/post-step states (finite-difference acceleration);
+        ``engaged`` / ``sim_step_count`` are the device arrays for the engagement command and sub-step
+        counter.
+        """
+        if self.done:
+            return
+        if not bool(engaged.numpy()[0]):
+            if self.accel_log:  # was engaged, now disengaged -> stop recording and dump
+                self.done = True
+                self._dump()
+            return
+
+        prev_v = prev_state.body_qd.numpy()[self.ee_body]  # [ang, lin] world, before the step
+        curr_v = curr_state.body_qd.numpy()[self.ee_body]  # after the step
+        accel = (curr_v - prev_v) / self.sim_dt  # world-frame spatial acceleration
+        # rotate into the end-effector frame (inverse of the current EE orientation)
+        quat = wp.quat(*curr_state.body_q.numpy()[self.ee_body][3:7])  # EE orientation [x, y, z, w]
+        ang = wp.quat_rotate_inv(quat, wp.vec3(*accel[0:3]))  # angular accel, EE frame [rad/s^2]
+        lin = wp.quat_rotate_inv(quat, wp.vec3(*accel[3:6]))  # linear accel, EE frame [m/s^2]
+        self.accel_log.append([ang[0], ang[1], ang[2], lin[0], lin[1], lin[2]])
+        self.time_log.append(float(sim_step_count.numpy()[0]) * self.sim_dt)
+
+    def _dump(self, path="ee_accelerations.csv"):
+        """Write the accel log (time + 6 EE-frame components) to CSV."""
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["time_s", "ang_x", "ang_y", "ang_z", "lin_x", "lin_y", "lin_z"])
+            for t, accel in zip(self.time_log, self.accel_log):
+                writer.writerow([t, *accel])
+        print(f"wrote {len(self.time_log)} rows to {path}")
+
+
+class DriveTargetRecorder:
+    """Records the smoothed runtime arm drive targets (the interpolated ``control.joint_target_q``
+    applied each sim step) while the suction is engaged, then writes them to CSV at the first
+    disengagement.
+
+    Gated by the caller (see the record calls in ``simulate``). Host-side (reads state each sub-step),
+    so CPU only.
+    """
+
+    def __init__(self, sim_dt, num_arm_dofs):
+        self.sim_dt = sim_dt
+        self.num_arm_dofs = num_arm_dofs
+        self.target_log = []  # applied arm drive targets [rad], J1..J6
+        self.time_log = []  # matching sim time [s]
+        self.done = False  # set True at the first disengagement -> record no more
+
+    def record(self, engaged, joint_target_q, sim_step_count):
+        """Record one sub-step. ``engaged`` / ``joint_target_q`` / ``sim_step_count`` are device arrays
+        for the engagement command, the applied drive targets, and the sub-step counter.
+        """
+        if self.done:
+            return
+        if not bool(engaged.numpy()[0]):
+            if self.target_log:  # was engaged, now disengaged -> stop recording and dump
+                self.done = True
+                self._dump()
+            return
+        self.target_log.append(list(joint_target_q.numpy()[: self.num_arm_dofs]))
+        self.time_log.append(float(sim_step_count.numpy()[0]) * self.sim_dt)
+
+    def _dump(self, path="drive_targets.csv"):
+        """Write the drive-target log (time + J1..J6 [rad]) to CSV."""
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["time_s"] + [f"J{i + 1}" for i in range(self.num_arm_dofs)])
+            for t, q in zip(self.time_log, self.target_log):
+                writer.writerow([t, *q])
+        print(f"wrote {len(self.time_log)} rows to {path}")
 
 
 class Example:
@@ -140,7 +308,7 @@ class Example:
         # Cache the viewer
         self.viewer = viewer
 
-        # FPS and sim step dt        
+        # FPS and sim step dt
         self.fps = FPS  # rendered frames per second
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = max(1, round(self.frame_dt * SIM_HZ))
@@ -156,7 +324,9 @@ class Example:
         # RECORDING_JSONL contains time-stamped joint drive target positions and suction pad engagement
         # states. Load and extract the time-stamps, the joint drive target positions and the
         # suction pad engagement states.
+        # Apply gaussian smoothing to the raw drive targets.
         rec_times, rec_targets, rec_engaged, self.rec_duration = load_playback(RECORDING_JSONL)
+        rec_targets = gaussian_smooth(rec_times, rec_targets, SMOOTHING_SIGMA)  # smooth the coarse waypoints
         self.rec_times_wp = wp.array(rec_times, dtype=wp.float32)
         self.rec_targets_wp = wp.array(rec_targets, dtype=wp.float32)  # 2d [N, NUM_ARM_DOFS]
         self.rec_engaged_wp = wp.array(rec_engaged, dtype=wp.bool)  # [N]; suction engagement command per frame
@@ -164,8 +334,9 @@ class Example:
         # Load the Fanuc robot arm on a ground plane.
         self.initial_arm_q = rec_targets[0].astype(np.float32)  # drive target at t=0, the start pose
         builder = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        builder.default_shape_cfg.restitution = 0.0  # low restitution: the held box shouldn't bounce
         builder.add_usd(str(ROBOT_USD), floating=False, collapse_fixed_joints=True)
+        self.ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
         builder.add_ground_plane()
 
         # Static support box (1x1x1, collidable) at the pick pose -- the pallet the pick box sits on.
@@ -176,38 +347,116 @@ class Example:
             hy=BOX_HALF,
             hz=BOX_HALF,
         )
-        # Dynamic pick box (1x1x0.1, the object to pick) resting on the static box.
-        pick_cfg = builder.default_shape_cfg.copy()
-        pick_cfg.density = PICK_BOX_DENSITY
+        # Dynamic pick box (the object to pick) resting on the static box. Mass and inertia are set
+        # directly on the body (solid-box formula); the shape density is 0 so the shape adds no mass.
+        hx, hy, hz = PICK_BOX_HALF
+        ixx = PICK_BOX_MASS / 3.0 * (hy * hy + hz * hz)
+        iyy = PICK_BOX_MASS / 3.0 * (hx * hx + hz * hz)
+        izz = PICK_BOX_MASS / 3.0 * (hx * hx + hy * hy)
         self.pick_box = builder.add_body(
-            xform=wp.transform(wp.vec3(*PICK_BOX_CENTER), wp.quat_identity()), label="pick_box"
+            xform=wp.transform(wp.vec3(*PICK_BOX_CENTER), wp.quat_identity()),
+            mass=PICK_BOX_MASS,
+            inertia=wp.mat33(ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz),
+            label="pick_box",
         )
-        builder.add_shape_box(self.pick_box, hx=PICK_BOX_HALF[0], hy=PICK_BOX_HALF[1], hz=PICK_BOX_HALF[2], cfg=pick_cfg)
+        pick_cfg = builder.default_shape_cfg.copy()
+        pick_cfg.density = 0.0
+        pick_box_shape = builder.add_shape_box(
+            self.pick_box, hx=PICK_BOX_HALF[0], hy=PICK_BOX_HALF[1], hz=PICK_BOX_HALF[2], cfg=pick_cfg
+        )
 
-        self._setup(builder.finalize())
-        self.viewer.set_model(self.model)
+        # Filter out pick-box <-> gripper-geometry contact: the bidirectional suction seal is a stiff
+        # bilateral hold (it provides the lip reaction itself), so a rigid pad<->box contact is
+        # redundant and just fights the seal. The box still collides with the pallet and ground.
+        for shape in range(len(builder.shape_body)):
+            if builder.shape_body[shape] == self.ee_body:
+                builder.add_shape_collision_filter_pair(pick_box_shape, shape)
 
-    def _setup(self, model):
-        """Bind ``model``, build the solver/state/control/contacts, start the arm at the first
-        recorded pose, and capture the step graph."""
-        self.model = model
-        self.solver = newton.solvers.SolverMuJoCo(self.model)
+        self.model = builder.finalize()
+        # njmax: MuJoCo's per-world constraint-row buffer. Its auto-estimate from the initial (resting)
+        # state is too small once the arm's self-contacts and the box/pallet/ground contacts are all
+        # active mid-cycle, which overflows nefc. Give ample headroom.
+        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=512, iterations=10)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.contacts()
-        self._reset_initial_state()
-        self.capture()
-        self._reset_initial_state()  # capture runs one frame; restore the clean start pose
 
-    def _reset_initial_state(self):
-        # set only the arm DOFs; any extra DOFs (the dynamic pick box's free joint) keep their
-        # built-in rest pose from the model, so the box starts resting on the static box.
+        # Suction gripper on the end-effector: one SurfaceGripper on the flange with four pads at the
+        # recorded finger offsets, suction axis along the flange +x (pad local +z rotated onto +x).
+        # Driven by the recorded ro[0] command -- all four pads engage/release together, sealing the
+        # dynamic pick box.
+        pad_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 2.0)  # pad +z -> flange +x
+        gripper = SurfaceGripper(
+            body_id=self.ee_body,
+            xform=wp.transform_identity(),  # gripper frame == flange body frame
+            # Tuned for the light pick box (~1 kg, weight ~10 N). Preload ~= box weight so the box
+            # rests against the pads (constant contact); the break threshold is well above the carry
+            # loads so the seal holds. Damped springs so the four redundant pads settle, not ring.
+            # Stiff seal so the box tracks the flange rigidly (a soft seal lets it swing like a
+            # pendulum under the fast arm). The seal forces are applied explicitly, so with the small
+            # box (m = 1, I ~ 4e-3) at 240 Hz: near-critical damping keeps k stable up to ~m/dt^2, but
+            # the angular d_peel must stay tiny (dt < 2*I/d_peel) or it diverges.
+            # Seal stiffness is bounded by explicit stability at 240 Hz (omega*dt must stay well below
+            # 2, or the seal rings): k ~ 6000 tracks the box with ~mm lag while staying smooth. Damping
+            # is near-critical for each mode.
+            k_normal=6000.0,
+            d_normal=110.0,
+            f_normal_max=100.0,  # per-pad break threshold [N] (high: release is by the ro command)
+            f_grip_max=5.0,  # per-pad suction preload [N] (4 pads ~= box weight ~20 N)
+            k_shear_x=6000.0,
+            k_shear_y=6000.0,
+            # Shear damping is not part of the original gripper.pdf model; keep it at 0 (the maths stays
+            # in eval_shear_friction but contributes nothing).
+            d_shear_x=0.0,
+            d_shear_y=0.0,
+            # High friction: when the arm holds the flange with the suction axis near-horizontal, the
+            # box weight is a pure shear load, and shear capacity = mu * |holding force|. High mu keeps
+            # ample margin through the arm's fast reorientation so the box doesn't slip and dangle.
+            mu_x=16.0,
+            mu_y=16.0,
+            # Peel damping kept small: it is bounded by dt < 2*inertia/d_peel, and the box inertia is
+            # tiny, so at 240 Hz a large value diverges.
+            d_peel_x=0.5,
+            d_peel_y=0.5,
+            # Larger pad radius -> larger peel-moment capacity (N_f * R/4) and peel/torsion stiffness,
+            # so the overhanging box is held flush instead of peeling off and dangling.
+            shape=int(PadShape.CIRCLE),
+            dim_a=0.03,
+            dim_b=0.03,
+        )
+        for px, py, pz in GRIPPER_PADS:
+            gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
+        gripper_builder = SurfaceGripperBuilder()
+        gripper_builder.add_gripper(gripper)
+        self.gripper_model = gripper_builder.finalize(device=self.model.device)
+        self.gripper_state = self.gripper_model.state()
+        self.gripper_control = self.gripper_model.control()
+        self.gripper_control.pad_grip_control.fill_(1.0)  # full suction command
+        self.seal_engaged = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)
+        self.seal_body_b = wp.full(len(GRIPPER_PADS), self.pick_box, dtype=wp.int32)
+
+        # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
+        # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
         joint_q = self.state_0.joint_q.numpy()
         joint_q[:NUM_ARM_DOFS] = self.initial_arm_q
         self.state_0.joint_q.assign(joint_q)
         self.state_0.joint_qd.zero_()
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        # Capture one frame of physics into a CUDA graph, then restore the clean start pose (capturing
+        # runs the frame for real, advancing the state).
+        self.capture()
+        self.state_0.joint_q.assign(joint_q)
+        self.state_0.joint_qd.zero_()
+        newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        self.viewer.set_model(self.model)
+
+        # Record the EE acceleration and the smoothed drive targets over the 1st engaged window to CSV
+        if RECORD_DEBUG and not wp.get_device().is_cuda:
+            self.accel_recorder = EndEffectorAccelerationRecorder(self.ee_body, self.sim_dt)
+            self.drive_target_recorder = DriveTargetRecorder(self.sim_dt, NUM_ARM_DOFS)
 
     def capture(self):
         # capturing runs one frame for real, which advances the device sub-step counter and search
@@ -222,9 +471,16 @@ class Example:
 
     def simulate(self):
         for _ in range(self.sim_substeps):
-            # at the device sub-step time (sim_step_count * sim_dt): interpolate the drive target,
-            # sample the engagement command, advance the counter and the search index -- all inside the
-            # kernel (on-device, so this stays graph-capturable).
+            # Compute the joint drive target positions (joint_target_q)
+            # at current sim time (sim_step_count_wp*sim_dt) from the
+            # corresponding time series (rec_targets_wp, rec_times_wp).
+            # Compute the gripper engagement state (engaged_wp) at current sim
+            # time (sim_step_count_wp*sim_dt) from the time series
+            # (rec_engaged_wp, rec_times_wp).
+            # Advance the progress (last_lo_wp) through the time series
+            # (rec_times_wp) and cache it for the next simulate step.
+            # Advance sim time for the next call to sample_playback_kernel
+            # by incrementing sim_step_count_wp.
             wp.launch(
                 sample_playback_kernel,
                 dim=NUM_ARM_DOFS,
@@ -238,9 +494,27 @@ class Example:
                 ],
                 outputs=[self.control.joint_target_q, self.engaged_wp],
             )
-            self.state_0.clear_forces()  # zero body_f each sub-step (the suction cup will accumulate into it)
+            self.state_0.clear_forces()  # zero body_f each sub-step (the suction cup accumulates into it)
+
+            # Suction seal: command all pads from the recorded ro[0] (engaged_wp), latch onto the pick
+            # box on the rising edge, then accumulate the seal wrench into body_f before stepping.
+            wp.launch(
+                broadcast_engaged_kernel,
+                dim=self.seal_engaged.shape[0],
+                inputs=[self.engaged_wp],
+                outputs=[self.seal_engaged],
+            )
+            latch_engagement(self.state_0, self.gripper_model, self.gripper_state, self.seal_engaged, self.seal_body_b)
+            if ENABLE_GRIPPER:
+                evaluate_gripper_force(
+                    self.model, self.state_0, self.gripper_model, self.gripper_state, self.gripper_control
+                )
+
             self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            if RECORD_DEBUG and not wp.get_device().is_cuda:
+                self.accel_recorder.record(self.state_0, self.state_1, self.engaged_wp, self.sim_step_count_wp)
+                self.drive_target_recorder.record(self.engaged_wp, self.control.joint_target_q, self.sim_step_count_wp)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -254,7 +528,7 @@ class Example:
     def render(self):
         # wall-clock time = physics sub-steps elapsed (read back from the device) * sim_dt
         sim_time = int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt
-        self.viewer.begin_frame(int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt)
+        self.viewer.begin_frame(sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()

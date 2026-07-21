@@ -141,6 +141,8 @@ class SurfaceGripper:
         shape: int,
         dim_a: float,
         dim_b: float,
+        d_shear_x: float = 0.0,
+        d_shear_y: float = 0.0,
     ):
         self.body_id = body_id
         self.xform = xform
@@ -150,6 +152,8 @@ class SurfaceGripper:
         self.f_grip_max = f_grip_max
         self.k_shear_x = k_shear_x
         self.k_shear_y = k_shear_y
+        self.d_shear_x = d_shear_x  # shear (tangential) damping [N.s/m]; damps in-plane ringing
+        self.d_shear_y = d_shear_y
         self.mu_x = mu_x
         self.mu_y = mu_y
         self.d_peel_x = d_peel_x
@@ -191,6 +195,8 @@ class SurfaceGripperBuilder:
         m.gripper_f_grip_max = wp.array([x.f_grip_max for x in g], dtype=wp.float32, device=device)
         m.gripper_k_shear_x = wp.array([x.k_shear_x for x in g], dtype=wp.float32, device=device)
         m.gripper_k_shear_y = wp.array([x.k_shear_y for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_shear_x = wp.array([x.d_shear_x for x in g], dtype=wp.float32, device=device)
+        m.gripper_d_shear_y = wp.array([x.d_shear_y for x in g], dtype=wp.float32, device=device)
         m.gripper_mu_x = wp.array([x.mu_x for x in g], dtype=wp.float32, device=device)
         m.gripper_mu_y = wp.array([x.mu_y for x in g], dtype=wp.float32, device=device)
         m.gripper_d_peel_x = wp.array([x.d_peel_x for x in g], dtype=wp.float32, device=device)
@@ -458,28 +464,32 @@ def eval_normal_force(
     pz: float,
     vz: float,
 ) -> tuple[float, float]:
-    """Normal (z) suction force: controllable preload + spring-damper, clamped tension-only.
+    """Normal (z) suction force: controllable preload + spring-damper, bidirectional.
 
-    See gripper.pdf, Normal Force: ``F_normal = clamp(f_min + k_normal*pz + d_normal*vz, 0,
-    F_normal_max)`` with the controllable preload ``f_min = grip_control * f_grip_max`` (the
-    commanded fraction of the max suction force dP*A).
+    ``F_normal = clamp(f_min + k_normal*pz + d_normal*vz, -F_normal_max, F_normal_max)`` with the
+    controllable preload ``f_min = grip_control * f_grip_max`` (the commanded fraction of the max
+    suction force dP*A). Deviation from gripper.pdf: the spring is bidirectional -- it pulls (tension)
+    when the seal frames separate and pushes (compression) when they close -- so the seal is a stiff
+    bilateral hold and its holding force ``|fz|`` (hence shear/peel capacity) does not collapse to zero
+    as the payload compresses through the anchor, which otherwise lets the box flail on the down-move.
 
     Args:
         grip_control: Grip command in [0, 1] (the control value).
         f_grip_max: Maximum suction (preload) force [N].
         k_normal: Normal stiffness [N/m].
         d_normal: Normal damping [N.s/m].
-        f_normal_max: Maximum (break-threshold) normal force [N].
+        f_normal_max: Maximum normal force magnitude [N] (break threshold in tension).
         pz: Normal separation of the seal frames since engagement [m].
         vz: Normal relative velocity of the seal point [m/s].
 
     Returns:
-        ``(fz, fz_unclamped)``: the applied normal force [N] (clamped to ``[0, f_normal_max]``)
-        and the raw unclamped value [N] -- the latter feeds the brittle break envelope.
+        ``(fz, fz_unclamped)``: the applied normal force [N] (clamped to ``[-f_normal_max,
+        f_normal_max]``; positive is tension/suction, negative is the push) and the raw unclamped
+        value [N] -- the latter feeds the brittle break envelope.
     """
     f_min = grip_control * f_grip_max
     fz_unclamped = f_min + k_normal * pz + d_normal * vz
-    fz = wp.clamp(fz_unclamped, 0.0, f_normal_max)
+    fz = wp.clamp(fz_unclamped, -f_normal_max, f_normal_max)
     return fz, fz_unclamped
 
 
@@ -487,30 +497,39 @@ def eval_normal_force(
 def eval_shear_friction(
     px: float,
     py: float,
+    vx: float,
+    vy: float,
     stick_x: float,
     stick_y: float,
     k_shear_x: float,
     k_shear_y: float,
+    d_shear_x: float,
+    d_shear_y: float,
     mu_x: float,
     mu_y: float,
     fz: float,
 ) -> tuple[float, float, wp.vec2]:
-    """Anisotropic Coulomb shear friction with stick-slip re-anchor.
+    """Anisotropic Coulomb shear friction (spring-damper) with stick-slip re-anchor.
 
-    Builds the trial (elastic) shear force from the spring between the current offset
-    ``(px, py)`` and the stick point ``(stick_x, stick_y)``, then clamps it onto the elliptical cone
-    ``(fx/(mu_x*fz))^2 + (fy/(mu_y*fz))^2 <= 1``. Outside the cone the pad slips: the force is
-    scaled back and the stick point slides to the offset that reproduces the clamped force.
-    With no normal force there is no friction to hold, so the force is zero and the stick
-    follows the current offset.
+    Builds the trial shear force from the tangential spring between the current offset
+    ``(px, py)`` and the stick point ``(stick_x, stick_y)`` plus a viscous damper ``d_shear*v``,
+    then clamps it onto the elliptical cone ``(fx/(mu_x*fz))^2 + (fy/(mu_y*fz))^2 <= 1``. Outside
+    the cone the pad slips: the force is scaled back and the stick point slides to the offset that
+    reproduces the clamped force. With no normal force there is no friction to hold, so the force is
+    zero and the stick follows the current offset. The damping suppresses in-plane ringing of the
+    held payload (the seal has no other shear-velocity term).
 
     Args:
         px: Current shear offset along seal x [m].
         py: Current shear offset along seal y [m].
+        vx: Shear velocity along seal x [m/s].
+        vy: Shear velocity along seal y [m/s].
         stick_x: Stick point along seal x [m].
         stick_y: Stick point along seal y [m].
         k_shear_x: Shear stiffness along seal x [N/m].
         k_shear_y: Shear stiffness along seal y [N/m].
+        d_shear_x: Shear damping along seal x [N.s/m].
+        d_shear_y: Shear damping along seal y [N.s/m].
         mu_x: Friction coefficient along seal x.
         mu_y: Friction coefficient along seal y.
         fz: Normal (holding) force [N].
@@ -518,8 +537,8 @@ def eval_shear_friction(
     Returns:
         ``(fx, fy, stick)``: the friction-limited shear force [N] and updated stick point [m].
     """
-    fx = k_shear_x * (px - stick_x)
-    fy = k_shear_y * (py - stick_y)
+    fx = k_shear_x * (px - stick_x) + d_shear_x * vx
+    fy = k_shear_y * (py - stick_y) + d_shear_y * vy
     stick = wp.vec2(stick_x, stick_y)  # unchanged while sticking
     mux_n = mu_x * fz
     muy_n = mu_y * fz
@@ -681,6 +700,8 @@ def eval_pad_force(
     gripper_f_grip_max: wp.array[float],
     gripper_k_shear_x: wp.array[float],
     gripper_k_shear_y: wp.array[float],
+    gripper_d_shear_x: wp.array[float],
+    gripper_d_shear_y: wp.array[float],
     gripper_mu_x: wp.array[float],
     gripper_mu_y: wp.array[float],
     gripper_d_peel_x: wp.array[float],
@@ -734,11 +755,11 @@ def eval_pad_force(
     com_b = wp.transform_point(body_q[body_b], body_com[body_b])  # B's COM (world)
     r_a = p_a_seal - com_a
     r_b = p_b_seal - com_b
-    _vx, _vy, vz, omega_x, omega_y, _omega_z = eval_pad_relative_velocity(
+    vx, vy, vz, omega_x, omega_y, _omega_z = eval_pad_relative_velocity(
         body_qd[body_a], body_qd[body_b], r_a, r_b, q_a_seal
     )
 
-    # --- normal (z): controllable preload + spring-damper, clamped (tension only) ---
+    # --- normal (z): controllable preload + spring-damper, bidirectional ---
     f_normal_max = gripper_f_normal_max[g]
     fz, fz_unclamped = eval_normal_force(
         pad_grip_control[pad],
@@ -749,21 +770,36 @@ def eval_pad_force(
         pz,
         vz,
     )
+    # shear/peel/twist capacity scales with the holding force magnitude, so it stays non-zero in both
+    # tension and compression (the bidirectional normal) rather than collapsing at the anchor.
+    f_hold = wp.abs(fz)
 
     # --- shear (x, y): tangential spring from stick anchor, elliptical friction cone ---
     k_shear_x = gripper_k_shear_x[g]
     k_shear_y = gripper_k_shear_y[g]
     shear_stick = pad_shear_stick_point[pad]
     fx, fy, shear_stick = eval_shear_friction(
-        px, py, shear_stick[0], shear_stick[1], k_shear_x, k_shear_y, gripper_mu_x[g], gripper_mu_y[g], fz
+        px,
+        py,
+        vx,
+        vy,
+        shear_stick[0],
+        shear_stick[1],
+        k_shear_x,
+        k_shear_y,
+        gripper_d_shear_x[g],
+        gripper_d_shear_y[g],
+        gripper_mu_x[g],
+        gripper_mu_y[g],
+        f_hold,
     )
     pad_shear_stick_point[pad] = shear_stick
 
     # --- peel (rotation about x, y): capped torsional spring-damper ---
     k_peel_x = gripper_k_peel_x[g]
     k_peel_y = gripper_k_peel_y[g]
-    m_peel_x_max = fz * gripper_peel_capacity_x[g]  # capacity scales with the holding force
-    m_peel_y_max = fz * gripper_peel_capacity_y[g]
+    m_peel_x_max = f_hold * gripper_peel_capacity_x[g]  # capacity scales with the holding force
+    m_peel_y_max = f_hold * gripper_peel_capacity_y[g]
     m_peel_x, m_peel_y = eval_peel_moment(
         k_peel_x,
         k_peel_y,
@@ -778,7 +814,7 @@ def eval_pad_force(
     )
 
     # --- twist (rotation about z): torsional friction from a stick anchor ---
-    m_twist_max = fz * (gripper_mu_x[g] * gripper_tw_x[g] + gripper_mu_y[g] * gripper_tw_y[g])
+    m_twist_max = f_hold * (gripper_mu_x[g] * gripper_tw_x[g] + gripper_mu_y[g] * gripper_tw_y[g])
     m_twist, twist_stick = eval_twist_friction(theta_z, pad_theta_anchor[pad], gripper_k_torsion[g], m_twist_max)
     pad_theta_anchor[pad] = twist_stick
 
@@ -834,6 +870,8 @@ def evaluate_gripper_force(
             gripper_model.gripper_f_grip_max,
             gripper_model.gripper_k_shear_x,
             gripper_model.gripper_k_shear_y,
+            gripper_model.gripper_d_shear_x,
+            gripper_model.gripper_d_shear_y,
             gripper_model.gripper_mu_x,
             gripper_model.gripper_mu_y,
             gripper_model.gripper_d_peel_x,
