@@ -34,7 +34,7 @@ from ...core.materials import (
     MaterialDescriptor,
     MaterialPairProperties,
 )
-from ...core.math import I_3, axis_to_mat33, screw
+from ...core.math import I_3, axis_to_mat33
 from ...core.shapes import (
     BoxShape,
     CapsuleShape,
@@ -660,7 +660,7 @@ class USDImporter:
 
         # Construct the initial pose and twist of the body in world coordinates
         q_i_0 = wp.transformf(r_com_i, body_xform.q)
-        u_i_0 = screw(v_i, omega_i)
+        u_i_0 = wp.spatial_vectorf(*v_i, *omega_i)
         msg.debug(f"q_i_0: {q_i_0}")
         msg.debug(f"u_i_0: {u_i_0}")
 

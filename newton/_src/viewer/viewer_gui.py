@@ -48,7 +48,6 @@ class ViewerGui:
 
         # Camera keyboard movement (shared with GL/RTX)
         self._cam_vel = np.zeros(3, dtype=np.float32)
-        self._cam_speed = 4.0
         self._cam_damp_tau = 0.083
         self._camera_orbit_sensitivity = 0.1
         self._camera_dolly_scroll_sensitivity = 0.15
@@ -181,7 +180,7 @@ class ViewerGui:
 
         dn = float(np.linalg.norm(desired))
         if dn > 1.0e-6:
-            desired = desired / dn * self._cam_speed
+            desired = desired / dn * self._viewer.camera_speed
         else:
             desired[:] = 0.0
 
