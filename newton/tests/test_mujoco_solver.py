@@ -4769,7 +4769,7 @@ class TestMuJoCoSolverContactKf(unittest.TestCase):
 
     def _slide_sphere_prismatic(self, kf, density, num_steps=60):
         """Single contact, rotation locked by a prismatic joint: pure force-space viscous friction."""
-        builder = newton.ModelBuilder(gravity=-9.81)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.default_shape_cfg.ke = 1.0e5
         builder.default_shape_cfg.kd = 1.0e3
         builder.default_shape_cfg.kf = kf
