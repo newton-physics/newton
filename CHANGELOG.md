@@ -23,6 +23,7 @@
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
 - Add `sign_method` argument to `Mesh.build_sdf` and `SDF.create_from_mesh` support for a `"normal"` (angle-weighted pseudo-normal) sign strategy, for selecting the inside/outside sign of the baked SDF (`"auto"`, `"parity"`, `"winding"`, or `"normal"`).
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
+- Add simulation throughput, real-time factor, p95 step-time, steady-state GPU-memory, timestep, and MuJoCo solver-iteration metrics to the ASV robot-learning benchmarks.
 
 ### Changed
 
@@ -57,6 +58,7 @@
 ### Fixed
 
 - Fix USD site import to discover sites beneath non-visual containers, collider prims, and instanceable rigid-body prims independently of `load_visual_shapes`; the reworked traversal also speeds up import of scenes with many nested `Xform` or instance prims.
+- Validate `ArticulationView` mask shapes and devices before launching selection kernels. (#3448)
 - Exclude active particles with non-finite positions from rebuildable `SolverImplicitMPM` sparse-grid packing.
 - Fix hydroelastic primitive texture SDF generation to sample analytic primitive distances instead of temporary tessellated meshes. (#3239)
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
@@ -68,6 +70,7 @@
 - Fix Style3D solver divergence caused by isolated vertices.
 - Fix `SolverFeatherstone` BALL joints to apply passive `joint_damping` on all three angular DOFs.
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
+- Fix `FastKitchenG1` ASV metrics to build the kitchen scene instead of a plain G1 model.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
 - Fix masked PID state reset to execute on the integral-state device. (#3447)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
