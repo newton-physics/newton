@@ -19,7 +19,6 @@ from ...core.types import override
 from ...sim import (
     Contacts,
     Control,
-    JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
@@ -620,7 +619,23 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()
         q_max = self._model_kamino.joints.q_j_max.numpy()
-        self._built_limit_finite = (q_min > self._kamino.JOINT_QMIN) | (q_max < self._kamino.JOINT_QMAX)
+        built_limit_finite_np = (q_min > self._kamino.JOINT_QMIN) | (q_max < self._kamino.JOINT_QMAX)
+        self._built_limit_finite = wp.array(
+            built_limit_finite_np.astype(np.int32),
+            dtype=wp.int32,
+            device=model.device,
+        )
+
+        # Scratch array for notify validation
+        self._notify_violations = wp.empty(4, dtype=wp.int32, device=model.device)
+
+        # Cache one representative shape per material.
+        self._material_first_shape = self._kamino.compute_material_first_shape(
+            self._model_kamino.geoms.material,
+            self._model_kamino.materials.num_materials,
+        )
+        # Scratch scalar for material update validation
+        self._material_update_conflict = wp.empty(1, dtype=wp.int32, device=model.device)
 
         # Create a collision detector if enabled in the config, otherwise
         # set to `None` to disable internal collision detection in Kamino
@@ -795,7 +810,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         Simulate the model for a given time step using the given control input.
 
-        When ``contacts`` is not ``None`` (i.e. produced by :meth:`Model.collide`),
+        When ``contacts`` is not ``None`` (i.e. populated by :meth:`~newton.CollisionPipeline.collide`),
         those contacts are converted to Kamino's internal format and used directly,
         bypassing Kamino's own collision detector.  When ``contacts`` is ``None``,
         Kamino's internal collision pipeline runs as a fallback.
@@ -883,20 +898,20 @@ class SolverKamino(SolverBase, CouplingInterface):
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._update_gravity()
 
-        if flags & ModelFlags.BODY_PROPERTIES:
-            pass  # TODO: convert to CoM-frame if body_q_i_0 is changed at runtime?
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            # q_i_0 is derived from both model.body_q and model.body_com.
+            self._update_body_initial_pose()
 
-        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-            pass  # TODO: refresh CoM-derived joint frames + geom offsets.
-
-        if flags & ModelFlags.SHAPE_PROPERTIES:
-            pass  # TODO: geom offsets + contact materials.
-
-        if flags & ModelFlags.JOINT_PROPERTIES:
+        if flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.JOINT_PROPERTIES):
+            # Joint transforms are derived from body_com and joint_X_p / joint_X_c.
             self._update_joint_transforms()
 
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            pass
+        if flags & (ModelFlags.BODY_INERTIAL_PROPERTIES | ModelFlags.SHAPE_PROPERTIES):
+            # Geom offsets are derived from body_com and shape_transform.
+            self._update_geom_offsets()
+
+        if flags & ModelFlags.SHAPE_PROPERTIES:
+            self._update_materials()
 
         if flags & (ModelFlags.CONSTRAINT_PROPERTIES | ModelFlags.TENDON_PROPERTIES):
             # Kamino does not support equality/mimic constraints or tendons, so we ignore these flags.
@@ -1126,114 +1141,82 @@ class SolverKamino(SolverBase, CouplingInterface):
         Raises:
             RuntimeError: If the solver must be recreated to apply the edit.
         """
-        if flags & ModelFlags.JOINT_DOF_PROPERTIES:
-            self._check_dynamic_constraint_topology()
-            self._check_limit_capacity()
-        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
-            self._check_actuation_types()
+        check_dof = bool(flags & ModelFlags.JOINT_DOF_PROPERTIES)
+        check_actuation = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES))
+        if not check_dof and not check_actuation:
+            return
 
-    def _reduce_dof_maximum_by_joint(self, values: np.ndarray) -> np.ndarray:
-        """Reduce per-DoF values to per-joint maxima, including zero-DoF joints."""
-        starts = self.model.joint_qd_start.numpy()
-        nonempty = np.diff(starts) > 0
-        maxima = np.zeros(self.model.joint_count, dtype=values.dtype)
-        if np.any(nonempty):
-            maxima[nonempty] = np.maximum.reduceat(values, starts[:-1][nonempty])
-        return maxima
-
-    def _check_dynamic_constraint_topology(self) -> None:
-        """Check that each joint retains its as-built dynamic status.
-
-        Kamino marks a joint dynamic when any of its DoFs has positive armature,
-        damping, target stiffness, or target damping. A dynamic joint receives
-        one dynamic constraint per DoF, so preserving this status also preserves
-        its constraint count.
-        """
-        dof_dynamic = (
-            (self.model.joint_armature.numpy() > 0.0)
-            | (self.model.joint_damping.numpy() > 0.0)
-            | (self.model.joint_target_ke.numpy() > 0.0)
-            | (self.model.joint_target_kd.numpy() > 0.0)
+        sentinel = self._kamino.validate_model_joint_updates(
+            self.model,
+            self._model_kamino.joints,
+            self._built_limit_finite,
+            self._notify_violations,
+            check_dof=check_dof,
+            check_actuation=check_actuation,
         )
-        current_dynamic = self._reduce_dof_maximum_by_joint(dof_dynamic)
-        built_dynamic = self._model_kamino.joints.num_dynamic_cts.numpy() > 0
-        changed = np.flatnonzero(current_dynamic != built_dynamic)
-        if changed.size > 0:
-            joint = int(changed[0])  # report only first violation
+        dynamic_joint, limit_dof, actuation_joint, invalid_joint = self._notify_violations.numpy()
+
+        if dynamic_joint != sentinel:
+            joint = int(dynamic_joint)
             raise RuntimeError(
                 f"Changing dynamic constraint topology for joint {joint} "
-                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
-                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver."
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change. "
+                "The dynamic constraint topology changes if armature, damping, target stiffness, or target damping are updated to non-zero values, while they were zero when creating the solver. "
                 "The opposite is also true: if the values are updated to zero, while they were non-zero when creating the solver, the dynamic constraint topology also changes."
             )
 
-    def _check_actuation_types(self) -> None:
-        """Check that each joint remains in its as-built actuation partition.
-
-        The comparison follows Kamino's per-joint aggregation so individual DoF
-        changes are allowed when the joint remains actuated or remains passive.
-        """
-        current_actuation = self._get_joint_actuation()
-        built_actuation = self._model_kamino.joints.act_type.numpy()
-        current_passive = current_actuation == self._kamino.JointActuationType.PASSIVE
-        built_passive = built_actuation == self._kamino.JointActuationType.PASSIVE
-        changed = np.flatnonzero(current_passive != built_passive)
-        if changed.size > 0:
-            joint = int(changed[0])  # report only first violation
-            raise RuntimeError(
-                f"Changing the actuation partition for joint {joint} "
-                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
-            )
-
-    def _get_joint_actuation(self) -> np.ndarray:
-        """Compute Kamino's per-joint actuation types.
-
-        Newton stores one target mode per DoF. Kamino takes the maximum target
-        mode over all DoFs of a joint, then maps that value to a
-        ``JointActuationType``. Zero-DoF joints retain the reduction's default
-        target mode, ``JointTargetMode.NONE``.
-        """
-        target_modes = self._reduce_dof_maximum_by_joint(self.model.joint_target_mode.numpy())
-        return np.array(
-            [
-                int(self._kamino.JointActuationType.from_newton(JointTargetMode(int(target_mode))))
-                for target_mode in target_modes
-            ],
-            dtype=np.int32,
-        )
-
-    def _update_actuation_types(self) -> None:
-        """Refresh actuation modes without changing the passive/actuated layout."""
-        self._model_kamino.joints.act_type.assign(self._get_joint_actuation())
-
-    def _check_limit_capacity(self) -> None:
-        """Check that each DoF retains its as-built finite-limit status."""
-        current_finite = (self.model.joint_limit_lower.numpy() > self._kamino.JOINT_QMIN) | (
-            self.model.joint_limit_upper.numpy() < self._kamino.JOINT_QMAX
-        )
-        changed = np.flatnonzero(current_finite != self._built_limit_finite)
-        if changed.size > 0:
-            dof = int(changed[0])  # report only first violation
+        if limit_dof != sentinel:
+            dof = int(limit_dof)
             raise RuntimeError(
                 f"Changing the existence of a joint limit for DoF {dof} "
                 f"is not supported; recreate SolverKamino to apply the change."
             )
 
-    def _update_gravity(self):
-        """
-        Updates Kamino's :class:`GravityModel` from Newton's model.gravity.
+        if actuation_joint != sentinel:
+            joint = int(actuation_joint)
+            raise RuntimeError(
+                f"Changing the actuation partition for joint {joint} "
+                f"({self.model.joint_label[joint]!r}) is not supported; recreate SolverKamino to apply the change."
+            )
 
-        Called when :data:`~newton.ModelFlags.MODEL_PROPERTIES` is raised,
-        indicating that ``model.gravity`` may have changed at runtime.
-        """
+        if invalid_joint != sentinel:
+            joint = int(invalid_joint)
+            raise ValueError(f"Unsupported joint target mode for joint {joint}")
+
+    def _update_actuation_types(self) -> None:
+        """Refresh actuation modes without changing the passive/actuated layout."""
+        self._kamino.convert_model_joint_actuation(self.model, self._model_kamino.joints)
+
+    def _update_gravity(self):
+        """Update Kamino's :class:`GravityModel` from Newton's ``model.gravity``."""
         self._kamino.convert_model_gravity(self.model, self._model_kamino.gravity)
 
-    def _update_joint_transforms(self):
-        """
-        Re-derive Kamino joint anchors and axes from Newton's joint_X_p / joint_X_c.
+    def _update_body_initial_pose(self):
+        """Recompute Kamino's CoM-frame initial body poses."""
+        self._kamino.convert_body_origin_to_com(
+            body_com=self._model_kamino.bodies.i_r_com_i,
+            body_q=self.model.body_q,
+            body_q_com=self._model_kamino.bodies.q_i_0,
+        )
 
-        Called when :data:`~newton.ModelFlags.JOINT_PROPERTIES` is raised,
-        indicating that ``model.joint_X_p`` or ``model.joint_X_c`` may have
-        changed at runtime (e.g. animated root transforms).
-        """
+    def _update_geom_offsets(self):
+        """Recompute Kamino's CoM-relative geom offsets."""
+        self._kamino.convert_geom_offset_origin_to_com(
+            body_com=self._model_kamino.bodies.i_r_com_i,
+            geom_bid=self._model_kamino.geoms.bid,
+            geom_offset=self.model.shape_transform,
+            geom_offset_com=self._model_kamino.geoms.offset,
+        )
+
+    def _update_joint_transforms(self):
+        """Re-derive Kamino joint anchors and axes from Newton's joint transforms."""
         self._kamino.convert_model_joint_transforms(self.model, self._model_kamino.joints)
+
+    def _update_materials(self) -> None:
+        """Refresh Kamino contact-material tables using cached representative shapes."""
+        self._kamino.convert_model_materials(
+            self.model,
+            self._model_kamino,
+            self._material_first_shape,
+            self._material_update_conflict,
+        )
