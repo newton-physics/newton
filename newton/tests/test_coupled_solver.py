@@ -1257,7 +1257,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         state_0 = self.model.state()
         state_1 = self.model.state()
-        contacts = self.model.collide(state_0)
+        collision_pipeline = newton.CollisionPipeline(self.model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_0, contacts)
 
         # Step and check bodies moved (due to gravity)
         coupled.step(state_0, state_1, control=None, contacts=contacts, dt=1.0 / 60.0)
@@ -1726,7 +1728,9 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
 
         state_in = model.state()
         state_out = model.state()
-        contacts = model.collide(state_in)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_in, contacts)
         self.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
         solver.step(state_in, state_out, control=None, contacts=contacts, dt=1.0 / 60.0)
 
@@ -2340,7 +2344,8 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
         state_0 = model.state()
         state_1 = model.state()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         q_before = state_0.particle_q.numpy().copy()
 
         solver.step(state_0, state_1, control=None, contacts=contacts, dt=1.0 / 60.0)
@@ -2363,7 +2368,8 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
         state_0 = model.state()
         state_1 = model.state()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         q_before = state_0.particle_q.numpy().copy()
 
         solver.step(state_0, state_1, control=None, contacts=contacts, dt=1.0 / 60.0)
@@ -2389,7 +2395,9 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
         state_0 = model.state()
         state_1 = model.state()
-        contacts = model.collide(state_0)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_0, contacts)
         self.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
         q_before = state_0.particle_q.numpy().copy()
 

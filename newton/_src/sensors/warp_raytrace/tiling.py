@@ -13,9 +13,10 @@ def tid_to_coord_tiled(
     tile_width: wp.int32,
     tile_height: wp.int32,
 ):
-    num_pixels_per_view = width * height
     num_pixels_per_tile = tile_width * tile_height
-    num_tiles_per_row = width // tile_width
+    num_tiles_per_row = (width + tile_width - 1) // tile_width
+    num_tiles_per_col = (height + tile_height - 1) // tile_height
+    num_pixels_per_view = num_tiles_per_row * num_tiles_per_col * num_pixels_per_tile
 
     pixel_idx = tid % num_pixels_per_view
     view_idx = tid // num_pixels_per_view
