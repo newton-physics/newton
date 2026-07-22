@@ -148,8 +148,12 @@ def validate_fk_actuation_updates(
             wp.atomic_min(violations, 1, joint)
             return
 
+    built_actuated = built_fk_actuated[joint]
+    if built_actuated < 0:
+        return
+
     act_type = _resolve_fk_actuation_type(model_act_type[joint], flag)
-    if (act_type != JointActuationType.PASSIVE) != (built_fk_actuated[joint] != 0):
+    if (act_type != JointActuationType.PASSIVE) != (built_actuated != 0):
         wp.atomic_min(violations, 0, joint)
 
 

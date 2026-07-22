@@ -518,6 +518,46 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
 
+    def test_axis_joint_frames_update_after_notify(self):
+        """Synthetic axis frames match a fresh solver after model changes."""
+        model = create_four_bar_tie_rod().finalize(device=self.default_device, requires_grad=False)
+        config = ForwardKinematicsSolver.Config(add_axis_joints=True)
+        solver = ForwardKinematicsSolver(model, config)
+        axis_body = int(solver.fk_axis_body.numpy()[0])
+        source_joint = int(solver.fk_axis_source_joint_0.numpy()[0])
+
+        body_q = model.bodies.q_i_0.numpy()
+        body_q[axis_body] = np.array(
+            wp.transformf(
+                wp.vec3f(*body_q[axis_body, :3]),
+                wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.3),
+            )
+        )
+        model.bodies.q_i_0.assign(body_q)
+        if model.joints.bid_B.numpy()[source_joint] == axis_body:
+            joint_anchor = model.joints.B_r_Bj.numpy()
+            joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
+            model.joints.B_r_Bj.assign(joint_anchor)
+        else:
+            joint_anchor = model.joints.F_r_Fj.numpy()
+            joint_anchor[source_joint] += np.array([0.05, -0.02, 0.01], dtype=np.float32)
+            model.joints.F_r_Fj.assign(joint_anchor)
+
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_PROPERTIES)
+        reference = ForwardKinematicsSolver(model, ForwardKinematicsSolver.Config(add_axis_joints=True))
+        axis_joints = solver.fk_axis_joint.numpy()
+
+        np.testing.assert_allclose(
+            solver.joints_X_Bj.numpy()[axis_joints],
+            reference.joints_X_Bj.numpy()[axis_joints],
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            solver.joints_X_Fj.numpy()[axis_joints],
+            reference.joints_X_Fj.numpy()[axis_joints],
+            atol=1e-6,
+        )
+
     def test_four_bar_tie_rod_model_FK_random_poses(self):
         # Initialize RNG
         test_name = "Four-bar with tie rod FK random poses check"

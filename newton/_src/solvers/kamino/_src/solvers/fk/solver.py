@@ -212,11 +212,7 @@ class ForwardKinematicsSolver:
                 device=self.device,
             )
         joints_act_type_prev = resolved_act_type.numpy()
-        self._built_fk_actuated = to_warp_int32_array(
-            (joints_act_type_prev != JointActuationType.PASSIVE).astype(np.int32),
-            device=self.device,
-        )
-        self._fk_actuation_violations = wp.empty(2, dtype=wp.int32, device=self.device)
+        built_fk_actuated = (joints_act_type_prev != JointActuationType.PASSIVE).astype(np.int32)
 
         # Retrieve / compute dimensions - Actuated coordinates/dofs (main model)
         if self.model.joints.fk_act_flag is None:
@@ -261,6 +257,12 @@ class ForwardKinematicsSolver:
         base_joint_ids = self.num_worlds * [-1]  # Base joint id per world
         base_joint_ids_input = self.model.info.base_joint_index.numpy().tolist()
         base_body_ids_input = self.model.info.base_body_index.numpy().tolist()
+        for base_joint_id in base_joint_ids_input:
+            if base_joint_id >= 0:
+                # FK always replaces an explicit base joint with an actuated free joint.
+                built_fk_actuated[base_joint_id] = -1
+        self._built_fk_actuated = to_warp_int32_array(built_fk_actuated, device=self.device)
+        self._fk_actuation_violations = wp.empty(2, dtype=wp.int32, device=self.device)
         for wd_id in range(self.num_worlds):
             # Retrieve base joint id
             base_joint_id = base_joint_ids_input[wd_id]

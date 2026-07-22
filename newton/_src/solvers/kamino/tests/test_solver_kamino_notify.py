@@ -107,6 +107,25 @@ def _build_free_body() -> newton.Model:
     return builder.finalize()
 
 
+def _build_free_root(*, fk_actuation_flag: int = -1) -> newton.Model:
+    """Build one body attached to the world by an explicit free root joint."""
+    builder = newton.ModelBuilder()
+    SolverKamino.register_custom_attributes(builder, fk_actuation_flags={0: fk_actuation_flag})
+    builder.begin_world()
+    bid = builder.add_link(
+        label="base",
+        mass=1.0,
+        inertia=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
+        lock_inertia=True,
+    )
+    builder.add_shape_box(body=bid, hx=0.1, hy=0.1, hz=0.1)
+    jid = builder.add_joint_free(parent=-1, child=bid)
+    builder.add_articulation([jid])
+    builder.end_world()
+    return builder.finalize()
+
+
 def _snapshot_model_arrays(model: newton.Model) -> dict[str, np.ndarray]:
     """Copy every allocated top-level Warp array on a model."""
     return {name: value.numpy().copy() for name, value in vars(model).items() if isinstance(value, wp.array)}
@@ -610,20 +629,67 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             atol=1e-6,
         )
 
+    def test_fk_explicit_base_pose_update_matches_fresh_solver(self):
+        """An explicit FK base reset after notify matches a freshly built solver."""
+        model = _build_free_root()
+        config = SolverKamino.Config(use_fk_solver=True, use_collision_detector=False)
+        solver = SolverKamino(model, config)
+        model.body_q.assign(
+            [
+                wp.transformf(
+                    wp.vec3f(0.3, -0.4, 1.5),
+                    wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.25),
+                )
+            ]
+        )
+
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        reference = SolverKamino(model, SolverKamino.Config(use_fk_solver=True, use_collision_detector=False))
+        state = model.state()
+        reference_state = model.state()
+
+        solver.reset(state)
+        reference.reset(reference_state)
+
+        np.testing.assert_allclose(state.body_q.numpy(), reference_state.body_q.numpy(), atol=1e-6)
+        np.testing.assert_allclose(
+            solver._solver_kamino.solver_fk.base_q_default.numpy(),
+            reference._solver_kamino.solver_fk.base_q_default.numpy(),
+            atol=1e-6,
+        )
+
     def test_fk_actuation_partition_change_raises(self):
         """Runtime FK override edits cannot change the FK buffer layout."""
-        model = _build_revolute(
-            actuator_mode=newton.JointTargetMode.POSITION,
-            fk_actuation_flag=1,
-        )
-        solver = SolverKamino(
-            model,
-            SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
-        )
-        model.fk_actuation_flag.assign([0])
+        for flag in (newton.ModelFlags.ACTUATOR_PROPERTIES, newton.ModelFlags.JOINT_DOF_PROPERTIES):
+            with self.subTest(flag=flag.name):
+                model = _build_revolute(
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    fk_actuation_flag=1,
+                )
+                solver = SolverKamino(
+                    model,
+                    SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+                )
+                model.fk_actuation_flag.assign([0])
 
-        with self.assertRaisesRegex(RuntimeError, "FK actuation partition.*recreate"):
-            solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+                with self.assertRaisesRegex(RuntimeError, "FK actuation partition.*recreate"):
+                    solver.notify_model_changed(flag)
+
+    def test_fk_base_joint_override_change_is_allowed(self):
+        """FK overrides do not affect explicit base joints replaced by free joints."""
+        for flag in (newton.ModelFlags.ACTUATOR_PROPERTIES, newton.ModelFlags.JOINT_DOF_PROPERTIES):
+            with self.subTest(flag=flag.name):
+                model = _build_free_root(fk_actuation_flag=0)
+                solver = SolverKamino(
+                    model,
+                    SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+                )
+                fk = solver._solver_kamino.solver_fk
+                model.fk_actuation_flag.assign([1])
+
+                solver.notify_model_changed(flag)
+
+                self.assertEqual(fk.joints_act_type.numpy()[0], solver._kamino.JointActuationType.FORCE)
 
     def test_equivalent_fk_actuation_override_change_is_allowed(self):
         """Raw FK override changes are allowed when effective actuation is unchanged."""
@@ -648,18 +714,23 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
     def test_invalid_fk_actuation_override_raises(self):
         """Runtime FK overrides accept only the documented -1, 0, and 1 values."""
-        model = _build_revolute(
-            actuator_mode=newton.JointTargetMode.POSITION,
-            fk_actuation_flag=1,
+        models = (
+            _build_revolute(
+                actuator_mode=newton.JointTargetMode.POSITION,
+                fk_actuation_flag=1,
+            ),
+            _build_free_root(fk_actuation_flag=0),
         )
-        solver = SolverKamino(
-            model,
-            SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
-        )
-        model.fk_actuation_flag.assign([2])
+        for model in models:
+            with self.subTest(joint_type=newton.JointType(model.joint_type.numpy()[0]).name):
+                solver = SolverKamino(
+                    model,
+                    SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
+                )
+                model.fk_actuation_flag.assign([2])
 
-        with self.assertRaisesRegex(ValueError, "Invalid FK actuation flag"):
-            solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+                with self.assertRaisesRegex(ValueError, "Invalid FK actuation flag"):
+                    solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
 
     def test_fk_reset_matches_fresh_solver_after_joint_update(self):
         """An FK reset after notify matches a solver built from the updated model."""
