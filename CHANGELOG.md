@@ -97,6 +97,9 @@
 - Reject invalid `ModelBuilder.ShapeConfig` SDF and density values during shape validation. Use finite nonnegative density and SDF padding, a finite positive target voxel size, a narrow-band range satisfying `inner < 0 < outer`, and a positive maximum resolution below 65536 that is divisible by 8; set either maximum resolution or target voxel size, not both. (#3311)
 - Reject runtime changes that alter `SolverKamino`'s as-built joint constraint counts, passive/actuated partition, or finite-limit structure; recreate the solver after making one of these structural changes. (#3532)
 - Cull positive-distance speculative contacts by default when converting Newton contacts for `SolverKamino` as a temporary workaround for restitution issues. No public compatibility option restores the old behavior; if a scene needs contact forces before geometry surfaces touch, increase `ModelBuilder.ShapeConfig.margin` so margin-shifted surfaces overlap at the desired force onset, and re-test contact behavior. (#3779)
+- Parallelize `newton.eval_fk` forward kinematics across the joints of each articulation on CUDA; differentiable models and non-tree articulation topologies retain the serial implementation.
+- Improve `SolverKamino` GPU simulation and kernel compilation performance.
+- Speed up `ModelBuilder.replicate()` for large world counts by merging all copies in one pass; it no longer calls `add_world()` or `add_builder()` per copy, so `ModelBuilder` subclass overrides of those methods are not invoked during replication.
 
 ### Deprecated
 
