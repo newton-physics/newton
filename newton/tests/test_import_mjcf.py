@@ -1512,7 +1512,7 @@ class TestImportMjcfGeometry(unittest.TestCase):
         self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
 
     def test_explicit_small_mesh_geom_mass(self):
-        """Test that a positive mass on a small mesh geom sets body mass and inertia."""
+        """Test that a positive mass on a solid or hollow mesh sets body mass and inertia."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="explicit_mesh_mass_test">
     <asset>
@@ -1555,20 +1555,27 @@ f 4 5 8
             with open(mjcf_path, "w") as f:
                 f.write(mjcf_content)
 
-            builder = newton.ModelBuilder()
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                builder.add_mjcf(mjcf_path)
+            for name, is_solid, margin in (("solid", True, 0.0), ("hollow", False, 0.001)):
+                with self.subTest(name=name):
+                    builder = newton.ModelBuilder()
+                    builder.default_shape_cfg.is_solid = is_solid
+                    builder.default_shape_cfg.margin = margin
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        builder.add_mjcf(mjcf_path)
 
-        self.assertFalse(any("explicit mass" in str(w.message) for w in caught))
-        self.assertAlmostEqual(builder.body_mass[0], 0.012, places=7)
-        np.testing.assert_allclose(builder.body_com[0], np.zeros(3), atol=1e-7)
-        np.testing.assert_allclose(
-            np.array(builder.body_inertia[0]).reshape(3, 3),
-            np.diag([5.0e-8, 5.0e-8, 5.0e-8]),
-            atol=1e-11,
-            rtol=1e-6,
-        )
+                    self.assertFalse(any("explicit mass" in str(w.message) for w in caught))
+                    self.assertAlmostEqual(builder.body_mass[0], 0.012, places=7)
+                    np.testing.assert_allclose(builder.body_com[0], np.zeros(3), atol=1e-7)
+                    inertia = np.array(builder.body_inertia[0]).reshape(3, 3)
+                    self.assertGreater(np.trace(inertia), 0.0)
+                    if is_solid:
+                        np.testing.assert_allclose(
+                            inertia,
+                            np.diag([5.0e-8, 5.0e-8, 5.0e-8]),
+                            atol=1e-11,
+                            rtol=1e-6,
+                        )
 
     def test_zero_mass_mesh_geom_no_warning(self):
         """Regression test: mass='0' on mesh geoms must not emit a warning.

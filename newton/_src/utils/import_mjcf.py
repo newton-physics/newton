@@ -15,7 +15,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
-from ..geometry import Mesh, ShapeFlags
+from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import JointTargetMode, JointType, ModelBuilder
@@ -990,7 +990,17 @@ def parse_mjcf(
                 )
                 explicit_mesh_density = None
                 if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
-                    unit_density_mass = sum(float(m_mesh.mass) for m_mesh in m_meshes)
+                    unit_density_mass = sum(
+                        compute_inertia_shape(
+                            GeoType.MESH,
+                            wp.vec3(1.0),
+                            m_mesh,
+                            density=1.0,
+                            is_solid=shape_cfg.is_solid,
+                            thickness=shape_cfg.margin,
+                        )[0]
+                        for m_mesh in m_meshes
+                    )
                     if unit_density_mass > 0.0:
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
