@@ -529,7 +529,8 @@ class ArticulationView:
 
     The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
     and ``exclude_links`` parameters accept label patterns or integer indices — see
-    :ref:`label-matching`.
+    :ref:`label-matching`. ``pattern`` is matched against full articulation labels.
+    Joint and link filters are matched against the final path component of each label.
 
     Args:
         model: The model containing the articulations.

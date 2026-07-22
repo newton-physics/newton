@@ -80,11 +80,13 @@ support label matching accept one of the following:
 - A **single string pattern** -- selects all entries whose label matches the pattern via :func:`fnmatch.fnmatch`
   (supports ``*`` and ``?`` wildcards).
 - A **list of string patterns** -- selects all entries whose label matches at least one pattern.
-- A **compiled string regular expression** -- selects all entries whose complete label matches via
+- A **compiled string regular expression** -- selects all entries whose entire label or name matches the expression via
   :meth:`re.Pattern.fullmatch`.
 
 Ordinary strings always use glob syntax. Compile a pattern with :func:`re.compile` to opt into regular-expression
 syntax. Callers who want a regular expression to match a substring can add ``.*`` around that substring explicitly.
+For :class:`~newton.selection.ArticulationView`, ``pattern`` is matched against full articulation labels. Joint and
+link filters are matched against the final path component of each label.
 
 .. code-block:: python
 
