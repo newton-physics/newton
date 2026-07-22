@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 from typing import Any
 
+import numpy as np
 import warp as wp
 import warp.fem as fem
 import warp.sparse as wps
@@ -882,6 +884,32 @@ def clamp_coordinates(
 
 
 @wp.kernel
+def build_active_particle_mask(
+    particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
+    point_mask: wp.array[wp.int32],
+):
+    particle_index = wp.tid()
+    position = particle_q[particle_index]
+    position_is_finite = wp.isfinite(position[0]) and wp.isfinite(position[1]) and wp.isfinite(position[2])
+    point_mask[particle_index] = wp.where(
+        (particle_flags[particle_index] & newton.ParticleFlags.ACTIVE) != 0 and position_is_finite,
+        wp.int32(1),
+        wp.int32(0),
+    )
+
+
+@wp.kernel
+def record_volume_rebuild_status(status: wp.array[wp.uint32], accumulated_status: wp.array[wp.uint32]):
+    """Retain and report rebuild failures without a host synchronization."""
+    rebuild_status = status[0]
+    new_status = rebuild_status & ~accumulated_status[0]
+    if new_status != wp.uint32(0):
+        accumulated_status[0] = accumulated_status[0] | rebuild_status
+        wp.printf("Warning: Implicit MPM sparse grid rebuild failed with status %u.\n", rebuild_status)
+
+
+@wp.kernel
 def pad_voxels(particle_q: wp.array[wp.vec3i], padded_q: wp.array4d[wp.vec3i]):
     pid = wp.tid()
 
@@ -896,7 +924,98 @@ def positive_modn(x: int, n: int):
     return (x % n + n) % n
 
 
-def allocate_by_voxels(particle_q, voxel_size, padding_voxels: int = 0):
+def _rebuild_capacity(
+    particle_q,
+    voxel_size,
+    ratio: float,
+    max_active_voxels: int,
+    point_mask=None,
+    *,
+    max_leaf_node_count: int = -1,
+    max_lower_node_count: int = -1,
+    max_upper_node_count: int = -1,
+) -> dict[str, int]:
+    """Estimate rebuildable-volume capacities (active voxels + NanoVDB node counts).
+
+    Automatic leaf-node storage reserves ``max_active_voxels`` entries. The
+    lower/upper internal nodes each span 16x and 32x more cells, so automatic
+    capacities are estimated from one throwaway build of the current particles
+    scaled by ``ratio`` for spreading headroom. Explicit capacities allow
+    applications with known spatial bounds to budget each hierarchy level.
+    """
+    initial = wp.Volume.allocate_by_voxels(
+        voxel_points=particle_q,
+        voxel_size=voxel_size,
+        point_mask=point_mask,
+    )
+    if initial.get_voxel_count() == 0:
+        automatic_lower = min(max_active_voxels, 8)
+        automatic_upper = min(max_active_voxels, 4)
+    else:
+        ijk = initial.get_voxels().numpy()
+        lower = np.unique(np.floor_divide(ijk, 8 * 16), axis=0).shape[0]
+        upper = np.unique(np.floor_divide(ijk, 8 * 16 * 32), axis=0).shape[0]
+        automatic_lower = min(max_active_voxels, max(8, math.ceil(lower * ratio)))
+        automatic_upper = min(max_active_voxels, max(4, math.ceil(upper * ratio)))
+
+    leaf_capacity = max_active_voxels if max_leaf_node_count == -1 else max_leaf_node_count
+    lower_capacity = min(automatic_lower, leaf_capacity) if max_lower_node_count == -1 else max_lower_node_count
+    upper_capacity = min(automatic_upper, lower_capacity) if max_upper_node_count == -1 else max_upper_node_count
+
+    if not upper_capacity <= lower_capacity <= leaf_capacity <= max_active_voxels:
+        raise ValueError(
+            "Implicit MPM sparse-grid capacity hierarchy must satisfy "
+            "max_upper_node_count <= max_lower_node_count <= max_leaf_node_count "
+            "<= max_active_cell_count after resolving automatic values; got "
+            f"{upper_capacity} <= {lower_capacity} <= {leaf_capacity} <= {max_active_voxels}."
+        )
+
+    return {
+        "max_active_voxels": max_active_voxels,
+        "max_leaf_nodes": leaf_capacity,
+        "max_lower_nodes": lower_capacity,
+        "max_upper_nodes": upper_capacity,
+    }
+
+
+def allocate_by_voxels(
+    particle_q,
+    voxel_size,
+    padding_voxels: int = 0,
+    rebuildable: bool = False,
+    max_active_voxels: int | None = None,
+    capacity_ratio: float = 16.0,
+    status=None,
+    point_mask=None,
+    max_leaf_node_count: int = -1,
+    max_lower_node_count: int = -1,
+    max_upper_node_count: int = -1,
+):
+    if rebuildable:
+        # Persistent capacity-sized volume refreshed in place each step so the sparse
+        # grid build is CUDA-graph-capturable. Padding is unsupported here.
+        capacity = max_active_voxels if max_active_voxels and max_active_voxels > 0 else particle_q.shape[0]
+        kwargs = _rebuild_capacity(
+            particle_q,
+            voxel_size,
+            capacity_ratio,
+            capacity,
+            point_mask=point_mask,
+            max_leaf_node_count=max_leaf_node_count,
+            max_lower_node_count=max_lower_node_count,
+            max_upper_node_count=max_upper_node_count,
+        )
+        if status is not None:
+            kwargs["status"] = status
+        if point_mask is not None:
+            kwargs["point_mask"] = point_mask
+        return wp.Volume.allocate_by_voxels(
+            voxel_points=particle_q,
+            voxel_size=voxel_size,
+            rebuildable=True,
+            **kwargs,
+        )
+
     volume = wp.Volume.allocate_by_voxels(
         voxel_points=particle_q.flatten(),
         voxel_size=voxel_size,
