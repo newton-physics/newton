@@ -268,163 +268,30 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
 .. _implicit-mpm-worlds:
 
-Implicit MPM worlds
-~~~~~~~~~~~~~~~~~~~
+Implicit MPM world isolation
+----------------------------
 
 .. experimental::
 
-    Independent per-world Implicit MPM simulation, collider filtering, reset,
-    and graph-capture behavior may change without prior notice.
+    Independent per-world Implicit MPM simulation and collider filtering may
+    change without prior notice.
 
-For models with more than one world, :class:`~newton.solvers.SolverImplicitMPM`
-retains the legacy shared Warp FEM topology by default. Set
-``SolverImplicitMPM.Config.separate_worlds = True`` to opt into independent FEM
-environments. In isolated mode, worlds can occupy identical physics-space
-coordinates without sharing grid mass, momentum, stress, or collider response.
+A multi-world :class:`~newton.solvers.SolverImplicitMPM` uses one shared FEM
+topology by default, so world assignment alone does not isolate overlapping MPM
+particles. Set :attr:`~newton.solvers.SolverImplicitMPM.Config.separate_worlds`
+to create one FEM environment per world and isolate grid mass, momentum,
+stress, and collider response.
 
-Every MPM particle in an isolated multi-world model must belong to a local
-world; global MPM particles are rejected. In this mode, world-local colliders
-affect only their assigned world, and body-backed colliders inherit their
-body's world. Global static colliders and global colliders backed by bodies
-marked :attr:`~newton.BodyFlags.KINEMATIC` affect every world. A global
-collider backed by a dynamic body is rejected and must instead use replicated
-or otherwise world-local bodies. Custom meshes passed to
-:meth:`~newton.solvers.SolverImplicitMPM.setup_collider` are global by default;
-use ``collider_world_ids`` to assign them to specific worlds.
+Isolated MPM requires every particle to belong to a local world. World-local
+colliders affect only that world, while global static colliders and global
+colliders backed by kinematic bodies affect every world. In isolated mode,
+global colliders backed by dynamic bodies are rejected.
 
-Dense and fixed grids use common physical bounds for all environments. Sparse
-grids instead store each world's active local voxels, so they are preferable
-when particle bounds differ substantially between worlds or worlds are far
-apart in physical coordinates. Dense-grid bounds are still recomputed through
-a host read and dense steps remain eager. Leaving ``separate_worlds=False``
-selects the default shared FEM topology; the isolation and capacity rules below
-apply only after opting into ``separate_worlds=True``.
-
-Sparse capacity and environment packing
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Implicit MPM has two sparse allocation modes:
-
-- An **allocating sparse grid** creates NanoVDB topology as needed. This is the
-  behavior when ``max_active_cell_count <= 0`` or when padding or the selected
-  basis topology cannot support an in-place rebuild. It
-  remains available for eager stepping but is not outer-capture safe.
-- A **capacity-bounded rebuildable sparse grid** reserves persistent topology
-  storage and rebuilds its active contents in place. It requires
-  ``max_active_cell_count > 0``, ``grid_padding == 0``, a ``"Q1"`` velocity
-  basis, compatible strain and collider bases, and rebuildable NanoVDB support
-  from the installed Warp artifact.
-
-For a multi-world solver, ``max_active_cell_count`` is one total capacity
-shared by the batched FEM geometry partition, not a separate quota for every
-world. Estimate the worst useful active-cell count per world, multiply it by
-the number of worlds, and pass that total. Worlds may use the shared reserve
-unevenly. The sparse topology contains active local voxels and guard regions;
-it does not allocate all voxels spanning the physical distance between worlds.
-
-Rebuildable NanoVDB topology has four separately configurable capacity levels:
-active voxels, leaf nodes, lower internal nodes, and upper internal nodes.
-Configure the latter three with ``max_leaf_node_count``,
-``max_lower_node_count``, and ``max_upper_node_count`` when application-level
-spatial bounds provide known limits. These are also total capacities shared by
-all worlds. Resolved capacities must satisfy
-``upper <= lower <= leaf <= active``. The default ``-1`` keeps automatic
-sizing: leaf capacity equals ``max_active_cell_count``; automatic lower
-capacity is capped by the resolved leaf capacity; and automatic upper capacity
-is capped by the resolved lower capacity. Lower and upper estimates reserve up
-to 16 times the initial packed topology at their respective hierarchy levels,
-with minimum estimates of eight lower and four upper nodes when the finer-level
-capacity permits. Explicit values are not adjusted, so an explicitly
-inconsistent hierarchy raises during construction.
-
-Node capacity depends on spatial distribution, not just active-cell count. A
-single escaped particle can enter a new internal node without materially
-changing the active-voxel count; an upper node spans 4096 voxels along each
-axis. Increasing ``max_active_cell_count`` alone therefore does not resolve an
-internal-node overflow. Prefer application bounds or outflow handling, then
-set explicit node capacities from that bounded domain. Arbitrarily scattered
-particles require worst-case node capacities as large as the active-cell
-capacity, which is usually impractical because upper nodes are comparatively
-expensive.
-
-When Newton generates packed-environment offsets, a rebuild recomputes their
-values on the device from current per-world bounds. This lets independently
-moving worlds remain disjoint in packed NanoVDB coordinates. Offset values and
-active counts may change between steps, but environment count, offset-array
-shape, guard width, alignment, storage addresses, and declared capacities are
-structural invariants. Explicit caller-provided offsets do not move
-automatically, so the caller must keep their packed bounds disjoint.
-
-Outer graph capture
-^^^^^^^^^^^^^^^^^^^
-
-An isolated multi-world step can be captured in an outer graph when all of
-the following conditions hold:
-
-- Although Warp supports CPU graphs generally, Implicit MPM graph replay is
-  currently supported only on CUDA, with conditional graph-node support and an
-  enabled memory pool. Rebuildable sparse-grid capture specifically requires
-  CUDA-safe topology rebuilds.
-- Construct :class:`~newton.solvers.SolverImplicitMPM` with
-  ``enable_timers=False``. Section timers synchronize the device and therefore
-  cannot run during outer capture.
-- ``SolverImplicitMPM.Config.separate_worlds`` is ``True``.
-- ``SolverImplicitMPM.Config.grid_type`` is either ``"fixed"`` with bounds
-  created before capture or ``"sparse"`` in the capacity-bounded rebuildable
-  mode described above.
-- ``SolverImplicitMPM.Config.max_active_cell_count`` is positive and large
-  enough for every replay. Any explicit leaf, lower, and upper node capacities
-  are also large enough for the bounded particle distribution. Active subsets
-  may change within those fixed total capacities.
-- Every selected sparse basis provides rebuildable topology.
-
-Construction materializes graph-persistent MPM topology and buffers internally;
-no separate capture-preparation call is required. For solver modes that build
-an inner solve graph lazily, such as Gauss-Seidel, run one uncaptured warm-up
-step on disposable state buffers before recording the outer graph. Model
-topology, world and particle ordering, array shapes, fixed-grid bounds,
-capacities, solver configuration, captured state-buffer sequence, and captured
-step arguments must remain unchanged across replays. Particle state, active
-cells, and automatically generated sparse packing offsets may change within
-those fixed structures.
-
-If the application alternates two state buffers, record both directions in one
-graph so every replay finishes with the buffers in the same roles:
-
-.. code-block:: python
-
-   with wp.ScopedCapture(device=model.device) as capture:
-       solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
-       solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
-
-   wp.capture_launch(capture.graph)
-   solver.check_status()
-
-Call :meth:`~newton.solvers.SolverImplicitMPM.check_status` on the concrete MPM
-solver at an explicit safe host boundary after replay. When MPM is an entry in a
-:class:`~newton.solvers.experimental.coupled.SolverCoupled`, retrieve that entry with
-``coupled.solver(name)`` and call its ``check_status()`` directly. For
-rebuildable sparse grids, capacity failures accumulate in a sticky device status
-so a later successful rebuild cannot hide an earlier overflow. The check
-synchronizes and raises a descriptive capacity error. A valid solver reset
-establishes a new status boundary.
-
-Keep resets outside the captured graph. Calling
-:meth:`~newton.solvers.SolverImplicitMPM.reset` with ``world_mask`` restores MPM
-history and grid-backed warm starts only for selected isolated worlds and
-preserves unselected worlds; a valid reset also clears sparse rebuild status.
-The mask has ``model.world_count + 1`` entries: the first entries select local
-worlds by index, while the final entry selects global objects assigned to world
-``-1``.
-A masked reset on a shared multi-world grid is rejected because one warm-start
-node may combine contributions from several worlds. Use ``separate_worlds=True``
-for selective reset, or omit ``world_mask`` to reset the shared grid in full.
-Recapture after changing any structural input, capacity, buffer sequence, or
-time step.
-
-Allocating sparse and dense grids remain eager. Fixed and capacity-bounded
-rebuildable sparse grids support outer capture on CUDA with valid rheology
-solver configurations, including the default Q1 Gauss-Seidel solver.
+See :class:`~newton.solvers.SolverImplicitMPM` for sparse-grid capacity and
+CUDA graph-capture requirements. See
+:meth:`~newton.solvers.SolverImplicitMPM.setup_collider` and
+:meth:`~newton.solvers.SolverImplicitMPM.reset` for collider configuration and
+selective reset behavior.
 
 .. _Per-world gravity:
 

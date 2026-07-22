@@ -737,12 +737,28 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     parameters and state variables (e.g. ``mpm:young_modulus``,
     ``mpm:friction``, ``mpm:particle_elastic_strain``).
 
-    Multi-world models retain the legacy shared FEM topology by default. Set
-    :attr:`Config.separate_worlds` to ``True`` to use an independent FEM
-    environment for each world. Isolated multi-world models require every MPM
-    particle to belong to a local world; shared and single-world models also
-    support global particles. See :ref:`implicit-mpm-worlds` for the supported
-    outer graph capture configuration.
+    Multi-world models retain the shared FEM topology by default. Set
+    :attr:`Config.separate_worlds` to use an independent FEM environment for
+    each world. In isolated mode, every MPM particle must belong to a local
+    world and particles must be stored contiguously by world. World-local
+    colliders affect only that world; global static colliders and global
+    colliders backed by kinematic bodies affect every world, while global
+    colliders backed by dynamic bodies are rejected.
+
+    A sparse grid is rebuildable when :attr:`Config.max_active_cell_count` is
+    positive, :attr:`Config.grid_padding` is zero, the velocity basis is
+    ``"Q1"``, and the strain and collider bases support rebuilding. Cell and
+    node capacities are totals across all FEM environments, and resolved
+    capacities must satisfy ``upper <= lower <= leaf <= active``.
+
+    Outer graph capture requires CUDA, an enabled memory pool, conditional
+    graph support, ``enable_timers=False``, positive active-cell capacity, and
+    either a fixed or rebuildable sparse grid. Construction creates persistent
+    capture resources internally. Run an uncaptured warm-up step for rheology
+    modes that build an inner graph lazily, and keep model topology, solver
+    configuration, captured buffers, and step arguments fixed across replays.
+    Keep :meth:`reset` outside capture and call :meth:`check_status` after
+    replay to report sparse-grid capacity failures.
 
     [1] https://doi.org/10.1145/2897824.2925877
 
@@ -759,7 +775,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     Raises:
         ValueError: If an isolated multi-world model contains global MPM
-            particles or particle world IDs outside ``[-1, model.world_count)``.
+            particles, particle world IDs outside ``[-1, model.world_count)``,
+            or particles that are not stored contiguously by world.
     """
 
     @dataclass
@@ -768,11 +785,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         Per-particle properties can be configured using custom attributes on the Model.
         See :meth:`SolverImplicitMPM.register_custom_attributes` for details.
-
-        Multi-world models retain the shared FEM topology by default. Set
-        :attr:`separate_worlds` to ``True`` to opt into independent FEM
-        environments, which require local particles. See
-        :ref:`implicit-mpm-worlds` for outer graph capture constraints.
         """
 
         # numerics
@@ -884,8 +896,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         The default ``False`` retains the legacy shared-grid behavior. Set to
         ``True`` to isolate grid mass, momentum, stress, and collider response
         by world. Isolated multi-world models require every MPM particle to
-        belong to a local world. See :ref:`implicit-mpm-worlds` for outer
-        graph capture constraints.
+        belong to a local world and particles to be stored contiguously by
+        world. See :ref:`implicit-mpm-worlds` for how this mode interprets
+        world assignment and collider ownership.
 
         .. experimental::
 
@@ -1324,7 +1337,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             raise _sparse_grid_rebuild_error(status)
 
     def check_status(self) -> None:
-        """Raise if a prior solver operation reported an asynchronous failure."""
+        """Raise if a sparse-grid rebuild exceeded its reserved capacity.
+
+        Rebuildable sparse-grid failures accumulate until a valid
+        :meth:`reset`. Call this method outside graph capture after replay; the
+        check synchronizes the solver device. It is a no-op when the solver has
+        no asynchronous sparse-grid status buffer.
+
+        Raises:
+            RuntimeError: If rebuild status is inspected during graph capture,
+                or if a rebuild reported a capacity or topology failure.
+        """
         self._check_sparse_grid_rebuild_status()
 
     def _clear_sparse_grid_rebuild_status(self) -> None:
@@ -1529,11 +1552,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         :attr:`~newton.StateFlags.PARTICLE_Q` or
         :attr:`~newton.StateFlags.PARTICLE_QD`. If ``flags`` is ``None``, all
         particle history is reset. Particle- and grid-backed warm starts are
-        cleared for selected isolated worlds; shared multi-world grids reject
-        masked reset because their warm-start nodes may combine worlds. A full
-        reset clears every warm-start field. Sparse-grid rebuild status is
-        always cleared at a valid reset boundary, and the previous-collider-pose
-        cache is refreshed from ``state``. The final mask entry selects global
+        cleared for selected worlds. Grid-backed warm starts cannot be
+        selectively cleared on a shared multi-world grid; use
+        :attr:`Config.separate_worlds` or a full reset. A full reset clears
+        every warm-start field. Sparse-grid rebuild status is always cleared at
+        a valid reset boundary, and the previous-collider-pose cache is
+        refreshed from ``state``. The final mask entry selects global
         particle-backed history and collider poses whose world index is ``-1``.
 
         Args:
@@ -1605,8 +1629,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         Transfers particle data to the grid, solves the implicit rheology
         system, and transfers the result back to update particle positions,
-        velocities, and stress. See :ref:`implicit-mpm-worlds` for supported
-        outer graph capture configurations and replay invariants.
+        velocities, and stress.
 
         Args:
             state_in: Input state at the start of the step.
