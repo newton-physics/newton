@@ -8400,6 +8400,18 @@ class ModelBuilder:
         if len(valid_inds) < len(areas):
             print("inverted or degenerate triangle elements")
 
+        filtered_custom_attributes = None
+        if custom_attributes:
+            filtered_custom_attributes = {}
+            for key, value in custom_attributes.items():
+                is_sequence = isinstance(value, (list, tuple)) or (isinstance(value, np.ndarray) and value.ndim != 0)
+                if is_sequence:
+                    if len(value) != len(areas):
+                        raise ValueError(f"Expected {len(areas)} values, got {len(value)}")
+                    filtered_custom_attributes[key] = [value[index] for index in valid_inds]
+                else:
+                    filtered_custom_attributes[key] = value
+
         D[areas == 0.0] = np.eye(2)[None, ...]
         inv_D = np.linalg.inv(D)
 
@@ -8435,18 +8447,18 @@ class ModelBuilder:
                 strict=False,
             )
         )
-        areas = areas.tolist()
-        self.tri_areas.extend(areas)
+        areas_list = areas.tolist()
+        self.tri_areas.extend(areas[valid_inds].tolist())
 
         # Process custom attributes
-        if custom_attributes and len(valid_inds) > 0:
+        if filtered_custom_attributes and len(valid_inds) > 0:
             tri_indices = list(range(tri_start, tri_start + len(valid_inds)))
             self._process_custom_attributes(
                 entity_index=tri_indices,
-                custom_attrs=custom_attributes,
+                custom_attrs=filtered_custom_attributes,
                 expected_frequency=Model.AttributeFrequency.TRIANGLE,
             )
-        return areas
+        return areas_list
 
     def add_tetrahedron(
         self,
