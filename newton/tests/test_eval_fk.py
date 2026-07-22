@@ -54,7 +54,7 @@ def _add_chain(builder: newton.ModelBuilder, length: int, x_offset: float) -> No
 
 
 def _build_heterogeneous_model(device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     _add_chain(builder, 3, -1.0)
 
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -79,7 +79,7 @@ def _build_heterogeneous_model(device):
 
 
 def _build_gradient_model(device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     joints = []
     parent = -1
     for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z):
@@ -98,7 +98,7 @@ def _build_gradient_model(device):
 
 
 def _build_loop_model(device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     root_joint = builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)
@@ -215,7 +215,7 @@ def test_heterogeneous_wide_articulations(test, device):
 
 
 def test_deep_articulation(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     joints = []
     parent = -1
     for _ in range(41):
@@ -266,7 +266,7 @@ def test_empty_articulation_selection(test, device):
 
 
 def test_noncontiguous_bodies_and_external_parent(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     external_parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -301,7 +301,7 @@ def test_body_flag_filter(test, device):
 
 
 def test_cable_pose_preserved(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     cable_body = builder.add_link(
         xform=wp.transform(wp.vec3(0.4, -0.3, 0.2), wp.quat_identity()),
         mass=1.0,
@@ -346,7 +346,7 @@ def test_loop_closing_joint(test, device):
 
 
 def test_duplicate_child_serial_fallback(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     root_joint = builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)
@@ -367,7 +367,7 @@ def test_duplicate_child_serial_fallback(test, device):
 
 
 def test_cyclic_articulation_serial_fallback(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     body_b = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     joint_a = builder.add_joint_revolute(parent=body_b, child=body_a, axis=newton.Axis.Z)
@@ -387,7 +387,7 @@ def test_cyclic_articulation_serial_fallback(test, device):
 
 
 def test_wide_level_serial_fallback(test, device):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     joints = [builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)]
     for i in range(FK_TILE_MAX_LEVEL_WIDTH + 1):
