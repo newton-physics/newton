@@ -1393,7 +1393,7 @@ def parse_usd(
         else:
             return parent_id, child_id
 
-    def resolve_dof_params(jp_prim, jd, is_revolute: bool) -> _DofParams:
+    def resolve_dof_params(jp_prim: Usd.Prim, jd: UsdPhysics.JointDesc, is_revolute: bool) -> _DofParams:
         """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
 
         Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``
