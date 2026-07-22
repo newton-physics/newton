@@ -59,7 +59,7 @@ def _control_callback(
     # Apply a time-dependent external force
     if t > t_start and t < t_end and wnc > 0:
         m = wp.float32(1.0)  # Mass of the box
-        g = wp.float32(9.8067)  # Gravitational acceleration
+        g = wp.float32(9.81)  # Gravitational acceleration
         mu = wp.float32(0.9)  # Friction coefficient
         f_ext = 1.1 * m * g * mu  # Magnitude of the external force
         state_w_i_e[bid] = wp.spatial_vectorf(f_ext, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -141,7 +141,8 @@ class Example:
 
         # Set gravity
         for w in range(self.builder.num_worlds):
-            self.builder.gravity[w].enabled = gravity
+            if not gravity:
+                self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Set solver config
         config = Simulator.Config()

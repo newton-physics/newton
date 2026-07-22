@@ -896,7 +896,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._update_actuation_types()
 
         if flags & ModelFlags.MODEL_PROPERTIES:
-            self._update_gravity()
+            pass
 
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             # q_i_0 is derived from both model.body_q and model.body_com.
@@ -1186,10 +1186,6 @@ class SolverKamino(SolverBase, CouplingInterface):
     def _update_actuation_types(self) -> None:
         """Refresh actuation modes without changing the passive/actuated layout."""
         self._kamino.convert_model_joint_actuation(self.model, self._model_kamino.joints)
-
-    def _update_gravity(self):
-        """Update Kamino's :class:`GravityModel` from Newton's ``model.gravity``."""
-        self._kamino.convert_model_gravity(self.model, self._model_kamino.gravity)
 
     def _update_body_initial_pose(self):
         """Recompute Kamino's CoM-frame initial body poses."""

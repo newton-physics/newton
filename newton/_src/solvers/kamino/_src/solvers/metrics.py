@@ -591,7 +591,7 @@ def compute_vector_difference_infnorm(
 def _compute_eom_residual(
     # Inputs
     model_time_dt: wp.array[wp.float32],
-    model_gravity: wp.array[wp.vec4f],
+    model_gravity: wp.array[wp.vec3f],
     model_bodies_wid: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     state_bodies_I_i: wp.array[wp.mat33f],
@@ -615,8 +615,7 @@ def _compute_eom_residual(
 
     # Retrieve the time step
     dt = model_time_dt[wid]
-    gravity = model_gravity[wid]
-    g = gravity.w * wp.vec3f(gravity.x, gravity.y, gravity.z)
+    g = model_gravity[wid]
 
     # Decompose into linear and angular parts
     f_i = wp.spatial_top(w_i)

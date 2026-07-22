@@ -31,7 +31,7 @@ from .model import ModelKamino, ModelKaminoInfo
 from .shapes import ShapeDescriptorType, max_contacts_for_shape_pair
 from .size import SizeKamino
 from .time import TimeModel
-from .types import to_warp_int32_array
+from .types import ArrayLike, to_warp_int32_array
 from .world import WorldDescriptor
 
 ###
@@ -206,7 +206,7 @@ class ModelBuilderKamino:
 
     @property
     def gravity(self) -> list[GravityDescriptor]:
-        """Returns the list of gravity descriptors for each world contained in the model."""
+        """Returns the gravity descriptors for each world contained in the model."""
         return self._gravity
 
     @property
@@ -261,7 +261,7 @@ class ModelBuilderKamino:
         name: str = "world",
         uid: str | None = None,
         up_axis: Axis | None = None,
-        gravity: GravityDescriptor | None = None,
+        gravity: GravityDescriptor | ArrayLike | None = None,
     ) -> int:
         """
         Add a new world to the model.
@@ -272,8 +272,8 @@ class ModelBuilderKamino:
                 If None, a UUID will be generated.
             up_axis: The up axis of the world.
                 If None, Axis.Z will be used.
-            gravity: The gravity descriptor of the world.
-                If None, a default gravity descriptor will be used.
+            gravity: The gravity descriptor or vector [m/s²] of the world.
+                If ``None``, Newton's default gravity is used along the negative up axis.
 
         Returns:
             The index of the newly added world.
@@ -293,7 +293,9 @@ class ModelBuilderKamino:
 
         # Set gravity
         if gravity is None:
-            gravity = GravityDescriptor()
+            gravity = GravityDescriptor.default_for(up_axis)
+        elif not isinstance(gravity, GravityDescriptor):
+            gravity = GravityDescriptor(name="gravity", vector=wp.vec3f(gravity))
         self._gravity.append(gravity)
 
         # Register the default material in the new world
@@ -752,26 +754,20 @@ class ModelBuilderKamino:
         # Set the new up axis
         self._up_axes[world_index] = axis
 
-    def set_gravity(self, gravity: GravityDescriptor, world_index: int = 0):
+    def set_gravity(self, gravity: GravityDescriptor | ArrayLike, world_index: int = 0):
         """
-        Set the gravity descriptor for a specific world.
+        Set the gravity vector for a specific world.
 
         Args:
-            gravity: The new gravity descriptor to be set.
-            world_index: The index of the world for which to set the gravity descriptor.
+            gravity: The new gravity descriptor or vector [m/s²].
+            world_index: The index of the world for which to set gravity.
                 Defaults to the first world with index `0`.
-
-        Raises:
-            TypeError: If the provided gravity descriptor is not of type `GravityDescriptor`.
         """
         # Check if the world index is valid
         self._check_world_index(world_index)
 
-        # Check if the gravity descriptor is valid
         if not isinstance(gravity, GravityDescriptor):
-            raise TypeError(f"Invalid gravity descriptor type: {type(gravity)}. Must be `GravityDescriptor`.")
-
-        # Set the new gravity configurations
+            gravity = GravityDescriptor(name="gravity", vector=wp.vec3f(gravity))
         self._gravity[world_index] = gravity
 
     def set_default_material(self, material: MaterialDescriptor, world_index: int = 0):
@@ -981,7 +977,6 @@ class ModelBuilderKamino:
         info_base_jid = []
 
         # Initialize the gravity data collections
-        gravity_g_dir_acc = []
         gravity_vector = []
 
         # Initialize the body data collections
@@ -1101,8 +1096,7 @@ class ModelBuilderKamino:
         # A helper function to collect model gravity data
         def collect_gravity_model_data():
             for w in range(num_worlds):
-                gravity_g_dir_acc.append(self._gravity[w].dir_accel())
-                gravity_vector.append(self._gravity[w].vector())
+                gravity_vector.append(self._gravity[w].vector)
 
         # A helper function to collect model bodies data
         def collect_body_model_data():
@@ -1364,10 +1358,7 @@ class ModelBuilderKamino:
             )
 
             # Construct model gravity data
-            model_gravity = GravityModel(
-                g_dir_acc=wp.array(gravity_g_dir_acc, dtype=wp.vec4f),
-                vector=wp.array(gravity_vector, dtype=wp.vec4f, requires_grad=requires_grad),
-            )
+            model_gravity = GravityModel(vector=wp.array(gravity_vector, dtype=wp.vec3, requires_grad=requires_grad))
 
             # Create the bodies model
             model_bodies = RigidBodiesModel(

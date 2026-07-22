@@ -18,7 +18,6 @@ from ......utils.topology import topological_sort_undirected
 from ...core.bodies import RigidBodyDescriptor
 from ...core.builder import ModelBuilderKamino
 from ...core.geometry import GeometryDescriptor
-from ...core.gravity import GravityDescriptor
 from ...core.joints import (
     JOINT_QMAX,
     JOINT_QMIN,
@@ -1800,9 +1799,6 @@ class USDImporter:
         # World
         ###
 
-        # Initialize the world properties
-        gravity = GravityDescriptor()
-
         # Parse for PhysicsScene prims
         if self.UsdPhysics.ObjectType.Scene in ret_dict:
             # Retrieve the phusics sene path and description
@@ -1813,8 +1809,9 @@ class USDImporter:
                 msg.error("Multiple PhysicsScene prims found in the USD file. Only the first prim will be considered.")
 
             # Extract the world gravity from the physics scene
-            gravity.acceleration = distance_unit * scene_desc.gravityMagnitude
-            gravity.direction = wp.vec3f(scene_desc.gravityDirection)
+            gravity = wp.normalize(wp.vec3f(scene_desc.gravityDirection)) * (
+                distance_unit * scene_desc.gravityMagnitude
+            )
             builder.set_gravity(gravity)
             msg.debug(f"World gravity: {gravity}")
 
