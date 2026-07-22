@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 import unittest
 from unittest import mock
 
@@ -30,6 +31,40 @@ def origin_velocity_from_body_qd(model, body_q, body_qd, body_idx):
 
 
 class TestSelection(unittest.TestCase):
+    def test_compiled_regex_selectors(self):
+        builder = newton.ModelBuilder()
+        articulation_labels = [
+            "/World/envs/env_0/Robot_A",
+            "/World/envs/env_0/Robot_B",
+            "/World/envs/env_0/Robot_C",
+            "/World/envs/env_0/Prop",
+        ]
+        for label in articulation_labels:
+            base = builder.add_link(label=f"{label}/base")
+            left_foot = builder.add_link(label=f"{label}/LF_FOOT")
+            right_foot = builder.add_link(label=f"{label}/RF_FOOT")
+            fixed_mount = builder.add_joint_free(child=base, label=f"{label}/fixed_mount")
+            left_hip = builder.add_joint_revolute(parent=base, child=left_foot, label=f"{label}/LF_HIP")
+            right_hip = builder.add_joint_revolute(parent=base, child=right_foot, label=f"{label}/RF_HIP")
+            builder.add_articulation([fixed_mount, left_hip, right_hip], label=label)
+        model = builder.finalize(device="cpu")
+
+        view = ArticulationView(
+            model,
+            pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_(A|B|C)"),
+            include_links=re.compile(r"(LF|RF)_FOOT"),
+            exclude_joints=re.compile(r"fixed_.*"),
+        )
+
+        assert_np_equal(view.articulation_ids.numpy(), [[0, 1, 2]])
+        self.assertEqual(view.link_names, ["LF_FOOT", "RF_FOOT"])
+        self.assertEqual(view.joint_names, ["LF_HIP", "RF_HIP"])
+        self.assertEqual(view.link_count, 2)
+        self.assertEqual(view.joint_count, 2)
+
+        with self.assertRaisesRegex(KeyError, "No articulations matching pattern"):
+            ArticulationView(model, pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_Z"))
+
     def test_articulation_selector_lists(self):
         builder = newton.ModelBuilder()
         for label in ["robot_a", "robot_b", "prop"]:

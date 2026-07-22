@@ -8270,9 +8270,32 @@ class ModelBuilder:
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
+
+        Raises:
+            ValueError: If a particle input or custom attribute list has a mismatched length.
         """
-        particle_start = self.particle_count
         particle_count = len(pos)
+        required_inputs = (
+            ("vel", vel),
+            ("mass", mass),
+        )
+        optional_inputs = (
+            ("radius", radius),
+            ("flags", flags),
+        )
+        for name, values in required_inputs:
+            if values is None or len(values) != particle_count:
+                actual_count = "None" if values is None else len(values)
+                raise ValueError(
+                    f"{name} length mismatch: expected {particle_count} values to match pos, got {actual_count}"
+                )
+        for name, values in optional_inputs:
+            if values is not None and len(values) != particle_count:
+                raise ValueError(
+                    f"{name} length mismatch: expected {particle_count} values to match pos, got {len(values)}"
+                )
+
+        particle_start = self.particle_count
 
         self.particle_q.extend(pos)
         self.particle_qd.extend(vel)
@@ -10511,7 +10534,21 @@ class ModelBuilder:
                     f"{next_start[idx]}."
                 )
 
-        # Validate array length consistency
+        particle_count = self.particle_count
+        particle_arrays = (
+            ("particle_qd", self.particle_qd),
+            ("particle_mass", self.particle_mass),
+            ("particle_radius", self.particle_radius),
+            ("particle_flags", self.particle_flags),
+            ("particle_world", self.particle_world),
+        )
+        for name, values in particle_arrays:
+            if len(values) != particle_count:
+                raise ValueError(
+                    f"Array length mismatch: {name} has length {len(values)}, "
+                    f"but expected {particle_count} (particle_count)."
+                )
+
         if joint_count > 0:
             # Per-DOF arrays should have length == joint_dof_count
             dof_arrays = [
