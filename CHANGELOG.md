@@ -72,6 +72,7 @@
 - Fix `FastKitchenG1` ASV metrics to build the kitchen scene instead of a plain G1 model.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
 - Fix masked PID state reset to execute on the integral-state device. (#3447)
+- Fix `SolverKamino.reset()` with `ResetConfig.preserve()` shifting `joint_q` for bodies with non-zero center-of-mass offsets by always converting body poses between Newton body-origin and Kamino CoM frames during reset.
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.
 - Fix `ModelBuilder.add_usd()` to honor `PhysicsScene.gravityDirection`, including stage-to-builder rotation and per-world imports.
 - Fix stale overlay layers remaining visible after switching examples in the OpenGL viewer.

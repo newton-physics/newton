@@ -386,6 +386,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         Configuration for a call to the reset() operation, specifying the behaviour (common or separate)
         for body poses, body velocities as well as floating base pose and velocity.
 
+        After body poses and velocities are updated (or preserved), joint coordinates and velocities
+        are always re-derived from the resulting body state for consistency. Joint constraint forces
+        are reset to zero. When body and joint state are already consistent, re-derived joint values
+        match the preserved inputs.
+
         Example
         -------
 
@@ -395,7 +400,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 reset_config = newton.solvers.SolverKamino.ResetConfig.to_default()
                 solver.reset(state=state, config=reset_config)
 
-                # Preserve the current body/joint state, while resetting time, forces/torques and solver internals
+                # Preserve the current body state, while resetting time, forces/torques and solver internals
                 reset_config = newton.solvers.SolverKamino.ResetConfig.preserve()
                 solver.reset(state=state, config=reset_config)
 
@@ -422,7 +427,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         @dataclass(frozen=True)
         class Preserve:
-            """Reset option, to preserve current values, assuming without check that they are consistent."""
+            """Reset option, to preserve current body/base values, assuming without check that they are consistent."""
 
         @dataclass(frozen=True)
         class FromJointQ:
@@ -735,22 +740,16 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._model_kamino.size, self.model, state, convert_to_com_frame=False
         )
 
-        # Convert body poses from origin to CoM if needed
+        # Convert Newton origin-frame body poses to Kamino CoM frame before reset.
         has_callbacks = self._solver_kamino._pre_reset_cb is not None or self._solver_kamino._post_reset_cb is not None
-        need_CoM_conversion = (
-            not isinstance(config.body_poses, SolverKamino.ResetConfig.Preserve)
-            or not isinstance(config.base_pose, SolverKamino.ResetConfig.Preserve)
-            or has_callbacks
+        self._kamino.convert_body_origin_to_com(
+            body_com=self._model_kamino.bodies.i_r_com_i,
+            body_q_com=state_kamino.q_i,
+            body_q=state_kamino.q_i,
+            world_mask=world_mask if not has_callbacks else None,
+            body_wid=self._model_kamino.bodies.wid,
         )
-        if need_CoM_conversion:
-            self._kamino.convert_body_origin_to_com(
-                body_com=self._model_kamino.bodies.i_r_com_i,
-                body_q_com=state_kamino.q_i,
-                body_q=state_kamino.q_i,
-                world_mask=world_mask if not has_callbacks else None,
-                body_wid=self._model_kamino.bodies.wid,
-            )
-            # Note: we convert all worlds if callbacks are set, so they see the full state correctly
+        # Note: we convert all worlds if callbacks are set, so they see the full state correctly
 
         # Convert base pose from origin to CoM if needed
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
@@ -792,14 +791,13 @@ class SolverKamino(SolverBase, CouplingInterface):
             wp.copy(array, snapshot)
 
         # Convert back body poses from COM-frame (Kamino) to body-origin frame (Newton)
-        if need_CoM_conversion:
-            self._kamino.convert_body_com_to_origin(
-                body_com=self._model_kamino.bodies.i_r_com_i,
-                body_q_com=state_kamino.q_i,
-                body_q=state_kamino.q_i,
-                world_mask=world_mask if not has_callbacks else None,
-                body_wid=self._model_kamino.bodies.wid,
-            )
+        self._kamino.convert_body_com_to_origin(
+            body_com=self._model_kamino.bodies.i_r_com_i,
+            body_q_com=state_kamino.q_i,
+            body_q=state_kamino.q_i,
+            world_mask=world_mask if not has_callbacks else None,
+            body_wid=self._model_kamino.bodies.wid,
+        )
 
         # Revert changes to config
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
