@@ -814,11 +814,11 @@ class TestSolverCoupledContactsAndMPM(unittest.TestCase):
 
     def test_implicit_mpm_reset_syncs_namespaced_non_in_place_state(self):
         """Verify coupled reset mirrors MPM history into the non-in-place output state."""
-        world_builder = newton.ModelBuilder(gravity=0.0)
+        world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverImplicitMPM.register_custom_attributes(world_builder)
         world_builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.05)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverImplicitMPM.register_custom_attributes(builder)
         builder.add_world(world_builder)
         builder.add_world(world_builder)
@@ -2228,12 +2228,12 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
 
     def test_masked_reset_preserves_other_world_proxy_history(self):
         """Verify masked reset preserves other world proxy history."""
-        world_builder = newton.ModelBuilder(gravity=0.0)
+        world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         source_body = world_builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         proxy_body = world_builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         world_builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_world(world_builder)
         builder.add_world(world_builder)
         model = builder.finalize(device="cpu")
@@ -2481,12 +2481,12 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
     def test_masked_reset_preserves_other_world_proxy_history(self):
         """Verify masked reset preserves other world proxy history."""
-        world_builder = newton.ModelBuilder(gravity=0.0)
+        world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         source_particle = world_builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
         proxy_particle = world_builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
         world_builder.add_particle(pos=(2.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
 
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_world(world_builder)
         builder.add_world(world_builder)
         model = builder.finalize(device="cpu")
@@ -2519,7 +2519,7 @@ class TestSolverCoupledParticleProxy(unittest.TestCase):
 
     def test_cross_world_particle_proxy_mapping_is_rejected(self):
         """Verify cross world particle proxy mapping is rejected."""
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.begin_world()
         source_particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
         builder.end_world()

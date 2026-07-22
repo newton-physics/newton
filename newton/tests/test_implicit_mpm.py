@@ -32,9 +32,7 @@ def _make_mpm_particle_builder(
     young_modulus=1.0e4,
     dimensions=(2, 2, 2),
 ):
-    gravity_array = np.asarray(gravity)
-    gravity_magnitude = float(gravity_array if gravity_array.ndim == 0 else gravity_array[1])
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=gravity_magnitude)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=gravity)
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_particle_grid(
         pos=wp.vec3(0.025, 0.025, 0.025),
@@ -69,10 +67,10 @@ def _make_mpm_config(grid_type="dense", integration_scheme="pic", solver="jacobi
 
 def _make_two_world_particle_model(device, builder=None, local_builder=None):
     if builder is None:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     if local_builder is None:
-        local_builder = _make_mpm_particle_builder(gravity=0.0)
+        local_builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
     builder.add_world(local_builder)
     builder.add_world(local_builder)
     return builder.finalize(device=device)
@@ -243,7 +241,7 @@ def test_multiworld_cr_matches_independent(test, device):
         young_moduli, velocity_amplitudes, particle_dimensions, strict=True
     ):
         reference_model = _make_mpm_particle_builder(
-            gravity=0.0,
+            gravity=(0.0, 0.0, 0.0),
             young_modulus=young_modulus,
             dimensions=dimensions,
         ).finalize(device=device)
@@ -256,19 +254,19 @@ def test_multiworld_cr_matches_independent(test, device):
         reference_initial_qd.append(initial_qd)
 
     populated_worlds = (0, 2)
-    empty_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    empty_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     empty_builder.add_body(is_kinematic=True, label="empty_world_marker")
-    multiworld_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    multiworld_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(multiworld_builder)
     for world_builder in (
         _make_mpm_particle_builder(
-            gravity=0.0,
+            gravity=(0.0, 0.0, 0.0),
             young_modulus=young_moduli[0],
             dimensions=particle_dimensions[0],
         ),
         empty_builder,
         _make_mpm_particle_builder(
-            gravity=0.0,
+            gravity=(0.0, 0.0, 0.0),
             young_modulus=young_moduli[1],
             dimensions=particle_dimensions[1],
         ),
@@ -324,7 +322,7 @@ def _run_multiworld_reference_case(device, grid_type="dense", integration_scheme
         reference_states.append((reference_state.particle_q.numpy(), reference_state.particle_qd.numpy()))
 
     local_builder = _make_mpm_particle_builder()
-    multiworld_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    multiworld_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(multiworld_builder)
     multiworld_builder.add_world(local_builder)
     multiworld_builder.add_world(local_builder)
@@ -371,8 +369,8 @@ def test_multiworld_fixed_pic_matches_independent(test, device):
 
 
 def _make_multiworld_fixed_outer_graph_case(device, max_active_cell_count=16):
-    local_builder = _make_mpm_particle_builder(gravity=0.0)
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    local_builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_world(local_builder)
     builder.add_world(local_builder)
@@ -572,9 +570,9 @@ def test_multiworld_sparse_empty_worlds_padding_matches_independent(test, device
         reference_states.append((reference_state.particle_q.numpy(), reference_state.particle_qd.numpy()))
 
     local_builder = _make_mpm_particle_builder()
-    empty_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    empty_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     empty_builder.add_body(is_kinematic=True, label="empty_world_marker")
-    multiworld_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    multiworld_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(multiworld_builder)
     for world_builder in (empty_builder, local_builder, empty_builder, local_builder, empty_builder):
         multiworld_builder.add_world(world_builder)
@@ -620,10 +618,10 @@ def test_multiworld_isolation_is_opt_in(test, device):
 
 def test_empty_particle_model_rejected(test, device):
     """Verify empty particle model rejected."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-9.81)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
-    builder.add_world(newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-9.81))
-    builder.add_world(newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-9.81))
+    builder.add_world(newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0)))
+    builder.add_world(newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0)))
     model = builder.finalize(device=device)
 
     with test.assertRaisesRegex(ValueError, "at least one particle"):
@@ -696,7 +694,7 @@ def test_multiworld_default_shared_grid_accepts_global_particles(test, device):
 
 def test_multiworld_invalid_particle_world_rejected(test, device):
     """Verify multi-world invalid particle world rejected."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-9.81)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     local = _make_mpm_particle_builder()
     builder.add_world(local)
@@ -717,8 +715,8 @@ def test_multiworld_shared_grid_couples_worlds(test, device):
     """Verify multi-world shared grid couples worlds."""
 
     def run(separate_worlds):
-        local = _make_mpm_particle_builder(gravity=0.0)
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+        local = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
         SolverImplicitMPM.register_custom_attributes(builder)
         builder.add_world(local)
         builder.add_world(local)
@@ -837,9 +835,9 @@ def test_multiworld_collision_sdf_filters_stable_colliders(test, device):
 
 def test_multiworld_rasterize_collider_node_environments(test, device):
     """Verify multi-world rasterize collider node environments."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
-    local_builder = _make_mpm_particle_builder(gravity=0.0)
+    local_builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
     for _ in range(3):
         builder.add_world(local_builder)
     model = builder.finalize(device=device)
@@ -931,14 +929,14 @@ def test_multiworld_project_outside_filters_particle_world(test, device):
 
 def test_multiworld_render_grains_follow_particle_world(test, device):
     """Verify multi-world render grains follow particle world."""
-    empty_world = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    empty_world = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     empty_world.add_body(is_kinematic=True, label="empty_world_marker")
 
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
-    builder.add_world(_make_mpm_particle_builder(gravity=0.0, velocity=(0.4, 0.0, 0.0)))
+    builder.add_world(_make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0), velocity=(0.4, 0.0, 0.0)))
     builder.add_world(empty_world)
-    builder.add_world(_make_mpm_particle_builder(gravity=0.0, velocity=(-0.4, 0.0, 0.0)))
+    builder.add_world(_make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0), velocity=(-0.4, 0.0, 0.0)))
     model = builder.finalize(device=device)
 
     temporary_store = fem.TemporaryStore()
@@ -980,7 +978,7 @@ def test_multiworld_render_grains_follow_particle_world(test, device):
 
 def test_multiworld_global_dynamic_collider_rejected(test, device):
     """Verify multi-world global dynamic collider rejected."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     body = builder.add_body(mass=1.0, inertia=inertia, lock_inertia=True)
     shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
@@ -993,7 +991,7 @@ def test_multiworld_global_dynamic_collider_rejected(test, device):
 
 def test_multiworld_global_kinematic_collider_supported(test, device):
     """Verify multi-world global kinematic collider supported."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     body = builder.add_body(mass=1.0, inertia=inertia, lock_inertia=True, is_kinematic=True)
     shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
@@ -1013,7 +1011,7 @@ def test_multiworld_global_kinematic_collider_supported(test, device):
 
 def test_multiworld_masked_reset_refreshes_global_kinematic_collider_history(test, device):
     """Verify multi-world masked reset refreshes global kinematic collider history."""
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     body = builder.add_body(mass=1.0, inertia=inertia, lock_inertia=True, is_kinematic=True)
     builder.add_shape_box(body, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
@@ -1048,7 +1046,7 @@ def test_multiworld_masked_reset_refreshes_global_kinematic_collider_history(tes
 
 def test_multiworld_local_dynamic_collider_and_mass_override(test, device):
     """Verify multi-world local dynamic collider and mass override."""
-    local_builder = _make_mpm_particle_builder(gravity=0.0)
+    local_builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
     inertia = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     body = local_builder.add_body(mass=1.0, inertia=inertia, lock_inertia=True)
     local_builder.add_shape_box(body, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
@@ -1069,9 +1067,9 @@ def test_multiworld_local_dynamic_collider_and_mass_override(test, device):
 def test_multiworld_default_static_colliders_grouped_by_world(test, device):
     """Verify multi-world default static colliders grouped by world."""
     shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     builder.add_shape_box(-1, cfg=shape_cfg)
-    local_builder = _make_mpm_particle_builder(gravity=0.0)
+    local_builder = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0))
     local_builder.add_shape_box(-1, cfg=shape_cfg)
     model = _make_two_world_particle_model(device, builder=builder, local_builder=local_builder)
 
@@ -1092,8 +1090,8 @@ def test_multiworld_external_collider_world_count_mismatch(test, device):
     model = _make_two_world_particle_model(device)
     solver = SolverImplicitMPM(model, _make_mpm_config())
 
-    external_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
-    local_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    external_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+    local_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     local_builder.add_shape_box(-1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
     external_builder.add_world(local_builder)
     external_model = external_builder.finalize(device=device)
@@ -1104,11 +1102,11 @@ def test_multiworld_external_collider_world_count_mismatch(test, device):
 
 def test_shared_solver_globalizes_external_multiworld_colliders(test, device):
     """Verify shared solver globalizes external multi-world colliders."""
-    model = _make_mpm_particle_builder(gravity=0.0).finalize(device=device)
+    model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
     solver = SolverImplicitMPM(model, _make_mpm_config())
 
-    external_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
-    local_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    external_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+    local_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     local_builder.add_shape_box(-1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
     external_builder.add_world(local_builder)
     external_builder.add_world(local_builder)

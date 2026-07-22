@@ -38,12 +38,12 @@ def _make_mpm_config() -> SolverImplicitMPM.Config:
 
 
 def _make_two_world_particle_model(device) -> newton.Model:
-    world_builder = newton.ModelBuilder(gravity=0.0)
+    world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(world_builder)
     for pos in ((-0.05, 0.0, -0.05), (0.05, 0.0, -0.05), (0.0, 0.0, 0.05)):
         world_builder.add_particle(pos=pos, vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.025)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_world(world_builder)
     builder.add_world(world_builder)
@@ -129,7 +129,7 @@ def test_coupled_multiworld_isolation(test, device):
     config = _make_mpm_config()
     test.assertTrue(config.separate_worlds)
 
-    world_builder = newton.ModelBuilder(gravity=0.0)
+    world_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(world_builder)
 
     # Three deformable-collider proxies, one transfer-only proxy, and one MPM
@@ -151,7 +151,7 @@ def test_coupled_multiworld_isolation(test, device):
     )
     world_builder.add_shape_box(dynamic_body, hx=0.2, hy=0.05, hz=0.2)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_world(world_builder)
     builder.add_world(world_builder)
@@ -254,7 +254,7 @@ def _make_sparse_capture_config() -> SolverImplicitMPM.Config:
 
 
 def _make_sparse_capture_case(device):
-    world_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    world_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(world_builder)
     world_builder.add_particle_grid(
         pos=wp.vec3(0.025, 0.025, 0.025),
@@ -272,7 +272,7 @@ def _make_sparse_capture_case(device):
         custom_attributes={"mpm:young_modulus": 1.0e4, "mpm:poisson_ratio": 0.2},
     )
 
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_world(world_builder)
     builder.add_world(world_builder)
@@ -289,7 +289,7 @@ def _make_sparse_capture_case(device):
 
 
 def _make_sparse_reset_case(device):
-    world_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    world_builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(world_builder)
     world_builder.add_particle(pos=(0.025, 0.025, 0.025), vel=(0.0, 0.0, 0.0), mass=0.01, radius=0.025)
     world_builder.add_body(
@@ -298,7 +298,7 @@ def _make_sparse_reset_case(device):
         mass=1.0,
     )
 
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_world(world_builder)
     builder.add_world(world_builder)
@@ -425,7 +425,7 @@ def test_graph_capture_resources_are_materialized_internally(test, device):
 def test_sparse_status_is_sticky_until_explicitly_cleared(test, device):
     """Verify sparse status is sticky until explicitly cleared."""
     _require_sparse_capture_prerequisites(test, device)
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
     SolverImplicitMPM.register_custom_attributes(builder)
     builder.add_particle((0.01, 0.01, 0.01), (0.0, 0.0, 0.0), mass=1.0)
     builder.add_particle((0.02, 0.02, 0.02), (0.0, 0.0, 0.0), mass=1.0)

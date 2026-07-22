@@ -2078,8 +2078,25 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                             else wp.empty(0, dtype=wp.vec3i, device=positions.device)
                             for begin, end in self._particle_world_ranges
                         ]
+                        cell_count = sum(cell_ijk.shape[0] for cell_ijk in cell_ijks)
+                        cell_ijk = wp.empty(cell_count, dtype=wp.vec3i, device=positions.device)
+                        cell_environment = wp.empty(cell_count, dtype=wp.int32, device=positions.device)
+                        cell_offset = 0
+                        for environment, environment_cell_ijk in enumerate(cell_ijks):
+                            environment_cell_count = environment_cell_ijk.shape[0]
+                            if environment_cell_count:
+                                wp.copy(
+                                    cell_ijk,
+                                    environment_cell_ijk,
+                                    dest_offset=cell_offset,
+                                    count=environment_cell_count,
+                                )
+                                cell_environment[cell_offset : cell_offset + environment_cell_count].fill_(environment)
+                            cell_offset += environment_cell_count
                         grid = fem.Nanogrid.from_environment_voxels(
-                            cell_ijks,
+                            cell_ijk,
+                            cell_environment,
+                            self._environment_count,
                             voxel_size=voxel_size,
                             temporary_store=temporary_store,
                             device=positions.device,
