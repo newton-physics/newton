@@ -58,6 +58,7 @@ class LoggingStateMixin:
 
 class TestLibraryLoggingDefaults(LoggingStateMixin, unittest.TestCase):
     def test_newton_warning_logs_remain_visible_without_logging_config(self):
+        """Verify WARNING-level Newton log records reach stderr without any logging config."""
         self._root_logger.handlers[:] = []
         self._newton_logger.handlers[:] = []
         self._root_logger.setLevel(logging.WARNING)
@@ -71,6 +72,7 @@ class TestLibraryLoggingDefaults(LoggingStateMixin, unittest.TestCase):
         self.assertIn("visible Newton warning", stderr.getvalue())
 
     def test_verbose_collapse_remains_visible_without_logging_config(self):
+        """Verify verbose diagnostics fall back to stdout with a one-time deprecation warning."""
         self._root_logger.handlers[:] = []
         self._root_logger.setLevel(logging.WARNING)
         self._newton_logger.setLevel(logging.NOTSET)
@@ -99,6 +101,7 @@ class TestLibraryLoggingDefaults(LoggingStateMixin, unittest.TestCase):
 
 class TestNewtonWarnings(unittest.TestCase):
     def test_warning_categories_are_filterable(self):
+        """Verify Newton warning categories subclass NewtonWarning for filtering."""
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             warnings.warn("geometry issue", newton.NewtonGeometryWarning, stacklevel=1)
@@ -108,6 +111,7 @@ class TestNewtonWarnings(unittest.TestCase):
         self.assertTrue(issubclass(caught[0].category, newton.NewtonWarning))
 
     def test_degenerate_triangle_preserves_legacy_stdout_diagnostic(self):
+        """Verify non-verbose legacy stdout diagnostics still print without emitting warnings."""
         builder = newton.ModelBuilder()
         builder.add_particle(wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), 1.0)
         builder.add_particle(wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), 1.0)
@@ -138,6 +142,7 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
         return builder
 
     def test_examples_configure_stdlib_logging_and_warning_capture(self):
+        """Verify example entry points route info to stdout and warnings/errors to stderr."""
         self._root_logger.handlers[:] = []
         configure_logging = getattr(newton_examples, "_configure_logging", None)
         self.assertTrue(callable(configure_logging))
@@ -171,6 +176,7 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
         self.assertIn("captured example warning", stderr.getvalue())
 
     def test_examples_respect_preconfigured_warp_level(self):
+        """Verify example logging setup honors a preconfigured warp logger level."""
         self._root_logger.handlers[:] = []
         self._warp_logger.handlers[:] = []
         self._warp_logger.setLevel(logging.WARNING)
@@ -192,6 +198,7 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
         self.assertIn("visible configured warp warning", stderr.getvalue())
 
     def test_examples_respect_preconfigured_newton_level(self):
+        """Verify example logging setup honors a preconfigured newton logger level."""
         self._root_logger.handlers[:] = []
         self._newton_logger.handlers[:] = []
         self._newton_logger.setLevel(logging.WARNING)
@@ -212,6 +219,7 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
         self.assertNotIn("visible configured newton warning", stdout.getvalue())
 
     def test_test_runner_configures_stdlib_logging_and_warning_capture(self):
+        """Verify the parallel test runner installs stdout/stderr logging handlers."""
         self._root_logger.handlers[:] = []
         configure_logging = getattr(unittest_parallel, "_configure_logging", None)
         self.assertTrue(callable(configure_logging))
@@ -240,6 +248,7 @@ class TestEntryPointLogging(LoggingStateMixin, unittest.TestCase):
 
 class TestVerboseRouting(unittest.TestCase):
     def test_production_verbose_paths_do_not_print_directly(self):
+        """Verify no verbose-gated production code calls print() instead of log_verbose()."""
         root = Path(newton.__file__).resolve().parent / "_src"
         offenders: list[str] = []
 
@@ -308,6 +317,7 @@ class TestFailfastProxyWarnings(LoggingStateMixin, unittest.TestCase):
         return manager
 
     def test_failfast_is_set_proxy_error_still_runs_tests(self):
+        """Verify a failing failfast is_set() proxy logs a warning and tests still run."""
         suite = unittest.TestSuite([self._PassingTest()])
         manager = self._manager(self._FailfastProxy(fail_is_set=True))
 
@@ -320,6 +330,7 @@ class TestFailfastProxyWarnings(LoggingStateMixin, unittest.TestCase):
         self.assertTrue(any("failfast proxy is_set() failed (OSError)" in line for line in logs.output))
 
     def test_failfast_set_proxy_error_still_returns_failures(self):
+        """Verify a failing failfast set() proxy logs a warning and failures are reported."""
         suite = unittest.TestSuite([self._FailingTest()])
         manager = self._manager(self._FailfastProxy(fail_set=True))
 
