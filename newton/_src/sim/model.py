@@ -527,6 +527,7 @@ class Model:
         ),
         "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
@@ -598,10 +599,12 @@ class Model:
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_COORD,
             compaction_policy="start",
         ),
         "joint_qd_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_DOF,
             compaction_policy="start",
         ),
         "joint_world_start": AttributeSpec(
@@ -641,6 +644,7 @@ class Model:
         # articulations and mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
+            references=AttributeFrequency.JOINT,
             compaction_policy="start",
         ),
         "articulation_end": AttributeSpec(
@@ -946,6 +950,8 @@ class Model:
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
+        self._shape_mesh_properties: wp.array[wp.int32] | None = None
+        """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed
@@ -2263,6 +2269,11 @@ class Model:
         """
         Create and return a :class:`Contacts` object for this model.
 
+        .. deprecated:: 1.5
+
+            Create a :class:`CollisionPipeline` and call
+            :meth:`CollisionPipeline.contacts` instead.
+
         This method initializes a collision pipeline with default arguments (when not already
         cached) and allocates a contacts buffer suitable for storing collision detection results.
         Call :meth:`collide` to run the collision detection and populate the contacts object.
@@ -2275,6 +2286,11 @@ class Model:
         Returns:
             The contact object containing collision information.
         """
+        warnings.warn(
+            "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
@@ -2294,6 +2310,11 @@ class Model:
         Generate contact points for the particles and rigid bodies in the model using the default collision
         pipeline.
 
+        .. deprecated:: 1.5
+
+            Create a :class:`CollisionPipeline` and call
+            :meth:`CollisionPipeline.collide` instead.
+
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
@@ -2310,6 +2331,12 @@ class Model:
                 :meth:`ModelBuilder.ShapeConfig.configure_sdf` (e.g. ``configure_sdf(force_sdf=True)`` on
                 ``default_shape_cfg``) before finalize, or pipeline construction raises.
         """
+        warnings.warn(
+            "Model.collide() is deprecated; create a CollisionPipeline and call "
+            "pipeline.collide(state, contacts) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -498,6 +499,10 @@ class TestSelection(unittest.TestCase):
         expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
 
+        world_mask = wp.array([0, 1, 1, 0], dtype=wp.bool, device=view.device)
+        model_mask = view.get_model_articulation_mask(mask=world_mask)
+        assert_np_equal(model_mask.numpy(), expected)
+
         # test world-arti mask
         m = [
             [0, 1, 0],
@@ -508,6 +513,41 @@ class TestSelection(unittest.TestCase):
         model_mask = view.get_model_articulation_mask(mask=m)
         expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=bool)
         assert_np_equal(model_mask.numpy(), expected)
+
+        world_articulation_mask = wp.array(m, dtype=wp.bool, device=view.device)
+        model_mask = view.get_model_articulation_mask(mask=world_articulation_mask)
+        assert_np_equal(model_mask.numpy(), expected)
+
+    def test_selection_mask_rejects_invalid_warp_arrays(self):
+        builder = newton.ModelBuilder()
+        body = builder.add_link()
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint], label="robot")
+        model = builder.finalize()
+        view = ArticulationView(model, "robot")
+
+        invalid_masks = (
+            wp.empty(0, dtype=wp.bool, device=view.device),
+            wp.ones(2, dtype=wp.bool, device=view.device),
+            wp.ones((1, 2), dtype=wp.bool, device=view.device),
+            wp.ones((1, 1, 1), dtype=wp.bool, device=view.device),
+            wp.ones(1, dtype=wp.int32, device=view.device),
+        )
+        for mask in invalid_masks:
+            with self.subTest(shape=mask.shape, dtype=mask.dtype):
+                with mock.patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, "Boolean mask"):
+                        view.get_model_articulation_mask(mask)
+                    launch.assert_not_called()
+
+        if wp.is_cuda_available():
+            other_device = "cpu" if view.device.is_cuda else "cuda:0"
+            mask = wp.ones(1, dtype=wp.bool, device=other_device)
+            with self.subTest(device=mask.device):
+                with mock.patch.object(wp, "launch") as launch:
+                    with self.assertRaisesRegex(ValueError, "device"):
+                        view.get_model_articulation_mask(mask)
+                    launch.assert_not_called()
 
     def run_test_joint_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         """Test an ArticulationView that includes a subset of joints and that we

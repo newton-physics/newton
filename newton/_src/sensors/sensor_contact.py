@@ -319,9 +319,10 @@ class SensorContact:
 
     .. rubric:: Construction and update order
 
-    ``SensorContact`` requests the ``force`` extended attribute from the model at init, so a :class:`~newton.Contacts`
-    object created afterwards (via :meth:`Model.contacts() <newton.Model.contacts>` or directly) will include it
-    automatically.
+    ``SensorContact`` requests the ``force`` extended attribute from the model at init. A :class:`~newton.Contacts`
+    object subsequently allocated via :meth:`~newton.CollisionPipeline.contacts` will include it automatically.
+    Construct the ``SensorContact`` before allocating the contacts buffer. When constructing :class:`~newton.Contacts`
+    directly, pass ``requested_attributes={"force"}``.
 
     :meth:`update` reads from ``contacts.force``. Call ``solver.update_contacts(contacts)`` before
     ``sensor.update()`` so that contact forces are current.
@@ -346,7 +347,8 @@ class SensorContact:
             sensor = SensorContact(model, sensing_shapes="ball")
             solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
-            contacts = model.contacts()
+            collision_pipeline = newton.CollisionPipeline(model)
+            contacts = collision_pipeline.contacts()
 
             solver.step(state, state, None, None, dt=1.0 / 60.0)
             solver.update_contacts(contacts)

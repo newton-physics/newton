@@ -45,10 +45,11 @@ class TestMuJoCoReset(unittest.TestCase):
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         newton.eval_fk(self.model, self.state_in.joint_q, self.state_in.joint_qd, self.state_in)
         # One step populates the internal buffers we then expect reset to clear.
-        self.model.collide(self.state_in, self.contacts)
+        self.collision_pipeline.collide(self.state_in, self.contacts)
         self.solver.step(self.state_in, self.state_out, self.control, self.contacts, 1.0 / 60.0)
 
     def _cleared_buffers(self):
