@@ -468,31 +468,30 @@ def test_fk_free_distance_root_descendant_linear_velocity_matches_finite_differe
     )
     q_next[q_start[1]] = q[q_start[1]] + qd[qd_start[1]] * dt
 
-    for eval_fk_fn in (newton.eval_fk,):
-        state = model.state()
-        state.joint_q.assign(q)
-        state.joint_qd.assign(qd)
-        eval_fk_fn(model, state.joint_q, state.joint_qd, state)
+    state = model.state()
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        state_next = model.state()
-        state_next.joint_q.assign(q_next)
-        state_next.joint_qd.assign(qd)
-        eval_fk_fn(model, state_next.joint_q, state_next.joint_qd, state_next)
+    state_next = model.state()
+    state_next.joint_q.assign(q_next)
+    state_next.joint_qd.assign(qd)
+    newton.eval_fk(model, state_next.joint_q, state_next.joint_qd, state_next)
 
-        body_q = state.body_q.numpy().reshape(-1, 7)
-        body_q_next = state_next.body_q.numpy().reshape(-1, 7)
-        body_qd = state.body_qd.numpy().reshape(-1, 6)
+    body_q = state.body_q.numpy().reshape(-1, 7)
+    body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+    body_qd = state.body_qd.numpy().reshape(-1, 6)
 
-        # Root body origin FD check -- pins the FREE/DISTANCE COM-velocity contract.
-        root_origin_vel_fd = (body_q_next[base, :3] - body_q[base, :3]) / dt
-        root_origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, base)
-        assert_np_equal(root_origin_vel_fd, root_origin_vel_from_body_qd, tol=5.0e-3)
+    # Root body origin FD check -- pins the FREE/DISTANCE COM-velocity contract.
+    root_origin_vel_fd = (body_q_next[base, :3] - body_q[base, :3]) / dt
+    root_origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, base)
+    assert_np_equal(root_origin_vel_fd, root_origin_vel_from_body_qd, tol=5.0e-3)
 
-        # Descendant body origin FD check -- covers the FREE/DISTANCE-rooted
-        # chain coverage that the removed Featherstone-specific oracle used to pin.
-        child_origin_vel_fd = (body_q_next[child, :3] - body_q[child, :3]) / dt
-        child_origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, child)
-        assert_np_equal(child_origin_vel_fd, child_origin_vel_from_body_qd, tol=5.0e-3)
+    # Descendant body origin FD check -- covers the FREE/DISTANCE-rooted
+    # chain coverage that the removed Featherstone-specific oracle used to pin.
+    child_origin_vel_fd = (body_q_next[child, :3] - body_q[child, :3]) / dt
+    child_origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, child)
+    assert_np_equal(child_origin_vel_fd, child_origin_vel_from_body_qd, tol=5.0e-3)
 
 
 def test_ik_free_distance_descendant_recovers_joint_state(test, device, joint_type):
@@ -594,25 +593,24 @@ def test_solver_fk_prismatic_descendant_linear_velocity_matches_finite_differenc
     q_next[q_start[0]] += qd[qd_start[0]] * dt
     q_next[q_start[1]] += qd[qd_start[1]] * dt
 
-    for eval_fk_fn in (newton.eval_fk,):
-        state = model.state()
-        state.joint_q.assign(q)
-        state.joint_qd.assign(qd)
-        eval_fk_fn(model, state.joint_q, state.joint_qd, state)
+    state = model.state()
+    state.joint_q.assign(q)
+    state.joint_qd.assign(qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        state_next = model.state()
-        state_next.joint_q.assign(q_next)
-        state_next.joint_qd.assign(qd)
-        eval_fk_fn(model, state_next.joint_q, state_next.joint_qd, state_next)
+    state_next = model.state()
+    state_next.joint_q.assign(q_next)
+    state_next.joint_qd.assign(qd)
+    newton.eval_fk(model, state_next.joint_q, state_next.joint_qd, state_next)
 
-        body_q = state.body_q.numpy().reshape(-1, 7)
-        body_q_next = state_next.body_q.numpy().reshape(-1, 7)
-        body_qd = state.body_qd.numpy().reshape(-1, 6)
+    body_q = state.body_q.numpy().reshape(-1, 7)
+    body_q_next = state_next.body_q.numpy().reshape(-1, 7)
+    body_qd = state.body_qd.numpy().reshape(-1, 6)
 
-        origin_vel_fd = (body_q_next[slider, :3] - body_q[slider, :3]) / dt
-        origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, slider)
+    origin_vel_fd = (body_q_next[slider, :3] - body_q[slider, :3]) / dt
+    origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, slider)
 
-        assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
+    assert_np_equal(origin_vel_fd, origin_vel_from_body_qd, tol=5.0e-3)
 
 
 def test_fk_with_indices(test, device):

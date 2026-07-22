@@ -1,14 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
+
 import warp as wp
 
 from .articulation import eval_joint_child_state, eval_joint_motion
 from .enums import JointType
 
 TILE_BLOCK_DIM = 32
+# The kernel stages one wp.transform (28 B) per joint in shared memory; 1024
+# joints stay within the 48 KiB per-block floor of supported GPUs.
+FK_TILE_MAX_JOINTS = 1024
 
 
+@functools.cache
 def create_eval_articulation_fk_tile(joint_capacity: int, write_all: bool, has_cable: bool):
     joint_capacity = wp.constant(joint_capacity)
     preserve_body_q = not write_all or has_cable

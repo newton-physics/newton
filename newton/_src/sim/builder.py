@@ -11897,13 +11897,18 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
-            fk_topology = _build_fk_level_topology(
-                self.articulation_count,
-                joint_articulation_np,
-                joint_parent_np,
-                joint_child_np,
-            )
-            # Non-tree articulations retain the serial FK path.
+            from .articulation_cuda import FK_TILE_MAX_JOINTS  # noqa: PLC0415
+
+            fk_topology = None
+            if max_joints_per_articulation <= FK_TILE_MAX_JOINTS:
+                fk_topology = _build_fk_level_topology(
+                    self.articulation_count,
+                    joint_articulation_np,
+                    joint_parent_np,
+                    joint_child_np,
+                )
+            # Non-tree articulations and articulations beyond the tile kernel's
+            # shared-memory capacity retain the serial FK path.
             if fk_topology is not None:
                 (
                     fk_articulation_level_start,
