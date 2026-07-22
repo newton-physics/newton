@@ -3371,7 +3371,7 @@ class ModelBuilder:
         legacy_margin_gap: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
-        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
+        """Parses a Universal Scene Description (USD) stage and adds rigid bodies, MPM particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
         The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the `Stage <https://openusd.org/dev/api/class_usd_stage.html>`_ interface.
 
@@ -3528,6 +3528,16 @@ class ModelBuilder:
             diagnostic text, not a stable code, and a prim absent from a realized map may still
             appear in the authored metadata.
 
+            ``path_mpm_particle_map`` is always returned. It maps each imported
+            ``UsdGeom.Points`` prim carrying ``NewtonMPMParticleAPI`` to its half-open
+            ``[start, end)`` builder particle range. These ranges are build-time
+            snapshots and are not updated by later structural builder mutations.
+            Each resolved whole-prim or point-``GeomSubset`` physics material must
+            apply ``NewtonMPMMaterialAPI``. Unbound MPM Points use Newton's registered
+            material defaults and :attr:`default_shape_cfg` density.
+            ``mpm_config`` is the validated :class:`SolverImplicitMPM.Config` read
+            from ``NewtonMPMSceneAPI``, or ``None`` when that scene API is absent.
+
             The returned mapping has the following entries:
 
             .. list-table::
@@ -3547,6 +3557,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_mpm_particle_map"``
+                  - Mapping from an MPM ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its ``(body_indices, joint_indices)`` lists. Curves welded into a rod graph report empty joints (the joints belong to the shared graph articulation). Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_map"``
@@ -3579,6 +3591,8 @@ class ModelBuilder:
                   - Dictionary of collected per-prim schema attributes (dict)
                 * - ``"max_solver_iterations"``
                   - The resolved maximum solver iterations (int or None)
+                * - ``"mpm_config"``
+                  - Validated :class:`SolverImplicitMPM.Config` authored on the physics scene, or ``None``
                 * - ``"path_body_relative_transform"``
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``

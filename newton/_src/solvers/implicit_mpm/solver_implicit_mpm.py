@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import math
 import operator
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -922,6 +924,193 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             Isolated multi-world MPM configuration and behavior may change
             without prior notice.
         """
+
+        @classmethod
+        def create_from_usd(cls, scene_prim: Any) -> SolverImplicitMPM.Config:
+            """Create a solver configuration from ``NewtonMPMSceneAPI``.
+
+            Only authored USD values override :class:`Config` defaults, so the
+            schema fallbacks and the Python defaults stay equivalent. Length
+            values authored in stage units are converted to meters. Following
+            :meth:`ModelBuilder.add_usd`, unauthored stage unit metadata is
+            interpreted as one meter and one kilogram per stage unit.
+
+            Args:
+                scene_prim: A ``UsdPhysics.Scene`` prim with
+                    ``NewtonMPMSceneAPI`` applied, or its typed schema object.
+
+            Returns:
+                A validated MPM solver configuration.
+
+            Raises:
+                TypeError: If ``scene_prim`` is not a USD physics scene prim.
+                ValueError: If the API is absent or an authored value is invalid.
+            """
+            try:
+                from pxr import UsdGeom, UsdPhysics
+            except ImportError as error:
+                raise ImportError("Creating an MPM config from USD requires usd-core.") from error
+
+            from ...usd import utils as usd  # noqa: PLC0415
+
+            prim = scene_prim.GetPrim() if hasattr(scene_prim, "GetPrim") else scene_prim
+            if not prim or not prim.IsValid() or not prim.IsA(UsdPhysics.Scene):
+                raise TypeError("scene_prim must be a valid UsdPhysics.Scene prim.")
+            path = str(prim.GetPath())
+            if not usd.has_applied_api_schema(prim, "NewtonMPMSceneAPI"):
+                raise ValueError(f"{path}: NewtonMPMSceneAPI is not applied.")
+
+            config = cls()
+
+            def authored(name: str):
+                attr = prim.GetAttribute(name)
+                if not attr or not attr.HasAuthoredValue():
+                    return None
+                value = attr.Get()
+                if value is None:
+                    raise ValueError(f"{path}: authored attribute {name!r} has no value.")
+                return value
+
+            def finite_float(name: str, value: Any, *, minimum: float | None = None) -> float:
+                try:
+                    result = float(value)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"{path}: {name} must be a finite number, got {value!r}.") from error
+                if not math.isfinite(result) or (minimum is not None and result < minimum):
+                    qualifier = f" greater than or equal to {minimum}" if minimum is not None else ""
+                    raise ValueError(f"{path}: {name} must be a finite number{qualifier}, got {value!r}.")
+                return result
+
+            def integer(name: str, value: Any, *, allow_minus_one: bool = False) -> int:
+                if isinstance(value, (bool, np.bool_)):
+                    raise ValueError(f"{path}: {name} must be an integer, got {value!r}.")
+                try:
+                    result = operator.index(value)
+                except TypeError as error:
+                    raise ValueError(f"{path}: {name} must be an integer, got {value!r}.") from error
+                if result < 0 and not (allow_minus_one and result == -1):
+                    suffix = " or -1" if allow_minus_one else ""
+                    raise ValueError(f"{path}: {name} must be non-negative{suffix}, got {result}.")
+                return result
+
+            def token(name: str, value: Any, allowed: set[str]) -> str:
+                result = str(value)
+                if result not in allowed:
+                    raise ValueError(f"{path}: {name} must be one of {sorted(allowed)}, got {result!r}.")
+                return result
+
+            value = authored("newton:maxSolverIterations")
+            if value is not None:
+                value = integer("newton:maxSolverIterations", value, allow_minus_one=True)
+                if value == 0:
+                    raise ValueError(f"{path}: newton:maxSolverIterations must be positive or -1, got 0.")
+                if value != -1:
+                    config.max_iterations = value
+
+            value = authored("newton:mpm:tolerance")
+            if value is not None:
+                config.tolerance = finite_float("newton:mpm:tolerance", value, minimum=0.0)
+                if config.tolerance == 0.0:
+                    raise ValueError(f"{path}: newton:mpm:tolerance must be positive.")
+
+            value = authored("newton:mpm:rheologySolvers")
+            if value is not None:
+                solvers = tuple(str(item) for item in value)
+                allowed_solvers = {
+                    "auto",
+                    "gs",
+                    "gauss-seidel",
+                    "gs-soa",
+                    "gauss-seidel-soa",
+                    "gs-batched",
+                    "gauss-seidel-batched",
+                    "jacobi",
+                    "cg",
+                    "cr",
+                    "gmres",
+                }
+                if not solvers or any(item not in allowed_solvers for item in solvers):
+                    raise ValueError(
+                        f"{path}: newton:mpm:rheologySolvers must be a non-empty ordered array of supported tokens, "
+                        f"got {solvers!r}."
+                    )
+                config.solver = solvers
+
+            token_fields = (
+                ("newton:mpm:warmstartMode", "warmstart_mode", {"none", "auto", "particles", "grid", "smoothed"}),
+                ("newton:mpm:colliderVelocityMode", "collider_velocity_mode", {"forward", "backward"}),
+                ("newton:mpm:gridType", "grid_type", {"sparse", "dense", "fixed"}),
+                ("newton:mpm:transferScheme", "transfer_scheme", {"apic", "pic"}),
+                ("newton:mpm:integrationScheme", "integration_scheme", {"pic", "gimp"}),
+                ("newton:mpm:velocityBasis", "velocity_basis", {"Q1", "B2", "B3"}),
+            )
+            for usd_name, field_name, allowed in token_fields:
+                value = authored(usd_name)
+                if value is not None:
+                    setattr(config, field_name, token(usd_name, value, allowed))
+
+            stage = prim.GetStage()
+            linear_unit = (
+                float(UsdGeom.GetStageMetersPerUnit(stage)) if UsdGeom.StageHasAuthoredMetersPerUnit(stage) else 1.0
+            )
+            if not math.isfinite(linear_unit) or linear_unit <= 0.0:
+                raise ValueError(f"{path}: metersPerUnit must be finite and positive, got {linear_unit!r}.")
+            mass_unit = (
+                float(UsdPhysics.GetStageKilogramsPerUnit(stage))
+                if UsdPhysics.StageHasAuthoredKilogramsPerUnit(stage)
+                else 1.0
+            )
+            if not math.isfinite(mass_unit) or mass_unit <= 0.0:
+                raise ValueError(f"{path}: kilogramsPerUnit must be finite and positive, got {mass_unit!r}.")
+            value = authored("newton:mpm:voxelSize")
+            if value is not None:
+                config.voxel_size = finite_float("newton:mpm:voxelSize", value, minimum=0.0) * linear_unit
+                if config.voxel_size == 0.0:
+                    raise ValueError(f"{path}: newton:mpm:voxelSize must be positive.")
+
+            value = authored("newton:mpm:gridPadding")
+            if value is not None:
+                config.grid_padding = integer("newton:mpm:gridPadding", value)
+
+            for usd_name, field_name in (
+                ("newton:mpm:maxActiveCellCount", "max_active_cell_count"),
+                ("newton:mpm:maxLeafNodeCount", "max_leaf_node_count"),
+                ("newton:mpm:maxLowerNodeCount", "max_lower_node_count"),
+                ("newton:mpm:maxUpperNodeCount", "max_upper_node_count"),
+            ):
+                value = authored(usd_name)
+                if value is not None:
+                    setattr(config, field_name, _validate_sparse_grid_node_capacity(field_name, value))
+
+            value = authored("newton:mpm:criticalFraction")
+            if value is not None:
+                config.critical_fraction = finite_float("newton:mpm:criticalFraction", value, minimum=0.0)
+                if config.critical_fraction > 1.0:
+                    raise ValueError(f"{path}: newton:mpm:criticalFraction must not exceed 1.0.")
+            value = authored("newton:mpm:airDrag")
+            if value is not None:
+                config.air_drag = finite_float("newton:mpm:airDrag", value, minimum=0.0)
+                config.air_drag *= mass_unit
+
+            value = authored("newton:mpm:colliderNormalFromSdfGradient")
+            if value is not None:
+                if not isinstance(value, (bool, np.bool_)):
+                    raise ValueError(f"{path}: newton:mpm:colliderNormalFromSdfGradient must be bool, got {value!r}.")
+                config.collider_normal_from_sdf_gradient = bool(value)
+
+            for usd_name, field_name, fixed in (
+                ("newton:mpm:colliderBasis", "collider_basis", {"Q1", "S2"}),
+                ("newton:mpm:strainBasis", "strain_basis", {"P0", "P1d", "Q1", "Q1d"}),
+            ):
+                value = authored(usd_name)
+                if value is None:
+                    continue
+                basis = str(value)
+                if basis not in fixed and re.fullmatch(r"pic(?:[1-9][0-9]*)?", basis) is None:
+                    raise ValueError(f"{path}: {usd_name} has unsupported basis token {basis!r}.")
+                setattr(config, field_name, basis)
+
+            return config
 
     @classmethod
     def register_custom_attributes(cls, builder: newton.ModelBuilder) -> None:
