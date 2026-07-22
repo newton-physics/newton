@@ -401,11 +401,17 @@ class _ExampleBrowser:
         if hasattr(self.viewer, "hide_loading_splash"):
             self.viewer.hide_loading_splash()
 
+    def _clear_viewer_scene(self):
+        if hasattr(self.viewer, "clear_all_layers"):
+            self.viewer.clear_all_layers()
+        else:
+            self.viewer.clear_model()
+
     def switch(self, example_class):
         """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
         module_path, self.switch_target = self.switch_target, None
         self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
-        self.viewer.clear_model()
+        self._clear_viewer_scene()
         try:
             mod = importlib.import_module(module_path)
             parser = getattr(mod.Example, "create_parser", create_parser)()
@@ -431,7 +437,7 @@ class _ExampleBrowser:
         """
         self._reset_requested = False
         self._show_splash("Resetting...")
-        self.viewer.clear_model()
+        self._clear_viewer_scene()
         try:
             if self._initial_args is not None:
                 # Re-create the example with the user's original CLI args so

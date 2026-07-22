@@ -147,7 +147,7 @@ def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=ne
     kernel = create_eval_articulation_fk_tile(
         model.max_joints_per_articulation,
         body_flag_filter == newton.BodyFlags.ALL,
-        model._fk_has_cable,
+        model._has_cable_joints,
     )
     wp.launch_tiled(
         kernel,
