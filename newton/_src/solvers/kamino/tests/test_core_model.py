@@ -881,12 +881,10 @@ class TestModelConversions(unittest.TestCase):
 
     def test_15_preserve_reset_keeps_joint_q_consistent_with_com_offset_body(self):
         """
-        Verify preserve reset keeps joint_q consistent with body_q for COM-offset bodies.
+        Verify preserve reset leaves body_q and joint_q unchanged for COM-offset bodies.
 
-        ``ResetConfig.preserve()`` skips origin<->COM conversion but still recomputes
-        joint coordinates from body poses. That path expects COM-frame body poses, so
-        for a single floating body with a non-zero COM offset the resulting ``joint_q``
-        is shifted by the COM offset even though ``body_q`` is unchanged.
+        For a single floating body with a non-zero center-of-mass offset, a preserve
+        reset should not modify ``body_q`` or re-derived ``joint_q``.
         """
         model = self._build_single_floating_body_com_offset_model()
         solver = SolverKamino(model)
