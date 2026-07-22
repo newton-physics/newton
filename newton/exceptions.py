@@ -12,12 +12,7 @@ class NewtonDeprecationWarning(NewtonWarning, DeprecationWarning):
     """Warning category for deprecated Newton APIs."""
 
 
-class NewtonGeometryWarning(NewtonWarning):
-    """Warning category for recoverable geometry issues."""
-
-
 __all__ = [
     "NewtonDeprecationWarning",
-    "NewtonGeometryWarning",
     "NewtonWarning",
 ]

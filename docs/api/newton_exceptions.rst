@@ -16,5 +16,4 @@ Warnings and exceptions raised by Newton's public API.
    :nosignatures:
 
    NewtonDeprecationWarning
-   NewtonGeometryWarning
    NewtonWarning

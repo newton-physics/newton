@@ -43,7 +43,6 @@ newton
    ModelBuilder
    ModelFlags
    NewtonDeprecationWarning
-   NewtonGeometryWarning
    NewtonWarning
    ParticleFlags
    SDF

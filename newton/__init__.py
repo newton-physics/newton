@@ -12,7 +12,6 @@ from ._src.core import (
 from ._version import __version__
 from .exceptions import (
     NewtonDeprecationWarning,
-    NewtonGeometryWarning,
     NewtonWarning,
 )
 
@@ -46,7 +45,6 @@ __all__ = [
     "Axis",
     "AxisType",
     "NewtonDeprecationWarning",
-    "NewtonGeometryWarning",
     "NewtonWarning",
     "__version__",
     "use_coord_layout_targets",

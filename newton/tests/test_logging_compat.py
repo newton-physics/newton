@@ -104,11 +104,11 @@ class TestNewtonWarnings(unittest.TestCase):
         """Verify Newton warning categories subclass NewtonWarning for filtering."""
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            warnings.warn("geometry issue", newton.NewtonGeometryWarning, stacklevel=1)
+            warnings.warn("deprecated API", newton.NewtonDeprecationWarning, stacklevel=1)
 
         self.assertEqual(len(caught), 1)
-        self.assertTrue(issubclass(caught[0].category, newton.NewtonGeometryWarning))
         self.assertTrue(issubclass(caught[0].category, newton.NewtonWarning))
+        self.assertTrue(issubclass(caught[0].category, DeprecationWarning))
 
     def test_degenerate_triangle_preserves_legacy_stdout_diagnostic(self):
         """Verify non-verbose legacy stdout diagnostics still print without emitting warnings."""
