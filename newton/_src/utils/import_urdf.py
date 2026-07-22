@@ -16,7 +16,7 @@ import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
-from ..geometry import Mesh
+from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
@@ -627,8 +627,8 @@ def parse_urdf(
 
     # maps from link name -> link index
     link_index: dict[str, int] = {}
-    visual_shapes: list[int] = []
     start_shape_count = len(builder.shape_type)
+    model_has_visual_shapes = any(len(urdf_link.findall("visual")) > 0 for urdf_link in urdf_links)
 
     for urdf_link in urdf_links:
         name = urdf_link.get("name")
@@ -648,12 +648,11 @@ def parse_urdf(
         if parse_visuals_as_colliders:
             colliders = visuals
         else:
-            s = parse_shapes(link, visuals, density=0.0, just_visual=True, visible=not hide_visuals)
-            visual_shapes.extend(s)
+            parse_shapes(link, visuals, density=0.0, just_visual=True, visible=not hide_visuals)
 
         show_colliders = should_show_collider(
             force_show_colliders,
-            has_visual_shapes=len(visuals) > 0,
+            model_has_visual_shapes=model_has_visual_shapes,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
         )
 
@@ -895,13 +894,13 @@ def parse_urdf(
         custom_attributes=articulation_custom_attrs,
     )
 
-    for i in range(start_shape_count, end_shape_count):
-        for j in visual_shapes:
-            builder.add_shape_collision_filter_pair(i, j)
-
     if not enable_self_collisions:
-        for i in range(start_shape_count, end_shape_count):
-            for j in range(i + 1, end_shape_count):
+        # The broad phase only ever tests colliding shapes, so visual-only shapes need no filter pairs.
+        colliding_shapes = [
+            i for i in range(start_shape_count, end_shape_count) if builder.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+        ]
+        for a, i in enumerate(colliding_shapes):
+            for j in colliding_shapes[a + 1 :]:
                 builder.add_shape_collision_filter_pair(i, j)
 
     if collapse_fixed_joints:

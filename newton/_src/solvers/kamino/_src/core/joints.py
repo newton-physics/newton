@@ -15,7 +15,7 @@ from warp._src.types import Any, Int, Vector
 
 from .....core.types import MAXVAL, override
 from .....sim import JointTargetMode, JointType
-from .math import FLOAT32_MAX, FLOAT32_MIN, PI, TWO_PI
+from .math import FLOAT32_MAX, FLOAT32_MIN
 from .types import (
     ArrayLike,
     Descriptor,
@@ -225,11 +225,11 @@ class JointCorrectionMode(IntEnum):
         Returns the numerical bound imposed by the correction mode.
         """
         if self.value == self.TWOPI:
-            return float(TWO_PI)
+            return float(wp.tau)  # Note: wp.tau is 2 * pi
         elif self.value == self.CONTINUOUS:
             return float(JOINT_QMAX)
         elif self.value == self.NONE:
-            return float(PI)
+            return float(wp.pi)
         else:
             raise ValueError(f"Unknown joint correction mode: {self.value}")
 
@@ -1025,6 +1025,16 @@ class JointDescriptor(Descriptor):
     act_type: JointActuationType = JointActuationType.PASSIVE
     """Actuation type of the joint."""
 
+    fk_act_flag: int = -1
+    """
+    Integer flag indicating whether this joint should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
+    """
+
     dof_type: JointDoFType = JointDoFType.FREE
     """DoF type of the joint."""
 
@@ -1499,6 +1509,7 @@ class JointDescriptor(Descriptor):
             f"uid: {self.uid},\n"
             "----------------------------------------------\n"
             f"act_type: {self.act_type},\n"
+            f"fk_act_flag: {self.fk_act_flag},\n"
             f"dof_type: {self.dof_type},\n"
             "----------------------------------------------\n"
             f"bid_B: {self.bid_B},\n"
@@ -1683,6 +1694,17 @@ class JointsModel:
     """
     Joint actuation type ID of each joint.
     Shape of ``(num_joints,)``.
+    """
+
+    fk_act_flag: wp.array[wp.int32] | None = None
+    """
+    Integer flag per joint, indicating whether it should be considered actuated (1) or passive (0) by the
+    Forward Kinematics solver, or to infer this from `act_type` (-1).
+    Shape of ``(num_joints,)`` if set; else considered to be -1 for all joints.
+
+    Actuating more joints in FK than in dynamics can be used, e.g., to make the FK problem well-posed for
+    under-actuated systems.
+    Note that all actuator types are treated equally in FK (only passive vs actuated matters).
     """
 
     bid_B: wp.array[wp.int32] | None = None

@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
-    from .inverse_dynamics import InverseDynamics
 
 
 _HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
@@ -512,6 +511,7 @@ class Model:
         ),
         "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
@@ -583,10 +583,12 @@ class Model:
         "joint_world": AttributeSpec(AttributeFrequency.JOINT, references=AttributeFrequency.WORLD),
         "joint_q_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_COORD,
             compaction_policy="start",
         ),
         "joint_qd_start": AttributeSpec(
             AttributeFrequency.JOINT,
+            references=AttributeFrequency.JOINT_DOF,
             compaction_policy="start",
         ),
         "joint_world_start": AttributeSpec(
@@ -626,6 +628,7 @@ class Model:
         # articulations and mimic constraints
         "articulation_start": AttributeSpec(
             AttributeFrequency.ARTICULATION,
+            references=AttributeFrequency.JOINT,
             compaction_policy="start",
         ),
         "articulation_end": AttributeSpec(
@@ -931,6 +934,8 @@ class Model:
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
+        self._shape_mesh_properties: wp.array[wp.int32] | None = None
+        """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed
@@ -1105,6 +1110,7 @@ class Model:
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type: wp.array[wp.int32] | None = None
         """Joint type, shape [joint_count], int."""
+        self._has_cable_joints: bool = False
         self.joint_articulation: wp.array[wp.int32] | None = None
         """Joint articulation index (-1 if not in any articulation), shape [joint_count], int."""
         self.joint_parent: wp.array[wp.int32] | None = None
@@ -2180,46 +2186,6 @@ class Model:
         )
         return c
 
-    def inverse_dynamics(self) -> InverseDynamics:
-        """Create an inverse-dynamics container sized for this model's topology.
-
-        The container holds the public output buffers (mass matrix,
-        compensation forces, and :attr:`~newton.InverseDynamics.tau`) and owns
-        the internal RNEA/Jacobian scratch privately, so callers only manage the
-        one object.
-
-        Returns:
-            An :class:`~newton.InverseDynamics` to pass to
-            :func:`~newton.eval_inverse_dynamics`.
-
-        Raises:
-            ValueError: If the model contains a ``JointType.CABLE`` joint.
-                Inverse dynamics has no motion-subspace implementation for
-                CABLE (``jcalc_motion`` / ``jcalc_motion_subspace``) and
-                ``eval_fk`` does not reconstruct it, so its results would be
-                undefined. The check runs here, at container-creation time,
-                rather than in the graph-capturable
-                :func:`~newton.eval_inverse_dynamics`.
-        """
-        from .enums import JointType  # noqa: PLC0415
-        from .inverse_dynamics import InverseDynamics  # noqa: PLC0415
-
-        if self.joint_count > 0 and np.any(self.joint_type.numpy() == int(JointType.CABLE)):
-            raise ValueError(
-                "Inverse dynamics does not support JointType.CABLE joints. Remove "
-                "them from the model before calling Model.inverse_dynamics()."
-            )
-
-        return InverseDynamics(
-            articulation_count=self.articulation_count,
-            joint_dof_count=self.joint_dof_count,
-            max_dofs_per_articulation=self.max_dofs_per_articulation,
-            body_count=self.body_count,
-            max_joints_per_articulation=self.max_joints_per_articulation,
-            world_count=self.world_count,
-            device=self.device,
-        )
-
     def set_gravity(
         self,
         gravity: tuple[float, float, float] | list | wp.vec3 | np.ndarray,
@@ -2281,6 +2247,11 @@ class Model:
         """
         Create and return a :class:`Contacts` object for this model.
 
+        .. deprecated:: 1.5
+
+            Create a :class:`CollisionPipeline` and call
+            :meth:`CollisionPipeline.contacts` instead.
+
         This method initializes a collision pipeline with default arguments (when not already
         cached) and allocates a contacts buffer suitable for storing collision detection results.
         Call :meth:`collide` to run the collision detection and populate the contacts object.
@@ -2293,6 +2264,11 @@ class Model:
         Returns:
             The contact object containing collision information.
         """
+        warnings.warn(
+            "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
@@ -2312,6 +2288,11 @@ class Model:
         Generate contact points for the particles and rigid bodies in the model using the default collision
         pipeline.
 
+        .. deprecated:: 1.5
+
+            Create a :class:`CollisionPipeline` and call
+            :meth:`CollisionPipeline.collide` instead.
+
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first). If None, a new
@@ -2328,6 +2309,12 @@ class Model:
                 :meth:`ModelBuilder.ShapeConfig.configure_sdf` (e.g. ``configure_sdf(force_sdf=True)`` on
                 ``default_shape_cfg``) before finalize, or pipeline construction raises.
         """
+        warnings.warn(
+            "Model.collide() is deprecated; create a CollisionPipeline and call "
+            "pipeline.collide(state, contacts) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:

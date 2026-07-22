@@ -185,8 +185,10 @@ jobs:
             macos-latest,
           ]
     runs-on: ubuntu-latest
-    # Same-run artifact downloads use the runtime token, not GITHUB_TOKEN.
-    permissions: {}
+    # Same-run artifact downloads use the runtime token; contents access is
+    # only used to build Codecov's source network for coverage path mapping.
+    permissions:
+      contents: read
     env:
       OS: ${{ matrix.os }}
     steps:
@@ -200,11 +202,20 @@ jobs:
           allowed-endpoints: >
             *.blob.core.windows.net:443
             cli.codecov.io:443
+            github.com:443
             ingest.codecov.io:443
             keybase.io:443
             o26192.ingest.us.sentry.io:443
             results-receiver.actions.githubusercontent.com:443
             storage.googleapis.com:443
+      - name: Checkout source for coverage path mapping
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            newton
       - name: Download test results artifact
         id: download-test-results
         continue-on-error: true
@@ -221,6 +232,7 @@ jobs:
         if: ${{ steps.download-test-results.outcome == 'success' }}
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
         with:
+          disable_search: true
           files: ./rspec.xml
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -232,4 +244,5 @@ jobs:
           env_vars: OS
           files: ./coverage.xml
           flags: unittests
+          plugins: noop
           token: ${{ secrets.CODECOV_TOKEN }}
