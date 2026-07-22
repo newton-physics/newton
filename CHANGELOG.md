@@ -221,6 +221,9 @@
 - Tune VBD contact settings in the `basic_shapes` and `cable_bundle_hysteresis` examples for more consistent friction and recovery behavior. (#3446)
 - Fix USD import ignoring ancestor material bindings with `strongerThanDescendants` strength when a mesh authors `material:binding` without applying `MaterialBindingAPI`: material resolution now uses UsdShade's canonical `ComputeBoundMaterial` unconditionally, which also adds collection-based binding support. Prims authoring bindings without the applied schema are invalid USD and now surface USD's own warning (once per prim per import) — fix such assets with `usdchecker` or `usd-validation-nvidia`. (#3350)
 - Fix `ModelBuilder.add_usd()` to honor `ignore_paths` in the custom-frequency traversal, so prims under ignored subtrees no longer register spurious custom-frequency rows in two-pass import workflows. (#3406)
+- Reject inconsistent per-particle array lengths during bulk model construction and finalization. (#3458)
+- Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive.
+- Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3094)
 - Fix USD joint `physics:collisionEnabled` import so joints with two explicit bodies honor authored collision behavior; joints to world continue to allow body/world collisions, and articulation-wide self-collision filtering remains additive. (#3320)
 - Fix `ViewerFile.is_running()` to return `False` after `ViewerFile.close()` so headless recording loops can terminate like interactive viewers. (#3190; fixes #3094)
 - Fix mesh-approximation fallback behavior:
