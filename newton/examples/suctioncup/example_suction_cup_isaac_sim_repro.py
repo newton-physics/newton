@@ -64,15 +64,12 @@ FPS = 60  # rendered frames per second
 SIM_HZ = 240  # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
 NUM_ARM_DOFS = 6  # J1-J6; recorded joints 6-8 are unused finger DOFs
 BOX_HALF = 0.5  # half-extent of the static support box (size [1, 1, 1]) [m]
-# Two pick boxes to choose between; set PICK_BOX to 0 or 1. The gripper parameters are fixed (a
-# statement of the tool -- only the payload changes), so this exercises whether the one real gripper
-# holds different boxes. The box + pallet placement is auto-derived by FK, so it adapts to each size.
-PICK_BOX = 1  # 0: the crate (deep); 1: a wide, shallow panel
-_PICK_BOXES = (
-    ((0.242, 0.166, 0.137), 12.0),  # 0: crate, size [0.484, 0.332, 0.274] m, 12 kg
-    ((0.5, 0.5, 0.04), 30.0),  # 1: wide shallow panel, size [1.0, 1.0, 0.08] m, 30 kg
-)
-PICK_BOX_HALF, PICK_BOX_MASS = _PICK_BOXES[PICK_BOX]  # half-extents [m], mass [kg] (shape density is 0)
+# The arm picks two boxes in sequence over the recording's two engage/disengage cycles: a wide shallow
+# panel at the 1st engagement, then a deep crate at the 2nd. Each rests on its own static pallet until
+# the suction grips it (the gripper parameters are fixed -- a statement of the tool). (half-extents [m],
+# mass [kg]); shape density is 0, so mass/inertia are set on the body.
+PANEL = ((0.5, 0.5, 0.04), 30.0)  # 1st engagement -- wide shallow panel, size [1.0, 1.0, 0.08] m
+CRATE = ((0.242, 0.166, 0.137), 12.0)  # 2nd engagement -- deep crate, size [0.484, 0.332, 0.274] m
 
 # Deepest reach of the finger collision geometry along the suction axis, in the J6_link (flange)
 # frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
@@ -168,8 +165,11 @@ GRIPPER_PARAMS = GripperParams(
     # Normal - translation - z
     k_normal=96000.0,  # stiff, like a vacuum cup on rigid tooling; sets the tilt tracking (peel angle ~0.2deg)
     d_normal=40.0,  # low: the wide-cup couple amplifies damping into the explicit-integrator limit at 240 Hz
-    f_normal_max=2000.0,  # normal break threshold [N]; sized for the 30 kg panel's weight + lift accel
-    f_grip_max=50.0,  # per-pad suction preload [N]; ~box weight / 4 so the panel rests on the pads
+    # f_normal_max is the seal's real hold/break capacity: the clamp on fz, i.e. the most tension a cup
+    # can pull. 2000 N/cup sits well above any pick here (4 cups >> 100 kg), so the seal holds robustly
+    # and the brittle-break trips only on genuine peel/overload, not on the panel's overhang transient.
+    f_normal_max=2000.0,  # per-pad normal hold / break threshold [N]
+    f_grip_max=50.0,  # per-pad suction preload [N]; gentle baseline push + shear/peel capacity floor
 
     # Shear - translation - x,y
     k_shear_x=6000.0,
@@ -470,61 +470,66 @@ class Example:
         ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
         builder.add_ground_plane()
 
-        # Auto-place the pick box + pallet from the flange pose at first engagement (forward kinematics).
-        # 1) engagement time -> the smoothed arm targets there; 2) eval_fk -> the flange world pose;
-        # 3) project the finger-hull deepest point -> the box-top world position; 4) seat the box (and
-        # pallet under it) there. Robust to SMOOTHING_SIGMA / cup geometry / recording (no hard-coded pose).
-        engage_idx = int(np.argmax(rec_engaged))  # first frame the suction command (ro[0]) is on
-        fk_model = builder.finalize()  # arm-only model, solely to run the FK placement probe
+        # Auto-place each pick box + its pallet from the flange pose at that box's engagement (forward
+        # kinematics): FK the arm to the engagement targets -> flange pose -> project the finger-hull
+        # deepest point -> box-top world position -> seat the box (and its pallet under it) there. The
+        # recording has two engage/disengage cycles: PANEL is picked at the 1st engagement, CRATE at the
+        # 2nd. Each rests on its own pallet until gripped. Robust to SMOOTHING_SIGMA / cups / recording.
+        rising = [i for i in range(1, len(rec_engaged)) if rec_engaged[i] and not rec_engaged[i - 1]]
+        falling = [i for i in range(1, len(rec_engaged)) if not rec_engaged[i] and rec_engaged[i - 1]]
+        fk_model = builder.finalize()  # arm-only model, solely to run the FK placement probes
         fk_state = fk_model.state()
-        fk_q = fk_state.joint_q.numpy()
-        fk_q[:NUM_ARM_DOFS] = rec_targets[engage_idx]  # smoothed arm targets at engagement
-        fk_state.joint_q.assign(fk_q)
-        newton.eval_fk(fk_model, fk_state.joint_q, fk_state.joint_qd, fk_state)
-        t_flange = fk_state.body_q.numpy()[ee_body]  # flange world pose at engagement [px,py,pz,qx,qy,qz,qw]
         cup_c = np.mean(GRIPPER_PADS, axis=0)  # box top seats at the finger-hull deepest, under the cups
-        box_top = wp.vec3(*t_flange[:3]) + wp.quat_rotate(
-            wp.quat(*t_flange[3:7]), wp.vec3(FINGER_HULL_DEEPEST_X, float(cup_c[1]), float(cup_c[2]))
-        )
-        box_top_x, box_top_y, box_top_z = float(box_top[0]), float(box_top[1]), float(box_top[2])
-        static_box_center = (box_top_x, box_top_y, box_top_z - 2.0 * PICK_BOX_HALF[2] - BOX_HALF)  # pallet
-        pick_box_center = (box_top_x, box_top_y, box_top_z - PICK_BOX_HALF[2])  # box top at box_top
 
-        # Static support box (1x1x1, collidable) at the pick pose -- the pallet the pick box sits on.
-        builder.add_shape_box(
-            -1,
-            xform=wp.transform(wp.vec3(*static_box_center), wp.quat_identity()),
-            hx=BOX_HALF,
-            hy=BOX_HALF,
-            hz=BOX_HALF,
-        )
-        # Dynamic pick box (the object to pick) resting on the static box. Mass and inertia are set
-        # directly on the body (solid-box formula); the shape density is 0 so the shape adds no mass.
-        hx, hy, hz = PICK_BOX_HALF
-        ixx = PICK_BOX_MASS / 3.0 * (hy * hy + hz * hz)
-        iyy = PICK_BOX_MASS / 3.0 * (hx * hx + hz * hz)
-        izz = PICK_BOX_MASS / 3.0 * (hx * hx + hy * hy)
-        pick_box = builder.add_body(
-            xform=wp.transform(wp.vec3(*pick_box_center), wp.quat_identity()),
-            mass=PICK_BOX_MASS,
-            inertia=wp.mat33(ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz),
-            label="pick_box",
-        )
-        pick_cfg = builder.default_shape_cfg.copy()
-        pick_cfg.density = 0.0
-        pick_box_shape = builder.add_shape_box(
-            pick_box, hx=PICK_BOX_HALF[0], hy=PICK_BOX_HALF[1], hz=PICK_BOX_HALF[2], cfg=pick_cfg
-        )
+        def box_top_world(engage_frame):
+            """World position of the box top when the flange is at the given engagement frame's pose."""
+            q = fk_state.joint_q.numpy()
+            q[:NUM_ARM_DOFS] = rec_targets[engage_frame]
+            fk_state.joint_q.assign(q)
+            newton.eval_fk(fk_model, fk_state.joint_q, fk_state.joint_qd, fk_state)
+            tf = fk_state.body_q.numpy()[ee_body]  # flange world pose [px,py,pz,qx,qy,qz,qw]
+            bt = wp.vec3(*tf[:3]) + wp.quat_rotate(
+                wp.quat(*tf[3:7]), wp.vec3(FINGER_HULL_DEEPEST_X, float(cup_c[1]), float(cup_c[2]))
+            )
+            return float(bt[0]), float(bt[1]), float(bt[2])
 
-        # Pick-box <-> gripper-geometry contact. Enabled: the box presses flush against the rigid tool,
-        # so tipping is resisted by contact (like the real gripper). Filtered: the seal alone owns the
-        # hold. When the contact is on, the seal should be tension-only so the seal and contact don't
-        # both react compression (see SEAL_TENSION_ONLY in surface_gripper.py). The box always collides
-        # with the pallet and ground.
+        def add_box_on_pallet(spec, top, label):
+            """Add a dynamic pick box (top face at ``top``) on its own static pallet. Returns (body, shape).
+
+            Mass/inertia set on the body (solid-box formula); shape density is 0 so the shape adds no mass.
+            """
+            (hx, hy, hz), mass = spec
+            builder.add_shape_box(  # 1x1x1 pallet, its top at the box bottom
+                -1,
+                xform=wp.transform(wp.vec3(top[0], top[1], top[2] - 2.0 * hz - BOX_HALF), wp.quat_identity()),
+                hx=BOX_HALF,
+                hy=BOX_HALF,
+                hz=BOX_HALF,
+            )
+            body = builder.add_body(
+                xform=wp.transform(wp.vec3(top[0], top[1], top[2] - hz), wp.quat_identity()),
+                mass=mass,
+                inertia=wp.mat33(
+                    mass / 3.0 * (hy * hy + hz * hz), 0.0, 0.0,
+                    0.0, mass / 3.0 * (hx * hx + hz * hz), 0.0,
+                    0.0, 0.0, mass / 3.0 * (hx * hx + hy * hy),
+                ),
+                label=label,
+            )
+            cfg = builder.default_shape_cfg.copy()
+            cfg.density = 0.0
+            return body, builder.add_shape_box(body, hx=hx, hy=hy, hz=hz, cfg=cfg)
+
+        panel_body, panel_shape = add_box_on_pallet(PANEL, box_top_world(rising[0]), "panel")
+        crate_body, crate_shape = add_box_on_pallet(CRATE, box_top_world(rising[1]), "crate")
+
+        # Filter each pick box against the gripper geometry: the seal owns the hold (see
+        # ENABLE_PAD_BOX_CONTACT / SEAL_TENSION_ONLY). Each box still collides with its pallet and ground.
         if not ENABLE_PAD_BOX_CONTACT:
             for shape in range(len(builder.shape_body)):
                 if builder.shape_body[shape] == ee_body:
-                    builder.add_shape_collision_filter_pair(pick_box_shape, shape)
+                    builder.add_shape_collision_filter_pair(panel_shape, shape)
+                    builder.add_shape_collision_filter_pair(crate_shape, shape)
 
         # Cup markers: a thin non-colliding disk at each suction cup so the cup layout is visible in the
         # viewer (radius = the modeled cup radius dim_a; oriented so the disk faces along the suction axis).
@@ -564,24 +569,26 @@ class Example:
         )
         for px, py, pz in GRIPPER_PADS:
             gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
-        # Characterize the seal's three spring-damper modes for this picked box (constant; shown in the
-        # side panel). ixx is the box tilt inertia about a horizontal grip axis; hz is the COM depth
-        # below the top-face grip. Stored as (name, omega_n [rad/s], zeta) per mode.
+        # Characterize the seal's three spring-damper modes for the first-picked box (the panel; shown
+        # in the side panel). panel_ixx is its tilt inertia about a horizontal grip axis; panel_hz is the
+        # COM depth below the top-face grip. Stored as (name, omega_n [rad/s], zeta) per mode.
+        (_phx, _phy, panel_hz), panel_mass = PANEL
+        panel_ixx = panel_mass / 3.0 * (_phy * _phy + panel_hz * panel_hz)
         self.seal_modes = (
             (
                 "peel",
-                gripper.peel_natural_frequency(ixx, PICK_BOX_MASS, hz),
-                gripper.peel_damping_ratio(ixx, PICK_BOX_MASS, GRIPPER_PARAMS.d_peel_x, hz),
+                gripper.peel_natural_frequency(panel_ixx, panel_mass, panel_hz),
+                gripper.peel_damping_ratio(panel_ixx, panel_mass, GRIPPER_PARAMS.d_peel_x, panel_hz),
             ),
             (
                 "normal",
-                gripper.normal_natural_frequency(PICK_BOX_MASS),
-                gripper.normal_damping_ratio(PICK_BOX_MASS, GRIPPER_PARAMS.d_normal),
+                gripper.normal_natural_frequency(panel_mass),
+                gripper.normal_damping_ratio(panel_mass, GRIPPER_PARAMS.d_normal),
             ),
             (
                 "shear",
-                gripper.shear_natural_frequency(PICK_BOX_MASS),
-                gripper.shear_damping_ratio(PICK_BOX_MASS, GRIPPER_PARAMS.d_shear_x),
+                gripper.shear_natural_frequency(panel_mass),
+                gripper.shear_damping_ratio(panel_mass, GRIPPER_PARAMS.d_shear_x),
             ),
         )
         gripper_builder = SurfaceGripperBuilder()
@@ -593,7 +600,12 @@ class Example:
         self.seal_engaged = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)
         self.seal_broken = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)  # latched physics break per pad
         self.seal_break_count = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps
-        self.seal_body_b = wp.full(len(GRIPPER_PADS), pick_box, dtype=wp.int32)
+        # The seal grips the panel in the 1st cycle and the crate in the 2nd. seal_body_b is switched
+        # from panel to crate in step(), between the 1st disengage and 2nd engage (seal idle, safe).
+        self.seal_body_b = wp.full(len(GRIPPER_PADS), panel_body, dtype=wp.int32)
+        self.crate_body = crate_body
+        self.seal_switched = False
+        self.t_seal_switch = 0.5 * (float(rec_times[falling[0]]) + float(rec_times[rising[1]]))
 
         # Start the arm at the first recorded pose. Set only the arm DOFs; the pick box's free-joint
         # DOFs keep their built-in rest pose (from add_body), so it starts resting on the static box.
@@ -688,6 +700,12 @@ class Example:
     def step(self):
         # the target kernel interpolates and applies the drive targets and advances the sub-step
         # counter before each physics sub-step, so step() just runs one frame.
+        # Between the two pick cycles (seal idle), retarget the seal from the panel to the crate so the
+        # 2nd engagement latches the crate. seal_body_b is captured by reference, so the in-place assign
+        # takes effect on the next graph launch.
+        if not self.seal_switched and int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt >= self.t_seal_switch:
+            self.seal_body_b.assign(np.full(len(GRIPPER_PADS), self.crate_body, dtype=np.int32))
+            self.seal_switched = True
         if self.graph:
             wp.capture_launch(self.graph)
         else:
