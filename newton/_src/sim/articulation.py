@@ -598,17 +598,15 @@ def eval_fk(
             from .articulation_cuda import TILE_BLOCK_DIM, create_eval_articulation_fk_tile  # noqa: PLC0415
 
             kernel = create_eval_articulation_fk_tile(
-                model.max_joints_per_articulation,
+                model._fk_level_capacity,
                 body_flag_filter == BodyFlags.ALL,
                 model._has_cable_joints,
             )
             inputs = [
-                model.articulation_start,
-                model.articulation_end,
                 model._fk_articulation_level_start,
                 model._fk_level_joint_start,
                 model._fk_level_joints,
-                model._fk_joint_parent,
+                model._fk_level_parent_pos,
                 model.articulation_count,
                 mask,
                 indices,

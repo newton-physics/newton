@@ -9,7 +9,7 @@ import warp as wp
 import newton
 from newton._src.sim.articulation import eval_articulation_fk
 from newton._src.sim.articulation_cuda import (
-    FK_TILE_MAX_JOINTS,
+    FK_TILE_MAX_LEVEL_WIDTH,
     TILE_BLOCK_DIM,
     create_eval_articulation_fk_tile,
 )
@@ -146,7 +146,7 @@ def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=ne
     count = len(indices) if indices is not None else model.articulation_count
     block_dim = TILE_BLOCK_DIM if model.device.is_cuda else 1
     kernel = create_eval_articulation_fk_tile(
-        model.max_joints_per_articulation,
+        model._fk_level_capacity,
         body_flag_filter == newton.BodyFlags.ALL,
         model._has_cable_joints,
     )
@@ -155,12 +155,10 @@ def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=ne
         dim=[count],
         block_dim=block_dim,
         inputs=[
-            model.articulation_start,
-            model.articulation_end,
             model._fk_articulation_level_start,
             model._fk_level_joint_start,
             model._fk_level_joints,
-            model._fk_joint_parent,
+            model._fk_level_parent_pos,
             model.articulation_count,
             mask,
             indices,
@@ -195,9 +193,9 @@ def test_heterogeneous_wide_articulations(test, device):
 
     articulation_level_start = model._fk_articulation_level_start.numpy()
     level_joint_start = model._fk_level_joint_start.numpy()
-    fk_joint_parent = model._fk_joint_parent.numpy()
-    test.assertEqual(fk_joint_parent[0], -1)
-    test.assertEqual(fk_joint_parent[1], 0)
+    level_parent_pos = model._fk_level_parent_pos.numpy()
+    test.assertEqual(level_parent_pos[0], -1)
+    test.assertEqual(level_parent_pos[1], 0)
     wide_articulation_levels = range(articulation_level_start[1], articulation_level_start[2])
     test.assertEqual(
         max(level_joint_start[level + 1] - level_joint_start[level] for level in wide_articulation_levels), 40
@@ -238,7 +236,8 @@ def test_deep_articulation(test, device):
 
     articulation_level_start = model._fk_articulation_level_start.numpy()
     test.assertEqual(articulation_level_start[1] - articulation_level_start[0], 41)
-    test.assertEqual(model._fk_joint_parent.numpy()[-1], 39)
+    test.assertEqual(model._fk_level_capacity, 1)
+    test.assertEqual(model._fk_level_parent_pos.numpy()[-1], 0)
 
     state_reference = model.state()
     state_parallel = model.state()
@@ -336,7 +335,7 @@ def test_loop_closing_joint(test, device):
     assert_np_equal(model.joint_ancestor.numpy(), np.array([-1, 2, 1], dtype=np.int32))
     assert_np_equal(model._fk_articulation_level_start.numpy(), np.array([0, 2], dtype=np.int32))
     assert_np_equal(model._fk_level_joint_start.numpy(), np.array([0, 1, 2], dtype=np.int32))
-    assert_np_equal(model._fk_joint_parent.numpy(), np.array([-1, 0, -1], dtype=np.int32))
+    assert_np_equal(model._fk_level_parent_pos.numpy(), np.array([-1, 0], dtype=np.int32))
 
     state_reference = model.state()
     state_parallel = model.state()
@@ -387,9 +386,21 @@ def test_cyclic_articulation_serial_fallback(test, device):
     assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
 
 
-def test_large_articulation_serial_fallback(test, device):
+def test_wide_level_serial_fallback(test, device):
     builder = newton.ModelBuilder(gravity=0.0)
-    _add_chain(builder, FK_TILE_MAX_JOINTS + 1, 0.0)
+    root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    joints = [builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)]
+    for i in range(FK_TILE_MAX_LEVEL_WIDTH + 1):
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joints.append(
+            builder.add_joint_revolute(
+                parent=root,
+                child=child,
+                axis=newton.Axis.Y,
+                parent_xform=wp.transform(wp.vec3(0.001 * i, 0.0, 0.0), wp.quat_identity()),
+            )
+        )
+    builder.add_articulation(joints)
     model = builder.finalize(device=device)
     model.joint_q.assign(np.linspace(-0.1, 0.1, model.joint_coord_count, dtype=np.float32))
 
@@ -461,8 +472,8 @@ add_function_test(
 )
 add_function_test(
     TestEvalFK,
-    "test_large_articulation_serial_fallback",
-    test_large_articulation_serial_fallback,
+    "test_wide_level_serial_fallback",
+    test_wide_level_serial_fallback,
     get_selected_cuda_test_devices(),
 )
 add_function_test(

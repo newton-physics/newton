@@ -165,7 +165,18 @@ def _build_fk_level_topology(
     articulation_level_count = np.bincount(sorted_articulations[new_level], minlength=articulation_count)
     articulation_level_start = np.concatenate(([0], np.cumsum(articulation_level_count))).astype(np.int32)
 
-    return articulation_level_start, level_joint_start, level_joints, parent_joint
+    # Position of each scheduled joint's parent within the previous level.
+    pos_in_level = np.arange(len(level_joints), dtype=np.int32) - np.repeat(
+        level_joint_start[:-1], np.diff(level_joint_start)
+    )
+    joint_pos = np.full(len(joint_articulations), -1, dtype=np.int32)
+    joint_pos[level_joints] = pos_in_level
+    scheduled_parents = parent_joint[level_joints]
+    level_parent_pos = np.where(scheduled_parents >= 0, joint_pos[np.maximum(scheduled_parents, 0)], -1).astype(
+        np.int32
+    )
+
+    return articulation_level_start, level_joint_start, level_joints, level_parent_pos
 
 
 @dataclass(frozen=True)
@@ -11897,29 +11908,30 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
-            from .articulation_cuda import FK_TILE_MAX_JOINTS  # noqa: PLC0415
+            from .articulation_cuda import FK_TILE_MAX_LEVEL_WIDTH  # noqa: PLC0415
 
-            fk_topology = None
-            if max_joints_per_articulation <= FK_TILE_MAX_JOINTS:
-                fk_topology = _build_fk_level_topology(
-                    self.articulation_count,
-                    joint_articulation_np,
-                    joint_parent_np,
-                    joint_child_np,
-                )
-            # Non-tree articulations and articulations beyond the tile kernel's
-            # shared-memory capacity retain the serial FK path.
+            fk_topology = _build_fk_level_topology(
+                self.articulation_count,
+                joint_articulation_np,
+                joint_parent_np,
+                joint_child_np,
+            )
+            # Non-tree articulations and levels beyond the tile kernel's
+            # shared-memory staging capacity retain the serial FK path.
             if fk_topology is not None:
                 (
                     fk_articulation_level_start,
                     fk_level_joint_start,
                     fk_level_joints,
-                    fk_joint_parent,
+                    fk_level_parent_pos,
                 ) = fk_topology
-                m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
-                m._fk_level_joint_start = wp.array(fk_level_joint_start, dtype=wp.int32)
-                m._fk_level_joints = wp.array(fk_level_joints, dtype=wp.int32)
-                m._fk_joint_parent = wp.array(fk_joint_parent, dtype=wp.int32)
+                fk_level_capacity = int(np.max(np.diff(fk_level_joint_start), initial=1))
+                if fk_level_capacity <= FK_TILE_MAX_LEVEL_WIDTH:
+                    m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
+                    m._fk_level_joint_start = wp.array(fk_level_joint_start, dtype=wp.int32)
+                    m._fk_level_joints = wp.array(fk_level_joints, dtype=wp.int32)
+                    m._fk_level_parent_pos = wp.array(fk_level_parent_pos, dtype=wp.int32)
+                    m._fk_level_capacity = fk_level_capacity
             m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
