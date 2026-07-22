@@ -2637,11 +2637,11 @@ class ModelBuilder:
             builder: The builder to replicate. All entities from this builder will be copied.
             world_count: The number of worlds to create.
             spacing: The spacing between each copy along each axis. Ignored when
-                :paramref:`xforms` is provided.
+                ``xforms`` is provided.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
             xforms: Optional transform for each replicated world. When provided,
-                its length must equal :paramref:`world_count`.
+                its length must equal ``world_count``.
         """
         if world_count <= 0:
             return
