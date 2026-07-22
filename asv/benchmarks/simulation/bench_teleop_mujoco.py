@@ -184,8 +184,6 @@ class _TeleopLoop:
             solver="newton",
             integrator="implicitfast",
             cone="pyramidal",
-            iterations=20,
-            ls_iterations=8,
             njmax=200,
             nconmax=100,
         )
