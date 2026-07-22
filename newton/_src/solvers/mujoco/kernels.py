@@ -1056,7 +1056,7 @@ def build_ref_q_kernel(
     """Build reference joint coordinates from joint types and ``dof_ref``.
 
     Iterates over joints ``[j]``. Produces joint coordinates in Newton
-    convention (xyzw quaternions) suitable for ``eval_articulation_fk``.
+    convention (xyzw quaternions) suitable for ``eval_fk``.
     Per joint type:
 
     - **FREE / DISTANCE**: copies position and quaternion [xyzw] from
