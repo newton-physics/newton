@@ -64,24 +64,38 @@ FPS = 60  # rendered frames per second
 SIM_HZ = 240  # target physics rate; sim_substeps = SIM_HZ / FPS physics steps per render frame
 NUM_ARM_DOFS = 6  # J1-J6; recorded joints 6-8 are unused finger DOFs
 BOX_HALF = 0.5  # half-extent of the static support box (size [1, 1, 1]) [m]
-PICK_BOX_HALF = (0.5, 0.5, 0.04)  # half-extents of the dynamic pick box (size [1.0, 1.0, 0.08]) [m]
-PICK_BOX_MASS = 30.0  # mass of the dynamic pick box [kg] (set on the body; shape density is 0)
+# Two pick boxes to choose between; set PICK_BOX to 0 or 1. The gripper parameters are fixed (a
+# statement of the tool -- only the payload changes), so this exercises whether the one real gripper
+# holds different boxes. The box + pallet placement is auto-derived by FK, so it adapts to each size.
+PICK_BOX = 1  # 0: the crate (deep); 1: a wide, shallow panel
+_PICK_BOXES = (
+    ((0.242, 0.166, 0.137), 12.0),  # 0: crate, size [0.484, 0.332, 0.274] m, 12 kg
+    ((0.5, 0.5, 0.04), 30.0),  # 1: wide shallow panel, size [1.0, 1.0, 0.08] m, 30 kg
+)
+PICK_BOX_HALF, PICK_BOX_MASS = _PICK_BOXES[PICK_BOX]  # half-extents [m], mass [kg] (shape density is 0)
 
-# Box centers at the arm's first-engagement pick pose, precomputed (centered under the end-effector,
-# with the pick box's top face 1 cm below the gripper geometry; the static box's top is the pick
-# box's bottom). Hard-coded here so the scene builds in one pass -- no forward-kinematics probe.
-# Sized to the gripper: a small box the 4 cm pad cluster grips within its footprint, so the grip has
-# leverage to control it (a 1x1 m slab would wobble about the near-point grip). Flat on purpose --
-# the tilt torque from lateral motion is mass * accel * (COM depth below the grip plane), so a thin
-# box (COM near the pads) barely rocks, whereas a tall one tilts because k_normal (hence the seal's
-# angular stiffness) is capped by explicit stability at 240 Hz. The box top sits at the pad tips.
-STATIC_BOX_CENTER = (-0.494, 1.589, 0.802)  # 1x1x1 support box (pallet); top at pick-box bottom [m]
-PICK_BOX_CENTER = (-0.494, 1.589, 1.342)  # 1.0x1.0x0.08 dynamic pick box; top at the pad tips [m]
+# Deepest reach of the finger collision geometry along the suction axis, in the J6_link (flange)
+# frame [m] -- the point that would first penetrate the box. The box top is seated here so the fingers
+# rest on the box without sinking in. Resolved from the USD (max +x over the Finger_0x meshes).
+FINGER_HULL_DEEPEST_X = 0.3109
+
+# The pick box and its pallet are NOT hard-coded: their positions are derived at build time from the
+# flange pose at the first-engagement time (forward kinematics), so the box always seats itself at the
+# cups regardless of SMOOTHING_SIGMA, the cup geometry, or the recording. See Example.__init__.
 
 # Set False to disable the suction cup: the seal wrench is never applied, so the arm plays back the
 # recorded trajectory and the pick box just sits on the pallet (useful for inspecting the bare arm
 # motion). Read at graph-capture time, so set it before constructing the example.
 ENABLE_GRIPPER = True
+
+# Enable the pick-box <-> gripper-geometry rigid contact. On: the box presses flush against the tool
+# and tipping is resisted by contact (matches a real vacuum grip on rigid tooling); pair with a
+# tension-only seal (surface_gripper.SEAL_TENSION_ONLY). Off: the soft seal alone owns the hold.
+ENABLE_PAD_BOX_CONTACT = False
+
+# Draw a small non-colliding disk at each suction cup (GRIPPER_PADS) so the cup layout is visible in
+# the viewer. Purely visual (has_shape_collision off); does not affect the physics.
+SHOW_CUP_MARKERS = True
 
 # Set False to disable the debug CSV recording -- the end-effector acceleration and the smoothed
 # runtime drive targets (see EndEffectorAccelerationRecorder / DriveTargetRecorder). Recording is
@@ -89,10 +103,11 @@ ENABLE_GRIPPER = True
 RECORD_DEBUG = False
 
 # Seal fractures (releases) once its brittle break metric exceeds this. 1.0 = nominal capacity; a
-# value > 1 is a capacity safety factor (the seal withstands sqrt(threshold)x the nominal elastic
-# load before breaking). Tuned to 1.5 so the current 4-pad cluster holds the 2 kg slab (peak metric
-# ~1.26) but drops the 4 kg one (peak ~1.75) -- the break is peel-dominated by the slab's overhang.
-BREAK_THRESHOLD = 1.0
+# value > 1 is a capacity safety factor (the seal tolerates sqrt(threshold)x the nominal elastic peel
+# before breaking). Set to 5 (~2.2x): the wide panel (box 1) overhangs the cups, so the arm's
+# reorientations spike its peel to ~2x nominal -- the holding force still carries it, so a strict 1.0
+# would drop it ~60 frames before the recorded release. The crate (box 0) stays far below either way.
+BREAK_THRESHOLD = 5.0
 
 # The break metric must stay over BREAK_THRESHOLD for at least this long before the seal fractures.
 # Debounces lone transient spikes (a genuine overload is sustained), so a held box is not dropped by a
@@ -100,14 +115,17 @@ BREAK_THRESHOLD = 1.0
 # round(BREAK_HOLD_TIME / sim_dt), floored at 1.
 BREAK_HOLD_TIME = 0.033  # [s]
 
-# Suction gripper on the end-effector (body EE_BODY / J6_link). Four pads at the recorded finger
-# offsets, seal points placed on the box-top surface; the suction axis is the flange +x (world-down
-# at the pick), so each pad's local +z is rotated onto +x. Positions in the EE body frame [m].
+# Suction gripper on the end-effector (body EE_BODY / J6_link). Four cups at the suction vents at the
+# tips of Finger_01..04, resolved into the J6_link (flange) frame from the USD. Each finger is an
+# L-shaped arm whose vent faces the box; the vents are wide-set at the crate edges (a cross ~+/-6 cm on
+# one axis, ~+/-13 cm on the other), giving the tilt leverage a real palletizer needs. x=0.309 is the
+# vent (suction-face) plane. The suction axis is the flange +x (world-down at the pick), so each pad's
+# local +z is rotated onto +x. Positions in the EE body frame [m].
 GRIPPER_PADS = (
-    (0.3213, -0.0218, 0.0032),
-    (0.3213, -0.0018, 0.0232),
-    (0.3213, 0.0182, 0.0032),
-    (0.3213, -0.0018, -0.0168),
+    (0.2880, 0.1286, 0.0035),
+    (0.2885, -0.0024, -0.2022),
+    (0.2880, -0.1323, 0.0035),
+    (0.2886, -0.0025, 0.2085),
 )
 
 
@@ -148,8 +166,8 @@ class GripperParams:
 GRIPPER_PARAMS = GripperParams(
 
     # Normal - translation - z
-    k_normal=6000.0,
-    d_normal=400.0,  # near-critical for the 30 kg panel's normal mode (~2*sqrt(k*m)/pad); damps bounce
+    k_normal=96000.0,  # stiff, like a vacuum cup on rigid tooling; sets the tilt tracking (peel angle ~0.2deg)
+    d_normal=40.0,  # low: the wide-cup couple amplifies damping into the explicit-integrator limit at 240 Hz
     f_normal_max=2000.0,  # normal break threshold [N]; sized for the 30 kg panel's weight + lift accel
     f_grip_max=50.0,  # per-pad suction preload [N]; ~box weight / 4 so the panel rests on the pads
 
@@ -161,27 +179,17 @@ GRIPPER_PARAMS = GripperParams(
     # margin through the arm's fast reorientation so the box doesn't slip and dangle.
     mu_x=16.0,
     mu_y=16.0,
-    # Shear damping is not part of the original gripper.pdf model, but the 30 kg panel's lateral mode is
-    # otherwise undamped; a moderate value settles the in-plane wobble without fighting the grip.
-    d_shear_x=200.0,
-    d_shear_y=200.0,
+    # Shear damping must stay small with the wide-set cups: the far cups' tangential velocity scales
+    # with the cup spread, so d_shear's effective twist damping is amplified by ~Sigma r^2 (75x vs a
+    # tight cluster) and overshoots the explicit-integrator limit at 240 Hz if raised much above ~30.
+    d_shear_x=20.0,
+    d_shear_y=20.0,
 
-    # peel rotation- x,y
-    # Peel damping settles the panel's tilt/rocking wobble (the dominant wobble mode). It is bounded by
-    # dt < 2*inertia/d_peel; the 30 kg panel's large tilt inertia raises that ceiling far above the
-    # tiny-box value, so d_peel=8 is stable at 240 Hz with large margin (holds even far higher) and
-    # cuts the wobble ~5x.
-    d_peel_x=8.0,
-    d_peel_y=8.0,
-    # Peel is the binding limit when the arm reorients the wide panel (rotational inertia -> peel
-    # torque). The 4 cm central pad cluster is fixed by the real EOAT, so raise the per-pad peel
-    # capacity instead. The high d_peel above removes the tilt overshoot but not the forced peel demand
-    # of swinging 30 kg through the wrist rotation (~2.9x capacity at scale=1), so a 2x boost keeps a
-    # comfortable margin (metric peak ~0.24) while scale=1 still breaks.
-    peel_capacity_scale=2.0,
-
-    # Larger pad radius -> larger peel-moment capacity (N_f * R/4) and peel/torsion stiffness, so the
-    # overhanging box is held flush instead of peeling off and dangling.
+    # peel rotation- x,y. Small, for the same explicit-integrator reason as the shear/normal damping
+    # above (the wide cup couple amplifies it); the wide-set cups need little peel damping to stay put.
+    d_peel_x=0.5,
+    d_peel_y=0.5,
+    peel_capacity_scale=1.0,  # geometric capacity only; the real wide-set cups should hold without a fudge
     shape=int(PadShape.CIRCLE),
     dim_a=0.03,
     dim_b=0.03,
@@ -462,10 +470,30 @@ class Example:
         ee_body = builder.body_count - 1  # last arm link (J6_link) is the end-effector flange
         builder.add_ground_plane()
 
+        # Auto-place the pick box + pallet from the flange pose at first engagement (forward kinematics).
+        # 1) engagement time -> the smoothed arm targets there; 2) eval_fk -> the flange world pose;
+        # 3) project the finger-hull deepest point -> the box-top world position; 4) seat the box (and
+        # pallet under it) there. Robust to SMOOTHING_SIGMA / cup geometry / recording (no hard-coded pose).
+        engage_idx = int(np.argmax(rec_engaged))  # first frame the suction command (ro[0]) is on
+        fk_model = builder.finalize()  # arm-only model, solely to run the FK placement probe
+        fk_state = fk_model.state()
+        fk_q = fk_state.joint_q.numpy()
+        fk_q[:NUM_ARM_DOFS] = rec_targets[engage_idx]  # smoothed arm targets at engagement
+        fk_state.joint_q.assign(fk_q)
+        newton.eval_fk(fk_model, fk_state.joint_q, fk_state.joint_qd, fk_state)
+        t_flange = fk_state.body_q.numpy()[ee_body]  # flange world pose at engagement [px,py,pz,qx,qy,qz,qw]
+        cup_c = np.mean(GRIPPER_PADS, axis=0)  # box top seats at the finger-hull deepest, under the cups
+        box_top = wp.vec3(*t_flange[:3]) + wp.quat_rotate(
+            wp.quat(*t_flange[3:7]), wp.vec3(FINGER_HULL_DEEPEST_X, float(cup_c[1]), float(cup_c[2]))
+        )
+        box_top_x, box_top_y, box_top_z = float(box_top[0]), float(box_top[1]), float(box_top[2])
+        static_box_center = (box_top_x, box_top_y, box_top_z - 2.0 * PICK_BOX_HALF[2] - BOX_HALF)  # pallet
+        pick_box_center = (box_top_x, box_top_y, box_top_z - PICK_BOX_HALF[2])  # box top at box_top
+
         # Static support box (1x1x1, collidable) at the pick pose -- the pallet the pick box sits on.
         builder.add_shape_box(
             -1,
-            xform=wp.transform(wp.vec3(*STATIC_BOX_CENTER), wp.quat_identity()),
+            xform=wp.transform(wp.vec3(*static_box_center), wp.quat_identity()),
             hx=BOX_HALF,
             hy=BOX_HALF,
             hz=BOX_HALF,
@@ -477,7 +505,7 @@ class Example:
         iyy = PICK_BOX_MASS / 3.0 * (hx * hx + hz * hz)
         izz = PICK_BOX_MASS / 3.0 * (hx * hx + hy * hy)
         pick_box = builder.add_body(
-            xform=wp.transform(wp.vec3(*PICK_BOX_CENTER), wp.quat_identity()),
+            xform=wp.transform(wp.vec3(*pick_box_center), wp.quat_identity()),
             mass=PICK_BOX_MASS,
             inertia=wp.mat33(ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz),
             label="pick_box",
@@ -488,12 +516,31 @@ class Example:
             pick_box, hx=PICK_BOX_HALF[0], hy=PICK_BOX_HALF[1], hz=PICK_BOX_HALF[2], cfg=pick_cfg
         )
 
-        # Filter out pick-box <-> gripper-geometry contact: the bidirectional suction seal is a stiff
-        # bilateral hold (it provides the lip reaction itself), so a rigid pad<->box contact is
-        # redundant and just fights the seal. The box still collides with the pallet and ground.
-        for shape in range(len(builder.shape_body)):
-            if builder.shape_body[shape] == ee_body:
-                builder.add_shape_collision_filter_pair(pick_box_shape, shape)
+        # Pick-box <-> gripper-geometry contact. Enabled: the box presses flush against the rigid tool,
+        # so tipping is resisted by contact (like the real gripper). Filtered: the seal alone owns the
+        # hold. When the contact is on, the seal should be tension-only so the seal and contact don't
+        # both react compression (see SEAL_TENSION_ONLY in surface_gripper.py). The box always collides
+        # with the pallet and ground.
+        if not ENABLE_PAD_BOX_CONTACT:
+            for shape in range(len(builder.shape_body)):
+                if builder.shape_body[shape] == ee_body:
+                    builder.add_shape_collision_filter_pair(pick_box_shape, shape)
+
+        # Cup markers: a thin non-colliding disk at each suction cup so the cup layout is visible in the
+        # viewer (radius = the modeled cup radius dim_a; oriented so the disk faces along the suction axis).
+        if SHOW_CUP_MARKERS:
+            marker_down = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), np.pi / 2.0)  # disk axis -> flange +x
+            marker_cfg = builder.default_shape_cfg.copy()
+            marker_cfg.density = 0.0
+            marker_cfg.has_shape_collision = False
+            for px, py, pz in GRIPPER_PADS:
+                builder.add_shape_cylinder(
+                    ee_body,
+                    xform=wp.transform(wp.vec3(px, py, pz), marker_down),
+                    radius=GRIPPER_PARAMS.dim_a,
+                    half_height=0.004,
+                    cfg=marker_cfg,
+                )
 
         self.model = builder.finalize()
         # njmax: MuJoCo's per-world constraint-row buffer. Its auto-estimate from the initial (resting)

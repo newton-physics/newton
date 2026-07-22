@@ -27,6 +27,12 @@ from enum import IntEnum
 
 import warp as wp
 
+# When True the normal seal is tension-only (pulls, never pushes): pair with an active pad<->box
+# contact that supplies the compression/tilt reaction (the box pressed flush against rigid tooling).
+# When False the seal is bidirectional (pushes and pulls) -- a stiff bilateral hold used when the
+# pad<->box contact is filtered out. Read at kernel-compile time.
+SEAL_TENSION_ONLY = False
+
 
 class PadShape(IntEnum):
     CIRCLE = 0
@@ -670,7 +676,10 @@ def eval_normal_force(
     f_min = grip_control * f_grip_max
     fz_elastic = f_min + k_normal * pz  # elastic (preload + spring) demand; drives the brittle break
     fz_unclamped = fz_elastic + d_normal * vz
-    fz = wp.clamp(fz_unclamped, -f_normal_max, f_normal_max)
+    if wp.static(SEAL_TENSION_ONLY):
+        fz = wp.clamp(fz_unclamped, 0.0, f_normal_max)  # tension-only: contact supplies the push
+    else:
+        fz = wp.clamp(fz_unclamped, -f_normal_max, f_normal_max)  # bidirectional: seal pushes and pulls
     return fz, fz_elastic
 
 
