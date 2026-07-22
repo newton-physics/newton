@@ -3258,7 +3258,8 @@ def parse_usd(
     no_collision_shapes = set()
     collision_group_ids = {}
     rigid_body_mass_info_map = {}
-    rigid_body_mass_fallback_data = {}
+    rigid_body_mass_fallback_density = {}
+    rigid_body_fallback_collider_paths = collections.defaultdict(list)
     expected_fallback_collider_paths: set[str] = set()
 
     def _record_fallback_collider_mass_information(
@@ -3272,7 +3273,8 @@ def parse_usd(
         thickness: float,
     ):
         """Record collider mass information used by the rigid-body fallback callback."""
-        if str(shape_spec.rigidBody) not in bodies_requiring_mass_properties_fallback:
+        body_path = str(shape_spec.rigidBody)
+        if body_path not in bodies_requiring_mass_properties_fallback:
             return
 
         shape_geo_type = None
@@ -3325,8 +3327,10 @@ def parse_usd(
                 thickness=thickness,
             )
         if mass_info is not None:
+            if path not in rigid_body_mass_info_map:
+                rigid_body_fallback_collider_paths[body_path].append(path)
             rigid_body_mass_info_map[path] = mass_info
-            rigid_body_mass_fallback_data[path] = (str(shape_spec.rigidBody), density)
+            rigid_body_mass_fallback_density[path] = density
 
     for key, value in ret_dict.items():
         if key in {
@@ -3947,11 +3951,9 @@ def parse_usd(
         total_com = wp.vec3(0.0)
         total_inertia = wp.mat33(0.0)
         found = False
-        for collider_path, mass_info in rigid_body_mass_info_map.items():
-            collider_body_path, shape_density = rigid_body_mass_fallback_data[collider_path]
-            if collider_body_path != body_path:
-                continue
-
+        for collider_path in rigid_body_fallback_collider_paths.get(body_path, ()):
+            mass_info = rigid_body_mass_info_map[collider_path]
+            shape_density = rigid_body_mass_fallback_density[collider_path]
             volume = float(mass_info.volume)
             if volume <= 0.0:
                 continue
@@ -4062,7 +4064,7 @@ def parse_usd(
                     if recorded_properties is not None:
                         cmp_mass, recorded_inertia, cmp_com = recorded_properties
                         builder.body_inertia[body_id] = recorded_inertia
-                        if any(recorded_inertia):
+                        if np.array(recorded_inertia).any():
                             builder.body_inv_inertia[body_id] = wp.inverse(recorded_inertia)
                         else:
                             builder.body_inv_inertia[body_id] = wp.mat33(0.0)
