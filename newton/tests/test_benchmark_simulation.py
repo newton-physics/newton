@@ -188,9 +188,8 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Gate PR comparisons on runtime while retaining dashboard metrics."""
         workflow_path = BENCHMARK_DIR.parents[1] / ".github" / "workflows" / "aws_gpu_benchmarks.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
-        selection = re.search(r"-b '([^']+)'", workflow)
-        self.assertIsNotNone(selection)
-        pattern = re.compile(selection.group(1))
+        patterns = tuple(re.compile(selection) for selection in re.findall(r"-b '([^']+)'", workflow))
+        self.assertTrue(patterns)
 
         blocking_benchmarks = (
             "simulation.bench_mujoco.FastG1.track_simulate(8192)",
@@ -209,15 +208,15 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_mujoco.FastG1.track_sim_dt(8192)",
             "simulation.bench_mujoco.FastG1.track_sim_substeps(8192)",
             "simulation.bench_mujoco.FastNewtonOverheadG1.track_simulate(8192)",
-            "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_step_rate_hz('graph')",
+            "simulation.bench_teleop_mujoco.TeleopMuJoCo.track_frame_overrun_pct('graph')",
         )
 
         for benchmark in blocking_benchmarks:
             with self.subTest(benchmark=benchmark):
-                self.assertRegex(benchmark, pattern)
+                self.assertTrue(any(pattern.search(benchmark) for pattern in patterns), benchmark)
         for benchmark in dashboard_benchmarks:
             with self.subTest(benchmark=benchmark):
-                self.assertNotRegex(benchmark, pattern)
+                self.assertFalse(any(pattern.search(benchmark) for pattern in patterns), benchmark)
 
     def test_anymal_short_horizon_validation(self):
         """Validate short-horizon ANYmal posture and forward progress."""
