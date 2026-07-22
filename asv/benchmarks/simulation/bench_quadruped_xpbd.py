@@ -19,12 +19,12 @@ from benchmark_metrics import (
     validate_simulation_state,
 )
 
-import newton
-import newton.examples
-from newton.examples.basic.example_basic_urdf import Example
-
 
 def _create_example(num_frames, world_count):
+    import newton  # noqa: PLC0415
+    import newton.examples  # noqa: PLC0415
+    from newton.examples.basic.example_basic_urdf import Example  # noqa: PLC0415
+
     if hasattr(newton.examples, "default_args") and hasattr(Example, "create_parser"):
         args = newton.examples.default_args(Example.create_parser())
         args.world_count = world_count

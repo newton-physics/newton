@@ -23,6 +23,7 @@ from benchmark_metrics import (  # noqa: E402
 
 class TestBenchmarkMetrics(unittest.TestCase):
     def test_compute_simulation_metrics(self):
+        """Verify derived simulation metrics and their units."""
         metrics = compute_simulation_metrics(
             frame_times=[0.1, 0.2, 0.3, 0.4],
             sim_dt=0.002,
@@ -40,6 +41,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertEqual(metrics.sim_substeps, 5)
 
     def test_collect_simulation_metrics(self):
+        """Verify internal timing, validation, and memory collection."""
         workloads = []
         events = []
         timer_values = iter((0.0, 0.02, 0.02, 0.06, 0.06, 0.08, 0.08, 0.12))
@@ -98,6 +100,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
 
     def test_collect_simulation_metrics_with_synchronization(self):
+        """Verify synchronized wall timing drives collected metrics."""
         workloads = []
         events = []
         sync_calls = []
@@ -151,6 +154,8 @@ class TestBenchmarkMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.gpu_memory_mib, 8.0)
 
     def test_collect_simulation_metrics_rejects_increased_free_memory(self):
+        """Reject an invalid increase in measured free GPU memory."""
+
         class FakeDevice:
             free_memory_values = iter((1000, 1100))
 
@@ -180,6 +185,8 @@ class TestBenchmarkMetrics(unittest.TestCase):
             )
 
     def test_validate_simulation_state(self):
+        """Validate finite states, unit quaternions, and bounded speeds."""
+
         class FakeArray:
             def __init__(self, values):
                 self.values = np.asarray(values, dtype=np.float32)
@@ -210,6 +217,7 @@ class TestBenchmarkMetrics(unittest.TestCase):
             validate_simulation_state(FakeState(), max_linear_speed=10.0, max_angular_speed=10.0)
 
     def test_run_benchmark_with_setup_cache(self):
+        """Pass one setup cache through the full benchmark lifecycle."""
         cache_events = []
 
         class CachedBenchmark:

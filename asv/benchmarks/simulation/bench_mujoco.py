@@ -23,9 +23,6 @@ from benchmark_metrics import (
     _SimulationMetricTracks,
     collect_simulation_metrics,
 )
-from benchmark_mujoco import Example
-
-from newton.utils import EventTracer
 
 
 class _SimulationMetricTracksMuJoCo(_SimulationMetricTracks):
@@ -58,6 +55,8 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     expected_bodies_per_world = None
 
     def _create_workload(self, builder, world_count):
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
         workload = Example(
             stage_path=None,
             robot=self.robot,
@@ -93,6 +92,8 @@ class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     def _collect_metrics(self):
         if wp.get_cuda_device_count() == 0:
             return None
+
+        from benchmark_mujoco import Example  # noqa: PLC0415
 
         metrics = {}
         for world_count in self.params[0]:
@@ -143,6 +144,9 @@ class _RealtimePhysicsBenchmark:
     def setup(self):
         if wp.get_cuda_device_count() == 0:
             raise SkipNotImplemented
+
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
         with wp.ScopedDevice("cuda:0"):
             if not wp.is_mempool_enabled(wp.get_device()):
                 raise SkipNotImplemented
@@ -218,6 +222,8 @@ class _NewtonOverheadBenchmark:
     random_init = None
 
     def setup(self, world_count):
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
         if not hasattr(self, "builder") or self.builder is None:
             self.builder = {}
         if world_count not in self.builder:
@@ -227,6 +233,10 @@ class _NewtonOverheadBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, world_count):
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
+        from newton.utils import EventTracer  # noqa: PLC0415
+
         trace = {}
         with EventTracer(enabled=True) as tracer:
             for _iter in range(self.samples):

@@ -8,15 +8,12 @@ from typing import ClassVar
 import warp as wp
 from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
-import newton
-
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_kamino import DRLegsBenchmarkWorkload
 from benchmark_metrics import (
     _SimulationMetricTracks,
     _SimulationMetricTracksUnparameterized,
@@ -27,6 +24,8 @@ from benchmark_metrics import (
 def _collect_metrics_dr_legs(robot, world_count, num_frames, samples, use_policy):
     if wp.get_cuda_device_count() == 0:
         return None
+
+    from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
 
     builder = DRLegsBenchmarkWorkload.create_model_builder(robot, world_count)
 
@@ -63,6 +62,8 @@ class _FastBenchmark:
     world_count = None
 
     def setup(self):
+        from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
+
         if not hasattr(self, "_builder") or self._builder is None:
             self._builder = DRLegsBenchmarkWorkload.create_model_builder(self.robot, self.world_count)
 
@@ -164,53 +165,58 @@ class NotifyDRLegs:
     world_count = 2048
 
     def setup(self):
+        from benchmark_kamino import DRLegsBenchmarkWorkload  # noqa: PLC0415
+
+        import newton  # noqa: PLC0415
+
         builder = DRLegsBenchmarkWorkload.create_model_builder("dr_legs", self.world_count)
         model = builder.finalize(skip_validation_joints=True)
         self._solver = newton.solvers.SolverKamino(model)
+        self._model_flags = newton.ModelFlags
         for flag in (
-            newton.ModelFlags.MODEL_PROPERTIES,
-            newton.ModelFlags.BODY_PROPERTIES,
-            newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
-            newton.ModelFlags.SHAPE_PROPERTIES,
-            newton.ModelFlags.JOINT_PROPERTIES,
-            newton.ModelFlags.JOINT_DOF_PROPERTIES,
-            newton.ModelFlags.ACTUATOR_PROPERTIES,
-            newton.ModelFlags.ALL,
+            self._model_flags.MODEL_PROPERTIES,
+            self._model_flags.BODY_PROPERTIES,
+            self._model_flags.BODY_INERTIAL_PROPERTIES,
+            self._model_flags.SHAPE_PROPERTIES,
+            self._model_flags.JOINT_PROPERTIES,
+            self._model_flags.JOINT_DOF_PROPERTIES,
+            self._model_flags.ACTUATOR_PROPERTIES,
+            self._model_flags.ALL,
         ):
             self._solver.notify_model_changed(flag)
         wp.synchronize_device()
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_actuator_properties(self):
-        self._notify(newton.ModelFlags.ACTUATOR_PROPERTIES)
+        self._notify(self._model_flags.ACTUATOR_PROPERTIES)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_all(self):
-        self._notify(newton.ModelFlags.ALL)
+        self._notify(self._model_flags.ALL)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_body_inertial_properties(self):
-        self._notify(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        self._notify(self._model_flags.BODY_INERTIAL_PROPERTIES)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_body_properties(self):
-        self._notify(newton.ModelFlags.BODY_PROPERTIES)
+        self._notify(self._model_flags.BODY_PROPERTIES)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_joint_dof_properties(self):
-        self._notify(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        self._notify(self._model_flags.JOINT_DOF_PROPERTIES)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_joint_properties(self):
-        self._notify(newton.ModelFlags.JOINT_PROPERTIES)
+        self._notify(self._model_flags.JOINT_PROPERTIES)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_model_properties(self):
-        self._notify(newton.ModelFlags.MODEL_PROPERTIES)
+        self._notify(self._model_flags.MODEL_PROPERTIES)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_notify_shape_properties(self):
-        self._notify(newton.ModelFlags.SHAPE_PROPERTIES)
+        self._notify(self._model_flags.SHAPE_PROPERTIES)
 
     def _notify(self, flag):
         self._solver.notify_model_changed(flag)

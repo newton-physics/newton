@@ -19,16 +19,16 @@ from benchmark_metrics import (
     validate_simulation_state,
 )
 
-import newton
-import newton.examples
-from newton.examples.robot.example_robot_anymal_c_walk import Example
-
 _NUM_FRAMES = 50
 _MIN_BASE_HEIGHT = 0.4
 _MIN_FORWARD_PROGRESS = 0.25
 
 
 def _create_example(num_frames):
+    import newton  # noqa: PLC0415
+    import newton.examples  # noqa: PLC0415
+    from newton.examples.robot.example_robot_anymal_c_walk import Example  # noqa: PLC0415
+
     if hasattr(newton.examples, "default_args"):
         args = newton.examples.default_args()
     else:
