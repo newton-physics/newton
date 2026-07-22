@@ -167,6 +167,25 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertIn("subprocess stdout", result.failures[0][1])
         self.assertIn("subprocess stderr", result.failures[0][1])
 
+    def test_caught_subprocess_failure_does_not_report_output_again(self):
+        unittest_utils.wp.init()
+
+        class CatchesFailingSubprocess(NewtonTestCase):
+            def test_output(self):
+                result = subprocess.CompletedProcess(
+                    args=["fake-command"],
+                    returncode=7,
+                    stdout="subprocess stdout\n",
+                    stderr="subprocess stderr\n",
+                )
+
+                with self.assertRaisesRegex(AssertionError, "Failed with return code 7"):
+                    self.assertSubprocessSuccess(result, command=result.args)
+
+        result = self._run_test_case(CatchesFailingSubprocess)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+
     def test_synchronized_output_is_captured(self):
         class SynchronizeEmitsOutput(NewtonTestCase):
             def test_output(self):

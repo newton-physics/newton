@@ -109,8 +109,9 @@ class Contacts:
     Names of optional extended contact attributes that are not allocated by default.
 
     These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
-    :meth:`newton.Model.request_contact_attributes` before calling :meth:`newton.Model.contacts` or
-    :meth:`newton.CollisionPipeline.contacts`.
+    :meth:`newton.Model.request_contact_attributes` before calling
+    :meth:`newton.CollisionPipeline.contacts`. When constructing :class:`newton.Contacts` directly,
+    pass the names via ``requested_attributes``.
 
     See :ref:`extended_contact_attributes` for details and usage.
     """

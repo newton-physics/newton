@@ -297,6 +297,18 @@ class ViewerBase(ABC):
             self.activate(prev_active)
         del self._layers[layer_id]
 
+    def clear_all_layers(self) -> None:
+        """Reset all model-dependent state across every registered layer.
+
+        This is the whole-scene counterpart to :meth:`clear_model`, which is
+        intentionally scoped to the active layer. Use this when discarding an
+        entire viewer scene, such as when the example browser switches to a
+        different example.
+        """
+        for layer_id in [lid for lid in self._layers if lid != _DEFAULT_LAYER_ID]:
+            self.remove_layer(layer_id)
+        self.clear_model()
+
     def set_layer_visible(self, layer_id: str, visible: bool) -> None:
         """Set the visibility of a layer.
 

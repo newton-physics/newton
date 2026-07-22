@@ -15,7 +15,7 @@ class TestJointDamping(unittest.TestCase):
 
 
 def _build_revolute_model(device, damping: float):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
@@ -42,7 +42,7 @@ def _build_revolute_model(device, damping: float):
 
 
 def _build_ball_model(device, damping: float):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
@@ -83,9 +83,9 @@ def _simulate_joint_damping(device, solver_fn, damping: float, sync_joint_qd: bo
     return initial_qd, float(state_0.joint_qd.numpy()[0])
 
 
-def _simulate_ball_joint_damping(device, damping: float) -> tuple[float, float]:
+def _simulate_ball_joint_damping(device, solver_fn, damping: float) -> tuple[float, float]:
     model = _build_ball_model(device, damping)
-    solver = newton.solvers.SolverSemiImplicit(model, angular_damping=0.0)
+    solver = solver_fn(model)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -111,8 +111,22 @@ def test_revolute_joint_damping_decays_velocity(test: TestJointDamping, device, 
 
 
 def test_semi_implicit_ball_joint_damping_decays_velocity(test: TestJointDamping, device):
-    undamped_initial, undamped_final = _simulate_ball_joint_damping(device, damping=0.0)
-    damped_initial, damped_final = _simulate_ball_joint_damping(device, damping=3.0)
+    def solver_fn(model):
+        return newton.solvers.SolverSemiImplicit(model, angular_damping=0.0)
+
+    undamped_initial, undamped_final = _simulate_ball_joint_damping(device, solver_fn, damping=0.0)
+    damped_initial, damped_final = _simulate_ball_joint_damping(device, solver_fn, damping=3.0)
+
+    np.testing.assert_allclose(undamped_final, undamped_initial, atol=1.0e-5, rtol=1.0e-5)
+    test.assertLess(damped_final, damped_initial * 0.85)
+
+
+def test_featherstone_ball_joint_damping_decays_velocity(test: TestJointDamping, device):
+    def solver_fn(model):
+        return newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+
+    undamped_initial, undamped_final = _simulate_ball_joint_damping(device, solver_fn, damping=0.0)
+    damped_initial, damped_final = _simulate_ball_joint_damping(device, solver_fn, damping=3.0)
 
     np.testing.assert_allclose(undamped_final, undamped_initial, atol=1.0e-5, rtol=1.0e-5)
     test.assertLess(damped_final, damped_initial * 0.85)
@@ -141,6 +155,12 @@ for device in devices:
         TestJointDamping,
         "test_semi_implicit_ball_joint_damping_decays_velocity",
         test_semi_implicit_ball_joint_damping_decays_velocity,
+        devices=[device],
+    )
+    add_function_test(
+        TestJointDamping,
+        "test_featherstone_ball_joint_damping_decays_velocity",
+        test_featherstone_ball_joint_damping_decays_velocity,
         devices=[device],
     )
 
