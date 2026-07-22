@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import warnings
@@ -12,6 +13,8 @@ from typing import Any
 
 import numpy as np
 import warp as wp
+
+from newton._src.utils.diagnostics import log_verbose
 
 from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
@@ -47,6 +50,8 @@ from .import_utils import (
     should_show_collider,
 )
 from .mesh import load_meshes_from_file
+
+_logger = logging.getLogger(__name__)
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -554,9 +559,10 @@ def parse_mjcf(
                 if elevation_arr.size == nrow * ncol:
                     elevation_data = elevation_arr.reshape(nrow, ncol)
                 elif verbose:
-                    print(
+                    log_verbose(
+                        _logger,
                         f"Warning: hfield '{hfield_name}' elevation has {elevation_arr.size} values, "
-                        f"expected {nrow * ncol} ({nrow}x{ncol}), ignoring"
+                        f"expected {nrow * ncol} ({nrow}x{ncol}), ignoring",
                     )
             hfield_assets[hfield_name] = {
                 "nrow": nrow,
@@ -841,7 +847,9 @@ def parse_mjcf(
                 mesh_name = geom_attrib.get("mesh")
                 if mesh_name is None or mesh_name not in mesh_assets:
                     if verbose:
-                        print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
+                        log_verbose(
+                            _logger, f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom"
+                        )
                     continue
                 else:
                     stl_file = mesh_assets[mesh_name]["file"]
@@ -880,7 +888,7 @@ def parse_mjcf(
                             geom_size = half_sizes * fitscale
                         else:
                             if verbose:
-                                print(f"Warning: unsupported fit type {geom_type} for {geom_name}")
+                                log_verbose(_logger, f"Warning: unsupported fit type {geom_type} for {geom_name}")
                             fit_to_mesh = False
 
                         if fit_to_mesh:
@@ -922,7 +930,7 @@ def parse_mjcf(
                             geom_size = he * fitscale
                         else:
                             if verbose:
-                                print(f"Warning: unsupported fit type {geom_type} for {geom_name}")
+                                log_verbose(_logger, f"Warning: unsupported fit type {geom_type} for {geom_name}")
                             fit_to_mesh = False
 
                         if fit_to_mesh:
@@ -966,11 +974,11 @@ def parse_mjcf(
                 mesh_attrib = geom_attrib.get("mesh")
                 if mesh_attrib is None:
                     if verbose:
-                        print(f"Warning: mesh attribute not defined for {geom_name}, skipping")
+                        log_verbose(_logger, f"Warning: mesh attribute not defined for {geom_name}, skipping")
                     continue
                 elif mesh_attrib not in mesh_assets:
                     if verbose:
-                        print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
+                        log_verbose(_logger, f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
                     continue
                 stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
                 mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
@@ -990,7 +998,9 @@ def parse_mjcf(
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
-                            print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
+                            log_verbose(
+                                _logger, f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored."
+                            )
                         m_mesh.texture = None
                     # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
                     mesh_shape_kwargs = dict(shape_kwargs)
@@ -1065,11 +1075,11 @@ def parse_mjcf(
                 hfield_name = geom_attrib.get("hfield")
                 if hfield_name is None:
                     if verbose:
-                        print(f"Warning: hfield attribute not defined for {geom_name}, skipping")
+                        log_verbose(_logger, f"Warning: hfield attribute not defined for {geom_name}, skipping")
                     continue
                 elif hfield_name not in hfield_assets:
                     if verbose:
-                        print(f"Warning: hfield asset '{hfield_name}' not found, skipping")
+                        log_verbose(_logger, f"Warning: hfield asset '{hfield_name}' not found, skipping")
                     continue
 
                 hfield_asset = hfield_assets[hfield_name]
@@ -1129,7 +1139,7 @@ def parse_mjcf(
 
             else:
                 if verbose:
-                    print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
+                    log_verbose(_logger, f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
 
             # Handle explicit mass: compute inertia using existing functions, add to body.
             # Visual geoms can still contribute authored mass when parse_visuals=True.
@@ -1344,7 +1354,10 @@ def parse_mjcf(
             else:
                 no_class_class = "collision" if no_class_as_colliders else "visual"
                 if verbose:
-                    print(f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}")
+                    log_verbose(
+                        _logger,
+                        f"MJCF parsing shape {geom_name} issue: no class defined for geom, assuming {no_class_class}",
+                    )
                 if no_class_as_colliders and collides_with_anything:
                     colliders.append(geom)
                 else:
@@ -1692,9 +1705,10 @@ def parse_mjcf(
                         if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
                             effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
                         elif verbose:
-                            print(
+                            log_verbose(
+                                _logger,
                                 f"Warning: Joint '{joint_attrib.get('name', 'unnamed')}' has actuatorfrcrange "
-                                f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled."
+                                f"but actuatorfrclimited='{actuatorfrclimited}'. Force clamping will be disabled.",
                             )
 
                 ax = ModelBuilder.JointDofConfig(
@@ -2036,12 +2050,12 @@ def parse_mjcf(
             """
             if site_name not in site_name_to_idx:
                 if verbose:
-                    print(f"Warning: Site '{site_name}' not found")
+                    log_verbose(_logger, f"Warning: Site '{site_name}' not found")
                 return None
             site_idx = site_name_to_idx[site_name]
             if not (builder.shape_flags[site_idx] & ShapeFlags.SITE):
                 if verbose:
-                    print(f"Warning: Shape '{site_name}' is not a site")
+                    log_verbose(_logger, f"Warning: Shape '{site_name}' is not a site")
                 return None
             body_idx = builder.shape_body[site_idx]
             site_xform = builder.shape_transform[site_idx]
@@ -2078,7 +2092,10 @@ def parse_mjcf(
                 )
             except ValueError:
                 if verbose:
-                    print(f"Warning: Equality constraint '{common['name']}' has no valid body reference. Skipping.")
+                    log_verbose(
+                        _logger,
+                        f"Warning: Equality constraint '{common['name']}' has no valid body reference. Skipping.",
+                    )
                 return
 
         for connect in equality.findall("connect"):
@@ -2093,7 +2110,7 @@ def parse_mjcf(
 
             if body1_name and anchor:
                 if verbose:
-                    print(f"Connect constraint: {body1_name} to {body2_name} at anchor {anchor}")
+                    log_verbose(_logger, f"Connect constraint: {body1_name} to {body2_name} at anchor {anchor}")
 
                 anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()]) if anchor else None
 
@@ -2129,13 +2146,14 @@ def parse_mjcf(
                     site2_info = get_site_body_and_anchor(site2)
                     if site1_info is None or site2_info is None:
                         if verbose:
-                            print(f"Warning: Connect constraint '{common['name']}' failed.")
+                            log_verbose(_logger, f"Warning: Connect constraint '{common['name']}' failed.")
                         continue
                     body1_idx, anchor_vec = site1_info
                     body2_idx, _ = site2_info
                     if verbose:
-                        print(
-                            f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}"
+                        log_verbose(
+                            _logger,
+                            f"Connect constraint (site-based): site '{site1}' on body {body1_idx} to body {body2_idx}",
                         )
                     if convert_mjc_equality_constraints:
                         add_converted_loop_joint(
@@ -2161,9 +2179,10 @@ def parse_mjcf(
                         )
                 else:
                     if verbose:
-                        print(
+                        log_verbose(
+                            _logger,
                             f"Warning: Connect constraint '{common['name']}' has site1 but no site2. "
-                            "When using sites, both site1 and site2 must be specified. Skipping."
+                            "When using sites, both site1 and site2 must be specified. Skipping.",
                         )
 
         for weld in equality.findall("weld"):
@@ -2180,7 +2199,7 @@ def parse_mjcf(
 
             if body1_name:
                 if verbose:
-                    print(f"Weld constraint: {body1_name} to {body2_name}")
+                    log_verbose(_logger, f"Weld constraint: {body1_name} to {body2_name}")
 
                 anchor_vec = wp.vec3(*[float(x) * scale for x in anchor.split()])
 
@@ -2224,7 +2243,7 @@ def parse_mjcf(
                     site2_info = get_site_body_and_anchor(site2)
                     if site1_info is None or site2_info is None:
                         if verbose:
-                            print(f"Warning: Weld constraint '{common['name']}' failed.")
+                            log_verbose(_logger, f"Warning: Weld constraint '{common['name']}' failed.")
                         continue
                     body1_idx, _ = site1_info
                     body2_idx, anchor_vec = site2_info
@@ -2234,7 +2253,7 @@ def parse_mjcf(
                         wp.quat(relpose_list[4], relpose_list[5], relpose_list[6], relpose_list[3]),
                     )
                     if verbose:
-                        print(f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
+                        log_verbose(_logger, f"Weld constraint (site-based): body {body1_idx} to body {body2_idx}")
                     if convert_mjc_equality_constraints:
                         add_converted_loop_joint(
                             EqType.WELD,
@@ -2261,9 +2280,10 @@ def parse_mjcf(
                         )
                 else:
                     if verbose:
-                        print(
+                        log_verbose(
+                            _logger,
                             f"Warning: Weld constraint '{common['name']}' has site1 but no site2. "
-                            "When using sites, both site1 and site2 must be specified. Skipping."
+                            "When using sites, both site1 and site2 must be specified. Skipping.",
                         )
 
         for joint in equality.findall("joint"):
@@ -2276,7 +2296,9 @@ def parse_mjcf(
 
             if joint1_name:
                 if verbose:
-                    print(f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}")
+                    log_verbose(
+                        _logger, f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}"
+                    )
 
                 joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
                 joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
@@ -2448,19 +2470,19 @@ def parse_mjcf(
 
             if not geom1_name or not geom2_name:
                 if verbose:
-                    print("Warning: <pair> element missing geom1 or geom2 attribute, skipping")
+                    log_verbose(_logger, "Warning: <pair> element missing geom1 or geom2 attribute, skipping")
                 continue
 
             geom1_idx = _find_shape_idx(geom1_name)
             if geom1_idx is None:
                 if verbose:
-                    print(f"Warning: <pair> references unknown geom '{geom1_name}', skipping")
+                    log_verbose(_logger, f"Warning: <pair> references unknown geom '{geom1_name}', skipping")
                 continue
 
             geom2_idx = _find_shape_idx(geom2_name)
             if geom2_idx is None:
                 if verbose:
-                    print(f"Warning: <pair> references unknown geom '{geom2_name}', skipping")
+                    log_verbose(_logger, f"Warning: <pair> references unknown geom '{geom2_name}', skipping")
                 continue
 
             # Parse attributes using the standard custom attribute parsing
@@ -2479,7 +2501,7 @@ def parse_mjcf(
             builder.add_custom_values(**pair_values)
 
             if verbose:
-                print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
+                log_verbose(_logger, f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
 
     # Parse <exclude> elements - body pairs to exclude from collision detection
     for contact in contact_sections:
@@ -2489,7 +2511,7 @@ def parse_mjcf(
 
             if not body1_name or not body2_name:
                 if verbose:
-                    print("Warning: <exclude> element missing body1 or body2 attribute, skipping")
+                    log_verbose(_logger, "Warning: <exclude> element missing body1 or body2 attribute, skipping")
                 continue
 
             # Normalize body names the same way parse_body() does (replace '-' with '_')
@@ -2500,13 +2522,13 @@ def parse_mjcf(
             body1_idx = body_name_to_idx.get(body1_name)
             if body1_idx is None:
                 if verbose:
-                    print(f"Warning: <exclude> references unknown body '{body1_name}', skipping")
+                    log_verbose(_logger, f"Warning: <exclude> references unknown body '{body1_name}', skipping")
                 continue
 
             body2_idx = body_name_to_idx.get(body2_name)
             if body2_idx is None:
                 if verbose:
-                    print(f"Warning: <exclude> references unknown body '{body2_name}', skipping")
+                    log_verbose(_logger, f"Warning: <exclude> references unknown body '{body2_name}', skipping")
                 continue
 
             # Find all shapes belonging to body1 and body2
@@ -2519,9 +2541,10 @@ def parse_mjcf(
                     builder.add_shape_collision_filter_pair(shape1_idx, shape2_idx)
 
             if verbose:
-                print(
+                log_verbose(
+                    _logger,
                     f"Parsed collision exclude: {body1_name} ({len(body1_shapes)} shapes) <-> "
-                    f"{body2_name} ({len(body2_shapes)} shapes), added {len(body1_shapes) * len(body2_shapes)} filter pairs"
+                    f"{body2_name} ({len(body2_shapes)} shapes), added {len(body1_shapes) * len(body2_shapes)} filter pairs",
                 )
 
     # -----------------
@@ -2568,15 +2591,18 @@ def parse_mjcf(
 
                 if not joint_name:
                     if verbose:
-                        print(f"Warning: <joint> in tendon '{tendon_name}' missing joint attribute, skipping")
+                        log_verbose(
+                            _logger, f"Warning: <joint> in tendon '{tendon_name}' missing joint attribute, skipping"
+                        )
                     continue
 
                 # Look up joint index by name
                 joint_idx = joint_name_to_idx.get(joint_name)
                 if joint_idx is None:
                     if verbose:
-                        print(
-                            f"Warning: Tendon '{tendon_name}' references unknown joint '{joint_name}', skipping joint"
+                        log_verbose(
+                            _logger,
+                            f"Warning: Tendon '{tendon_name}' references unknown joint '{joint_name}', skipping joint",
                         )
                     continue
 
@@ -2585,7 +2611,7 @@ def parse_mjcf(
 
             if not joint_entries:
                 if verbose:
-                    print(f"Warning: Fixed tendon '{tendon_name}' has no valid joint elements, skipping")
+                    log_verbose(_logger, f"Warning: Fixed tendon '{tendon_name}' has no valid joint elements, skipping")
                 continue
 
             # Parse tendon-level attributes using the standard custom attribute parsing
@@ -2626,7 +2652,7 @@ def parse_mjcf(
 
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_label[j]}*{c}" for j, c in joint_entries)
-                print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
+                log_verbose(_logger, f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
 
         def find_shape_by_name(name: str, want_site: bool) -> int:
             """Find a shape index by name, disambiguating sites from geoms.
@@ -2743,7 +2769,7 @@ def parse_mjcf(
                 tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
 
             if verbose:
-                print(f"Parsed spatial tendon: {tendon_name} ({len(wrap_entries)} wrap elements)")
+                log_verbose(_logger, f"Parsed spatial tendon: {tendon_name} ({len(wrap_entries)} wrap elements)")
 
     # -----------------
     # parse actuators
@@ -2810,14 +2836,16 @@ def parse_mjcf(
                     trntype = 0  # TrnType.JOINT
                 else:
                     if verbose:
-                        print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
+                        log_verbose(
+                            _logger, f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'"
+                        )
                     continue
             elif body_name:
                 # Body transmission (trntype=4)
                 body_idx = body_name_to_idx.get(body_name)
                 if body_idx is None:
                     if verbose:
-                        print(f"Warning: {actuator_type} actuator references unknown body '{body_name}'")
+                        log_verbose(_logger, f"Warning: {actuator_type} actuator references unknown body '{body_name}'")
                     continue
                 target_idx = body_idx
                 target_name_for_log = body_name
@@ -2826,7 +2854,9 @@ def parse_mjcf(
                 # Tendon transmission (trntype=2 in MuJoCo)
                 if tendon_name not in tendon_name_to_idx:
                     if verbose:
-                        print(f"Warning: {actuator_type} actuator references unknown tendon '{tendon_name}'")
+                        log_verbose(
+                            _logger, f"Warning: {actuator_type} actuator references unknown tendon '{tendon_name}'"
+                        )
                     continue
                 tendon_idx = tendon_name_to_idx[tendon_name]
                 target_idx = tendon_idx
@@ -2837,14 +2867,17 @@ def parse_mjcf(
                 site_idx = site_name_to_idx.get(site_name)
                 if site_idx is None:
                     if verbose:
-                        print(f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
+                        log_verbose(_logger, f"Warning: {actuator_type} actuator references unknown site '{site_name}'")
                     continue
                 target_idx = site_idx
                 target_name_for_log = site_name
                 trntype = 3  # TrnType.SITE
             else:
                 if verbose:
-                    print(f"Warning: {actuator_type} actuator has no joint, body, site, or tendon target, skipping")
+                    log_verbose(
+                        _logger,
+                        f"Warning: {actuator_type} actuator has no joint, body, site, or tendon target, skipping",
+                    )
                 continue
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
@@ -2858,9 +2891,10 @@ def parse_mjcf(
                 biasprm = vec10(0.0, -kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 if kv > 0.0:
                     if dampratio > 0.0 and verbose:
-                        print(
+                        log_verbose(
+                            _logger,
                             f"Warning: position actuator '{act_name}' sets both kv={kv} "
-                            f"and dampratio={dampratio}; using kv and ignoring dampratio."
+                            f"and dampratio={dampratio}; using kv and ignoring dampratio.",
                         )
                     biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 elif dampratio > 0.0:
@@ -2936,7 +2970,7 @@ def parse_mjcf(
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
             else:
                 if verbose:
-                    print(f"Warning: Unknown actuator type '{actuator_type}', skipping")
+                    log_verbose(_logger, f"Warning: Unknown actuator type '{actuator_type}', skipping")
                 continue
 
             # Add actuator via custom attributes
@@ -2992,9 +3026,10 @@ def parse_mjcf(
                     "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
                 )
                 trn_name = {0: "joint", 2: "tendon", 4: "body"}.get(trntype, "unknown")
-                print(
+                log_verbose(
+                    _logger,
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
-                    f"trntype={trntype}, source={source_name}"
+                    f"trntype={trntype}, source={source_name}",
                 )
 
     # Only parse tendons if custom tendon attributes are registered

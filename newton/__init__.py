@@ -10,6 +10,10 @@ from ._src.core import (
     AxisType,
 )
 from ._version import __version__
+from .exceptions import (
+    NewtonDeprecationWarning,
+    NewtonWarning,
+)
 
 use_coord_layout_targets: bool = False
 """Use :attr:`joint_q`-aligned layout for joint position targets.
@@ -40,6 +44,8 @@ __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "NewtonDeprecationWarning",
+    "NewtonWarning",
     "__version__",
     "use_coord_layout_targets",
 ]
@@ -119,10 +125,11 @@ __all__ += [
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import actuators, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
+from . import actuators, exceptions, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
 
 __all__ += [
     "actuators",
+    "exceptions",
     "geometry",
     "ik",
     "math",

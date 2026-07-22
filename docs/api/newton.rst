@@ -10,6 +10,7 @@ newton
 .. rubric:: Submodules
 
 - :doc:`newton.actuators <newton_actuators>`
+- :doc:`newton.exceptions <newton_exceptions>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
@@ -41,6 +42,8 @@ newton
    Model
    ModelBuilder
    ModelFlags
+   NewtonDeprecationWarning
+   NewtonWarning
    ParticleFlags
    SDF
    ShapeFlags

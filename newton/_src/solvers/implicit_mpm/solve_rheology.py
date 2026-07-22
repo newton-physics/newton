@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.linalg import array_axpy
 from warp.optim.linear import LinearOperator, cg, cr, gmres
+
+from newton._src.utils.diagnostics import log_verbose
 
 from .contact_solver_kernels import (
     apply_nodal_impulse_warmstart,
@@ -51,6 +54,8 @@ from .rheology_solver_kernels import (
     reorder_strain_mat,
     vec6,
 )
+
+_logger = logging.getLogger(__name__)
 
 _TILED_SUM_BLOCK_DIM = 512
 
@@ -1374,7 +1379,7 @@ class _LinearSolver:
                 end_iter = end_iter.numpy()[0]
                 residual = residual.numpy()[0]
             res = math.sqrt(residual) / tolerance_scale
-            print(f"{self.name} terminated after {end_iter} iterations with residual {res}")
+            log_verbose(_logger, f"{self.name} terminated after {end_iter} iterations with residual {res}")
 
     @property
     def name(self):
@@ -1627,8 +1632,9 @@ def _run_solver_loop(
             if verbose:
                 residual = rheology_solver.eval_residual().numpy()
                 res_l2, res_linf = math.sqrt(residual[0, 0]) / l2_tolerance_scale, math.sqrt(residual[1, 0])
-                print(
-                    f"{rheology_solver.name} terminated after {iteration_and_condition.numpy()[0]} iterations with residuals {res_l2}, {res_linf}"
+                log_verbose(
+                    _logger,
+                    f"{rheology_solver.name} terminated after {iteration_and_condition.numpy()[0]} iterations with residuals {res_l2}, {res_linf}",
                 )
 
         iteration_and_condition.release()
@@ -1644,8 +1650,9 @@ def _run_solver_loop(
             res_l2, res_linf = math.sqrt(residual[0, 0]) / l2_tolerance_scale, math.sqrt(residual[1, 0])
 
             if verbose:
-                print(
-                    f"{rheology_solver.name} iteration #{(batch + 1) * solve_granularity} \t res(l2)={res_l2}, res(linf)={res_linf}"
+                log_verbose(
+                    _logger,
+                    f"{rheology_solver.name} iteration #{(batch + 1) * solve_granularity} \t res(l2)={res_l2}, res(linf)={res_linf}",
                 )
             if res_l2 < tolerance and res_linf < tolerance:
                 break

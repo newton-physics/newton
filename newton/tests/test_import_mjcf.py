@@ -1,10 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import io
 import os
 import struct
-import sys
 import tempfile
 import unittest
 import warnings
@@ -5928,21 +5926,13 @@ class TestImportMjcfComposition(unittest.TestCase):
         builder = newton.ModelBuilder()
         mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
 
-        # Capture verbose output
-        captured_output = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = captured_output
-
-        try:
+        with self.assertLogs("newton._src.utils.import_mjcf", level="INFO") as captured:
             builder.add_mjcf(
                 mjcf_filename,
                 enable_self_collisions=True,
                 verbose=True,
             )
-        finally:
-            sys.stdout = old_stdout
-
-        output = captured_output.getvalue()
+        output = "\n".join(captured.output)
 
         # Check that the verbose output includes information about the exclude
         self.assertIn("Parsed collision exclude", output)
@@ -6057,17 +6047,9 @@ class TestImportMjcfComposition(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
 
-        # Capture verbose output
-        captured_output = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = captured_output
-
-        try:
+        with self.assertLogs("newton._src.utils.import_mjcf", level="INFO") as captured:
             builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=True)
-        finally:
-            sys.stdout = old_stdout
-
-        output = captured_output.getvalue()
+        output = "\n".join(captured.output)
 
         # Check that warnings were printed for invalid exclude entries
         self.assertIn("Warning", output)

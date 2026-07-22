@@ -234,7 +234,8 @@ def test_viewer_file_playback(test: TestRecorder, device):
         for state in states:
             viewer_file_record.log_state(state)
 
-        viewer_file_record.close()
+        with test.assertLogs("newton._src.viewer.viewer_file", level="INFO"):
+            viewer_file_record.close()
         test.assertFalse(viewer_file_record.is_running())
 
         # Playback via ViewerFile

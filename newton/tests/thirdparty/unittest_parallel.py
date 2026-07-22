@@ -10,6 +10,7 @@ unittest-parallel command-line script main module
 
 import argparse
 import concurrent.futures  # NVIDIA Modification
+import logging
 import multiprocessing
 import os
 import sys
@@ -26,6 +27,10 @@ from io import StringIO
 # preserve any caller-provided override.
 os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
 
+from newton._src.utils.diagnostics import (  # NVIDIA modification
+    _entry_point_stderr_handler,
+    _install_below_warning_stdout_handler,
+)
 from newton.tests.unittest_utils import (  # NVIDIA modification
     ParallelJunitTestResult,
     write_junit_results,
@@ -41,6 +46,16 @@ except ImportError:
 
 # The following variables are NVIDIA Modifications
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
+
+_logger = logging.getLogger(__name__)
+
+
+def _configure_logging(verbose: bool = False) -> None:
+    """Configure default logging for Newton test entry points."""
+    logging.captureWarnings(True)
+    logging.basicConfig(level=logging.WARNING, handlers=[_entry_point_stderr_handler()])
+    if verbose:
+        _install_below_warning_stdout_handler(logging.getLogger("newton"), force_level=True)
 
 
 def _enable_strict_warnings():
@@ -193,6 +208,7 @@ def main(argv=None):
         help="Forward a warp.config override to example subprocesses (repeatable).",
     )
     args = parser.parse_args(args=argv)
+    _configure_logging(verbose=args.verbose > 1)
     if args.parallel_timeout <= 0:
         parser.error("--parallel-timeout must be greater than 0")
 
@@ -526,9 +542,9 @@ class ParallelTestManager:
             if self.failfast.is_set():
                 return [0, [], [], 0, 0, 0, []]  # NVIDIA Modification
         except self._PROXY_ERRORS as exc:
-            print(
-                f"Warning: failfast proxy is_set() failed ({type(exc).__name__}), continuing test execution",
-                file=sys.stderr,
+            _logger.warning(
+                "Warning: failfast proxy is_set() failed (%s), continuing test execution",
+                type(exc).__name__,
             )
 
         # NVIDIA Modification for GitLab
@@ -567,10 +583,9 @@ class ParallelTestManager:
                 try:
                     self.failfast.set()
                 except self._PROXY_ERRORS as exc:
-                    print(
-                        f"Warning: failfast proxy set() failed ({type(exc).__name__}), "
-                        "other workers may not stop early",
-                        file=sys.stderr,
+                    _logger.warning(
+                        "Warning: failfast proxy set() failed (%s), other workers may not stop early",
+                        type(exc).__name__,
                     )
 
             # Return (test_count, errors, failures, skipped_count, expected_failure_count, unexpected_success_count)
@@ -673,6 +688,8 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
     # unpickle, before run_tests).
     if args.strict_warnings:
         _enable_strict_warnings()
+
+    _configure_logging(verbose=args.verbose > 1)
 
     with lock:
         shared_index.value += 1

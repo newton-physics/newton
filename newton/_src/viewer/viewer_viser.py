@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import collections
 import inspect
+import logging
 import os
 import warnings
 from pathlib import Path
@@ -15,10 +16,13 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils.diagnostics import log_verbose
 
 from ..core.types import override
 from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
+
+_logger = logging.getLogger(__name__)
 
 
 class ViewerViser(ViewerBase):
@@ -167,12 +171,12 @@ class ViewerViser(ViewerBase):
         if share:
             self._share_url = self._server.request_share_url()
             if verbose:
-                print(f"Viser share URL: {self._share_url}")
+                log_verbose(_logger, f"Viser share URL: {self._share_url}")
         else:
             self._share_url = None
 
         if verbose:
-            print(f"Viser server running at: {self.url}")
+            log_verbose(_logger, f"Viser server running at: {self.url}")
 
         # Recording state
         self._frame_dt = 0.0
@@ -183,7 +187,7 @@ class ViewerViser(ViewerBase):
         self._setup_scene()
 
         if self._serializer is not None and verbose:
-            print(f"Recording to: {record_to_viser}")
+            log_verbose(_logger, f"Recording to: {record_to_viser}")
 
     @override
     def clear_model(self):
@@ -1083,7 +1087,7 @@ class ViewerViser(ViewerBase):
         self._serializer = None
 
         if self.verbose:
-            print(f"Recording saved to: {self._record_to_viser}")
+            log_verbose(_logger, f"Recording saved to: {self._record_to_viser}")
 
     @override
     def log_lines(

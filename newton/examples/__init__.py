@@ -5,6 +5,7 @@ import ast
 import copy
 import gc
 import importlib
+import logging
 import math
 import os
 import sys
@@ -17,9 +18,53 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils.diagnostics import (
+    _entry_point_stderr_handler,
+    _install_below_warning_stdout_handler,
+    _remove_marked_handlers,
+)
 from newton.tests.unittest_utils import find_nan_members
 
 _DEPRECATED_WARP_CONFIG_KEYS = {"quiet", "verbose"}
+
+
+class _StdlibWarpLogger:
+    """Route Warp log records through stdlib logging."""
+
+    def __init__(self):
+        self._logger = logging.getLogger("warp")
+
+    def debug(self, message: str) -> None:
+        self._logger.debug(message)
+
+    def info(self, message: str) -> None:
+        self._logger.info(message)
+
+    def warning(self, message: str, category=None, stacklevel: int = 1) -> None:
+        warnings.warn(message, category or UserWarning, stacklevel=stacklevel)
+
+    def error(self, message: str) -> None:
+        self._logger.error("Warp Error: %s", message)
+
+
+def _configure_logging(args) -> None:
+    """Configure default logging for Newton example entry points."""
+    logging.captureWarnings(True)
+    logging.basicConfig(level=logging.WARNING, handlers=[_entry_point_stderr_handler()])
+    _install_below_warning_stdout_handler(logging.getLogger("newton"))
+    warp_logger = logging.getLogger("warp")
+    if getattr(args, "quiet", False):
+        _remove_marked_handlers(warp_logger)
+        warp_logger.setLevel(logging.WARNING)
+    else:
+        _install_below_warning_stdout_handler(
+            warp_logger,
+            enabled_level=logging.INFO,
+            handler_level=logging.DEBUG,
+            logger_level=logging.DEBUG,
+        )
+
+    wp.set_logger(_StdlibWarpLogger())
 
 
 def get_source_directory() -> str:
@@ -897,6 +942,8 @@ def init(parser=None):
     # Suppress Warp compilation messages if requested
     if args.quiet:
         wp.config.log_level = max(wp.config.log_level, wp.LOG_WARNING)
+
+    _configure_logging(args)
 
     # Set device if specified
     if args.device:

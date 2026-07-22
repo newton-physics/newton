@@ -31,6 +31,8 @@ else:
 import numpy as np
 import warp as wp
 
+from newton._src.utils.diagnostics import log_verbose
+
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
@@ -64,7 +66,7 @@ from .import_usd_deformable_utils import _DeformableImportContext, _scout_deform
 from .import_usd_deformable_volume import _deformable_import_volume
 from .import_utils import should_show_collider
 
-logger = logging.getLogger("newton")
+_logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -488,7 +490,7 @@ def parse_usd(
             mass_unit = UsdPhysics.GetStageKilogramsPerUnit(stage)
     except Exception as e:
         if verbose:
-            print(f"Failed to get mass unit: {e}")
+            log_verbose(_logger, f"Failed to get mass unit: {e}")
     if not math.isclose(mass_unit, 1.0):
         warnings.warn(
             "USD stages with non-unit mass units are not supported. "
@@ -501,7 +503,7 @@ def parse_usd(
             linear_unit = UsdGeom.GetStageMetersPerUnit(stage)
     except Exception as e:
         if verbose:
-            print(f"Failed to get linear unit: {e}")
+            log_verbose(_logger, f"Failed to get linear unit: {e}")
     if not math.isclose(linear_unit, 1.0):
         warnings.warn(
             "USD stages with non-unit linear units are not supported. "
@@ -889,7 +891,7 @@ def parse_usd(
         if texture is not None:
             mesh.texture = texture
         if mesh.texture is not None and mesh.uvs is None:
-            logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
+            _logger.info("Mesh %s: dropping texture because UVs could not be recovered.", path_name)
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
@@ -996,7 +998,7 @@ def parse_usd(
         if texture:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
-            logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
+            _logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
             submesh.texture = None
 
         color = material_props.get("color")
@@ -1041,7 +1043,7 @@ def parse_usd(
             subset_indices = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int32)
             valid = (subset_indices >= 0) & (subset_indices < len(face_counts))
             if not np.all(valid):
-                logger.info(
+                _logger.info(
                     "Mesh material subset %s: face indices outside the mesh face range; "
                     "out-of-range indices will be ignored.",
                     subset_path,
@@ -1328,9 +1330,10 @@ def parse_usd(
                         if shape_id < 0:
                             shape_id = subset_shape_id
                         if verbose:
-                            print(
+                            log_verbose(
+                                _logger,
                                 f"Added visual shape {subset_path} ({type_name} material subset) "
-                                f"with id {subset_shape_id}."
+                                f"with id {subset_shape_id}.",
                             )
                 else:
                     mesh = _get_mesh_with_visual_material(prim, path_name=path_name)
@@ -1359,7 +1362,10 @@ def parse_usd(
                 and type_name not in {"geomsubset", "material", "scope", "shader", "xform", "tetmesh"}
                 and verbose
             ):
-                print(f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.")
+                log_verbose(
+                    _logger,
+                    f"Warning: Unsupported geometry type {type_name} at {path_name} while loading visual shapes.",
+                )
 
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
@@ -1367,7 +1373,7 @@ def parse_usd(
                 if not is_site and visual_shape_cfg_for_prim.is_visible:
                     bodies_with_visual_shapes.add(parent_body_id)
                 if verbose:
-                    print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
+                    log_verbose(_logger, f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
         for child in prim.GetChildren():
             _load_visual_shapes_impl(parent_body_id, child, body_xform, articulation_root_xform)
@@ -1475,7 +1481,7 @@ def parse_usd(
             if get_transforms:
                 parent_tf, child_tf = child_tf, parent_tf
             if verbose:
-                print(f"Joint {joint_desc.primPath} connects {parent_path} to world")
+                log_verbose(_logger, f"Joint {joint_desc.primPath} connects {parent_path} to world")
         if get_transforms:
             return parent_id, child_id, parent_tf, child_tf
         else:
@@ -1875,8 +1881,9 @@ def parse_usd(
                     builder.joint_q[q_start] = initial_position
                 if verbose:
                     joint_type_str = "revolute" if key == UsdPhysics.ObjectType.RevoluteJoint else "prismatic"
-                    print(
-                        f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({'rad' if key == UsdPhysics.ObjectType.RevoluteJoint else 'm'})"
+                    log_verbose(
+                        _logger,
+                        f"Set {joint_type_str} joint {joint_index} position to {initial_position} ({'rad' if key == UsdPhysics.ObjectType.RevoluteJoint else 'm'})",
                     )
             if initial_velocity is not None:
                 qd_start = builder.joint_qd_start[joint_index]
@@ -1886,7 +1893,9 @@ def parse_usd(
                     builder.joint_qd[qd_start] = initial_velocity
                 if verbose:
                     joint_type_str = "revolute" if key == UsdPhysics.ObjectType.RevoluteJoint else "prismatic"
-                    print(f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} rad/s")
+                    log_verbose(
+                        _logger, f"Set {joint_type_str} joint {joint_index} velocity to {initial_velocity} rad/s"
+                    )
         elif key == UsdPhysics.ObjectType.D6Joint:
             # Apply D6 joint initial state
             q_start = builder.joint_q_start[joint_index]
@@ -1913,13 +1922,16 @@ def parse_usd(
                     coord_val = pos * DegreesToRadian if is_rot else pos
                     builder.joint_q[q_start + dof_idx] = coord_val
                     if verbose:
-                        print(f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})")
+                        log_verbose(
+                            _logger,
+                            f"Set D6 joint {joint_index} {axis_name} position to {pos} ({'deg' if is_rot else 'm'})",
+                        )
 
                 if vel is not None and qd_start + dof_idx < qd_end:
                     vel_val = vel  # D6 velocities are already in correct units
                     builder.joint_qd[qd_start + dof_idx] = vel_val
                     if verbose:
-                        print(f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
+                        log_verbose(_logger, f"Set D6 joint {joint_index} {axis_name} velocity to {vel} rad/s")
 
         return joint_index
 
@@ -2263,9 +2275,10 @@ def parse_usd(
                 builder.joint_qd[qd_start + dof_idx] = vel
 
         if verbose:
-            print(
+            log_verbose(
+                _logger,
                 f"Merged {len(joint_paths)} joints into D6 joint {joint_index}: "
-                f"{len(linear_axes)} linear + {len(angular_axes)} angular DOFs"
+                f"{len(linear_axes)} linear + {len(angular_axes)} angular DOFs",
             )
 
         return joint_index
@@ -2279,12 +2292,12 @@ def parse_usd(
     if UsdPhysics.ObjectType.Scene in ret_dict:
         paths, scene_descs = ret_dict[UsdPhysics.ObjectType.Scene]
         if len(paths) > 1 and verbose:
-            print("Only the first PhysicsScene is considered")
+            log_verbose(_logger, "Only the first PhysicsScene is considered")
         path, scene_desc = paths[0], scene_descs[0]
         if verbose:
-            print("Found PhysicsScene:", path)
-            print("Gravity direction:", scene_desc.gravityDirection)
-            print("Gravity magnitude:", scene_desc.gravityMagnitude)
+            log_verbose(_logger, f"Found PhysicsScene: {path}")
+            log_verbose(_logger, f"Gravity direction: {scene_desc.gravityDirection}")
+            log_verbose(_logger, f"Gravity magnitude: {scene_desc.gravityMagnitude}")
         scene_gravity_direction = scene_desc.gravityDirection
         scene_gravity_magnitude = scene_desc.gravityMagnitude
 
@@ -2322,11 +2335,13 @@ def parse_usd(
         builder.up_axis = stage_up_axis
         axis_xform = wp.transform_identity()
         if verbose:
-            print(f"Using stage up axis {stage_up_axis} as builder up axis")
+            log_verbose(_logger, f"Using stage up axis {stage_up_axis} as builder up axis")
     else:
         axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(stage_up_axis, builder.up_axis))
         if verbose:
-            print(f"Rotating stage to align its up axis {stage_up_axis} with builder up axis {builder.up_axis}")
+            log_verbose(
+                _logger, f"Rotating stage to align its up axis {stage_up_axis} with builder up axis {builder.up_axis}"
+            )
     if override_root_xform and xform is None:
         raise ValueError("override_root_xform=True requires xform to be set")
 
@@ -2351,8 +2366,9 @@ def parse_usd(
             builder.gravity = gravity_vector
 
     if verbose:
-        print(
-            f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}"
+        log_verbose(
+            _logger,
+            f"Scaling PD gains by (joint_drive_gains_scaling / DegreesToRadian) = {joint_drive_gains_scaling / DegreesToRadian}, default scale for joint_drive_gains_scaling=1 is 1.0/DegreesToRadian = {1.0 / DegreesToRadian}",
         )
 
     # Process custom attributes defined for different kinds of prim.
@@ -2418,7 +2434,7 @@ def parse_usd(
         if key not in physics_utils_results:
             return
         if verbose:
-            print(physics_utils_results[key])
+            log_verbose(_logger, physics_utils_results[key])
 
         yield from zip(*physics_utils_results[key], strict=False)
 
@@ -2585,7 +2601,9 @@ def parse_usd(
             # First check if articulation_prim itself has the PhysicsArticulationRootAPI
             if articulation_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                 if verbose:
-                    print(f"Extracting articulation custom attributes from {articulation_prim.GetPath()}")
+                    log_verbose(
+                        _logger, f"Extracting articulation custom attributes from {articulation_prim.GetPath()}"
+                    )
                 articulation_custom_attrs = usd.get_custom_attribute_values(
                     articulation_prim, builder_custom_attr_articulation
                 )
@@ -2594,21 +2612,23 @@ def parse_usd(
                 parent_prim is not None and parent_prim.IsValid() and parent_prim.HasAPI(UsdPhysics.ArticulationRootAPI)
             ):
                 if verbose:
-                    print(f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}")
+                    log_verbose(
+                        _logger, f"Extracting articulation custom attributes from parent {parent_prim.GetPath()}"
+                    )
                 articulation_custom_attrs = usd.get_custom_attribute_values(
                     parent_prim, builder_custom_attr_articulation
                 )
             if verbose and articulation_custom_attrs:
-                print(f"Extracted articulation custom attributes: {articulation_custom_attrs}")
+                log_verbose(_logger, f"Extracted articulation custom attributes: {articulation_custom_attrs}")
             body_ids = {}
             body_labels = []
             current_body_id = 0
             art_bodies = []
             if verbose:
-                print(f"Bodies under articulation {path!s}:")
+                log_verbose(_logger, f"Bodies under articulation {path!s}:")
             for p in desc.articulatedBodies:
                 if verbose:
-                    print(f"\t{p!s}")
+                    log_verbose(_logger, f"\t{p!s}")
                 if p == Sdf.Path.emptyPath:
                     continue
                 key = str(p)
@@ -2678,7 +2698,10 @@ def parse_usd(
                 joint_desc = joint_descriptions[joint_path]
                 if joint_path in mjc_equality_connect_or_weld_paths:
                     if verbose:
-                        print(f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph")
+                        log_verbose(
+                            _logger,
+                            f"Skipping equality connect/weld joint '{joint_path}' from articulation joint graph",
+                        )
                     continue
                 # it may be possible that a joint is filtered out in the middle of
                 # a chain of joints, which results in a disconnected graph
@@ -2771,7 +2794,7 @@ def parse_usd(
                 # we have an articulation with joints, we need to sort them topologically
                 if joint_ordering is not None:
                     if verbose:
-                        print(f"Sorting joints using {joint_ordering} ordering...")
+                        log_verbose(_logger, f"Sorting joints using {joint_ordering} ordering...")
                     sorted_joints, reversed_joint_list = topological_sort_undirected(
                         joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
                     )
@@ -2782,7 +2805,7 @@ def parse_usd(
                             f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
                         )
                     if verbose:
-                        print("Joint ordering:", sorted_joints)
+                        log_verbose(_logger, "Joint ordering:", sorted_joints)
                 else:
                     # we keep the original order of the joints
                     sorted_joints = np.arange(len(joint_names))
@@ -3029,7 +3052,7 @@ def parse_usd(
             continue
         if joint_path in mjc_equality_connect_or_weld_paths:
             if verbose:
-                print(f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
+                log_verbose(_logger, f"Skipping equality connect/weld joint '{joint_path}' from orphan joint parsing")
             continue
 
         # Apply the importer filters before grouping the remaining candidates.
@@ -3096,7 +3119,7 @@ def parse_usd(
                 parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
         except ValueError as exc:
             if verbose:
-                print(f"Skipping joint group {joint_group}: {exc}")
+                log_verbose(_logger, f"Skipping joint group {joint_group}: {exc}")
 
     def _build_mass_info_from_effective_properties(
         prim: Usd.Prim,
@@ -3274,11 +3297,11 @@ def parse_usd(
                 # rigid (e.g. its body API conflicts with RigidBodyAPI), so import it.
                 if path in path_shape_map:
                     if verbose:
-                        print(f"Shape at {path} already added, skipping.")
+                        log_verbose(_logger, f"Shape at {path} already added, skipping.")
                     continue
                 body_path = str(shape_spec.rigidBody)
                 if verbose:
-                    print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
+                    log_verbose(_logger, f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
                 body_id = path_body_map.get(body_path, -1)
                 scale = usd.get_scale(prim, local=False)
                 collision_group = builder.default_shape_cfg.collision_group
@@ -3293,14 +3316,18 @@ def parse_usd(
                 has_shape_material = len(shape_spec.materials) >= 1
                 if has_shape_material:
                     if len(shape_spec.materials) > 1 and verbose:
-                        print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
+                        log_verbose(
+                            _logger,
+                            f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.",
+                        )
                     material = material_specs[str(shape_spec.materials[0])]
                     if verbose:
-                        print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                        log_verbose(
+                            _logger,
+                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}",
                         )
                 elif verbose:
-                    print(f"No material found for shape at '{path}'.")
+                    log_verbose(_logger, f"No material found for shape at '{path}'.")
 
                 # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
                 # Use per-shape physics material density when present; otherwise use default density.
@@ -3715,8 +3742,9 @@ def parse_usd(
                                 remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
                                 if remeshing_method is None:
                                     if verbose:
-                                        print(
-                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        log_verbose(
+                                            _logger,
+                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'.",
                                         )
                                 else:
                                     if remeshing_method not in remeshing_queue:
@@ -3868,7 +3896,7 @@ def parse_usd(
             path_shape_map[gaussian_path] = shape_id
             path_shape_scale[gaussian_path] = g_scale
             if verbose:
-                print(f"Added Gaussian splat shape {gaussian_path} with id {shape_id}.")
+                log_verbose(_logger, f"Added Gaussian splat shape {gaussian_path} with id {shape_id}.")
 
     def _zero_mass_information():
         """Create a reusable zero-contribution collider mass payload for callback fallback."""
@@ -4083,8 +4111,9 @@ def parse_usd(
                     builder.body_inv_inertia[body_id] = wp.inverse(I_default)
 
                     if verbose:
-                        print(
-                            f"Applied default inertia matrix for body {body_path}: diagonal elements = [{I_default[0, 0]}, {I_default[1, 1]}, {I_default[2, 2]}]"
+                        log_verbose(
+                            _logger,
+                            f"Applied default inertia matrix for body {body_path}: diagonal elements = [{I_default[0, 0]}, {I_default[1, 1]}, {I_default[2, 2]}]",
                         )
                 else:
                     warnings.warn(
@@ -4673,9 +4702,10 @@ def parse_usd(
             )
 
             if verbose:
-                print(
+                log_verbose(
+                    _logger,
                     f"Added PhysxMimicJointAPI constraint: '{joint_path}' follows '{leader_path}' "
-                    f"(gearing={gearing}, offset={offset}, axis={axis_instance})"
+                    f"(gearing={gearing}, offset={offset}, axis={axis_instance})",
                 )
 
     # Mimic constraints from NewtonMimicAPI (run after collapse so joint indices are final).
@@ -4691,12 +4721,12 @@ def parse_usd(
         mimic_rel = joint_prim.GetRelationship("newton:mimicJoint")
         if not mimic_rel or not mimic_rel.HasAuthoredTargets():
             if verbose:
-                print(f"NewtonMimicAPI on {joint_path} has no newton:mimicJoint target; skipping")
+                log_verbose(_logger, f"NewtonMimicAPI on {joint_path} has no newton:mimicJoint target; skipping")
             continue
         targets = mimic_rel.GetTargets()
         if not targets:
             if verbose:
-                print(f"NewtonMimicAPI on {joint_path}: newton:mimicJoint has no targets; skipping")
+                log_verbose(_logger, f"NewtonMimicAPI on {joint_path}: newton:mimicJoint has no targets; skipping")
             continue
         leader_path = targets[0]
         if not leader_path.IsAbsolutePath():
@@ -4781,7 +4811,7 @@ def parse_usd(
         )
         actuator_count += 1
     if verbose and actuator_count > 0:
-        print(f"Added {actuator_count} actuator(s) from USD")
+        log_verbose(_logger, f"Added {actuator_count} actuator(s) from USD")
 
     result = {
         "fps": stage.GetFramesPerSecond(),
@@ -4846,8 +4876,9 @@ def parse_usd(
                     values_rows = [{attr.key: row.get(attr.key, None) for attr in freq_attrs} for row in expanded_rows]
                     builder.add_custom_values_batch(values_rows)
                     if verbose and len(expanded_rows) > 0:
-                        print(
-                            f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()} with {len(expanded_rows)} rows"
+                        log_verbose(
+                            _logger,
+                            f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()} with {len(expanded_rows)} rows",
                         )
                     continue
 
@@ -4868,7 +4899,7 @@ def parse_usd(
                 # even if all values are None (defaults will be applied during finalization)
                 builder.add_custom_values(**values_dict)
                 if verbose:
-                    print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+                    log_verbose(_logger, f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
 
     # USD MjcActuator does not preserve the original MJCF authoring tag:
     # MuJoCo's compiler expands <position>/<velocity> shortcuts into raw
@@ -4977,7 +5008,7 @@ def parse_usd(
             converted += 1
 
         if verbose and converted > 0:
-            print(f"Mapped {converted} MuJoCo USD actuator(s) to joint targets")
+            log_verbose(_logger, f"Mapped {converted} MuJoCo USD actuator(s) to joint targets")
     if return_deformable_results:
         # The deformable results are opt-in so the default return shape carries no
         # deformable additions and stays isolated from changes to this experimental contract.
@@ -4993,7 +5024,6 @@ def parse_usd(
                 "path_attachment_attrs": path_attachment_attrs,
             }
         )
-
     return result
 
 
