@@ -2941,6 +2941,43 @@ def Xform "World" {{
                 np.testing.assert_allclose(builder.shape_scale[collision][:2], dims)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_planar_visual_scale_follows_axis(self):
+        from pxr import Usd
+
+        # UsdGeomPlane aligns width to Z for X-axis planes and length to Z for Y-axis planes.
+        cases = {
+            "X": (2.0 * 4.0, 3.0 * 3.0),
+            "Y": (2.0 * 2.0, 3.0 * 4.0),
+            "Z": (2.0 * 2.0, 3.0 * 3.0),
+        }
+        for axis, dims in cases.items():
+            with self.subTest(axis=axis):
+                stage = Usd.Stage.CreateInMemory()
+                stage.GetRootLayer().ImportFromString(
+                    f"""#usda 1.0
+def Xform "World" {{
+    def Xform "link" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {{
+        def Plane "visual" {{
+            uniform token axis = "{axis}"
+            double width = 2.0
+            double length = 3.0
+            float3 xformOp:scale = (2, 3, 4)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+        }}
+    }}
+}}
+"""
+                )
+
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage)
+
+                plane = builder.shape_label.index("/World/link/visual")
+                np.testing.assert_allclose(builder.shape_scale[plane][:2], dims)
+                normal = wp.quat_rotate(builder.shape_transform[plane].q, wp.vec3(0.0, 0.0, 1.0))
+                np.testing.assert_allclose(normal, newton.Axis.from_string(axis).to_vec3(), atol=1e-7)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_non_symmetric_inertia(self):
         """Test importing USD with inertia specified in principal axes that don't align with body frame."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
