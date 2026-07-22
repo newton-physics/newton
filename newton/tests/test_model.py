@@ -2024,6 +2024,39 @@ class TestModelJoints(unittest.TestCase):
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
 
+    def test_collapse_fixed_joints_transports_body_velocity(self):
+        for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+            with self.subTest(joint_type=joint_type):
+                builder = ModelBuilder()
+                root = builder.add_link(mass=1.0, inertia=wp.mat33(1.0))
+                child = builder.add_link(mass=1.0, inertia=wp.mat33(1.0), com=wp.vec3(0.5, 0.0, 0.0))
+                if joint_type == newton.JointType.FREE:
+                    root_joint = builder.add_joint_free(parent=-1, child=root)
+                else:
+                    root_joint = builder.add_joint_distance(parent=-1, child=root)
+                fixed_joint = builder.add_joint_fixed(
+                    parent=root,
+                    child=child,
+                    parent_xform=wp.transform(wp.vec3(2.0, 0.0, 0.0)),
+                )
+                builder.add_articulation([root_joint, fixed_joint])
+                builder.body_qd[root] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+                builder.body_qd[child] = wp.spatial_vector(0.0, 2.5, 0.0, 0.0, 0.0, 1.0)
+
+                builder.collapse_fixed_joints()
+
+                expected = np.asarray((0.0, 1.25, 0.0, 0.0, 0.0, 1.0))
+                assert_np_equal(builder.body_com[0], np.asarray((1.25, 0.0, 0.0)))
+                assert_np_equal(builder.body_qd[0], expected)
+                assert_np_equal(builder.joint_qd, expected)
+
+                model = builder.finalize()
+                assert_np_equal(model.joint_qd.numpy(), expected)
+
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                assert_np_equal(state.body_qd.numpy()[0], expected)
+
     def test_collapse_fixed_joints_remaps_custom_body_and_joint_references(self):
         # A custom attribute declaring references="body"/"joint" must have its indices remapped
         # when fixed joints are collapsed, just like the built-in arrays. This is the generic path

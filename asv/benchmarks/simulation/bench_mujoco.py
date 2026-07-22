@@ -1,15 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 import os
 import sys
+import time
 
 import warp as wp
 
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
-from asv_runner.benchmarks.mark import skip_benchmark_if
+from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -64,6 +66,84 @@ class _KpiBenchmark:
         return total_time * 1000 / (self.num_frames * example.sim_substeps * world_count * self.samples)
 
     track_simulate.unit = "ms/world-step"
+
+
+class _RealtimePhysicsBenchmark:
+    """Report single-world physics throughput, stability, and real-time factor."""
+
+    robot = None
+    physics_hz = 200
+    num_steps = 300
+    warmup_steps = 60
+    repeat = 3
+    number = 1
+    rounds = 2
+    timeout = 600
+
+    def setup(self):
+        if wp.get_cuda_device_count() == 0:
+            raise SkipNotImplemented
+        with wp.ScopedDevice("cuda:0"):
+            if not wp.is_mempool_enabled(wp.get_device()):
+                raise SkipNotImplemented
+            builder = Example.create_model_builder(self.robot, 1, randomize=True, seed=123)
+            self.example = Example(
+                stage_path=None,
+                robot=self.robot,
+                randomize=True,
+                headless=True,
+                actuation="None",
+                use_cuda_graph=True,
+                builder=builder,
+                fps=self.physics_hz,
+                sim_substeps=1,
+            )
+            for _ in range(self.warmup_steps):
+                self.example.step()
+
+    def track_mean_step_ms(self) -> float:
+        return 1000.0 * self._mean(self._measure_step_durations())
+
+    track_mean_step_ms.unit = "ms/step"
+
+    def track_p95_step_ms(self) -> float:
+        durations = sorted(self._measure_step_durations())
+        p95_index = min(len(durations) - 1, int(math.ceil(0.95 * len(durations))) - 1)
+        return 1000.0 * durations[p95_index]
+
+    track_p95_step_ms.unit = "ms/step"
+
+    def track_step_rate_hz(self) -> float:
+        return 1.0 / self._mean(self._measure_step_durations())
+
+    track_step_rate_hz.unit = "Hz"
+
+    def track_step_time_cv_pct(self) -> float:
+        durations = self._measure_step_durations()
+        mean = self._mean(durations)
+        variance = sum((duration - mean) ** 2 for duration in durations) / len(durations)
+        return 100.0 * math.sqrt(variance) / mean
+
+    track_step_time_cv_pct.unit = "%"
+
+    def track_real_time_factor(self) -> float:
+        mean_step_s = self._mean(self._measure_step_durations())
+        return self.example.sim_dt / mean_step_s
+
+    track_real_time_factor.unit = "x"
+
+    def _measure_step_durations(self) -> list[float]:
+        durations = []
+        with wp.ScopedDevice("cuda:0"):
+            for _ in range(self.num_steps):
+                start = time.perf_counter()
+                self.example.step()
+                durations.append(time.perf_counter() - start)
+        return durations
+
+    @staticmethod
+    def _mean(values: list[float]) -> float:
+        return sum(values) / len(values)
 
 
 class _NewtonOverheadBenchmark:
@@ -156,6 +236,12 @@ class FastHumanoid(_KpiBenchmark):
     environment = "None"
 
 
+class RealtimeHumanoidPhysics(_RealtimePhysicsBenchmark):
+    """Single highly articulated humanoid in physics-only mode."""
+
+    robot = "humanoid"
+
+
 class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
     params = [[8192]]
     num_frames = 100
@@ -200,6 +286,7 @@ if __name__ == "__main__":
         "FastKitchenG1": FastKitchenG1,
         "FastNewtonOverheadG1": FastNewtonOverheadG1,
         "FastNewtonOverheadHumanoid": FastNewtonOverheadHumanoid,
+        "RealtimeHumanoidPhysics": RealtimeHumanoidPhysics,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
