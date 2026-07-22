@@ -17,8 +17,6 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from newton._src.utils.diagnostics import log_verbose
-
 from . import utils as usd
 
 _logger = logging.getLogger(__name__)
@@ -276,11 +274,13 @@ class SchemaResolverManager:
         except (AttributeError, RuntimeError):
             prim_path = "<invalid>"
         if verbose:
-            error_message = (
-                f"Error: Cannot resolve value for '{prim_type.name.lower()}:{key}' on prim '{prim_path}'; "
-                + "no authored value, no explicit default, and no solver mapping default."
+            _logger.warning(
+                "Cannot resolve value for '%s:%s' on prim '%s'; "
+                "no authored value, no explicit default, and no solver mapping default.",
+                prim_type.name.lower(),
+                key,
+                prim_path,
             )
-            log_verbose(_logger, error_message)
         return None, None
 
     def deformable_compat_namespaces(self) -> list[str]:
