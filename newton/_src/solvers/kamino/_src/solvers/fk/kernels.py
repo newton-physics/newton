@@ -182,9 +182,8 @@ def _compute_fk_joint_frames(
     else:
         fk_B_r_Bj[fk_joint] = wp.vec3f(0.0)
         fk_F_r_Fj[fk_joint] = wp.vec3f(0.0)
-        identity = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-        fk_X_Bj[fk_joint] = identity
-        fk_X_Fj[fk_joint] = identity
+        fk_X_Bj[fk_joint] = wp.identity(n=3, dtype=wp.float32)
+        fk_X_Fj[fk_joint] = wp.identity(n=3, dtype=wp.float32)
 
 
 @wp.kernel
