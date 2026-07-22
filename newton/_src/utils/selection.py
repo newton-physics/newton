@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import operator
+import re
 import warnings
 from fnmatch import fnmatch
 from types import NoneType
@@ -395,7 +396,10 @@ def get_name_from_label(label: str):
 
 
 def find_matching_ids(
-    pattern: str | list[str] | list[int], labels: list[str], world_ids, world_count: int
+    pattern: str | list[str] | re.Pattern[str] | list[int],
+    labels: list[str],
+    world_ids,
+    world_count: int,
 ) -> tuple[list[list[int]], list[int]]:
     matching_ids = match_labels(labels, pattern)
 
@@ -420,29 +424,35 @@ def find_matching_ids(
     return grouped_ids, global_ids
 
 
-def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> list[int]:
+def match_labels(labels: list[str], pattern: str | list[str] | re.Pattern[str] | list[int]) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
     See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
 
     Args:
         labels: List of label strings to match against.
-        pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
-            A ``list[str]`` matches any pattern.
-            A ``list[int]`` is returned as-is (indices used directly).
-            Mixing ``str`` and ``int`` in the same list is not allowed.
+        pattern: Glob string, list of glob strings, compiled string regular expression,
+            or list of integer indices. Regular expressions use full matching. Integer
+            indices are returned as-is.
 
     Returns:
         Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
 
     Raises:
-        TypeError: If list elements are not all ``str`` or all ``int``.
+        TypeError: If the selector type is unsupported or list elements are not all
+            strings or all integers.
     """
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
+    if isinstance(pattern, re.Pattern):
+        return [idx for idx, label in enumerate(labels) if pattern.fullmatch(label) is not None]
+
     if not isinstance(pattern, list):
-        raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
+        raise TypeError(
+            "Expected a glob string, list of glob strings, compiled string pattern, "
+            f"or list of int indices, got: {type(pattern)}"
+        )
 
     if len(pattern) == 0:
         return pattern
@@ -458,7 +468,7 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
         if not validation_failure:
             return pattern
     elif all(isinstance(item, str) for item in pattern):
-        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, item) for item in pattern)]
 
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
@@ -508,6 +518,8 @@ class ArticulationView:
 
     .. code-block:: python
 
+        import re
+
         import newton
 
         view = newton.selection.ArticulationView(model, pattern="robot*")
@@ -516,20 +528,32 @@ class ArticulationView:
         q_np[..., 0] = 0.0
         view.set_dof_positions(state, q_np)
 
+        regex_view = newton.selection.ArticulationView(
+            model,
+            pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_(A|B|C)"),
+            include_links=re.compile(r"(LF|RF)_FOOT"),
+        )
+
     The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
     and ``exclude_links`` parameters accept label patterns or integer indices — see
-    :ref:`label-matching`.
+    :ref:`label-matching`. ``pattern`` is matched against full articulation labels.
+    Joint and link filters are matched against the final path component of each label.
 
     Args:
         model: The model containing the articulations.
-        pattern: Pattern or list of patterns to match articulation labels, or a list
-            of absolute articulation indices. Indices must be unique and in ascending order.
-        include_joints: List of joint names, patterns, or indices to include. Unsorted
-            integer indices are deprecated and will be rejected in a future release.
-        exclude_joints: List of joint names, patterns, or indices to exclude.
-        include_links: List of link names, patterns, or indices to include. Unsorted
-            integer indices are deprecated and will be rejected in a future release.
-        exclude_links: List of link names, patterns, or indices to exclude.
+        pattern: Glob pattern, list of glob patterns, compiled regular-expression pattern,
+            or list of absolute articulation indices. Regular expressions use full matching.
+            Indices must be unique and in ascending order.
+        include_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to include. Unsorted integer indices are
+            deprecated and will be rejected in a future release.
+        exclude_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to exclude.
+        include_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to include. Unsorted integer indices are
+            deprecated and will be rejected in a future release.
+        exclude_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to exclude.
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
@@ -540,12 +564,12 @@ class ArticulationView:
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str] | list[int],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
-        include_joints: list[str] | list[int] | None = None,
-        exclude_joints: list[str] | list[int] | None = None,
-        include_links: list[str] | list[int] | None = None,
-        exclude_links: list[str] | list[int] | None = None,
+        include_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        include_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
@@ -2157,7 +2181,8 @@ class DeformableView:
 
        This API may change while deformable selection is developed.
 
-    ``pattern`` uses the label glob matching shared by Newton selection APIs.
+    ``pattern`` uses the label matching shared by Newton selection APIs. It accepts
+    glob strings, lists of glob strings, and compiled regular expressions.
     Results keep model order: world order followed by builder order. The public
     families are ``"curve"``, ``"surface"``, and ``"volume"``. ``family`` is an
     optional filter and is inferred when all matches belong to one family. A mixed-family
@@ -2212,7 +2237,7 @@ class DeformableView:
 
     Args:
         model: Model containing the finalized deformable groups.
-        pattern: Label glob or list of label globs.
+        pattern: Label glob, list of label globs, or compiled regular expression.
         family: Optional family filter: ``"curve"``, ``"surface"``, or
             ``"volume"``. Inferred when the match contains one family.
         verbose: If True, print a short selection summary.
@@ -2223,7 +2248,7 @@ class DeformableView:
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str],
+        pattern: str | list[str] | re.Pattern[str],
         *,
         family: Literal["curve", "surface", "volume"] | None = None,
         verbose: bool | None = None,

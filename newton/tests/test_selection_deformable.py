@@ -3,6 +3,7 @@
 
 """Tests for DeformableView batched selection over finalized deformable groups."""
 
+import re
 import unittest
 
 import numpy as np
@@ -106,6 +107,14 @@ class TestDeformableView(unittest.TestCase):
         model = _replicated_model(2, device="cpu")
 
         view = DeformableView(model, "/World/Cloth")
+
+        self.assertEqual((view.family, view.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
+
+    def test_compiled_regex_uses_shared_label_matching(self):
+        """Deformable selection accepts the shared compiled-regex selector."""
+        model = _replicated_model(2, device="cpu")
+
+        view = DeformableView(model, re.compile(r"/World/Cloth"), family="surface")
 
         self.assertEqual((view.family, view.labels), ("surface", ["/World/Cloth", "/World/Cloth"]))
 
