@@ -198,6 +198,13 @@ class ControllerJointImpedanceModelFree(Controller):
         self._coriolis_idx = _normalize_indices(coriolis_force_idx, default_dof_indices, name="coriolis_force")
         self._f_idx = _normalize_indices(joint_f_idx, default_dof_indices, name="joint_f")
 
+        f_idx_np = self._f_idx.numpy()
+        if len(f_idx_np) != len(np.unique(f_idx_np)):
+            raise ValueError(
+                "joint_f output indices must be unique — two robots cannot scatter torques "
+                "to the same simulation DOF slot."
+            )
+
         self._stiffness_attr, self._stiffness_baked = self._normalize_gain(stiffness, "stiffness")
         self._damping_attr, self._damping_baked = self._normalize_gain(damping, "damping")
 
@@ -255,9 +262,6 @@ class ControllerJointImpedanceModelFree(Controller):
     @property
     def requires_grad(self) -> bool:
         return self._requires_grad
-
-    def is_stateful(self) -> bool:
-        return False
 
     def is_graphable(self) -> bool:
         return True
@@ -324,8 +328,10 @@ class ControllerJointImpedanceModelFree(Controller):
             controller_state_next: Unused. Pass ``None``.
             time_step: Unused. Accepted for API compatibility.
         """
-        stiffness = self._stiffness_baked or getattr(input_struct, self._stiffness_attr)
-        damping = self._damping_baked or getattr(input_struct, self._damping_attr)
+        stiffness = (
+            self._stiffness_baked if self._stiffness_baked is not None else getattr(input_struct, self._stiffness_attr)
+        )
+        damping = self._damping_baked if self._damping_baked is not None else getattr(input_struct, self._damping_attr)
 
         dim2d = (self._num_robots, self._max_dofs)
 
