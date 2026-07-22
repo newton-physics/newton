@@ -2607,7 +2607,7 @@ class ModelBuilder:
         world_count: int,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
         *,
-        xforms: Sequence[Transform | None] | None = None,
+        xforms: Sequence[Transform] | None = None,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -2640,8 +2640,8 @@ class ModelBuilder:
                 ``xforms`` is provided.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
-            xforms: Optional transform for each replicated world. When provided,
-                its length must equal ``world_count``.
+            xforms: Optional sequence of transforms, one per replicated world.
+                When provided, its length must equal ``world_count``.
         """
         if world_count <= 0:
             return
