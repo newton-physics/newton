@@ -2606,6 +2606,8 @@ class ModelBuilder:
         builder: ModelBuilder,
         world_count: int,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        *,
+        xforms: Sequence[Transform] | None = None,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -2634,9 +2636,12 @@ class ModelBuilder:
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
             world_count: The number of worlds to create.
-            spacing: The spacing between each copy along each axis.
+            spacing: The spacing between each copy along each axis. Ignored when
+                ``xforms`` is provided.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
+            xforms: Optional sequence of transforms, one per replicated world.
+                When provided, its length must equal ``world_count``.
         """
         if world_count <= 0:
             return
@@ -2645,10 +2650,14 @@ class ModelBuilder:
                 f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
                 "Call end_world() first to close the current world context."
             )
-        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+        if xforms is None:
+            offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+            xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
+        elif len(xforms) != world_count:
+            raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
+
         base_world = self.world_count
         worlds = list(range(base_world, base_world + world_count))
-        xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
         self._merge_builder_copies(builder, worlds, xforms, [None] * world_count)
 
         self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
