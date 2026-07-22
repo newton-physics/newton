@@ -27,6 +27,10 @@ from io import StringIO
 # preserve any caller-provided override.
 os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
 
+from newton._src.utils.diagnostics import (  # NVIDIA modification
+    _entry_point_stderr_handler,
+    _install_below_warning_stdout_handler,
+)
 from newton.tests.unittest_utils import (  # NVIDIA modification
     ParallelJunitTestResult,
     write_junit_results,
@@ -44,67 +48,6 @@ except ImportError:
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
 _logger = logging.getLogger(__name__)
-_ENTRY_POINT_STDOUT_HANDLER = "_newton_entry_point_stdout_handler"
-
-
-class _MaxLevelFilter(logging.Filter):
-    def __init__(self, exclusive_maximum: int):
-        super().__init__()
-        self._exclusive_maximum = exclusive_maximum
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return record.levelno < self._exclusive_maximum
-
-
-def _entry_point_stderr_handler() -> logging.Handler:
-    formatter = logging.Formatter("%(message)s")
-    stderr_handler = logging.StreamHandler()
-    stderr_handler.setLevel(logging.WARNING)
-    stderr_handler.setFormatter(formatter)
-    return stderr_handler
-
-
-def _has_enabled_handler(logger: logging.Logger, level: int) -> bool:
-    current: logging.Logger | None = logger
-    while current is not None:
-        if any(level >= handler.level for handler in current.handlers):
-            return True
-        if not current.propagate:
-            return False
-        current = current.parent
-    return logging.lastResort is not None and level >= logging.lastResort.level
-
-
-def _remove_marked_handlers(logger: logging.Logger, marker: str = _ENTRY_POINT_STDOUT_HANDLER) -> None:
-    logger.handlers[:] = [handler for handler in logger.handlers if not getattr(handler, marker, False)]
-
-
-def _install_below_warning_stdout_handler(
-    logger: logging.Logger,
-    *,
-    enabled_level: int = logging.INFO,
-    handler_level: int = logging.INFO,
-    force_level: bool = False,
-    marker: str = _ENTRY_POINT_STDOUT_HANDLER,
-) -> logging.Handler | None:
-    _remove_marked_handlers(logger, marker)
-
-    if force_level:
-        logger.setLevel(enabled_level)
-    elif logger.level == logging.NOTSET and not logger.isEnabledFor(enabled_level):
-        logger.setLevel(enabled_level)
-
-    if not logger.isEnabledFor(enabled_level) or _has_enabled_handler(logger, enabled_level):
-        return None
-
-    formatter = logging.Formatter("%(message)s")
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(handler_level)
-    stdout_handler.addFilter(_MaxLevelFilter(logging.WARNING))
-    stdout_handler.setFormatter(formatter)
-    setattr(stdout_handler, marker, True)
-    logger.addHandler(stdout_handler)
-    return stdout_handler
 
 
 def _configure_logging(verbose: bool = False) -> None:
