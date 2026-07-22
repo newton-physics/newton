@@ -22,8 +22,9 @@ class Controller(ABC):
 
     Subclasses are responsible for:
 
-    - :meth:`is_graphable`, :meth:`is_stateful`: predicates the user can query
-      to decide CUDA-graph capture and double-buffered state setup.
+    - :meth:`is_graphable`: predicate the user can query to decide CUDA-graph
+      capture. Check ``ctrl.state() is not None`` to determine whether
+      double-buffered state setup is needed.
     - :meth:`state`: allocate a fresh :class:`State`, or return ``None`` for
       stateless laws.
     - :meth:`input`, :meth:`output`: allocate fresh duck-typed containers
@@ -44,12 +45,14 @@ class Controller(ABC):
         """Whether :meth:`compute` is safe to capture in a CUDA graph."""
 
     @abstractmethod
-    def is_stateful(self) -> bool:
-        """Whether this controller maintains internal state between steps."""
-
-    @abstractmethod
     def state(self) -> Controller.State | None:
-        """Allocate a fresh :class:`State`, or ``None`` if stateless."""
+        """Allocate a fresh :class:`State`, or ``None`` if stateless.
+
+        The return value is the canonical indicator of statefulness:
+        ``ctrl.state() is not None`` means the controller maintains state
+        between steps and callers should allocate two buffers for
+        double-buffering.
+        """
 
     @abstractmethod
     def input(self) -> Any:

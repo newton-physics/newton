@@ -118,16 +118,17 @@ class ControllerJointImpedance(Controller):
         if num_robots < 1:
             raise ValueError("model_builder has no articulations.")
 
-        scalar_dof_joint_types = {int(JointType.REVOLUTE), int(JointType.PRISMATIC)}
+        # Fixed joints contribute zero DOFs and are invisible to the PD error term.
+        allowed_joint_types = {int(JointType.REVOLUTE), int(JointType.PRISMATIC), int(JointType.FIXED)}
         unsupported_joints = [
             (joint_index, JointType(joint_type).name)
             for joint_index, joint_type in enumerate(model_builder.joint_type)
-            if joint_type not in scalar_dof_joint_types
+            if joint_type not in allowed_joint_types
         ]
         if unsupported_joints:
             raise ValueError(
-                f"ControllerJointImpedance requires 1-DOF joints (Revolute/Prismatic) only; "
-                f"found unsupported joint types: {unsupported_joints}"
+                f"ControllerJointImpedance only supports 1-DOF joints (Revolute/Prismatic) and "
+                f"zero-DOF fixed joints; found unsupported joint types: {unsupported_joints}"
             )
 
         self._device = device if device is not None else wp.get_device()
@@ -288,9 +289,6 @@ class ControllerJointImpedance(Controller):
     @property
     def requires_grad(self) -> bool:
         return self._requires_grad
-
-    def is_stateful(self) -> bool:
-        return False
 
     def is_graphable(self) -> bool:
         return True

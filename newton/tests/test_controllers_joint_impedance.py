@@ -245,11 +245,11 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         ctrl.compute(ins, outs, None, None, 0.01)
         np.testing.assert_allclose(outs.joint_f.numpy(), [6.0, 0.0], atol=1e-5)
 
-    def test_is_not_stateful(self):
-        """Verify the controller reports is_stateful() == False."""
+    def test_is_stateless(self):
+        """Verify state() returns None (controller is stateless)."""
         device = wp.get_device()
         ctrl = _make_mf(num_robots=1, dofs_list=[2], kp=1.0, kd=0.0, device=device)
-        self.assertFalse(ctrl.is_stateful())
+        self.assertIsNone(ctrl.state())
 
     def test_is_graphable(self):
         """Verify the controller reports is_graphable() == True."""
@@ -337,6 +337,25 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         self.assertAlmostEqual(result[1], 5.0, places=5)
         self.assertAlmostEqual(result[2], 0.0, places=5)
         self.assertAlmostEqual(result[3], 3.0, places=5)
+
+    def test_duplicate_output_indices_raises(self):
+        """Verify that overlapping scatter indices raise ValueError at construction."""
+        device = wp.get_device()
+        # Two robots, both claiming DOF slot 0 as their output — undefined scatter behaviour.
+        duplicate_indices = wp.array([0, 0], dtype=wp.uint32, device=device)
+        with self.assertRaises(ValueError):
+            ControllerJointImpedanceModelFree(
+                num_robots=2,
+                dofs_per_robot=_dofs_arr([1, 1], device),
+                max_dofs=1,
+                default_dof_indices=duplicate_indices,
+                stiffness=_gains(2, 1, 1.0, device),
+                damping=_gains(2, 1, 0.0, device),
+                use_gravity_compensation=False,
+                use_coriolis_compensation=False,
+                use_inertia_decoupling=False,
+                device=device,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -523,11 +542,11 @@ class TestControllerJointImpedance(unittest.TestCase):
         tau = self._run(ctrl, q_sim=[0.0], qd_sim=[0.0], q_des_sim=[0.0], qd_des_sim=[2.0], device=device)
         np.testing.assert_allclose(tau, [6.0], atol=1e-4)
 
-    def test_is_stateful_false(self):
-        """Verify is_stateful() returns False."""
+    def test_is_stateless(self):
+        """Verify state() returns None (controller is stateless)."""
         device = wp.get_device()
         ctrl = self._make_ctrl(device)
-        self.assertFalse(ctrl.is_stateful())
+        self.assertIsNone(ctrl.state())
 
     def test_is_graphable_true(self):
         """Verify is_graphable() returns True."""
@@ -535,8 +554,8 @@ class TestControllerJointImpedance(unittest.TestCase):
         ctrl = self._make_ctrl(device)
         self.assertTrue(ctrl.is_graphable())
 
-    def test_non_scalar_joint_type_raises(self):
-        """Verify that a model containing a non-1-DOF joint type raises ValueError."""
+    def test_ball_joint_raises(self):
+        """Verify that a multi-DOF ball joint raises ValueError."""
         device = wp.get_device()
         builder = newton.ModelBuilder()
         link = builder.add_link()
@@ -550,13 +569,45 @@ class TestControllerJointImpedance(unittest.TestCase):
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model_builder=builder,
-                default_dof_indices=_iota(3, device),  # ball joint has 3 DOFs
+                default_dof_indices=_iota(3, device),
                 stiffness=_gains(1, 3, 1.0, device),
                 damping=_gains(1, 3, 0.0, device),
                 use_gravity_compensation=False,
                 use_coriolis_compensation=False,
                 device=device,
             )
+
+    def test_fixed_joint_allowed(self):
+        """Verify that fixed joints (zero DOF) are accepted alongside revolute/prismatic joints."""
+        device = wp.get_device()
+        builder = newton.ModelBuilder()
+        base = builder.add_link()
+        arm = builder.add_link()
+        j_fixed = builder.add_joint_fixed(
+            parent=-1,
+            child=base,
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        j_rev = builder.add_joint_revolute(
+            parent=base,
+            child=arm,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform_identity(),
+            child_xform=wp.transform_identity(),
+        )
+        builder.add_articulation([j_fixed, j_rev], label="robot")
+        # Should not raise — fixed joint is zero-DOF and irrelevant to the PD term.
+        ctrl = ControllerJointImpedance(
+            model_builder=builder,
+            default_dof_indices=_iota(1, device),
+            stiffness=_gains(1, 1, 10.0, device),
+            damping=_gains(1, 1, 1.0, device),
+            use_gravity_compensation=False,
+            use_coriolis_compensation=False,
+            device=device,
+        )
+        self.assertIsNotNone(ctrl)
 
     def test_wrong_index_length_raises(self):
         """Verify that a mismatched default_dof_indices length raises ValueError."""
