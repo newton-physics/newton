@@ -33,7 +33,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
+from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere, transform_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
@@ -701,7 +701,7 @@ def parse_usd(
         pruning subtrees owned by nested rigid bodies."""
         if _mass_api_has_blocked_attrs(body_prim):
             return True
-        it = iter(Usd.PrimRange(body_prim))
+        it = iter(Usd.PrimRange(body_prim, Usd.TraverseInstanceProxies()))
         for prim in it:
             if prim != body_prim and prim.HasAPI(UsdPhysics.RigidBodyAPI):
                 it.PruneChildren()
@@ -2505,7 +2505,7 @@ def parse_usd(
             prim = stage.GetPrimAtPath(prim_path)
             mass_api = UsdPhysics.MassAPI(prim)
             if not mass_api:
-                descendants = iter(Usd.PrimRange(prim))
+                descendants = iter(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
                 for descendant in descendants:
                     if descendant != prim and descendant.HasAPI(UsdPhysics.RigidBodyAPI):
                         descendants.PruneChildren()
@@ -3258,7 +3258,76 @@ def parse_usd(
     no_collision_shapes = set()
     collision_group_ids = {}
     rigid_body_mass_info_map = {}
+    rigid_body_mass_fallback_data = {}
     expected_fallback_collider_paths: set[str] = set()
+
+    def _record_fallback_collider_mass_information(
+        path: str,
+        prim: Usd.Prim,
+        shape_spec,
+        shape_type,
+        *,
+        density: float,
+        is_solid: bool,
+        thickness: float,
+    ):
+        """Record collider mass information used by the rigid-body fallback callback."""
+        if str(shape_spec.rigidBody) not in bodies_requiring_mass_properties_fallback:
+            return
+
+        shape_geo_type = None
+        shape_scale = wp.vec3(1.0, 1.0, 1.0)
+        shape_src = None
+        if shape_type == UsdPhysics.ObjectType.CubeShape:
+            shape_geo_type = GeoType.BOX
+            hx, hy, hz = shape_spec.halfExtents
+            shape_scale = wp.vec3(hx, hy, hz)
+        elif shape_type == UsdPhysics.ObjectType.SphereShape:
+            shape_geo_type = GeoType.SPHERE
+            shape_scale = wp.vec3(shape_spec.radius, 0.0, 0.0)
+        elif shape_type == UsdPhysics.ObjectType.CapsuleShape:
+            shape_geo_type = GeoType.CAPSULE
+            shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+        elif shape_type == UsdPhysics.ObjectType.CylinderShape:
+            shape_geo_type = GeoType.CYLINDER
+            shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+        elif shape_type == UsdPhysics.ObjectType.ConeShape:
+            shape_geo_type = GeoType.CONE
+            shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+        elif shape_type == UsdPhysics.ObjectType.MeshShape:
+            shape_geo_type = GeoType.MESH
+            shape_scale = wp.vec3(*shape_spec.meshScale)
+            shape_src = _get_mesh_cached(prim)
+        if shape_geo_type is None:
+            return
+
+        expected_fallback_collider_paths.add(path)
+        shape_axis = getattr(shape_spec, "axis", None)
+        mass_info = _build_mass_info_from_effective_properties(
+            prim,
+            shape_spec.localPos,
+            shape_spec.localRot,
+            shape_geo_type,
+            shape_scale,
+            shape_src,
+            shape_axis,
+        )
+        if mass_info is None:
+            mass_info = _build_mass_info_from_shape_geometry(
+                prim,
+                shape_spec.localPos,
+                shape_spec.localRot,
+                shape_geo_type,
+                shape_scale,
+                shape_src,
+                shape_axis,
+                is_solid=is_solid,
+                thickness=thickness,
+            )
+        if mass_info is not None:
+            rigid_body_mass_info_map[path] = mass_info
+            rigid_body_mass_fallback_data[path] = (str(shape_spec.rigidBody), density)
+
     for key, value in ret_dict.items():
         if key in {
             UsdPhysics.ObjectType.CubeShape,
@@ -3280,10 +3349,7 @@ def parse_usd(
                 # Deformable-owned meshes never reach this loop: the scout excludes them
                 # from the native parse. A sim-API mesh seen here was deliberately left
                 # rigid (e.g. its body API conflicts with RigidBodyAPI), so import it.
-                if path in path_shape_map:
-                    if verbose:
-                        print(f"Shape at {path} already added, skipping.")
-                    continue
+                shape_already_added = path in path_shape_map
                 body_path = str(shape_spec.rigidBody)
                 if verbose:
                     print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
@@ -3581,6 +3647,20 @@ def parse_usd(
                 else:
                     inertia_margin = margin_val
 
+                if shape_already_added:
+                    _record_fallback_collider_mass_information(
+                        path,
+                        prim,
+                        shape_spec,
+                        key,
+                        density=shape_density,
+                        is_solid=shape_is_solid,
+                        thickness=inertia_margin,
+                    )
+                    if verbose:
+                        print(f"Shape at {path} already added; skipping duplicate geometry.")
+                    continue
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -3754,59 +3834,15 @@ def parse_usd(
                 if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)) and shape_id >= 0:
                     builder.shape_margin[shape_id] = margin_val
 
-                if body_path in bodies_requiring_mass_properties_fallback:
-                    # Prepare collider mass information for ComputeMassProperties fallback path.
-                    # Prefer authored collider MassAPI mass+diagonalInertia; otherwise derive
-                    # unit-density mass information from shape geometry.
-                    shape_geo_type = None
-                    shape_scale = wp.vec3(1.0, 1.0, 1.0)
-                    shape_src = None
-                    if key == UsdPhysics.ObjectType.CubeShape:
-                        shape_geo_type = GeoType.BOX
-                        hx, hy, hz = shape_spec.halfExtents
-                        shape_scale = wp.vec3(hx, hy, hz)
-                    elif key == UsdPhysics.ObjectType.SphereShape:
-                        shape_geo_type = GeoType.SPHERE
-                        shape_scale = wp.vec3(shape_spec.radius, 0.0, 0.0)
-                    elif key == UsdPhysics.ObjectType.CapsuleShape:
-                        shape_geo_type = GeoType.CAPSULE
-                        shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
-                    elif key == UsdPhysics.ObjectType.CylinderShape:
-                        shape_geo_type = GeoType.CYLINDER
-                        shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
-                    elif key == UsdPhysics.ObjectType.ConeShape:
-                        shape_geo_type = GeoType.CONE
-                        shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
-                    elif key == UsdPhysics.ObjectType.MeshShape:
-                        shape_geo_type = GeoType.MESH
-                        shape_scale = wp.vec3(*shape_spec.meshScale)
-                        shape_src = _get_mesh_cached(prim)
-                    if shape_geo_type is not None:
-                        expected_fallback_collider_paths.add(path)
-                        shape_axis = getattr(shape_spec, "axis", None)
-                        mass_info = _build_mass_info_from_effective_properties(
-                            prim,
-                            shape_spec.localPos,
-                            shape_spec.localRot,
-                            shape_geo_type,
-                            shape_scale,
-                            shape_src,
-                            shape_axis,
-                        )
-                        if mass_info is None:
-                            mass_info = _build_mass_info_from_shape_geometry(
-                                prim,
-                                shape_spec.localPos,
-                                shape_spec.localRot,
-                                shape_geo_type,
-                                shape_scale,
-                                shape_src,
-                                shape_axis,
-                                is_solid=shape_is_solid,
-                                thickness=inertia_margin,
-                            )
-                        if mass_info is not None:
-                            rigid_body_mass_info_map[path] = mass_info
+                _record_fallback_collider_mass_information(
+                    path,
+                    prim,
+                    shape_spec,
+                    key,
+                    density=shape_density,
+                    is_solid=shape_is_solid,
+                    thickness=inertia_margin,
+                )
 
                 _collect_filtered_pairs(prim)
 
@@ -3905,6 +3941,47 @@ def parse_usd(
             warned_missing_collider_mass_info.add(collider_path)
         return rigid_body_mass_info_map.get(collider_path, zero_mass_information)
 
+    def _aggregate_recorded_mass_properties(body_path: str, body_density: float | None):
+        """Aggregate callback mass data when OpenUSD cannot traverse the colliders."""
+        total_mass = 0.0
+        total_com = wp.vec3(0.0)
+        total_inertia = wp.mat33(0.0)
+        found = False
+        for collider_path, mass_info in rigid_body_mass_info_map.items():
+            collider_body_path, shape_density = rigid_body_mass_fallback_data[collider_path]
+            if collider_body_path != body_path:
+                continue
+
+            volume = float(mass_info.volume)
+            if volume <= 0.0:
+                continue
+            collider_prim = stage.GetPrimAtPath(collider_path)
+            collider_mass_api = UsdPhysics.MassAPI(collider_prim)
+            collider_mass = _mass_api_effective_mass(collider_mass_api) if collider_mass_api else None
+            collider_density = _mass_api_effective_density(collider_mass_api) if collider_mass_api else None
+            density = collider_mass / volume if collider_mass is not None else collider_density
+            if density is None:
+                density = body_density if body_density is not None else shape_density
+
+            mass = density * volume
+            local_rot = usd.value_to_warp(mass_info.localRot)
+            local_xform = wp.transform(wp.vec3(*mass_info.localPos), local_rot)
+            com = wp.transform_point(local_xform, wp.vec3(*mass_info.centerOfMass))
+            inertia = wp.mat33(np.array(mass_info.inertia, dtype=np.float32).reshape(3, 3) * density)
+
+            new_mass = total_mass + mass
+            new_com = (total_com * total_mass + com * mass) / new_mass
+            total_inertia = transform_inertia(
+                total_mass, total_inertia, new_com - total_com, wp.quat_identity()
+            ) + transform_inertia(mass, inertia, new_com - com, local_rot)
+            total_mass = new_mass
+            total_com = new_com
+            found = True
+
+        if not found:
+            return None
+        return total_mass, total_inertia, total_com
+
     # Resolve body inertial properties from authored values and collider aggregation.
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
@@ -3976,24 +4053,36 @@ def parse_usd(
                 if cmp_mass < 0.0 or not math.isfinite(cmp_mass):
                     # ComputeMassProperties failed to discover colliders (e.g. shapes
                     # created by schema resolvers are not real USD prims) or aggregated
-                    # non-finite authored values. Fall back to builder-accumulated mass
-                    # properties from add_shape_*() calls.
-                    cmp_mass = builder.body_mass[body_id]
-                    if not has_effective_com:
-                        cmp_com = builder.body_com[body_id]
-                    # When the body has an effective density, rescale accumulated mass
-                    # and inertia from the builder's default shape density to the
-                    # body-level density (USD body density overrides per-shape density).
-                    body_density = effective_density
-                    if body_density is not None and not has_effective_mass and default_shape_density > 0.0:
-                        density_scale = body_density / default_shape_density
-                        cmp_mass *= density_scale
-                        scaled_inertia = np.array(builder.body_inertia[body_id]) * density_scale
-                        builder.body_inertia[body_id] = wp.mat33(scaled_inertia)
-                        if scaled_inertia.any():
-                            builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
+                    # non-finite authored values. Prefer the recorded callback payloads,
+                    # which also cover colliders below instance proxies. Schema-resolved
+                    # shapes without real prims fall back to builder-accumulated values.
+                    recorded_properties = _aggregate_recorded_mass_properties(
+                        body_path, effective_density if not has_effective_mass else None
+                    )
+                    if recorded_properties is not None:
+                        cmp_mass, recorded_inertia, cmp_com = recorded_properties
+                        builder.body_inertia[body_id] = recorded_inertia
+                        if any(recorded_inertia):
+                            builder.body_inv_inertia[body_id] = wp.inverse(recorded_inertia)
                         else:
                             builder.body_inv_inertia[body_id] = wp.mat33(0.0)
+                    else:
+                        cmp_mass = builder.body_mass[body_id]
+                        if not has_effective_com:
+                            cmp_com = builder.body_com[body_id]
+                        # When the body has an effective density, rescale accumulated mass
+                        # and inertia from the builder's default shape density to the
+                        # body-level density.
+                        body_density = effective_density
+                        if body_density is not None and not has_effective_mass and default_shape_density > 0.0:
+                            density_scale = body_density / default_shape_density
+                            cmp_mass *= density_scale
+                            scaled_inertia = np.array(builder.body_inertia[body_id]) * density_scale
+                            builder.body_inertia[body_id] = wp.mat33(scaled_inertia)
+                            if scaled_inertia.any():
+                                builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
+                            else:
+                                builder.body_inv_inertia[body_id] = wp.mat33(0.0)
                     cmp_i_diag = Gf.Vec3f(0.0, 0.0, 0.0)
                     cmp_principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
