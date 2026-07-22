@@ -19,71 +19,40 @@ import sys
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from ._src.solvers import coupled as _coupled
+from ._src import solvers as _solvers
 
 if TYPE_CHECKING:
-    from ._src.solvers import (
-        SolverBase,
-        SolverFeatherstone,
-        SolverImplicitMPM,
-        SolverKamino,
-        SolverMuJoCo,
-        SolverNotifyFlags,
-        SolverSemiImplicit,
-        SolverStyle3D,
-        SolverVBD,
-        SolverXPBD,
-        style3d,
-    )
+    from ._src.solvers import *  # noqa: F403
 
-__all__ = [
-    "SolverBase",
-    "SolverFeatherstone",
-    "SolverImplicitMPM",
-    "SolverKamino",
-    "SolverMuJoCo",
-    "SolverNotifyFlags",
-    "SolverSemiImplicit",
-    "SolverStyle3D",
-    "SolverVBD",
-    "SolverXPBD",
-    "experimental",
-    "style3d",
-]
-
-# Maps each public symbol to the module that provides it and the attribute to
-# fetch from that module (None returns the module itself). Symbols are
-# resolved on first attribute access (PEP 562) so that ``import newton`` does
-# not pay the import cost of every solver backend.
-_LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
-    "SolverBase": ("._src.solvers", "SolverBase"),
-    "SolverFeatherstone": ("._src.solvers", "SolverFeatherstone"),
-    "SolverImplicitMPM": ("._src.solvers", "SolverImplicitMPM"),
-    "SolverKamino": ("._src.solvers", "SolverKamino"),
-    "SolverMuJoCo": ("._src.solvers", "SolverMuJoCo"),
-    "SolverNotifyFlags": ("._src.solvers", "SolverNotifyFlags"),
-    "SolverSemiImplicit": ("._src.solvers", "SolverSemiImplicit"),
-    "SolverStyle3D": ("._src.solvers", "SolverStyle3D"),
-    "SolverVBD": ("._src.solvers", "SolverVBD"),
-    "SolverXPBD": ("._src.solvers", "SolverXPBD"),
-    "style3d": ("._src.solvers.style3d", None),
-}
+__all__ = [*_solvers.__all__, "experimental"]  # noqa: PLE0604
 
 
 def __getattr__(name: str):
-    try:
-        module_name, attr_name = _LAZY_IMPORTS[name]
-    except KeyError:
+    if name not in __all__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
 
-    module = importlib.import_module(module_name, __package__)
-    value = module if attr_name is None else getattr(module, attr_name)
+    value = getattr(_solvers, name)
     globals()[name] = value
     return value
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_LAZY_IMPORTS))
+    return sorted(set(globals()) | set(__all__))
+
+
+class _LazyCoupledModule(ModuleType):
+    def _load(self) -> ModuleType:
+        module = importlib.import_module("._src.solvers.coupled", __package__)
+        experimental.coupled = module
+        sys.modules[self.__name__] = module
+        return module
+
+    def __getattr__(self, name: str):
+        module = self._load()
+        return getattr(module, name)
+
+    def __dir__(self) -> list[str]:
+        return dir(self._load())
 
 
 experimental = ModuleType(f"{__name__}.experimental")
@@ -93,7 +62,7 @@ experimental.__doc__ = """Experimental solver namespaces.
 """
 experimental.__all__ = ["coupled"]
 experimental.__path__ = []
-experimental.coupled = _coupled
+experimental.coupled = _LazyCoupledModule(f"{__name__}.experimental.coupled")
 
 sys.modules[f"{__name__}.experimental"] = experimental
-sys.modules[f"{__name__}.experimental.coupled"] = _coupled
+sys.modules[f"{__name__}.experimental.coupled"] = experimental.coupled

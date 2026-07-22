@@ -6,12 +6,14 @@ import sys
 import unittest
 
 import newton
+from newton._src import solvers as internal_solvers
 
 
 class TestLazySolverImports(unittest.TestCase):
     def test_import_newton_does_not_import_solvers(self):
         """Verify that importing newton does not import any solver backend module."""
         backends = (
+            "coupled",
             "featherstone",
             "implicit_mpm",
             "kamino",
@@ -29,6 +31,10 @@ class TestLazySolverImports(unittest.TestCase):
         )
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "", f"solver modules imported eagerly: {result.stdout.strip()}")
+
+    def test_public_exports_match_internal_exports(self):
+        """Expose the internal solver surface through the public module."""
+        self.assertEqual(set(newton.solvers.__all__), set(internal_solvers.__all__) | {"experimental"})
 
     def test_lazy_attributes_resolve(self):
         """Verify that every public solver symbol resolves to the implementation object."""
