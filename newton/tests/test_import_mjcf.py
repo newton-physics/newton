@@ -2898,8 +2898,12 @@ f 4 5 8
 
     def test_compiler_inertiafromgeom_modes(self):
         """Test compiler control over geom inference when inertial data exists."""
-        expected_masses = {"auto": 1.0, "false": 1.0, "true": 2.0}
-        for mode, expected_mass in expected_masses.items():
+        expected_properties = {
+            "auto": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "false": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "true": (2.0, [-0.2, 0.4, 0.1], [0.008, 0.008, 0.008]),
+        }
+        for mode, (expected_mass, expected_com, expected_inertia) in expected_properties.items():
             with self.subTest(mode=mode):
                 mjcf = f"""<?xml version="1.0" ?>
 <mujoco>
@@ -2907,8 +2911,8 @@ f 4 5 8
   <worldbody>
     <body name="test">
       <freejoint/>
-      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-      <geom type="sphere" size="0.1" mass="2"/>
+      <inertial pos="0.1 0.2 0.3" mass="1" diaginertia="0.01 0.02 0.03"/>
+      <geom type="sphere" size="0.1" pos="-0.2 0.4 0.1" mass="2"/>
     </body>
   </worldbody>
 </mujoco>"""
@@ -2916,6 +2920,12 @@ f 4 5 8
                 builder.add_mjcf(mjcf)
 
                 self.assertAlmostEqual(builder.body_mass[0], expected_mass, places=6)
+                np.testing.assert_allclose(builder.body_com[0], expected_com, atol=1e-7)
+                np.testing.assert_allclose(
+                    np.array(builder.body_inertia[0]).reshape(3, 3),
+                    np.diag(expected_inertia),
+                    atol=1e-7,
+                )
 
         mjcf_missing_inertial = """<?xml version="1.0" ?>
 <mujoco>
