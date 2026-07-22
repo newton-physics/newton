@@ -307,39 +307,47 @@ def sample_playback_kernel(
 def command_seal_kernel(
     engaged: wp.array[wp.bool],  # [1] recorded engagement command (ro[0])
     pad_break_metric: wp.array[float],  # [pads] brittle break envelope from the previous force eval
-    pad_engaged: wp.array[wp.bool],  # [pads] whether the pad held last sub-step (from latch_engagement)
+    pad_engaged: wp.array[wp.bool],  # [pads] whether each pad held last sub-step (from latch_engagement)
     break_threshold: float,  # break metric above this counts as over-capacity (1.0 = nominal capacity)
-    break_hold_steps: int,  # sub-steps the metric must stay over threshold before the seal fractures
-    seal_break_count: wp.array[int],  # [pads] in/out: consecutive over-threshold sub-steps
-    seal_broken: wp.array[wp.bool],  # [pads] in/out: latched physics break within an engaged window
+    break_hold_steps: int,  # sub-steps a cup must stay over threshold before the gripper fractures
+    pad_offsets: wp.array[int],  # [grippers+1] CSR offsets: gripper g owns pads [pad_offsets[g], pad_offsets[g+1])
+    seal_break_count: wp.array[int],  # [pads] in/out: consecutive over-threshold sub-steps, per pad
+    seal_broken: wp.array[wp.bool],  # [grippers] in/out: latched gripper-wide break within an engaged window
     seal_engaged: wp.array[wp.bool],  # [pads] out: seal command fed to latch_engagement
 ):
-    """Break a pad's seal on either a recorded release (ro[0] low) or a *sustained* physics break.
+    """Command a whole gripper's seal: break on a recorded release (ro[0] low) or a *sustained* physics
+    break at any one of its cups.
 
-    The recorded command is the master enable. Within an engaged window a pad also breaks -- and
-    stays broken -- once its brittle break metric (see
-    :func:`~newton.examples.suctioncup.surface_gripper.eval_break_metric`) exceeds ``break_threshold``
-    for ``break_hold_steps`` consecutive sub-steps. The debounce ignores lone transient spikes (brief
-    sub-step spikes that survive even the capacity floor) so only a genuine sustained overload fractures
-    the seal. The over-threshold test is gated on ``pad_engaged``
-    so a pad that was actually holding is what breaks, and a stale metric cannot veto a fresh grip. A
-    recorded release clears the latch and counter so the next engage cycle can re-seal.
+    One thread per gripper, iterating its own pads -- so the gripper-wide break latch has a single writer
+    and there is no cross-pad contention (and no atomics). Detection is per pad: each cup debounces its
+    own brittle break metric (see
+    :func:`~newton.examples.suctioncup.surface_gripper.eval_break_metric`), gated on ``pad_engaged`` so
+    only a cup that was actually holding can trip and a stale metric cannot veto a fresh grip; lone
+    transient spikes are ignored. Release is per gripper: the first cup to stay over ``break_threshold``
+    for ``break_hold_steps`` consecutive sub-steps latches ``seal_broken`` for the whole gripper --
+    modeling a shared-vacuum tool that vents as a unit -- so every pad releases together and the box is
+    never left hanging on a subset of cups. A recorded release clears the latch and the pad counters so
+    the next engage cycle can re-seal.
     """
-    pad = wp.tid()
+    g = wp.tid()  # one thread per gripper -> sole owner of this gripper's latch, counters, and commands
+    lo = pad_offsets[g]  # this gripper's pads are [lo, hi)
+    hi = pad_offsets[g + 1]
     cmd = engaged[0]
     if not cmd:
-        seal_broken[pad] = False  # recorded release resets the break latch for the next cycle
-        seal_break_count[pad] = 0
-    elif pad_engaged[pad] and pad_break_metric[pad] > break_threshold:
-        seal_break_count[pad] = seal_break_count[pad] + 1
-        if seal_break_count[pad] >= break_hold_steps:
-            seal_broken[pad] = True  # sustained overload: latched off until the recording releases
+        seal_broken[g] = False  # recorded release clears the gripper latch for the next cycle
+        for pad in range(lo, hi):
+            seal_break_count[pad] = 0
     else:
-        seal_break_count[pad] = 0  # dipped back under -> not a sustained overload
-    if cmd and not seal_broken[pad]:
-        seal_engaged[pad] = True
-    else:
-        seal_engaged[pad] = False
+        for pad in range(lo, hi):
+            if pad_engaged[pad] and pad_break_metric[pad] > break_threshold:
+                seal_break_count[pad] = seal_break_count[pad] + 1
+                if seal_break_count[pad] >= break_hold_steps:
+                    seal_broken[g] = True  # sustained overload at this cup vents the whole gripper
+            else:
+                seal_break_count[pad] = 0  # dipped back under -> not a sustained overload
+    hold = cmd and not seal_broken[g]  # whole gripper engages or releases as a unit
+    for pad in range(lo, hi):
+        seal_engaged[pad] = hold
 
 
 class EndEffectorAccelerationRecorder:
@@ -569,28 +577,34 @@ class Example:
         )
         for px, py, pz in GRIPPER_PADS:
             gripper.add_pad(wp.transform(wp.vec3(px, py, pz), pad_down))
-        # Characterize the seal's three spring-damper modes for the first-picked box (the panel; shown
-        # in the side panel). panel_ixx is its tilt inertia about a horizontal grip axis; panel_hz is the
-        # COM depth below the top-face grip. Stored as (name, omega_n [rad/s], zeta) per mode.
-        (_phx, _phy, panel_hz), panel_mass = PANEL
-        panel_ixx = panel_mass / 3.0 * (_phy * _phy + panel_hz * panel_hz)
-        self.seal_modes = (
-            (
-                "peel",
-                gripper.peel_natural_frequency(panel_ixx, panel_mass, panel_hz),
-                gripper.peel_damping_ratio(panel_ixx, panel_mass, GRIPPER_PARAMS.d_peel_x, panel_hz),
-            ),
-            (
-                "normal",
-                gripper.normal_natural_frequency(panel_mass),
-                gripper.normal_damping_ratio(panel_mass, GRIPPER_PARAMS.d_normal),
-            ),
-            (
-                "shear",
-                gripper.shear_natural_frequency(panel_mass),
-                gripper.shear_damping_ratio(panel_mass, GRIPPER_PARAMS.d_shear_x),
-            ),
-        )
+        # Characterize the seal's three spring-damper modes for the box currently gripped (shown in the
+        # side panel). The modes depend on the box, so precompute a set per box and select the active one
+        # as the seal retargets (see step()). ixx is the box's tilt inertia about a horizontal grip axis;
+        # hz is the COM depth below the top-face grip. Stored as (name, omega_n [rad/s], zeta) per mode.
+        def seal_modes_for(spec):
+            (_hx, hy, hz), mass = spec
+            ixx = mass / 3.0 * (hy * hy + hz * hz)
+            return (
+                (
+                    "peel",
+                    gripper.peel_natural_frequency(ixx, mass, hz),
+                    gripper.peel_damping_ratio(ixx, mass, GRIPPER_PARAMS.d_peel_x, hz),
+                ),
+                (
+                    "normal",
+                    gripper.normal_natural_frequency(mass),
+                    gripper.normal_damping_ratio(mass, GRIPPER_PARAMS.d_normal),
+                ),
+                (
+                    "shear",
+                    gripper.shear_natural_frequency(mass),
+                    gripper.shear_damping_ratio(mass, GRIPPER_PARAMS.d_shear_x),
+                ),
+            )
+
+        self.panel_seal_modes = seal_modes_for(PANEL)
+        self.crate_seal_modes = seal_modes_for(CRATE)
+        self.seal_modes = self.panel_seal_modes  # panel is gripped first; swapped to the crate at the switch
         gripper_builder = SurfaceGripperBuilder()
         gripper_builder.add_gripper(gripper)
         self.gripper_model = gripper_builder.finalize(device=self.model.device)
@@ -598,8 +612,11 @@ class Example:
         self.gripper_control = self.gripper_model.control()
         self.gripper_control.pad_grip_control.fill_(1.0)  # full suction command
         self.seal_engaged = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)
-        self.seal_broken = wp.zeros(len(GRIPPER_PADS), dtype=wp.bool)  # latched physics break per pad
-        self.seal_break_count = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps
+        # CSR pad ranges per gripper: gripper g owns pads [pad_offsets[g], pad_offsets[g+1]). One 4-pad
+        # gripper here -> [0, 4]; command_seal_kernel launches one thread per gripper over these ranges.
+        self.pad_offsets = wp.array([0, len(GRIPPER_PADS)], dtype=wp.int32)
+        self.seal_broken = wp.zeros(self.pad_offsets.shape[0] - 1, dtype=wp.bool)  # [grippers] latched break
+        self.seal_break_count = wp.zeros(len(GRIPPER_PADS), dtype=wp.int32)  # consecutive over-threshold steps, per pad
         # The seal grips the panel in the 1st cycle and the crate in the 2nd. seal_body_b is switched
         # from panel to crate in step(), between the 1st disengage and 2nd engage (seal idle, safe).
         self.seal_body_b = wp.full(len(GRIPPER_PADS), panel_body, dtype=wp.int32)
@@ -672,13 +689,14 @@ class Example:
             # the rising edge, then accumulate the seal wrench into body_f before stepping.
             wp.launch(
                 command_seal_kernel,
-                dim=self.seal_engaged.shape[0],
+                dim=self.seal_broken.shape[0],  # one thread per gripper
                 inputs=[
                     self.engaged_wp,
                     self.gripper_state.pad_break_metric,
                     self.gripper_state.pad_engaged,
                     float(BREAK_THRESHOLD),
                     int(self.break_hold_steps),
+                    self.pad_offsets,
                     self.seal_break_count,
                     self.seal_broken,
                 ],
@@ -705,6 +723,7 @@ class Example:
         # takes effect on the next graph launch.
         if not self.seal_switched and int(self.sim_step_count_wp.numpy()[0]) * self.sim_dt >= self.t_seal_switch:
             self.seal_body_b.assign(np.full(len(GRIPPER_PADS), self.crate_body, dtype=np.int32))
+            self.seal_modes = self.crate_seal_modes  # side-panel modes now describe the crate
             self.seal_switched = True
         if self.graph:
             wp.capture_launch(self.graph)
