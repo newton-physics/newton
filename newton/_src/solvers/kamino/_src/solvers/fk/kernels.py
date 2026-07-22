@@ -11,11 +11,9 @@ import warp as wp
 
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.math import (
-    TWO_PI,
     G_of,
     quat_left_jacobian_inverse,
     quat_log,
-    squared_norm,
     unit_quat_apply,
     unit_quat_apply_jacobian,
     unit_quat_conj_apply,
@@ -364,13 +362,13 @@ def _eval_actuator_coords(
 @wp.func
 def _correct_joint_angle(angle: wp.float32, angle_ref: wp.float32) -> wp.float32:
     """Function adding multiples of 2 pi to an angle, so that it is the closest to a reference."""
-    return angle + wp.round((angle_ref - angle) / TWO_PI) * TWO_PI
+    return angle + wp.round((angle_ref - angle) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
 
 
 @wp.func
 def _correct_joint_quaternion(quat: wp.vec4f, quat_ref: wp.vec4f) -> wp.vec4f:
     """Function flipping the sign of a quaternion if needed, so it is the closest to a reference."""
-    if squared_norm(quat + quat_ref) < squared_norm(quat - quat_ref):
+    if wp.length_sq(quat + quat_ref) < wp.length_sq(quat - quat_ref):
         return -quat
     return quat
 

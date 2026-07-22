@@ -507,6 +507,12 @@ class ArticulationView:
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
 
+    Methods that select articulations with a mask support per-world Boolean masks
+    with shape ``(world_count,)`` and per-articulation Boolean masks with shape
+    ``(world_count, count_per_world)``. Per-world masks select all articulations
+    in each selected world. :meth:`set_actuator_parameter` accepts only the
+    per-world layout. Masks provided as Warp arrays must be on the view's device.
+
     Example:
 
     .. code-block:: python
@@ -1664,11 +1670,40 @@ class ArticulationView:
     # ========================================================================================
     # Utilities
 
+    def _resolve_world_mask(self, mask):
+        if mask is None:
+            return self.full_mask
+        if isinstance(mask, wp.array):
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape != (self.world_count,):
+                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
+
+        try:
+            return wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
+        except Exception as error:
+            raise ValueError(f"Expected Boolean mask with shape ({self.world_count},)") from error
+
     def _resolve_mask(self, mask):
         # accept 1D and 2D Boolean masks
         if isinstance(mask, wp.array):
-            if mask.dtype is wp.bool and mask.ndim < 3:
-                return mask
+            expected_shapes = {
+                (self.world_count,),
+                (self.world_count, self.count_per_world),
+            }
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape not in expected_shapes:
+                raise ValueError(
+                    f"Expected Boolean mask with shape "
+                    f"({self.world_count}, {self.count_per_world}) or ({self.world_count},), got {mask.shape}"
+                )
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
         else:
             # try interpreting as a 1D world mask
             try:
@@ -2018,6 +2053,7 @@ class ArticulationView:
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
+        mask = self._resolve_world_mask(mask)
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return
@@ -2031,14 +2067,6 @@ class ArticulationView:
 
         if values.shape[:2] != expected_shape[:2]:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-
-        if mask is None:
-            mask = self.full_mask
-        else:
-            if not isinstance(mask, wp.array):
-                mask = wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
-            if mask.shape != (self.world_count,):
-                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
 
         wp.launch(
             _scatter_masked_2d_kernel,

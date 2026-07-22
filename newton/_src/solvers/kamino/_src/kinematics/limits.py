@@ -10,11 +10,7 @@ from dataclasses import dataclass, field
 import warp as wp
 
 from ..core.joints import JOINT_QMAX, JOINT_QMIN, JointDoFType
-from ..core.math import (
-    quat_from_vec4,
-    quat_log,
-    screw,
-)
+from ..core.math import quat_log
 from ..core.model import ModelKamino
 from ..core.types import (
     to_warp_int32_array,
@@ -198,8 +194,8 @@ class LimitsKaminoData:
 @wp.func
 def map_joint_coords_to_dofs_free(q_j: vec7f) -> wp.spatial_vectorf:
     """Maps free joint quaternion to a local axes-aligned rotation vector."""
-    v_j = quat_log(quat_from_vec4(q_j[3:7]))
-    return screw(q_j[0:3], v_j)
+    v_j = quat_log(wp.quatf(*q_j[3:7]))
+    return wp.spatial_vectorf(*q_j[0:3], *v_j)
 
 
 @wp.func
@@ -230,7 +226,7 @@ def map_joint_coords_to_dofs_universal(q_j: wp.vec2f) -> wp.vec2f:
 def map_joint_coords_to_dofs_spherical(q_j: wp.vec4f) -> wp.vec3f:
     """Maps quaternion coordinates of a spherical
     joint to a local axes-aligned rotation vector."""
-    return quat_log(quat_from_vec4(q_j))
+    return quat_log(wp.quatf(*q_j))
 
 
 @wp.func

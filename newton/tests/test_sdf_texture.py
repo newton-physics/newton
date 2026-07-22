@@ -20,9 +20,11 @@ from newton._src.geometry.sdf_texture import (
     SIGN_MODE_NORMAL,
     QuantizationMode,
     TextureSDFData,
+    build_sparse_sdf_from_primitive,
     compute_isomesh_from_texture_sdf,
     create_empty_texture_sdf_data,
     create_texture_sdf_from_mesh,
+    create_texture_sdf_from_primitive,
     create_texture_sdf_from_volume,
     texture_sample_sdf,
     texture_sample_sdf_grad,
@@ -1096,6 +1098,38 @@ def _generate_sphere_query_points(radius: float = 0.5, num_points: int = 3000, s
     return directions * (radius + radial_offsets)
 
 
+def test_hydroelastic_sphere_texture_sdf_matches_analytic_distance(test, device):
+    """Hydroelastic primitive spheres should build texture SDFs analytically."""
+    radius = 0.5
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body()
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, sdf_max_resolution=64, sdf_texture_format="float32")
+    shape = builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+    model = builder.finalize(device=device)
+
+    sdf_idx = int(model._shape_sdf_index.numpy()[shape])
+    test.assertGreaterEqual(sdf_idx, 0)
+
+    query_np = _generate_sphere_query_points(radius=radius, num_points=2000, seed=123)
+    expected = np.linalg.norm(query_np, axis=1) - radius
+    query_points = wp.array(query_np, dtype=wp.vec3, device=device)
+    tex_results = wp.zeros(len(query_np), dtype=float, device=device)
+    wp.launch(
+        _sample_texture_sdf_from_array_kernel,
+        dim=len(query_np),
+        inputs=[model._texture_sdf_data, sdf_idx, query_points, tex_results],
+        device=device,
+    )
+
+    diff = np.abs(tex_results.numpy() - expected)
+    test.assertLess(float(diff.mean()), 5e-4, f"mean analytic sphere distance error: {diff.mean():.4e}")
+    test.assertLess(
+        float(np.percentile(diff, 95)),
+        1e-3,
+        f"p95 analytic sphere distance error: {np.percentile(diff, 95):.4e}",
+    )
+
+
 def test_texture_sdf_vs_ground_truth_distance(test, device):
     """Compare texture SDF distance against BVH ground truth in the contact zone.
 
@@ -1362,6 +1396,54 @@ def test_create_texture_sdf_from_mesh_validates_target_voxel_size(test, device):
         )
 
 
+def test_create_texture_sdf_from_primitive_validates_inputs(test, device):
+    """Invalid primitive texture-SDF inputs must fail before GPU construction."""
+    with test.assertRaises(NotImplementedError):
+        create_texture_sdf_from_primitive(GeoType.PLANE, (1.0, 1.0, 1.0), max_resolution=8, device=device)
+
+    for invalid_scale in ((1.0, 1.0), (-1.0, 1.0, 1.0), (np.nan, 1.0, 1.0)):
+        with test.subTest(shape_scale=invalid_scale):
+            with test.assertRaises(ValueError):
+                create_texture_sdf_from_primitive(GeoType.SPHERE, invalid_scale, max_resolution=8, device=device)
+
+
+def test_build_sparse_sdf_from_primitive_validates_inputs(test, device):
+    """Low-level primitive sparse-SDF construction must reject invalid inputs."""
+    cell_size = np.array([0.1, 0.1, 0.1], dtype=float)
+    min_corner = np.array([-0.1, -0.1, -0.1], dtype=float)
+    max_corner = np.array([0.1, 0.1, 0.1], dtype=float)
+
+    with test.assertRaises(NotImplementedError):
+        build_sparse_sdf_from_primitive(
+            GeoType.PLANE,
+            (1.0, 1.0, 1.0),
+            3,
+            3,
+            3,
+            cell_size,
+            min_corner,
+            max_corner,
+            subgrid_size=2,
+            device=device,
+        )
+
+    for invalid_scale in ((1.0, 1.0), (-1.0, 1.0, 1.0), (np.inf, 1.0, 1.0)):
+        with test.subTest(shape_scale=invalid_scale):
+            with test.assertRaises(ValueError):
+                build_sparse_sdf_from_primitive(
+                    GeoType.SPHERE,
+                    invalid_scale,
+                    3,
+                    3,
+                    3,
+                    cell_size,
+                    min_corner,
+                    max_corner,
+                    subgrid_size=2,
+                    device=device,
+                )
+
+
 def test_texture_sdf_sign_mode_normal_open_mesh(test, device):
     """SIGN_MODE_NORMAL bakes pseudo-normal signs valid for an open mesh.
 
@@ -1478,6 +1560,24 @@ add_function_test(
     TestTextureSDF,
     "test_create_texture_sdf_from_mesh_validates_target_voxel_size",
     test_create_texture_sdf_from_mesh_validates_target_voxel_size,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_hydroelastic_sphere_texture_sdf_matches_analytic_distance",
+    test_hydroelastic_sphere_texture_sdf_matches_analytic_distance,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_create_texture_sdf_from_primitive_validates_inputs",
+    test_create_texture_sdf_from_primitive_validates_inputs,
+    devices=devices,
+)
+add_function_test(
+    TestTextureSDF,
+    "test_build_sparse_sdf_from_primitive_validates_inputs",
+    test_build_sparse_sdf_from_primitive_validates_inputs,
     devices=devices,
 )
 add_function_test(
