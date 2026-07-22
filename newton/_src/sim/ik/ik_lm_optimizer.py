@@ -81,13 +81,41 @@ def _update_lm_state(
 
 
 @wp.kernel
-def _zero_masked_jacobian_columns(
+def _zero_fixed_dof_jacobian_columns(
     joint_dof_mask: wp.array[wp.bool],
     jacobian: wp.array3d[wp.float32],
 ):
     row, residual, dof = wp.tid()
     if not joint_dof_mask[dof]:
         jacobian[row, residual, dof] = 0.0
+
+
+def _validate_joint_dof_mask(model: Model, joint_dof_mask: wp.array[wp.bool]) -> None:
+    if joint_dof_mask.dtype != wp.bool:
+        raise ValueError("joint_dof_mask must have dtype wp.bool")
+    if joint_dof_mask.ndim != 1 or joint_dof_mask.shape[0] != model.joint_dof_count:
+        raise ValueError("joint_dof_mask must have shape [joint_dof_count]")
+    if joint_dof_mask.device != model.device:
+        raise ValueError("joint_dof_mask must be on the model device")
+
+    # The mask acts on twist-space DOFs, but the integrator couples a
+    # quaternion-integrated joint's DOFs to its coordinates (rotation about the
+    # joint origin translates the body), so a partial mask would not keep the
+    # remaining coordinates fixed. Require all-or-nothing masks for such joints.
+    mask = joint_dof_mask.numpy()
+    joint_type = model.joint_type.numpy()
+    qd_start = model.joint_qd_start.numpy()
+    quaternion_joints = (JointType.BALL, JointType.FREE, JointType.DISTANCE)
+    for j in range(len(joint_type)):
+        if joint_type[j] not in quaternion_joints:
+            continue
+        joint_mask = mask[qd_start[j] : qd_start[j + 1]]
+        if joint_mask.any() and not joint_mask.all():
+            raise ValueError(
+                f"joint_dof_mask partially masks joint {j} "
+                f"({JointType(joint_type[j]).name}): quaternion-integrated joints "
+                "must have all of their DOFs masked together"
+            )
 
 
 class IKOptimizerLM:
@@ -113,8 +141,13 @@ class IKOptimizerLM:
             accept a step.
         problem_idx: Optional mapping from batch rows to base problem indices
             for per-problem objective data.
-        joint_dof_mask: Optional model-wide mask with one value per joint DOF.
-            False entries keep the corresponding DOFs fixed.
+        joint_dof_mask: Optional model-wide mask, shape ``[joint_dof_count]``,
+            indexed in DOF (velocity) space per :attr:`Model.joint_qd_start` —
+            a free joint has 6 entries. ``True`` entries are optimized;
+            ``False`` entries receive an exactly-zero update. Quaternion-
+            integrated joints (free/ball/distance) must be masked
+            all-or-nothing, which the constructor enforces. The mask array must
+            not be modified after construction.
     """
 
     TILE_N_DOFS = None
@@ -173,6 +206,8 @@ class IKOptimizerLM:
         self.lambda_min = lambda_min
         self.lambda_max = lambda_max
         self.rho_min = rho_min
+        if joint_dof_mask is not None:
+            _validate_joint_dof_mask(model, joint_dof_mask)
         self.joint_dof_mask = joint_dof_mask
 
         if self.TILE_N_DOFS is not None:
@@ -403,7 +438,7 @@ class IKOptimizerLM:
         if self.joint_dof_mask is None:
             return
         wp.launch(
-            _zero_masked_jacobian_columns,
+            _zero_fixed_dof_jacobian_columns,
             dim=(self.n_batch, self.n_residuals, self.n_dofs),
             inputs=[self.joint_dof_mask],
             outputs=[jacobian],

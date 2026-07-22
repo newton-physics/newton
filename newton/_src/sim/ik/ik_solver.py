@@ -217,10 +217,14 @@ class IKSolver:
         lambda_min: Minimum LM damping value.
         lambda_max: Maximum LM damping value.
         rho_min: Minimum LM acceptance ratio.
-        joint_dof_mask: Optional model-wide mask with one value per joint DOF.
-            False entries keep the corresponding DOFs fixed during optimization.
-            This is currently supported by the LM optimizer with sampling
-            disabled.
+        joint_dof_mask: Optional model-wide mask, shape ``[joint_dof_count]``,
+            indexed in DOF (velocity) space per :attr:`Model.joint_qd_start` —
+            a free joint has 6 entries. ``True`` entries are optimized;
+            ``False`` entries receive an exactly-zero update. Quaternion-
+            integrated joints (free/ball/distance) must be masked
+            all-or-nothing, which the constructor enforces. The mask array
+            must not be modified after construction. Currently supported by
+            the LM optimizer with sampling disabled.
         history_len: Number of correction pairs retained by L-BFGS.
         h0_scale: Initial inverse-Hessian scale for L-BFGS.
         line_search_alphas: Candidate line-search step sizes for L-BFGS.
@@ -270,12 +274,7 @@ class IKSolver:
                 raise ValueError("joint_dof_mask is only supported by the LM optimizer")
             if sampler is not IKSampler.NONE:
                 raise ValueError("joint_dof_mask requires sampler='none'")
-            if joint_dof_mask.dtype != wp.bool:
-                raise ValueError("joint_dof_mask must have dtype wp.bool")
-            if joint_dof_mask.ndim != 1 or joint_dof_mask.shape[0] != model.joint_dof_count:
-                raise ValueError("joint_dof_mask must have shape [joint_dof_count]")
-            if joint_dof_mask.device != model.device:
-                raise ValueError("joint_dof_mask must be on the model device")
+            # remaining mask validation happens in IKOptimizerLM
 
         self.model = model
         self.device = model.device

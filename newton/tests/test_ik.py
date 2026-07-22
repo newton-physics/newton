@@ -374,30 +374,88 @@ def test_convergence_mixed_d6(test, device):
 
 
 def test_joint_dof_mask(test, device, mode: ik.IKJacobianType):
-    """The LM solver must leave masked joint DOFs unchanged."""
+    """The LM solver must leave masked joint DOFs exactly unchanged while the
+    free DOFs still converge, across the batch dimension."""
     with wp.ScopedDevice(device):
         model = _build_two_link_planar(device)
         requires_grad = mode in (ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED)
-        joint_q = wp.array([[0.4, 0.0]], dtype=wp.float32, device=device, requires_grad=requires_grad)
-        target = wp.array([[1.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
+        seeds = np.array([[0.4, 0.0], [-0.2, 0.1]], dtype=np.float32)
+        targets = wp.array([[1.0, 1.0, 0.0], [0.5, 1.2, 0.0]], dtype=wp.vec3, device=device)
+        position_objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=targets,
+        )
+
+        def solve(mask):
+            joint_q = wp.array(seeds, dtype=wp.float32, device=device, requires_grad=requires_grad)
+            solver = ik.IKSolver(
+                model,
+                2,
+                [position_objective],
+                jacobian_mode=mode,
+                joint_dof_mask=mask,
+            )
+            solver.step(joint_q, joint_q, iterations=40)
+            return joint_q.numpy()
+
+        result = solve(wp.array([False, True], dtype=wp.bool, device=device))
+
+        # Masked deltas are exactly zero by construction (zeroed Jacobian
+        # columns + lambda damping), so fixedness is bit-exact, per problem.
+        for row in range(2):
+            test.assertEqual(float(result[row, 0]), float(seeds[row, 0]))
+        # The free DOF must actually converge, not merely move: compare the
+        # end-effector error against the 1-DOF optimum found by a dense scan.
+        for row in range(2):
+            theta0 = float(seeds[row, 0])
+            tx, ty = float(targets.numpy()[row][0]), float(targets.numpy()[row][1])
+            thetas = np.linspace(-np.pi, np.pi, 20001)
+            ee_x = np.cos(theta0) + np.cos(theta0 + thetas)
+            ee_y = np.sin(theta0) + np.sin(theta0 + thetas)
+            best = float(np.min(np.hypot(ee_x - tx, ee_y - ty)))
+            x = np.cos(theta0) + np.cos(theta0 + result[row, 1])
+            y = np.sin(theta0) + np.sin(theta0 + result[row, 1])
+            achieved = float(np.hypot(x - tx, y - ty))
+            test.assertLess(achieved, best + 1.0e-3)
+
+        # An all-True mask must be exactly equivalent to no mask.
+        all_true = solve(wp.ones(model.joint_dof_count, dtype=wp.bool, device=device))
+        no_mask = solve(None)
+        assert_np_equal(all_true, no_mask, tol=0.0)
+
+
+def test_joint_dof_mask_free_joint(test, device):
+    """A fully-masked FREE joint must keep its pose fixed (up to quaternion
+    renormalization roundoff) while the remaining revolute DOF still updates."""
+    with wp.ScopedDevice(device):
+        model = _build_free_plus_revolute(device)
+        seed = np.zeros((1, model.joint_coord_count), dtype=np.float32)
+        seed[0, 0:3] = [0.1, -0.2, 0.3]
+        rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7)
+        seed[0, 3:7] = [rot[0], rot[1], rot[2], rot[3]]
+        joint_q = wp.array(seed, dtype=wp.float32, device=device)
+        target = wp.array([[1.0, 0.5, 0.0]], dtype=wp.vec3, device=device)
         position_objective = ik.IKObjectivePosition(
             link_index=1,
             link_offset=wp.vec3(0.5, 0.0, 0.0),
             target_positions=target,
         )
+        mask = np.ones(model.joint_dof_count, dtype=bool)
+        mask[0:6] = False  # freeze the free joint (6 DOFs, 7 coordinates)
         solver = ik.IKSolver(
             model,
             1,
             [position_objective],
-            jacobian_mode=mode,
-            joint_dof_mask=wp.array([False, True], dtype=wp.bool, device=device),
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+            joint_dof_mask=wp.array(mask, dtype=wp.bool, device=device),
         )
 
         solver.step(joint_q, joint_q, iterations=40)
 
         result = joint_q.numpy()[0]
-        test.assertAlmostEqual(float(result[0]), 0.4, places=6)
-        test.assertGreater(abs(float(result[1])), 1.0e-3)
+        assert_np_equal(result[0:7], seed[0, 0:7], tol=1.0e-6)
+        test.assertGreater(abs(float(result[7])), 1.0e-3)
 
 
 def test_joint_dof_mask_validation(test, device):
@@ -440,6 +498,31 @@ def test_joint_dof_mask_validation(test, device):
                 [objective],
                 sampler=ik.IKSampler.GAUSS,
                 joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device=device),
+            )
+        if device.is_cuda:
+            with test.assertRaisesRegex(ValueError, "model device"):
+                ik.IKSolver(
+                    model,
+                    1,
+                    [objective],
+                    joint_dof_mask=wp.ones(model.joint_dof_count, dtype=wp.bool, device="cpu"),
+                )
+
+        free_model = _build_free_plus_revolute(device)
+        free_target = wp.array([[1.0, 0.5, 0.0]], dtype=wp.vec3, device=device)
+        free_objective = ik.IKObjectivePosition(
+            link_index=1,
+            link_offset=wp.vec3(0.5, 0.0, 0.0),
+            target_positions=free_target,
+        )
+        partial = np.ones(free_model.joint_dof_count, dtype=bool)
+        partial[0:3] = False  # linear DOFs of the free joint only
+        with test.assertRaisesRegex(ValueError, "masked together"):
+            ik.IKSolver(
+                free_model,
+                1,
+                [free_objective],
+                joint_dof_mask=wp.array(partial, dtype=wp.bool, device=device),
             )
 
 
@@ -670,6 +753,7 @@ for mode in ik.IKJacobianType:
         devices,
         mode=mode,
     )
+add_function_test(TestIKModes, "test_joint_dof_mask_free_joint", test_joint_dof_mask_free_joint, devices)
 add_function_test(TestIKModes, "test_joint_dof_mask_validation", test_joint_dof_mask_validation, devices)
 
 # Jacobian equality
