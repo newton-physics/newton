@@ -9,6 +9,7 @@ import warp as wp
 import newton
 from newton._src.sim.articulation import eval_articulation_fk
 from newton._src.sim.articulation_cuda import (
+    FK_TILE_MAX_JOINTS,
     TILE_BLOCK_DIM,
     create_eval_articulation_fk_tile,
 )
@@ -386,6 +387,22 @@ def test_cyclic_articulation_serial_fallback(test, device):
     assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
 
 
+def test_large_articulation_serial_fallback(test, device):
+    builder = newton.ModelBuilder(gravity=0.0)
+    _add_chain(builder, FK_TILE_MAX_JOINTS + 1, 0.0)
+    model = builder.finalize(device=device)
+    model.joint_q.assign(np.linspace(-0.1, 0.1, model.joint_coord_count, dtype=np.float32))
+
+    test.assertIsNone(model._fk_articulation_level_start)
+
+    state_reference = model.state()
+    state_public = model.state()
+    _eval_fk_serial(model, state_reference)
+    newton.eval_fk(model, state_public.joint_q, state_public.joint_qd, state_public)
+    assert_np_equal(state_public.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+
 def _eval_fk_gradients(device, use_public):
     model, body = _build_gradient_model(device)
     state = model.state(requires_grad=True)
@@ -441,6 +458,12 @@ add_function_test(
     "test_cyclic_articulation_serial_fallback",
     test_cyclic_articulation_serial_fallback,
     get_test_devices(),
+)
+add_function_test(
+    TestEvalFK,
+    "test_large_articulation_serial_fallback",
+    test_large_articulation_serial_fallback,
+    get_selected_cuda_test_devices(),
 )
 add_function_test(
     TestEvalFK,
