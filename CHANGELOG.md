@@ -58,7 +58,6 @@
 
 ### Fixed
 
-- Fix USD site import to discover sites beneath non-visual containers, collider prims, and instanceable rigid-body prims independently of `load_visual_shapes`; the reworked traversal also speeds up import of scenes with many nested `Xform` or instance prims.
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.
 - Fix USD plane visual width and length to scale along the axes defined by the `UsdGeomPlane` schema, and orient X- and Y-axis plane visuals along the authored axis.
 - Validate `ArticulationView` mask shapes and devices before launching selection kernels. (#3448)
@@ -72,6 +71,7 @@
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Report malformed MJCF free-joint and inertial inputs with deterministic validation errors, and ignore MJCF mesh geom `size` lengths consistently.
 - Fix Style3D solver divergence caused by isolated vertices.
+- Fix USD site import to discover sites beneath non-visual containers, collider prims, and instanceable rigid-body prims independently of `load_visual_shapes`; the reworked traversal also speeds up import of scenes with many nested `Xform` or instance prims.
 - Fix `SolverFeatherstone` BALL joints to apply passive `joint_damping` on all three angular DOFs.
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
 - Fix `FastKitchenG1` ASV metrics to build the kitchen scene instead of a plain G1 model.
