@@ -18,6 +18,7 @@
 - Add masked rigid-body reset support to `SolverVBD`; particle resets are not yet supported. (#3256)
 - Add viewer layer system to overlay multiple solvers/models in supported rendering viewers; call `ViewerBase.activate(layer_id)` to route subsequent `set_model` / `log_state` / `log_*` calls into a named layer, `ViewerBase.set_layer_visible()` to toggle layers independently, and `ViewerBase.set_layer_transform()` to position layers side-by-side. See `example_basic_multi_solver_overlay.py`
 - Add `ViewerBase.camera_speed` to configure keyboard translation speed for interactive viewers. (#3439)
+- Add public `NewtonWarning`, `NewtonDeprecationWarning`, and `NewtonGeometryWarning` categories for filtering Newton warnings.
 - Add SDF contact support for convex-hull shapes with mesh-attached SDFs and opt-in SDF contact generation for box shapes.
 - Add opt-in filtering of static-static, static-kinematic, and kinematic-kinematic contacts during broad-phase collision detection. Set `CollisionPipeline(include_static_kinematic_pairs=False)` to enable filtering; the default preserves existing contact generation. `Model.shape_contact_pairs` remains an unfiltered superset for direct consumers such as `SolverKamino` and hydroelastic SDF setup.
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
@@ -30,6 +31,7 @@
 - Compile tiled camera render kernels with CUDA fast math by default for faster rendering; set `SensorTiledCamera.render_config.enable_fast_math = False` for bit-exact, IEEE-precise output.
 - Optimize raycast/raytrace queries by restructuring ray-shape intersection into local-space primitives and compile specialized depth/shadow variants that skip unused surface-normal work (mesh shadows also use any-hit queries).
 - Improve `SolverKamino` GPU simulation and kernel compilation performance.
+- Route `newton` and Warp `INFO` diagnostics from Newton example entry points through stdlib logging to stdout by default, with `WARNING` and higher records on stderr. Configure `logging.getLogger("newton")` or `logging.getLogger("warp")` to route or suppress these records; `--quiet` still suppresses Warp informational output.
 - Speed up `ModelBuilder.replicate()` for large world counts by merging all copies in one pass; it no longer calls `add_world()` or `add_builder()` per copy, so `ModelBuilder` subclass overrides of those methods are not invoked during replication.
 
 ### Deprecated
@@ -43,6 +45,7 @@
 - Deprecate `newton.geometry.MATCH_BROKEN` and `newton.geometry.MATCH_NOT_FOUND` without replacement; do not rely on or import these values.
 - Deprecate unsorted integer indices for `ArticulationView.include_joints` and `ArticulationView.include_links`, and reject out-of-range indices; sort indices in ascending order and ensure they are within the articulation's joint or link range.
 - Deprecate `State.body_q_prev` without replacement because solvers now manage previous body transforms internally; applications that need pose history should clone `State.body_q` explicitly.
+- Deprecate warning-style diagnostics written directly to stdout in favor of future stdlib logging; legacy verbose stdout fallback emits a one-time `NewtonDeprecationWarning`. Configure `logging.getLogger("newton")` at `INFO` level with a handler to route or suppress diagnostics as these messages move fully to logging in a future release.
 - Deprecate passing option-heavy helper API parameters positionally, including `ModelBuilder.ShapeConfig`, `ModelBuilder.JointDofConfig`, `Contacts`, `ArticulationView`, and selected `ModelBuilder` body, joint, shape, rod, cloth, soft-body, and FEM helpers. Keep stable identifiers such as `body`, `parent`/`child`, capacity counts, and topology indices positional; migrate calls such as `add_shape_box(body, xform, hx=...)` to `add_shape_box(body, xform=xform, hx=...)`.
 - Deprecate loading TorchScript (`torch.jit.save`) and dict (`torch.save`) neural-network checkpoints in `ControllerNeuralMLP` and `ControllerNeuralLSTM` in favor of pt2 archives saved via `torch.export.save`.
 - Deprecate omitting `body_frame_origin` in `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()`; the implicit behavior still uses the existing start-node body-frame convention during the deprecation window, but the implicit default will change to `body_frame_origin="com"` in a future release. Pass `body_frame_origin="start"` to preserve the legacy frame or `body_frame_origin="com"` to opt into the future COM-centered frame.
@@ -67,6 +70,7 @@
 - Fix `ModelBuilder.add_usd()` requiring the optional `mujoco` package when handling `MjcActuator` prims, including during default MJC equality conversion.
 - Report malformed MJCF free-joint and inertial inputs with deterministic validation errors, and ignore MJCF mesh geom `size` lengths consistently.
 - Fix Style3D solver divergence caused by isolated vertices.
+- Fix Newton example and test entry points to install default stdlib logging handlers and route Python warnings through logging.
 - Fix `SolverFeatherstone` BALL joints to apply passive `joint_damping` on all three angular DOFs.
 - Fix excessive memory usage when importing MJCF or URDF models containing many visual-only shapes with self-collisions disabled.
 - Fix `FastKitchenG1` ASV metrics to build the kitchen scene instead of a plain G1 model.
@@ -107,7 +111,6 @@
 - Add `CollisionPipeline.soft_rigid_contact_pair_count` for the number of precomputed soft-rigid (particle-shape) candidate pairs, filtered to compatible worlds, launched for soft-contact generation; this is the default capacity for `soft_contact_max`
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied. (#2705)
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
-- Add public `NewtonWarning`, `NewtonDeprecationWarning`, and `NewtonGeometryWarning` categories for filtering Newton warnings.
 - Add USD import support for `NewtonJointAPI` (`newton:armature`, `newton:damping`, `newton:friction`, `newton:velocityLimit`, `newton:limitStiffness`, `newton:limitDamping`). Attributes broadcast uniformly to every DOF on the joint. If per DOF variance is required, recommendation is to break apart into 1-DOF (i.e. revolute & prismatic) joints instead. (#3275)
 - Add support for pt2 neural-network checkpoints (saved via `torch.export.save`) in `ControllerNeuralMLP` and `ControllerNeuralLSTM`. (#3356)
 - Add a `deterministic` constructor argument to `SolverXPBD`, `SolverSemiImplicit`, `SolverFeatherstone`, `SolverVBD`, and `SolverMuJoCo` to opt into deterministic solver execution; the default inherits `wp.config.deterministic`. (#3300)
@@ -159,30 +162,6 @@
 - Enable graph capture on CPU in examples and allow `SolverVBD` contact buffers to grow during CPU graph capture. (#3387)
 - Assign one default visual color to capsule segments generated by `ModelBuilder.add_rod()` or `add_rod_graph()`; pass `color=` to choose an explicit cable color. (#2670)
 - Move the MuJoCo guide from `/integrations/mujoco` to `/solvers/mujoco` and the Isaac Lab page from `/integrations/isaac-lab` to `/lab/isaac-lab`; use the new Solvers and Isaac Lab navigation entries.
-- Allow standalone world-root joints to remain outside articulation metadata during `ModelBuilder.finalize()`; use `SolverXPBD`, `SolverSemiImplicit`, or `SolverMuJoCo`'s standalone-root fallback, or add the joints to an articulation for solvers that require reduced-coordinate articulation metadata.
-- Change the default CoACD convex decomposition threshold from `0.5` to `0.05` to match CoACD's default; pass `remeshing_kwargs={"threshold": 0.5}` to preserve the previous coarse decomposition.
-- **Breaking change (experimental `SolverVBD`):** VBD now interprets all damping coefficients as absolute physical units instead of dimensionless stiffness-relative (Rayleigh) multipliers (`D = kd · ke`). Existing `kd`-family values will produce different damping. Affected parameters: tetrahedral `k_damp` [Pa·s], `tri_kd`, spring `kd` [N·s/m], cable `stretch_damping` [N·s/m] and `bend_damping` [N·m·s/rad] in `add_joint_cable()`/`add_rod()`/`add_rod_graph()`, `joint_target_kd` and `joint_limit_kd` (including `JointDofConfig.limit_kd`), shape contact `kd`/`shape_material_kd` and `soft_contact_kd` [N·s/m], and `SolverVBD(rigid_joint_linear_kd=…, rigid_joint_angular_kd=…)`. To preserve previous behavior, set `kd_new = kd_old · k`, where `k` is the stiffness or penalty coefficient the value was previously paired with, and pass the product to the same field.
-- Change `SolverKamino.reset(world_mask=...)` to accept `wp.bool` arrays instead of `wp.int32`; callers passing `wp.int32` masks must switch to `wp.bool` (e.g. `wp.array([False, True, False], dtype=wp.bool)` or `wp.ones((num_worlds,), dtype=wp.bool)`). (#2934)
-- Enable particle-particle contact forces by default in standalone `SolverSemiImplicit`: the solver now rebuilds `Model.particle_grid` every substep and adds contact forces to the existing `particle_f`. Existing scenes with particles closer than `2 * particle_max_radius + particle_cohesion` may change trajectories; set `model.particle_grid = None` before stepping to preserve the previous behavior without particle-particle contacts.
-- Change `CollisionPipeline.soft_contact_max` to default to the precomputed `soft_rigid_contact_pair_count` instead of `shape_count * particle_count`.
-- Change `SolverFeatherstone` FREE/DISTANCE `joint_qd` to use the public Newton convention: callers must pass six values per joint as child-COM linear velocity followed by angular velocity, both expressed in the joint parent frame; floating-root FREE/DISTANCE articulations now use a root-COM-centered internal solve frame for improved stability far from the world origin.
-- Assign one default visual color to capsule segments generated by `ModelBuilder.add_rod()` or `add_rod_graph()`; pass `color=` to choose an explicit cable color.
-- Route `newton` and Warp `INFO` diagnostics from Newton example entry points through stdlib logging to stdout by default, with `WARNING` and higher records on stderr. Configure `logging.getLogger("newton")` or `logging.getLogger("warp")` to route or suppress these records; `--quiet` still suppresses Warp informational output.
-- Exclude particles without `ParticleFlags.ACTIVE` from `SolverImplicitMPM` grid transfers, including mass and velocity. Simulations that used inactive particles as fixed obstacles must keep those particles active and set their mass to `0` to retain kinematic boundary behavior.
-- Rework the API of the `reset()` operation in `SolverKamino` to use an explicit `ResetConfig` instead of many keyword arguments.
-
-### Deprecated
-
-- Deprecate passing solver constructor options positionally after stable positional inputs such as `model` and explicit solver configs; migrate calls such as `SolverVBD(model, 10)` to `SolverVBD(model, iterations=10)`.
-- Deprecate `newton.EqType` in favor of `newton.solvers.SolverMuJoCo.EqType`; migrate equality-constraint type references to the MuJoCo-scoped enum.
-- Deprecate passing option-heavy helper API parameters positionally, including `ModelBuilder.ShapeConfig`, `ModelBuilder.JointDofConfig`, `Contacts`, `ArticulationView`, and selected `ModelBuilder` body, joint, shape, rod, cloth, soft-body, and FEM helpers. Keep stable identifiers such as `body`, `parent`/`child`, capacity counts, and topology indices positional; migrate calls such as `add_shape_box(body, xform, hx=...)` to `add_shape_box(body, xform=xform, hx=...)`.
-- Deprecate omitting `body_frame_origin` in `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()`; the implicit behavior still uses the existing start-node body-frame convention during the deprecation window, but the implicit default will change to `body_frame_origin="com"` in a future release. Pass `body_frame_origin="start"` to preserve the legacy frame or `body_frame_origin="com"` to opt into the future COM-centered frame.
-- Change VBD Neo-Hookean membrane/tet damping to an objective metric based on the rate of `C = FᵀF`, so rigid-body rotations no longer generate damping force.
-- Change VBD spring damping to act only along the spring axis (damping edge-length rate), so transverse and rigid-rotational motion is no longer damped by springs.
-- Deprecate warning-style diagnostics written directly to stdout in favor of future stdlib logging; legacy verbose stdout fallback emits a one-time `NewtonDeprecationWarning`. Configure `logging.getLogger("newton")` at `INFO` level with a handler to route or suppress diagnostics as these messages move fully to logging in a future release.
-- Deprecate the `indices` argument of `MeshAdjacency` in favor of `tri_indices`
-- Deprecate `MeshAdjacency.add_edge`; construct a `MeshAdjacency` with `edge_indices` (`[o0, o1, v0, v1]` rows) instead
-- `SolverVBD` now applies each shape's `ShapeConfig.margin` (`model.shape_margin`) to particle-rigid (soft) contacts, widening the soft-contact detection shell and reducing penetration depth per shape; previously only the global `soft_contact_margin` and particle radius were used. Re-check VBD scenes that set per-shape margins. (#2994)
 
 ### Deprecated
 
@@ -231,7 +210,6 @@
 - Refer to `kf` consistently as contact friction gain in public documentation. (#2988)
 - Fix `SolverMuJoCo` dropping the authored `actuator_ctrlrange`/`actuator_ctrllimited`/`actuator_forcerange`/`actuator_forcelimited` when rebuilding USD/MJCF position/velocity actuators imported as `JOINT_TARGET`, so the compiled `mj_model` now clamps control targets and actuator forces like native MuJoCo.
 - Fix `SolverVBD` rigid contact injecting kinetic energy for yawed finite-radius contacts (e.g. small-radius cables blowing up). The normal response now acts at the geometric skeleton point rather than the rotating surface anchor, which was non-conservative under reorientation; friction still uses the surface anchor to preserve finite-radius slip. (#3125)
-- Fix Newton example and test entry points to install default stdlib logging handlers and route Python warnings through logging.
 - Fix `SolverXPBD` rigid restitution activation so contact thickness is not double-counted after applying contact offsets. (#3287; fixes #3034)
 - Fix `SolverKamino` contact filtering and constraint stabilization so gap/margin contacts are handled consistently, positive-distance contacts can be filtered as configured, and converted contact forces/wrenches populate matching Newton contact slots for `SensorContact`. (#2908)
 - Fix mesh collision sign queries to select the method from mesh topology: parity for watertight meshes, the pseudo-normal method for non-watertight meshes at runtime, and winding numbers for SDFs baked at model finalization; pass `sign_method` to `Mesh.build_sdf` to override the strategy of explicitly baked SDFs. (#3242)
