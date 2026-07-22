@@ -1986,6 +1986,15 @@ void main() {
 
     # ----------------------------------------------------------- viewer API
 
+    @override
+    def clear_all_layers(self) -> None:
+        """Reset the RTX viewer as one complete layered scene."""
+        for layer_id in [lid for lid in self._layers if lid != _DEFAULT_LAYER_ID]:
+            del self._layers[layer_id]
+        self._active_layer_id = _DEFAULT_LAYER_ID
+        self._load_layer_state(self._layers[_DEFAULT_LAYER_ID])
+        self.clear_model()
+
     def clear_model(self) -> None:
         """Reset RTX-specific model-dependent state to defaults.
 

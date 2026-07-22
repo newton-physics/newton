@@ -1021,7 +1021,7 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
     """Contact history must be allocated before CUDA graph recording."""
 
     def make_scene(pipeline_first, rigid_contact_max=4):
-        builder = newton.ModelBuilder(gravity=-10.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -10.0))
         builder.add_ground_plane()
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.2), wp.quat_identity()))
         builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
@@ -1031,40 +1031,40 @@ def _rigid_contact_history_capture_requires_preallocation(test, device):
         pipeline = contacts = None
         if pipeline_first:
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
-            contacts = model.contacts(collision_pipeline=pipeline)
+            contacts = pipeline.contacts()
 
         solver = newton.solvers.SolverVBD(model, iterations=1, rigid_contact_history=True)
 
         if not pipeline_first:
             pipeline = newton.CollisionPipeline(model, rigid_contact_max=rigid_contact_max, contact_matching="latest")
-            contacts = model.contacts(collision_pipeline=pipeline)
+            contacts = pipeline.contacts()
 
         state_in = model.state()
         state_out = model.state()
         control = model.control()
         if rigid_contact_max > 0:
-            model.collide(state_in, contacts)
-        return model, solver, contacts, state_in, state_out, control
+            pipeline.collide(state_in, contacts)
+        return pipeline, solver, contacts, state_in, state_out, control
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
     with test.assertRaisesRegex(RuntimeError, "contact history must be allocated before CUDA graph capture"):
         with wp.ScopedCapture(device=device):
             solver.step(state_in, state_out, control, contacts, 1.0e-3)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_in, state_out, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True, rigid_contact_max=0)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=True, rigid_contact_max=0)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_in, state_out, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
     test.assertIsNone(solver._prev_contact_lambda)
 
-    model, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
+    pipeline, solver, contacts, state_in, state_out, control = make_scene(pipeline_first=False)
     solver.step(state_in, state_out, control, contacts, 1.0e-3)
-    model.collide(state_out, contacts)
+    pipeline.collide(state_out, contacts)
     with wp.ScopedCapture(device=device) as capture:
         solver.step(state_out, state_in, control, contacts, 1.0e-3)
     test.assertIsNotNone(capture.graph)
@@ -1690,7 +1690,7 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):
     """D6 structural slots should be inactive when all axes are free."""
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
 
@@ -1732,10 +1732,10 @@ def _rigid_reset_state_and_history(test, device):
         joint = builder.add_joint_fixed(parent=-1, child=body)
         builder.add_articulation([joint])
 
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     add_fixed_body(template, 0.0)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     add_fixed_body(builder, -2.0)  # Global head range.
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
@@ -1943,11 +1943,11 @@ def _rigid_reset_state_and_history(test, device):
 
 def _rigid_reset_replays_captured_step(test, device):
     """A reset issued after capture is consumed by the existing step graph."""
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(mass=1.0, is_kinematic=True)
     template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
@@ -2005,7 +2005,7 @@ def _rigid_reset_replays_captured_step(test, device):
 def _rigid_contact_reset_lifecycle(test, device):
     """A reset cold-starts only selected-world contacts, once, on the next refresh."""
     cfg = newton.ModelBuilder.ShapeConfig(ke=100.0, kd=0.0, mu=0.5)
-    template = newton.ModelBuilder(gravity=0.0)
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
         mass=1.0,
@@ -2013,7 +2013,7 @@ def _rigid_contact_reset_lifecycle(test, device):
     )
     template.add_shape_sphere(body, radius=0.1, cfg=cfg)
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_ground_plane(cfg=cfg)
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
@@ -2143,7 +2143,7 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
 
 
 def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_max=None, dahl_tau=None):
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=dahl_defaults_enabled)
@@ -2455,7 +2455,8 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True)
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         init_qd = state_0.body_qd.numpy().copy()
         init_qd[0] = [0.0, 0.0, 0.0, omega_init, 0.0, 0.0]
@@ -2464,7 +2465,7 @@ def _capsule_axial_spin_dissipates_via_friction(test, device, hard_contact=True)
         sim_dt = 1.0e-3
         for _ in range(500):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
 
@@ -2493,7 +2494,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
     num_frames = 200
     settle_frames = 50
 
-    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81), up_axis=newton.Axis.Z)
     cfg = newton.ModelBuilder.ShapeConfig()
     cfg.density = 100.0
     cfg.mu = 0.0
@@ -2534,7 +2535,8 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         masses = model.body_mass.numpy()
         inertias = model.body_inertia.numpy()
@@ -2554,7 +2556,7 @@ def _yawed_cable_does_not_inject_energy(test, device, hard_contact=True):
         for frame in range(num_frames):
             for _ in range(substeps):
                 state_0.clear_forces()
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
                 solver.step(state_0, state_1, control, contacts, sim_dt)
                 state_0, state_1 = state_1, state_0
             if frame >= settle_frames:
@@ -2590,9 +2592,10 @@ def _collect_rigid_contact_forces_reports_surface_points(test, device):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         body_q_prev_snapshot = wp.clone(solver.body_q_prev)
         solver.step(state_0, state_1, control, contacts, 1.0e-3)
 
@@ -2906,7 +2909,7 @@ def _build_edge_over_post(device):
     on it. Gravity is disabled so the contact push-out is the only force.
     """
     builder = newton.ModelBuilder()
-    builder.gravity = 0.0
+    builder.gravity = (0.0, 0.0, 0.0)
 
     # Narrow tall post centered at the origin: x,z in [-0.1, 0.1], top face at y = +0.5.
     builder.add_shape_box(

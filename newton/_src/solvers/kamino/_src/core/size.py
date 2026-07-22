@@ -140,11 +140,23 @@ class SizeKamino:
     max_of_num_actuated_joint_coords: int = 0
     """The maximum number of actuated joint coordinates in any world."""
 
+    sum_of_num_fk_actuated_joint_coords: int = 0
+    """The total number of actuated joint coordinates, for FK actuation types, across all worlds."""
+
+    max_of_num_fk_actuated_joint_coords: int = 0
+    """The maximum number of actuated joint coordinates, for FK actuation types, in any world."""
+
     sum_of_num_actuated_joint_dofs: int = 0
     """The total number of actuated joint DoFs in the model across all worlds."""
 
     max_of_num_actuated_joint_dofs: int = 0
     """The maximum number of actuated joint DoFs in any world."""
+
+    sum_of_num_fk_actuated_joint_dofs: int = 0
+    """The total number of actuated joint DoFs, for FK actuation types, across all worlds."""
+
+    max_of_num_fk_actuated_joint_dofs: int = 0
+    """The maximum number of actuated joint DoFs, for FK actuation types, in any world."""
 
     sum_of_num_joint_cts: int = 0
     """The total number of joint constraints in the model across all worlds."""
