@@ -34,7 +34,6 @@ from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     assert_np_equal,
-    assert_schema_fallback_migration,
     get_test_devices,
     patch_sys_module,
 )
@@ -3536,7 +3535,7 @@ def Xform "Articulation" (
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_applied_physx_limit_api_warns_before_fallback_change(self):
+    def test_unregistered_physx_limit_api_uses_importer_defaults(self):
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
@@ -3559,8 +3558,11 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.limit_ke = 4321.0
         builder.default_joint_cfg.limit_kd = 43.0
-        with self.assertWarnsRegex(DeprecationWarning, "PhysxLimitAPI:linear"):
-            builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()])
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_applied_schema_fallbacks=True,
+        )
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
@@ -6908,8 +6910,7 @@ def Xform "Articulation" (
 
         # Import the USD
         builder = newton.ModelBuilder()
-        with assert_schema_fallback_migration():
-            result = builder.add_usd(stage)
+        result = builder.add_usd(stage, use_applied_schema_fallbacks=True)
         model = builder.finalize()
 
         # Verify the material properties were parsed correctly
@@ -8355,8 +8356,7 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(col3_prim)
 
         builder = newton.ModelBuilder()
-        with assert_schema_fallback_migration():
-            result = builder.add_usd(stage)
+        result = builder.add_usd(stage, use_applied_schema_fallbacks=True)
         model = builder.finalize()
 
         idx_all = result["path_shape_map"]["/Articulation/Body/ColAll"]
@@ -8545,8 +8545,11 @@ def Xform "Articulation" (
         # MuJoCo resolver first -> solref wins over material ke/kd
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        with assert_schema_fallback_migration():
-            result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+        result = builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            use_applied_schema_fallbacks=True,
+        )
         model = builder.finalize()
         idx = result["path_shape_map"]["/Articulation/Body/Col"]
 
@@ -8561,8 +8564,11 @@ def Xform "Articulation" (
         # Newton resolver first -> material wins over solref
         builder2 = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder2)
-        with assert_schema_fallback_migration():
-            result2 = builder2.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        result2 = builder2.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
         model2 = builder2.finalize()
         idx2 = result2["path_shape_map"]["/Articulation/Body/Col"]
 

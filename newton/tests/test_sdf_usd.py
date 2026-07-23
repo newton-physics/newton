@@ -24,7 +24,6 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import (
     add_function_test,
-    assert_schema_fallback_migration,
     get_selected_cuda_test_devices,
 )
 
@@ -614,8 +613,11 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with assert_schema_fallback_migration((UserWarning, ".*independent collision representations")):
-                result = builder.add_usd(str(usd_path))
+            with self.assertWarnsRegex(UserWarning, "independent collision representations"):
+                result = builder.add_usd(
+                    str(usd_path),
+                    use_applied_schema_fallbacks=True,
+                )
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
 

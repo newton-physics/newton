@@ -19,7 +19,6 @@ from numbers import Real
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from . import utils as usd
-from ._schema_fallbacks import _SCHEMA_FALLBACKS
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -36,10 +35,6 @@ class _SchemaFallbackError(Exception):
     def __init__(self, message: str, label: str):
         super().__init__(message)
         self.label = label
-
-
-class _MissingSchemaFallbackError(_SchemaFallbackError, RuntimeError):
-    """An applied schema has no available fallback."""
 
 
 class _PXRValueGetterError(_SchemaFallbackError, TypeError):
@@ -75,7 +70,8 @@ class SchemaResolver:
 
         Args:
             name: The name of the USD attribute (or primary attribute when using a getter).
-            default: Compatibility fallback used while legacy resolution is active.
+            default: Compatibility fallback used after importer defaults when no
+                registered schema fallback is available.
             usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
             usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
             attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
@@ -301,19 +297,10 @@ def _registered_attribute_fallbacks(prim_definition: Any) -> dict[str, Any]:
 
 
 class _SchemaResolution:
-    """Applied-schema resolution policy for one ordered resolver set."""
+    """Registered-schema resolution policy for one ordered resolver set."""
 
     def __init__(self, resolvers: Sequence[SchemaResolver]):
         self._resolvers = tuple(resolvers)
-
-    def _mapping_fallback(self, resolver: SchemaResolver, prim_type: PrimType, key: str) -> Any:
-        schema_name = resolver._schema_name(prim_type, key)
-        values = _SCHEMA_FALLBACKS.get(schema_name, {}) if schema_name is not None else {}
-        return resolver._get_fallback_with_reader(
-            lambda name: values.get(name, _MISSING_FALLBACK),
-            prim_type,
-            key,
-        )
 
     def _resolve_value(
         self,
@@ -325,6 +312,7 @@ class _SchemaResolution:
         *,
         default: Any = None,
     ) -> _ResolvedValue:
+        compatibility_fallbacks: set[int] = set()
         for resolver in self._resolvers:
             spec = resolver.mapping.get(prim_type, {}).get(key)
             if spec is None:
@@ -336,14 +324,9 @@ class _SchemaResolution:
             if schema_is_applied(resolver, key):
                 value = read_fallback(resolver, key)
                 if value is _MISSING_FALLBACK:
-                    schema_name = resolver._schema_name(prim_type, key)
-                    names = ", ".join(spec.attribute_names or (spec.name,))
-                    raise _MissingSchemaFallbackError(
-                        f"Cannot resolve USD fallback for applied schema '{schema_name}' property '{names}'. "
-                        "Register the schema plugin or add the fallback to Newton's built-in catalog.",
-                        f"{schema_name} ({names})",
-                    )
-                return _ResolvedValue(value, resolver, False)
+                    compatibility_fallbacks.add(id(resolver))
+                else:
+                    return _ResolvedValue(value, resolver, False)
 
         if default is not None:
             return _ResolvedValue(default, None, False)
@@ -353,7 +336,7 @@ class _SchemaResolution:
             if (
                 spec is None
                 or not resolver._use_legacy_unowned_defaults
-                or resolver._schema_name(prim_type, key) is not None
+                or (resolver._schema_name(prim_type, key) is not None and id(resolver) not in compatibility_fallbacks)
                 or spec.default is None
             ):
                 continue
@@ -389,12 +372,13 @@ class SchemaResolverManager:
         Args:
             resolvers: List of instantiated resolvers in priority order.
             use_applied_schema_fallbacks: Use the owning applied schema's fallback
-                before importer defaults. Defaults to False.
+                from USD's registered schema definition before importer defaults.
+                Defaults to False.
         """
         self.resolvers = list(resolvers)
         self._use_applied_schema_fallbacks = use_applied_schema_fallbacks
         self._resolution = _SchemaResolution(self.resolvers)
-        self._pxr_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
+        self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
         self._legacy_fallback_properties: set[str] = set()
         self._legacy_fallback_failures: set[str] = set()
 
@@ -643,13 +627,13 @@ class SchemaResolverManager:
         return self._resolution._resolve_value(
             read_from_prim if read_value is None else read_value,
             lambda resolver, key: resolver._schema_is_applied(prim, prim_type, key),
-            lambda resolver, key: self._pxr_fallback(resolver, prim, prim_type, key),
+            lambda resolver, key: self._registered_fallback(resolver, prim, prim_type, key),
             prim_type,
             key,
             default=default,
         )
 
-    def _pxr_fallback(
+    def _registered_fallback(
         self,
         resolver: SchemaResolver,
         prim: Usd.Prim,
@@ -664,23 +648,27 @@ class SchemaResolverManager:
 
         prim_type_name = str(prim.GetTypeName())
         cache_key = (prim_type_name, schema_name)
-        if cache_key not in self._pxr_schema_fallbacks:
+        if cache_key not in self._registered_schema_fallbacks:
             registry = Usd.SchemaRegistry()
             if prim_type_name == schema_name:
                 prim_definition = registry.FindConcretePrimDefinition(schema_name)
             else:
-                prim_definition = registry.BuildComposedPrimDefinition(prim_type_name, [schema_name])
-            self._pxr_schema_fallbacks[cache_key] = _registered_attribute_fallbacks(prim_definition)
+                schema_type_name, _ = registry.GetTypeNameAndInstance(schema_name)
+                schema_definition = registry.FindAppliedAPIPrimDefinition(schema_type_name)
+                prim_definition = (
+                    registry.BuildComposedPrimDefinition(prim_type_name, [schema_name])
+                    if schema_definition is not None
+                    else None
+                )
+            self._registered_schema_fallbacks[cache_key] = _registered_attribute_fallbacks(prim_definition)
 
-        fallbacks = self._pxr_schema_fallbacks[cache_key]
+        fallbacks = self._registered_schema_fallbacks[cache_key]
         value = resolver._get_fallback_with_reader(
             lambda name: fallbacks.get(name, _MISSING_FALLBACK),
             prim_type,
             key,
         )
-        if value is not _MISSING_FALLBACK:
-            return value
-        return self._resolution._mapping_fallback(resolver, prim_type, key)
+        return value
 
     def deformable_compat_namespaces(self) -> list[str]:
         """Deformable vendor attribute namespaces declared by the active resolvers.

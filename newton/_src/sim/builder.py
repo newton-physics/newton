@@ -3522,11 +3522,13 @@ class ModelBuilder:
 
                     The ``schema_resolvers`` and ``use_applied_schema_fallbacks``
                     arguments may change without prior notice.
-            use_applied_schema_fallbacks: True uses an applied schema's fallback
-                before importer defaults and lower-priority resolvers, opting into
-                the future behavior without migration warnings. False explicitly
-                retains legacy resolution and is the default during the compatibility
-                period.
+            use_applied_schema_fallbacks: True uses an applied schema's registered
+                USD fallback before importer defaults and lower-priority resolvers,
+                opting into the future behavior without migration warnings. The
+                relevant schema plugins must be registered with USD for first-class
+                fallback ownership; unregistered schemas retain resolver compatibility
+                defaults after importer defaults. False explicitly retains legacy
+                resolution and is the default during the compatibility period.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
