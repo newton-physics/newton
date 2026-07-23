@@ -162,6 +162,13 @@ class RenderContext:
                 self.shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
         deformable_visual_meshes = getattr(model, "deformable_visual_meshes", None) or []
+        has_simulation_triangles = bool(
+            enable_simulation_triangles
+            and model.particle_q is not None
+            and model.particle_q.shape[0]
+            and model.tri_indices is not None
+            and model.tri_indices.shape[0]
+        )
 
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.__has_particles = True
@@ -172,7 +179,7 @@ class RenderContext:
                 if indices is not None and indices.shape[0]:
                     topology_particle_mask[indices.numpy().reshape(-1)] = True
 
-            if enable_simulation_triangles and model.tri_indices is not None and model.tri_indices.shape[0]:
+            if has_simulation_triangles:
                 if deformable_visual_meshes:
                     self.__dynamic_triangle_particle_count = model.particle_q.shape[0]
                 else:
@@ -196,7 +203,7 @@ class RenderContext:
             self.__init_deformable_visual_triangle_mesh(
                 model,
                 deformable_visual_meshes,
-                enable_simulation_triangles,
+                has_simulation_triangles,
             )
 
     def update(self, model: Model, state: State, deformable_visuals: DeformableVisuals | None = None):
@@ -646,7 +653,7 @@ class RenderContext:
         self,
         model: Model,
         deformable_visual_meshes: list[object],
-        enable_simulation_triangles: bool,
+        has_simulation_triangles: bool,
     ):
         """Build the static index buffer and dynamic point buffer for skinned visual meshes."""
         triangle_indices: list[np.ndarray] = []
@@ -655,13 +662,7 @@ class RenderContext:
         vertex_worlds: list[np.ndarray] = []
         vertex_offset = 0
 
-        if (
-            enable_simulation_triangles
-            and model.particle_q is not None
-            and model.particle_q.shape[0]
-            and model.tri_indices is not None
-            and model.tri_indices.shape[0]
-        ):
+        if has_simulation_triangles:
             sim_indices = model.tri_indices.numpy().astype(np.int32, copy=False)
             triangle_indices.append(sim_indices.reshape(-1))
             triangle_uvs.append(np.zeros((model.particle_q.shape[0], 2), dtype=np.float32))

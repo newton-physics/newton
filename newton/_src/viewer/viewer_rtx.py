@@ -1456,18 +1456,19 @@ void main() {
             self._mesh_prim_paths[name] = self._get_path(name)
         elif name in self._mesh_prim_paths:
             self._pending_mesh_visibility[name] = not hidden
-            pts = (
-                points.numpy().astype(np.float32)
-                if isinstance(points, wp.array)
-                else np.asarray(points, dtype=np.float32)
-            )
-            self._pending_mesh_points[name] = pts
-            if normals is not None:
-                self._pending_mesh_normals[name] = (
-                    normals.numpy().astype(np.float32)
-                    if isinstance(normals, wp.array)
-                    else np.asarray(normals, dtype=np.float32)
+            if not hidden:
+                pts = (
+                    points.numpy().astype(np.float32)
+                    if isinstance(points, wp.array)
+                    else np.asarray(points, dtype=np.float32)
                 )
+                self._pending_mesh_points[name] = pts
+                if normals is not None:
+                    self._pending_mesh_normals[name] = (
+                        normals.numpy().astype(np.float32)
+                        if isinstance(normals, wp.array)
+                        else np.asarray(normals, dtype=np.float32)
+                    )
 
     @override
     def log_instances(
