@@ -66,6 +66,10 @@
 - Deprecate `SensorTiledCamera.render_config` in favor of `SensorTiledCamera.default_render_config`; migrate `sensor.render_config.enable_shadows = True` to `sensor.default_render_config.enable_shadows = True`.
 - Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
 
+### Removed
+
+- Remove the deprecated SDF compatibility attributes `Model.shape_sdf_index`, `Model.texture_sdf_data`, `Model.texture_sdf_coarse_textures`, `Model.texture_sdf_subgrid_textures`, `Model.texture_sdf_subgrid_start_slots`, `Model.sdf_block_coords`, `Model.sdf_index2blocks`, and `SDF.texture_block_coords` (deprecated in 1.3.0); the hydroelastic broadphase derives block coordinates arithmetically and the remaining storage is internal.
+
 ### Fixed
 
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.
