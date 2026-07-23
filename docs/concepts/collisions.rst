@@ -1183,63 +1183,6 @@ Use ``builder.default_shape_cfg`` to set defaults for all shapes:
     builder.default_shape_cfg.is_hydroelastic = True
     builder.default_shape_cfg.sdf_max_resolution = 64  # Primitive SDF defaults
 
-**Collision frequency in the simulation loop**
-
-There are two common patterns for when to call ``collide`` relative to the substep loop:
-
-.. testsetup:: sim-loop
-
-    import warp as wp
-    import newton
-    from newton import CollisionPipeline
-
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    body = builder.add_body(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
-    builder.add_shape_sphere(body, radius=0.5)
-    model = builder.finalize()
-    solver = newton.solvers.SolverXPBD(model, iterations=5)
-    pipeline = CollisionPipeline(model, broad_phase="sap")
-    state_0 = model.state()
-    state_1 = model.state()
-    control = model.control()
-    contacts = pipeline.contacts()
-    num_frames = 2
-    sim_substeps = 3
-    sim_dt = 1.0 / 60.0 / sim_substeps
-    collide_every_n = 2
-
-*Every substep* (most accurate, used by most basic examples):
-
-.. testcode:: sim-loop
-
-    for frame in range(num_frames):
-        for substep in range(sim_substeps):
-            pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, dt=sim_dt)
-            state_0, state_1 = state_1, state_0
-
-*Once per frame* (faster, common for hydroelastic/SDF-heavy scenes):
-
-.. testcode:: sim-loop
-
-    for frame in range(num_frames):
-        pipeline.collide(state_0, contacts)
-        for substep in range(sim_substeps):
-            solver.step(state_0, state_1, control, contacts, dt=sim_dt)
-            state_0, state_1 = state_1, state_0
-
-Another pattern is to run collision detection every N substeps for a middle ground:
-
-.. testcode:: sim-loop
-
-    for frame in range(num_frames):
-        for substep in range(sim_substeps):
-            if substep % collide_every_n == 0:
-                pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, dt=sim_dt)
-            state_0, state_1 = state_1, state_0
-
 **Soft contacts (particle-shape)**
 
 Soft contacts are generated automatically when particles are present. They use a separate margin:
@@ -1267,6 +1210,72 @@ Soft contacts are generated automatically when particles are present. They use a
     n_soft = contacts.soft_contact_count.numpy()[0]
     particles = contacts.soft_contact_particle.numpy()[:n_soft]
     shapes = contacts.soft_contact_shape.numpy()[:n_soft]
+
+.. _collision-frequency-in-the-simulation-loop:
+
+Collision frequency in the simulation loop
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Start by calling ``collide`` every substep when debugging contact behavior.
+This keeps contacts current as bodies move. Once the behavior is acceptable,
+calling ``collide`` less often can reduce collision cost, especially for
+hydroelastic or SDF-heavy scenes.
+
+These are the common loop patterns:
+
+.. testsetup:: sim-loop
+
+    import warp as wp
+    import newton
+    from newton import CollisionPipeline
+
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.5)
+    model = builder.finalize()
+    solver = newton.solvers.SolverXPBD(model, iterations=5)
+    pipeline = CollisionPipeline(model, broad_phase="sap")
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    contacts = pipeline.contacts()
+    num_frames = 2
+    sim_substeps = 3
+    sim_dt = 1.0 / 60.0 / sim_substeps
+    collide_every_n = 2
+
+*Every substep* (the debugging baseline, used by most basic examples):
+
+.. testcode:: sim-loop
+
+    for frame in range(num_frames):
+        for substep in range(sim_substeps):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt=sim_dt)
+            state_0, state_1 = state_1, state_0
+
+*Once per frame* (faster, but contacts can become stale between substeps):
+
+.. testcode:: sim-loop
+
+    for frame in range(num_frames):
+        pipeline.collide(state_0, contacts)
+        for substep in range(sim_substeps):
+            solver.step(state_0, state_1, control, contacts, dt=sim_dt)
+            state_0, state_1 = state_1, state_0
+
+*Every N substeps* is a middle ground. Start from the every-substep baseline,
+then increase N and check that the task behavior remains acceptable:
+
+.. testcode:: sim-loop
+
+    for frame in range(num_frames):
+        for substep in range(sim_substeps):
+            if substep % collide_every_n == 0:
+                pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt=sim_dt)
+            state_0, state_1 = state_1, state_0
 
 .. _Contact Generation:
 

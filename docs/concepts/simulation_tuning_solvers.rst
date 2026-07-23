@@ -91,10 +91,17 @@ Effort limits, target rates, armature, and friction
    justified by actuator or gearbox data when possible.
 
 Collision frequency
-   Calling ``pipeline.collide`` every substep is most
-   robust. Calling it less frequently can improve performance for expensive
-   collision models, but stale contacts can increase penetration or weaken
-   grasping.
+   When debugging contact chatter, excess penetration, or a weak grasp, call
+   ``pipeline.collide`` every substep. This removes stale contacts as a
+   variable. If the behavior improves, collision cadence is contributing to
+   the problem; it does not prove that the timestep, solver, and contact
+   parameters are otherwise correct.
+
+   Once the behavior is acceptable, try colliding every N substeps to reduce
+   collision cost. Use the largest interval that preserves the required
+   behavior. Fast motion and changing contact configurations usually need more
+   frequent updates. See :ref:`collision-frequency-in-the-simulation-loop` for
+   loop patterns.
 
 Solver-Specific Knobs
 ---------------------
@@ -380,8 +387,10 @@ Use this sequence for contact-heavy scenes:
    support it.
 6. Add damping to reduce bounce or oscillation.
 7. Increase solver-specific convergence work if available.
-8. Refresh contacts more frequently if fast motion or manipulation depends on
-   current contact points.
+8. As a collision-cadence sanity check, refresh contacts every substep. If that
+   helps, collide every N substeps and increase N until you find an acceptable
+   performance and behavior tradeoff. Keep N smaller than the number of
+   substeps; otherwise contacts are not refreshed again within the frame.
 
 Common mistakes:
 
