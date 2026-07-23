@@ -12,6 +12,11 @@ wp.config.log_level = wp.LOG_WARNING
 
 import newton
 
+if __package__:
+    from .benchmark_metrics import validate_simulation_state
+else:
+    from benchmark_metrics import validate_simulation_state
+
 _NUM_ACTIONS = 12
 _OBS_DIM = 94
 _MIN_STANDING_HEIGHT = 0.20
@@ -435,37 +440,23 @@ class DRLegsBenchmarkWorkload:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        state_values = {}
-        for name in ("joint_q", "body_q", "body_qd"):
-            values = getattr(self.state_0, name).numpy()
-            if not np.isfinite(values).all():
-                raise RuntimeError(f"Simulation produced non-finite values in state.{name}")
-            state_values[name] = values
-
-        body_count = self.model.body_count // self.world_count
-        body_qd = state_values["body_qd"].reshape(self.world_count, body_count, 6)
-        max_linear_speed = np.linalg.norm(body_qd[:, :, :3], axis=-1).max()
-        max_angular_speed = np.linalg.norm(body_qd[:, :, 3:], axis=-1).max()
-        if max_linear_speed > _MAX_BODY_LINEAR_SPEED:
-            raise RuntimeError(
-                f"Maximum body linear speed is {max_linear_speed:.3f} m/s, exceeding {_MAX_BODY_LINEAR_SPEED:.1f} m/s"
-            )
-        if max_angular_speed > _MAX_BODY_ANGULAR_SPEED:
-            raise RuntimeError(
-                f"Maximum body angular speed is {max_angular_speed:.3f} rad/s, "
-                f"exceeding {_MAX_BODY_ANGULAR_SPEED:.1f} rad/s"
-            )
+        validate_simulation_state(
+            self.state_0,
+            max_linear_speed=_MAX_BODY_LINEAR_SPEED,
+            max_angular_speed=_MAX_BODY_ANGULAR_SPEED,
+        )
 
         if self.policy_controller is None:
             return
 
+        body_count = self.model.body_count // self.world_count
         body_labels = [label.rsplit("/", 1)[-1] for label in self.model.body_label[:body_count]]
         try:
             pelvis_index = body_labels.index("pelvis")
         except ValueError as e:
             raise RuntimeError("DR Legs model has no pelvis root body") from e
 
-        body_q = state_values["body_q"].reshape(self.world_count, body_count, 7)[:, pelvis_index]
+        body_q = self.state_0.body_q.numpy().reshape(self.world_count, body_count, 7)[:, pelvis_index]
         body_com = self.model.body_com.numpy().reshape(self.world_count, body_count, 3)[:, pelvis_index]
         quat_vector = body_q[:, 3:6]
         twice_cross = 2.0 * np.cross(quat_vector, body_com)
