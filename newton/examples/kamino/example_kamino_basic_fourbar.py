@@ -38,6 +38,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the basic four-bar mechanism either from USD or by manually building it
         # with the builder API, depending on the command-line argument `--from-usd`

@@ -45,6 +45,7 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = dvi_contact_margin
         robot_builder.default_shape_cfg.gap = 1e-2
+        robot_builder.request_contact_attributes("force")  # For contact visualization
 
         # Load the DR Legs USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
