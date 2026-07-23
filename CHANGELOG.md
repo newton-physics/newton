@@ -42,6 +42,7 @@
 - Improve `SolverKamino` GPU simulation and kernel compilation performance.
 - Load solver backends lazily on first access to speed up `import newton`; access solver classes through `newton.solvers` as before, and import solver modules explicitly if module-level side effects are required.
 - Speed up `ModelBuilder.replicate()` for large world counts by merging all copies in one pass; it no longer calls `add_world()` or `add_builder()` per copy, so `ModelBuilder` subclass overrides of those methods are not invoked during replication.
+- Refine contact visualizations (showing contact force and color-coded contact mode) in Newton viewer.
 
 ### Deprecated
 
