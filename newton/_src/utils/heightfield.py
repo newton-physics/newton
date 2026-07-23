@@ -61,6 +61,81 @@ def load_heightfield_elevation(
     return data.reshape(header[0], header[1])
 
 
+@wp.kernel
+def _rasterize_mesh_kernel(
+    mesh_id: wp.uint64,
+    x_min: wp.float32,
+    y_min: wp.float32,
+    dx: wp.float32,
+    dy: wp.float32,
+    z_start: wp.float32,
+    max_dist: wp.float32,
+    z_floor: wp.float32,
+    heights: wp.array2d[wp.float32],
+):
+    row, col = wp.tid()
+    origin = wp.vec3(x_min + wp.float32(col) * dx, y_min + wp.float32(row) * dy, z_start)
+    query = wp.mesh_query_ray(mesh_id, origin, wp.vec3(0.0, 0.0, -1.0), max_dist)
+    heights[row, col] = wp.where(query.result, z_start - query.t, z_floor)
+
+
+def rasterize_mesh_to_heightfield(
+    mesh: wp.Mesh,
+    resolution: float,
+    *,
+    max_cells_per_axis: int = 4096,
+) -> tuple[np.ndarray, tuple[float, float, float, float]]:
+    """Rasterize a triangle mesh into a heightfield elevation grid.
+
+    Rays are cast straight down onto the mesh on a regular grid spanning the mesh's
+    XY bounding box. The grid follows Newton's heightfield convention (see
+    :class:`~newton.Heightfield`): ``heights[row, col]`` samples the surface at
+    ``x = x_min + col * dx`` (columns map to X) and ``y = y_min + row * dy`` (rows
+    map to Y). Rays that miss the mesh fall back to the mesh's minimum Z so that
+    nothing collides in gaps. This is only meaningful for surfaces that are
+    single-valued in Z (e.g. locomotion terrain).
+
+    Args:
+        mesh: Triangle mesh to rasterize. Its vertices are taken in their current
+            frame; transform the mesh into world space beforehand if needed.
+        resolution: Horizontal grid spacing [m]. Smaller values preserve more
+            detail at the cost of a larger grid.
+        max_cells_per_axis: Upper bound on grid rows/columns. If the mesh extent
+            would exceed this, the effective resolution is coarsened to fit.
+
+    Returns:
+        A tuple ``(heights, bounds)`` where ``heights`` is a ``(nrow, ncol)``
+        float32 array of world-space elevations [m] and ``bounds`` is the mesh's
+        XY bounding box as ``(x_min, y_min, x_max, y_max)`` [m].
+    """
+    if resolution <= 0.0:
+        raise ValueError(f"resolution must be positive, got {resolution}")
+
+    points = mesh.points.numpy()
+    x_min, y_min, z_min = (float(v) for v in points.min(axis=0))
+    x_max, y_max, z_max = (float(v) for v in points.max(axis=0))
+    size_x, size_y = x_max - x_min, y_max - y_min
+
+    ncol = max(2, min(int(round(size_x / resolution)) + 1, max_cells_per_axis))
+    nrow = max(2, min(int(round(size_y / resolution)) + 1, max_cells_per_axis))
+    dx = size_x / (ncol - 1)
+    dy = size_y / (nrow - 1)
+
+    z_start = z_max + 1.0
+    max_dist = (z_start - z_min) + 1.0
+
+    device = mesh.points.device
+    heights = wp.empty((nrow, ncol), dtype=wp.float32, device=device)
+    wp.launch(
+        _rasterize_mesh_kernel,
+        dim=(nrow, ncol),
+        inputs=[mesh.id, x_min, y_min, dx, dy, z_start, max_dist, z_min],
+        outputs=[heights],
+        device=device,
+    )
+    return heights.numpy(), (x_min, y_min, x_max, y_max)
+
+
 @wp.struct
 class HeightfieldData:
     """Per-shape heightfield metadata for collision kernels.
