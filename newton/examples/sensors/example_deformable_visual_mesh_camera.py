@@ -9,7 +9,7 @@
 # skinned meshes. Use this example to check that viewer images, camera RGB,
 # depth, and optional recordings see the same skinned visual geometry.
 #
-# Command: uv run -m newton.examples deformable_visual_mesh_camera
+# Command: python -m newton.examples deformable_visual_mesh_camera
 #
 ###########################################################################
 
@@ -28,7 +28,18 @@ from newton.sensors import SensorTiledCamera
 
 
 class _CameraRecorder:
-    def __init__(self, output_path: str | None, mode: str, width: int, height: int, fps: int):
+    """Streams optional RGB and depth recordings to ffmpeg."""
+
+    def __init__(self, output_path: str | None, mode: str, width: int, height: int, fps: int) -> None:
+        """Start the requested recording streams.
+
+        Args:
+            output_path: Base path for the generated video file or files.
+            mode: Recording mode: ``"none"``, ``"rgb"``, ``"depth"``, or ``"both"``.
+            width: Recorded frame width in pixels.
+            height: Recorded frame height in pixels.
+            fps: Recorded frame rate.
+        """
         self._processes = {}
         self._closed = False
         if mode == "none":
@@ -75,24 +86,44 @@ class _CameraRecorder:
 
         atexit.register(lambda: self.close(raise_on_error=False))
 
-    def write(self, mode: str, rgba: wp.array):
+    @property
+    def is_active(self) -> bool:
+        """Whether any recording process remains active."""
+        return bool(self._processes)
+
+    def write(self, mode: str, rgba: wp.array[wp.uint8]) -> None:
+        """Write one RGBA frame to a recording stream.
+
+        Args:
+            mode: Stream receiving the frame.
+            rgba: Contiguous RGBA image bytes.
+        """
         process = self._processes.get(mode)
         if process is None or process.stdin is None:
             return
         frame = np.ascontiguousarray(rgba.numpy())
         process.stdin.write(frame.tobytes())
 
-    def close(self, raise_on_error: bool = True):
+    def close(self, raise_on_error: bool = True) -> None:
+        """Close every stream and report any ffmpeg failures.
+
+        Args:
+            raise_on_error: Whether to raise after all streams are closed if
+                one or more ffmpeg processes fail.
+        """
         if self._closed:
             return
         self._closed = True
+        errors = []
         for mode, process in self._processes.items():
             if process.stdin is not None:
                 process.stdin.close()
             return_code = process.wait()
-            if return_code != 0 and raise_on_error:
-                raise RuntimeError(f"ffmpeg exited with status {return_code} while writing {mode} camera video")
+            if return_code != 0:
+                errors.append(f"{mode}: status {return_code}")
         self._processes.clear()
+        if errors and raise_on_error:
+            raise RuntimeError(f"ffmpeg failed while writing camera video ({'; '.join(errors)})")
 
 
 def _look_at_transform(pos, target):
@@ -497,7 +528,7 @@ class Example:
         if self.camera_view in ("depth", "both"):
             self.viewer.log_image("camera/depth", self.camera_depth_rgba)
 
-        if self.camera_recorder is not None:
+        if self.camera_recorder.is_active:
             self.camera_color_rgba_tiled = utils.flatten_color_image_to_rgba(
                 self.camera_color_image, out_buffer=self.camera_color_rgba_tiled, worlds_per_row=self.camera_count
             )

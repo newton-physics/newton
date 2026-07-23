@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import warnings
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -16,7 +17,12 @@ import warp as wp
 import newton
 from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
 from newton._src.utils.import_usd_deformable_visual import _sim_bind_positions
-from newton.examples.sensors.example_deformable_visual_mesh_camera import Example as DeformableVisualMeshCameraExample
+from newton.examples.sensors.example_deformable_visual_mesh_camera import (
+    Example as DeformableVisualMeshCameraExample,
+)
+from newton.examples.sensors.example_deformable_visual_mesh_camera import (
+    _CameraRecorder as DeformableVisualMeshCameraRecorder,
+)
 from newton.sensors import SensorTiledCamera
 from newton.tests._usd_deformable_test_utils import _add_cable_curve, _add_cloth_mesh, _deformable_stage
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
@@ -1396,6 +1402,30 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         builder = self._import(stage, load_visual_shapes=False)
         model = builder.finalize()
         self.assertEqual(model.deformable_visual_mesh_count, 0)
+
+
+class TestDeformableVisualMeshCameraRecorder(unittest.TestCase):
+    """Tests for the example's optional ffmpeg recorder."""
+
+    def test_close_waits_for_every_recording_process(self):
+        """A failed stream must not prevent the other streams from closing."""
+        recorder = object.__new__(DeformableVisualMeshCameraRecorder)
+        recorder._closed = False
+        recorder._processes = {
+            "rgb": mock.Mock(stdin=mock.Mock()),
+            "depth": mock.Mock(stdin=mock.Mock()),
+        }
+        recorder._processes["rgb"].wait.return_value = 1
+        recorder._processes["depth"].wait.return_value = 2
+        processes = list(recorder._processes.values())
+
+        with self.assertRaisesRegex(RuntimeError, "rgb.*depth"):
+            recorder.close()
+
+        for process in processes:
+            process.stdin.close.assert_called_once_with()
+            process.wait.assert_called_once_with()
+        self.assertFalse(recorder.is_active)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
