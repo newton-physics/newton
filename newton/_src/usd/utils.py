@@ -2449,6 +2449,69 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
     return properties
 
 
+def _output_channel_count(type_name: Sdf.ValueTypeName) -> int:
+    """Return the component count of a shader output value type (float -> 1, float3 -> 3)."""
+    default = type_name.defaultValue
+    if hasattr(default, "__len__"):
+        return len(default)
+    return 1
+
+
+# Base-color input name fragments. Only used to identify a direct-asset color
+# parameter (e.g. an MDL ``diffuse_texture``), where — unlike a connected
+# UsdUVTexture — USD exposes no output type to distinguish it from a normal or
+# roughness map.
+_COLOR_TEXTURE_INPUT_NAMES = ("diffuse", "albedo", "basecolor", "base_color", "displaycolor")
+
+
+def _is_color_texture_input_name(base_name: str) -> bool:
+    """Return whether an input name denotes a base-color/albedo texture parameter."""
+    name = base_name.lower()
+    return any(fragment in name for fragment in _COLOR_TEXTURE_INPUT_NAMES)
+
+
+def _color_texture_from_input(surface_input: UsdShade.Input, prim: Usd.Prim) -> str | np.ndarray | None:
+    """Return the base-color texture feeding a surface shader input, if any.
+
+    Two shapes are supported:
+
+    - A connected ``UsdUVTexture``: accepted only when the connected output is a
+      multi-channel color output (``rgb`` / ``rgba``). Single-channel outputs
+      (``r``/``g``/``b``/``a``) are scalar data maps (roughness, metallic, ...)
+      and are ignored, so a data map is never mistaken for the diffuse texture —
+      independent of input naming.
+    - A direct asset value (e.g. an MDL ``diffuse_texture`` parameter): there is
+      no texture node to inspect, so the base-color input is identified by its
+      (well-known) name.
+    """
+    try:
+        producing = UsdShade.Utils.GetValueProducingAttributes(surface_input)
+    except Exception:
+        producing = ()
+    for attr in producing:
+        source_shader = UsdShade.Shader(attr.GetPrim())
+        try:
+            if source_shader.GetIdAttr().Get() != "UsdUVTexture":
+                continue
+        except Exception:
+            continue
+        if _output_channel_count(attr.GetTypeName()) < 3:
+            continue
+        texture = _find_texture_in_shader(source_shader, prim)
+        if texture is not None:
+            return texture
+
+    try:
+        connected = surface_input.HasConnectedSource()
+    except Exception:
+        connected = False
+    if not connected and _is_color_texture_input_name(surface_input.GetBaseName()):
+        asset = surface_input.Get()
+        if asset:
+            return _resolve_color_texture_asset(asset, prim, surface_input.GetAttr())
+    return None
+
+
 def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract common material properties from a shader node.
 
@@ -2495,19 +2558,10 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
 
     if properties["texture"] is None:
         for inp in shader.GetInputs():
-            name = inp.GetBaseName()
-            if inp.HasConnectedSource():
-                source = inp.GetConnectedSource()
-                source_shader = UsdShade.Shader(source[0].GetPrim())
-                texture = _find_texture_in_shader(source_shader, prim)
-                if texture is not None:
-                    properties["texture"] = texture
-                    break
-            elif "file" in name or "texture" in name:
-                asset = inp.Get()
-                if asset:
-                    properties["texture"] = _resolve_color_texture_asset(asset, prim, inp.GetAttr())
-                    break
+            texture = _color_texture_from_input(inp, prim)
+            if texture is not None:
+                properties["texture"] = texture
+                break
 
     return properties
 
