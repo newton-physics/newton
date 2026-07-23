@@ -73,7 +73,7 @@ class GravityModel:
     """Hold per-world gravity vectors."""
 
     vector: wp.array[wp.vec3] | None = None
-    """Per-world gravity vectors [m/s²], shape [world_count]."""
+    """Per-world gravity vector [m/s²]. Shape of ``(num_worlds,)``."""
 
     @staticmethod
     def from_newton(model: Model | ModelView) -> GravityModel:
