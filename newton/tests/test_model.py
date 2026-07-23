@@ -1580,25 +1580,29 @@ class TestModelMesh(unittest.TestCase):
 
 
 class TestShapeConfigValidation(unittest.TestCase):
-    def test_shape_config_rejects_negative_density(self):
-        cfg = newton.ModelBuilder.ShapeConfig(density=-1.0)
+    def test_shape_config_rejects_invalid_density(self):
+        for density in (-1.0, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(density=density):
+                cfg = newton.ModelBuilder.ShapeConfig(density=density)
 
-        with self.assertRaisesRegex(ValueError, "density must be >= 0"):
-            cfg.validate(shape_type=newton.GeoType.SPHERE)
+                with self.assertRaisesRegex(ValueError, "density must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
 
     def test_shape_config_rejects_invalid_sdf_target_voxel_size(self):
-        for target_voxel_size in (0.0, -0.01):
+        for target_voxel_size in (0.0, -0.01, float("nan"), float("inf"), float("-inf")):
             with self.subTest(target_voxel_size=target_voxel_size):
                 cfg = newton.ModelBuilder.ShapeConfig(sdf_target_voxel_size=target_voxel_size)
 
-                with self.assertRaisesRegex(ValueError, "sdf_target_voxel_size must be > 0"):
+                with self.assertRaisesRegex(ValueError, "sdf_target_voxel_size must be finite and > 0"):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
 
     def test_shape_config_rejects_invalid_sdf_padding(self):
-        cfg = newton.ModelBuilder.ShapeConfig(sdf_padding=-0.1)
+        for padding in (-0.1, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(padding=padding):
+                cfg = newton.ModelBuilder.ShapeConfig(sdf_padding=padding)
 
-        with self.assertRaisesRegex(ValueError, "sdf_padding must be >= 0"):
-            cfg.validate(shape_type=newton.GeoType.SPHERE)
+                with self.assertRaisesRegex(ValueError, "sdf_padding must be finite and >= 0"):
+                    cfg.validate(shape_type=newton.GeoType.SPHERE)
 
     def test_shape_config_rejects_invalid_sdf_narrow_band_range(self):
         cases = [
@@ -1606,6 +1610,10 @@ class TestShapeConfigValidation(unittest.TestCase):
             (-0.1, -0.01),
             (0.1, -0.1),
             (-0.1,),
+            (float("nan"), 0.1),
+            (-0.1, float("nan")),
+            (float("-inf"), 0.1),
+            (-0.1, float("inf")),
         ]
 
         for narrow_band_range in cases:
@@ -1614,6 +1622,11 @@ class TestShapeConfigValidation(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, "sdf_narrow_band_range"):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_accepts_list_sdf_narrow_band_range(self):
+        cfg = newton.ModelBuilder.ShapeConfig(sdf_narrow_band_range=[-0.1, 0.1])
+
+        cfg.validate(shape_type=newton.GeoType.SPHERE)
 
     def test_shape_config_rejects_invalid_sdf_max_resolution(self):
         cases = [0, -8, 10, 1 << 16]

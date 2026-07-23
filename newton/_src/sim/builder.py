@@ -492,7 +492,7 @@ class ModelBuilder:
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
-        sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
+        sdf_narrow_band_range: tuple[float, float] | list[float] = (-0.1, 0.1)
         """The narrow band distance range (inner, outer) for primitive SDF computation."""
         sdf_target_voxel_size: float | None = None
         """Target voxel size for sparse SDF grid.
@@ -601,23 +601,26 @@ class ModelBuilder:
                 raise ValueError(
                     f"Unknown sdf_texture_format {self.sdf_texture_format!r}. Expected one of {list(_valid_tex_fmts)}."
                 )
-            if self.density < 0.0:
-                raise ValueError(f"density must be >= 0 (got {self.density}).")
+            if not math.isfinite(self.density) or self.density < 0.0:
+                raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
 
-            if self.sdf_target_voxel_size is not None and self.sdf_target_voxel_size <= 0.0:
-                raise ValueError(f"sdf_target_voxel_size must be > 0 (got {self.sdf_target_voxel_size}).")
+            if self.sdf_target_voxel_size is not None and (
+                not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0
+            ):
+                raise ValueError(f"sdf_target_voxel_size must be finite and > 0 (got {self.sdf_target_voxel_size}).")
 
-            if self.sdf_padding is not None and self.sdf_padding < 0.0:
-                raise ValueError(f"sdf_padding must be >= 0 (got {self.sdf_padding}).")
+            if self.sdf_padding is not None and (not math.isfinite(self.sdf_padding) or self.sdf_padding < 0.0):
+                raise ValueError(f"sdf_padding must be finite and >= 0 (got {self.sdf_padding}).")
 
-            if not isinstance(self.sdf_narrow_band_range, tuple) or len(self.sdf_narrow_band_range) != 2:
+            if not isinstance(self.sdf_narrow_band_range, (tuple, list)) or len(self.sdf_narrow_band_range) != 2:
                 raise ValueError(
-                    "sdf_narrow_band_range must be a tuple of two distances (inner, outer) with inner < 0 < outer."
+                    "sdf_narrow_band_range must contain two distances (inner, outer) with inner < 0 < outer."
                 )
             inner, outer = self.sdf_narrow_band_range
-            if not inner < 0.0 < outer:
+            if not math.isfinite(inner) or not math.isfinite(outer) or not inner < 0.0 < outer:
                 raise ValueError(
-                    f"sdf_narrow_band_range must satisfy inner < 0 < outer (got {self.sdf_narrow_band_range})."
+                    f"sdf_narrow_band_range must contain finite values satisfying inner < 0 < outer "
+                    f"(got {self.sdf_narrow_band_range})."
                 )
 
             if self.sdf_max_resolution is not None and self.sdf_target_voxel_size is not None:
