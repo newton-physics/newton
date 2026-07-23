@@ -194,9 +194,13 @@ class ControllerJointImpedance(Controller):
                 requires_grad=requires_grad,
             )
         if self._use_gravity:
-            self._gravity_flat = wp.zeros(total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            self._gravity_flat = wp.zeros(
+                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
         if self._use_coriolis:
-            self._coriolis_flat = wp.zeros(total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad)
+            self._coriolis_flat = wp.zeros(
+                total_dofs, dtype=wp.float32, device=self._device, requires_grad=requires_grad
+            )
 
         # Newton fills dynamics in the same DOF order as model.joint_q (robot-stride,
         # no sim-level remapping needed) — use identity indices.
@@ -248,7 +252,6 @@ class ControllerJointImpedance(Controller):
         if self._has_qdd:
             self._input_specs.append((self._qdd_attr, wp.float32, _idx_max(self._qdd_idx)))
 
-    @staticmethod
     @property
     def num_robots(self) -> int:
         return self._num_robots
@@ -273,9 +276,17 @@ class ControllerJointImpedance(Controller):
         ns = _allocate_namespace(self._input_specs, self._device, self._requires_grad)
         shape_2d = (self._num_robots, self._max_dofs)
         if self._stiffness_attr is not None:
-            setattr(ns, self._stiffness_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad))
+            setattr(
+                ns,
+                self._stiffness_attr,
+                wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad),
+            )
         if self._damping_attr is not None:
-            setattr(ns, self._damping_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad))
+            setattr(
+                ns,
+                self._damping_attr,
+                wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad),
+            )
         return ns
 
     def output(self):
