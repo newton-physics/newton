@@ -339,18 +339,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 spec.compaction_policy,
             )
             for name, spec in model._iter_attribute_specs()
-            if spec.compaction_policy in {"generic", "end"} and not self._is_deprecated_namespace_alias(name)
+            if spec.compaction_policy in {"generic", "end"}
         )
-
-    def _is_deprecated_namespace_alias(self, full_name: str) -> bool:
-        """Return whether metadata names a warning-producing namespace alias."""
-        if ":" not in full_name:
-            return False
-        namespace_name, attribute_name = full_name.split(":", 1)
-        namespace = getattr(self.model, namespace_name, None)
-        if not isinstance(namespace, self.model.AttributeNamespace):
-            return False
-        return attribute_name in namespace._deprecated_aliases
 
     def _validate_entry_names(self) -> None:
         names: set[str] = set()

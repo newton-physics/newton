@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import operator
 import warnings
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
 from enum import IntEnum
@@ -694,47 +694,12 @@ class Model:
             Args:
                 name: The name of the namespace
             """
-            object.__setattr__(self, "_name", name)
-            object.__setattr__(self, "_deprecated_aliases", {})
-
-        def add_deprecated_alias(self, name: str, getter: Callable[[], Any], message: str) -> None:
-            """Add a deprecated attribute alias.
-
-            Args:
-                name: Alias name exposed on the namespace.
-                getter: Callable returning the canonical target object.
-                message: Deprecation warning message.
-            """
-            if name in self.__dict__ or name in self._deprecated_aliases:
-                raise AttributeError(f"Attribute already exists: {self._name}.{name}")
-            self._deprecated_aliases[name] = (getter, message)
-
-        def __getattr__(self, name: str) -> Any:
-            aliases = self.__dict__.get("_deprecated_aliases", {})
-            if name in aliases:
-                getter, message = aliases[name]
-                warnings.warn(message, DeprecationWarning, stacklevel=2)
-                return getter()
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-
-        def __setattr__(self, name: str, value: Any) -> None:
-            if not name.startswith("_"):
-                aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
-                if name in aliases:
-                    getter, message = aliases[name]
-                    warnings.warn(message, DeprecationWarning, stacklevel=2)
-                    target = getter()
-                    if isinstance(target, wp.array):
-                        target.assign(value)
-                        return
-                    raise AttributeError(f"Deprecated alias '{self._name}.{name}' does not support assignment")
-            object.__setattr__(self, name, value)
+            self._name = name
 
         def __repr__(self):
             """Return a string representation showing the namespace and its attributes."""
             # List all public attributes (not starting with _)
             attrs = [k for k in self.__dict__ if not k.startswith("_")]
-            attrs.extend(k for k in self._deprecated_aliases if k not in attrs)
             return f"AttributeNamespace('{self._name}', attributes={attrs})"
 
     def __init__(self, device: Devicelike | None = None):
@@ -2462,7 +2427,7 @@ class Model:
                 setattr(self, namespace, Model.AttributeNamespace(namespace))
 
             ns_obj = getattr(self, namespace)
-            if name in ns_obj.__dict__ or name in ns_obj._deprecated_aliases:
+            if name in ns_obj.__dict__:
                 raise AttributeError(f"Attribute already exists: {namespace}.{name}")
 
             setattr(ns_obj, name, attrib)
