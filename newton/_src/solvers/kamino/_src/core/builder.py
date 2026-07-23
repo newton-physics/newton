@@ -295,7 +295,7 @@ class ModelBuilderKamino:
         if gravity is None:
             gravity = GravityDescriptor.default_for(up_axis)
         elif not isinstance(gravity, GravityDescriptor):
-            gravity = GravityDescriptor(name="gravity", vector=wp.vec3f(gravity))
+            gravity = GravityDescriptor.from_array(gravity)
         self._gravity.append(gravity)
 
         # Register the default material in the new world
@@ -767,7 +767,7 @@ class ModelBuilderKamino:
         self._check_world_index(world_index)
 
         if not isinstance(gravity, GravityDescriptor):
-            gravity = GravityDescriptor(name="gravity", vector=wp.vec3f(gravity))
+            gravity = GravityDescriptor.from_array(gravity)
         self._gravity[world_index] = gravity
 
     def set_default_material(self, material: MaterialDescriptor, world_index: int = 0):
