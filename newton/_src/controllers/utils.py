@@ -32,37 +32,6 @@ def _normalize_indices(
     return idx
 
 
-def _normalize_parameter_port(
-    value: Any,
-    expected_size: int,
-    dtype: Any,
-    device: Any,
-    requires_grad: bool,
-    *,
-    name: str,
-) -> tuple[str | None, wp.array[Any] | None]:
-    """Normalize a parameter-type port.
-
-    - ``str``: live — at step time the controller resolves
-      ``getattr(input, value)`` and reads that array.
-    - ``wp.array``: baked — the controller stores a copy of the supplied
-      array and reads from it each step.
-
-    Returns ``(attr_name, baked_array)`` — exactly one is non-``None``.
-    """
-    if isinstance(value, str):
-        return value, None
-    if isinstance(value, wp.array):
-        if value.size != expected_size:
-            raise ValueError(f"Port '{name}': baked array length {value.size} must equal {expected_size}.")
-        if value.dtype != dtype:
-            raise TypeError(f"Port '{name}': baked array dtype {value.dtype} must equal {dtype}.")
-        baked = wp.zeros(expected_size, dtype=dtype, device=device, requires_grad=requires_grad)
-        wp.copy(baked, value)
-        return None, baked
-    raise TypeError(f"Port '{name}': must be wp.array[{dtype}] or str (attr name); got {type(value).__name__}.")
-
-
 def _allocate_namespace(
     specs: list[tuple[str, Any, int]],
     device: Any,
