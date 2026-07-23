@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import functools
+import operator
 import re
 import warnings
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import warp as wp
 from warp.types import is_array
@@ -2074,4 +2075,725 @@ class ArticulationView:
             inputs=[values, mapping, mask, dofs_per_world],
             outputs=[dst],
             device=self.device,
+        )
+
+
+@wp.kernel
+def _gather_group_vec3_kernel(
+    src: wp.array[wp.vec3],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.vec3],
+):
+    group, i = wp.tid()
+    out[group, i] = src[starts[group] + i]
+
+
+@wp.kernel
+def _mark_last_group_row_kernel(
+    groups: wp.array[wp.int32],
+    group_count: int,
+    last_rows: wp.array[wp.int32],
+):
+    row = wp.tid()
+    group = groups[row]
+    if group >= 0 and group < group_count:
+        wp.atomic_max(last_rows, group, row)
+
+
+@wp.kernel
+def _scatter_group_vec3_kernel(
+    values: wp.array2d[wp.vec3],
+    starts: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
+    last_rows: wp.array[wp.int32],
+    deduplicate: bool,
+    dst: wp.array[wp.vec3],
+):
+    i, j = wp.tid()
+    group = groups[i]
+    if group < 0 or group >= starts.shape[0]:
+        return
+    if deduplicate and last_rows[group] != i:
+        return
+    dst[starts[group] + j] = values[i, j]
+
+
+@wp.kernel
+def _gather_group_transform_kernel(
+    src: wp.array[wp.transform],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.transform],
+):
+    group, i = wp.tid()
+    out[group, i] = src[starts[group] + i]
+
+
+@wp.kernel
+def _scatter_group_transform_kernel(
+    values: wp.array2d[wp.transform],
+    starts: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
+    last_rows: wp.array[wp.int32],
+    deduplicate: bool,
+    dst: wp.array[wp.transform],
+):
+    i, j = wp.tid()
+    group = groups[i]
+    if group < 0 or group >= starts.shape[0]:
+        return
+    if deduplicate and last_rows[group] != i:
+        return
+    dst[starts[group] + j] = values[i, j]
+
+
+@wp.kernel
+def _gather_group_spatial_kernel(
+    src: wp.array[wp.spatial_vector],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.spatial_vector],
+):
+    group, i = wp.tid()
+    out[group, i] = src[starts[group] + i]
+
+
+@wp.kernel
+def _scatter_group_spatial_kernel(
+    values: wp.array2d[wp.spatial_vector],
+    starts: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
+    last_rows: wp.array[wp.int32],
+    deduplicate: bool,
+    dst: wp.array[wp.spatial_vector],
+):
+    i, j = wp.tid()
+    group = groups[i]
+    if group < 0 or group >= starts.shape[0]:
+        return
+    if deduplicate and last_rows[group] != i:
+        return
+    dst[starts[group] + j] = values[i, j]
+
+
+class DeformableView:
+    """Select finalized deformable groups and read or update their existing state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    ``pattern`` uses the label matching shared by Newton selection APIs. It accepts
+    glob strings, lists of glob strings, and compiled regular expressions.
+    Results keep model order: world order followed by builder order. The public
+    families are ``"curve"``, ``"surface"``, and ``"volume"``. ``family`` is an
+    optional filter and is inferred when all matches belong to one family. A mixed-family
+    match without a filter is rejected.
+
+    Native deformables and deformables loaded by
+    :meth:`~newton.ModelBuilder.add_usd` use the same finalized group records. Native
+    builder calls may provide stable labels for later lookup; otherwise Newton assigns
+    family-specific labels such as ``surface_0``. USD deformables use their prim paths.
+
+    A group is one independently addressable cable, cloth, or soft volume together
+    with the ranges of its simulation elements. Fixed-joint collapse does not preserve
+    joints merely because a curve is labeled. A curve group is omitted if collapse
+    removes any of its segment bodies or joints; pass those fixed joints through
+    :meth:`~newton.ModelBuilder.collapse_fixed_joints` using ``joints_to_keep`` when
+    complete post-collapse access is required.
+
+    Selected groups use one flat axis. :attr:`world_starts` partitions that axis by
+    model world, including worlds without a match, and :attr:`world_ids` identifies
+    the world of each group. :meth:`ranges` and :meth:`starts` work even when selected
+    groups have different element counts. Batched getters and setters require equal
+    counts for the requested element kind, which must be recorded by every selected
+    group, and otherwise direct callers to the raw ranges. Global groups (world ``-1``)
+    cannot be mixed with per-world groups.
+
+    Getters accept a :class:`~newton.Model` or :class:`~newton.State`. Writing a model
+    changes its initial arrays; writing a state changes only that state. Host
+    ``group_indices`` select flat group rows. Host group indices are bounds-checked
+    and duplicates are rejected. Device ``int32`` indices stay on the device:
+    out-of-range entries are ignored and the last value wins for duplicates.
+    Indexed setters and internally staged getters can be captured after view
+    construction and kernel warm-up. Regular getter layouts return zero-copy views;
+    irregular layouts reuse an internal contiguous staging array.
+
+    Example:
+
+    .. code-block:: python
+
+        import warp as wp
+
+        import newton
+
+        surface = newton.selection.DeformableView(
+            model,
+            "/World/Cloth",
+            family="surface",
+        )
+        positions = surface.get_particle_positions(state)
+        lifted = positions.numpy()
+        lifted[:, :, 2] += 1.0
+        surface.set_particle_positions(state, wp.array(lifted, dtype=wp.vec3))
+
+    Args:
+        model: Model containing the finalized deformable groups.
+        pattern: Label glob, list of label globs, or compiled regular expression.
+        family: Optional family filter: ``"curve"``, ``"surface"``, or
+            ``"volume"``. Inferred when the match contains one family.
+        verbose: If True, print a short selection summary.
+    """
+
+    _FAMILIES: ClassVar[frozenset[str]] = frozenset(("curve", "surface", "volume"))
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str],
+        *,
+        family: Literal["curve", "surface", "volume"] | None = None,
+        verbose: bool | None = None,
+    ) -> None:
+        if family is not None and family not in self._FAMILIES:
+            raise ValueError(f"Unknown deformable family '{family}'; expected one of {sorted(self._FAMILIES)}")
+        self.model = model
+        self.device = model.device
+
+        if verbose is None:
+            verbose = wp.config.log_level <= wp.LOG_DEBUG
+
+        # Model group metadata is private (the view is the public addressability surface);
+        # resolve the selection from the per-group records emitted by finalize().
+        groups = [g for g in model._deformable_groups if family is None or g.family == family]
+        labels = [g.label for g in groups]
+        group_worlds = [g.world for g in groups]
+
+        group_ids, global_group_ids = find_matching_ids(pattern, labels, group_worlds, model.world_count)
+
+        # Keep every model world in the partition, including worlds without a
+        # match. Equal adjacent offsets make empty worlds explicit to consumers.
+        world_count = model.world_count
+        counts_per_world = [len(ids) for ids in group_ids]
+        group_count = sum(counts_per_world)
+
+        # Global groups have no real model-world rows, so mixing them would make
+        # the flat group's world partition ambiguous.
+        if group_count > 0 and global_group_ids:
+            raise ValueError(
+                f"Deformable pattern '{pattern}' matches global and per-world groups, which is not supported"
+            )
+
+        if group_count == 0 and global_group_ids:
+            world_count = 1
+            group_count = len(global_group_ids)
+            counts_per_world = [group_count]
+            group_ids = [global_group_ids]
+
+        if group_count == 0:
+            family_description = f"{family} " if family is not None else "deformable "
+            raise KeyError(f"No {family_description}groups matching pattern '{pattern}'")
+
+        self.count = group_count
+        """Number of selected groups across all worlds."""
+        self.world_count = world_count
+        """Number of worlds spanned by the selection."""
+        self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
+        """Number of selected groups per world, or None when the counts vary."""
+        flat_ids = [i for ids in group_ids for i in ids]
+        selected = [groups[i] for i in flat_ids]
+        matched_families = {group.family for group in selected}
+        if family is None:
+            if len(matched_families) > 1:
+                raise ValueError(
+                    f"Deformable pattern '{pattern}' matches multiple families {sorted(matched_families)}; "
+                    "pass family= or use a narrower pattern"
+                )
+            family = next(iter(matched_families))
+        self.family = family
+        self.labels = [g.label for g in selected]
+        """Label of each selected group, ordered world by world."""
+        self.worlds = [g.world for g in selected]
+        """World index of each selected group."""
+        world_starts = [0]
+        for count in counts_per_world:
+            world_starts.append(world_starts[-1] + count)
+        self._world_starts = world_starts
+        self.world_starts: wp.array[wp.int32] = wp.array(world_starts, dtype=wp.int32, device=self.device)
+        """Device offsets partitioning the flat groups by world, shape ``(world_count + 1,)``."""
+        self.world_ids: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
+        """World index of each flat group, shape ``(count,)``."""
+        self._model_group_ids: list[int] = [g.id for g in selected]
+
+        # Element ranges are always available; only rectangular operations require homogeneity.
+        self._all_groups: wp.array[wp.int32] | None = None  # lazy identity indices for full-selection writes
+        self._last_group_rows: wp.array[wp.int32] = wp.empty(self.count, dtype=wp.int32, device=self.device)
+        self._ranges: dict[str, list[tuple[int, int]]] = {}
+        self._starts: dict[str, wp.array[wp.int32]] = {}
+        self._counts: dict[str, int | None] = {}
+        self._attribute_arrays: dict[tuple[str, int], tuple[wp.array[Any], Any]] = {}
+        self._kinds = tuple(kind for kind in selected[0].ranges if all(kind in group.ranges for group in selected))
+        for kind in self._kinds:
+            kind_ranges = [g.ranges[kind] for g in selected]
+            sizes = {end - start for start, end in kind_ranges}
+            self._counts[kind] = sizes.pop() if len(sizes) == 1 else None
+            self._ranges[kind] = kind_ranges
+            self._starts[kind] = wp.array([start for start, _end in kind_ranges], dtype=wp.int32, device=self.device)
+
+        if verbose:
+            elements = ", ".join(
+                f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)" for k in self._kinds
+            )
+            print(f"DeformableView '{pattern}' ({family}): {self.count} group(s) x [{elements}]")
+
+    # raw ranges -------------------------------------------------------------
+
+    def world_ranges(self) -> list[tuple[int, int]]:
+        """Return flat group ranges for every model world, including empty worlds.
+
+        Returns:
+            ``[start, end)`` group ranges in model-world order.
+        """
+        return [(self._world_starts[i], self._world_starts[i + 1]) for i in range(self.world_count)]
+
+    def elements_per_group(
+        self,
+        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> int:
+        """Elements of ``kind`` in each selected group (homogeneous across the selection).
+
+        ``kind`` is ``body``/``joint`` for curves, ``particle``/``triangle``/``edge`` for
+        surfaces, and ``particle``/``tetrahedron`` for volumes.
+
+        Args:
+            kind: Element kind belonging to this view's family.
+
+        Returns:
+            Common number of elements in every selected group.
+
+        Raises:
+            AttributeError: If ``kind`` does not belong to this view's family.
+            ValueError: If the selected groups have different element counts.
+        """
+        return self._element_count(kind)
+
+    def ranges(
+        self,
+        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> list[tuple[int, int]]:
+        """``[start, end)`` element ranges of the selected groups, in selection order.
+
+        For consumers that need each group's raw slice of the flat model arrays, e.g. to
+        hand per-instance offsets to a renderer sync or to custom kernels. See
+        :meth:`elements_per_group` for the valid ``kind`` values.
+
+        Args:
+            kind: Element kind belonging to this view's family.
+
+        Returns:
+            One ``[start, end)`` range per selected group.
+
+        Raises:
+            AttributeError: If ``kind`` does not belong to this view's family.
+        """
+        self._validate_kind(kind)
+        return list(self._ranges[kind])
+
+    def starts(
+        self,
+        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> wp.array[wp.int32]:
+        """Device-side element-range starts of the selected groups, shape ``(count,)``.
+
+        Together with :meth:`elements_per_group` this drives custom kernels over the
+        selection without a host round-trip; the view's own gather/scatter kernels use
+        the same array. Treat the returned internal array as read-only.
+
+        Args:
+            kind: Element kind belonging to this view's family.
+
+        Returns:
+            Device array containing one start index per selected group.
+
+        Raises:
+            AttributeError: If ``kind`` does not belong to this view's family.
+        """
+        self._validate_kind(kind)
+        return self._starts[kind]
+
+    # generic gather/scatter -------------------------------------------------
+
+    def _validate_kind(self, kind: str) -> None:
+        if kind not in self._kinds:
+            raise AttributeError(f"Selected {self.family} groups have no {kind} elements in common")
+
+    def _element_count(self, kind: str) -> int:
+        self._validate_kind(kind)
+        count = self._counts[kind]
+        if count is None:
+            sizes = sorted({end - start for start, end in self._ranges[kind]})
+            raise ValueError(
+                f"Varying {kind} counts per {self.family} group cannot form a batched array "
+                f"(got {sizes}); use ranges({kind!r}) and direct slices instead"
+            )
+        return count
+
+    def _get_attribute_array(self, kind: str, src: wp.array[Any]):
+        cache_key = (kind, id(src))
+        cached = self._attribute_arrays.get(cache_key)
+        if cached is not None and cached[0] is src:
+            return cached[1]
+
+        count = self._element_count(kind)
+        shape = (self.count, count)
+        if count == 0:
+            result = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
+            self._attribute_arrays[cache_key] = (src, result)
+            return result
+
+        starts = [start for start, _end in self._ranges[kind]]
+
+        def make_view(data: wp.array[Any], start: int, row_count: int, row_stride: int):
+            value_stride = data.strides[0]
+            result = wp.array(
+                ptr=int(data.ptr) + start * value_stride,
+                dtype=data.dtype,
+                shape=(row_count, count),
+                strides=(row_stride * value_stride, value_stride),
+                device=data.device,
+                copy=False,
+            )
+            result._ref = data
+            return result
+
+        row_stride = count if self.count == 1 else starts[1] - starts[0]
+        if all(start == starts[0] + row * row_stride for row, start in enumerate(starts)):
+            grad = None if src.grad is None else make_view(src.grad, starts[0], self.count, row_stride)
+            result = make_view(src, starts[0], self.count, row_stride)
+            result.grad = grad
+            self._attribute_arrays[cache_key] = (src, result)
+            return result
+
+        # A sliding-window view turns arbitrary equal-sized ranges into row indices
+        # without copying their source values.
+        grad = None if src.grad is None else make_view(src.grad, 0, src.shape[0] - count + 1, 1)
+        windows = make_view(src, 0, src.shape[0] - count + 1, 1)
+        windows.grad = grad
+        result = windows[self._starts[kind], :]
+        result._staging_array = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
+        self._attribute_arrays[cache_key] = (src, result)
+        return result
+
+    def _gather(
+        self,
+        kind: str,
+        src: wp.array[Any],
+        kernel: Any,
+    ) -> wp.array2d[Any]:
+        count = self._element_count(kind)
+        attribute = self._get_attribute_array(kind, src)
+        if not isinstance(attribute, wp.indexedarray):
+            return attribute
+        out = attribute._staging_array
+        wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
+        return out
+
+    def _resolve_group_indices(
+        self,
+        group_indices: Any,
+        argument_name: str = "group_indices",
+    ) -> wp.array[wp.int32]:
+        if group_indices is None:
+            if self._all_groups is None:
+                self._all_groups = wp.array(list(range(self.count)), dtype=wp.int32, device=self.device)
+            return self._all_groups
+        if isinstance(group_indices, wp.array):
+            # Kernel-side checks keep this graph-safe without a host copy.
+            if group_indices.ndim != 1:
+                raise ValueError(f"Expected {argument_name} to be one-dimensional, got {group_indices.ndim} dimensions")
+            if group_indices.dtype is not wp.int32:
+                raise ValueError(f"Expected {argument_name} dtype int32, got {group_indices.dtype.__name__}")
+            if group_indices.device != self.device:
+                raise ValueError(f"Expected {argument_name} on device {self.device}, got {group_indices.device}")
+            return group_indices
+        idx = []
+        for value in group_indices:
+            if isinstance(value, bool):
+                raise TypeError(f"{argument_name} entries must be integers, got {value!r}")
+            try:
+                idx.append(operator.index(value))
+            except TypeError as error:
+                raise TypeError(f"{argument_name} entries must be integers, got {value!r}") from error
+        if any(i < 0 or i >= self.count for i in idx):
+            raise ValueError(f"{argument_name} entries must be in [0, {self.count}), got {idx}")
+        if len(set(idx)) != len(idx):
+            raise ValueError(f"{argument_name} contains duplicate entries: {idx}")
+        return wp.array(idx, dtype=wp.int32, device=self.device)
+
+    def _scatter(
+        self,
+        kind: str,
+        values: Any,
+        kernel: Any,
+        dst: wp.array[Any],
+        dtype: Any,
+        group_indices: Any = None,
+    ) -> None:
+        count = self._element_count(kind)
+        device_indices = isinstance(group_indices, wp.array)
+        groups = self._resolve_group_indices(group_indices)
+        rows = groups.shape[0]
+        if not isinstance(values, wp.array):
+            values = wp.array(values, dtype=dtype, shape=(rows, count), device=self.device, copy=False)
+        if values.shape != (rows, count):
+            raise ValueError(f"Expected values shape {(rows, count)}, got {values.shape}")
+        # Validate Warp inputs eagerly so a mismatch reads as a contract error, not a
+        # kernel-launch failure.
+        if values.dtype is not dtype:
+            raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
+        if values.device != self.device:
+            raise ValueError(f"Expected values on device {self.device}, got {values.device}")
+        if device_indices:
+            self._last_group_rows.fill_(-1)
+            wp.launch(
+                _mark_last_group_row_kernel,
+                dim=rows,
+                inputs=[groups, self.count, self._last_group_rows],
+                device=self.device,
+            )
+        wp.launch(
+            kernel,
+            dim=(rows, count),
+            inputs=[values, self._starts[kind], groups, self._last_group_rows, device_indices, dst],
+            device=self.device,
+        )
+
+    # particle state (surface / volume) --------------------------------------
+
+    @property
+    def particles_per_group(self) -> int:
+        """Particles in each selected surface or volume group."""
+        return self._element_count("particle")
+
+    def get_particle_positions(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.vec3]:
+        """Return particle positions [m] for the selected surface or volume groups.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Particle positions with shape ``(count, particles_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            ValueError: If the selected groups have different particle counts.
+        """
+        return self._gather("particle", source.particle_q, _gather_group_vec3_kernel)
+
+    def set_particle_positions(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+    ) -> None:
+        """Write particle positions [m] from ``(rows, particles_per_group)`` vec3 values.
+
+        ``rows`` is ``count``, or the number of selected groups. ``group_indices``
+        selects flat rows. Other groups are untouched.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Particle positions [m] with shape ``(rows, particles_per_group)``.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness are invalid.
+        """
+        self._scatter(
+            "particle",
+            values,
+            _scatter_group_vec3_kernel,
+            target.particle_q,
+            wp.vec3,
+            group_indices,
+        )
+
+    def get_particle_velocities(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.vec3]:
+        """Return particle velocities [m/s] for the selected surface or volume groups.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Particle velocities with shape ``(count, particles_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            ValueError: If the selected groups have different particle counts.
+        """
+        return self._gather("particle", source.particle_qd, _gather_group_vec3_kernel)
+
+    def set_particle_velocities(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+    ) -> None:
+        """Write particle velocities [m/s] from ``(rows, particles_per_group)`` vec3 values.
+
+        ``rows`` is ``count``, or the number of selected groups. ``group_indices``
+        selects flat rows. Other groups are untouched.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Particle velocities [m/s] with shape
+                ``(rows, particles_per_group)``.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+
+        Raises:
+            AttributeError: If this is not a surface or volume view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness are invalid.
+        """
+        self._scatter(
+            "particle",
+            values,
+            _scatter_group_vec3_kernel,
+            target.particle_qd,
+            wp.vec3,
+            group_indices,
+        )
+
+    # body state (curve) --------------------------------------------------
+
+    @property
+    def bodies_per_group(self) -> int:
+        """Segment bodies in each selected curve group."""
+        return self._element_count("body")
+
+    def get_body_transforms(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.transform]:
+        """Segment transforms of each curve, shape ``(count, bodies_per_group)``.
+
+        Each transform contains a world-space translation [m] and a unitless
+        quaternion.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Segment transforms with shape ``(count, bodies_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            ValueError: If the selected groups have different body counts.
+        """
+        return self._gather("body", source.body_q, _gather_group_transform_kernel)
+
+    def set_body_transforms(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+    ) -> None:
+        """Write segment transforms from ``(rows, bodies_per_group)`` values.
+
+        Each transform contains a world-space translation [m] and a unitless
+        quaternion. ``group_indices`` selects flat rows.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Segment transforms with shape ``(rows, bodies_per_group)``;
+                translations are in meters and quaternions are unitless.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness are invalid.
+        """
+        self._scatter(
+            "body",
+            values,
+            _scatter_group_transform_kernel,
+            target.body_q,
+            wp.transform,
+            group_indices,
+        )
+
+    def get_body_velocities(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.spatial_vector]:
+        """Segment velocities, shape ``(count, bodies_per_group)``.
+
+        Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
+        followed by angular velocity [rad/s].
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Segment velocities with shape ``(count, bodies_per_group)``.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            ValueError: If the selected groups have different body counts.
+        """
+        return self._gather("body", source.body_qd, _gather_group_spatial_kernel)
+
+    def set_body_velocities(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        group_indices: Any = None,
+    ) -> None:
+        """Write segment velocities from ``(rows, bodies_per_group)`` values.
+
+        Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
+        followed by angular velocity [rad/s]. ``group_indices`` selects flat rows.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Segment velocities with shape ``(rows, bodies_per_group)``;
+                linear components are in meters per second and angular components are
+                in radians per second.
+            group_indices: Optional flat group rows. Host entries must be integers;
+                device entries must be a one-dimensional ``int32`` array on the model
+                device.
+
+        Raises:
+            AttributeError: If this is not a curve view.
+            TypeError: If a host selector entry is not an integer.
+            ValueError: If group sizes, value shape/dtype/device, host selector bounds
+                or uniqueness are invalid.
+        """
+        self._scatter(
+            "body",
+            values,
+            _scatter_group_spatial_kernel,
+            target.body_qd,
+            wp.spatial_vector,
+            group_indices,
         )

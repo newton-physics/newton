@@ -299,6 +299,22 @@ class _ShapeCollisionFilterPairsAttribute:
         instance.__dict__["shape_collision_filter_pairs"] = _DeprecatedShapeCollisionFilterSet(value)
 
 
+@dataclass(frozen=True)
+class _DeformableGroup:
+    """One finalized curve, surface, or volume deformable group.
+
+    Private backing data for :class:`newton.selection.DeformableView`; the view is the
+    public way to address deformables, so this representation can change freely.
+    ``ranges`` maps an element kind to its ``[start, end)`` index range.
+    """
+
+    id: int
+    family: str
+    label: str
+    world: int
+    ranges: dict[str, tuple[int, int]]
+
+
 class Model:
     """
     Represents the static (non-time-varying) definition of a simulation model in Newton.
@@ -1268,6 +1284,12 @@ class Model:
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
+
+        # Deformable groups: each cable/cloth/volume recorded by the builder is a world-tagged
+        # group with [start, end) index ranges into the per-element arrays. Kept private so
+        # :class:`newton.selection.DeformableView` stays the public addressability surface;
+        # the representation is free to evolve into a general selection layer.
+        self._deformable_groups: tuple[_DeformableGroup, ...] = ()
 
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""

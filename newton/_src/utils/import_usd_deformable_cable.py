@@ -404,19 +404,22 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         # caller choice, and only a tree (not the all-incident-edges joint set produced when
         # unwrapped) is articulation-safe. So the importer wraps each component into its own
         # articulation here; path_cable_map exposes empty joints for graph curves accordingly.
-        body_ids, _graph_joint_ids = builder.add_rod_graph(
-            node_positions=node_positions,
-            edges=edges,
-            radius=radius,
-            cfg=cfg,
-            stretch_stiffness=stretch,
-            shear_stiffness=shear,
-            bend_stiffness=bend,
-            twist_stiffness=twist,
-            label=cid,
-            wrap_in_articulation=True,
-            body_frame_origin="com",
-        )
+        # The graph spans several welded curves; per-curve cable groups are recorded
+        # below instead of one group for the whole component.
+        with builder._suppress_cable_group_recording():
+            body_ids, _graph_joint_ids = builder.add_rod_graph(
+                node_positions=node_positions,
+                edges=edges,
+                radius=radius,
+                cfg=cfg,
+                stretch_stiffness=stretch,
+                shear_stiffness=shear,
+                bend_stiffness=bend,
+                twist_stiffness=twist,
+                label=cid,
+                wrap_in_articulation=True,
+                body_frame_origin="com",
+            )
 
         # Partition graph bodies back to their owning curve, and rebuild the per-prim anchor
         # maps the curve-to-xform attachment pass reads (point index / segment index -> body).
@@ -705,20 +708,23 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             # Wrap each cable into its own articulation so the model is finalize-ready (add_rod keeps
             # a periodic cable's loop-closing joint out of the tree). Attachment joints to other
             # bodies are loop-closing and stay outside the articulation regardless.
-            bodies, joints = builder.add_rod(
-                positions=positions,
-                quaternions=quaternions,
-                radius=radius,
-                cfg=cable_cfg,
-                stretch_stiffness=stretch_stiffness,
-                shear_stiffness=shear_stiffness,
-                bend_stiffness=bend_stiffness,
-                twist_stiffness=twist_stiffness,
-                closed=closed,
-                label=label,
-                wrap_in_articulation=True,
-                body_frame_origin="com",
-            )
+            # One group per prim is recorded below; a multi-curve prim spans several
+            # add_rod calls, so per-call recording would split it.
+            with builder._suppress_cable_group_recording():
+                bodies, joints = builder.add_rod(
+                    positions=positions,
+                    quaternions=quaternions,
+                    radius=radius,
+                    cfg=cable_cfg,
+                    stretch_stiffness=stretch_stiffness,
+                    shear_stiffness=shear_stiffness,
+                    bend_stiffness=bend_stiffness,
+                    twist_stiffness=twist_stiffness,
+                    closed=closed,
+                    label=label,
+                    wrap_in_articulation=True,
+                    body_frame_origin="com",
+                )
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)
             cable_point_runs.append((start, n, bodies))
