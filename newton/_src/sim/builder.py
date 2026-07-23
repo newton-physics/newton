@@ -11958,8 +11958,6 @@ class ModelBuilder:
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
                     target_pos_indices=target_pos_indices_arg,
-                    control_target_pos_attr="joint_target_q",
-                    control_target_vel_attr="joint_target_qd",
                     requires_grad=requires_grad,
                 )
 
