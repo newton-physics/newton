@@ -896,6 +896,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             self._update_actuation_types()
 
         if flags & ModelFlags.MODEL_PROPERTIES:
+            # All model properties are aliased.
             pass
 
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
