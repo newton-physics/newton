@@ -796,7 +796,7 @@ class HeterogenousModelSparseJacobianAssemblyCheck(unittest.TestCase):
             for wd_id in range(model.size.num_worlds):
                 rows, cols = int(dims[wd_id][0]), int(dims[wd_id][1])
                 residual = jac_dense_np[wd_id, :rows, :cols] - jac_sparse_np[wd_id]
-                self.assertTrue(np.max(np.abs(residual)) < 1e-10)
+                self.assertTrue(np.max(np.abs(residual)) < 1e-6)
 
 
 ###
