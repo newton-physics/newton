@@ -928,6 +928,11 @@ def parse_usd(
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
+        elif mesh.texture is not None:
+            # A textured mesh with no scalar color must use a white base so the
+            # default per-shape palette color does not tint the texture (matches
+            # the material-subset path in _make_visual_submesh).
+            mesh.color = (1.0, 1.0, 1.0)
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
