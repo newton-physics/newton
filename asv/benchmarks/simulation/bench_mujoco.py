@@ -5,7 +5,10 @@ import math
 import os
 import sys
 import time
+from dataclasses import replace
+from functools import partial
 
+import numpy as np
 import warp as wp
 
 wp.config.enable_backward = False
@@ -16,12 +19,29 @@ from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_mujoco import Example
+from benchmark_metrics import (
+    _SimulationMetricTracks,
+    collect_simulation_metrics,
+)
 
-from newton.utils import EventTracer
+
+class _SimulationMetricTracksMuJoCo(_SimulationMetricTracks):
+    """MuJoCo-specific tracked metrics."""
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_solver_niter_mean(self, metrics, world_count):
+        return metrics[world_count].solver_niter_mean
+
+    track_solver_niter_mean.unit = "iterations"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_solver_niter_max(self, metrics, world_count):
+        return metrics[world_count].solver_niter_max
+
+    track_solver_niter_max.unit = "iterations"
 
 
-class _KpiBenchmark:
+class _KpiBenchmark(_SimulationMetricTracksMuJoCo):
     """Utility base class for KPI benchmarks."""
 
     param_names = ["world_count"]
@@ -29,43 +49,82 @@ class _KpiBenchmark:
     params = None
     robot = None
     samples = None
-    ls_iteration = None
     random_init = None
     environment = "None"
+    expected_bodies_per_world = None
 
-    def setup(self, world_count):
-        if not hasattr(self, "builder") or self.builder is None:
-            self.builder = {}
-        if world_count not in self.builder:
-            self.builder[world_count] = Example.create_model_builder(
-                self.robot, world_count, randomize=self.random_init, seed=123
+    def _create_workload(self, builder, world_count):
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
+        workload = Example(
+            stage_path=None,
+            robot=self.robot,
+            randomize=self.random_init,
+            headless=True,
+            actuation="random",
+            use_cuda_graph=True,
+            builder=builder,
+            world_count=world_count,
+            environment=self.environment,
+        )
+        if workload.graph is None:
+            raise RuntimeError("KPI benchmark requires CUDA graph capture (is the CUDA mempool allocator enabled?)")
+        wp.synchronize_device()
+        return workload
+
+    def _validate_workload(self, workload, world_count):
+        workload.test_final()
+        if self.expected_bodies_per_world is None:
+            return
+        expected_body_count = self.expected_bodies_per_world * world_count
+        if workload.model.body_count != expected_body_count:
+            raise RuntimeError(
+                f"Expected {self.expected_bodies_per_world} bodies per world for {self.environment}, "
+                f"got {workload.model.body_count / world_count:g}"
             )
 
-    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def track_simulate(self, world_count):
-        total_time = 0.0
-        for _iter in range(self.samples):
-            example = Example(
-                stage_path=None,
-                robot=self.robot,
-                randomize=self.random_init,
-                headless=True,
-                actuation="random",
-                use_cuda_graph=True,
-                builder=self.builder[world_count],
-                ls_iteration=self.ls_iteration,
+    def _validate_metrics_workload(self, workload, world_count, solver_niter_samples):
+        self._validate_workload(workload, world_count)
+        solver_niter_samples.append(workload.solver.mjw_data.solver_niter.numpy())
+
+    def _collect_metrics(self):
+        if wp.get_cuda_device_count() == 0:
+            return None
+
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
+        metrics = {}
+        for world_count in self.params[0]:
+            builder = Example.create_model_builder(
+                self.robot,
+                world_count,
                 environment=self.environment,
+                randomize=self.random_init,
+                seed=123,
             )
+            solver_niter_samples = []
 
-            wp.synchronize_device()
-            for _ in range(self.num_frames):
-                example.step()
-            wp.synchronize_device()
-            total_time += example.benchmark_time
+            def create_workload(builder=builder, world_count=world_count):
+                return self._create_workload(builder, world_count)
 
-        return total_time * 1000 / (self.num_frames * example.sim_substeps * world_count * self.samples)
-
-    track_simulate.unit = "ms/world-step"
+            world_metrics = collect_simulation_metrics(
+                create_workload=create_workload,
+                world_count=world_count,
+                num_frames=self.num_frames,
+                samples=self.samples,
+                validate=partial(
+                    self._validate_metrics_workload,
+                    world_count=world_count,
+                    solver_niter_samples=solver_niter_samples,
+                ),
+            )
+            solver_niter = np.concatenate([np.asarray(values).reshape(-1) for values in solver_niter_samples])
+            metrics[world_count] = replace(
+                world_metrics,
+                solver_niter_mean=float(np.mean(solver_niter)),
+                solver_niter_max=float(np.max(solver_niter)),
+            )
+        return metrics
 
 
 class _RealtimePhysicsBenchmark:
@@ -83,6 +142,9 @@ class _RealtimePhysicsBenchmark:
     def setup(self):
         if wp.get_cuda_device_count() == 0:
             raise SkipNotImplemented
+
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
         with wp.ScopedDevice("cuda:0"):
             if not wp.is_mempool_enabled(wp.get_device()):
                 raise SkipNotImplemented
@@ -154,10 +216,11 @@ class _NewtonOverheadBenchmark:
     params = None
     robot = None
     samples = None
-    ls_iteration = None
     random_init = None
 
     def setup(self, world_count):
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
         if not hasattr(self, "builder") or self.builder is None:
             self.builder = {}
         if world_count not in self.builder:
@@ -167,6 +230,10 @@ class _NewtonOverheadBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def track_simulate(self, world_count):
+        from benchmark_mujoco import Example  # noqa: PLC0415
+
+        from newton.utils import EventTracer  # noqa: PLC0415
+
         trace = {}
         with EventTracer(enabled=True) as tracer:
             for _iter in range(self.samples):
@@ -179,7 +246,6 @@ class _NewtonOverheadBenchmark:
                     world_count=world_count,
                     use_cuda_graph=True,
                     builder=self.builder[world_count],
-                    ls_iteration=self.ls_iteration,
                 )
 
                 for _ in range(self.num_frames):
@@ -200,9 +266,11 @@ class FastCartpole(_KpiBenchmark):
     num_frames = 50
     robot = "cartpole"
     samples = 4
-    ls_iteration = 3
     random_init = True
     environment = "None"
+
+    def setup_cache(self):
+        return self._collect_metrics()
 
 
 class FastG1(_KpiBenchmark):
@@ -211,9 +279,11 @@ class FastG1(_KpiBenchmark):
     robot = "g1"
     timeout = 900
     samples = 2
-    ls_iteration = 10
     random_init = True
     environment = "None"
+
+    def setup_cache(self):
+        return self._collect_metrics()
 
 
 class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
@@ -222,7 +292,6 @@ class FastNewtonOverheadG1(_NewtonOverheadBenchmark):
     robot = "g1"
     timeout = 900
     samples = 2
-    ls_iteration = 10
     random_init = True
 
 
@@ -231,9 +300,11 @@ class FastHumanoid(_KpiBenchmark):
     num_frames = 100
     robot = "humanoid"
     samples = 4
-    ls_iteration = 15
     random_init = True
     environment = "None"
+
+    def setup_cache(self):
+        return self._collect_metrics()
 
 
 class RealtimeHumanoidPhysics(_RealtimePhysicsBenchmark):
@@ -247,7 +318,6 @@ class FastNewtonOverheadHumanoid(_NewtonOverheadBenchmark):
     num_frames = 100
     robot = "humanoid"
     samples = 4
-    ls_iteration = 15
     random_init = True
 
 
@@ -257,20 +327,27 @@ class FastAllegro(_KpiBenchmark):
     robot = "allegro"
     timeout = 900
     samples = 2
-    ls_iteration = 10
     random_init = False
     environment = "None"
 
+    def setup_cache(self):
+        return self._collect_metrics()
+
 
 class FastKitchenG1(_KpiBenchmark):
+    # #3574 bounds replicated filter pairs to colliding shapes so 512 worlds fit on CI hosts.
     params = [[512]]
     num_frames = 50
     robot = "g1"
     timeout = 900
+    version = "2"  # The pre-v2 series accidentally omitted the kitchen environment.
     samples = 2
-    ls_iteration = 10
     random_init = True
     environment = "kitchen"
+    expected_bodies_per_world = 111
+
+    def setup_cache(self):
+        return self._collect_metrics()
 
 
 if __name__ == "__main__":

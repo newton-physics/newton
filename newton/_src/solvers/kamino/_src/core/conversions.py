@@ -1341,27 +1341,21 @@ def convert_joints(
     joint_dof_type_np = joint_dof_type.numpy()
 
     # Assign base bodies based on articulation roots (if articulations are present)
+    world_has_non_floating_root = np.zeros((model.world_count,), dtype=bool)
     if model.articulation_count > 0:
         articulation_start_np = model.articulation_start.numpy()
         articulation_world_np = model.articulation_world.numpy()
-        # For each articulation, assign its base body and joint to the corresponding world,
-        # if the base joint is a unary free joint.
-        # NOTE: We only assign the first articulation found in each world
-        has_non_free_root = False
+        # NOTE: We only assign the first articulation rooted by a unary free joint in each world
         for aid in range(model.articulation_count):
             wid = articulation_world_np[aid]
             base_joint = articulation_start_np[aid]
             base_body = joint_child_np[base_joint]
             if base_body_idx_np[wid] == -1 and base_joint_idx_np[wid] == -1:
-                if joint_dof_type_np[base_joint] != JointDoFType.FREE:
-                    has_non_free_root = True
+                if joint_dof_type_np[base_joint] != JointDoFType.FREE or joint_parent_np[base_joint] != -1:
+                    world_has_non_floating_root[wid] = True
                     continue
                 base_body_idx_np[wid] = base_body
                 base_joint_idx_np[wid] = base_joint
-        if has_non_free_root:
-            msg.warning(
-                "Model has articulations with a non-free joint as root, disabling floating base resets for those worlds."
-            )
 
     # For worlds without articulations, look for a unary free joint, or use the first body
     for wid in range(model.world_count):
@@ -1383,6 +1377,13 @@ def convert_joints(
                 msg.warning(f"Zero bodies in world {wid}, no base body assigned.")
                 continue
             base_body_idx_np[wid] = body_world_start_np[wid]
+
+    # Only warn for worlds where a skipped root left the world without a base
+    if np.any(world_has_non_floating_root & (base_body_idx_np == -1)):
+        msg.warning(
+            "Model has articulations whose root is not a free joint attached to the world, "
+            "disabling floating base resets for those worlds."
+        )
 
     # Update size object
     model_size.sum_of_num_joints = int(num_joints_np.sum())

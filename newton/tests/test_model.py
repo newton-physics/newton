@@ -3341,6 +3341,111 @@ class TestModelWorld(unittest.TestCase):
 
 
 class TestModelValidation(unittest.TestCase):
+    def test_add_particles_rejects_mismatched_lengths(self):
+        valid = {
+            "pos": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            "vel": [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+            "mass": [1.0, 1.0],
+            "radius": [0.1, 0.1],
+            "flags": [newton.ParticleFlags.ACTIVE, newton.ParticleFlags.ACTIVE],
+        }
+
+        for name in ("vel", "mass", "radius", "flags"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = values[name][:-1]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name in ("vel", "mass"):
+            with self.subTest(name=name, value=None):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = None
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*None"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name, value in (("vel", (0.0, 0.0, 0.0)), ("mass", 1.0)):
+            with self.subTest(name=name, empty_pos=True):
+                builder = ModelBuilder()
+                values = {"pos": [], "vel": [], "mass": []}
+                values[name] = [value]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*0.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        builder = ModelBuilder()
+        builder.add_particle((2.0, 0.0, 0.0), (0.0, 0.0, 0.0), 2.0)
+        expected_arrays = (
+            list(builder.particle_q),
+            list(builder.particle_qd),
+            list(builder.particle_mass),
+            list(builder.particle_radius),
+            list(builder.particle_flags),
+            list(builder.particle_world),
+        )
+        with self.assertRaisesRegex(ValueError, r"vel.*2.*1"):
+            builder.add_particles(
+                pos=valid["pos"],
+                vel=valid["vel"][:-1],
+                mass=valid["mass"],
+            )
+        actual_arrays = (
+            builder.particle_q,
+            builder.particle_qd,
+            builder.particle_mass,
+            builder.particle_radius,
+            builder.particle_flags,
+            builder.particle_world,
+        )
+        for actual, expected in zip(actual_arrays, expected_arrays, strict=True):
+            self.assertEqual(actual, expected)
+
+        builder.add_particles(pos=valid["pos"], vel=valid["vel"], mass=valid["mass"])
+        self.assertEqual(len(builder.particle_radius), 3)
+        self.assertEqual(len(builder.particle_flags), 3)
+
+    def test_finalize_rejects_mismatched_particle_arrays(self):
+        for name in ("particle_qd", "particle_mass", "particle_radius", "particle_flags", "particle_world"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+                getattr(builder, name).clear()
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*particle_count"):
+                    builder.finalize(device="cpu")
+
+        builder = ModelBuilder()
+        builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+        builder.particle_qd.clear()
+        model = builder.finalize(device="cpu", skip_validation_structure=True)
+        self.assertEqual(model.particle_count, 1)
+        self.assertEqual(model.particle_qd.shape, (0,))
+
     def test_lock_inertia_on_shape_addition(self):
         builder = ModelBuilder()
         shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)
