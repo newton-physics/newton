@@ -57,6 +57,29 @@ _STICK_FLAG_ANCHOR = wp.constant(1)
 _STICK_FLAG_DEADZONE = wp.constant(2)
 """contact_stick_flag value: anti-creep deadzone (sticking dynamic-dynamic contacts)"""
 
+# DER bend-twist strain measure tolerances (curvature binormal + Bishop transport).
+_CABLE_KB_FOLD_EPS = wp.constant(1.0e-12)
+"""Degenerate-fold scale and denominator floor for the DER curvature binormal.
+
+When both 1 + dot(t0, t1) and |cross(t0, t1)|^2 fall below this value, the
+tangents are treated as a true fold with a chosen perpendicular direction. This
+is only a divide-by-zero guard; magnitude is bounded by _CABLE_KB_CURVATURE_CAP."""
+
+_CABLE_KB_CURVATURE_CAP = wp.constant(20.0)
+"""Numerical cap for near-fold DER curvature-binormal magnitude.
+
+For |kb| = 2*tan(theta/2), this starts near theta ~= 168.6 deg; it is a
+conditioning guard, not a material parameter."""
+
+_CABLE_TRANSPORT_DENOM_EPS = wp.constant(1.0e-8)
+"""Near-anti-parallel threshold for switching closed-form transport to Bishop.
+
+This is larger than _CABLE_KB_FOLD_EPS because transport has no curvature cap;
+the closed-form expression must be left before it becomes ill-conditioned."""
+
+_CABLE_TWIST_ATAN2_DENOM_EPS = wp.constant(1.0e-12)
+"""Floor on sin^2 + cos^2 in the transported-twist atan2 derivative."""
+
 # ---------------------------------
 # Helper classes and device functions
 # ---------------------------------
@@ -218,7 +241,7 @@ def ldlt6_solve(h_ll: wp.mat33, h_aa: wp.mat33, h_al: wp.mat33, rhs_lin: wp.vec3
 
 @wp.func
 def compute_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: wp.quat) -> wp.vec3:
-    """Compute cable bending curvature vector kappa in the parent frame.
+    """Compute rest-relative angular rotation vector kappa in the parent frame.
 
     Kappa is the rotation vector (theta*axis) from the rest-aligned relative rotation.
 
@@ -229,7 +252,7 @@ def compute_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: w
         q_wc_rest: Child rest orientation (world).
 
     Returns:
-        wp.vec3: Curvature vector kappa in parent frame (rotation vector form).
+        wp.vec3: Rotation vector kappa in parent frame.
     """
     # Build R_align = R_rel * R_rel_rest^T using quaternions
     q_rel = wp.quat_inverse(q_wp) * q_wc
@@ -243,6 +266,422 @@ def compute_kappa(q_wp: wp.quat, q_wc: wp.quat, q_wp_rest: wp.quat, q_wc_rest: w
     # Log map to rotation vector
     axis, angle = wp.quat_to_axis_angle(q_align)
     return axis * angle
+
+
+@wp.func
+def _quat_rotate_local_z(q: wp.quat) -> wp.vec3:
+    """Rotate local +Z by a unit quaternion; the third rotation-matrix column."""
+    x = q[0]
+    y = q[1]
+    z = q[2]
+    w = q[3]
+    return wp.vec3(2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y))
+
+
+@wp.func
+def _quat_rotate_local_x(q: wp.quat) -> wp.vec3:
+    """Rotate local +X by a unit quaternion; the first rotation-matrix column."""
+    x = q[0]
+    y = q[1]
+    z = q[2]
+    w = q[3]
+    return wp.vec3(1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w))
+
+
+@wp.func
+def _normalize_with_fallback(v: wp.vec3, fallback: wp.vec3) -> wp.vec3:
+    """Normalize v, then fallback, with a final fixed axis if both are tiny."""
+    v_len = wp.length(v)
+    if v_len > _SMALL_LENGTH_EPS:
+        return v / v_len
+    fb_len = wp.length(fallback)
+    if fb_len > _SMALL_LENGTH_EPS:
+        return fallback / fb_len
+    return wp.vec3(1.0, 0.0, 0.0)
+
+
+@wp.func
+def _project_perp(v: wp.vec3, axis: wp.vec3) -> wp.vec3:
+    """Project v onto the plane orthogonal to an already-unit axis."""
+    return v - axis * wp.dot(v, axis)
+
+
+@wp.func
+def _perpendicular_axis_with_fallback(axis: wp.vec3, preferred: wp.vec3) -> wp.vec3:
+    """Return a unit vector perpendicular to axis, preferring preferred when possible."""
+    axis = _normalize_with_fallback(axis, wp.vec3(0.0, 0.0, 1.0))
+    perp = _project_perp(preferred, axis)
+    perp_len = wp.length(perp)
+    if perp_len > _SMALL_LENGTH_EPS:
+        return perp / perp_len
+
+    alt = wp.vec3(1.0, 0.0, 0.0)
+    if wp.abs(axis[0]) > 0.9:
+        alt = wp.vec3(0.0, 1.0, 0.0)
+    return _normalize_with_fallback(_project_perp(alt, axis), wp.vec3(0.0, 0.0, 1.0))
+
+
+@wp.func
+def _bishop_transport_quat(t0: wp.vec3, t1: wp.vec3, fallback_axis: wp.vec3) -> wp.quat:
+    """Minimal no-twist rotation that transports unit tangent t0 to unit tangent t1."""
+    c = wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    v = wp.cross(t0, t1)
+    s = wp.length(v)
+    if s > _SMALL_ANGLE_EPS:
+        return wp.quat_from_axis_angle(v / s, wp.atan2(s, c))
+    if c > 0.0:
+        return wp.quat_identity()
+
+    axis = _perpendicular_axis_with_fallback(t0, fallback_axis)
+    return wp.quat_from_axis_angle(axis, wp.pi)
+
+
+@wp.func
+def _finite_curvature_binormal(t0: wp.vec3, t1: wp.vec3, fallback_axis: wp.vec3) -> wp.vec3:
+    """Capped DER finite curvature binormal with a true-fold fallback."""
+    tangent_dot = wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    tangent_cross = wp.cross(t0, t1)
+    denom = 1.0 + tangent_dot
+    cross_sq = wp.dot(tangent_cross, tangent_cross)
+
+    # Use exact DER while cross(t0, t1) gives a direction. At an exact fold the
+    # cross product vanishes, so choose a stable perpendicular cap direction.
+    if denom <= _CABLE_KB_FOLD_EPS and cross_sq <= _CABLE_KB_FOLD_EPS:
+        axis = _perpendicular_axis_with_fallback(t0, fallback_axis)
+        return _CABLE_KB_CURVATURE_CAP * axis
+
+    kb = (2.0 / wp.max(_CABLE_KB_FOLD_EPS, denom)) * tangent_cross
+
+    kb_len = wp.length(kb)
+    if kb_len > _CABLE_KB_CURVATURE_CAP:
+        kb = (_CABLE_KB_CURVATURE_CAP / kb_len) * kb
+    return kb
+
+
+@wp.func
+def _finite_curvature_binormal_derivative(
+    t0: wp.vec3,
+    t1: wp.vec3,
+    dt0: wp.vec3,
+    dt1: wp.vec3,
+) -> wp.vec3:
+    """Directional derivative of kb(t0, t1) for tangent perturbations dt0, dt1.
+
+    Pure tangent-space math: it does not know where the perturbations come from.
+    The caller forms each one from a world rotation as ``dti = omega_world x ti``
+    to build rigid-body angular Jacobian columns.
+    """
+    tangent_dot = wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    tangent_cross = wp.cross(t0, t1)
+    denom = 1.0 + tangent_dot
+    cross_sq = wp.dot(tangent_cross, tangent_cross)
+    ddenom = wp.dot(dt0, t1) + wp.dot(t0, dt1)
+    dcross = wp.cross(dt0, t1) + wp.cross(t0, dt1)
+
+    if denom <= _CABLE_KB_FOLD_EPS and cross_sq <= _CABLE_KB_FOLD_EPS:
+        # The exact-fold direction is chosen, not geometric, so it has no
+        # meaningful derivative; return zero to keep the model bounded.
+        return wp.vec3(0.0)
+
+    denom_safe = wp.max(_CABLE_KB_FOLD_EPS, denom)
+    inv_denom = 1.0 / denom_safe
+    kb_raw = (2.0 * inv_denom) * tangent_cross
+    dkb_raw = (2.0 * inv_denom) * dcross
+    if denom > _CABLE_KB_FOLD_EPS:
+        dkb_raw = dkb_raw - (2.0 * ddenom * inv_denom * inv_denom) * tangent_cross
+
+    kb_len = wp.length(kb_raw)
+    if kb_len > _CABLE_KB_CURVATURE_CAP:
+        inv_len = 1.0 / kb_len
+        scale = _CABLE_KB_CURVATURE_CAP * inv_len
+        dkb_raw = scale * (dkb_raw - kb_raw * (wp.dot(kb_raw, dkb_raw) * inv_len * inv_len))
+
+    return dkb_raw
+
+
+@wp.func
+def _transport_material_axis(t0: wp.vec3, t1: wp.vec3, m0: wp.vec3, fallback_axis: wp.vec3) -> wp.vec3:
+    """Parallel-transport a material normal from tangent t0 to tangent t1."""
+    c = wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    denom = 1.0 + c
+    # Closed-form minimal rotation t0 -> t1; assumes m0 perpendicular to t0.
+    if denom > _CABLE_TRANSPORT_DENOM_EPS:
+        w = t0 + t1
+        transported = m0 - (wp.dot(m0, t1) / denom) * w
+        return _normalize_with_fallback(transported, fallback_axis)
+
+    # Anti-parallel tangents (~180 deg): use a Bishop transport quaternion.
+    B = _bishop_transport_quat(t0, t1, fallback_axis)
+    return _normalize_with_fallback(wp.quat_rotate(B, m0), fallback_axis)
+
+
+@wp.func
+def _transported_twist_angle_from_material_axes(
+    t0: wp.vec3,
+    t1: wp.vec3,
+    m0: wp.vec3,
+    m1: wp.vec3,
+    fallback_axis: wp.vec3,
+) -> float:
+    """Signed twist from transported parent material normal to child material normal."""
+    m0_transport = _transport_material_axis(t0, t1, m0, fallback_axis)
+    sin_theta = wp.dot(t1, wp.cross(m0_transport, m1))
+    cos_theta = wp.dot(m0_transport, m1)
+    return wp.atan2(sin_theta, cos_theta)
+
+
+@wp.struct
+class CableBendTwistMeasure:
+    """Live bend/twist geometry for one cable joint.
+
+    Measured once per force/Hessian evaluation and reused by the residual and
+    analytic Jacobian columns.
+    """
+
+    t0: wp.vec3
+    t1: wp.vec3
+    m0: wp.vec3
+    m1: wp.vec3
+    kb_world: wp.vec3
+    twist: float
+
+
+@wp.func
+def _measure_cable_bend_twist_z(q_wp: wp.quat, q_wc: wp.quat) -> CableBendTwistMeasure:
+    """Measure bend/twist for SolverVBD cables, whose material tangent is local +Z.
+
+    The fixed cable material basis is local ``+X, +Y, +Z``.
+    SolverVBD keeps body rotations normalized, so rotated basis axes are already
+    orthonormal.
+    """
+    t0 = _quat_rotate_local_z(q_wp)
+    t1 = _quat_rotate_local_z(q_wc)
+    m0 = _quat_rotate_local_x(q_wp)
+    m1 = _quat_rotate_local_x(q_wc)
+
+    # DER-style split: bend comes from the finite curvature binormal of the two
+    # tangents; twist is material spin after no-twist/Bishop transport.
+    measure = CableBendTwistMeasure()
+    measure.t0 = t0
+    measure.t1 = t1
+    measure.m0 = m0
+    measure.m1 = m1
+    measure.twist = _transported_twist_angle_from_material_axes(t0, t1, m0, m1, m0)
+    measure.kb_world = _finite_curvature_binormal(t0, t1, m0)
+    return measure
+
+
+@wp.func
+def _transported_twist_angle_derivative_from_measure(
+    measure: CableBendTwistMeasure,
+    omega_world: wp.vec3,
+    is_parent: bool,
+) -> float:
+    """Directional derivative of transported twist for one endpoint rotation.
+
+    Linear in the infinitesimal world-space rotation ``omega_world``; frames
+    are read from ``measure``.
+    """
+    t0 = measure.t0
+    t1 = measure.t1
+    m0 = measure.m0
+    m1 = measure.m1
+
+    dt0 = wp.vec3(0.0)
+    dt1 = wp.vec3(0.0)
+    dm0 = wp.vec3(0.0)
+    dm1 = wp.vec3(0.0)
+    if is_parent:
+        dt0 = wp.cross(omega_world, t0)
+        dm0 = wp.cross(omega_world, m0)
+    else:
+        dt1 = wp.cross(omega_world, t1)
+        dm1 = wp.cross(omega_world, m1)
+
+    c = wp.clamp(wp.dot(t0, t1), -1.0, 1.0)
+    denom = 1.0 + c
+    if denom <= _CABLE_TRANSPORT_DENOM_EPS:
+        # At a 180-degree kink the transport derivative is singular. Use bounded
+        # tangent spin while the residual fallback supplies the finite angle.
+        if is_parent:
+            return -wp.dot(omega_world, t0)
+        return wp.dot(omega_world, t1)
+
+    w = t0 + t1
+    n = wp.dot(m0, t1)
+    scale = n / denom
+    m0_transport_raw = m0 - scale * w
+    m0_transport = _normalize_with_fallback(m0_transport_raw, m0)
+
+    ddenom = wp.dot(dt0, t1) + wp.dot(t0, dt1)
+    dn = wp.dot(dm0, t1) + wp.dot(m0, dt1)
+    dscale = (dn * denom - n * ddenom) / (denom * denom)
+    dm0_transport_raw = dm0 - dscale * w - scale * (dt0 + dt1)
+
+    raw_len = wp.length(m0_transport_raw)
+    dm0_transport = wp.vec3(0.0)
+    if raw_len > _SMALL_LENGTH_EPS:
+        inv_len = 1.0 / raw_len
+        dm0_transport = inv_len * (dm0_transport_raw - m0_transport * wp.dot(m0_transport, dm0_transport_raw))
+
+    sin_theta = wp.dot(t1, wp.cross(m0_transport, m1))
+    cos_theta = wp.dot(m0_transport, m1)
+    dsin = wp.dot(dt1, wp.cross(m0_transport, m1)) + wp.dot(
+        t1, wp.cross(dm0_transport, m1) + wp.cross(m0_transport, dm1)
+    )
+    dcos = wp.dot(dm0_transport, m1) + wp.dot(m0_transport, dm1)
+    denom_angle = wp.max(_CABLE_TWIST_ATAN2_DENOM_EPS, sin_theta * sin_theta + cos_theta * cos_theta)
+    return (cos_theta * dsin - sin_theta * dcos) / denom_angle
+
+
+@wp.func
+def _cable_bend_twist_directional_derivatives_from_measure(
+    q_wp: wp.quat,
+    measure: CableBendTwistMeasure,
+    omega_world: wp.vec3,
+    is_parent: bool,
+) -> tuple[wp.vec3, float]:
+    """Bend/twist derivatives for one endpoint angular perturbation.
+
+    Returns ``(d_bend_local, d_twist)``: the un-projected parent-frame
+    curvature-binormal derivative and transported-twist derivative. For a parent
+    perturbation the bend term also differentiates the parent-frame coordinates
+    (the ``-omega_world x kb`` term).
+    """
+    t0 = measure.t0
+    t1 = measure.t1
+
+    dt0 = wp.vec3(0.0)
+    dt1 = wp.vec3(0.0)
+    if is_parent:
+        dt0 = wp.cross(omega_world, t0)
+    else:
+        dt1 = wp.cross(omega_world, t1)
+
+    dkb_world = _finite_curvature_binormal_derivative(t0, t1, dt0, dt1)
+
+    # A parent rotation also turns the parent frame the binormal is expressed in,
+    # so the parent-frame coordinates pick up the extra -omega x kb term before
+    # the single map into the parent frame.
+    dkb_parent_frame = dkb_world
+    if is_parent:
+        dkb_parent_frame = dkb_world - wp.cross(omega_world, measure.kb_world)
+    d_bend_local = wp.quat_rotate(wp.quat_inverse(q_wp), dkb_parent_frame)
+
+    d_twist = _transported_twist_angle_derivative_from_measure(measure, omega_world, is_parent)
+    return d_bend_local, d_twist
+
+
+@wp.func
+def _geometric_cable_strain_directional_derivative_z_from_measure(
+    q_wp: wp.quat,
+    measure: CableBendTwistMeasure,
+    omega_world: wp.vec3,
+    is_parent: bool,
+) -> wp.vec3:
+    """Directional derivative of [bend_x, bend_y, twist_z] for local +Z cables."""
+    d_bend_local, d_twist = _cable_bend_twist_directional_derivatives_from_measure(
+        q_wp, measure, omega_world, is_parent
+    )
+    return wp.vec3(d_bend_local[0], d_bend_local[1], d_twist)
+
+
+@wp.func
+def _cable_bend_twist_jacobian_z_from_measure(
+    q_wp: wp.quat,
+    measure: CableBendTwistMeasure,
+    is_parent: bool,
+) -> wp.mat33:
+    """Jacobian of [bend_x, bend_y, twist_z] for fixed local +Z cables.
+
+    The local residual is exactly ``[bend_x, bend_y, twist_z]``, so no bend
+    projector or twist-axis vector is needed in this hot path.
+    """
+    e0 = wp.vec3(1.0, 0.0, 0.0)
+    e1 = wp.vec3(0.0, 1.0, 0.0)
+    e2 = wp.vec3(0.0, 0.0, 1.0)
+
+    j0 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e0, is_parent)
+    j1 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e1, is_parent)
+    j2 = _geometric_cable_strain_directional_derivative_z_from_measure(q_wp, measure, e2, is_parent)
+    return wp.matrix_from_cols(j0, j1, j2)
+
+
+@wp.func
+def _wrap_principal_angle(angle: float) -> float:
+    """Wrap a bounded angular difference into ``[-pi, pi]``.
+
+    Args:
+        angle: Difference of two principal angles. The caller guarantees a
+            value in ``[-2*pi, 2*pi]``.
+
+    Returns:
+        Equivalent principal angular difference.
+    """
+    if angle > wp.pi:
+        angle -= 2.0 * wp.pi
+    elif angle < -wp.pi:
+        angle += 2.0 * wp.pi
+    return angle
+
+
+@wp.func
+def _assemble_geometric_cable_kappa_z(
+    q_wp: wp.quat,
+    kb_now_world: wp.vec3,
+    twist_now: float,
+    kb_rest_local: wp.vec3,
+    twist_rest: float,
+) -> wp.vec3:
+    """Assemble [bend_x, bend_y, twist_z] for SolverVBD local +Z cables."""
+    bend_now_local = wp.quat_rotate(wp.quat_inverse(q_wp), kb_now_world)
+    bend_residual_local = bend_now_local - kb_rest_local
+    # In the local +Z convention, parent-frame x/y are bend and z is twist.
+    # Wrap the twist delta of two atan2 angles into [-pi, pi] to avoid a ~2*pi
+    # jump when rest/current straddle the branch cut (one revolution per joint).
+    twist_residual = _wrap_principal_angle(twist_now - twist_rest)
+    return wp.vec3(bend_residual_local[0], bend_residual_local[1], twist_residual)
+
+
+@wp.func
+def _cable_bend_twist_delta(kappa: wp.vec3, kappa_prev: wp.vec3) -> wp.vec3:
+    """Return a temporal cable bend/twist strain increment.
+
+    Args:
+        kappa: Current ``[bend_x, bend_y, twist_z]`` strain.
+        kappa_prev: Previous strain in the same representation.
+
+    Returns:
+        Bend increments from ordinary subtraction and the shortest signed
+        principal-angle increment for twist.
+    """
+    return wp.vec3(
+        kappa[0] - kappa_prev[0],
+        kappa[1] - kappa_prev[1],
+        _wrap_principal_angle(kappa[2] - kappa_prev[2]),
+    )
+
+
+@wp.func
+def compute_geometric_cable_kappa_cached_z(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    kb_rest_local: wp.vec3,
+    twist_rest: float,
+) -> wp.vec3:
+    """Geometric cable strain residual for fixed local +Z cables."""
+    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+    return _assemble_geometric_cable_kappa_z(q_wp, measure.kb_world, measure.twist, kb_rest_local, twist_rest)
+
+
+@wp.func
+def _diag_mul_mat33(d: wp.vec3, m: wp.mat33) -> wp.mat33:
+    """Return diag(d) * m without building a dense diagonal matrix."""
+    return wp.matrix_from_rows(
+        d[0] * wp.vec3(m[0, 0], m[0, 1], m[0, 2]),
+        d[1] * wp.vec3(m[1, 0], m[1, 1], m[1, 2]),
+        d[2] * wp.vec3(m[2, 0], m[2, 1], m[2, 2]),
+    )
 
 
 @wp.func
@@ -273,7 +712,7 @@ def compute_kappa_dot(
     omega_p_world: wp.vec3,
     omega_c_world: wp.vec3,
 ) -> wp.vec3:
-    """Time derivative of curvature vector d(kappa)/dt in parent frame.
+    """Time derivative of the rotation-vector residual d(kappa)/dt in parent frame.
 
     Exploits J_world^T = Jr_inv * R_align^T * R_wp^T, so
     kappa_dot = J_world^T * (omega_c - omega_p).
@@ -284,7 +723,7 @@ def compute_kappa_dot(
         omega_c_world: Child angular velocity (world) [rad/s].
 
     Returns:
-        wp.vec3: Curvature rate kappa_dot in parent frame [rad/s].
+        wp.vec3: Rotation-vector rate kappa_dot in parent frame [rad/s].
     """
     return wp.transpose(J_world) * (omega_c_world - omega_p_world)
 
@@ -296,10 +735,10 @@ def compute_kappa_and_jacobian(
     q_wp_rest: wp.quat,
     q_wc_rest: wp.quat,
 ):
-    """Compute curvature vector and world-frame Jacobian from quaternion poses.
+    """Compute rotation-vector residual and world-frame Jacobian from quaternion poses.
 
     Returns:
-        (kappa, J_world) -- curvature vector and world-frame force Jacobian.
+        (kappa, J_world) -- rotation vector and world-frame force Jacobian.
     """
     q_rel = wp.quat_inverse(q_wp) * q_wc
     q_rel_rest = wp.quat_inverse(q_wp_rest) * q_wc_rest
@@ -431,8 +870,6 @@ def evaluate_angular_constraint_force_hessian(
     is_parent: bool,
     penalty_k: float,
     P: wp.mat33,
-    sigma0: wp.vec3,
-    C_fric: wp.vec3,
     lambda_ang: wp.vec3,
     C0_ang: wp.vec3,
     alpha: float,
@@ -441,23 +878,22 @@ def evaluate_angular_constraint_force_hessian(
 ):
     """Projected angular constraint force/Hessian using rotation-vector error (kappa).
 
-    Unified evaluator for all joint types. Computes constraint force and Hessian
-    in the constrained subspace defined by the orthogonal-complement projector P.
+    Generic evaluator for non-cable angular constraints. Computes force and
+    Hessian in the constrained subspace defined by the orthogonal-complement
+    projector P. Angular Dahl friction is cable-only and handled separately, so
+    this evaluator carries no friction term.
 
     C0 stabilization: when alpha > 0 and C0_ang is nonzero, the effective
     kappa is kappa - alpha*C0_ang (initial violation snapshot).
 
     Special cases by projector:
-      - P = I: isotropic (CABLE bend, FIXED angular)
+      - P = I: isotropic (FIXED angular)
       - P = I - a*a^T: revolute (1 free angular axis)
       - arbitrary P: D6 (0-3 free angular axes)
 
-    Dahl friction (sigma0, C_fric) is only valid when P = I (isotropic).
-    Pass vec3(0) for both when P != I.
-
     Returns:
         (tau_world, H_aa, kappa, J_world) -- constraint torque and Hessian in world
-        frame, plus the curvature vector and world-frame Jacobian for reuse by the
+        frame, plus the rotation vector and world-frame Jacobian for reuse by the
         drive/limit block.
     """
     inv_dt = 1.0 / dt
@@ -469,19 +905,9 @@ def evaluate_angular_constraint_force_hessian(
     # P_ang is constant for joint angular residuals, so lambda_ang should already
     # be in-basis. Project here too so stale or externally edited state cannot
     # apply force along a free angular DOF.
-    f_local = penalty_k * kappa_perp + sigma0 + P * lambda_ang
+    f_local = penalty_k * kappa_perp + P * lambda_ang
 
-    H_local = penalty_k * P + wp.mat33(
-        C_fric[0],
-        0.0,
-        0.0,
-        0.0,
-        C_fric[1],
-        0.0,
-        0.0,
-        0.0,
-        C_fric[2],
-    )
+    H_local = penalty_k * P
 
     if damping > 0.0:
         omega_p_world = quat_velocity(q_wp, q_wp_prev, dt)
@@ -505,6 +931,59 @@ def evaluate_angular_constraint_force_hessian(
 
 
 @wp.func
+def evaluate_cable_bend_twist_force_hessian_z(
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    kb_rest_local: wp.vec3,
+    twist_rest: float,
+    q_wp_prev: wp.quat,
+    q_wc_prev: wp.quat,
+    is_parent: bool,
+    K_elastic_diag: wp.vec3,
+    C0_force: wp.vec3,
+    sigma0: wp.vec3,
+    H_fric_diag: wp.vec3,
+    lambda_projected: wp.vec3,
+    K_damp_diag: wp.vec3,
+    damping_active: bool,
+    dt: float,
+):
+    """Bend/twist torque and Hessian for SolverVBD local +Z cables.
+
+    In the fixed cable material basis, local angular operators are diagonal:
+    ``[bend_x, bend_y, twist_z]``. Keep them as vec3 row scales in the hot path
+    instead of building dense local matrices.
+    """
+    inv_dt = 1.0 / dt
+
+    measure = _measure_cable_bend_twist_z(q_wp, q_wc)
+    kappa_now_vec = _assemble_geometric_cable_kappa_z(q_wp, measure.kb_world, measure.twist, kb_rest_local, twist_rest)
+
+    # Bend and twist decouple in the material basis: the angular energy is a sum
+    # of independent quadratics in [bend_x, bend_y, twist_z], so elastic stiffness
+    # and the friction Hessian have no off-diagonal coupling. Carry them as vec3
+    # row scales; the dense angular block reappears below via J^T diag(H) J.
+    f_local = wp.cw_mul(K_elastic_diag, kappa_now_vec) - C0_force + sigma0 + lambda_projected
+    H_local_diag = K_elastic_diag + H_fric_diag
+
+    if damping_active:
+        prev_measure = _measure_cable_bend_twist_z(q_wp_prev, q_wc_prev)
+        kappa_prev_vec = _assemble_geometric_cable_kappa_z(
+            q_wp_prev, prev_measure.kb_world, prev_measure.twist, kb_rest_local, twist_rest
+        )
+        dkappa_dt = _cable_bend_twist_delta(kappa_now_vec, kappa_prev_vec) * inv_dt
+        f_local = f_local + wp.cw_mul(K_damp_diag, dkappa_dt)
+        H_local_diag = H_local_diag + inv_dt * K_damp_diag
+
+    J_body = _cable_bend_twist_jacobian_z_from_measure(q_wp, measure, is_parent)
+    # Gauss-Newton self Hessian: J^T diag(H_local_diag) J.
+    H_aa = wp.transpose(J_body) * _diag_mul_mat33(H_local_diag, J_body)
+    tau_world = -(wp.transpose(J_body) * f_local)
+
+    return tau_world, H_aa, kappa_now_vec, J_body
+
+
+@wp.func
 def evaluate_linear_constraint_force_hessian(
     X_wp: wp.transform,
     X_wc: wp.transform,
@@ -525,14 +1004,14 @@ def evaluate_linear_constraint_force_hessian(
 ):
     """Projected linear constraint force/Hessian for anchor coincidence.
 
-    Unified evaluator for all joint types. Computes C = x_c - x_p, projects
-    with P, and returns force/Hessian in world frame.
+    Generic evaluator for non-cable linear constraints. Computes C = x_c - x_p,
+    projects with P, and returns force/Hessian in world frame.
 
     C0 stabilization: when alpha > 0 and C0_lin is nonzero, the effective
     constraint violation is C - alpha*C0 (initial violation snapshot).
 
     Special cases by projector:
-      - P = I: isotropic (BALL, CABLE stretch, FIXED linear, REVOLUTE linear)
+      - P = I: isotropic (BALL, FIXED linear, REVOLUTE linear)
       - P = I - a*a^T: prismatic (1 free linear axis)
       - arbitrary P: D6 (0-3 free linear axes)
 
@@ -579,6 +1058,71 @@ def evaluate_linear_constraint_force_hessian(
     force = f_attachment if is_parent else -f_attachment
     torque = wp.cross(r, force)
 
+    return force, torque, H_ll, H_al, H_aa
+
+
+@wp.func
+def evaluate_cable_stretch_shear_force_hessian(
+    X_wp: wp.transform,
+    X_wc: wp.transform,
+    X_wp_prev: wp.transform,
+    X_wc_prev: wp.transform,
+    parent_pose: wp.transform,
+    child_pose: wp.transform,
+    parent_com: wp.vec3,
+    child_com: wp.vec3,
+    is_parent: bool,
+    k_diag: wp.vec3,
+    C0_force_local: wp.vec3,
+    lambda_local: wp.vec3,
+    kd_diag: wp.vec3,
+    damping_active: bool,
+    dt: float,
+):
+    """Cable stretch/shear anchor force, torque, and PSD Gauss-Newton self-Hessian.
+
+    All inputs are parent-material: residual ``u = R_p^T (x_c - x_p) =
+    [shear_x, shear_y, stretch_z]``, diagonal ``k_diag = (k_shear, k_shear,
+    k_stretch)`` / ``kd_diag``, and local ``C0_force_local`` / ``lambda_local``.
+    Elastic and AL are energy gradients, damping is dissipative in ``u``, and both
+    bodies react at the shared child anchor, so the net internal wrench is zero.
+    """
+    x_p = wp.transform_get_translation(X_wp)
+    x_c = wp.transform_get_translation(X_wc)
+    q_wp = wp.transform_get_rotation(X_wp)
+
+    if is_parent:
+        com_w = wp.transform_point(parent_pose, parent_com)
+    else:
+        com_w = wp.transform_point(child_pose, child_com)
+    r = x_c - com_w
+
+    C_vec = x_c - x_p
+    u = wp.quat_rotate_inv(q_wp, C_vec)
+    psi = wp.cw_mul(k_diag, u) - C0_force_local + lambda_local
+
+    h_s = k_diag[0]
+    h_z = k_diag[2]
+    if damping_active:
+        inv_dt = 1.0 / dt
+        x_p_prev = wp.transform_get_translation(X_wp_prev)
+        x_c_prev = wp.transform_get_translation(X_wc_prev)
+        u_prev = wp.quat_rotate_inv(wp.transform_get_rotation(X_wp_prev), x_c_prev - x_p_prev)
+        psi = psi + wp.cw_mul(kd_diag, (u - u_prev) * inv_dt)
+        h_s = h_s + kd_diag[0] * inv_dt
+        h_z = h_z + kd_diag[2] * inv_dt
+
+    f_world = wp.quat_rotate(q_wp, psi)
+    force = f_world if is_parent else -f_world
+
+    t = _quat_rotate_local_z(q_wp)
+    K_eff = h_s * wp.identity(3, float) + (h_z - h_s) * wp.outer(t, t)
+    rx = wp.skew(r)
+    H_ll = K_eff
+    H_al = rx * K_eff
+    H_aa = wp.transpose(rx) * K_eff * rx
+
+    torque = wp.cross(r, force)
     return force, torque, H_ll, H_al, H_aa
 
 
@@ -1211,6 +1755,8 @@ def evaluate_joint_force_hessian(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -1241,12 +1787,13 @@ def evaluate_joint_force_hessian(
     """Compute AVBD joint force and Hessian contributions for one body.
 
     Supported joint types: CABLE, BALL, FIXED, REVOLUTE, PRISMATIC, D6.
-    Uses unified projector-based constraint evaluators for all joint types.
+    Cable uses split stretch/shear and bend/twist helpers; other joints use
+    projector-based linear/angular evaluators.
 
     Indexing:
         joint_constraint_start[j] is a solver-owned start offset into the per-constraint
         arrays (joint_penalty_k, joint_penalty_kd). Layout per joint type:
-          - CABLE: 2 scalars -> [stretch, bend]
+          - CABLE: 4 scalars -> [stretch, shear, bend, twist]
           - BALL:  1 scalar  -> [linear]
           - FIXED: 2 scalars -> [linear, angular]
           - REVOLUTE:  3 scalars -> [linear, angular, ang_drive_limit]
@@ -1282,65 +1829,42 @@ def evaluate_joint_force_hessian(
     if parent_index >= 0:
         parent_pose = body_q[parent_index]
         parent_pose_prev = body_q_prev[parent_index]
-        parent_pose_rest = body_q_rest[parent_index]
         parent_com = body_com[parent_index]
     else:
         parent_pose = wp.transform(wp.vec3(0.0), wp.quat_identity())
         parent_pose_prev = parent_pose
-        parent_pose_rest = parent_pose
         parent_com = wp.vec3(0.0)
 
     child_pose = body_q[child_index]
     child_pose_prev = body_q_prev[child_index]
-    child_pose_rest = body_q_rest[child_index]
     child_com = body_com[child_index]
 
     X_wp = parent_pose * X_pj
     X_wc = child_pose * X_cj
     X_wp_prev = parent_pose_prev * X_pj
     X_wc_prev = child_pose_prev * X_cj
-    X_wp_rest = parent_pose_rest * X_pj
-    X_wc_rest = child_pose_rest * X_cj
 
     c_start = joint_constraint_start[joint_index]
 
     # Hoist quaternion extraction (shared by all angular constraints and drive/limits)
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
-    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
     q_wp_prev = wp.transform_get_rotation(X_wp_prev)
     q_wc_prev = wp.transform_get_rotation(X_wc_prev)
 
-    P_I = wp.identity(3, float)
-
-    # Hard/soft AL gating for the linear structural slot (slot 0)
-    lin_lambda = wp.vec3(0.0)
-    lin_C0 = wp.vec3(0.0)
-    lin_alpha = float(0.0)
-    if joint_is_hard[c_start] == 1:
-        lin_lambda = joint_lambda_lin[joint_index]
-        lin_C0 = joint_C0_lin[joint_index]
-        lin_alpha = avbd_alpha
-
-    # Hard/soft AL gating for the angular structural slot (slot 1)
-    ang_lambda = wp.vec3(0.0)
-    ang_C0 = wp.vec3(0.0)
-    ang_alpha = float(0.0)
-    ang_hard = 0
-    if jt != JointType.BALL:
-        ang_hard = joint_is_hard[c_start + 1]
-
-    if ang_hard == 1:
-        ang_lambda = joint_lambda_ang[joint_index]
-        ang_C0 = joint_C0_ang[joint_index]
-        ang_alpha = avbd_alpha
-
     if jt == JointType.CABLE:
-        k_stretch = joint_penalty_k[c_start]
-        k_bend = joint_penalty_k[c_start + 1]
-        kd_stretch = joint_penalty_kd[c_start]
-        kd_bend = joint_penalty_kd[c_start + 1]
+        stretch_idx = c_start
+        shear_idx = c_start + 1
+        bend_idx = c_start + 2
+        twist_idx = c_start + 3
+        k_stretch = joint_penalty_k[stretch_idx]
+        k_shear = joint_penalty_k[shear_idx]
+        kd_stretch = joint_penalty_kd[stretch_idx]
+        kd_shear = joint_penalty_kd[shear_idx]
+        k_bend = joint_penalty_k[bend_idx]
+        k_twist = joint_penalty_k[twist_idx]
+        kd_bend = joint_penalty_kd[bend_idx]
+        kd_twist = joint_penalty_kd[twist_idx]
 
         total_force = wp.vec3(0.0)
         total_torque = wp.vec3(0.0)
@@ -1348,36 +1872,90 @@ def evaluate_joint_force_hessian(
         total_H_al = wp.mat33(0.0)
         total_H_aa = wp.mat33(0.0)
 
-        if k_bend > 0.0:
-            if ang_hard == 1:
-                sigma0 = wp.vec3(0.0)
-                C_fric = wp.vec3(0.0)
-            else:
-                sigma0 = joint_sigma_start[joint_index]
-                C_fric = joint_C_fric[joint_index]
-            bend_torque, bend_H_aa, _bend_kappa, _bend_J = evaluate_angular_constraint_force_hessian(
+        bend_stiff = k_bend > 0.0
+        twist_stiff = k_twist > 0.0
+        bend_active = bend_stiff or kd_bend > 0.0
+        twist_active = twist_stiff or kd_twist > 0.0
+        if bend_active or twist_active:
+            K_elastic_diag = wp.vec3(k_bend, k_bend, k_twist)
+            # kd_X is already 0 when its slot is inactive (X_active includes kd_X > 0),
+            # so use the damping coefficients directly, matching K_elastic_diag above.
+            K_damp_diag = wp.vec3(kd_bend, kd_bend, kd_twist)
+            damping_active = kd_bend > 0.0 or kd_twist > 0.0
+
+            sigma = wp.vec3(0.0)
+            H_fric_diag = wp.vec3(0.0)
+            lambda_projected = wp.vec3(0.0)
+            C0_force = wp.vec3(0.0)
+            dahl_sigma = joint_sigma_start[joint_index]
+            dahl_fric = joint_C_fric[joint_index]
+            bend_hard = bend_stiff and joint_is_hard[bend_idx] == 1
+            twist_hard = twist_stiff and joint_is_hard[twist_idx] == 1
+            lambda_ang = wp.vec3(0.0)
+            C0_ang = wp.vec3(0.0)
+            if bend_hard or twist_hard:
+                lambda_ang = joint_lambda_ang[joint_index]
+                C0_ang = joint_C0_ang[joint_index]
+
+            if bend_hard:
+                lambda_projected = lambda_projected + wp.vec3(lambda_ang[0], lambda_ang[1], 0.0)
+                C0_force = C0_force + (k_bend * avbd_alpha) * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
+            elif bend_stiff:
+                sigma = sigma + wp.vec3(dahl_sigma[0], dahl_sigma[1], 0.0)
+                H_fric_diag = H_fric_diag + wp.vec3(dahl_fric[0], dahl_fric[1], 0.0)
+
+            if twist_hard:
+                lambda_projected = lambda_projected + wp.vec3(0.0, 0.0, lambda_ang[2])
+                C0_force = C0_force + (k_twist * avbd_alpha) * wp.vec3(0.0, 0.0, C0_ang[2])
+            elif twist_stiff:
+                sigma = sigma + wp.vec3(0.0, 0.0, dahl_sigma[2])
+                H_fric_diag = H_fric_diag + wp.vec3(0.0, 0.0, dahl_fric[2])
+
+            cable_torque, cable_H_aa, _cable_kappa, _cable_J = evaluate_cable_bend_twist_force_hessian_z(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                joint_cable_rest_kb_local[joint_index],
+                joint_cable_rest_twist[joint_index],
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
-                k_bend,
-                P_I,
-                sigma0,
-                C_fric,
-                ang_lambda,
-                ang_C0,
-                ang_alpha,
-                kd_bend,
+                K_elastic_diag,
+                C0_force,
+                sigma,
+                H_fric_diag,
+                lambda_projected,
+                K_damp_diag,
+                damping_active,
                 dt,
             )
-            total_torque = total_torque + bend_torque
-            total_H_aa = total_H_aa + bend_H_aa
+            total_torque = total_torque + cable_torque
+            total_H_aa = total_H_aa + cable_H_aa
 
-        if k_stretch > 0.0:
-            f_s, t_s, Hll_s, Hal_s, Haa_s = evaluate_linear_constraint_force_hessian(
+        stretch_stiff = k_stretch > 0.0
+        shear_stiff = k_shear > 0.0
+        stretch_active = stretch_stiff or kd_stretch > 0.0
+        shear_active = shear_stiff or kd_shear > 0.0
+        if stretch_active or shear_active:
+            # Parent-material diagonals for local u = [shear_x, shear_y, stretch_z].
+            k_diag = wp.vec3(k_shear, k_shear, k_stretch)
+            kd_diag = wp.vec3(kd_shear, kd_shear, kd_stretch)
+            damping_active = kd_stretch > 0.0 or kd_shear > 0.0
+
+            lambda_local = wp.vec3(0.0)
+            C0_force_local = wp.vec3(0.0)
+            stretch_hard = stretch_stiff and joint_is_hard[stretch_idx] == 1
+            shear_hard = shear_stiff and joint_is_hard[shear_idx] == 1
+            if stretch_hard or shear_hard:
+                lambda_lin = joint_lambda_lin[joint_index]
+                C0_lin = joint_C0_lin[joint_index]
+                if stretch_hard:
+                    lambda_local = lambda_local + wp.vec3(0.0, 0.0, lambda_lin[2])
+                    C0_force_local = C0_force_local + (k_stretch * avbd_alpha) * wp.vec3(0.0, 0.0, C0_lin[2])
+                if shear_hard:
+                    lambda_local = lambda_local + wp.vec3(lambda_lin[0], lambda_lin[1], 0.0)
+                    C0_force_local = C0_force_local + (k_shear * avbd_alpha) * wp.vec3(C0_lin[0], C0_lin[1], 0.0)
+
+            f_l, t_l, Hll_l, Hal_l, Haa_l = evaluate_cable_stretch_shear_force_hessian(
                 X_wp,
                 X_wc,
                 X_wp_prev,
@@ -1387,23 +1965,42 @@ def evaluate_joint_force_hessian(
                 parent_com,
                 child_com,
                 is_parent_body,
-                k_stretch,
-                P_I,
-                lin_lambda,
-                lin_C0,
-                lin_alpha,
-                kd_stretch,
+                k_diag,
+                C0_force_local,
+                lambda_local,
+                kd_diag,
+                damping_active,
                 dt,
             )
-            total_force = total_force + f_s
-            total_torque = total_torque + t_s
-            total_H_ll = total_H_ll + Hll_s
-            total_H_al = total_H_al + Hal_s
-            total_H_aa = total_H_aa + Haa_s
+            total_force = total_force + f_l
+            total_torque = total_torque + t_l
+            total_H_ll = total_H_ll + Hll_l
+            total_H_al = total_H_al + Hal_l
+            total_H_aa = total_H_aa + Haa_l
 
         return total_force, total_torque, total_H_ll, total_H_al, total_H_aa
 
-    elif jt == JointType.BALL:
+    P_I = wp.identity(3, float)
+
+    # Hard/soft AL gating for the non-cable linear structural slot.
+    lin_lambda = wp.vec3(0.0)
+    lin_C0 = wp.vec3(0.0)
+    lin_alpha = float(0.0)
+    if joint_is_hard[c_start] == 1:
+        lin_lambda = joint_lambda_lin[joint_index]
+        lin_C0 = joint_C0_lin[joint_index]
+        lin_alpha = avbd_alpha
+
+    # BALL has no angular structural slot; other non-cable joints do.
+    ang_lambda = wp.vec3(0.0)
+    ang_C0 = wp.vec3(0.0)
+    ang_alpha = float(0.0)
+    if jt != JointType.BALL and joint_is_hard[c_start + 1] == 1:
+        ang_lambda = joint_lambda_ang[joint_index]
+        ang_C0 = joint_C0_ang[joint_index]
+        ang_alpha = avbd_alpha
+
+    if jt == JointType.BALL:
         k = joint_penalty_k[c_start]
         damping = joint_penalty_kd[c_start]
         if k > 0.0:
@@ -1427,7 +2024,15 @@ def evaluate_joint_force_hessian(
             )
         return _zero_force_hessian()
 
-    elif jt == JointType.FIXED:
+    if parent_index >= 0:
+        X_wp_rest = body_q_rest[parent_index] * X_pj
+    else:
+        X_wp_rest = X_pj
+    X_wc_rest = body_q_rest[child_index] * X_cj
+    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+
+    if jt == JointType.FIXED:
         k_lin = joint_penalty_k[c_start + 0]
         kd_lin = joint_penalty_kd[c_start + 0]
         if k_lin > 0.0:
@@ -1469,8 +2074,6 @@ def evaluate_joint_force_hessian(
                 is_parent_body,
                 k_ang,
                 P_I,
-                wp.vec3(0.0),
-                wp.vec3(0.0),
                 ang_lambda,
                 ang_C0,
                 ang_alpha,
@@ -1534,8 +2137,6 @@ def evaluate_joint_force_hessian(
                 is_parent_body,
                 k_ang,
                 P_ang,
-                wp.vec3(0.0),
-                wp.vec3(0.0),
                 ang_lambda,
                 ang_C0,
                 ang_alpha,
@@ -1646,8 +2247,6 @@ def evaluate_joint_force_hessian(
                 is_parent_body,
                 k_ang,
                 P_ang,
-                wp.vec3(0.0),
-                wp.vec3(0.0),
                 ang_lambda,
                 ang_C0,
                 ang_alpha,
@@ -1791,8 +2390,6 @@ def evaluate_joint_force_hessian(
                 is_parent_body,
                 k_ang,
                 P_ang,
-                wp.vec3(0.0),
-                wp.vec3(0.0),
                 ang_lambda,
                 ang_C0,
                 ang_alpha,
@@ -2271,12 +2868,55 @@ def check_contact_overflow(
 
 
 @wp.kernel
+def init_cable_rest_bend_twist(
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q_rest: wp.array[wp.transform],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
+):
+    """Precompute cable rest angular deformation invariants."""
+    j = wp.tid()
+    joint_cable_rest_kb_local[j] = wp.vec3(0.0)
+    joint_cable_rest_twist[j] = 0.0
+
+    if joint_type[j] != JointType.CABLE:
+        return
+
+    child = joint_child[j]
+    if child < 0:
+        return
+
+    parent = joint_parent[j]
+    if parent >= 0:
+        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    else:
+        X_wp_rest = joint_X_p[j]
+    X_wc_rest = body_q_rest[child] * joint_X_c[j]
+
+    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+
+    # Rest DER bend (parent-local curvature binormal) and rest twist (transported
+    # material spin), measured once so a pre-curved rest yields zero strain.
+    rest_measure = _measure_cable_bend_twist_z(q_wp_rest, q_wc_rest)
+    joint_cable_rest_kb_local[j] = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest_measure.kb_world)
+    joint_cable_rest_twist[j] = rest_measure.twist
+
+
+@wp.kernel
 def step_joint_C0_lambda(
+    joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
     body_q_prev: wp.array[wp.transform],
     body_q_rest: wp.array[wp.transform],
     joint_constraint_start: wp.array[wp.int32],
@@ -2294,9 +2934,11 @@ def step_joint_C0_lambda(
 ):
     """Per-step joint AVBD maintenance: k decay + C0 snapshot + lambda decay.
 
-    Sole owner of all joint decay. Runs every step.
+    Sole owner of joint decay. Cable stretch/shear and bend/twist share linear
+    and angular AL state blocks; non-cable drive/limit slots stay soft.
     """
     j = wp.tid()
+    zero = wp.vec3(0.0)
     c_start = int(joint_constraint_start[j])
     c_dim = int(joint_constraint_dim[j])
 
@@ -2309,18 +2951,36 @@ def step_joint_C0_lambda(
 
     child = joint_child[j]
     if not joint_enabled[j] or c_dim == 0 or child < 0:
-        joint_C0_lin[j] = wp.vec3(0.0)
-        joint_C0_ang[j] = wp.vec3(0.0)
-        joint_lambda_lin[j] = wp.vec3(0.0)
-        joint_lambda_ang[j] = wp.vec3(0.0)
+        joint_C0_lin[j] = zero
+        joint_lambda_lin[j] = zero
+        joint_C0_ang[j] = zero
+        joint_lambda_ang[j] = zero
         return
 
-    lin_hard = joint_is_hard[c_start]
-    ang_hard = 0
-    if c_dim > 1:
-        ang_hard = joint_is_hard[c_start + 1]
+    jt = joint_type[j]
 
-    if lin_hard == 1 or ang_hard == 1:
+    # Cable has four structural slots, but AL state is stored as two vec3
+    # blocks: linear = stretch/shear, angular = bend/twist.
+    if jt == JointType.CABLE:
+        stretch_idx = c_start
+        shear_idx = c_start + 1
+        bend_idx = c_start + 2
+        twist_idx = c_start + 3
+
+        has_linear_hard = int(0)
+        has_angular_hard = int(0)
+        if joint_is_hard[stretch_idx] == 1 or joint_is_hard[shear_idx] == 1:
+            has_linear_hard = 1
+        if joint_is_hard[bend_idx] == 1 or joint_is_hard[twist_idx] == 1:
+            has_angular_hard = 1
+
+        if has_linear_hard == 0 and has_angular_hard == 0:
+            joint_C0_lin[j] = zero
+            joint_lambda_lin[j] = zero
+            joint_C0_ang[j] = zero
+            joint_lambda_ang[j] = zero
+            return
+
         parent = joint_parent[j]
         if parent >= 0:
             X_wp = body_q_prev[parent] * joint_X_p[j]
@@ -2328,35 +2988,76 @@ def step_joint_C0_lambda(
             X_wp = joint_X_p[j]
         X_wc = body_q_prev[child] * joint_X_c[j]
 
-        if lin_hard == 1:
+        if has_linear_hard == 1:
             x_p = wp.transform_get_translation(X_wp)
             x_c = wp.transform_get_translation(X_wc)
-            joint_C0_lin[j] = x_c - x_p
+            # Store the parent-material residual [shear_x, shear_y, stretch_z].
+            joint_C0_lin[j] = wp.quat_rotate_inv(wp.transform_get_rotation(X_wp), x_c - x_p)
             joint_lambda_lin[j] = joint_lambda_lin[j] * lambda_decay
         else:
-            joint_C0_lin[j] = wp.vec3(0.0)
-            joint_lambda_lin[j] = wp.vec3(0.0)
+            joint_C0_lin[j] = zero
+            joint_lambda_lin[j] = zero
 
-        if ang_hard == 1:
-            if parent >= 0:
-                X_wp_rest = body_q_rest[parent] * joint_X_p[j]
-            else:
-                X_wp_rest = joint_X_p[j]
-            X_wc_rest = body_q_rest[child] * joint_X_c[j]
+        if has_angular_hard == 1:
             q_wp = wp.transform_get_rotation(X_wp)
             q_wc = wp.transform_get_rotation(X_wc)
-            q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-            q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-            joint_C0_ang[j] = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            joint_C0_ang[j] = compute_geometric_cable_kappa_cached_z(
+                q_wp,
+                q_wc,
+                joint_cable_rest_kb_local[j],
+                joint_cable_rest_twist[j],
+            )
             joint_lambda_ang[j] = joint_lambda_ang[j] * lambda_decay
         else:
-            joint_C0_ang[j] = wp.vec3(0.0)
-            joint_lambda_ang[j] = wp.vec3(0.0)
+            joint_C0_ang[j] = zero
+            joint_lambda_ang[j] = zero
+        return
+
+    # Non-cable joints have at most two structural hard slots here: linear and
+    # angular. Drive/limit slots are always soft and ignored by this snapshot.
+    has_linear_hard = int(joint_is_hard[c_start])
+    has_angular_hard = int(0)
+    if c_dim > 1 and joint_is_hard[c_start + 1] == 1:
+        has_angular_hard = 1
+
+    if has_linear_hard == 0 and has_angular_hard == 0:
+        joint_C0_lin[j] = zero
+        joint_lambda_lin[j] = zero
+        joint_C0_ang[j] = zero
+        joint_lambda_ang[j] = zero
+        return
+
+    parent = joint_parent[j]
+    if parent >= 0:
+        X_wp = body_q_prev[parent] * joint_X_p[j]
     else:
-        joint_C0_lin[j] = wp.vec3(0.0)
-        joint_C0_ang[j] = wp.vec3(0.0)
-        joint_lambda_lin[j] = wp.vec3(0.0)
-        joint_lambda_ang[j] = wp.vec3(0.0)
+        X_wp = joint_X_p[j]
+    X_wc = body_q_prev[child] * joint_X_c[j]
+
+    if has_linear_hard == 1:
+        x_p = wp.transform_get_translation(X_wp)
+        x_c = wp.transform_get_translation(X_wc)
+        joint_C0_lin[j] = x_c - x_p
+        joint_lambda_lin[j] = joint_lambda_lin[j] * lambda_decay
+    else:
+        joint_C0_lin[j] = zero
+        joint_lambda_lin[j] = zero
+
+    if has_angular_hard == 1:
+        q_wp = wp.transform_get_rotation(X_wp)
+        q_wc = wp.transform_get_rotation(X_wc)
+        if parent >= 0:
+            X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+        else:
+            X_wp_rest = joint_X_p[j]
+        X_wc_rest = body_q_rest[child] * joint_X_c[j]
+        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
+        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        joint_C0_ang[j] = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        joint_lambda_ang[j] = joint_lambda_ang[j] * lambda_decay
+    else:
+        joint_C0_ang[j] = zero
+        joint_lambda_ang[j] = zero
 
 
 @wp.kernel
@@ -2661,6 +3362,68 @@ def init_body_particle_contacts(
     body_particle_contact_penalty_k[i] = k_floor
 
 
+@wp.func
+def _cable_dahl_active_stiffness(
+    c_start: int,
+    joint_penalty_k: wp.array[float],
+    joint_is_hard: wp.array[wp.int32],
+) -> wp.vec3:
+    """Current stiffness for soft cable bend/twist modes; hard modes return zero."""
+    bend_idx = c_start + 2
+    twist_idx = c_start + 3
+
+    k_bend = float(0.0)
+    k_bend_active = joint_penalty_k[bend_idx]
+    if joint_is_hard[bend_idx] == 0 and k_bend_active > 0.0:
+        k_bend = k_bend_active
+
+    k_twist = float(0.0)
+    k_twist_active = joint_penalty_k[twist_idx]
+    if joint_is_hard[twist_idx] == 0 and k_twist_active > 0.0:
+        k_twist = k_twist_active
+
+    return wp.vec3(k_bend, k_bend, k_twist)
+
+
+@wp.func
+def _dahl_axis_direction(d_kappa: float, d_kappa_prev: float) -> float:
+    """Loading direction for one scalar Dahl component."""
+    direction = float(1.0)
+    if d_kappa > _DAHL_KAPPADOT_DEADBAND:
+        direction = 1.0
+    elif d_kappa < -_DAHL_KAPPADOT_DEADBAND:
+        direction = -1.0
+    else:
+        direction = 1.0 if d_kappa_prev >= 0.0 else -1.0
+    return direction
+
+
+@wp.func
+def _advance_dahl_axis(
+    d_kappa: float,
+    d_kappa_prev: float,
+    sigma_prev: float,
+    sigma_max: float,
+    tau: float,
+):
+    """Advance one scalar Dahl component from a supplied strain increment.
+
+    Args:
+        d_kappa: Current strain increment.
+        d_kappa_prev: Previous increment used inside the direction deadband.
+        sigma_prev: Previous Dahl stress.
+        sigma_max: Magnitude of the Dahl stress envelope.
+        tau: Dahl transition length in strain units.
+
+    Returns:
+        Updated Dahl stress and loading direction.
+    """
+    direction = _dahl_axis_direction(d_kappa, d_kappa_prev)
+    exp_term = wp.exp(-direction * d_kappa / tau)
+    sigma = direction * sigma_max * (1.0 - exp_term) + sigma_prev * exp_term
+    return sigma, direction
+
+
 @wp.kernel
 def compute_cable_dahl_parameters(
     # Inputs
@@ -2674,8 +3437,10 @@ def compute_cable_dahl_parameters(
     joint_X_c: wp.array[wp.transform],
     joint_constraint_start: wp.array[int],
     joint_penalty_k: wp.array[float],
+    joint_is_hard: wp.array[wp.int32],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
     body_q: wp.array[wp.transform],
-    body_q_rest: wp.array[wp.transform],
     joint_sigma_prev: wp.array[wp.vec3],
     joint_kappa_prev: wp.array[wp.vec3],
     joint_dkappa_prev: wp.array[wp.vec3],
@@ -2685,62 +3450,73 @@ def compute_cable_dahl_parameters(
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
 ):
-    """Compute per-step Dahl friction parameters for cable bending.
+    """
+    Compute shared cable Dahl hysteresis parameters (sigma0, C_fric) from
+    the current bend/twist strain and the stored previous Dahl state.
 
-    ``joint_sigma_start`` is the linearized friction stress at step start;
-    ``joint_C_fric`` is d(sigma) / d(kappa). On a selected first/reset step,
-    curvature is based on the current start-of-step pose and the stored stress
-    and curvature increment are cleared. This pre-solve rebaseline covers enabled
-    cables; a disabled cable refreshes its history in ``update_cable_dahl_state``
-    (the end-of-step finalizer) instead, so a reset while disabled is applied there.
+    The outputs are:
+      - sigma0: linearized friction stress at the start of the step (per component)
+      - C_fric: tangent stiffness d(sigma)/d(kappa) (per component)
+
+    Dahl eps_max/tau remain per-joint scalars for compatibility with main's
+    custom attributes. Bend and twist still get separate envelopes through live
+    active stiffness. Hard or inactive subspaces produce zero Dahl stress and
+    tangent stiffness.
+
+    On a selected first/reset step, curvature is rebased to the current
+    start-of-step pose and the stored stress and curvature increment are
+    cleared. This pre-solve rebaseline covers enabled cables; a disabled cable
+    refreshes its history in ``update_cable_dahl_state`` (the end-of-step
+    finalizer) instead, so a reset while disabled is applied there.
     """
     j = wp.tid()
+    zero = wp.vec3(0.0)
 
-    # Only cable joints own Dahl state.
-    if joint_type[j] != JointType.CABLE:
-        joint_sigma_start[j] = wp.vec3(0.0)
-        joint_C_fric[j] = wp.vec3(0.0)
-        return
+    # Default to no friction; the success path overwrites both outputs below.
+    joint_sigma_start[j] = zero
+    joint_C_fric[j] = zero
 
-    # Disabled cables are not solved, and the finalizer refreshes their Dahl
-    # history every step, so they need no begin-of-step rebaseline.
-    if not joint_enabled[j]:
-        joint_sigma_start[j] = wp.vec3(0.0)
-        joint_C_fric[j] = wp.vec3(0.0)
+    # Only cable joints own Dahl state. Disabled cables are not solved, and
+    # the finalizer refreshes their Dahl history every step, so they need no
+    # begin-of-step rebaseline.
+    if not joint_enabled[j] or joint_type[j] != JointType.CABLE:
         return
 
     parent = joint_parent[j]
     child = joint_child[j]
-
     # World-parent joints are valid; child body must exist.
     if child < 0:
-        joint_sigma_start[j] = wp.vec3(0.0)
-        joint_C_fric[j] = wp.vec3(0.0)
         return
 
     rebaseline = _world_selected(joint_world[j], pose_rebaseline_mask)
 
-    # Compute joint frames in world space (current and rest only)
+    eps_max = joint_eps_max[j]
+    tau = joint_tau[j]
+    c_start = joint_constraint_start[j]
+    k_dahl = _cable_dahl_active_stiffness(c_start, joint_penalty_k, joint_is_hard)
+    # A gated joint (no Dahl this step) still owes state clearing on a
+    # rebaseline step, so stale pre-reset stress can never resurface when a
+    # subspace later reactivates.
+    dahl_active = tau > 0.0 and eps_max > 0.0 and (k_dahl[0] > 0.0 or k_dahl[1] > 0.0 or k_dahl[2] > 0.0)
+    if not dahl_active and not rebaseline:
+        return
+
+    # Compute joint frames in world space and the current bend/twist strain.
     if parent >= 0:
         X_wp = body_q[parent] * joint_X_p[j]
-        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
     else:
         X_wp = joint_X_p[j]
-        X_wp_rest = joint_X_p[j]
-
     X_wc = body_q[child] * joint_X_c[j]
-    X_wc_rest = body_q_rest[child] * joint_X_c[j]
-
-    # Extract quaternions (current and rest configurations)
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
-    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+    kappa_now = compute_geometric_cable_kappa_cached_z(
+        q_wp,
+        q_wc,
+        joint_cable_rest_kb_local[j],
+        joint_cable_rest_twist[j],
+    )
 
-    # Compute curvature at the start-of-step pose.
-    kappa_now = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
-
-    # Read previous state (from last converged timestep)
+    # Previous Dahl state (from last converged timestep).
     kappa_prev = joint_kappa_prev[j]
     d_kappa_prev = joint_dkappa_prev[j]
     sigma_prev = joint_sigma_prev[j]
@@ -2752,54 +3528,31 @@ def compute_cable_dahl_parameters(
         joint_dkappa_prev[j] = d_kappa_prev
         joint_sigma_prev[j] = sigma_prev
 
-    # Read per-joint Dahl parameters (isotropic)
-    eps_max = joint_eps_max[j]
-    tau = joint_tau[j]
-
-    # Use the per-joint bend stiffness from the solver constraint array (constraint slot 1 for cables).
-    c_start = joint_constraint_start[j]
-    k_bend_target = joint_penalty_k[c_start + 1]
-
-    # Friction envelope: sigma_max = k_bend_target * eps_max.
-
-    sigma_max = k_bend_target * eps_max
-    if sigma_max <= 0.0 or tau <= 0.0:
-        joint_sigma_start[j] = wp.vec3(0.0)
-        joint_C_fric[j] = wp.vec3(0.0)
+    if not dahl_active:
         return
 
-    sigma_out = wp.vec3(0.0)
-    C_fric_out = wp.vec3(0.0)
-
+    d_kappa = _cable_bend_twist_delta(kappa_now, kappa_prev)
+    sigma_out = zero
+    C_fric_out = zero
     for axis in range(3):
-        kappa_i = kappa_now[axis]
-        kappa_i_prev = kappa_prev[axis]
-        sigma_i_prev = sigma_prev[axis]
+        sigma_max = k_dahl[axis] * eps_max
+        if sigma_max <= 0.0:
+            continue
 
-        # Geometric curvature change
-        d_kappa_i = kappa_i - kappa_i_prev
-
-        # Direction flag based primarily on geometric change, with stored Delta-kappa fallback
-        s_i = 1.0
-        if d_kappa_i > _DAHL_KAPPADOT_DEADBAND:
-            s_i = 1.0
-        elif d_kappa_i < -_DAHL_KAPPADOT_DEADBAND:
-            s_i = -1.0
-        else:
-            # Within deadband: maintain previous direction from stored Delta kappa
-            s_i = 1.0 if d_kappa_prev[axis] >= 0.0 else -1.0
-        exp_term = wp.exp(-s_i * d_kappa_i / tau)
-        sigma0_i = s_i * sigma_max * (1.0 - exp_term) + sigma_i_prev * exp_term
+        sigma0_i, direction = _advance_dahl_axis(
+            d_kappa[axis],
+            d_kappa_prev[axis],
+            sigma_prev[axis],
+            sigma_max,
+            tau,
+        )
         sigma0_i = wp.clamp(sigma0_i, -sigma_max, sigma_max)
 
-        numerator = sigma_max - s_i * sigma0_i
-        # Use geometric curvature change for the length scale
-        denominator = tau + wp.abs(d_kappa_i)
-
-        # Store pure stiffness K = numerator / (tau + |d_kappa|)
-        C_fric_i = wp.max(numerator / denominator, 0.0)
+        # Tangent stiffness K = (sigma_max - dir*sigma0) / (tau + |d_kappa|).
+        numerator = sigma_max - direction * sigma0_i
+        denominator = tau + wp.abs(d_kappa[axis])
         sigma_out[axis] = sigma0_i
-        C_fric_out[axis] = C_fric_i
+        C_fric_out[axis] = wp.max(numerator / denominator, 0.0)
 
     joint_sigma_start[j] = sigma_out
     joint_C_fric[j] = C_fric_out
@@ -3328,6 +4081,8 @@ def solve_rigid_body(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -3500,6 +4255,8 @@ def solve_rigid_body(
             joint_X_p,
             joint_X_c,
             joint_axis,
+            joint_cable_rest_kb_local,
+            joint_cable_rest_twist,
             joint_qd_start,
             joint_target_q_start,
             joint_constraint_start,
@@ -3579,6 +4336,8 @@ def update_duals_joint(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
     joint_qd_start: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_constraint_start: wp.array[int],
@@ -3606,8 +4365,8 @@ def update_duals_joint(
     """
     Update augmented-Lagrangian duals for joint constraints (per-iteration).
 
-    Structural slots (linear, angular) update lambda via ALM and ramp k,
-    both unconditionally.  Drive/limit slots ramp k only (no lambda);
+    Hard structural slots update lambda via ALM; all structural slots ramp k.
+    Drive/limit slots ramp k only (no lambda);
     k is capped at ``joint_penalty_k_max`` while the force kernel applies
     the mode-specific stiffness cap (``min(avbd_ke, model_ke)``).
     """
@@ -3640,56 +4399,109 @@ def update_duals_joint(
     # Compute joint frames in world space
     if parent >= 0:
         X_wp = body_q[parent] * joint_X_p[j]
-        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
     else:
         X_wp = joint_X_p[j]
-        X_wp_rest = joint_X_p[j]
     X_wc = body_q[child] * joint_X_c[j]
-    X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
-    # CABLE joint: isotropic stretch + isotropic bend penalties (2 scalars).
+    # CABLE joint: fixed stretch/shear/bend/twist slots.
     if jt == JointType.CABLE:
         q_wp = wp.transform_get_rotation(X_wp)
         q_wc = wp.transform_get_rotation(X_wc)
-        q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-        q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
         x_p = wp.transform_get_translation(X_wp)
         x_c = wp.transform_get_translation(X_wc)
-        C_vec_stretch = x_c - x_p
+        C_vec = x_c - x_p
 
-        kappa = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        kappa = compute_geometric_cable_kappa_cached_z(
+            q_wp,
+            q_wc,
+            joint_cable_rest_kb_local[j],
+            joint_cable_rest_twist[j],
+        )
 
-        # Stretch penalty update (constraint slot 0)
+        # Linear penalty update in the parent-material frame: local
+        # u = [shear_x, shear_y, stretch_z], so stretch is z and shear is xy.
         stretch_idx = c_start
-        lam_new = _update_dual_vec3(
-            C_vec_stretch,
-            joint_C0_lin[j],
+        shear_idx = c_start + 1
+        u = wp.quat_rotate_inv(q_wp, C_vec)
+        lambda_lin = joint_lambda_lin[j]
+        C0_lin = joint_C0_lin[j]
+
+        u_stretch = wp.vec3(0.0, 0.0, u[2])
+        lam_stretch = _update_dual_vec3(
+            u_stretch,
+            wp.vec3(0.0, 0.0, C0_lin[2]),
             avbd_alpha,
             joint_penalty_k[stretch_idx],
-            joint_lambda_lin[j],
+            wp.vec3(0.0, 0.0, lambda_lin[2]),
             joint_is_hard[stretch_idx],
         )
-        joint_lambda_lin[j] = lam_new
+        # Soft slots use pure penalty (no ALM); discard lambda so joint_lambda_* only
+        # carries hard-slot contributions and soft slots don't accumulate stale duals.
+        if joint_is_hard[stretch_idx] == 0:
+            lam_stretch = wp.vec3(0.0)
         joint_penalty_k[stretch_idx] = wp.min(
-            joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx] + beta_lin * wp.length(C_vec_stretch)
+            joint_penalty_k_max[stretch_idx], joint_penalty_k[stretch_idx] + beta_lin * wp.abs(u[2])
         )
 
-        # Bend penalty update (constraint slot 1)
-        bend_idx = c_start + 1
-        lam_new = _update_dual_vec3(
-            kappa,
-            joint_C0_ang[j],
+        u_shear = wp.vec3(u[0], u[1], 0.0)
+        lam_shear = _update_dual_vec3(
+            u_shear,
+            wp.vec3(C0_lin[0], C0_lin[1], 0.0),
+            avbd_alpha,
+            joint_penalty_k[shear_idx],
+            wp.vec3(lambda_lin[0], lambda_lin[1], 0.0),
+            joint_is_hard[shear_idx],
+        )
+        if joint_is_hard[shear_idx] == 0:
+            lam_shear = wp.vec3(0.0)
+        joint_lambda_lin[j] = lam_stretch + lam_shear
+        joint_penalty_k[shear_idx] = wp.min(
+            joint_penalty_k_max[shear_idx], joint_penalty_k[shear_idx] + beta_lin * wp.length(u_shear)
+        )
+
+        # Bend penalty update (first angular constraint slot)
+        bend_idx = c_start + 2
+        lambda_ang = joint_lambda_ang[j]
+        C0_ang = joint_C0_ang[j]
+        kappa_bend = wp.vec3(kappa[0], kappa[1], 0.0)
+        lam_bend = _update_dual_vec3(
+            kappa_bend,
+            wp.vec3(C0_ang[0], C0_ang[1], 0.0),
             avbd_alpha,
             joint_penalty_k[bend_idx],
-            joint_lambda_ang[j],
+            wp.vec3(lambda_ang[0], lambda_ang[1], 0.0),
             joint_is_hard[bend_idx],
         )
-        joint_lambda_ang[j] = lam_new
+        if joint_is_hard[bend_idx] == 0:
+            lam_bend = wp.vec3(0.0)
         joint_penalty_k[bend_idx] = wp.min(
-            joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx] + beta_ang * wp.length(kappa)
+            joint_penalty_k_max[bend_idx], joint_penalty_k[bend_idx] + beta_ang * wp.length(kappa_bend)
+        )
+
+        twist_idx = c_start + 3
+        kappa_twist = wp.vec3(0.0, 0.0, kappa[2])
+        lam_twist = _update_dual_vec3(
+            kappa_twist,
+            wp.vec3(0.0, 0.0, C0_ang[2]),
+            avbd_alpha,
+            joint_penalty_k[twist_idx],
+            wp.vec3(0.0, 0.0, lambda_ang[2]),
+            joint_is_hard[twist_idx],
+        )
+        if joint_is_hard[twist_idx] == 0:
+            lam_twist = wp.vec3(0.0)
+        joint_lambda_ang[j] = lam_bend + lam_twist
+        joint_penalty_k[twist_idx] = wp.min(
+            joint_penalty_k_max[twist_idx], joint_penalty_k[twist_idx] + beta_ang * wp.length(kappa_twist)
         )
         return
+
+    if parent >= 0:
+        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    else:
+        X_wp_rest = joint_X_p[j]
+    X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
     # BALL joint: update isotropic linear anchor-coincidence penalty (single scalar).
     if jt == JointType.BALL:
@@ -4298,9 +5110,10 @@ def update_cable_dahl_state(
     joint_constraint_start: wp.array[int],
     joint_penalty_k: wp.array[float],
     joint_is_hard: wp.array[wp.int32],
+    joint_cable_rest_kb_local: wp.array[wp.vec3],
+    joint_cable_rest_twist: wp.array[float],
     # Body states (final, after solver convergence)
     body_q: wp.array[wp.transform],
-    body_q_rest: wp.array[wp.transform],
     # Dahl model parameters (PER-JOINT arrays, isotropic)
     joint_eps_max: wp.array[float],
     joint_tau: wp.array[float],
@@ -4310,121 +5123,83 @@ def update_cable_dahl_state(
     joint_dkappa_prev: wp.array[wp.vec3],  # input/output (stores Delta kappa)
 ):
     """
-    Post-iteration kernel: update Dahl hysteresis state after solver convergence (component-wise).
+    Persist cable Dahl hysteresis state after solver convergence.
 
-    Stores final curvature, friction stress, and curvature Delta kappa for the next step. Each
-    curvature component (x, y, z) is updated independently to preserve path-dependent memory.
-
-    Args:
-        joint_type: Joint type (only updates for cable joints)
-        joint_parent, joint_child: Parent/child body indices
-        joint_X_p, joint_X_c: Joint frames in parent/child
-        joint_constraint_start: Start index per joint in the solver constraint layout
-        joint_penalty_k: Per-constraint penalty stiffness; for cables, bend slot stores effective per-joint bend stiffness [N*m]
-        body_q: Final body transforms (after convergence)
-        body_q_rest: Rest body transforms
-        joint_sigma_prev: Friction stress state (read old, write new), wp.vec3 per joint
-        joint_kappa_prev: Curvature state (read old, write new), wp.vec3 per joint
-        joint_dkappa_prev: Delta-kappa state (write new), wp.vec3 per joint
-        joint_eps_max: Maximum persistent strain [rad] (scalar per joint)
-        joint_tau: Memory decay length [rad] (scalar per joint)
+    State is diagonal in [bend_x, bend_y, twist_z]. Only soft modes with active
+    stiffness are advanced; inactive modes clear stress and use final strain as
+    the next baseline.
     """
     j = wp.tid()
+    zero = wp.vec3(0.0)
 
-    # Only update cable joints
     if joint_type[j] != JointType.CABLE:
         return
 
-    # Get parent and child body indices
     parent = joint_parent[j]
     child = joint_child[j]
-
-    # World-parent joints are valid; child body must exist.
     if child < 0:
         return
 
-    # Compute joint frames in world space (final state)
     if parent >= 0:
         X_wp = body_q[parent] * joint_X_p[j]
-        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
     else:
         X_wp = joint_X_p[j]
-        X_wp_rest = joint_X_p[j]
     X_wc = body_q[child] * joint_X_c[j]
-    X_wc_rest = body_q_rest[child] * joint_X_c[j]
 
     q_wp = wp.transform_get_rotation(X_wp)
     q_wc = wp.transform_get_rotation(X_wc)
-    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
 
-    # Compute final curvature vector at end of timestep
-    kappa_final = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+    kappa_final = compute_geometric_cable_kappa_cached_z(
+        q_wp,
+        q_wc,
+        joint_cable_rest_kb_local[j],
+        joint_cable_rest_twist[j],
+    )
 
-    # Refresh Dahl state so toggling enabled/hard does not see stale values.
-    c_start_dahl = joint_constraint_start[j]
-    if not joint_enabled[j] or joint_is_hard[c_start_dahl + 1] == 1:
+    c_start = joint_constraint_start[j]
+    k_dahl = _cable_dahl_active_stiffness(c_start, joint_penalty_k, joint_is_hard)
+
+    # Inactive modes clear stress and use the current strain as the next baseline.
+    if not joint_enabled[j] or (k_dahl[0] <= 0.0 and k_dahl[1] <= 0.0 and k_dahl[2] <= 0.0):
         joint_kappa_prev[j] = kappa_final
-        joint_sigma_prev[j] = wp.vec3(0.0)
-        joint_dkappa_prev[j] = wp.vec3(0.0)
+        joint_sigma_prev[j] = zero
+        joint_dkappa_prev[j] = zero
         return
 
-    # Read stored Dahl state (component-wise vectors)
-    kappa_old = joint_kappa_prev[j]  # stored curvature
-    d_kappa_old = joint_dkappa_prev[j]  # stored Delta kappa
-    sigma_old = joint_sigma_prev[j]  # stored friction stress
+    # Stored Dahl state from the previous converged timestep.
+    kappa_old = joint_kappa_prev[j]
+    d_kappa_old = joint_dkappa_prev[j]
+    sigma_old = joint_sigma_prev[j]
+    d_kappa = _cable_bend_twist_delta(kappa_final, kappa_old)
 
-    # Read per-joint Dahl parameters (isotropic)
     eps_max = joint_eps_max[j]  # Maximum persistent strain [rad]
     tau = joint_tau[j]  # Memory decay length [rad]
 
-    # Bend stiffness is stored in constraint slot 1 for cable joints.
-    c_start = joint_constraint_start[j]
-    k_bend_target = joint_penalty_k[c_start + 1]  # [N*m]
-
-    # Friction envelope: sigma_max = k_bend_target * eps_max.
-    sigma_max = k_bend_target * eps_max  # [N*m]
-
-    # Early-out: disable friction if envelope is zero/invalid
-    if sigma_max <= 0.0 or tau <= 0.0:
-        joint_sigma_prev[j] = wp.vec3(0.0)
+    if eps_max <= 0.0 or tau <= 0.0:
+        joint_sigma_prev[j] = zero
         joint_kappa_prev[j] = kappa_final
-        joint_dkappa_prev[j] = kappa_final - kappa_old  # store Delta kappa
+        joint_dkappa_prev[j] = d_kappa
         return
 
-    # Update each component independently (3 separate hysteresis loops)
-    sigma_final_out = wp.vec3(0.0)
-    d_kappa_out = wp.vec3(0.0)
+    sigma_final_out = zero
+    d_kappa_out = zero
 
     for axis in range(3):
-        # Get component values
-        kappa_i_final = kappa_final[axis]
-        kappa_i_prev = kappa_old[axis]
-        d_kappa_i_prev = d_kappa_old[axis]
-        sigma_i_prev = sigma_old[axis]
+        sigma_max = k_dahl[axis] * eps_max  # [N*m]
+        if sigma_max <= 0.0:
+            continue
 
-        # Curvature change for this component
-        d_kappa_i = kappa_i_final - kappa_i_prev
-
-        # Direction flag (same logic as pre-iteration kernel), in kappa-space
-        s_i = 1.0
-        if d_kappa_i > _DAHL_KAPPADOT_DEADBAND:
-            s_i = 1.0
-        elif d_kappa_i < -_DAHL_KAPPADOT_DEADBAND:
-            s_i = -1.0
-        else:
-            # Within deadband: maintain previous direction
-            s_i = 1.0 if d_kappa_i_prev >= 0.0 else -1.0
-
-        # sigma_i_next = s_i*sigma_max * [1 - exp(-s_i*d_kappa_i/tau)] + sigma_i_prev * exp(-s_i*d_kappa_i/tau)
-        exp_term = wp.exp(-s_i * d_kappa_i / tau)
-        sigma_i_next = s_i * sigma_max * (1.0 - exp_term) + sigma_i_prev * exp_term
-
-        # Store component results
+        sigma_i_next, _direction = _advance_dahl_axis(
+            d_kappa[axis],
+            d_kappa_old[axis],
+            sigma_old[axis],
+            sigma_max,
+            tau,
+        )
         sigma_final_out[axis] = sigma_i_next
-        d_kappa_out[axis] = d_kappa_i
+        d_kappa_out[axis] = d_kappa[axis]
 
-    # Store final vector state for next timestep
+    # Store final vector state for next timestep: [bend_x, bend_y, twist_z].
     joint_sigma_prev[j] = sigma_final_out
     joint_kappa_prev[j] = kappa_final
     joint_dkappa_prev[j] = d_kappa_out

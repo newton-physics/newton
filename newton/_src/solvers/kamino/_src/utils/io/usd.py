@@ -1800,8 +1800,7 @@ class USDImporter:
         # World
         ###
 
-        # Initialize the world properties
-        gravity = GravityDescriptor()
+        stage_up_axis = Axis.from_string(str(self.UsdGeom.GetStageUpAxis(stage)))
 
         # Parse for PhysicsScene prims
         if self.UsdPhysics.ObjectType.Scene in ret_dict:
@@ -1813,16 +1812,25 @@ class USDImporter:
                 msg.error("Multiple PhysicsScene prims found in the USD file. Only the first prim will be considered.")
 
             # Extract the world gravity from the physics scene
-            gravity.acceleration = distance_unit * scene_desc.gravityMagnitude
-            gravity.direction = wp.vec3f(scene_desc.gravityDirection)
+            gravity = GravityDescriptor.from_usd(
+                scene_desc.gravityDirection,
+                scene_desc.gravityMagnitude,
+                stage_up_axis,
+                distance_unit,
+            )
             builder.set_gravity(gravity)
-            msg.debug(f"World gravity: {gravity}")
+            msg.debug(f"World gravity: {gravity.vector}")
 
-            # Set the world up-axis based on the gravity direction
-            up_axis = Axis.from_any(int(np.argmax(np.abs(scene_desc.gravityDirection))))
+            # Set the world up-axis based on the resolved gravity vector.
+            gravity_vector = np.asarray(gravity.vector, dtype=np.float32)
+            up_axis = (
+                stage_up_axis
+                if np.linalg.norm(gravity_vector) == 0.0
+                else Axis.from_any(int(np.argmax(np.abs(gravity_vector))))
+            )
         else:
             # NOTE: Gravity is left with default values
-            up_axis = Axis.from_string(str(self.UsdGeom.GetStageUpAxis(stage)))
+            up_axis = stage_up_axis
 
         # Determine the up-axis transformation
         if apply_up_axis_from_stage:
