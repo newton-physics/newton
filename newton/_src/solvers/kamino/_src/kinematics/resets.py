@@ -206,7 +206,7 @@ def _get_base_q_from_joint_q_and_body_q(
     model_joint_coords_offset: wp.array[wp.int32],
     state_joint_q: wp.array[wp.float32],
     state_body_q: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     base_q: wp.array[wp.transformf],
 ):
@@ -214,7 +214,7 @@ def _get_base_q_from_joint_q_and_body_q(
     wid = wp.tid()
 
     # Early return based on mask
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Read base_q from joint_q if a base joint was set for this world
@@ -247,7 +247,7 @@ def _get_base_u_from_joint_u_and_body_u(
     model_joint_dofs_offset: wp.array[wp.int32],
     state_joint_u: wp.array[wp.float32],
     state_body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     base_u: wp.array[wp.spatial_vectorf],
 ):
@@ -255,7 +255,7 @@ def _get_base_u_from_joint_u_and_body_u(
     wid = wp.tid()
 
     # Early return based on mask
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Read base_u from joint_u if a base joint was set for this world
@@ -284,13 +284,13 @@ def _set_body_q(
     # Inputs:
     body_world_id: wp.array[wp.int32],
     body_q_in: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     body_q_out: wp.array[wp.transformf],
 ):
     body_id = wp.tid()
     wid = body_world_id[body_id]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
     body_q_out[body_id] = body_q_in[body_id]
 
@@ -312,7 +312,7 @@ def _reset_joints_state_from_bodies_state(
     joint_q_0: wp.array[wp.float32],
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs
     joint_q: wp.array[wp.float32],
     joint_q_prev: wp.array[wp.float32],
@@ -324,7 +324,7 @@ def _reset_joints_state_from_bodies_state(
 
     # Early return based on mask
     wid = joint_world_id[jid]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Retrieve the joint model data
@@ -369,7 +369,7 @@ def _reset_joints_state_from_bodies_state(
 def _reset_body_velocities(
     # Inputs
     body_world_id: wp.array[wp.int32],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs
     body_u: wp.array[wp.spatial_vectorf],
 ):
@@ -378,7 +378,7 @@ def _reset_body_velocities(
 
     # Early return based on mask
     wid = body_world_id[body_id]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Reset velocities to zero
@@ -389,7 +389,7 @@ def _reset_body_velocities(
 def _reset_body_wrenches(
     # Inputs
     body_world_id: wp.array[wp.int32],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs
     body_w: wp.array[wp.spatial_vectorf],
     body_w_e: wp.array[wp.spatial_vectorf],
@@ -399,7 +399,7 @@ def _reset_body_wrenches(
 
     # Early return based on mask
     wid = body_world_id[body_id]
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Reset wrenches to zero
@@ -410,7 +410,7 @@ def _reset_body_wrenches(
 @wp.kernel
 def _reset_time_of_select_worlds(
     # Inputs:
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     data_time: wp.array[wp.float32],
     data_steps: wp.array[wp.int32],
@@ -419,7 +419,7 @@ def _reset_time_of_select_worlds(
     wid = wp.tid()
 
     # Skip resetting time if the world has not been marked for reset
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Reset both the physical time and step count to zero
@@ -440,7 +440,7 @@ def _eval_floating_base_relative_transform(
     base_u: wp.array[wp.spatial_vectorf],  # None also supported
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     relative_base_u: wp.bool,
     # Outputs:
     rel_transform: wp.array[wp.transformf],
@@ -451,7 +451,7 @@ def _eval_floating_base_relative_transform(
     wid = wp.tid()
 
     # Early return based on mask
-    if not world_mask[wid]:
+    if world_mask and not world_mask[wid]:
         return
 
     # Determine new pose of the base body (= follower of the base joint if there is a base joint)
@@ -529,7 +529,7 @@ def _apply_floating_base_transform(
     rel_transform: wp.array[wp.transformf],
     rel_velocity: wp.array[wp.spatial_vectorf],
     new_base_pos: wp.array[wp.vec3f],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     # Outputs:
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
@@ -539,7 +539,7 @@ def _apply_floating_base_transform(
 
     # Early return based on mask or absence of floating base
     wid = body_world_id[body_id]
-    if not world_mask[wid] or model_base_body_index[wid] < 0:
+    if (world_mask and not world_mask[wid]) or model_base_body_index[wid] < 0:
         return
 
     # Transform body pose
@@ -570,7 +570,7 @@ def reset_time(
     model: ModelKamino,
     time: wp.array[wp.float32],
     steps: wp.array[wp.int32],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     wp.launch(
         _reset_time_of_select_worlds,
@@ -591,7 +591,7 @@ def get_base_q_from_joint_q_and_body_q(
     joint_q: wp.array[wp.float32],
     body_q: wp.array[wp.transformf],
     base_q: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Infer the floating base pose from joint coordinates, if a base joint was set, or from body poses,
@@ -602,7 +602,7 @@ def get_base_q_from_joint_q_and_body_q(
         joint_q: joint coordinates array.
         body_q: body poses array.
         base_q: array of per-world floating base pose, to set from joint_q/body_q as applicable.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _get_base_q_from_joint_q_and_body_q,
@@ -625,7 +625,7 @@ def get_base_u_from_joint_u_and_body_u(
     joint_u: wp.array[wp.float32],
     body_u: wp.array[wp.spatial_vectorf],
     base_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Infer the floating base velocity from joint velocities, if a base joint was set, or from body velocities,
@@ -636,7 +636,7 @@ def get_base_u_from_joint_u_and_body_u(
         joint_u: joint velocities array.
         body_u: body velocities array.
         base_u: array of per-world floating base velocity, to set from joint_u/body_u as applicable.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _get_base_u_from_joint_u_and_body_u,
@@ -658,7 +658,7 @@ def set_body_q(
     model: ModelKamino,
     body_q_in: wp.array[wp.transformf],
     body_q_out: wp.array[wp.transformf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Set the body poses of select worlds to prescribed values.
@@ -667,7 +667,7 @@ def set_body_q(
         model: Kamino model.
         body_q_in: prescribed body poses.
         body_q_out: body poses to overwrite with those in body_q_in, in active worlds.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _set_body_q,
@@ -683,7 +683,7 @@ def set_floating_base(
     base_u: wp.array[wp.spatial_vectorf] | None,
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
     relative_base_u: bool = False,
 ):
     """
@@ -698,7 +698,7 @@ def set_floating_base(
                 If None, no additional velocity is composed to match the base velocity.
         body_q: body poses to update.
         body_u: body velocities to update.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
         relative_base_u: Boolean indicating whether base_u should be interpreted as expressed relative
                          to the new pose (after transforming so as to match base_q).
     """
@@ -755,7 +755,7 @@ def set_floating_base(
 def reset_joints_state_from_bodies_state(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Reset joint-based components of the state given body poses and velocities, inferring consistent
@@ -764,7 +764,7 @@ def reset_joints_state_from_bodies_state(
     Args:
         model: Kamino model.
         state: Kamino state.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _reset_joints_state_from_bodies_state,
@@ -797,7 +797,7 @@ def reset_joints_state_from_bodies_state(
 def reset_body_velocities(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Reset body velocities in the state to zero.
@@ -818,7 +818,7 @@ def reset_body_velocities(
 def reset_body_wrenches(
     model: ModelKamino,
     state: StateKamino,
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Reset body wrenches in the state to zero.
@@ -826,7 +826,7 @@ def reset_body_wrenches(
     Args:
         model: Kamino model.
         state: Kamino state.
-        world_mask: Per-world boolean mask, indicating in which worlds to perform the operation.
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
     """
     wp.launch(
         _reset_body_wrenches,
