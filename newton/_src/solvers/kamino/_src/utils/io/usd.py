@@ -3,6 +3,7 @@
 
 """Provides mechanisms to import OpenUSD Physics models."""
 
+import math
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -708,7 +709,13 @@ class USDImporter:
         num_dofs = int(dof_type.num_dofs)
         q_j_min = [JOINT_QMIN] * num_dofs
         q_j_max = [JOINT_QMAX] * num_dofs
-        tau_j_max = [JOINT_TAUMAX] * num_dofs
+        # Mirroring Newton USD importer behavior: Default effort limit on
+        # revolute/prismatic/spherical joints is set to JOINT_TAUMAX. On all
+        # D6-derived joints, the effort limit is set to `math.inf`.
+        if dof_type in (JointDoFType.REVOLUTE, JointDoFType.PRISMATIC, JointDoFType.SPHERICAL):
+            tau_j_max = [JOINT_TAUMAX] * num_dofs
+        else:
+            tau_j_max = [math.inf] * num_dofs
         return q_j_min, q_j_max, tau_j_max
 
     def _make_joint_default_dynamics(
@@ -748,7 +755,8 @@ class USDImporter:
             q_j_max[0] = min(rotation_unit * joint_spec.limit.upper, JOINT_QMAX)
         if joint_spec.drive.enabled:
             if not joint_spec.drive.acceleration:
-                tau_j_max[0] = min(joint_spec.drive.forceLimit, JOINT_TAUMAX)
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                tau_j_max[0] = joint_spec.drive.forceLimit
                 has_pd_gains = joint_spec.drive.stiffness > 0.0 or joint_spec.drive.damping > 0.0
                 if load_drive_dynamics and has_pd_gains:
                     a_j = [0.0] * dof_type.num_dofs
@@ -778,7 +786,8 @@ class USDImporter:
             q_j_max[0] = min(distance_unit * joint_spec.limit.upper, JOINT_QMAX)
         if joint_spec.drive.enabled:
             if not joint_spec.drive.acceleration:
-                tau_j_max[0] = min(joint_spec.drive.forceLimit, JOINT_TAUMAX)
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                tau_j_max[0] = joint_spec.drive.forceLimit
                 has_pd_gains = joint_spec.drive.stiffness > 0.0 or joint_spec.drive.damping > 0.0
                 if load_drive_dynamics and has_pd_gains:
                     a_j = [0.0] * dof_type.num_dofs
@@ -815,7 +824,8 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 if drive.first == joint_dof:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                    tau_j_max[0] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, X_j, q_j_min, q_j_max, tau_j_max
@@ -839,7 +849,8 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 if drive.first == joint_dof:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
+                    tau_j_max[0] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, X_j, q_j_min, q_j_max, tau_j_max
@@ -867,10 +878,11 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -896,10 +908,11 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -934,12 +947,13 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -968,12 +982,13 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
@@ -1019,18 +1034,19 @@ class USDImporter:
             act_type = JointActuationType.FORCE
             for drive in joint_spec.jointDrives:
                 dof = drive.first
+                # To align with the Newton USD importer, the effort limit is not clamped to JOINT_TAUMAX.
                 if dof == self.UsdPhysics.JointDOF.TransX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.TransZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[0] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[1] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotZ:
-                    tau_j_max[2] = min(drive.second.forceLimit, JOINT_TAUMAX)
+                    tau_j_max[2] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max

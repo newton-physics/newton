@@ -277,7 +277,7 @@ class TestModelConversions(unittest.TestCase):
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
         model_kamino: ModelKamino = builder_kamino.finalize(device=self.default_device)
         model_kamino_converted: ModelKamino = ModelKamino.from_newton(model_newton)
-        excluded = ["base_joint_index", "dq_j_max", "tau_j_max"]
+        excluded = ["base_joint_index"]
         test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino, excluded=excluded)
 
         # TODO: IMPLEMENT THIS CHECK: We wanna see if the both generate
@@ -338,7 +338,7 @@ class TestModelConversions(unittest.TestCase):
         # so inv_i_I_i needs a somewhat higher tolerance.
         rtol = {"inv_i_I_i": 1e-5}
         atol = {"inv_i_I_i": 1e-6}
-        excluded = ["ptr", "dq_j_max", "tau_j_max"]
+        excluded = ["ptr"]
         test_util_checks.assert_model_equal(
             self, model_kamino_converted, model_kamino, excluded=excluded, rtol=rtol, atol=atol
         )
