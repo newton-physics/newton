@@ -247,7 +247,11 @@ def _rnea_compensation_pass(
             model.joint_qd_start,
             model.joint_target_q_start,
             model.joint_dof_dim,
-            scratch.zeros_dof,  # joint_target_q
+            # Values are irrelevant here (the gains below are zero), but the
+            # array must be indexable via joint_target_q_start, which is
+            # coord-shaped under newton.use_coord_layout_targets; a DOF-sized
+            # zero buffer would read out of bounds.
+            model.joint_target_q,  # joint_target_q
             scratch.zeros_dof,  # joint_target_qd
             state.joint_q,
             scratch.joint_qd_internal,
