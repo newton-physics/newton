@@ -130,6 +130,40 @@ class JacobianCheckForwardKinematics(unittest.TestCase):
         self.assertTrue(success)
 
 
+class SparseJacobianSingleJointCheckForwardKinematics(unittest.TestCase):
+    def setUp(self):
+        if not test_context.setup_done:
+            setup_tests(clear_cache=False)
+        self.default_device = wp.get_device(test_context.device)
+
+    def tearDown(self):
+        self.default_device = None
+
+    def test_sparse_jacobian_matches_dense_for_single_joint_examples(self):
+        """Match dense and sparse Jacobians for every single-joint fixture."""
+        test_name = "Single-joint sparse Jacobian assembly check"
+        rng = np.random.default_rng(42)
+
+        def test_function(model: ModelKamino):
+            """Compare the dense and sparse Jacobians for a random body state."""
+            bodies_q_np = rng.uniform(-1.0, 1.0, 7 * model.size.sum_of_num_bodies).astype("float32")
+            bodies_q = wp.from_numpy(bodies_q_np, dtype=wp.transformf, device=model.device)
+            actuators_q = wp.zeros(
+                shape=model.size.sum_of_num_actuated_joint_coords, dtype=wp.float32, device=model.device
+            )
+            solver = ForwardKinematicsSolver(model, config=ForwardKinematicsSolver.Config(use_sparsity=True))
+            transforms = solver.eval_position_control_transformations(actuators_q, None)
+
+            jac_dense_np = solver.eval_kinematic_constraints_jacobian(bodies_q, transforms).numpy()
+            solver.assemble_sparse_jacobian(bodies_q, transforms)
+            jac_sparse_np = solver.sparse_jacobian.numpy()
+            rows, cols = solver.sparse_jacobian.dims.numpy()[0]
+            return np.allclose(jac_dense_np[0, :rows, :cols], jac_sparse_np[0], atol=1e-6, rtol=0.0)
+
+        success = run_test_single_joint_examples(test_function, test_name, device=self.default_device)
+        self.assertTrue(success)
+
+
 class WorldMaskInitializationForwardKinematics(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:
