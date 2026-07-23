@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..core.types import override
 from ..usd.schema_resolver import PrimType, SchemaResolver, _reader_schema_attribute
-from . import utils as usd
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -158,120 +157,120 @@ class SchemaResolverNewton(SchemaResolver):
             "limit_kd": SchemaAttribute("newton:limitDamping", None),
             "velocity_limit": SchemaAttribute("newton:velocityLimit", float("inf")),
             # Non-schema per-DOF limit attrs (deprecated; use newton:limitStiffness / newton:limitDamping)
-            "limit_linear_ke": _source_schema_attribute(
+            "limit_linear_ke": _reader_schema_attribute(
                 "newton:linear:limitStiffness",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr(
+                _reader_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:linear:limitStiffness", "newton:limitStiffness"
                 ),
             ),
-            "limit_angular_ke": _source_schema_attribute(
+            "limit_angular_ke": _reader_schema_attribute(
                 "newton:angular:limitStiffness",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr(
+                _reader_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:angular:limitStiffness", "newton:limitStiffness"
                 ),
             ),
-            "limit_rotX_ke": _source_schema_attribute(
+            "limit_rotX_ke": _reader_schema_attribute(
                 "newton:rotX:limitStiffness",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr(
+                _reader_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:rotX:limitStiffness", "newton:limitStiffness"
                 ),
             ),
-            "limit_rotY_ke": _source_schema_attribute(
+            "limit_rotY_ke": _reader_schema_attribute(
                 "newton:rotY:limitStiffness",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr(
+                _reader_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:rotY:limitStiffness", "newton:limitStiffness"
                 ),
             ),
-            "limit_rotZ_ke": _source_schema_attribute(
+            "limit_rotZ_ke": _reader_schema_attribute(
                 "newton:rotZ:limitStiffness",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr(
+                _reader_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:rotZ:limitStiffness", "newton:limitStiffness"
                 ),
             ),
-            "limit_linear_kd": _source_schema_attribute(
+            "limit_linear_kd": _reader_schema_attribute(
                 "newton:linear:limitDamping",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr(
+                _reader_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:linear:limitDamping", "newton:limitDamping"
                 ),
             ),
-            "limit_angular_kd": _source_schema_attribute(
+            "limit_angular_kd": _reader_schema_attribute(
                 "newton:angular:limitDamping",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr(
+                _reader_value_getter=_newton_legacy_joint_limit_attr(
                     "newton:angular:limitDamping", "newton:limitDamping"
                 ),
             ),
-            "limit_rotX_kd": _source_schema_attribute(
+            "limit_rotX_kd": _reader_schema_attribute(
                 "newton:rotX:limitDamping",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr("newton:rotX:limitDamping", "newton:limitDamping"),
+                _reader_value_getter=_newton_legacy_joint_limit_attr("newton:rotX:limitDamping", "newton:limitDamping"),
             ),
-            "limit_rotY_kd": _source_schema_attribute(
+            "limit_rotY_kd": _reader_schema_attribute(
                 "newton:rotY:limitDamping",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr("newton:rotY:limitDamping", "newton:limitDamping"),
+                _reader_value_getter=_newton_legacy_joint_limit_attr("newton:rotY:limitDamping", "newton:limitDamping"),
             ),
-            "limit_rotZ_kd": _source_schema_attribute(
+            "limit_rotZ_kd": _reader_schema_attribute(
                 "newton:rotZ:limitDamping",
                 None,
-                _source_value_getter=_newton_legacy_joint_limit_attr("newton:rotZ:limitDamping", "newton:limitDamping"),
+                _reader_value_getter=_newton_legacy_joint_limit_attr("newton:rotZ:limitDamping", "newton:limitDamping"),
             ),
             # Non-schema per-DOF initial state attrs
-            "angular_position": _source_schema_attribute(
+            "angular_position": _reader_schema_attribute(
                 "newton:angular:position",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:angular:position"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:angular:position"),
             ),
-            "linear_position": _source_schema_attribute(
+            "linear_position": _reader_schema_attribute(
                 "newton:linear:position",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:linear:position"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:linear:position"),
             ),
-            "rotX_position": _source_schema_attribute(
+            "rotX_position": _reader_schema_attribute(
                 "newton:rotX:position",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:position"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:position"),
             ),
-            "rotY_position": _source_schema_attribute(
+            "rotY_position": _reader_schema_attribute(
                 "newton:rotY:position",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:position"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:position"),
             ),
-            "rotZ_position": _source_schema_attribute(
+            "rotZ_position": _reader_schema_attribute(
                 "newton:rotZ:position",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:position"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:position"),
             ),
-            "angular_velocity": _source_schema_attribute(
+            "angular_velocity": _reader_schema_attribute(
                 "newton:angular:velocity",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:angular:velocity"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:angular:velocity"),
             ),
-            "linear_velocity": _source_schema_attribute(
+            "linear_velocity": _reader_schema_attribute(
                 "newton:linear:velocity",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:linear:velocity"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:linear:velocity"),
             ),
-            "rotX_velocity": _source_schema_attribute(
+            "rotX_velocity": _reader_schema_attribute(
                 "newton:rotX:velocity",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:velocity"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:rotX:velocity"),
             ),
-            "rotY_velocity": _source_schema_attribute(
+            "rotY_velocity": _reader_schema_attribute(
                 "newton:rotY:velocity",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:velocity"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:rotY:velocity"),
             ),
-            "rotZ_velocity": _source_schema_attribute(
+            "rotZ_velocity": _reader_schema_attribute(
                 "newton:rotZ:velocity",
                 0.0,
-                _source_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:velocity"),
+                _reader_value_getter=_newton_non_schema_joint_state_attr("newton:rotZ:velocity"),
             ),
         },
         PrimType.SHAPE: {
@@ -281,25 +280,25 @@ class SchemaResolverNewton(SchemaResolver):
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
             # Legacy per-shape contact attrs (deprecated; use NewtonMaterialAPI instead)
-            "ke": _source_schema_attribute(
+            "ke": _reader_schema_attribute(
                 "newton:contact_ke",
                 None,
-                _source_value_getter=_newton_legacy_contact_attr("newton:contact_ke", "newton:contactStiffness"),
+                _reader_value_getter=_newton_legacy_contact_attr("newton:contact_ke", "newton:contactStiffness"),
             ),
-            "kd": _source_schema_attribute(
+            "kd": _reader_schema_attribute(
                 "newton:contact_kd",
                 None,
-                _source_value_getter=_newton_legacy_contact_attr("newton:contact_kd", "newton:contactDamping"),
+                _reader_value_getter=_newton_legacy_contact_attr("newton:contact_kd", "newton:contactDamping"),
             ),
-            "kf": _source_schema_attribute(
+            "kf": _reader_schema_attribute(
                 "newton:contact_kf",
                 None,
-                _source_value_getter=_newton_legacy_contact_attr("newton:contact_kf", "newton:contactFrictionGain"),
+                _reader_value_getter=_newton_legacy_contact_attr("newton:contact_kf", "newton:contactFrictionGain"),
             ),
-            "ka": _source_schema_attribute(
+            "ka": _reader_schema_attribute(
                 "newton:contact_ka",
                 None,
-                _source_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
+                _reader_value_getter=_newton_legacy_contact_attr("newton:contact_ka", "newton:contactAdhesion"),
             ),
             # SDF configuration — from NewtonSDFCollisionAPI.
             "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", float("-inf")),
@@ -630,15 +629,15 @@ class SchemaResolverMjc(SchemaResolver):
             "weight": SchemaAttribute("mjc:solmix", 1.0),
             # See PrimType.SHAPE above for the mjc:solref → stiffness/damping
             # back-compat mirror.
-            "ke": _source_schema_attribute(
+            "ke": _reader_schema_attribute(
                 "mjc:solref",
                 None,
-                _source_value_getter=_mjc_legacy_material_solref(solref_to_stiffness, "newton:contactStiffness"),
+                _reader_value_getter=_mjc_legacy_material_solref(solref_to_stiffness, "newton:contactStiffness"),
             ),
-            "kd": _source_schema_attribute(
+            "kd": _reader_schema_attribute(
                 "mjc:solref",
                 None,
-                _source_value_getter=_mjc_legacy_material_solref(solref_to_damping, "newton:contactDamping"),
+                _reader_value_getter=_mjc_legacy_material_solref(solref_to_damping, "newton:contactDamping"),
             ),
         },
         PrimType.ACTUATOR: {

@@ -218,6 +218,7 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
+    schema_resolution: SchemaResolution | None = None,
     use_applied_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
@@ -344,8 +345,12 @@ def parse_usd(
 
             .. experimental::
 
-                The ``schema_resolvers`` and ``use_applied_schema_fallbacks``
-                arguments may change without prior notice.
+                The ``schema_resolvers``, ``schema_resolution``, and
+                ``use_applied_schema_fallbacks`` arguments may change without
+                prior notice.
+        schema_resolution: Reusable source-neutral schema resolution. It is
+            mutually exclusive with ``schema_resolvers`` and owns the applied
+            schema fallback policy when provided.
         use_applied_schema_fallbacks: True uses an applied schema's registered
             USD fallback before importer defaults and lower-priority resolvers,
             opting into the future behavior without migration warnings. The
@@ -452,12 +457,19 @@ def parse_usd(
 
     if schema_resolvers is not None and schema_resolution is not None:
         raise ValueError("schema_resolvers and schema_resolution are mutually exclusive")
-    if schema_resolution is None:
+    if schema_resolution is not None:
+        if use_applied_schema_fallbacks:
+            raise ValueError(
+                "use_applied_schema_fallbacks must be configured on schema_resolution when that object is provided"
+            )
+        schema_resolvers = list(schema_resolution._resolvers)
+    else:
         if schema_resolvers is None:
             schema_resolvers = [SchemaResolverNewton()]
-        schema_resolution = SchemaResolution(schema_resolvers)
-    else:
-        schema_resolvers = list(schema_resolution._resolvers)
+        schema_resolution = SchemaResolution(
+            schema_resolvers,
+            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+        )
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
@@ -561,10 +573,7 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
 
     # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(
-        schema_resolvers,
-        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
-    )
+    R = SchemaResolverManager(resolution=schema_resolution)
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
     # fallback to the canonical physics: deformable schema. Empty unless a
@@ -827,6 +836,7 @@ def parse_usd(
             spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
             if spec is None:
                 continue
+
             if resolver.name == "mjc":
                 raw_value = usd.get_attribute(prim, spec.name)
                 if raw_value is None:

@@ -29,7 +29,6 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_RAW,
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
-from newton._src.usd.schema_resolver import _FallbackPolicy
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import (
@@ -43,11 +42,8 @@ devices = get_test_devices()
 
 
 def _composed_resolution(*args, **kwargs):
-    with mock.patch(
-        "newton._src.usd.schema_resolver._DEFAULT_FALLBACK_POLICY",
-        _FallbackPolicy.COMPOSED,
-    ):
-        return SchemaResolution(*args, **kwargs)
+    kwargs["use_applied_schema_fallbacks"] = True
+    return usd.SchemaResolution(*args, **kwargs)
 
 
 _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"

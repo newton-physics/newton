@@ -3395,6 +3395,7 @@ class ModelBuilder:
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
+        schema_resolution: SchemaResolution | None = None,
         use_applied_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
@@ -3520,8 +3521,12 @@ class ModelBuilder:
 
                 .. experimental::
 
-                    The ``schema_resolvers`` and ``use_applied_schema_fallbacks``
-                    arguments may change without prior notice.
+                    The ``schema_resolvers``, ``schema_resolution``, and
+                    ``use_applied_schema_fallbacks`` arguments may change without
+                    prior notice.
+            schema_resolution: Reusable source-neutral schema resolution. It is
+                mutually exclusive with ``schema_resolvers`` and owns the applied
+                schema fallback policy when provided.
             use_applied_schema_fallbacks: True uses an applied schema's registered
                 USD fallback before importer defaults and lower-priority resolvers,
                 opting into the future behavior without migration warnings. The
@@ -3648,6 +3653,7 @@ class ModelBuilder:
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
+            schema_resolution=schema_resolution,
             use_applied_schema_fallbacks=use_applied_schema_fallbacks,
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,

@@ -19,10 +19,11 @@ the current `ModelBuilder.add_usd()` construction path and behavior. One typed
 existing `schema_resolvers=` argument constructs that object internally.
 Applied schema identity is part of the input: an applied schema owns the
 properties it defines, including its USD fallbacks. Resolver definitions
-identify ownership and conversion. A private catalog supplies built-in Newton,
-PhysX, and MuJoCo fallbacks when their schema plugins are unavailable. Batched
-resolution, Warp functions, and direct ModelBuilder buffer population are
-deliberately deferred.
+identify ownership and conversion. The source adapter supplies registered
+schema fallbacks: the PXR adapter reads them from `Usd.SchemaRegistry`, while a
+PXR-free adapter provides the equivalent versioned schema metadata explicitly.
+Batched resolution, Warp functions, and direct ModelBuilder buffer population
+are deliberately deferred.
 
 ## Goals
 
@@ -30,8 +31,8 @@ deliberately deferred.
 - Preserve the behavior of `add_usd()` and `schema_resolvers=` by default.
 - Resolve values and applied schemas supplied without a `Usd.Prim`.
 - Read fallbacks from registered USD schemas on the PXR path.
-- Share built-in fallbacks with schema-neutral sources.
-- Let callers override or extend the fallback catalog for other schema versions.
+- Accept registered schema fallbacks from schema-neutral source adapters.
+- Keep schema metadata versioning in the adapter that owns the scene source.
 - Keep the external mechanism small and hide candidates, provenance, and storage.
 - Make the scalar contract suitable for later columnar and Warp execution.
 - Let non-PXR scene consumers reuse the resolver without changing their
@@ -86,13 +87,14 @@ fallback(schema_name, attribute_name) -> raw USD value or missing
 
 The PXR adapter reads authored values and applied/type metadata, then asks
 `Usd.SchemaRegistry` for the composed prim definition and its attribute
-fallbacks. A non-PXR source provides already-composed values and recorded
-schema identity; the resolver uses Newton's private fallback catalog. Resolver
-priority, transformations, and selected-source provenance are shared. Once the
-composed policy is active, an applied schema that owns a requested property but
-has no fallback in either the registry or catalog fails instead of silently
-using a builder default. During the audit period, that future error does not
-break the legacy result.
+fallbacks. A non-PXR source provides already-composed values, recorded schema
+identity, and the fallbacks for schemas it treats as registered. Resolver
+priority, transformations, and selected-source provenance are shared.
+
+Schemas without authoritative metadata remain a second-class compatibility
+path. Their authored values still participate in resolver priority, while
+importer defaults precede resolver compatibility defaults. They do not claim
+registered-schema fallback ownership.
 
 Canonical USDPhysics descriptors remain importer inputs. Resolvers only supply
 extension-schema properties such as armature, friction, contact parameters,
@@ -131,10 +133,6 @@ The same object resolves mapping inputs directly:
 ```python
 resolution = newton.usd.SchemaResolution(
     resolvers,
-    # Only needed for custom schemas or version-specific overrides.
-    schema_fallbacks={
-        "ExampleJointAPI": {"example:armature": 0.0},
-    },
 )
 requirements = resolution.requirements(PrimType.JOINT)
 schemas = resolution.schemas(PrimType.JOINT)
@@ -142,6 +140,10 @@ properties = resolution.resolve(
     PrimType.JOINT,
     values,
     schemas=applied_schemas,
+    # Registered schema metadata supplied by this source adapter.
+    schema_fallbacks={
+        "ExampleJointAPI": {"example:armature": 0.0},
+    },
     defaults={"armature": builder.default_joint_cfg.armature},
 )
 ```
@@ -165,9 +167,10 @@ path, not the future hot path.
 `SchemaResolution` through the PXR adapter. It constructs a default Newton
 resolution when neither argument is supplied and wraps `schema_resolvers=` when
 that shorthand is used. The adapter caches composed schema fallbacks by prim
-type and schema. An explicitly supplied fallback table is used only when the
-registered schema cannot provide the property. Attribute collection for the
-returned `schema_attrs` dictionary remains separate and unchanged.
+type and schema. `Usd.SchemaRegistry` remains authoritative on this path;
+`schema_fallbacks` is input for source-neutral `resolve()` calls. Attribute
+collection for the returned `schema_attrs` dictionary remains separate and
+unchanged.
 
 The first implementation does not move every higher-level rule out of
 `import_usd.py`. Source-specific branches such as MuJoCo raw-limit provenance,
@@ -178,8 +181,8 @@ small behavior-preserving changes after the common scalar engine is established.
 
 A schema-aware scene source supplies attribute values plus typed and applied
 schema identities to the same `SchemaResolution` inside its existing body,
-shape, and joint loops. It uses Newton's built-in fallback catalog, so it owns
-no schema-default table. Topology discovery, ordering, and
+shape, and joint loops. It also supplies the registered fallbacks for the
+schema versions its transport exposes. Topology discovery, ordering, and
 `ModelBuilder.add_*()` calls remain source concerns. Equivalent local
 precedence and conversion code can be removed as each entity family moves to
 the shared engine.
@@ -217,8 +220,9 @@ host to report after execution. Diagnostic representation is not public.
   authored nonzero, resolver ordering, transformations, and missing values.
 - The same values and schema identity resolve equally through PXR and mapping
   sources.
-- Every built-in owned mapping has an entry in the private fallback catalog.
-- Registered Newton schema fallbacks match the catalog exactly.
+- Adapter-supplied fallbacks establish registered ownership without importing
+  PXR.
+- Registered Newton schema fallbacks are read directly from the PXR registry.
 - Legacy PXR-only callbacks continue to work and fail explicitly through the
   source-neutral facade.
 - Later cross-source tests compare final builder/model fields against
