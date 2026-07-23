@@ -115,6 +115,7 @@ class ControllerJointImpedanceModelFree(Controller):
 
     def __init__(
         self,
+        *,
         num_robots: int,
         dofs_per_robot: wp.array[wp.int32],
         max_dofs: int,
@@ -266,9 +267,6 @@ class ControllerJointImpedanceModelFree(Controller):
     def is_graphable(self) -> bool:
         return True
 
-    def state(self) -> None:
-        return None
-
     def input(self) -> SimpleNamespace:
         """Return a pre-allocated input struct with zero-initialised flat arrays."""
         specs = [
@@ -286,9 +284,9 @@ class ControllerJointImpedanceModelFree(Controller):
         ns = _allocate_namespace(specs, self._device, self._requires_grad)
         shape_2d = (self._num_robots, self._max_dofs)
         if self._stiffness_attr is not None:
-            setattr(ns, self._stiffness_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device))
+            setattr(ns, self._stiffness_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad))
         if self._damping_attr is not None:
-            setattr(ns, self._damping_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device))
+            setattr(ns, self._damping_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad))
         if self._use_inertia:
             setattr(
                 ns,
@@ -297,6 +295,7 @@ class ControllerJointImpedanceModelFree(Controller):
                     (self._num_robots, self._max_dofs, self._max_dofs),
                     dtype=wp.float32,
                     device=self._device,
+                    requires_grad=self._requires_grad,
                 ),
             )
         return ns
@@ -311,27 +310,23 @@ class ControllerJointImpedanceModelFree(Controller):
 
     def compute(
         self,
-        input_struct: Any,
-        output_struct: Any,
-        controller_state_now: None,
-        controller_state_next: None,
-        time_step: float | wp.array[wp.float32],
+        inputs: Any,
+        outputs: Any,
+        dt: float | wp.array[wp.float32],
     ) -> None:
         """Compute one impedance-control step and write joint torques.
 
         Args:
-            input_struct: Namespace with flat sim arrays as described in the
+            inputs: Namespace with flat sim arrays as described in the
                 class docstring. Dynamics fields must be populated by the
                 caller before each call.
-            output_struct: Namespace with a flat sim torque array.
-            controller_state_now: Unused (stateless). Pass ``None``.
-            controller_state_next: Unused. Pass ``None``.
-            time_step: Unused. Accepted for API compatibility.
+            outputs: Namespace with a flat sim torque array.
+            dt: Unused. Accepted for API compatibility.
         """
         stiffness = (
-            self._stiffness_baked if self._stiffness_baked is not None else getattr(input_struct, self._stiffness_attr)
+            self._stiffness_baked if self._stiffness_baked is not None else getattr(inputs, self._stiffness_attr)
         )
-        damping = self._damping_baked if self._damping_baked is not None else getattr(input_struct, self._damping_attr)
+        damping = self._damping_baked if self._damping_baked is not None else getattr(inputs, self._damping_attr)
 
         dim2d = (self._num_robots, self._max_dofs)
 
@@ -339,7 +334,7 @@ class ControllerJointImpedanceModelFree(Controller):
             wp.launch(
                 _gather_dof_kernel,
                 dim=dim2d,
-                inputs=[getattr(input_struct, src_attr), src_idx, self._dof_offsets, self._dofs_per_robot],
+                inputs=[getattr(inputs, src_attr), src_idx, self._dof_offsets, self._dofs_per_robot],
                 outputs=[dst_2d],
                 device=self._device,
             )
@@ -377,7 +372,7 @@ class ControllerJointImpedanceModelFree(Controller):
             wp.launch(
                 _mass_matrix_multiply_kernel,
                 dim=dim2d,
-                inputs=[getattr(input_struct, self._mass_matrix_attr), self._acc_buf, self._dofs_per_robot],
+                inputs=[getattr(inputs, self._mass_matrix_attr), self._acc_buf, self._dofs_per_robot],
                 outputs=[self._tau_buf],
                 device=self._device,
             )
@@ -403,6 +398,6 @@ class ControllerJointImpedanceModelFree(Controller):
             _scatter_dof_kernel,
             dim=dim2d,
             inputs=[self._tau_buf, self._f_idx, self._dof_offsets, self._dofs_per_robot],
-            outputs=[getattr(output_struct, self._f_attr)],
+            outputs=[getattr(outputs, self._f_attr)],
             device=self._device,
         )
