@@ -669,12 +669,6 @@ def compute_inertia_shape(
                 return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cone(density, scale[0] - thickness, scale[1] - thickness)
             m_shell = solid[0] - hollow[0]
-            if m_shell <= 0.0:
-                raise ValueError(
-                    f"Hollow cone shell has non-positive mass ({m_shell:.6g}). "
-                    f"The thickness ({thickness}) must be smaller than both the "
-                    f"radius ({scale[0]}) and half_height ({scale[1]})."
-                )
             # Cones have non-zero COM so outer and inner cones have different COMs;
             # compute the shell COM as the weighted difference, then shift both
             # inertia tensors to the shell COM before subtracting (parallel-axis theorem).
