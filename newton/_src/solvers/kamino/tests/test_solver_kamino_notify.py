@@ -629,32 +629,25 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             atol=1e-6,
         )
 
-    def test_fk_explicit_base_pose_update_matches_fresh_solver(self):
-        """An explicit FK base reset after notify matches a freshly built solver."""
+    def test_fk_explicit_base_pose_changes_propagate(self):
+        """Joint-property notifications refresh an explicit FK base pose."""
         model = _build_free_root()
-        config = SolverKamino.Config(use_fk_solver=True, use_collision_detector=False)
-        solver = SolverKamino(model, config)
-        model.body_q.assign(
-            [
-                wp.transformf(
-                    wp.vec3f(0.3, -0.4, 1.5),
-                    wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.25),
-                )
-            ]
+        solver = SolverKamino(
+            model,
+            SolverKamino.Config(use_fk_solver=True, use_collision_detector=False),
         )
+        fk = solver._solver_kamino.solver_fk
+        new_pose = wp.transformf(
+            wp.vec3f(0.3, -0.4, 1.5),
+            wp.quat_from_axis_angle(wp.vec3f(0.0, 1.0, 0.0), 0.25),
+        )
+        model.joint_q.assign(np.asarray(new_pose))
 
-        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
-        reference = SolverKamino(model, SolverKamino.Config(use_fk_solver=True, use_collision_detector=False))
-        state = model.state()
-        reference_state = model.state()
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
 
-        solver.reset(state)
-        reference.reset(reference_state)
-
-        np.testing.assert_allclose(state.body_q.numpy(), reference_state.body_q.numpy(), atol=1e-6)
         np.testing.assert_allclose(
-            solver._solver_kamino.solver_fk.base_q_default.numpy(),
-            reference._solver_kamino.solver_fk.base_q_default.numpy(),
+            fk.base_q_default.numpy()[0],
+            np.asarray(new_pose),
             atol=1e-6,
         )
 
@@ -672,7 +665,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 )
                 model.fk_actuation_flag.assign([0])
 
-                with self.assertRaisesRegex(RuntimeError, "FK actuation partition.*recreate"):
+                with self.assertRaisesRegex(RuntimeError, "actuated vs passive status.*recreate"):
                     solver.notify_model_changed(flag)
 
     def test_fk_base_joint_override_change_is_allowed(self):

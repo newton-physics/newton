@@ -19,6 +19,7 @@ from ....config import ForwardKinematicsSolverConfig
 from ...core.joints import JointActuationType, JointDoFType
 from ...core.model import ModelKamino
 from ...core.types import assign_to_warp_int32_array, to_warp_int32_array, vec7f
+from ...kinematics.resets import get_base_q_from_joint_q_and_body_q
 from ...linalg.blas import (
     block_sparse_ATA_blockwise_3_4_inv_diagonal_2d,
     block_sparse_ATA_inv_diagonal_2d,
@@ -33,7 +34,6 @@ from ...utils.world_equivalence import DiscreteSignature, compute_equivalence_cl
 from .kernels import (
     _add_regularizer_to_diagonal,
     _apply_line_search_step,
-    _compute_base_q_default,
     _compute_fk_axis_joint_frames,
     _compute_fk_joint_frames,
     _correct_actuator_coords,
@@ -212,6 +212,8 @@ class ForwardKinematicsSolver:
                 device=self.device,
             )
         joints_act_type_prev = resolved_act_type.numpy()
+        # Indexed by model joint: 0 is passive, 1 is actuated, and -1 skips
+        # validation for an explicit base joint that FK replaces.
         built_fk_actuated = (joints_act_type_prev != JointActuationType.PASSIVE).astype(np.int32)
 
         # Retrieve / compute dimensions - Actuated coordinates/dofs (main model)
@@ -231,6 +233,8 @@ class ForwardKinematicsSolver:
         classes = compute_fk_equivalence_classes(self.model)
         num_classes = len(classes)
 
+        # Resolve discrete joint data (e.g. types and indices) first, then
+        # copy or compute continuous joint data (e.g. frames).
         # Create a copy of the model's joints with added joints as needed:
         # - actuated free joints to reset the base position/orientation
         # - axis joints to factor out superfluous DoFs at tie rods
@@ -261,8 +265,6 @@ class ForwardKinematicsSolver:
             if base_joint_id >= 0:
                 # FK always replaces an explicit base joint with an actuated free joint.
                 built_fk_actuated[base_joint_id] = -1
-        self._built_fk_actuated = to_warp_int32_array(built_fk_actuated, device=self.device)
-        self._fk_actuation_violations = wp.empty(2, dtype=wp.int32, device=self.device)
         for wd_id in range(self.num_worlds):
             # Retrieve base joint id
             base_joint_id = base_joint_ids_input[wd_id]
@@ -350,9 +352,6 @@ class ForwardKinematicsSolver:
                 joints_bid_F.append(base_body_id)
                 joints_source_id.append(-1)
                 joints_num_actuated_coords.append(7)
-                # Note: we rely on the initial body orientations being identity
-                # Only then will the corresponding joint coordinates be interpretable as
-                # specifying the absolute base position and orientation
                 coord_offset = -7 * wd_id - 1  # We encode offsets in base_q negatively with i -> -i - 1
                 actuated_coords_map.extend(range(coord_offset, coord_offset - 7, -1))
                 joints_num_actuated_dofs.append(6)
@@ -541,6 +540,10 @@ class ForwardKinematicsSolver:
             self.num_constraints = to_warp_int32_array(num_constraints)
             self.constraint_full_to_red_map = to_warp_int32_array(constraint_full_to_red_map)
 
+            # Helper data for model updates validation
+            self._built_fk_actuated = to_warp_int32_array(built_fk_actuated)
+            self._fk_actuation_violations = wp.empty(2, dtype=wp.int32)
+
             # Modified joints
             self.joints_dof_type = to_warp_int32_array(joints_dof_type)
             self.joints_act_type = to_warp_int32_array(joints_act_type)
@@ -561,11 +564,6 @@ class ForwardKinematicsSolver:
             # Default base state
             self.base_q_default = wp.zeros(shape=self.num_worlds, dtype=wp.transformf)
             self.base_u_default = wp.zeros(shape=(self.num_worlds,), dtype=wp.spatial_vectorf)
-
-            # Initialize mutable model-derived values through the same path used by runtime notifications.
-            self._update_joint_frames()
-            self._update_axis_joint_frames()
-            self._update_base_q_default()
 
             # Line search
             self.max_line_search_iterations = wp.array(dtype=wp.int32, shape=(1,))  # Max iterations
@@ -910,6 +908,11 @@ class ForwardKinematicsSolver:
                 maxiter=self.cg_max_iter,
             )
 
+        # Initialize continuous joint data (e.g. joint frames)
+        self._update_joint_frames()
+        self._update_axis_joint_frames()
+        self._update_base_q_default()
+
     def validate_model_changed(self, flags: ModelFlags | int) -> None:
         """Validate FK structural invariants before model values are updated.
 
@@ -917,7 +920,7 @@ class ForwardKinematicsSolver:
             flags: Bitmask indicating which model properties changed.
 
         Raises:
-            RuntimeError: If the effective FK actuation partition changed.
+            RuntimeError: If the effective set of joints that are actuated for FK changed.
             ValueError: If an FK actuation override is invalid.
         """
         if not flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
@@ -943,7 +946,7 @@ class ForwardKinematicsSolver:
             raise ValueError(f"Invalid FK actuation flag for joint {int(invalid_joint)}: expected -1, 0, or 1")
         if changed_joint != joint_count:
             raise RuntimeError(
-                f"Changing the FK actuation partition for joint {int(changed_joint)} is not supported; "
+                f"Changing the actuated vs passive status of joint {int(changed_joint)} for FK is not supported; "
                 "recreate SolverKamino to apply the change."
             )
 
@@ -962,7 +965,7 @@ class ForwardKinematicsSolver:
         if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._update_axis_joint_frames()
 
-        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._update_base_q_default()
 
     def _update_joint_frames(self) -> None:
@@ -1012,16 +1015,12 @@ class ForwardKinematicsSolver:
         """Compute default FK base poses from the current reference pose."""
         if self.num_worlds == 0:
             return
-        wp.launch(
-            _compute_base_q_default,
-            dim=self.num_worlds,
-            inputs=[
-                self.model.info.base_joint_index,
-                self.model.info.base_body_index,
-                self.model.bodies.q_i_0,
-                self.base_q_default,
-            ],
-            device=self.device,
+        get_base_q_from_joint_q_and_body_q(
+            model=self.model,
+            joint_q=self.model.joints.q_j_0,
+            body_q=self.model.bodies.q_i_0,
+            base_q=self.base_q_default,
+            world_mask=self.all_worlds_mask,
         )
 
     ###

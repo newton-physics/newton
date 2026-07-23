@@ -20,7 +20,11 @@ from ...core.math import (
     unit_quat_conj_apply_jacobian,
     unit_quat_conj_to_rotation_matrix,
 )
-from ...kinematics.joints import get_joint_coords_mapping_function
+from ...kinematics.joints import (
+    correct_quat_vector_coord,
+    correct_rotational_coord,
+    get_joint_coords_mapping_function,
+)
 from ...linalg.sparse_matrix import BlockDType
 from .types import FKJointDoFType
 
@@ -31,7 +35,6 @@ from .types import FKJointDoFType
 __all__ = [
     "_add_regularizer_to_diagonal",
     "_apply_line_search_step",
-    "_compute_base_q_default",
     "_compute_fk_axis_joint_frames",
     "_compute_fk_joint_frames",
     "_correct_actuator_coords",
@@ -139,7 +142,11 @@ def validate_fk_actuation_updates(
     # Outputs
     violations: wp.array[wp.int32],
 ):
-    """Find invalid FK overrides and changes to the effective actuation partition."""
+    """Find invalid overrides and changes to the set of joints actuated for FK.
+
+    ``built_fk_actuated`` is indexed by model joint: 0 is passive, 1 is
+    actuated, and -1 skips validation for a joint replaced by FK.
+    """
     joint = wp.tid()
     flag = wp.int32(-1)
     if model_fk_act_flag:
@@ -175,11 +182,14 @@ def _compute_fk_joint_frames(
     fk_joint = wp.tid()
     model_joint = source_joint[fk_joint]
     if model_joint >= 0:
+        # Preserve frames for joints copied from the model.
         fk_B_r_Bj[fk_joint] = model_B_r_Bj[model_joint]
         fk_F_r_Fj[fk_joint] = model_F_r_Fj[model_joint]
         fk_X_Bj[fk_joint] = model_X_Bj[model_joint]
         fk_X_Fj[fk_joint] = model_X_Fj[model_joint]
     else:
+        # FK-added base and axis joints start at identity; axis orientations are
+        # overwritten by _compute_fk_axis_joint_frames.
         fk_B_r_Bj[fk_joint] = wp.vec3f(0.0)
         fk_F_r_Fj[fk_joint] = wp.vec3f(0.0)
         fk_X_Bj[fk_joint] = wp.identity(n=3, dtype=wp.float32)
@@ -209,6 +219,7 @@ def _compute_fk_axis_joint_frames(
     joint_1 = axis_joint_1[axis_joint]
     body_q = model_body_q_0[body]
 
+    # Locate both spherical-joint anchors in the tie-rod body frame.
     local_0 = model_joint_F_r_Fj[joint_0]
     if model_joint_bid_B[joint_0] == body:
         local_0 = model_joint_B_r_Bj[joint_0]
@@ -216,6 +227,8 @@ def _compute_fk_axis_joint_frames(
     if model_joint_bid_B[joint_1] == body:
         local_1 = model_joint_B_r_Bj[joint_1]
 
+    # Evaluate the anchors in the initial pose and align the joint X axis with
+    # the line that connects them.
     pos_0 = wp.transform_point(body_q, local_0)
     pos_1 = wp.transform_point(body_q, local_1)
     a_x = wp.normalize(pos_1 - pos_0)
@@ -226,26 +239,8 @@ def _compute_fk_axis_joint_frames(
     a_z = wp.normalize(wp.cross(a_x, a_y))
     X_Bj = wp.matrix_from_cols(a_x, a_y, a_z)
     fk_X_Bj[fk_joint] = X_Bj
+    # Match the follower frame to the base frame in the initial pose.
     fk_X_Fj[fk_joint] = wp.quat_to_matrix(wp.transform_get_rotation(body_q)) * X_Bj
-
-
-@wp.kernel
-def _compute_base_q_default(
-    # Inputs
-    model_base_joint: wp.array[wp.int32],
-    model_base_body: wp.array[wp.int32],
-    model_body_q_0: wp.array[wp.transformf],
-    # Outputs
-    base_q_default: wp.array[wp.transformf],
-):
-    """Compute the default FK base pose from the model data."""
-    world = wp.tid()
-    if model_base_joint[world] >= 0:
-        base_q_default[world] = wp.transform_identity()
-    else:
-        body = model_base_body[world]
-        if body >= 0:
-            base_q_default[world] = model_body_q_0[body]
 
 
 @wp.kernel
@@ -508,20 +503,6 @@ def _eval_actuator_coords(
     _joint_transform_to_coords(dof_type, pos_rel, q_rel, coord_id, actuators_q)
 
 
-@wp.func
-def _correct_joint_angle(angle: wp.float32, angle_ref: wp.float32) -> wp.float32:
-    """Function adding multiples of 2 pi to an angle, so that it is the closest to a reference."""
-    return angle + wp.round((angle_ref - angle) / wp.tau) * wp.tau  # Note: wp.tau is 2 * pi
-
-
-@wp.func
-def _correct_joint_quaternion(quat: wp.vec4f, quat_ref: wp.vec4f) -> wp.vec4f:
-    """Function flipping the sign of a quaternion if needed, so it is the closest to a reference."""
-    if wp.length_sq(quat + quat_ref) < wp.length_sq(quat - quat_ref):
-        return -quat
-    return quat
-
-
 @wp.kernel
 def _correct_actuator_coords(
     # Inputs
@@ -561,7 +542,7 @@ def _correct_actuator_coords(
     elif dof_type == FKJointDoFType.CYLINDRICAL:  # Correct angle up to +/- 2 pi
         angle = actuators_q[coord_id + 1]
         angle_ref = actuators_q_ref[coord_id + 1]
-        actuators_q[coord_id + 1] = _correct_joint_angle(angle, angle_ref)
+        actuators_q[coord_id + 1] = correct_rotational_coord(angle, angle_ref)
     elif dof_type == FKJointDoFType.FREE:  # Correct quaternion up to sign
         quat = wp.vec4f(
             actuators_q[coord_id + 3], actuators_q[coord_id + 4], actuators_q[coord_id + 5], actuators_q[coord_id + 6]
@@ -572,13 +553,13 @@ def _correct_actuator_coords(
             actuators_q_ref[coord_id + 5],
             actuators_q_ref[coord_id + 6],
         )
-        quat_corrected = _correct_joint_quaternion(quat, quat_ref)
+        quat_corrected = correct_quat_vector_coord(quat, quat_ref)
         for i in range(4):
             actuators_q[coord_id + 3 + i] = quat_corrected[i]
     elif dof_type == FKJointDoFType.REVOLUTE:  # Correct angle up to +/- 2 pi
         angle = actuators_q[coord_id]
         angle_ref = actuators_q_ref[coord_id]
-        actuators_q[coord_id] = _correct_joint_angle(angle, angle_ref)
+        actuators_q[coord_id] = correct_rotational_coord(angle, angle_ref)
     elif dof_type == FKJointDoFType.SPHERICAL:  # Correct quaternion up to sign
         quat = wp.vec4f(
             actuators_q[coord_id], actuators_q[coord_id + 1], actuators_q[coord_id + 2], actuators_q[coord_id + 3]
@@ -589,16 +570,16 @@ def _correct_actuator_coords(
             actuators_q_ref[coord_id + 2],
             actuators_q_ref[coord_id + 3],
         )
-        quat_corrected = _correct_joint_quaternion(quat, quat_ref)
+        quat_corrected = correct_quat_vector_coord(quat, quat_ref)
         for i in range(4):
             actuators_q[coord_id + i] = quat_corrected[i]
     elif dof_type == FKJointDoFType.UNIVERSAL:  # Correct angles up to +/- 2 pi
         angle = actuators_q[coord_id]
         angle_ref = actuators_q_ref[coord_id]
-        actuators_q[coord_id] = _correct_joint_angle(angle, angle_ref)
+        actuators_q[coord_id] = correct_rotational_coord(angle, angle_ref)
         angle = actuators_q[coord_id + 1]
         angle_ref = actuators_q_ref[coord_id + 1]
-        actuators_q[coord_id + 1] = _correct_joint_angle(angle, angle_ref)
+        actuators_q[coord_id + 1] = correct_rotational_coord(angle, angle_ref)
     else:
         assert False, "Unexpected actuator dof type"  # noqa: B011
 
