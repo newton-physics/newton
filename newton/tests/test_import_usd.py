@@ -6878,6 +6878,79 @@ def Xform "Articulation" (
         np.testing.assert_allclose(np.array(blue_mesh.color), np.array([1.0, 1.0, 1.0]), atol=1e-6, rtol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_visual_mesh_material_subset_with_loaded_texture_array(self):
+        """Import a material-subset mesh whose subset texture decodes to an image array.
+
+        Regression test: a subset texture that resolves to a decoded image (a
+        linear-encoded texture that exists on disk) must be tested with
+        ``is not None`` rather than truthiness, which raises ``ValueError`` on a
+        multi-element array.
+        """
+        from PIL import Image
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "tex.png")
+            Image.fromarray(np.full((4, 4, 4), (10, 20, 30, 255), dtype=np.uint8)).save(texture_path)
+
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            body = UsdGeom.Xform.Define(stage, "/Body")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+            mesh = UsdGeom.Mesh.Define(stage, "/Body/VisualMesh")
+            mesh.CreatePointsAttr().Set([(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)])
+            mesh.CreateFaceVertexCountsAttr().Set([3, 3])
+            mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2, 0, 2, 3])
+            st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+                "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex
+            )
+            st.Set([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+
+            red_material = UsdShade.Material.Define(stage, "/Materials/Red")
+            red_shader = UsdShade.Shader.Define(stage, "/Materials/Red/PreviewSurface")
+            red_shader.CreateIdAttr("UsdPreviewSurface")
+            red_shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
+            red_material.CreateSurfaceOutput().ConnectToSource(red_shader.ConnectableAPI(), "surface")
+
+            # A linear ("raw") texture that exists on disk decodes to a numpy array.
+            tex_material = UsdShade.Material.Define(stage, "/Materials/Tex")
+            tex_shader = UsdShade.Shader.Define(stage, "/Materials/Tex/PreviewSurface")
+            tex_shader.CreateIdAttr("UsdPreviewSurface")
+            albedo = UsdShade.Shader.Define(stage, "/Materials/Tex/Albedo")
+            albedo.CreateIdAttr("UsdUVTexture")
+            albedo.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_path))
+            albedo.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
+            albedo.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+            tex_shader.CreateInput("baseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+                albedo.ConnectableAPI(), "rgb"
+            )
+            tex_material.CreateSurfaceOutput().ConnectToSource(tex_shader.ConnectableAPI(), "surface")
+
+            red_subset = UsdGeom.Subset.Define(stage, "/Body/VisualMesh/red")
+            red_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+            red_subset.CreateFamilyNameAttr().Set("materialBind")
+            red_subset.CreateIndicesAttr().Set(Vt.IntArray([0]))
+            UsdShade.MaterialBindingAPI.Apply(red_subset.GetPrim()).Bind(red_material)
+
+            tex_subset = UsdGeom.Subset.Define(stage, "/Body/VisualMesh/tex")
+            tex_subset.CreateElementTypeAttr().Set(UsdGeom.Tokens.face)
+            tex_subset.CreateFamilyNameAttr().Set("materialBind")
+            tex_subset.CreateIndicesAttr().Set(Vt.IntArray([1]))
+            UsdShade.MaterialBindingAPI.Apply(tex_subset.GetPrim()).Bind(tex_material)
+
+            builder = newton.ModelBuilder()
+            result = builder.add_usd(stage)
+
+        self.assertIn("/Body/VisualMesh/tex", result["path_shape_map"])
+        tex_mesh = builder.shape_source[result["path_shape_map"]["/Body/VisualMesh/tex"]]
+        self.assertIsInstance(tex_mesh.texture, np.ndarray)
+        self.assertEqual(np.asarray(tex_mesh.texture).shape[-1], 4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_subset_splitting_is_independent_of_material_vocabulary(self):
         """Subsets binding unrecognized materials split identically to recognized ones.
 

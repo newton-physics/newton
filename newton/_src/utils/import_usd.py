@@ -1028,7 +1028,7 @@ def parse_usd(
         )
 
         texture = material_props.get("texture")
-        if texture:
+        if texture is not None:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
             logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
