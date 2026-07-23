@@ -424,7 +424,7 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
         seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
         rng = np.random.default_rng(seed)
 
-        # Load the DR TestMech and DR Legs models from the `newton-assets` repository
+        # Load the DR Legs model from the `newton-assets` repository
         asset_path = newton.utils.download_asset("disneyresearch")
         asset_file = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
         builder = USDImporter().import_from(asset_file)
