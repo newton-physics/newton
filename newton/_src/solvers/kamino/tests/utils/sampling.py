@@ -66,7 +66,7 @@ def sample_base_state(
     max_lin_vel: float = 0.5,
     max_ang_vel: float = np.radians(90.0),
     unit_quaternions: bool = True,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Helper sampling random base_q, base_u given the number of worlds.
 
