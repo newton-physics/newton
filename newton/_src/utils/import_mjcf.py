@@ -1593,6 +1593,7 @@ def parse_mjcf(
             # frictionloss for a native <joint type="ball"/>; captured in the ball branch
             # and read by the add_joint_ball call. Default 0.0 matches MJCF.
             ball_friction = 0.0
+            ball_damping = default_joint_damping
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_attrib = resolve_element_attrib(joint, "joint", defaults)
@@ -1638,9 +1639,10 @@ def parse_mjcf(
                             dof_custom_attributes[solreflimit_mode_key][current_dof_index + dof_offset] = (
                                 solreflimit_mode
                             )
-                    # Lift frictionloss into the builder's per-DOF friction array so it
-                    # reaches the MuJoCo spec (joint_friction[qd_start]) on export.
+                    # Lift frictionloss and damping into the builder's per-DOF arrays
+                    # so they reach the MuJoCo spec on export.
                     ball_friction = parse_float(joint_attrib, "frictionloss", 0.0)
+                    ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
                     mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
                     current_dof_index += 3
                     break
@@ -1884,6 +1886,7 @@ def parse_mjcf(
                     child_xform=wp.transform(joint_pos, wp.quat_identity()),
                     armature=joint_armature[-1] if joint_armature else None,
                     friction=ball_friction,
+                    damping=ball_damping,
                     label=joint_label,
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )

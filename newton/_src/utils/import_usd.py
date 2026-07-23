@@ -1568,8 +1568,19 @@ def parse_usd(
             jp_prim, prim_type=PrimType.JOINT, key="friction", default=default_joint_friction, verbose=verbose
         )
         _damping_usd = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose)
-        damping_authored = _damping_usd is not None
-        damping = _damping_usd if damping_authored else default_joint_damping
+        _damping_per_rad_usd = R.get_value(
+            jp_prim, prim_type=PrimType.JOINT, key="damping_per_rad", default=None, verbose=verbose
+        )
+        # "damping_per_rad" carries SI units and bypasses the USD per-degree
+        # convention applied to "damping" on angular DOFs below.
+        damping_si = _damping_per_rad_usd is not None
+        damping_authored = damping_si or _damping_usd is not None
+        if damping_si:
+            damping = _damping_per_rad_usd
+        elif damping_authored:
+            damping = _damping_usd
+        else:
+            damping = default_joint_damping
         velocity_limit = R.get_value(
             jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
         )
@@ -1628,7 +1639,7 @@ def parse_usd(
             limit_upper *= DegreesToRadian
             limit_ke /= DegreesToRadian
             limit_kd /= DegreesToRadian
-            if damping_authored:
+            if damping_authored and not damping_si:
                 damping /= DegreesToRadian
             if has_drive:
                 target_pos *= DegreesToRadian
@@ -1741,8 +1752,18 @@ def parse_usd(
             _joint_damping_usd = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose
             )
-            joint_damping_authored = _joint_damping_usd is not None
-            joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
+            _joint_damping_per_rad_usd = R.get_value(
+                joint_prim, prim_type=PrimType.JOINT, key="damping_per_rad", default=None, verbose=verbose
+            )
+            # See the single-DOF path above for the "damping_per_rad" contract.
+            joint_damping_si = _joint_damping_per_rad_usd is not None
+            joint_damping_authored = joint_damping_si or _joint_damping_usd is not None
+            if joint_damping_si:
+                joint_damping = _joint_damping_per_rad_usd
+            elif joint_damping_authored:
+                joint_damping = _joint_damping_usd
+            else:
+                joint_damping = default_joint_damping
             joint_velocity_limit = R.get_value(
                 joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
             )
@@ -1939,7 +1960,9 @@ def parse_usd(
                             target_vel=target_vel * DegreesToRadian,
                             target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                             target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
-                            damping=joint_damping / DegreesToRadian if joint_damping_authored else joint_damping,
+                            damping=joint_damping / DegreesToRadian
+                            if joint_damping_authored and not joint_damping_si
+                            else joint_damping,
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             velocity_limit=joint_velocity_limit * DegreesToRadian
