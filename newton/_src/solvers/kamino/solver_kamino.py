@@ -386,11 +386,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         Configuration for a call to the reset() operation, specifying the behaviour (common or separate)
         for body poses, body velocities as well as floating base pose and velocity.
 
-        After body poses and velocities are updated (or preserved), joint coordinates and velocities
-        are always re-derived from the resulting body state for consistency. Joint constraint forces
-        are reset to zero. When body and joint state are already consistent, re-derived joint values
-        match the preserved inputs.
-
         Example
         -------
 
@@ -709,6 +704,11 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         All state components are reset consistently with the new body poses and velocities
         (unless prescribed otherwise by state flags), and solver-internal buffers are cleared.
+        More specifically, joint coordinates and velocities are re-derived from the
+        resulting body state for consistency, and joint constraint forces are reset to
+        zero. If flags exclude :attr:`~newton.StateFlags.JOINT_Q` or
+        :attr:`~newton.StateFlags.JOINT_QD`, the corresponding joint coordinates or
+        velocities are restored after the reset instead.
 
         Args:
             state: The simulation state to reset (modified in place).
