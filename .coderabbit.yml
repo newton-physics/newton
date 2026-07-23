@@ -17,14 +17,38 @@ reviews:
   path_instructions:
     - path: "**"
       instructions: |
-        Check that any user-facing change includes a corresponding entry in
-        CHANGELOG.md under the [Unreleased] section. Entries should use
-        imperative present tense ("Add X", not "Added X") and be placed under
-        the correct category (Added, Changed, Deprecated, Removed, or Fixed).
-        Entries may appear at any position within their category — do not flag
-        placement order. For Deprecated, Changed, and Removed entries, verify
-        the entry includes migration guidance telling users what replaces the
-        old behavior.
+        Check that every normal pull request targeting main adds exactly one new
+        file under changelog.d/: a Markdown fragment for a user-facing change or
+        a .skip file with a credible one-line reason otherwise. Do not accept a
+        .skip when the pull request changes user-facing behavior. Backport pull
+        requests targeting a release branch may carry one or more unchanged
+        fragments. Changelog maintenance pull requests are exempt because they
+        consolidate fragments into [Unreleased], promote [Unreleased] for a
+        release, or reconcile a released section back to main. Verify that they
+        preserve existing entries, dated release history, and main-only post-cut
+        entries while deleting only consumed fragments. The one-time workflow
+        transition is also exempt; it must retain all existing Unreleased and
+        dated content and add only the stable release-boundary marker.
+    - path: "changelog.d/*.md"
+      instructions: |
+        Review changelog prose for users. Allowed headings are Added, Changed,
+        Deprecated, Removed, and Fixed, in that order. Entries must use
+        imperative present tense ("Add X", not "Added X"), avoid internal
+        implementation details, and use the correct category. Deprecated,
+        Changed, and Removed entries must include concrete migration guidance.
+        Do not flag ordering of entries within a category.
+    - path: "changelog.d/*.skip"
+      instructions: |
+        Verify the one-line reason is credible and that the pull request has no
+        user-facing behavior that requires release notes.
+    - path: "CHANGELOG.md"
+      instructions: |
+        Direct changes are allowed only for the one-time workflow transition or
+        a changelog-maintenance pull request. Verify [Unreleased] retains all
+        prior accumulated entries plus consolidated fragments, dated release
+        history is unchanged, generated changelog-fragment comments are
+        preserved only in [Unreleased] and absent from dated public releases,
+        and reconciliation keeps main-only post-cut entries.
     - path: "**/*.py"
       instructions: |
         Flag inline code comments (not docstrings) that are verbose or

@@ -604,10 +604,27 @@ documentation.
 Changelog
 ---------
 
-Newton maintains a ``CHANGELOG.md`` at the repository root.
+Newton keeps accumulated pending release notes under ``[Unreleased]`` in
+``CHANGELOG.md``.  New pull requests contribute individual files under
+``changelog.d/`` until a maintainer consolidates them.  Every normal pull
+request must add exactly one fragment:
 
-When a pull request modifies user-facing behavior, add an entry under the
-``[Unreleased]`` section in the appropriate category:
+.. code-block:: console
+
+   $ uv run --no-project python scripts/changelog.py create descriptive-name \
+       --category added --content "Add a new capability."
+
+Use a ``.skip`` fragment when a pull request has no user-facing effect:
+
+.. code-block:: console
+
+   $ uv run --no-project python scripts/changelog.py create descriptive-name \
+       --skip "No user-facing change: reorganize tests only."
+
+The generated filename combines a readable slug with a random identifier, so
+it can be created before the pull request has a number.  Keep that filename
+unchanged.  A Markdown fragment may contain multiple sections when one pull
+request affects more than one category; use these headings in order:
 
 - **Added** — new features
 - **Changed** — changes to existing functionality (include migration guidance)
@@ -618,7 +635,22 @@ When a pull request modifies user-facing behavior, add an entry under the
 
 Use imperative present tense ("Add X", not "Added X") and keep entries concise.
 Internal implementation details (refactors, CI tweaks) that do not affect users
-should **not** be listed.
+belong in a ``.skip`` fragment rather than the release notes.  Do not edit
+``CHANGELOG.md`` directly in a normal pull request.
+
+Validate the fragment before submitting the pull request:
+
+.. code-block:: console
+
+   $ uv run --no-project python scripts/changelog.py validate
+
+See ``changelog.d/README.md`` for the complete fragment format and release
+maintenance commands.  Maintainers may safely consolidate fragments into
+``[Unreleased]`` at any time with
+``uv run --no-project python scripts/changelog.py build``; this consumes the
+fragment files without changing prior release sections.  Add ``--dry-run`` to
+``build``, ``release``, or ``reconcile`` to print and validate the proposed
+Markdown without editing ``CHANGELOG.md`` or consuming fragments.
 
 Style Guide
 -----------

@@ -51,8 +51,23 @@ uvx --with virtualenv asv run --launch-method spawn main^!
 ## PR Instructions
 
 - If opening a pull request on GitHub, use the template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- If a change modifies user-facing behavior, insert an entry at a random position within the correct category (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`) in `CHANGELOG.md`'s `[Unreleased]` section. Use imperative present tense ("Add X") and avoid internal implementation details.
-- For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: "Deprecate `Model.geo_meshes` in favor of `Model.shapes`".
+- Every normal pull request must add exactly one uniquely named file under `changelog.d/`. Use a `.md` fragment for
+  user-facing changes or a `.skip` fragment containing a one-line reason when there is no user-facing change. Generate
+  it before opening the pull request with `scripts/changelog.py create`; never wait for a pull request number or rename
+  the file to include one. The command derives a readable slug from the supplied name (or current branch) and appends a
+  random identifier. See `changelog.d/README.md` for commands and the exact format.
+- A `.md` fragment may contain multiple `### Added`, `### Changed`, `### Deprecated`, `### Removed`, and `### Fixed`
+  sections in that exact order. Start every entry with `- `, end every entry with a period `.`, use imperative present tense ("Add X"), and avoid internal
+  implementation details. For `Deprecated`, `Changed`, and `Removed` entries, include migration guidance: "Deprecate
+  `Model.geo_meshes` in favor of `Model.shapes`".
+- Do not edit `CHANGELOG.md` or its generated `changelog-fragment` comments directly in a normal pull request. Maintainers
+  may consolidate pending fragments into `[Unreleased]` at any time with `scripts/changelog.py build`. Final releases use
+  `scripts/changelog.py release`, which strips provenance comments from the dated public section; post-release
+  synchronization to `main` uses `scripts/changelog.py reconcile`. Add `--dry-run` to any of these commands to preview
+  without editing files or consuming fragments. Commit each mutating operation in a changelog-only pull request labeled
+  `changelog-maintenance`.
+- Run `uv run --no-project python scripts/changelog.py validate` after editing fragments.
+- If you want to annotate a changelog entry with a GitHub link following the #xxxx format, you must use the number of the pull request, not the issue number.
 
 ## Examples
 

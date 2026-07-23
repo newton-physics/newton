@@ -5,6 +5,7 @@ permissions:
 on:
   merge_group:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - main
       - "release-*"
@@ -14,6 +15,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate changelog contribution
+        env:
+          ALLOW_CHANGELOG_UPDATE: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'changelog-maintenance') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            args=(check --base-ref "$BASE_SHA" --target-branch "$TARGET_BRANCH")
+            if [[ "$ALLOW_CHANGELOG_UPDATE" == "true" ]]; then
+              args+=(--allow-changelog-update)
+            fi
+            python3 scripts/changelog.py "${args[@]}"
+          else
+            python3 scripts/changelog.py validate
+          fi
+
   check-lockfile:
     runs-on: ubuntu-latest
     steps:

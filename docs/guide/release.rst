@@ -166,8 +166,20 @@ Prefer sequential cherry-picks in ``main`` order with ``git cherry-pick -x``
 and keep the backport PR unsquashed.  Keep change/revert pairs together.  A bulk
 merge is appropriate only when every intervening commit belongs in the release.
 
-Finalize the changelog on ``release-X.Y`` and reconcile it to ``main`` after
-release, as described in :ref:`post-release`.
+Preview the complete ``[Unreleased]`` accumulator plus pending fragments on
+``release-X.Y`` during release audits.  Fragments may be consolidated into
+``[Unreleased]`` at any time in a changelog-maintenance pull request.  Promote
+the complete accumulator for GA and reconcile the tagged release to ``main``
+afterward, as described in :ref:`post-release`.
+
+.. code-block:: bash
+
+   uv run --no-project python scripts/changelog.py build --dry-run
+
+The ``--dry-run`` flag validates and prints the proposed Markdown without
+editing ``CHANGELOG.md`` or consuming fragment files.  It is also available on
+the ``release`` and ``reconcile`` commands; rerun without the flag only after
+reviewing the preview.
 
 For each new RC, repeat the version, generated-file, validation, and tag steps
 used for RC1.
@@ -210,7 +222,8 @@ As a guideline, an RC is typically ready for GA when:
        no new flags since the last RC.
    * - ☐
      - Prepare draft GitHub Release notes: summary, a few highlights, link
-       to ``CHANGELOG.md``, acknowledgments.
+       to ``CHANGELOG.md``, acknowledgments.  The ``release-notes`` skill can
+       draft from a non-mutating preview of the pending fragments.
    * - ☐
      - :ref:`Testing criteria <testing-criteria>` satisfied.
    * - ☐
@@ -236,10 +249,16 @@ otherwise.
    * - ☐
      - Go/no-go approval obtained from maintainers.
    * - ☐
-     - Finalize ``CHANGELOG.md`` on ``release-X.Y`` using the previous release
-       tag and latest audit as references.  Date the section with the GA date
-       and merge it before preparing the final version.  The
-       ``release-changelog`` skill can assist.
+     - Review ``CHANGELOG.md``'s ``[Unreleased]`` section and pending files in
+       ``changelog.d/`` against the previous release tag and latest audit.
+       Promote the complete accumulator on ``release-X.Y`` with ``uv run
+       --no-project python scripts/changelog.py release --version X.Y.Z --date
+       YYYY-MM-DD``.  Commit any editorial accumulator changes before running
+       the promotion so provenance is recoverable from Git history.  Commit
+       ``CHANGELOG.md`` and any consumed fragment
+       deletions in a pull request labeled ``changelog-maintenance`` before
+       preparing the final version.  The ``release-changelog`` skill can assist
+       with the audit and promotion.
    * - ☐
      - Update ``README.md`` documentation links to point to versioned URLs
        (e.g. ``/X.Y.Z/guide.html`` instead of ``/latest/``).
@@ -314,9 +333,13 @@ Post-release
    :header-rows: 0
 
    * - ☐
-     - Merge the ``vX.Y.Z`` changelog section back to ``main`` in a
-       changelog-only PR, preserving ``[Unreleased]`` and all post-cut entries.
-       The ``release-changelog`` skill can assist.
+     - On a changelog-only branch from current ``main``, run ``uv run
+       --no-project python scripts/changelog.py reconcile --source-ref vX.Y.Z
+       --version X.Y.Z`` and merge the result in a pull request labeled
+       ``changelog-maintenance``.  This imports the tagged release, removes
+       released entries and fragments from ``[Unreleased]``, and retains
+       main-only post-cut entries for the next release.  The
+       ``release-changelog`` skill can assist with reconciliation.
    * - ☐
      - Verify PyPI installation works in a clean environment.
    * - ☐

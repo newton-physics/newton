@@ -52,6 +52,12 @@ repos:
         exclude: \.(js|css)$
   - repo: local
     hooks:
+      - id: check-changelog-fragments
+        name: check changelog fragments
+        entry: python scripts/changelog.py validate
+        language: python
+        pass_filenames: false
+        files: ^(CHANGELOG\.md|changelog\.d/|scripts/changelog\.py$)
       - id: check-warp-array-syntax
         name: check warp array syntax
         entry: python scripts/check_warp_array_syntax.py
