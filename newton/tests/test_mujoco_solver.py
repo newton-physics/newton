@@ -10331,7 +10331,7 @@ class TestUsdActuatorInheritrange(unittest.TestCase):
     promoted to ``CtrlSource.JOINT_TARGET`` (matching MJCF), so the compiled
     MuJoCo actuator built by :class:`SolverMuJoCo` is rebuilt from
     ``joint_target_*`` and intentionally does not carry the input ctrlrange.
-    Inputs are driven via ``Control.joint_target_pos`` instead.
+    Inputs are driven via ``Control.joint_target_q`` instead.
     """
 
     JOINT_LO_DEG = -90.0

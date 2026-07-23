@@ -854,18 +854,6 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [16.0, 17.0])
         np.testing.assert_array_equal(view.joint_target_ke.numpy(), [106.0, 107.0])
 
-        target_pos_spec = model._attribute_spec("joint_target_pos")
-        self.assertTrue(target_pos_spec.deprecated)
-        self.assertEqual(target_pos_spec.alias_of, "joint_target_q")
-        with self.assertWarnsRegex(DeprecationWarning, "Model.joint_target_pos"):
-            legacy_target_pos = view.joint_target_pos
-        np.testing.assert_array_equal(legacy_target_pos.numpy(), [16.0, 17.0])
-
-        legacy_override = wp.array([21.0, 22.0], dtype=float, device=model.device)
-        with self.assertWarnsRegex(DeprecationWarning, "Model.joint_target_pos"):
-            view.joint_target_pos = legacy_override
-        np.testing.assert_array_equal(view.joint_target_q.numpy(), [21.0, 22.0])
-
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""
         _ControlRecordingSolver.instances.clear()

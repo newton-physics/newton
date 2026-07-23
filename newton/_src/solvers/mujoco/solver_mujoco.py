@@ -491,9 +491,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Determines where an actuator gets its control input from:
 
-        - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_q`/:attr:`~newton.Control.joint_target_qd` arrays
-          (or the deprecated :attr:`~newton.Control.joint_target_pos`/:attr:`~newton.Control.joint_target_vel` aliases when
-          :attr:`newton.use_coord_layout_targets` is ``False``).
+        - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_q`/:attr:`~newton.Control.joint_target_qd` arrays.
         - :attr:`CTRL_DIRECT`: Uses ``control.mujoco.ctrl`` directly (for MuJoCo-native control)
         """
 
@@ -505,13 +503,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
-        - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_q` (legacy alias
-          :attr:`~newton.Control.joint_target_pos`), syncs gains from
+        - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_q`, syncs gains from
           :attr:`~newton.Model.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
           also syncs damping from :attr:`~newton.Model.joint_target_kd`. For
           :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
-        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_qd` (legacy alias
-          :attr:`~newton.Control.joint_target_vel`), syncs gains from :attr:`~newton.Model.joint_target_kd`
+        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_qd`, syncs gains from :attr:`~newton.Model.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
 

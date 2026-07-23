@@ -65,6 +65,10 @@
 - Deprecate `SensorTiledCamera.render_config` in favor of `SensorTiledCamera.default_render_config`; migrate `sensor.render_config.enable_shadows = True` to `sensor.default_render_config.enable_shadows = True`.
 - Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
 
+### Removed
+
+- Remove the deprecated `joint_target_pos` / `joint_target_vel` aliases from `Model`, `Control`, and `ModelBuilder` (deprecated in 1.3.0); use `joint_target_q` / `joint_target_qd` instead. `Actuator` now always defaults `control_target_pos_attr` / `control_target_vel_attr` to the canonical `joint_target_q` / `joint_target_qd` names.
+
 ### Fixed
 
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.

@@ -107,8 +107,8 @@ class Actuator:
                 ``state.joint_q``). Defaults to *indices*. Differs from
                 *indices* when position and velocity arrays have different
                 layouts (e.g. floating-base or ball-joint articulations).
-            target_pos_indices: Indices into ``control.joint_target_pos`` /
-                ``joint_target_q``. Defaults to *pos_indices* when
+            target_pos_indices: Indices into ``control.joint_target_q``.
+                Defaults to *pos_indices* when
                 :attr:`newton.use_coord_layout_targets` is ``True`` (coord
                 layout), otherwise to *indices* (legacy DOF layout). The flag is
                 read once here, so toggling ``newton.use_coord_layout_targets``
@@ -119,13 +119,9 @@ class Actuator:
             state_pos_attr: Attribute on sim_state for positions.
             state_vel_attr: Attribute on sim_state for velocities.
             control_target_pos_attr: Attribute on sim_control for target positions.
-                ``None`` (default) resolves at construction time based on
-                :data:`newton.use_coord_layout_targets`: ``True`` →
-                ``"joint_target_q"``; ``False`` → legacy ``"joint_target_pos"``.
+                Defaults to ``"joint_target_q"``.
             control_target_vel_attr: Attribute on sim_control for target velocities.
-                ``None`` (default) resolves at construction time based on
-                :data:`newton.use_coord_layout_targets`: ``True`` →
-                ``"joint_target_qd"``; ``False`` → legacy ``"joint_target_vel"``.
+                Defaults to ``"joint_target_qd"``.
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
@@ -159,30 +155,11 @@ class Actuator:
 
         self.state_pos_attr = state_pos_attr
         self.state_vel_attr = state_vel_attr
-        if control_target_pos_attr is None or control_target_vel_attr is None:
-            import warnings  # noqa: PLC0415
-
-            import newton  # noqa: PLC0415
-
-            if newton.use_coord_layout_targets:
-                default_pos_attr, default_vel_attr = "joint_target_q", "joint_target_qd"
-            else:
-                default_pos_attr, default_vel_attr = "joint_target_pos", "joint_target_vel"
-                warnings.warn(
-                    "Actuator default control_target_pos_attr/control_target_vel_attr "
-                    "currently resolves to legacy 'joint_target_pos'/'joint_target_vel' "
-                    "under newton.use_coord_layout_targets=False. The default will switch "
-                    "to canonical 'joint_target_q'/'joint_target_qd' in a future release. "
-                    "Pass control_target_pos_attr='joint_target_q' (and the velocity "
-                    "counterpart) explicitly to lock in the new behaviour now.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
         self.control_target_pos_attr = (
-            control_target_pos_attr if control_target_pos_attr is not None else default_pos_attr
+            control_target_pos_attr if control_target_pos_attr is not None else "joint_target_q"
         )
         self.control_target_vel_attr = (
-            control_target_vel_attr if control_target_vel_attr is not None else default_vel_attr
+            control_target_vel_attr if control_target_vel_attr is not None else "joint_target_qd"
         )
         self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr

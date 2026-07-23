@@ -1510,7 +1510,7 @@ class TestMenagerieUSD(TestMenagerieBase):
             ``StepResponseControlStrategy`` would drive different actuators on
             each side when USD vs MJCF orderings differ).
           - JOINT_TARGET actuators (USD-imported MjcActuator position-shortcut rows)
-            are routed through ``Control.joint_target_pos`` / ``joint_target_vel``
+            are routed through ``Control.joint_target_q`` / ``joint_target_qd``
             rather than ``mujoco.ctrl`` — see ``mjc_actuator_ctrl_source`` on the
             solver. Both arrays are written here, indexed via
             ``mjc_actuator_to_newton_idx``.

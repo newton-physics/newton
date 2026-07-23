@@ -170,11 +170,10 @@ to the coord-aligned layout that matches ``joint_q``:
 Migration steps:
 
 - Replace ``Control.joint_target_pos`` / ``Model.joint_target_pos`` with
-  :attr:`Control.joint_target_q` / :attr:`Model.joint_target_q`. The legacy names emit a
-  :class:`DeprecationWarning` and raise :class:`AttributeError` when
-  ``newton.use_coord_layout_targets`` is ``True``.
-- Replace ``Control.joint_target_vel`` / ``Model.joint_target_vel`` with
-  :attr:`Control.joint_target_qd` / :attr:`Model.joint_target_qd`.
+  :attr:`Control.joint_target_q` / :attr:`Model.joint_target_q`, and
+  ``Control.joint_target_vel`` / ``Model.joint_target_vel`` with
+  :attr:`Control.joint_target_qd` / :attr:`Model.joint_target_qd`. The legacy
+  aliases were deprecated in 1.3 and have been removed.
 - On :class:`ModelBuilder`, ``joint_target_pos`` and ``joint_target_vel`` have been removed.
   Configure per-axis targets via :attr:`ModelBuilder.JointDofConfig.target_pos` /
   :attr:`~ModelBuilder.JointDofConfig.target_vel` before calling ``add_joint*()``, or write
@@ -186,7 +185,7 @@ Migration steps:
   ``target_pos_indices`` argument: with the coord layout it defaults to ``pos_indices``.
 
 A subsequent release will flip the flag's default to ``True`` and remove the legacy
-attributes.
+layout.
 
 
 ``ModelBuilder``

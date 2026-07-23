@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -143,10 +142,8 @@ def test_ball_controller(
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         control = model.control()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            control.joint_target_pos = wp.array(pos_target_vals, dtype=wp.float32, device=device)
-            control.joint_target_vel = wp.array(vel_target_vals, dtype=wp.float32, device=device)
+        control.joint_target_q = wp.array(pos_target_vals, dtype=wp.float32, device=device)
+        control.joint_target_qd = wp.array(vel_target_vals, dtype=wp.float32, device=device)
 
         sim_dt = 1.0 / 60.0
         sim_time = 0.0

@@ -1255,7 +1255,7 @@ class TestModelConversions(unittest.TestCase):
             self,
             control_newton_converted,
             control_newton,
-            attributes=["joint_f", "joint_target_pos", "joint_target_vel"],
+            attributes=["joint_f", "joint_target_q", "joint_target_qd"],
         )
 
 
