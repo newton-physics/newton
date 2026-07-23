@@ -150,7 +150,7 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
 
 def test_distance_joint_limits(test, device):
     def solve(initial_distance, min_distance, max_distance):
-        builder = newton.ModelBuilder(gravity=0.0)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         body = builder.add_link(
             xform=wp.transform(wp.vec3(initial_distance, 0.0, 0.0), wp.quat_identity()),
         )
