@@ -587,7 +587,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         builder, _uvs = self._cloth_skin_builder()
         model = builder.finalize()
         state = model.state()
-        moved = state.particle_q.numpy()
+        moved = state.particle_q.numpy().copy()
         moved[:, 2] += 0.75
         state.particle_q.assign(moved)
         visuals = model.deformable_visuals()
@@ -830,7 +830,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         sensor = SensorTiledCamera(
             model,
-            config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorTiledCamera.RenderConfig(
                 enable_particles=False,
                 max_distance=10.0,
             ),
@@ -871,7 +871,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         sensor = SensorTiledCamera(
             model,
-            config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorTiledCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 max_distance=10.0,
@@ -906,7 +906,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         default_sensor = SensorTiledCamera(
             model,
-            config=SensorTiledCamera.RenderConfig(enable_particles=False, max_distance=10.0),
+            default_render_config=SensorTiledCamera.RenderConfig(enable_particles=False, max_distance=10.0),
         )
         camera_rays, camera_transforms = self._camera_setup(default_sensor, model)
         default_depth_image = default_sensor.utils.create_depth_image_output(16, 16, camera_count=1)
@@ -916,7 +916,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         visual_sensor = SensorTiledCamera(
             model,
-            config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorTiledCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 max_distance=10.0,
@@ -934,7 +934,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         sensor = SensorTiledCamera(
             model,
-            config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorTiledCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 max_distance=10.0,
@@ -958,7 +958,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         sensor = SensorTiledCamera(
             model,
-            config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorTiledCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 enable_textures=True,
@@ -995,7 +995,7 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         sensor = SensorTiledCamera(
             model,
-            config=SensorTiledCamera.RenderConfig(
+            default_render_config=SensorTiledCamera.RenderConfig(
                 enable_particles=False,
                 enable_simulation_triangles=False,
                 enable_textures=True,
