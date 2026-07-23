@@ -7,6 +7,12 @@
 # This example shows how to simulate a Y-junction using `builder.add_rod_graph(...)`
 # with a shared junction node.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
+#
 ###########################################################################
 
 from __future__ import annotations
@@ -109,6 +115,7 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
 
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
@@ -117,7 +124,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.contacts = self.collision_pipeline.contacts()
 
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
@@ -152,7 +159,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

@@ -22,7 +22,7 @@ from newton.tests import get_kamino_basics_asset
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -127,8 +127,9 @@ class Example:
             )
 
         # Set gravity
-        for w in range(self.builder.num_worlds):
-            self.builder.gravity[w].enabled = gravity
+        if not gravity:
+            for w in range(self.builder.num_worlds):
+                self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Set solver config
         config = Simulator.Config()

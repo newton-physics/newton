@@ -80,8 +80,23 @@ class ControllerPID(Controller):
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
             if mask is None:
                 self.integral.zero_()
-            else:
-                wp.launch(_masked_zero_1d, dim=len(mask), inputs=[self.integral, mask])
+                return
+            if mask.dtype is not wp.bool or mask.ndim != 1:
+                raise ValueError("PID reset mask must be a one-dimensional Boolean array")
+            if len(mask) != len(self.integral):
+                raise ValueError(
+                    f"PID reset mask length ({len(mask)}) must match integral length ({len(self.integral)})"
+                )
+            if mask.device != self.integral.device:
+                raise ValueError(
+                    f"PID reset mask device ({mask.device}) must match integral device ({self.integral.device})"
+                )
+            wp.launch(
+                _masked_zero_1d,
+                dim=len(mask),
+                inputs=[self.integral, mask],
+                device=self.integral.device,
+            )
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:

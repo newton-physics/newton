@@ -138,7 +138,8 @@ def validate_base_pose_reset(
             continue
         if base_q is None:  # Check that base body pose is preserved if base_q is not provided
             bid = base_body_id_np[wid]
-            assert_rigid_poses_close(body_q_new_np[bid], body_q_prev_np[bid])
+            if bid >= 0:
+                assert_rigid_poses_close(body_q_new_np[bid], body_q_prev_np[bid])
         else:
             jid = base_joint_id_np[wid]
             if jid >= 0:  # If a base joint was set, check that base_q matches joint_q for that joint
@@ -151,7 +152,8 @@ def validate_base_pose_reset(
                 )
             else:  # If no base joint was set, check that base_q matches body_q for the base body
                 bid = base_body_id_np[wid]
-                assert_rigid_poses_close(body_q_new_np[bid], base_q_np[wid])
+                if bid >= 0:
+                    assert_rigid_poses_close(body_q_new_np[bid], base_q_np[wid])
 
 
 def validate_base_velocity_reset(
@@ -192,13 +194,14 @@ def validate_base_velocity_reset(
             continue
         if base_u is None:  # Check that base body velocity is preserved up to base rotation
             bid = base_body_id_np[wid]
-            base_body_q_prev = wp.quatf(body_q_prev_np[bid, 3:])
-            base_body_q_new = wp.quatf(body_q_new_np[bid, 3:])
-            R_rel_wp = wp.quat_to_matrix(base_body_q_new * wp.quat_inverse(base_body_q_prev))
-            R_rel = np.array([*R_rel_wp])
-            body_u_prev_rotated = rotate_twist(R_rel, body_u_prev_np[bid])
-            np.testing.assert_allclose(body_u_new_np[bid], body_u_prev_rotated, rtol=rtol, atol=atol)
-            continue
+            if bid >= 0:
+                base_body_q_prev = wp.quatf(body_q_prev_np[bid, 3:])
+                base_body_q_new = wp.quatf(body_q_new_np[bid, 3:])
+                R_rel_wp = wp.quat_to_matrix(base_body_q_new * wp.quat_inverse(base_body_q_prev))
+                R_rel = np.array([*R_rel_wp])
+                body_u_prev_rotated = rotate_twist(R_rel, body_u_prev_np[bid])
+                np.testing.assert_allclose(body_u_new_np[bid], body_u_prev_rotated, rtol=rtol, atol=atol)
+                continue
         else:
             jid = base_joint_id_np[wid]
             if jid >= 0:  # If a base joint was set, check that target base_u matches joint_u for that joint
@@ -214,7 +217,8 @@ def validate_base_velocity_reset(
                 )
             else:  # If no base joint was set, check that target base_u matches body_u for the base body
                 bid = base_body_id_np[wid]
-                np.testing.assert_allclose(body_u_new_np[bid], base_u_np[wid], rtol=rtol, atol=atol)
+                if bid >= 0:
+                    np.testing.assert_allclose(body_u_new_np[bid], base_u_np[wid], rtol=rtol, atol=atol)
 
 
 def run_set_floating_base_check(
@@ -533,6 +537,46 @@ class TestSetFloatingBase(unittest.TestCase):
         )
         np.testing.assert_allclose(body_q.numpy(), body_q_check.numpy(), rtol=rtol, atol=atol)
         np.testing.assert_allclose(body_u.numpy(), body_u_check.numpy(), rtol=rtol, atol=atol)
+
+    def test_05_set_floating_base_without_base_body(self):
+        """
+        Validate that set_floating_base() is a no-op if no base body is set.
+        """
+        # Initialize rng
+        rng = np.random.default_rng(self.seed)
+
+        # Set up an actuated four-bar model with a fixed base
+        num_worlds = 3
+        build_fn = functools.partial(
+            build_boxes_fourbar, actuator_ids=[1], floatingbase=False, fixedbase=True, ground=False
+        )
+        builder = make_homogeneous_builder(num_worlds=num_worlds, build_fn=build_fn, limits=False)
+        model = builder.finalize(device=self.default_device)
+
+        # Double-check that no floating base is set for this model
+        np.testing.assert_equal(model.info.base_joint_index.numpy(), -1)
+        np.testing.assert_equal(model.info.base_body_index.numpy(), -1)
+
+        # Set model into non-trivial pose
+        data = set_model_to_random_pose(self, model, rng)
+
+        # Sample non-trivial world mask and base state
+        world_mask = wp.array(sample_world_mask(num_worlds, rng)[0], dtype=wp.bool, device=self.default_device)
+        base_q, base_u = sample_base_state_wp(model, rng)
+
+        # Check that set_floating_base is a no-op
+        body_q = wp.clone(data.bodies.q_i, device=self.default_device)
+        body_u = wp.clone(data.bodies.u_i, device=self.default_device)
+        set_floating_base(
+            model=model,
+            base_q=base_q,
+            base_u=base_u,
+            body_q=body_q,
+            body_u=body_u,
+            world_mask=world_mask,
+        )
+        np.testing.assert_equal(body_q.numpy(), data.bodies.q_i.numpy())
+        np.testing.assert_equal(body_u.numpy(), data.bodies.u_i.numpy())
 
 
 class TestJointBodyStateConversions(unittest.TestCase):

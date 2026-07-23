@@ -394,7 +394,8 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
     dt = 1e-2
-    solver.step(state_0, state_1, model.control(), model.contacts(), dt)
+    collision_pipeline = newton.CollisionPipeline(model)
+    solver.step(state_0, state_1, model.control(), collision_pipeline.contacts(), dt)
 
     # World gravity along -Z rotated into the parent frame R(x, 90°) is along -Y.
     np.testing.assert_allclose(state_1.joint_qd.numpy()[0:3], (0.0, -10.0 * dt, 0.0), atol=1e-5)

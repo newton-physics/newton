@@ -80,6 +80,24 @@ def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
     return points, counts
 
 
+def _cable_stiffnesses_from_material(
+    material: dict[str, float], radius: float, segment_length: float
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """Convert USD cable moduli to per-joint stretch, shear, bend, and twist stiffnesses."""
+    from .cable import create_cable_stiffness_from_elastic_moduli  # noqa: PLC0415
+
+    stretch = shear = bend = twist = None
+    if "stretchStiffness" in material:
+        stretch = create_cable_stiffness_from_elastic_moduli(material["stretchStiffness"], radius, segment_length)[0]
+    if "shearStiffness" in material:
+        shear = material["shearStiffness"] * math.pi * radius**2 / segment_length
+    if "bendStiffness" in material:
+        bend = create_cable_stiffness_from_elastic_moduli(material["bendStiffness"], radius, segment_length)[1]
+    if "twistStiffness" in material:
+        twist = material["twistStiffness"] * 0.5 * math.pi * radius**4 / segment_length
+    return stretch, shear, bend, twist
+
+
 def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[str], set[str]]:
     """Weld curve deformables joined by curve-to-curve ``PhysicsAttachment`` prims into
     rod graphs via :meth:`ModelBuilder.add_rod_graph`.
@@ -103,7 +121,6 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
     from pxr import UsdGeom
 
     from ..usd import utils as usd  # noqa: PLC0415
-    from .cable import create_cable_stiffness_from_elastic_moduli  # noqa: PLC0415
 
     builder = ctx.builder
     root_prim = ctx.root_prim
@@ -342,7 +359,9 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
                     curve_recs[p].radius,
                     curve_recs[p].density,
                     curve_recs[p].material.get("stretchStiffness"),
+                    curve_recs[p].material.get("shearStiffness"),
                     curve_recs[p].material.get("bendStiffness"),
+                    curve_recs[p].material.get("twistStiffness"),
                 )
                 for p in comp_paths
             }
@@ -355,12 +374,7 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
         radius = rep.radius
         seg_len = sum(float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges) / len(edges)
         mat = rep.material
-        stretch = bend = None
-        if seg_len > 0.0:
-            if "stretchStiffness" in mat:
-                stretch = create_cable_stiffness_from_elastic_moduli(mat["stretchStiffness"], radius, seg_len)[0]
-            if "bendStiffness" in mat:
-                bend = create_cable_stiffness_from_elastic_moduli(mat["bendStiffness"], radius, seg_len)[1]
+        stretch, shear, bend, twist = _cable_stiffnesses_from_material(mat, radius, seg_len)
         # One rod graph has one shape config, so collision is resolved per component:
         # any collision-enabled member curve makes the whole graph collide.
         collision_states = {p: _deformable_collision_enabled(curve_recs[p].prim, ctx.ignore_paths) for p in comp_paths}
@@ -396,7 +410,9 @@ def _deformable_import_cable_graphs(ctx: _DeformableImportContext) -> tuple[set[
             radius=radius,
             cfg=cfg,
             stretch_stiffness=stretch,
+            shear_stiffness=shear,
             bend_stiffness=bend,
+            twist_stiffness=twist,
             label=cid,
             wrap_in_articulation=True,
             body_frame_origin="com",
@@ -479,7 +495,6 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
     from pxr import UsdGeom
 
     from ..usd import utils as usd  # noqa: PLC0415
-    from .cable import create_cable_stiffness_from_elastic_moduli  # noqa: PLC0415
 
     builder = ctx.builder
     root_prim = ctx.root_prim
@@ -612,12 +627,6 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
-        if "shearStiffness" in cable_mat or "twistStiffness" in cable_mat:
-            warnings.warn(
-                f"{path}: shearStiffness / twistStiffness cannot be expressed by the rod's stretch and "
-                f"bend stiffness; ignoring them (they remain available in path_cable_attrs).",
-                stacklevel=2,
-            )
 
         cable_bodies: list[int] = []
         cable_joints: list[int] = []
@@ -689,16 +698,9 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 if min(rest_seg_lengths, default=0.0) > 1.0e-8:
                     seg_len = sum(rest_seg_lengths) / max(1, num_seg)
             # An absent modulus stays None so the builder default applies.
-            stretch_stiffness = bend_stiffness = None
-            if seg_len > 0.0:
-                if "stretchStiffness" in cable_mat:
-                    stretch_stiffness = create_cable_stiffness_from_elastic_moduli(
-                        cable_mat["stretchStiffness"], radius, seg_len
-                    )[0]
-                if "bendStiffness" in cable_mat:
-                    bend_stiffness = create_cable_stiffness_from_elastic_moduli(
-                        cable_mat["bendStiffness"], radius, seg_len
-                    )[1]
+            stretch_stiffness, shear_stiffness, bend_stiffness, twist_stiffness = _cable_stiffnesses_from_material(
+                cable_mat, radius, seg_len
+            )
             label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
             # Wrap each cable into its own articulation so the model is finalize-ready (add_rod keeps
             # a periodic cable's loop-closing joint out of the tree). Attachment joints to other
@@ -709,7 +711,9 @@ def _deformable_import_cable(ctx: _DeformableImportContext, consumed_cable_curve
                 radius=radius,
                 cfg=cable_cfg,
                 stretch_stiffness=stretch_stiffness,
+                shear_stiffness=shear_stiffness,
                 bend_stiffness=bend_stiffness,
+                twist_stiffness=twist_stiffness,
                 closed=closed,
                 label=label,
                 wrap_in_articulation=True,
