@@ -284,9 +284,17 @@ class ControllerJointImpedanceModelFree(Controller):
         ns = _allocate_namespace(specs, self._device, self._requires_grad)
         shape_2d = (self._num_robots, self._max_dofs)
         if self._stiffness_attr is not None:
-            setattr(ns, self._stiffness_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad))
+            setattr(
+                ns,
+                self._stiffness_attr,
+                wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad),
+            )
         if self._damping_attr is not None:
-            setattr(ns, self._damping_attr, wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad))
+            setattr(
+                ns,
+                self._damping_attr,
+                wp.zeros(shape_2d, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad),
+            )
         if self._use_inertia:
             setattr(
                 ns,
