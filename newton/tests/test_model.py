@@ -1583,48 +1583,39 @@ class TestModelJoints(unittest.TestCase):
         ``joint_qd`` (DOF). Free and ball joints are where the two layouts
         diverge. Multi-articulation builder also exercises the per-env start
         arrays."""
-        for use_coord in (False, True):
-            prev = newton.use_coord_layout_targets
-            newton.use_coord_layout_targets = use_coord
-            try:
-                builder = ModelBuilder()
-                # env 0: free + revolute (7 coords / 6 DOFs from free)
-                b0 = builder.add_link(mass=1.0)
-                j0_free = builder.add_joint_free(child=b0)
-                b1 = builder.add_link(mass=1.0)
-                j0_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
-                builder.add_articulation([j0_free, j0_rev])
-                # env 1: ball + revolute (4 coords / 3 DOFs from ball)
-                b2 = builder.add_link(mass=1.0)
-                j1_ball = builder.add_joint_ball(parent=-1, child=b2)
-                b3 = builder.add_link(mass=1.0)
-                j1_rev = builder.add_joint_revolute(parent=b2, child=b3, axis=newton.Axis.Z)
-                builder.add_articulation([j1_ball, j1_rev])
-                model = builder.finalize()
+        builder = ModelBuilder()
+        # env 0: free + revolute (7 coords / 6 DOFs from free)
+        b0 = builder.add_link(mass=1.0)
+        j0_free = builder.add_joint_free(child=b0)
+        b1 = builder.add_link(mass=1.0)
+        j0_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
+        builder.add_articulation([j0_free, j0_rev])
+        # env 1: ball + revolute (4 coords / 3 DOFs from ball)
+        b2 = builder.add_link(mass=1.0)
+        j1_ball = builder.add_joint_ball(parent=-1, child=b2)
+        b3 = builder.add_link(mass=1.0)
+        j1_rev = builder.add_joint_revolute(parent=b2, child=b3, axis=newton.Axis.Z)
+        builder.add_articulation([j1_ball, j1_rev])
+        model = builder.finalize()
 
-                self.assertEqual(model.joint_dof_count, 7 + 4)
-                self.assertEqual(model.joint_coord_count, 8 + 5)
+        self.assertEqual(model.joint_dof_count, 7 + 4)
+        self.assertEqual(model.joint_coord_count, 8 + 5)
 
-                target_q_size = model.joint_coord_count if use_coord else model.joint_dof_count
-                self.assertEqual(model.joint_target_q.shape[0], target_q_size)
-                self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
+        self.assertEqual(model.joint_target_q.shape[0], model.joint_coord_count)
+        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
 
-                control = model.control()
-                self.assertEqual(control.joint_target_q.shape[0], target_q_size)
-                self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
+        control = model.control()
+        self.assertEqual(control.joint_target_q.shape[0], model.joint_coord_count)
+        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
 
-                expected_start = model.joint_q_start.numpy() if use_coord else model.joint_qd_start.numpy()
-                np.testing.assert_array_equal(model.joint_target_q_start.numpy(), expected_start)
+        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_q_start.numpy())
 
-                if use_coord:
-                    target_q = model.joint_target_q.numpy()
-                    q_starts = model.joint_q_start.numpy()
-                    # env 0 free joint: w-component at offset 6 (3 lin + 3 quat-xyz)
-                    self.assertAlmostEqual(float(target_q[int(q_starts[0]) + 6]), 1.0)
-                    # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
-                    self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
-            finally:
-                newton.use_coord_layout_targets = prev
+        target_q = model.joint_target_q.numpy()
+        q_starts = model.joint_q_start.numpy()
+        # env 0 free joint: w-component at offset 6 (3 lin + 3 quat-xyz)
+        self.assertAlmostEqual(float(target_q[int(q_starts[0]) + 6]), 1.0)
+        # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
+        self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
 
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
@@ -1657,56 +1648,41 @@ class TestModelJoints(unittest.TestCase):
 
         expected_quat = ModelBuilder._quat_from_axis_targets(*ang_targets)
 
-        for use_coord in (False, True):
-            prev = newton.use_coord_layout_targets
-            newton.use_coord_layout_targets = use_coord
-            try:
-                builder = ModelBuilder()
-                # BALL via low-level add_joint with per-axis targets
-                b_ball = builder.add_link(mass=1.0)
-                j_ball = builder.add_joint(
-                    newton.JointType.BALL,
-                    parent=-1,
-                    child=b_ball,
-                    angular_axes=_make_axes(),
-                )
-                # FREE via low-level add_joint with per-axis linear+angular targets
-                b_free = builder.add_link(mass=1.0)
-                j_free = builder.add_joint(
-                    newton.JointType.FREE,
-                    parent=-1,
-                    child=b_free,
-                    linear_axes=_make_linear_axes(),
-                    angular_axes=_make_axes(),
-                )
-                builder.add_articulation([j_ball])
-                builder.add_articulation([j_free])
-                model = builder.finalize()
+        builder = ModelBuilder()
+        # BALL via low-level add_joint with per-axis targets
+        b_ball = builder.add_link(mass=1.0)
+        j_ball = builder.add_joint(
+            newton.JointType.BALL,
+            parent=-1,
+            child=b_ball,
+            angular_axes=_make_axes(),
+        )
+        # FREE via low-level add_joint with per-axis linear+angular targets
+        b_free = builder.add_link(mass=1.0)
+        j_free = builder.add_joint(
+            newton.JointType.FREE,
+            parent=-1,
+            child=b_free,
+            linear_axes=_make_linear_axes(),
+            angular_axes=_make_axes(),
+        )
+        builder.add_articulation([j_ball])
+        builder.add_articulation([j_free])
+        model = builder.finalize()
 
-                target_q = model.joint_target_q.numpy()
+        target_q = model.joint_target_q.numpy()
 
-                if use_coord:
-                    # BALL coord slice = (qx, qy, qz, qw) — full unit quaternion
-                    q_starts = model.joint_q_start.numpy()
-                    b = int(q_starts[j_ball])
-                    np.testing.assert_allclose(target_q[b : b + 4], expected_quat, rtol=0, atol=1e-6)
-                    # FREE coord slice = (px, py, pz, qx, qy, qz, qw)
-                    f = int(q_starts[j_free])
-                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-                    np.testing.assert_allclose(target_q[f + 3 : f + 7], expected_quat, rtol=0, atol=1e-6)
-                    # Verify unit norm (would only hold post-conversion)
-                    self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
-                    self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
-                else:
-                    # DOF projection: BALL → 3 raw angular floats; FREE → 3 lin + 3 raw ang
-                    qd_starts = model.joint_qd_start.numpy()
-                    b = int(qd_starts[j_ball])
-                    np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
-                    f = int(qd_starts[j_free])
-                    np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-                    np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
-            finally:
-                newton.use_coord_layout_targets = prev
+        # BALL coord slice = (qx, qy, qz, qw) — full unit quaternion
+        q_starts = model.joint_q_start.numpy()
+        b = int(q_starts[j_ball])
+        np.testing.assert_allclose(target_q[b : b + 4], expected_quat, rtol=0, atol=1e-6)
+        # FREE coord slice = (px, py, pz, qx, qy, qz, qw)
+        f = int(q_starts[j_free])
+        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
+        np.testing.assert_allclose(target_q[f + 3 : f + 7], expected_quat, rtol=0, atol=1e-6)
+        # Verify unit norm (would only hold post-conversion)
+        self.assertAlmostEqual(float(np.linalg.norm(target_q[b : b + 4])), 1.0, places=5)
+        self.assertAlmostEqual(float(np.linalg.norm(target_q[f + 3 : f + 7])), 1.0, places=5)
 
     def test_collapse_keeps_attachment_anchored_rod_joints(self):
         """collapse_fixed_joints must not delete non-fixed joints: a rod anchored

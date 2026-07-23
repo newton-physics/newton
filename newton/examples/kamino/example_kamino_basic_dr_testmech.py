@@ -18,6 +18,7 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.001

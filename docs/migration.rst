@@ -184,8 +184,11 @@ Migration steps:
 - When constructing an :class:`Actuator` with a custom ``pos_indices``, drop the
   ``target_pos_indices`` argument: with the coord layout it defaults to ``pos_indices``.
 
-A subsequent release will flip the flag's default to ``True`` and remove the legacy
-layout.
+The legacy DOF-shaped layout is deprecated: building a model whose joint coordinate and DOF
+counts differ (free/ball/distance joints) under ``use_coord_layout_targets = False`` emits a
+:class:`DeprecationWarning` from ``finalize()``. In a future release the coordinate layout
+becomes the only layout and the flag is removed. For models without such joints the two
+layouts are identical, so no warning is emitted and the removal is invisible.
 
 
 ``ModelBuilder``

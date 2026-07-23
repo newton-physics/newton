@@ -27,8 +27,14 @@ Controls the shape of :attr:`~newton.Model.joint_target_q` and
 matching :attr:`~newton.State.joint_qd`.
 
 Solvers, the actuator library, importers, and viewers honor this flag. Toggle
-it before constructing a :class:`~newton.ModelBuilder`; a subsequent release
-will flip the default to ``True``, then remove the flag and the legacy layout.
+it before constructing a :class:`~newton.ModelBuilder`.
+
+.. deprecated:: 1.5
+    The legacy DOF-shaped layout is deprecated. In a future release the
+    coordinate layout becomes the only layout and this flag is removed;
+    ``finalize()`` warns when building an affected model (one whose joint
+    coordinate and DOF counts differ) under ``False``. Set the flag to
+    ``True`` now to migrate.
 """
 
 __all__ = [

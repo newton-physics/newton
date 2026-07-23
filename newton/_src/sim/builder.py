@@ -11788,6 +11788,17 @@ class ModelBuilder:
             if newton.use_coord_layout_targets:
                 target_q_values = self.joint_target_q
             else:
+                if self.joint_coord_count != self.joint_dof_count:
+                    warnings.warn(
+                        "The legacy DOF-shaped joint_target_q layout is deprecated for models "
+                        "whose joint coordinate and DOF counts differ (free/ball/distance "
+                        "joints). In a future release joint_target_q will always use the "
+                        "coordinate layout (matching joint_q) and newton.use_coord_layout_targets "
+                        "will be removed. Set newton.use_coord_layout_targets = True before "
+                        "building models and index targets via Model.joint_target_q_start.",
+                        DeprecationWarning,
+                        stacklevel=3,
+                    )
                 target_q_values = self._project_target_q_to_dof()
             m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)

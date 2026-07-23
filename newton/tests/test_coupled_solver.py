@@ -829,7 +829,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         builder.add_articulation([first_joint, second_joint])
         model = builder.finalize(device="cpu")
-        model.joint_target_q.assign(np.arange(model.joint_dof_count, dtype=np.float32))
+        model.joint_target_q.assign(np.arange(model.joint_coord_count, dtype=np.float32))
 
         coupled = SolverCoupled(
             model=model,
@@ -846,12 +846,12 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
-        np.testing.assert_array_equal(view.joint_target_q.numpy(), [6.0, 7.0])
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
 
-        model.joint_target_q.assign(10.0 + np.arange(model.joint_dof_count, dtype=np.float32))
+        model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        np.testing.assert_array_equal(view.joint_target_q.numpy(), [16.0, 17.0])
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [17.0, 18.0])
         np.testing.assert_array_equal(view.joint_target_ke.numpy(), [106.0, 107.0])
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
