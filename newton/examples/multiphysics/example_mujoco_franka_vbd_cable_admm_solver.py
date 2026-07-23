@@ -567,7 +567,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
-            self.model.collide(self.state_0, self.contacts, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             newton.eval_ik(self.model, self.state_1, self.state_1.joint_q, self.state_1.joint_qd)
             self.state_0, self.state_1 = self.state_1, self.state_0

@@ -460,7 +460,7 @@ class NewtonTestCase(unittest.TestCase):
         if result is None:
             return False
 
-        for issue_list in (result.failures, result.errors):
+        for issue_list in (result.failures, result.errors, result.skipped):
             if any(test is self for test, _ in issue_list):
                 return True
 
@@ -544,9 +544,9 @@ def create_test_func(func, device, check_output, **kwargs):
     return test_func
 
 
+@unittest.skip("No selected devices are available for this test.")
 def skip_test_func(self):
-    # A function to use so we can tell unittest that the test was skipped.
-    self.skipTest("No suitable devices to run the test.")
+    pass
 
 
 def sanitize_identifier(s):
