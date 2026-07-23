@@ -29,7 +29,7 @@ SUBSTEPS = {
     "xpbd": 10,
     "vbd": 10,
     "mujoco": 10,
-    "featherstone": 20,
+    "featherstone": 50,
     "kamino": 5,
 }
 SOLVER_CHOICES = ("xpbd", "vbd", "mujoco", "featherstone", "kamino")
@@ -190,8 +190,13 @@ class Example:
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "balance bird remains within scene bounds",
-            lambda q, qd: abs(q[0]) < 3.0 and abs(q[1]) < 3.0 and -0.5 < q[2] < 3.0,
+            "balance bird remains upright on the pedestal",
+            lambda q, qd: (
+                abs(q[0]) < 0.05
+                and abs(q[1]) < 0.05
+                and 0.1 < q[2] < 0.2
+                and wp.quat_rotate(wp.transform_get_rotation(q), wp.vec3(0.0, 0.0, 1.0))[2] > 0.8
+            ),
         )
 
     def render(self):

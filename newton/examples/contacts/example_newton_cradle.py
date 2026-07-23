@@ -191,8 +191,8 @@ class Example:
         newton.examples.test_body_state(
             self.model,
             self.state_0,
-            "cradle remains within scene bounds",
-            lambda q, qd: abs(q[0]) < 3.0 and abs(q[1]) < 3.0 and -1.5 < q[2] < 3.0,
+            "cradle remains in its planar workspace",
+            lambda q, qd: abs(q[0]) < 1.25 and abs(q[1]) < 1.0e-3 and abs(q[2]) < 1.1,
         )
 
     def render(self):

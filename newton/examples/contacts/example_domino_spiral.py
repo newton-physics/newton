@@ -33,7 +33,7 @@ SUBSTEPS = {
     "xpbd": 10,
     "vbd": 10,
     "mujoco": 10,
-    "featherstone": 10,
+    "featherstone": 100,
     "kamino": 5,
 }
 SOLVER_CHOICES = ("xpbd", "vbd", "mujoco", "featherstone", "kamino")
@@ -45,7 +45,7 @@ def _rainbow_color(i: int, count: int) -> wp.vec3:
     return wp.vec3(0.9 * (1.0 - t) + 0.2 * t, 0.25 + 0.55 * t, 0.15 + 0.75 * (1.0 - abs(0.5 - t) * 2.0))
 
 
-def _domino_spiral_pose(index: int) -> tuple[wp.vec3, wp.quat, float]:
+def _domino_spiral_pose(index: int) -> tuple[wp.vec3, wp.quat]:
     b = SPIRAL_PITCH / (2.0 * math.pi)
     theta = 0.0
     for _ in range(index):
@@ -60,7 +60,7 @@ def _domino_spiral_pose(index: int) -> tuple[wp.vec3, wp.quat, float]:
     ty = b * math.sin(theta) + r * math.cos(theta)
     yaw = math.atan2(-tx, ty)
     q_yaw = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), yaw)
-    return wp.vec3(x, y, DOMINO_HALF[2]), q_yaw, r
+    return wp.vec3(x, y, DOMINO_HALF[2]), q_yaw
 
 
 class Example:
@@ -86,7 +86,7 @@ class Example:
 
         hx, hy, hz = DOMINO_HALF
         for i in range(NUM_DOMINOES):
-            pos, q_yaw, _ = _domino_spiral_pose(i)
+            pos, q_yaw = _domino_spiral_pose(i)
             if i == 0:
                 q = q_yaw * wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -INITIAL_TILT)
             else:
@@ -115,7 +115,7 @@ class Example:
             self.contacts = self.collision_pipeline.contacts()
 
         if self.solver_name == "xpbd":
-            self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=True)
+            self.solver = newton.solvers.SolverXPBD(self.model, iterations=20, enable_restitution=True)
         elif self.solver_name == "vbd":
             self.solver = newton.solvers.SolverVBD(self.model, iterations=10, rigid_contact_hard=False)
         elif self.solver_name == "mujoco":
@@ -169,7 +169,7 @@ class Example:
             self.model,
             self.state_0,
             "dominoes remain within scene bounds",
-            lambda q, qd: abs(q[0]) < 3.1 and abs(q[1]) < 3.1 and -0.5 < q[2] < 3.1,
+            lambda q, qd: abs(q[0]) < 1.0 and abs(q[1]) < 1.0 and 0.0 < q[2] < 0.5,
         )
 
     def render(self):
