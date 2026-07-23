@@ -49,7 +49,8 @@ class TestSetup:
         self.builder: ModelBuilderKamino = builder_fn(**kwargs)
 
         # Set ad-hoc configurations
-        self.builder.gravity[0].enabled = gravity
+        if not gravity:
+            self.builder.set_gravity(wp.vec3f(0.0))
         if perturb:
             u_0 = wp.spatial_vectorf(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             for body in self.builder.all_bodies:
