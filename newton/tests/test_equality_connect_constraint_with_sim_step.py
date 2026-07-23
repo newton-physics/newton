@@ -4,6 +4,7 @@
 """Tests for joint equality constraints verified with simulation steps."""
 
 import unittest
+
 import numpy as np
 import warp as wp
 
