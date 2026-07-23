@@ -250,15 +250,9 @@ class Example:
         config.solver.padmm.max_iterations = 200
         config.solver.padmm.eta = 1e-5
         config.solver.padmm.use_acceleration = True
-        # CRF converges only with the adaptive "balanced" penalty; rho_min/alpha/tau are no-ops
-        # under the fixed penalty the direct solvers use.
-        crf = linear_solver == "CRF"
-        config.solver.padmm.penalty_update_method = "balanced" if crf else "fixed"
-        config.solver.padmm.rho_0 = 0.5 if crf else 0.02
-        config.solver.padmm.rho_min = 5e-5
-        config.solver.padmm.alpha = 5.0
-        config.solver.padmm.tau = 1.4
-        config.solver.padmm.linear_solver_tolerance_ratio = 0.2
+        config.solver.padmm.rho_0 = 0.02  # try 0.02 for Balanced update
+        config.solver.padmm.rho_min = 0.05
+        config.solver.padmm.penalty_update_method = "fixed"  # try "balanced"
         config.solver.padmm.warmstart_mode = "containers"
         config.solver.padmm.contact_warmstart_method = "geom_pair_net_force"
         config.solver.collect_solver_info = False
