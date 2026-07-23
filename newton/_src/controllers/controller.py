@@ -56,6 +56,7 @@ class Controller(ABC):
     @abstractmethod
     def compute(
         self,
+        *,
         inputs: Any,
         outputs: Any,
         dt: float | wp.array[wp.float32],

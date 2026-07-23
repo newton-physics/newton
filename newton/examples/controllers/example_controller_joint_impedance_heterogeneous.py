@@ -183,7 +183,7 @@ class Example:
 
     def _gpu_step(self):
         """Pure GPU work: controller compute + physics substeps. Safe to graph-capture."""
-        self.controller.compute(self._input, self._output, self.sim_dt)
+        self.controller.compute(inputs=self._input, outputs=self._output, dt=self.sim_dt)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()

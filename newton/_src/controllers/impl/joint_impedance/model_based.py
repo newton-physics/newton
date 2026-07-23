@@ -295,6 +295,7 @@ class ControllerJointImpedance(Controller):
 
     def compute(
         self,
+        *,
         inputs: Any,
         outputs: Any,
         dt: float | wp.array[wp.float32],
@@ -347,4 +348,4 @@ class ControllerJointImpedance(Controller):
         if self._damping_attr is not None:
             setattr(self._mf_input, self._damping_attr, getattr(inputs, self._damping_attr))
 
-        self._model_free.compute(self._mf_input, outputs, dt)
+        self._model_free.compute(inputs=self._mf_input, outputs=outputs, dt=dt)
