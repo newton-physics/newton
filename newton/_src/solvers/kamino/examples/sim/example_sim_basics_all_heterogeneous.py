@@ -108,8 +108,8 @@ class Example:
         self.builder: ModelBuilderKamino = basics.make_basics_heterogeneous_builder(ground=ground)
 
         # Set gravity
-        for w in range(self.builder.num_worlds):
-            if not gravity:
+        if not gravity:
+            for w in range(self.builder.num_worlds):
                 self.builder.set_gravity(wp.vec3f(0.0), w)
 
         # Set solver config
