@@ -982,6 +982,10 @@ class ConjugateResidualSolverFused(IterativeSolver):
             self._world_active = world_active
         if preconditioner is not None:
             self._preconditioner = preconditioner
+        if self._preconditioner is not None:
+            # The fused kernel applies the operator's dual preconditioner inline; a solver-side
+            # preconditioner (e.g. "jacobi") has no effect here, so reject it instead of ignoring it.
+            raise ValueError("ConjugateResidualSolverFused does not support a solver-side preconditioner.")
 
         n_worlds = operator._model.size.num_worlds
         with wp.ScopedDevice(operator.device):

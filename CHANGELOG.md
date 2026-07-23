@@ -5,6 +5,7 @@
 ### Added
 
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
+- Add a single-kernel sparse fused Conjugate Residual linear solver for the Kamino PADMM solver (`linear_solver_type="CRF"`): a matrix-free Delassus solve that runs the full CR iteration in one Warp kernel per world, with optional inexact-ADMM inner-tolerance scheduling via `linear_solver_tolerance_ratio`.
 
 ### Changed
 
@@ -57,8 +58,6 @@
 - Add opt-in `body_frame_origin="com"` to `ModelBuilder.add_rod()` and `ModelBuilder.add_rod_graph()` for COM-centered cable capsule body frames.
 - Add `Model.shape_collision_filter_contains()`, `Model.shape_collision_filter_mask()`, and `Model.shape_collision_filter_pairs_array()` for solver integrations that need collision-filter queries. (#3187)
 - Add `CollisionPipeline.soft_rigid_contact_pair_count` for the number of precomputed soft-rigid (particle-shape) candidate pairs, filtered to compatible worlds, launched for soft-contact generation; this is the default capacity for `soft_contact_max`
-- Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied.
-- Add a single-kernel sparse fused Conjugate Residual linear solver for the Kamino PADMM solver (`linear_solver_type="CRF"`): a matrix-free Delassus solve that runs the full CR iteration in one Warp kernel per world, with optional inexact-ADMM inner-tolerance scheduling via `linear_solver_tolerance_ratio`.
 - Add user-defined pressure laws to hydroelastic SDF contact via `HydroelasticSDF.Config.pressure_func` (a `@wp.func` mapping `(signed_depth, shape_idx, data) -> pressure`) and `pressure_data` (a `@wp.struct` carrying per-shape state). The contact patch is the iso-pressure surface `p_a == p_b`; the default linear law `pressure = -kh * signed_depth` is preserved when no callback is supplied. (#2705)
 - Add `SensorTiledCamera.utils.assign_checkerboard_material(shape_indices=...)` for applying the checkerboard texture to selected shapes.
 - Add USD import support for `NewtonJointAPI` (`newton:armature`, `newton:damping`, `newton:friction`, `newton:velocityLimit`, `newton:limitStiffness`, `newton:limitDamping`). Attributes broadcast uniformly to every DOF on the joint. If per DOF variance is required, recommendation is to break apart into 1-DOF (i.e. revolute & prismatic) joints instead. (#3275)
