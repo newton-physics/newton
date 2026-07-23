@@ -670,6 +670,20 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         self.assertEqual(len(call["points"]), model.deformable_visual_meshes[0].vertex_count)
         self.assertFalse(viewer.calls["/model/triangles"]["hidden"])
 
+    def test_skinned_mesh_toggle_is_independent_from_show_visual(self):
+        """Skinned meshes remain visible when regular visual shapes are hidden."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        state = model.state()
+
+        viewer.show_visual = False
+        viewer._frame(state)
+        name = "/model/deformable_visual_meshes/mesh_0_skin"
+        self.assertFalse(viewer.calls[name]["hidden"])
+        self.assertTrue(viewer.show_deformable_visual_meshes)
+
     def test_replicated_worlds_use_distinct_names_and_device_offsets(self):
         """Replicated meshes draw under distinct names, each offset by its own
         world offset."""
