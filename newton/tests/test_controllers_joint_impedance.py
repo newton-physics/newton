@@ -125,7 +125,7 @@ def _run_mf(ctrl, *, q, qd, q_des, qd_des, device, **extras):
     for k, v in extras.items():
         setattr(ins, k, v)
     outs = ctrl.output()
-    ctrl.compute(ins, outs, 0.01)
+    ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
     return outs.joint_f.numpy()
 
 
@@ -242,7 +242,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         ins.joint_qd_des = wp.zeros(2, dtype=wp.float32, device=device)
         ins.kp = wp.array([[3.0, 3.0]], dtype=wp.float32, device=device)
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         np.testing.assert_allclose(outs.joint_f.numpy(), [6.0, 0.0], atol=1e-5)
 
     def test_is_graphable(self):
@@ -325,7 +325,7 @@ class TestControllerJointImpedanceModelFree(unittest.TestCase):
         ins.joint_q_des = wp.array([0.0, 5.0, 0.0, 3.0], dtype=wp.float32, device=device)
         ins.joint_qd_des = wp.zeros(4, dtype=wp.float32, device=device)
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         result = outs.joint_f.numpy()
         self.assertAlmostEqual(result[0], 0.0, places=5)
         self.assertAlmostEqual(result[1], 5.0, places=5)
@@ -383,7 +383,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         ins.joint_q_des = wp.array([1.0, 0.0, 2.0], dtype=wp.float32, device=device)
         ins.joint_qd_des = wp.zeros(3, dtype=wp.float32, device=device)
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         tau = outs.joint_f.numpy()
         np.testing.assert_allclose(tau, [5.0, 0.0, 10.0], atol=1e-5)
 
@@ -410,7 +410,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         ins.joint_q_des = wp.array([0.0, 0.0, 3.0], dtype=wp.float32, device=device)
         ins.joint_qd_des = wp.zeros(3, dtype=wp.float32, device=device)
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         tau = outs.joint_f.numpy()
         # Only robot 1's slot (index 2) should be nonzero
         np.testing.assert_allclose(tau[:2], [0.0, 0.0], atol=1e-5)
@@ -441,7 +441,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         ins.joint_q_des = wp.full(4, 99.0, dtype=wp.float32, device=device)
         ins.joint_qd_des = wp.zeros(4, dtype=wp.float32, device=device)
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         tau = outs.joint_f.numpy()
         # Exactly 4 real DOFs: all should equal 99
         self.assertEqual(tau.shape[0], 4)
@@ -479,7 +479,7 @@ class TestControllerJointImpedanceModelFreeHeterogeneous(unittest.TestCase):
         ins.joint_qd_des = wp.zeros(3, dtype=wp.float32, device=device)
         ins.mass_matrix = M
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         tau = outs.joint_f.numpy()
         np.testing.assert_allclose(tau, [2.0, 2.0, 3.0], atol=1e-5)
 
@@ -512,7 +512,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         ins.joint_q_des = wp.array(np.array(q_des_sim, dtype=np.float32), dtype=wp.float32, device=device)
         ins.joint_qd_des = wp.array(np.array(qd_des_sim, dtype=np.float32), dtype=wp.float32, device=device)
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         return outs.joint_f.numpy()
 
     def test_zero_error_gives_zero_torque(self):
@@ -642,7 +642,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         ins.joint_q_des = wp.array([1.0, 0.0, 2.0], dtype=wp.float32, device=device)
         ins.joint_qd_des = wp.zeros(3, dtype=wp.float32, device=device)
         outs = ctrl.output()
-        ctrl.compute(ins, outs, 0.01)
+        ctrl.compute(inputs=ins, outputs=outs, dt=0.01)
         tau = outs.joint_f.numpy()
         # robot0 DOF0: 4*1=4, robot0 DOF1: 4*0=0, robot1 DOF0: 4*2=8
         np.testing.assert_allclose(tau, [4.0, 0.0, 8.0], atol=1e-4)

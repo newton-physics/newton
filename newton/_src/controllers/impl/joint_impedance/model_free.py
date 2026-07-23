@@ -318,6 +318,7 @@ class ControllerJointImpedanceModelFree(Controller):
 
     def compute(
         self,
+        *,
         inputs: Any,
         outputs: Any,
         dt: float | wp.array[wp.float32],
