@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -15,7 +14,7 @@ from warp._src.types import Any, Int, Vector
 
 from .....core.types import MAXVAL, override
 from .....sim import JointTargetMode, JointType
-from .math import FLOAT32_MAX, FLOAT32_MIN, PI, TWO_PI
+from .math import FLOAT32_MAX
 from .types import (
     ArrayLike,
     Descriptor,
@@ -225,11 +224,11 @@ class JointCorrectionMode(IntEnum):
         Returns the numerical bound imposed by the correction mode.
         """
         if self.value == self.TWOPI:
-            return float(TWO_PI)
+            return float(wp.tau)  # Note: wp.tau is 2 * pi
         elif self.value == self.CONTINUOUS:
             return float(JOINT_QMAX)
         elif self.value == self.NONE:
-            return float(PI)
+            return float(wp.pi)
         else:
             raise ValueError(f"Unknown joint correction mode: {self.value}")
 
@@ -1586,12 +1585,7 @@ class JointDescriptor(Descriptor):
             return [float(default) for _ in range(size)]
 
         if isinstance(x, (int, float, np.floating)):
-            if x == math.inf:
-                return [float(FLOAT32_MAX) for _ in range(size)]
-            elif x == -math.inf:
-                return [float(FLOAT32_MIN) for _ in range(size)]
-            else:
-                return [x] * size
+            return [x] * size
 
         if isinstance(x, ArrayLike):
             if len(x) == 0:
@@ -1601,11 +1595,6 @@ class JointDescriptor(Descriptor):
                 raise ValueError(f"Invalid DOF array length: {len(x)} != {size}")
 
             if all(isinstance(x, (float, np.floating)) for x in x):
-                for i in range(len(x)):
-                    if x[i] == math.inf:
-                        x[i] = float(FLOAT32_MAX)
-                    elif x[i] == -math.inf:
-                        x[i] = float(FLOAT32_MIN)
                 return x
             else:
                 raise TypeError(f"Unsupported DOF array type: {type(x)!r}; expected float, iterable of floats, or None")

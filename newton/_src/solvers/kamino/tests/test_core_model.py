@@ -338,8 +338,9 @@ class TestModelConversions(unittest.TestCase):
         # so inv_i_I_i needs a somewhat higher tolerance.
         rtol = {"inv_i_I_i": 1e-5}
         atol = {"inv_i_I_i": 1e-6}
+        excluded = ["ptr"]
         test_util_checks.assert_model_equal(
-            self, model_kamino_converted, model_kamino, excluded=["ptr"], rtol=rtol, atol=atol
+            self, model_kamino_converted, model_kamino, excluded=excluded, rtol=rtol, atol=atol
         )
 
     def test_03_model_conversions_dr_legs_from_usd(self):
@@ -469,6 +470,43 @@ class TestModelConversions(unittest.TestCase):
             "excluded_pairs",  # TODO: newton.ModelBuilder preemptively adding geom-pairs to shape_collision_filter_pairs
         ]
         test_util_checks.assert_model_equal(self, model_kamino_converted, model_kamino, excluded=excluded)
+
+    def test_05_model_conversions_base_assignment_non_floating_root(self):
+        """
+        Test per-world base assignment when articulation roots are not unary free joints.
+
+        A free-rooted articulation following a fixed-rooted one still provides the
+        world's floating base without warning; a world whose articulations are
+        fixed-rooted or rooted by a free joint with a body parent gets no base and
+        warns that floating base resets are disabled.
+        """
+
+        def build_model(free_root: str | None) -> Model:
+            builder: ModelBuilder = ModelBuilder()
+            SolverKamino.register_custom_attributes(builder)
+            body_fixed = builder.add_link()
+            builder.add_shape_box(body_fixed)
+            joint_fixed = builder.add_joint_fixed(parent=-1, child=body_fixed)
+            builder.add_articulation([joint_fixed])
+            if free_root is not None:
+                body_free = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()))
+                builder.add_shape_box(body_free)
+                parent = -1 if free_root == "world" else body_fixed
+                joint_free = builder.add_joint_free(child=body_free, parent=parent)
+                builder.add_articulation([joint_free])
+            return builder.finalize(device=self.default_device)
+
+        with self.assertNoLogs(level="WARNING"):
+            model_kamino = ModelKamino.from_newton(build_model(free_root="world"))
+        self.assertEqual(model_kamino.info.base_body_index.numpy().tolist(), [1])
+        self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [1])
+
+        for free_root in (None, "body"):
+            with self.assertLogs(level="WARNING") as logs:
+                model_kamino = ModelKamino.from_newton(build_model(free_root=free_root))
+            self.assertTrue(any("not a free joint attached to the world" in message for message in logs.output))
+            self.assertEqual(model_kamino.info.base_body_index.numpy().tolist(), [-1])
+            self.assertEqual(model_kamino.info.base_joint_index.numpy().tolist(), [-1])
 
     def test_10_model_conversions_arbitrary_axis(self):
         """
@@ -633,6 +671,35 @@ class TestModelConversions(unittest.TestCase):
         # plus origin (1,0,0) → (1.1, -0.3, 0.2)
         np.testing.assert_allclose(q_i_0_np[2, :3], [1.1, -0.3, 0.2], atol=1e-6)
         np.testing.assert_allclose(q_i_0_np[2, 3:7], body_q_np[2, 3:7], atol=1e-6)
+
+    def _build_single_floating_body_com_offset_model(self) -> Model:
+        """Build a single floating body with a non-zero COM offset."""
+        builder_newton: ModelBuilder = ModelBuilder()
+        SolverKamino.register_custom_attributes(builder_newton)
+        builder_newton.default_shape_cfg.margin = 0.0
+        builder_newton.default_shape_cfg.gap = 0.0
+
+        builder_newton.begin_world()
+
+        bid = builder_newton.add_link(
+            label="body0",
+            mass=1.0,
+            xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
+            com=wp.vec3f(0.1, 0.0, 0.0),
+            lock_inertia=True,
+        )
+        builder_newton.add_shape_box(label="box0", body=bid, hx=0.05, hy=0.05, hz=0.05)
+        builder_newton.add_joint_free(
+            label="world_to_body0",
+            parent=-1,
+            child=bid,
+            parent_xform=wp.transform_identity(dtype=wp.float32),
+            child_xform=wp.transform_identity(dtype=wp.float32),
+        )
+
+        builder_newton.end_world()
+
+        return builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
 
     def _build_com_offset_model(self, with_base_joint: bool = True):
         """Build a 3-body chain with non-zero COM offsets for reset tests."""
@@ -812,6 +879,37 @@ class TestModelConversions(unittest.TestCase):
                     atol=1e-6,
                     err_msg=f"Base reset (translated): body {i} rotation mismatch",
                 )
+
+    def test_15_preserve_reset_keeps_joint_q_consistent_with_com_offset_body(self):
+        """
+        Verify preserve reset leaves body_q and joint_q unchanged for COM-offset bodies.
+
+        For a single floating body with a non-zero center-of-mass offset, a preserve
+        reset should not modify ``body_q`` or re-derived ``joint_q``.
+        """
+        model = self._build_single_floating_body_com_offset_model()
+        solver = SolverKamino(model)
+
+        state: State = model.state()
+        solver.reset(state=state)
+
+        body_q_before = state.body_q.numpy().copy()
+        joint_q_before = state.joint_q.numpy().copy()
+
+        solver.reset(state=state, config=SolverKamino.ResetConfig.preserve())
+
+        np.testing.assert_allclose(
+            state.body_q.numpy(),
+            body_q_before,
+            atol=1e-6,
+            err_msg="Preserve reset should not modify body_q",
+        )
+        np.testing.assert_allclose(
+            state.joint_q.numpy(),
+            joint_q_before,
+            atol=1e-6,
+            err_msg="Preserve reset should not modify joint_q when body_q is unchanged",
+        )
 
     def test_14_model_conversions_shape_offset_com_relative(self):
         """

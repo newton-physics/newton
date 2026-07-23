@@ -706,7 +706,8 @@ class TestImportUrdfBasic(unittest.TestCase):
                 state_0 = model.state()
                 state_1 = model.state()
                 control = model.control()
-                contacts = model.contacts()
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
                 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
                 root_body = int(model.joint_child.numpy()[0])

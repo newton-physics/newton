@@ -125,8 +125,9 @@ class TestMujocoSpatialTendon(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.contacts()
-        model.collide(state_in, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_in, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
@@ -199,8 +200,9 @@ class TestMujocoSpatialTendon(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.contacts()
-        model.collide(state_in, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_in, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
@@ -271,8 +273,9 @@ class TestMujocoSpatialTendon(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.contacts()
-        model.collide(state_in, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_in, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
@@ -438,8 +441,9 @@ class TestMujocoSpatialTendon(unittest.TestCase):
 
         # Verify the MuJoCo model compiles and simulates correctly
         state = model.state()
-        contacts = model.contacts()
-        model.collide(state, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
         self.assertEqual(solver.mj_model.ntendon, 1)
@@ -537,8 +541,9 @@ class TestMujocoSpatialTendon(unittest.TestCase):
 
         model = builder.finalize()
         state = model.state()
-        contacts = model.contacts()
-        model.collide(state, contacts)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
         with warnings.catch_warnings(record=True) as w:

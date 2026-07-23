@@ -23,7 +23,14 @@ import newton.utils
 from newton.sensors import SensorContact
 from newton.utils import EventTracer
 
+if __package__:
+    from .benchmark_metrics import validate_simulation_state
+else:
+    from benchmark_metrics import validate_simulation_state
+
 _NEW_LAYOUT_AVAILABLE = hasattr(newton, "use_coord_layout_targets")
+_MAX_BODY_LINEAR_SPEED = 100.0
+_MAX_BODY_ANGULAR_SPEED = 500.0
 
 
 def _target_q(owner):
@@ -368,14 +375,17 @@ class Example:
         nconmax=None,
         builder=None,
         cone=None,
+        fps=600,
+        sim_substeps=10,
     ):
         if _NEW_LAYOUT_AVAILABLE:
             newton.use_coord_layout_targets = True
-        fps = 600
+        if fps <= 0 or sim_substeps <= 0:
+            raise ValueError("fps and sim_substeps must be positive")
         self.sim_time = 0.0
         self.benchmark_time = 0.0
         self.frame_dt = 1.0 / fps
-        self.sim_substeps = 10
+        self.sim_substeps = sim_substeps
         self.contacts = None
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.world_count = world_count
@@ -482,16 +492,23 @@ class Example:
             self.apply_waypoint_control()
 
         wp.synchronize_device()
-        start_time = time.time()
-        if self.use_cuda_graph:
+        start_time = time.perf_counter()
+        if self.use_cuda_graph and self.graph is not None:
             wp.capture_launch(self.graph)
         else:
             self.simulate()
         wp.synchronize_device()
-        end_time = time.time()
+        end_time = time.perf_counter()
 
         self.benchmark_time += end_time - start_time
         self.sim_time += self.frame_dt
+
+    def test_final(self):
+        validate_simulation_state(
+            self.state_0,
+            max_linear_speed=_MAX_BODY_LINEAR_SPEED,
+            max_angular_speed=_MAX_BODY_ANGULAR_SPEED,
+        )
 
     def render(self):
         if self.renderer is None:
@@ -562,8 +579,6 @@ class Example:
         nconmax=None,
         cone=None,
     ):
-        solver_iteration = solver_iteration if solver_iteration is not None else 100
-        ls_iteration = ls_iteration if ls_iteration is not None else 50
         solver = solver if solver is not None else ROBOT_CONFIGS[robot]["solver"]
         integrator = integrator if integrator is not None else ROBOT_CONFIGS[robot]["integrator"]
         njmax = njmax if njmax is not None else ROBOT_CONFIGS[robot]["njmax"]

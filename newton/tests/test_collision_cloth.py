@@ -918,8 +918,9 @@ def test_mesh_ground_collision_index(test, device):
     model = builder.finalize(device=device)
     test.assertEqual(model.shape_contact_pair_count, 3)
     state = model.state()
-    contacts = model.contacts()
-    model.collide(state, contacts)
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state, contacts)
     contact_count = contacts.rigid_contact_count.numpy()[0]
     # CPU gets 3 contacts (no reduction), CUDA may get more with reduction
     test.assertTrue(contact_count >= 3, f"Expected at least 3 contacts, got {contact_count}")

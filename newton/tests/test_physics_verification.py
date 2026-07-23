@@ -595,7 +595,7 @@ def test_torque_free_precession(test, device, solver_fn):
 # Test 9a: Restitution
 # Verify bounce height h_rebound = e^2 * h_drop for different restitution coefficients.
 # ---------------------------------------------------------------------------
-def test_restitution(test, device, solver_fn):
+def test_restitution(test, device, solver_fn, rebound_rtol=0.01):
     # Test parameters: gravity, initial height, sphere radius, restitution values
     g = -10.0
     h_drop = 1.0
@@ -620,8 +620,9 @@ def test_restitution(test, device, solver_fn):
         builder.add_shape_sphere(b, radius=radius, cfg=cfg)
         model = builder.finalize(device=device)
 
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
         solver = solver_fn(model)
-        contacts = model.contacts()
         state_0 = model.state()
         state_1 = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -633,7 +634,7 @@ def test_restitution(test, device, solver_fn):
         y_positions = []
         for _ in range(num_steps):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, None, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
             y_positions.append(float(state_0.body_q.numpy()[0, 1]))
@@ -656,7 +657,7 @@ def test_restitution(test, device, solver_fn):
         test.assertAlmostEqual(
             h_rebound,
             h_expected,
-            delta=0.01 * h_expected,
+            delta=rebound_rtol * h_expected,
             msg=f"Rebound height for e={e}: got {h_rebound:.4f}, expected {h_expected:.4f}",
         )
 
@@ -667,7 +668,7 @@ def test_restitution(test, device, solver_fn):
         test.assertAlmostEqual(
             ratio,
             expected_ratio,
-            delta=0.01 * expected_ratio,
+            delta=rebound_rtol * expected_ratio,
             msg=f"Rebound ratio: got {ratio:.3f}, expected {expected_ratio:.3f}",
         )
 
@@ -1599,6 +1600,14 @@ for device in devices:
             solver_fn=lambda model: newton.solvers.SolverXPBD(
                 model, iterations=10, angular_damping=0.0, enable_restitution=True
             ),
+        )
+        add_function_test(
+            TestPhysicsVerification,
+            "test_restitution_kamino",
+            test_restitution,
+            devices=[device],
+            solver_fn=newton.solvers.SolverKamino,
+            rebound_rtol=0.03,
         )
 
     if not device.is_cuda:
