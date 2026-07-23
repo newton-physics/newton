@@ -258,8 +258,6 @@ def create_kernel(
             albedo_color = wp.vec3f(1.0)
             if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 albedo_color = srgb_to_linear_wp(shape_colors[closest_hit.shape_index])
-            elif closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
-                albedo_color = srgb_to_linear_wp(wp.vec3f(0.35, 0.55, 0.95))
 
             if wp.static(config.enable_textures) and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
                 texture_index = shape_texture_ids[closest_hit.shape_index]

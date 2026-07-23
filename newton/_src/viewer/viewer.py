@@ -2828,7 +2828,7 @@ class ViewerBase(ABC):
             world_index = rm.world if offsets is not None else -1
             if offsets is None:
                 if self._deformable_visual_mesh_null_offsets is None:
-                    self.layer._deformable_visual_mesh_null_offsets = wp.zeros(1, dtype=wp.vec3, device=self.device)
+                    self._deformable_visual_mesh_null_offsets = wp.zeros(1, dtype=wp.vec3, device=self.device)
                 offsets = self._deformable_visual_mesh_null_offsets
             wp.launch(
                 apply_world_offset_and_layer_transform_normals,

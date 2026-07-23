@@ -689,6 +689,22 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         assert_np_equal(p0, verts + offsets[0], tol=1.0e-5)
         assert_np_equal(p1, verts + offsets[1], tol=1.0e-5)
 
+    def test_viewer_reuses_null_world_offsets(self):
+        """Reuse one fallback offset buffer when no world offsets are configured."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer.world_offsets = None
+
+        viewer._frame(model.state())
+        offsets = viewer._deformable_visual_mesh_null_offsets
+        self.assertIsNotNone(offsets)
+        self.assertIs(viewer.layer._deformable_visual_mesh_null_offsets, offsets)
+
+        viewer._frame(model.state(), 1.0)
+        self.assertIs(viewer._deformable_visual_mesh_null_offsets, offsets)
+
     def test_viewer_file_roundtrips_deformable_visual_mesh(self):
         builder = newton.ModelBuilder()
         _add_cloth(builder)
@@ -948,6 +964,29 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
 
         self.assertGreater(int(rgba[3]), 0)
         self.assertTrue(int(rgba[0]) != int(rgba[1]) or int(rgba[1]) != int(rgba[2]))
+
+    def test_tiled_camera_keeps_untextured_simulation_triangles_white(self):
+        """Keep the established white albedo for untextured simulation triangles."""
+        model = self._triangle_surface_with_visual_mesh_behind()
+        state = model.state()
+
+        sensor = SensorTiledCamera(
+            model,
+            default_render_config=SensorTiledCamera.RenderConfig(
+                enable_particles=False,
+                max_distance=10.0,
+            ),
+        )
+        camera_rays, camera_transforms = self._camera_setup(sensor, model)
+        albedo_image = sensor.utils.create_albedo_image_output(16, 16, camera_count=1)
+
+        sensor.update(state, camera_transforms, camera_rays, albedo_image=albedo_image)
+        rgba = self._unpack_rgba(albedo_image.numpy()[0, 0, 8, 8])
+
+        self.assertGreater(int(rgba[0]), 240)
+        self.assertGreater(int(rgba[1]), 240)
+        self.assertGreater(int(rgba[2]), 240)
+        self.assertEqual(int(rgba[3]), 255)
 
     def test_tiled_camera_samples_dynamic_visual_mesh_texture(self):
         texture = np.zeros((4, 4, 4), dtype=np.uint8)
