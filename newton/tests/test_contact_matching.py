@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -67,7 +68,7 @@ def test_first_frame_all_not_found(test, device):
 
         match_idx = contacts.rigid_contact_match_index.numpy()[:count]
         test.assertTrue(
-            np.all(match_idx == -1),
+            np.all(match_idx == MATCH_NOT_FOUND),
             f"First frame should have all MATCH_NOT_FOUND, got unique values: {np.unique(match_idx)}",
         )
 
@@ -196,10 +197,10 @@ def test_broken_pos_threshold_all_contacts(test, device):
         count2 = _collide_once(pipeline, state, contacts)
         match_idx = contacts.rigid_contact_match_index.numpy()[:count2]
 
-        # Every new contact should be MATCH_BROKEN (-2): key matches but
-        # position drifted beyond threshold.
+        # Every new contact should be MATCH_BROKEN: key matches but position
+        # drifted beyond threshold.
         test.assertTrue(
-            np.all(match_idx == newton.geometry.MATCH_BROKEN),
+            np.all(match_idx == MATCH_BROKEN),
             f"All contacts should be MATCH_BROKEN. Unique values: {np.unique(match_idx)}",
         )
 

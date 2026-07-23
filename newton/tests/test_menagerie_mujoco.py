@@ -378,6 +378,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "body_ipos",
     # Inertia frame orientation: derived from inertia diagonalization.
     "body_iquat",
+    # Simple-body classification (new in mujoco-warp 3.10.0.2): derived from the
+    # inertia representation, so Newton's re-diagonalization can classify differently.
+    "body_simple",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
     "geom_contype",

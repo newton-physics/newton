@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from typing import Any
 
@@ -18,6 +19,8 @@ from .warp_raytrace import (
     RenderOrder,
     Utils,
 )
+
+PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 _RENDER_CONFIG_DEPRECATION_MSG = (
     "SensorTiledCamera.render_config is deprecated as of Newton 1.4; "
@@ -41,11 +44,12 @@ _DEPRECATED_CONFIG_UNSET: Any = _ConfigUnset()
 class SensorTiledCamera:
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
 
-    Renders up to six image channels per (world, camera) pair:
+    Renders up to seven image channels per (world, camera) pair:
 
     - **color** -- RGBA shaded image (``uint32``).
     - **hdr_color** -- linear shaded RGB image (``vec3f``).
     - **depth** -- ray-hit distance [m] (``float32``); negative means no hit.
+    - **forward_depth** -- ray-hit distance projected onto camera forward [m] (``float32``); negative means no hit.
     - **normal** -- surface normal at hit point (``vec3f``).
     - **albedo** -- unshaded surface color (``uint32``).
     - **shape_index** -- shape id per pixel (``uint32``).
@@ -198,6 +202,7 @@ class SensorTiledCamera:
         color_image: wp.array4d[wp.uint32] | None = None,
         hdr_color_image: wp.array4d[wp.vec3f] | None = None,
         depth_image: wp.array4d[wp.float32] | None = None,
+        forward_depth_image: wp.array4d[wp.float32] | None = None,
         shape_index_image: wp.array4d[wp.uint32] | None = None,
         normal_image: wp.array4d[wp.vec3f] | None = None,
         albedo_image: wp.array4d[wp.uint32] | None = None,
@@ -228,6 +233,8 @@ class SensorTiledCamera:
                 ``self.default_render_config.output_color_space`` is
                 ``newton.utils.ColorSpace.LINEAR``. None to skip.
             depth_image: Output for ray-hit distance [m]. None to skip.
+            forward_depth_image: Output for ray-hit distance projected onto
+                camera forward [m]. None to skip.
             shape_index_image: Output for per-pixel shape id. None to skip.
             normal_image: Output for surface normals. None to skip.
             albedo_image: Output for packed unshaded surface color, using the
@@ -246,23 +253,27 @@ class SensorTiledCamera:
                 for the render megakernel.
         """
 
-        self.sync_transforms(state, deformable_visuals)
+        with wp.ScopedTimer(
+            "Newton::SensorTiledCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True
+        ):
+            self.sync_transforms(state, deformable_visuals)
 
-        self.__render_context.render(
-            self.model,
-            state,
-            camera_transforms=camera_transforms,
-            camera_rays=camera_rays,
-            color_image=color_image,
-            hdr_color_image=hdr_color_image,
-            depth_image=depth_image,
-            shape_index_image=shape_index_image,
-            normal_image=normal_image,
-            albedo_image=albedo_image,
-            clear_data=clear_data if clear_data is not None else self.default_clear_data,
-            config=render_config if render_config is not None else self.default_render_config,
-            kernel_block_dim=kernel_block_dim,
-        )
+            self.__render_context.render(
+                self.model,
+                state,
+                camera_transforms=camera_transforms,
+                camera_rays=camera_rays,
+                color_image=color_image,
+                hdr_color_image=hdr_color_image,
+                depth_image=depth_image,
+                forward_depth_image=forward_depth_image,
+                shape_index_image=shape_index_image,
+                normal_image=normal_image,
+                albedo_image=albedo_image,
+                clear_data=clear_data if clear_data is not None else self.default_clear_data,
+                config=render_config if render_config is not None else self.default_render_config,
+                kernel_block_dim=kernel_block_dim,
+            )
 
     @property
     def render_config(self) -> RenderConfig:

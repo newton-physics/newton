@@ -5,8 +5,8 @@ import ast
 import hashlib
 import inspect
 import math
-import sys
 import textwrap
+import types
 import unittest
 import warnings
 from collections.abc import Mapping
@@ -23,7 +23,7 @@ from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
 def _eq_set_value(builder, name, idx, value):
@@ -799,6 +799,79 @@ class TestModelMesh(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.approx_attr.numpy()[visual_shape], keep_visual_attr, places=6)
 
+    def test_mesh_approximation_coacd_uses_builder_default_cfg(self):
+        builder = ModelBuilder()
+        builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+
+        captured = {}
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            captured.update(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape])
+        self.assertEqual(captured["threshold"], 0.5)
+
+        # an explicit argument overrides the builder default
+        captured.clear()
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
+        self.assertEqual(captured["threshold"], 0.2)
+
+    def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
+        builder = ModelBuilder()
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with patch_sys_module("coacd", None), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.5)
+        # the documented threshold migration must keep working without coacd installed
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.CONVEX_MESH)
+
+    def test_mesh_approximation_ignores_non_mesh_shapes(self):
+        builder = ModelBuilder()
+        box_prim = builder.add_shape_box(body=-1)
+        mesh = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        mesh_shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+        remeshed = builder.approximate_meshes(method="convex_hull", shape_indices=[box_prim, mesh_shape])
+        self.assertEqual(remeshed, {mesh_shape})
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.CONVEX_MESH)
+        self.assertEqual(
+            builder.approximate_meshes(method="bounding_box", shape_indices=[box_prim, mesh_shape]), {mesh_shape}
+        )
+        self.assertEqual(builder.shape_type[box_prim], newton.GeoType.BOX)
+        self.assertEqual(builder.shape_type[mesh_shape], newton.GeoType.BOX)
+
+    def test_mesh_approximation_convex_hull_failure_falls_back_to_bounding_box(self):
+        builder = ModelBuilder()
+        box = newton.Mesh.create_box(
+            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        shape = builder.add_shape_mesh(body=-1, mesh=box)
+        with (
+            mock.patch("newton._src.sim.builder.remesh_mesh", side_effect=RuntimeError("qhull failed")),
+            warnings.catch_warnings(),
+        ):
+            warnings.simplefilter("ignore")
+            builder.approximate_meshes(method="convex_hull", shape_indices=[shape])
+        self.assertEqual(builder.shape_type[shape], newton.GeoType.BOX)
+        self.assertIsNone(builder.shape_source[shape])
+
     def test_mesh_approximation_convex_decomposition_preserves_visual_properties(self):
         builder = ModelBuilder()
         builder.add_custom_attribute(
@@ -841,7 +914,7 @@ class TestModelMesh(unittest.TestCase):
             ],
         )
 
-        with mock.patch.dict(sys.modules, {"coacd": fake_coacd}):
+        with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], raise_on_failure=True)
 
         extra_shape = shape + 1
@@ -1950,6 +2023,39 @@ class TestModelJoints(unittest.TestCase):
         builder2.add_builder(builder)
         assert builder2.articulation_count == 2 * builder.articulation_count
         assert builder2.articulation_start == [0, 1, 2, 3]
+
+    def test_collapse_fixed_joints_transports_body_velocity(self):
+        for joint_type in (newton.JointType.FREE, newton.JointType.DISTANCE):
+            with self.subTest(joint_type=joint_type):
+                builder = ModelBuilder()
+                root = builder.add_link(mass=1.0, inertia=wp.mat33(1.0))
+                child = builder.add_link(mass=1.0, inertia=wp.mat33(1.0), com=wp.vec3(0.5, 0.0, 0.0))
+                if joint_type == newton.JointType.FREE:
+                    root_joint = builder.add_joint_free(parent=-1, child=root)
+                else:
+                    root_joint = builder.add_joint_distance(parent=-1, child=root)
+                fixed_joint = builder.add_joint_fixed(
+                    parent=root,
+                    child=child,
+                    parent_xform=wp.transform(wp.vec3(2.0, 0.0, 0.0)),
+                )
+                builder.add_articulation([root_joint, fixed_joint])
+                builder.body_qd[root] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+                builder.body_qd[child] = wp.spatial_vector(0.0, 2.5, 0.0, 0.0, 0.0, 1.0)
+
+                builder.collapse_fixed_joints()
+
+                expected = np.asarray((0.0, 1.25, 0.0, 0.0, 0.0, 1.0))
+                assert_np_equal(builder.body_com[0], np.asarray((1.25, 0.0, 0.0)))
+                assert_np_equal(builder.body_qd[0], expected)
+                assert_np_equal(builder.joint_qd, expected)
+
+                model = builder.finalize()
+                assert_np_equal(model.joint_qd.numpy(), expected)
+
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                assert_np_equal(state.body_qd.numpy()[0], expected)
 
     def test_collapse_fixed_joints_remaps_custom_body_and_joint_references(self):
         # A custom attribute declaring references="body"/"joint" must have its indices remapped
@@ -3235,6 +3341,111 @@ class TestModelWorld(unittest.TestCase):
 
 
 class TestModelValidation(unittest.TestCase):
+    def test_add_particles_rejects_mismatched_lengths(self):
+        valid = {
+            "pos": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            "vel": [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+            "mass": [1.0, 1.0],
+            "radius": [0.1, 0.1],
+            "flags": [newton.ParticleFlags.ACTIVE, newton.ParticleFlags.ACTIVE],
+        }
+
+        for name in ("vel", "mass", "radius", "flags"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = values[name][:-1]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name in ("vel", "mass"):
+            with self.subTest(name=name, value=None):
+                builder = ModelBuilder()
+                values = dict(valid)
+                values[name] = None
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*2.*None"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        for name, value in (("vel", (0.0, 0.0, 0.0)), ("mass", 1.0)):
+            with self.subTest(name=name, empty_pos=True):
+                builder = ModelBuilder()
+                values = {"pos": [], "vel": [], "mass": []}
+                values[name] = [value]
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*0.*1"):
+                    builder.add_particles(**values)
+
+                self.assertEqual(builder.particle_q, [])
+                self.assertEqual(builder.particle_qd, [])
+                self.assertEqual(builder.particle_mass, [])
+                self.assertEqual(builder.particle_radius, [])
+                self.assertEqual(builder.particle_flags, [])
+                self.assertEqual(builder.particle_world, [])
+
+        builder = ModelBuilder()
+        builder.add_particle((2.0, 0.0, 0.0), (0.0, 0.0, 0.0), 2.0)
+        expected_arrays = (
+            list(builder.particle_q),
+            list(builder.particle_qd),
+            list(builder.particle_mass),
+            list(builder.particle_radius),
+            list(builder.particle_flags),
+            list(builder.particle_world),
+        )
+        with self.assertRaisesRegex(ValueError, r"vel.*2.*1"):
+            builder.add_particles(
+                pos=valid["pos"],
+                vel=valid["vel"][:-1],
+                mass=valid["mass"],
+            )
+        actual_arrays = (
+            builder.particle_q,
+            builder.particle_qd,
+            builder.particle_mass,
+            builder.particle_radius,
+            builder.particle_flags,
+            builder.particle_world,
+        )
+        for actual, expected in zip(actual_arrays, expected_arrays, strict=True):
+            self.assertEqual(actual, expected)
+
+        builder.add_particles(pos=valid["pos"], vel=valid["vel"], mass=valid["mass"])
+        self.assertEqual(len(builder.particle_radius), 3)
+        self.assertEqual(len(builder.particle_flags), 3)
+
+    def test_finalize_rejects_mismatched_particle_arrays(self):
+        for name in ("particle_qd", "particle_mass", "particle_radius", "particle_flags", "particle_world"):
+            with self.subTest(name=name):
+                builder = ModelBuilder()
+                builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+                getattr(builder, name).clear()
+
+                with self.assertRaisesRegex(ValueError, rf"{name}.*particle_count"):
+                    builder.finalize(device="cpu")
+
+        builder = ModelBuilder()
+        builder.add_particle((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.0)
+        builder.particle_qd.clear()
+        model = builder.finalize(device="cpu", skip_validation_structure=True)
+        self.assertEqual(model.particle_count, 1)
+        self.assertEqual(model.particle_qd.shape, (0,))
+
     def test_lock_inertia_on_shape_addition(self):
         builder = ModelBuilder()
         shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)

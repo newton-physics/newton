@@ -57,9 +57,11 @@ from .kinematics.resets import (
     set_floating_base,
 )
 from .linalg import ConjugateResidualSolver, IterativeSolver, LinearSolverNameToType
+from .solvers.common import WarmStartMode
+from .solvers.dvi import DVISolver
 from .solvers.fk import ForwardKinematicsSolver
 from .solvers.metrics import SolutionMetrics
-from .solvers.padmm import PADMMSolver, PADMMWarmStartMode
+from .solvers.padmm import PADMMSolver
 from .solvers.warmstart import WarmstarterContacts, WarmstarterLimits
 from .utils import logger as msg
 
@@ -91,10 +93,9 @@ class SolverKaminoImpl(SolverBase):
 
     Config = SolverKamino.Config
     """
-    Defines a type alias of the PADMM solver configurations container, including convergence
-    criteria, maximum iterations, and options for the linear solver and preconditioning.
-
-    See :class:`PADMMSolverConfig` for the full list of configuration options and their descriptions.
+    Defines a type alias of the public Kamino solver configuration container,
+    including the selected forward-dynamics solver, convergence criteria, and
+    options for the linear solver and preconditioning.
     """
 
     ResetCallbackType = Callable[["SolverKaminoImpl", StateKamino], None]
@@ -151,7 +152,16 @@ class SolverKaminoImpl(SolverBase):
 
         # Cache the solver config and parse relevant options for internal use
         self._config: SolverKaminoImpl.Config = config
-        self._warmstart_mode: PADMMWarmStartMode = PADMMWarmStartMode.from_string(config.padmm.warmstart_mode)
+        if config.dynamics_solver == "padmm":
+            warmstart_mode = config.padmm.warmstart_mode
+            contact_warmstart_method = config.padmm.contact_warmstart_method
+        elif config.dynamics_solver == "dvi":
+            warmstart_mode = config.dvi.warmstart_mode
+            contact_warmstart_method = config.dvi.contact_warmstart_method
+        else:
+            raise ValueError(f"Unsupported dynamics solver: {config.dynamics_solver}")
+        self._warmstart_mode = WarmStartMode.from_string(warmstart_mode)
+        self._contact_warmstart_method = WarmstarterContacts.Method.from_string(contact_warmstart_method)
         self._rotation_correction: JointCorrectionMode = JointCorrectionMode.from_string(config.rotation_correction)
 
         # ---------------------------------------------------------------------------
@@ -229,14 +239,31 @@ class SolverKaminoImpl(SolverBase):
         )
 
         # Allocate the forward dynamics solver on the device
-        self._solver_fd = PADMMSolver(
-            model=self._model,
-            config=self._config.padmm,
-            warmstart=self._warmstart_mode,
-            use_acceleration=self._config.padmm.use_acceleration,
-            use_graph_conditionals=self._config.padmm.use_graph_conditionals,
-            collect_info=self._config.collect_solver_info,
-        )
+        if self._config.dynamics_solver == "padmm":
+            self._solver_fd = PADMMSolver(
+                model=self._model,
+                config=self._config.padmm,
+                warmstart=self._warmstart_mode,
+                use_acceleration=self._config.padmm.use_acceleration,
+                use_graph_conditionals=self._config.padmm.use_graph_conditionals,
+                collect_info=self._config.collect_solver_info,
+            )
+        elif self._config.dynamics_solver == "dvi":
+            # DVI consumes Kamino's unified joint, limit, and contact
+            # DualProblem rather than rebuilding standalone constraint pipelines.
+            self._solver_fd = DVISolver(
+                model=self._model,
+                data=self._data,
+                limits=self._limits,
+                contacts=contacts,
+                jacobians=self._jacobians if isinstance(self._jacobians, SparseSystemJacobians) else None,
+                problem=self._problem_fd,
+                config=self._config.dvi,
+                warmstart=self._warmstart_mode,
+                collect_info=self._config.collect_solver_info,
+            )
+        else:
+            raise ValueError(f"Unsupported dynamics solver: {self._config.dynamics_solver}")
 
         # Allocate the forward kinematics solver on the device
         self._solver_fk = None
@@ -265,11 +292,11 @@ class SolverKaminoImpl(SolverBase):
         # Allocate the contacts warmstarter if enabled
         self._ws_limits: WarmstarterLimits | None = None
         self._ws_contacts: WarmstarterContacts | None = None
-        if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits = WarmstarterLimits(limits=self._limits)
             self._ws_contacts = WarmstarterContacts(
                 contacts=contacts,
-                method=WarmstarterContacts.Method.from_string(self._config.padmm.contact_warmstart_method),
+                method=self._contact_warmstart_method,
             )
 
         # Allocate the solution metrics evaluator if enabled
@@ -321,7 +348,7 @@ class SolverKaminoImpl(SolverBase):
         return self._problem_fd
 
     @property
-    def solver_fd(self) -> PADMMSolver:
+    def solver_fd(self) -> PADMMSolver | DVISolver:
         """
         Returns the forward dynamics solver.
         """
@@ -384,6 +411,7 @@ class SolverKaminoImpl(SolverBase):
         state: StateKamino,
         world_mask: wp.array[wp.bool] | None = None,
         config: SolverKamino.ResetConfig | None = None,
+        success_mask: wp.array[wp.bool] | None = None,
     ):
         """
         Reset the Kamino solver state.
@@ -404,6 +432,9 @@ class SolverKaminoImpl(SolverBase):
             config: Optional reset configuration, controlling the reset behavior
                 for body poses/velocities as well as floating base pose/velocity.
                 If not provided, all components are reset to default (initial) values.
+            success_mask: Optional mask, filled with a success boolean per world if provided
+                (True if reset successfully, False if not reset due to world_mask, or if reset
+                was unsuccessful, e.g. due to an unconverged FK solve).
         """
 
         def _check_length(data: wp.array[Any], name: str, expected: int):
@@ -426,7 +457,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_poses.actuator_q,
                 "config.body_poses.actuator_q",
-                self._model.size.sum_of_num_actuated_joint_coords,
+                self._model.size.sum_of_num_fk_actuated_joint_coords,
             )
         if isinstance(config.body_velocities, SolverKamino.ResetConfig.FromJointU):
             _check_length(
@@ -438,7 +469,7 @@ class SolverKaminoImpl(SolverBase):
             _check_length(
                 config.body_velocities.actuator_u,
                 "config.body_velocities.actuator_u",
-                self._model.size.sum_of_num_actuated_joint_dofs,
+                self._model.size.sum_of_num_fk_actuated_joint_dofs,
             )
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromJointQ):
             _check_length(
@@ -621,6 +652,14 @@ class SolverKaminoImpl(SolverBase):
 
         # Reset solver internals
         self._reset_solver_data(world_mask=world_mask)
+
+        # Fill success mask
+        if success_mask is not None:
+            # Currently, only the position-level (iterative) FK solve can fail
+            if actuator_q is not None:
+                wp.copy(success_mask, self._solver_fk.newton_success)
+            else:
+                wp.copy(success_mask, world_mask)
 
         # Run the post-reset callback if it has been set
         self._run_post_reset_callback(state_out=state)
@@ -854,11 +893,10 @@ class SolverKaminoImpl(SolverBase):
         # on the first call to `step()`
         self._solver_fd.reset(problem=self._problem_fd, world_mask=world_mask)
 
-        # TODO: Enable this when world-masking is implemented
         # Reset the warm-starting caches if enabled
-        # if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
-        #     self._ws_limits.reset()
-        #     self._ws_contacts.reset()
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
+            self._ws_limits.reset(world_mask=world_mask)
+            self._ws_contacts.reset(world_mask=world_mask)
 
     ###
     # Internals - Step Operations
@@ -945,8 +983,8 @@ class SolverKaminoImpl(SolverBase):
         """
         # If warm-starting is enabled, initialize unilateral
         # constraints containers from the current solver data
-        if self._warmstart_mode > PADMMWarmStartMode.NONE:
-            if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+        if self._warmstart_mode > WarmStartMode.NONE:
+            if self._warmstart_mode == WarmStartMode.CONTAINERS:
                 self._ws_limits.warmstart(self._limits)
                 self._ws_contacts.warmstart(self._model, self._data, contacts)
             self._solver_fd.warmstart(
@@ -989,7 +1027,7 @@ class SolverKaminoImpl(SolverBase):
         # If warmstarting is enabled, update the limits and contacts caches
         # with the constraint reactions generated by the dynamics solver
         # NOTE: This needs to happen after unpacking the multipliers
-        if self._warmstart_mode == PADMMWarmStartMode.CONTAINERS:
+        if self._warmstart_mode == WarmStartMode.CONTAINERS:
             self._ws_limits.update(self._limits)
             self._ws_contacts.update(contacts)
 

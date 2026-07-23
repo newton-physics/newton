@@ -283,8 +283,8 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_visual_mesh.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_visual_mesh.jpg" alt="Cable Visual Mesh">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_plectoneme.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_plectoneme.jpg" alt="Cable Plectoneme">
       </a>
     </td>
   </tr>
@@ -296,8 +296,24 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples cable_cross_slide_table</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples cable_plectoneme</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_visual_mesh.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_visual_mesh.jpg" alt="Cable Visual Mesh">
+      </a>
+    </td>
+    <td align="center" width="33%"></td>
+    <td align="center" width="33%"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
       <code>python -m newton.examples cable_visual_mesh</code>
     </td>
+    <td align="center" width="33%"></td>
+    <td align="center" width="33%"></td>
   </tr>
   <tr>
     <td colspan="3"><h3>Cloth Examples</h3></td>

@@ -15,7 +15,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
-from ..geometry import Mesh, ShapeFlags
+from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh
 from ..sim import JointTargetMode, JointType, ModelBuilder
@@ -725,6 +725,7 @@ def parse_mjcf(
 
             geom_density = parse_float(geom_attrib, "density", density)
             geom_mass_explicit = None
+            explicit_mass_handled = False
 
             # MuJoCo: explicit mass attribute (from <geom mass="..."> or class defaults).
             # Skip density-based mass contribution and compute inertia directly from mass.
@@ -976,7 +977,6 @@ def parse_mjcf(
                 mesh_scale = mesh_assets[geom_attrib["mesh"]]["scale"]
                 scaling = np.array(mesh_scale) * scale
                 # as per the Mujoco XML reference, ignore geom size attribute
-                assert len(geom_size) == 3, "need to specify size for mesh geom"
 
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
@@ -988,6 +988,22 @@ def parse_mjcf(
                     override_color=material_color,
                     override_texture=texture,
                 )
+                explicit_mesh_density = None
+                if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
+                    unit_density_mass = sum(
+                        compute_inertia_shape(
+                            GeoType.MESH,
+                            wp.vec3(1.0),
+                            m_mesh,
+                            density=1.0,
+                            is_solid=shape_cfg.is_solid,
+                            thickness=shape_cfg.margin,
+                        )[0]
+                        for m_mesh in m_meshes
+                    )
+                    if unit_density_mass > 0.0:
+                        explicit_mesh_density = geom_mass_explicit / unit_density_mass
+                        explicit_mass_handled = True
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
@@ -999,6 +1015,8 @@ def parse_mjcf(
                     mesh_cfg.sdf_max_resolution = None
                     mesh_cfg.sdf_target_voxel_size = None
                     mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    if explicit_mesh_density is not None:
+                        mesh_cfg.density = explicit_mesh_density
                     mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = builder.add_shape_mesh(
                         xform=tf,
@@ -1134,7 +1152,7 @@ def parse_mjcf(
 
             # Handle explicit mass: compute inertia using existing functions, add to body.
             # Visual geoms can still contribute authored mass when parse_visuals=True.
-            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0:
+            if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0 and not explicit_mass_handled:
                 from ..geometry.inertia import (  # noqa: PLC0415
                     compute_inertia_box_from_mass,
                     compute_inertia_capsule,
@@ -1373,11 +1391,11 @@ def parse_mjcf(
 
         show_colliders = should_show_collider(
             force_show_colliders,
-            has_visual_shapes=len(visuals) > 0 and parse_visuals,
+            model_has_visual_shapes=True,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
         )
 
-        parse_shapes(
+        collider_shape_indices = parse_shapes(
             defaults,
             body_name,
             link,
@@ -1387,6 +1405,7 @@ def parse_mjcf(
             incoming_xform=incoming_xform,
             label_prefix=label_prefix,
         )
+        collider_shapes.extend(collider_shape_indices)
 
         return visual_shape_indices
 
@@ -1836,7 +1855,11 @@ def parse_mjcf(
             joint_label_name = "_".join(joint_name)
             joint_label = f"{body_label_path}/{joint_label_name}"
             if joint_type == JointType.FREE:
-                assert parent == -1, "Free joints must have the world body as parent"
+                if parent != -1:
+                    raise ValueError(
+                        f"Free joints must have the world body as parent; "
+                        f"joint '{joint_label}' on body '{body_label_path}' has parent body index {parent}."
+                    )
                 joint_idx = builder.add_joint_free(
                     link,
                     label=joint_label,
@@ -1934,14 +1957,27 @@ def parse_mjcf(
             com = inertial_frame.p
             if inertial_attrib.get("diaginertia") is not None:
                 diaginertia = parse_vec(inertial_attrib, "diaginertia", (0.0, 0.0, 0.0))
+                if len(diaginertia) != 3:
+                    raise ValueError(
+                        f"MJCF diaginertia for body '{body_label_path}' must contain 3 values; got {len(diaginertia)}."
+                    )
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = diaginertia[0] * scale**2
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
                 fullinertia = inertial_attrib.get("fullinertia")
-                assert fullinertia is not None
+                if fullinertia is None:
+                    raise ValueError(
+                        f"MJCF inertial element for body '{body_label_path}' must define "
+                        "either diaginertia or fullinertia."
+                    )
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
+                if fullinertia.shape[0] != 6:
+                    raise ValueError(
+                        f"MJCF fullinertia for body '{body_label_path}' must contain 6 values; "
+                        f"got {fullinertia.shape[0]}."
+                    )
                 I_m = np.zeros((3, 3))
                 I_m[0, 0] = fullinertia[0] * scale**2
                 I_m[1, 1] = fullinertia[1] * scale**2
@@ -2300,6 +2336,7 @@ def parse_mjcf(
     # start articulation
 
     visual_shapes = []
+    collider_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
     root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
@@ -2356,7 +2393,7 @@ def parse_mjcf(
         # `parse_visuals_as_colliders=True` apply uniformly to worldbody
         # geoms too (not just geoms inside bodies).
 
-        _process_body_geoms(
+        world_visual_shapes = _process_body_geoms(
             geoms=world.findall("geom"),
             defaults=world_defaults,
             body_name="world",
@@ -2364,6 +2401,7 @@ def parse_mjcf(
             incoming_xform=xform,
             label_prefix=root_label_path,
         )
+        visual_shapes.extend(world_visual_shapes)
 
         if parse_sites:
             _parse_sites_impl(
@@ -2992,15 +3030,19 @@ def parse_mjcf(
 
     # -----------------
 
+    if not visual_shapes:
+        for shape_idx in collider_shapes:
+            builder.shape_flags[shape_idx] |= ShapeFlags.VISIBLE
+
     end_shape_count = len(builder.shape_type)
 
-    for i in range(start_shape_count, end_shape_count):
-        for j in visual_shapes:
-            builder.add_shape_collision_filter_pair(i, j)
-
     if not enable_self_collisions:
-        for i in range(start_shape_count, end_shape_count):
-            for j in range(i + 1, end_shape_count):
+        # The broad phase only ever tests colliding shapes, so visual-only shapes need no filter pairs.
+        colliding_shapes = [
+            i for i in range(start_shape_count, end_shape_count) if builder.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+        ]
+        for a, i in enumerate(colliding_shapes):
+            for j in colliding_shapes[a + 1 :]:
                 builder.add_shape_collision_filter_pair(i, j)
 
     # Create articulations from collected joints

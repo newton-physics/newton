@@ -53,6 +53,7 @@ from .constants import (
     SOLREF_MODE_RAW,
 )
 from .enums import EqType as _EqType
+from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
 from .kernels import (
     _snapshot_nacon_count,
@@ -77,6 +78,7 @@ from .kernels import (
     reset_joint_state_kernel,
     reset_world_buffers_kernel,
     sync_qpos0_kernel,
+    sync_site_xposes_kernel,
     sync_worldbody_geom_xposes_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -99,6 +101,7 @@ from .kernels import (
     update_model_properties_kernel,
     update_pair_properties_kernel,
     update_shape_mappings_kernel,
+    update_site_properties_kernel,
     update_solver_options_kernel,
     update_tendon_properties_kernel,
 )
@@ -1401,24 +1404,48 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
         def parse_actuator_enum(value: Any, mapping: dict[str, int]) -> int:
             """Parse actuator enum values, defaulting to 0 for unknown strings."""
-            return SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0)
+            return int(SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0))
+
+        actuator_transmission_types = {
+            "joint": int(SolverMuJoCo.TrnType.JOINT),
+            "jointinparent": int(SolverMuJoCo.TrnType.JOINT_IN_PARENT),
+            "tendon": int(SolverMuJoCo.TrnType.TENDON),
+            "site": int(SolverMuJoCo.TrnType.SITE),
+            "body": int(SolverMuJoCo.TrnType.BODY),
+            "slidercrank": int(SolverMuJoCo.TrnType.SLIDERCRANK),
+        }
+        actuator_dynamics_types = {
+            "none": _ActuatorDynamicsType.NONE,
+            "integrator": _ActuatorDynamicsType.INTEGRATOR,
+            "filter": _ActuatorDynamicsType.FILTER,
+            "filterexact": _ActuatorDynamicsType.FILTER_EXACT,
+            "muscle": _ActuatorDynamicsType.MUSCLE,
+            "user": _ActuatorDynamicsType.USER,
+        }
+        actuator_gain_types = {
+            "fixed": _ActuatorGainType.FIXED,
+            "affine": _ActuatorGainType.AFFINE,
+            "muscle": _ActuatorGainType.MUSCLE,
+            "user": _ActuatorGainType.USER,
+        }
+        actuator_bias_types = {
+            "none": _ActuatorBiasType.NONE,
+            "affine": _ActuatorBiasType.AFFINE,
+            "muscle": _ActuatorBiasType.MUSCLE,
+            "user": _ActuatorBiasType.USER,
+        }
 
         def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(
-                s,
-                {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5},
-            )
+            return parse_actuator_enum(s, actuator_transmission_types)
 
         def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(
-                s, {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4, "user": 5}
-            )
+            return parse_actuator_enum(s, actuator_dynamics_types)
 
         def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, {"fixed": 0, "affine": 1, "muscle": 2, "user": 3})
+            return parse_actuator_enum(s, actuator_gain_types)
 
         def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return parse_actuator_enum(s, {"none": 0, "affine": 1, "muscle": 2, "user": 3})
+            return parse_actuator_enum(s, actuator_bias_types)
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -1769,7 +1796,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # TrnType.JOINT
+                default=int(SolverMuJoCo.TrnType.JOINT),
                 namespace="mujoco",
                 mjcf_attribute_name="trntype",
                 mjcf_value_transformer=parse_trntype,
@@ -1784,7 +1811,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # DynType.NONE
+                default=int(_ActuatorDynamicsType.NONE),
                 namespace="mujoco",
                 mjcf_attribute_name="dyntype",
                 mjcf_value_transformer=parse_dyntype,
@@ -1798,7 +1825,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # GainType.FIXED
+                default=int(_ActuatorGainType.FIXED),
                 namespace="mujoco",
                 mjcf_attribute_name="gaintype",
                 mjcf_value_transformer=parse_gaintype,
@@ -1812,7 +1839,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # BiasType.NONE
+                default=int(_ActuatorBiasType.NONE),
                 namespace="mujoco",
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
@@ -3237,12 +3264,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # Map trntype integer to MuJoCo enum and override default in general_args
             trntype_enum = {
-                0: mujoco.mjtTrn.mjTRN_JOINT,
-                1: mujoco.mjtTrn.mjTRN_JOINTINPARENT,
-                2: mujoco.mjtTrn.mjTRN_TENDON,
-                3: mujoco.mjtTrn.mjTRN_SITE,
-                4: mujoco.mjtTrn.mjTRN_BODY,
-                5: mujoco.mjtTrn.mjTRN_SLIDERCRANK,
+                int(SolverMuJoCo.TrnType.JOINT): mujoco.mjtTrn.mjTRN_JOINT,
+                int(SolverMuJoCo.TrnType.JOINT_IN_PARENT): mujoco.mjtTrn.mjTRN_JOINTINPARENT,
+                int(SolverMuJoCo.TrnType.TENDON): mujoco.mjtTrn.mjTRN_TENDON,
+                int(SolverMuJoCo.TrnType.SITE): mujoco.mjtTrn.mjTRN_SITE,
+                int(SolverMuJoCo.TrnType.BODY): mujoco.mjtTrn.mjTRN_BODY,
+                int(SolverMuJoCo.TrnType.SLIDERCRANK): mujoco.mjtTrn.mjTRN_SLIDERCRANK,
             }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
             general_args["trntype"] = trntype_enum
             act = spec.add_actuator(target=target_name, **general_args)
@@ -3370,6 +3397,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
+        # Template-relative for per-world sites and absolute for global sites.
+        self._mjc_site_shape_index: wp.array[wp.int32] | None = None
+        self._mjc_site_is_global: wp.array[bool] | None = None
         self.mjc_jnt_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32."""
         self.mjc_jnt_to_newton_dof: wp.array2d[wp.int32] | None = None
@@ -4113,6 +4143,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             need_length_range = True
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._update_geom_properties()
+            self._update_site_properties()
             self._update_pair_properties()
             self._invalidate_contact_fast_path()
         if flags & ModelFlags.MODEL_PROPERTIES:
@@ -4211,6 +4242,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             if flags & ModelFlags.SHAPE_PROPERTIES:
                 self._sync_worldbody_geom_xposes()
+                self._sync_site_xposes()
 
     def _sync_equality_properties_to_mujoco_cpu(self) -> None:
         """Mirror equality properties from MJWarp buffers to MuJoCo-C CPU buffers."""
@@ -4243,6 +4275,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[
                 self.mjw_data.geom_xpos,
                 self.mjw_data.geom_xmat,
+            ],
+            device=self.model.device,
+        )
+
+    def _sync_site_xposes(self) -> None:
+        """Refresh derived site poses after per-world model updates."""
+        if self.mj_model.nsite == 0:
+            return
+        wp.launch(
+            sync_site_xposes_kernel,
+            dim=(self.mjw_data.nworld, self.mj_model.nsite),
+            inputs=[
+                self.mjw_model.site_bodyid,
+                self.mjw_model.site_pos,
+                self.mjw_model.site_quat,
+                self.mjw_data.xpos,
+                self.mjw_data.xquat,
+            ],
+            outputs=[
+                self.mjw_data.site_xpos,
+                self.mjw_data.site_xmat,
             ],
             device=self.model.device,
         )
@@ -5795,8 +5848,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             parent = int(joint_parent[j])
             j_type = int(joint_type[j])
             # Articulated fixed roots remain mocap bodies because Newton can
-            # update their root transform at runtime.
-            is_fixed_root = parent == -1 and j_type == JointType.FIXED
+            # update their root transform at runtime. Fully-locked D6 roots
+            # (e.g. imported from a generic USD PhysicsJoint) are equivalent;
+            # without mocap they would be baked at the template world's pose
+            # for every world.
+            is_fixed_root = parent == -1 and (
+                j_type == JointType.FIXED or (j_type == JointType.D6 and joint_dof_dim[j][0] + joint_dof_dim[j][1] == 0)
+            )
             body, parent, child, child_is_kinematic, j_type, child_xform = add_body_from_joint(
                 int(j), mocap=is_fixed_root
             )
@@ -6555,9 +6613,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 shape_to_geom_idx[shape] = geom_idx
                 geom_to_shape_idx[geom_idx] = shape
 
+        site_to_shape_idx = {}
+        for shape, site_name in site_mapping.items():
+            site_idx = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_SITE, site_name)
+            if site_idx >= 0:
+                site_to_shape_idx[site_idx] = shape
+
         with wp.ScopedDevice(model.device):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
+            self.mjw_model.block_dim.linesearch_iterative = 32
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
@@ -6614,6 +6679,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     device=model.device,
                 )
 
+            site_to_shape_idx_np = np.full((self.mj_model.nsite,), -1, dtype=np.int32)
+            site_is_global_np = np.zeros((self.mj_model.nsite,), dtype=bool)
+            for site_idx, abs_shape_idx in site_to_shape_idx.items():
+                if shape_world[abs_shape_idx] < 0:
+                    site_to_shape_idx_np[site_idx] = abs_shape_idx
+                    site_is_global_np[site_idx] = True
+                else:
+                    site_to_shape_idx_np[site_idx] = abs_shape_idx - first_env_shape_base
+
+            self._mjc_site_shape_index = wp.array(site_to_shape_idx_np, dtype=wp.int32)
+            self._mjc_site_is_global = wp.array(site_is_global_np, dtype=bool)
+
             # Create mjc_body_to_newton: MuJoCo[world, body] -> Newton body
             # body_mapping is {newton_body_id: mjc_body_id}, we need to invert it
             # and expand to 2D for all worlds
@@ -6667,7 +6744,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index.
             # These mocap bodies are Newton roots attached to world by a
-            # FIXED joint. Static world shapes are not represented here.
+            # FIXED or fully-locked D6 joint. Static world shapes are not
+            # represented here.
             nmocap = self.mj_model.nmocap
             if nmocap > 0:
                 mjc_mocap_to_newton_jnt_np = np.full((nworld, nmocap), -1, dtype=np.int32)
@@ -6936,8 +7014,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "geom_margin",
             "geom_gap",
             # "geom_rgba",
-            # "site_pos",
-            # "site_quat",
+            "site_pos",
+            "site_quat",
             # "cam_pos",
             # "cam_quat",
             # "cam_poscom0",
@@ -7838,6 +7916,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_solmix,
                 self.mjw_model.geom_gap,
                 self.mjw_model.geom_margin,
+            ],
+            device=self.model.device,
+        )
+
+    def _update_site_properties(self) -> None:
+        """Update MuJoCo site poses and sizes from Newton shape properties.
+
+        ``site_size`` is unbatched in mujoco_warp, so sizes are synced from
+        the first world; per-world scale differences are not supported.
+        """
+        if self.mj_model.nsite == 0:
+            return
+
+        wp.launch(
+            update_site_properties_kernel,
+            dim=(self.mjw_data.nworld, self.mj_model.nsite),
+            inputs=[
+                self.model.shape_transform,
+                self.model.shape_scale,
+                self._mjc_site_shape_index,
+                self._mjc_site_is_global,
+                self._shapes_per_world,
+                self._first_env_shape_base,
+            ],
+            outputs=[
+                self.mjw_model.site_pos,
+                self.mjw_model.site_quat,
+                self.mjw_model.site_size,
             ],
             device=self.model.device,
         )

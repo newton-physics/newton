@@ -109,8 +109,9 @@ class Contacts:
     Names of optional extended contact attributes that are not allocated by default.
 
     These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
-    :meth:`newton.Model.request_contact_attributes` before calling :meth:`newton.Model.contacts` or
-    :meth:`newton.CollisionPipeline.contacts`.
+    :meth:`newton.Model.request_contact_attributes` before calling
+    :meth:`newton.CollisionPipeline.contacts`. When constructing :class:`newton.Contacts` directly,
+    pass the names via ``requested_attributes``.
 
     See :ref:`extended_contact_attributes` for details and usage.
     """
@@ -295,17 +296,15 @@ class Contacts:
                 self.rigid_contact_match_index = wp.full(rigid_contact_max, -1, dtype=wp.int32)
                 """Per-contact match index from frame-to-frame matching.
 
-                Values: ``>= 0`` matched old contact index;
-                :data:`newton.geometry.MATCH_NOT_FOUND` (``-1``) new contact;
-                :data:`newton.geometry.MATCH_BROKEN` (``-2``) key matched but
-                position/normal thresholds exceeded.
+                Non-negative elements index matching contacts in the previous sorted contact buffer.
+                Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
-                """Indices of new contacts in the current sorted buffer (where ``match_index < 0``).
+                """Indices of new contacts in the current sorted buffer.
 
                 Valid after the collision pipeline runs.
                 Shape (rigid_contact_max,), dtype int32."""

@@ -111,7 +111,9 @@ _ROW_COLORS = (
 
 
 def build_friction_grid(device, mus, angles_deg):
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for row, mu in enumerate(mus):
@@ -153,13 +155,13 @@ def build_friction_grid(device, mus, angles_deg):
     return builder.finalize(device=device), box_ids
 
 
-def simulate(solver, model, state_0, state_1, control, contacts, num_frames):
+def simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames):
     dt_sub = SIM_DT / SIM_SUBSTEPS
     for _ in range(num_frames):
         for _ in range(SIM_SUBSTEPS):
             state_0.clear_forces()
             if contacts is not None:
-                model.collide(state_0, contacts)
+                collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt_sub)
             state_0, state_1 = state_1, state_0
     return state_0, state_1
@@ -189,22 +191,24 @@ def assert_grid_behavior(test, settle_q, final_q, final_qd, mus, angles_deg, box
         test.fail("\n  ".join([f"{len(failures)} friction-ramp cell(s) failed:", *failures]))
 
 
-def test_friction_ramp(test, device, solver_name, solver_fn, mus, angles_deg, thresholds):
-    if solver_name == "mujoco_warp" and device.is_cuda:
-        test.skipTest("Flaky on CUDA (GH-3391), pending google-deepmind/mujoco_warp#1512")
-
+def test_friction_ramp(test, device, solver_fn, mus, angles_deg, thresholds):
     model, box_ids = build_friction_grid(device, mus, angles_deg)
 
     solver = solver_fn(model)
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts() if not isinstance(solver, newton.solvers.SolverMuJoCo) else None
+    if isinstance(solver, newton.solvers.SolverMuJoCo):
+        collision_pipeline = None
+        contacts = None
+    else:
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, SETTLE_FRAMES)
+    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, SETTLE_FRAMES)
     settle_q = state_0.body_q.numpy().copy()
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, MEASURE_FRAMES)
+    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, MEASURE_FRAMES)
     final_q = state_0.body_q.numpy()
     final_qd = state_0.body_qd.numpy()
 
@@ -221,7 +225,9 @@ def build_stopping_distance_scene(device):
     give effective mu = (mu_box + mu_patch) / 2. Per-box patches keep the
     effective mu equal to the per-box value.
     """
-    builder = newton.ModelBuilder(gravity=GRAVITY, up_axis=UP_AXIS)
+    builder = newton.ModelBuilder(
+        gravity=tuple(component * GRAVITY for component in UP_AXIS.to_vector()), up_axis=UP_AXIS
+    )
 
     box_ids = []
     for i, mu in enumerate(STOPPING_MUS):
@@ -277,10 +283,13 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, v_final_ma
     state_1 = model.state()
     control = model.control()
     is_mujoco = isinstance(solver, newton.solvers.SolverMuJoCo)
-    contacts = model.contacts() if not is_mujoco else None
+    collision_pipeline = None if is_mujoco else newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts() if collision_pipeline is not None else None
 
     # Establish resting contacts so the measurement excludes landing impulses.
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, STOPPING_SETTLE_FRAMES)
+    state_0, state_1 = simulate(
+        solver, model, state_0, state_1, control, collision_pipeline, contacts, STOPPING_SETTLE_FRAMES
+    )
     initial_q = state_0.body_q.numpy().copy()
 
     qd = state_0.body_qd.numpy()
@@ -302,7 +311,7 @@ def test_friction_stopping_distance(test, device, solver_fn, rel_tol, v_final_ma
     t_stop_max = STOPPING_V0 / (min(STOPPING_MUS) * g)
     num_frames = int(math.ceil(1.5 * t_stop_max / SIM_DT))
 
-    state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, num_frames)
+    state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, num_frames)
 
     final_q = state_0.body_q.numpy()
     final_qd = state_0.body_qd.numpy()
@@ -428,7 +437,12 @@ class TestRigidFrictionRamp(unittest.TestCase):
         state_0 = model.state()
         state_1 = model.state()
         control = model.control()
-        contacts = model.contacts() if not isinstance(solver, newton.solvers.SolverMuJoCo) else None
+        if isinstance(solver, newton.solvers.SolverMuJoCo):
+            collision_pipeline = None
+            contacts = None
+        else:
+            collision_pipeline = newton.CollisionPipeline(model)
+            contacts = collision_pipeline.contacts()
 
         try:
             viewer = newton.viewer.ViewerGL()
@@ -450,7 +464,7 @@ class TestRigidFrictionRamp(unittest.TestCase):
                     viewer.log_contacts(contacts, state_0)
                 viewer.end_frame()
 
-                state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, 1)
+                state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, 1)
                 sim_time += SIM_DT
                 time.sleep(SIM_DT)
         except KeyboardInterrupt:
@@ -466,7 +480,8 @@ class TestRigidFrictionRamp(unittest.TestCase):
         state_1 = model.state()
         control = model.control()
         is_mujoco = isinstance(solver, newton.solvers.SolverMuJoCo)
-        contacts = model.contacts() if not is_mujoco else None
+        collision_pipeline = None if is_mujoco else newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts() if collision_pipeline is not None else None
 
         qd = state_0.body_qd.numpy()
         for bid in box_ids:
@@ -500,7 +515,7 @@ class TestRigidFrictionRamp(unittest.TestCase):
                     viewer.log_contacts(contacts, state_0)
                 viewer.end_frame()
 
-                state_0, state_1 = simulate(solver, model, state_0, state_1, control, contacts, 1)
+                state_0, state_1 = simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, 1)
                 sim_time += SIM_DT
                 time.sleep(SIM_DT)
         except KeyboardInterrupt:
@@ -519,7 +534,6 @@ for device in devices:
             test_friction_ramp,
             devices=[device],
             check_output=False,
-            solver_name=solver_name,
             solver_fn=cfg["factory"],
             mus=cfg["mus"],
             angles_deg=cfg["angles_deg"],

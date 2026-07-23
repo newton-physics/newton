@@ -9,6 +9,12 @@
 # orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
 # resolution, stacking stability, and friction in dense cable assemblies.
 #
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_pile
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_pile --test --viewer null
+#
 ###########################################################################
 
 import math
@@ -160,8 +166,8 @@ class Example:
 
         self.model = builder.finalize()
         # Size persistent contact history before CUDA graph capture.
-        pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
+        self.contacts = self.collision_pipeline.contacts()
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -175,6 +181,8 @@ class Example:
         self.control = self.model.control()
 
         self.viewer.set_model(self.model)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.fov = 40.0
 
         picking = getattr(self.viewer, "picking", None)
         if picking is not None:
@@ -196,7 +204,7 @@ class Example:
         for _substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(
                 self.state_0,

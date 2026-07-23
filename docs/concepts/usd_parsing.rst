@@ -274,16 +274,20 @@ Mass and Inertia Precedence
    density-based inference, and finalize-time validation.
 
 For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inertial property
-(mass, inertia, center of mass) independently.  Authored attributes take precedence;
+(mass, inertia, center of mass) independently.  Effective attribute values take precedence;
 ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
+Per the schema's value semantics, an attribute is effective only when its value is usable:
+mass and density must be positive and finite, ``diagonalInertia`` nonzero with finite,
+nonnegative components, ``principalAxes`` nonzero, and ``centerOfMass`` finite.  Explicitly
+authoring a schema fallback value is equivalent to leaving the attribute unauthored.
 
 1. ``newton:inertia`` (from ``NewtonMassAPI``) is a compact 6-element symmetric tensor
    ``[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`` already in the body frame.  When authored, it
    overrides ``physics:diagonalInertia`` and ``physics:principalAxes``.
-2. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
-   applied directly when present.  If ``physics:principalAxes`` is missing, identity rotation
-   is used.
-3. When ``physics:mass`` is authored but inertia is not, the inertia
+2. Effective ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
+   applied directly when present.  If ``physics:principalAxes`` is not effective, identity
+   rotation is used.
+3. When ``physics:mass`` is effective but inertia is not, the inertia
    accumulated from collision shapes is scaled by ``authored_mass / accumulated_mass``.
    Shell colliders (``newton:massModel = "shell"``) contribute shell-derived inertia to the
    accumulation before this scaling is applied.
@@ -291,8 +295,8 @@ For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inert
    ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
    In this fallback path, collider contributions use a two-level precedence:
 
-   a. If collider ``UsdPhysics.MassAPI`` has authored ``mass`` and ``diagonalInertia``, those
-      authored values are converted to unit-density collider mass information.
+   a. If collider ``UsdPhysics.MassAPI`` has effective ``mass`` and ``diagonalInertia``, those
+      values are converted to unit-density collider mass information.
    b. Otherwise, Newton derives unit-density collider mass information from collider
       geometry.  When ``NewtonMassAPI`` is applied to the collider, ``newton:massModel``
       controls whether inertia is derived from the full volume (``"solid"``, default) or a
