@@ -14,11 +14,6 @@ from newton._src.core.types import Axis
 from newton._src.solvers.kamino._src.core.bodies import RigidBodyDescriptor
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.geometry import GeometryDescriptor
-from newton._src.solvers.kamino._src.core.gravity import (
-    GRAVITY_ACCEL_DEFAULT,
-    GRAVITY_DIREC_DEFAULT,
-    GRAVITY_NAME_DEFAULT,
-)
 from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointDescriptor, JointDoFType
 from newton._src.solvers.kamino._src.core.materials import MaterialDescriptor
 from newton._src.solvers.kamino._src.core.model import ModelKamino
@@ -188,6 +183,7 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(len(builder.geoms), 1)
         self.assertEqual(len(builder.geoms[0]), 0)
         self.assertEqual(len(builder.materials), 1)  # Default material is always created
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.array([0.0, 0.0, -9.81], dtype=np.float32))
 
     def test_02_add_world(self):
         builder = ModelBuilderKamino()
@@ -197,9 +193,32 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(builder.worlds[wid].wid, wid)
         self.assertEqual(builder.worlds[wid].name, "test_world")
         self.assertEqual(builder.up_axes[wid], Axis.Y)
-        self.assertEqual(builder.gravity[wid].name, GRAVITY_NAME_DEFAULT)
-        self.assertEqual(builder.gravity[wid].acceleration, GRAVITY_ACCEL_DEFAULT)
-        np.testing.assert_array_equal(builder.gravity[wid].direction, np.array(GRAVITY_DIREC_DEFAULT, dtype=np.float32))
+        np.testing.assert_array_equal(builder.gravity[wid].vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+
+    def test_add_world_accepts_arraylike_gravity(self):
+        """Store a list gravity vector when adding a world."""
+        builder = ModelBuilderKamino()
+
+        wid = builder.add_world(gravity=[1.0, -2.0, 3.0])
+
+        np.testing.assert_array_equal(builder.gravity[wid].vector, np.array([1.0, -2.0, 3.0], dtype=np.float32))
+
+    def test_set_gravity_accepts_numpy_vector(self):
+        """Store a NumPy gravity vector after adding a world."""
+        builder = ModelBuilderKamino()
+        builder.add_world()
+
+        builder.set_gravity(np.array([1.0, -2.0, 3.0], dtype=np.float32))
+
+        np.testing.assert_array_equal(builder.gravity[0].vector, np.array([1.0, -2.0, 3.0], dtype=np.float32))
+
+    def test_set_gravity_rejects_invalid_vector_shape(self):
+        """Reject gravity vectors without exactly three components."""
+        builder = ModelBuilderKamino()
+        builder.add_world()
+
+        with self.assertRaisesRegex(ValueError, r"shape \(3,\)"):
+            builder.set_gravity([0.0, -9.81])
 
     def test_03_add_rigid_body(self):
         builder = ModelBuilderKamino()

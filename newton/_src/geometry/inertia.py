@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import math
 import warnings
+from numbers import Real
 
 import numpy as np
 import warp as wp
@@ -39,6 +41,36 @@ _INERTIA_SYMMETRY_RTOL = 1.0e-5
 _INERTIA_SYMMETRY_ATOL = 1.0e-8
 
 _MESH_INERTIA_TILE_SIZE = 256
+
+
+def _validate_hollow_thickness(
+    shape_name: str,
+    thickness: float,
+    limits: tuple[tuple[str, float], ...],
+) -> float:
+    if isinstance(thickness, bool) or not isinstance(thickness, Real):
+        raise TypeError(f"thickness must be a real scalar for a hollow {shape_name} geom")
+
+    thickness = float(thickness)
+    if not math.isfinite(thickness):
+        raise ValueError(f"thickness must be finite for a hollow {shape_name} geom; got {thickness}")
+    if thickness < 0.0:
+        raise ValueError(f"thickness must be >= 0 for a hollow {shape_name} geom; got {thickness}")
+    if thickness == 0.0:
+        warnings.warn(
+            f"A hollow {shape_name} geom with zero thickness has zero mass and inertia.",
+            stacklevel=2,
+        )
+        return thickness
+
+    for dim_name, dim_value in limits:
+        dim_limit = float(dim_value)
+        if thickness >= dim_limit:
+            raise ValueError(
+                f"thickness ({thickness}) must be smaller than {dim_name} ({dim_limit}) for a hollow {shape_name} geom"
+            )
+
+    return thickness
 
 
 def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
@@ -582,7 +614,9 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow sphere geom"
+            thickness = _validate_hollow_thickness("sphere", thickness, (("radius", scale[0]),))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_sphere(density, scale[0] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.BOX:
@@ -591,7 +625,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow box geom"
+            thickness = _validate_hollow_thickness(
+                "box", thickness, (("hx", scale[0]), ("hy", scale[1]), ("hz", scale[2]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_box(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CAPSULE:
@@ -600,7 +638,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow capsule geom"
+            thickness = _validate_hollow_thickness(
+                "capsule", thickness, (("radius", scale[0]), ("half_height", scale[1]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CYLINDER:
@@ -609,7 +651,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow cylinder geom"
+            thickness = _validate_hollow_thickness(
+                "cylinder", thickness, (("radius", scale[0]), ("half_height", scale[1]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cylinder(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CONE:
@@ -618,15 +664,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
+            thickness = _validate_hollow_thickness("cone", thickness, (("radius", scale[0]), ("half_height", scale[1])))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cone(density, scale[0] - thickness, scale[1] - thickness)
             m_shell = solid[0] - hollow[0]
-            if m_shell <= 0.0:
-                raise ValueError(
-                    f"Hollow cone shell has non-positive mass ({m_shell:.6g}). "
-                    f"The thickness ({thickness}) must be smaller than both the "
-                    f"radius ({scale[0]}) and half_height ({scale[1]})."
-                )
             # Cones have non-zero COM so outer and inner cones have different COMs;
             # compute the shell COM as the weighted difference, then shift both
             # inertia tensors to the shell COM before subtracting (parallel-axis theorem).
@@ -648,7 +690,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
+            thickness = _validate_hollow_thickness(
+                "ellipsoid", thickness, (("rx", scale[0]), ("ry", scale[1]), ("rz", scale[2]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_ellipsoid(
                 density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness
             )

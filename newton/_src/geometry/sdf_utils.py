@@ -26,7 +26,7 @@ from .types import GeoType, Mesh
 
 logger = logging.getLogger(__name__)
 
-SignMethod = Literal["auto", "parity", "winding"]
+SignMethod = Literal["auto", "parity", "winding", "normal"]
 
 if TYPE_CHECKING:
     from .sdf_texture import TextureSDFData
@@ -430,6 +430,11 @@ class SDF:
                   ``wp.mesh_query_point_sign_winding_number``. Robust for
                   general (possibly open or non-manifold) meshes but more
                   expensive to build and query.
+                * ``"normal"``: always use
+                  ``wp.mesh_query_point_sign_normal`` (angle-weighted
+                  pseudo-normal). Signs voxels by the local side of the
+                  nearest surface; the choice for open sheets, where
+                  neither parity nor winding defines a consistent inside.
             cache_dir: Optional directory holding cached cooked SDFs. When
                 provided, the cooked SDF data (everything that backs the
                 GPU 3D textures) is keyed by mesh content + build
@@ -457,7 +462,7 @@ class SDF:
                 "No CUDA-capable device was detected."
             )
 
-        valid_sign_methods: tuple[SignMethod, ...] = ("auto", "parity", "winding")
+        valid_sign_methods: tuple[SignMethod, ...] = ("auto", "parity", "winding", "normal")
         if sign_method not in valid_sign_methods:
             raise ValueError(f"Unknown sign_method {sign_method!r}. Expected one of {list(valid_sign_methods)}.")
 
@@ -467,17 +472,24 @@ class SDF:
         is_watertight = mesh.is_watertight
 
         if sign_method == "auto":
-            use_parity = is_watertight
+            sign_method_resolved = "parity" if is_watertight else "winding"
         else:
-            use_parity = sign_method == "parity"
-
-        sign_method_resolved = "parity" if use_parity else "winding"
+            sign_method_resolved = sign_method
 
         from .sdf_texture import (  # noqa: PLC0415
+            SIGN_MODE_NORMAL,
+            SIGN_MODE_PARITY,
+            SIGN_MODE_WINDING,
             QuantizationMode,
             create_sparse_sdf_textures,
             create_texture_sdf_from_mesh,
         )
+
+        _sign_mode_map = {
+            "winding": SIGN_MODE_WINDING,
+            "parity": SIGN_MODE_PARITY,
+            "normal": SIGN_MODE_NORMAL,
+        }
 
         _tex_fmt_map = {
             "float32": QuantizationMode.FLOAT32,
@@ -525,12 +537,14 @@ class SDF:
                 indices = wp.array(mesh.indices, dtype=wp.int32)
 
                 winding_threshold = 0.5
-                if use_parity:
-                    tex_mesh = wp.Mesh(points=pos, indices=indices)
-                else:
+                if sign_method_resolved == "winding":
                     tex_mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
                     signed_volume = compute_mesh_signed_volume(pos, indices)
                     winding_threshold = 0.5 if signed_volume >= 0.0 else -0.5
+                else:
+                    # Parity and pseudo-normal queries need no winding-number
+                    # acceleration on the mesh.
+                    tex_mesh = wp.Mesh(points=pos, indices=indices)
 
                 want_sparse = cache_dir is not None
                 res = effective_max_resolution if effective_max_resolution is not None else 64
@@ -543,7 +557,7 @@ class SDF:
                     quantization_mode=qmode,
                     winding_threshold=winding_threshold,
                     scale_baked=bake_scale,
-                    use_parity=use_parity,
+                    sign_mode=_sign_mode_map[sign_method_resolved],
                     return_sparse_data=want_sparse,
                 )
                 if want_sparse:
@@ -680,6 +694,21 @@ def get_distance_to_mesh_parity(mesh: wp.uint64, point: wp.vec3, max_dist: wp.fl
     but requires a watertight mesh for correct results.
     """
     res = wp.mesh_query_point_sign_parity(mesh, point, max_dist)
+    if res.result:
+        closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
+        return res.sign * wp.length(closest - point)
+    return max_dist
+
+
+@wp.func
+def get_distance_to_mesh_normal(mesh: wp.uint64, point: wp.vec3, max_dist: wp.float32):
+    """Signed distance using the angle-weighted pseudo-normal for the sign.
+
+    Gives a stable local side-of-surface classification for open
+    (non-watertight) meshes, where neither parity nor winding numbers define
+    a consistent inside. Needs no winding-number acceleration on the mesh.
+    """
+    res = wp.mesh_query_point_sign_normal(mesh, point, max_dist)
     if res.result:
         closest = wp.mesh_eval_position(mesh, res.face, res.u, res.v)
         return res.sign * wp.length(closest - point)

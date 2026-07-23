@@ -196,7 +196,8 @@ def test_shapes_never_exceed_initial_z(test, device):
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state_0, contacts)
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
@@ -215,7 +216,7 @@ def test_shapes_never_exceed_initial_z(test, device):
         # Simulate one frame (same as example)
         for _ in range(sim_substeps):
             state_0.clear_forces()
-            contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt)
             state_0, state_1 = state_1, state_0
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import warnings
 from typing import Any, Literal
 
@@ -319,9 +320,10 @@ class SensorContact:
 
     .. rubric:: Construction and update order
 
-    ``SensorContact`` requests the ``force`` extended attribute from the model at init, so a :class:`~newton.Contacts`
-    object created afterwards (via :meth:`Model.contacts() <newton.Model.contacts>` or directly) will include it
-    automatically.
+    ``SensorContact`` requests the ``force`` extended attribute from the model at init. A :class:`~newton.Contacts`
+    object subsequently allocated via :meth:`~newton.CollisionPipeline.contacts` will include it automatically.
+    Construct the ``SensorContact`` before allocating the contacts buffer. When constructing :class:`~newton.Contacts`
+    directly, pass ``requested_attributes={"force"}``.
 
     :meth:`update` reads from ``contacts.force``. Call ``solver.update_contacts(contacts)`` before
     ``sensor.update()`` so that contact forces are current.
@@ -346,7 +348,8 @@ class SensorContact:
             sensor = SensorContact(model, sensing_shapes="ball")
             solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
-            contacts = model.contacts()
+            collision_pipeline = newton.CollisionPipeline(model)
+            contacts = collision_pipeline.contacts()
 
             solver.step(state, state, None, None, dt=1.0 / 60.0)
             solver.update_contacts(contacts)
@@ -450,10 +453,10 @@ class SensorContact:
         self,
         model: Model,
         *,
-        sensing_bodies: str | list[str] | list[int] | None = None,
-        sensing_shapes: str | list[str] | list[int] | None = None,
-        counterpart_bodies: str | list[str] | list[int] | None = None,
-        counterpart_shapes: str | list[str] | list[int] | None = None,
+        sensing_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        sensing_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        counterpart_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        counterpart_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
@@ -468,14 +471,14 @@ class SensorContact:
 
         Args:
             model: The simulation model providing shape/body definitions and world layout.
-            sensing_bodies: List of body indices, single pattern to match against body labels, or list of patterns where
-                any one matches.
-            sensing_shapes: List of shape indices, single pattern to match against shape labels, or list of patterns
-                where any one matches.
-            counterpart_bodies: List of body indices, single pattern to match
-                against body labels, or list of patterns where any one matches.
-            counterpart_shapes: List of shape indices, single pattern to match
-                against shape labels, or list of patterns where any one matches.
+            sensing_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
+                body labels, or list of body indices. Regular expressions use full matching.
+            sensing_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
+                shape labels, or list of shape indices. Regular expressions use full matching.
+            counterpart_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
+                against body labels, or list of body indices. Regular expressions use full matching.
+            counterpart_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
+                against shape labels, or list of shape indices. Regular expressions use full matching.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
             verbose: If True, print details. If False, suppress details. If None, print details when

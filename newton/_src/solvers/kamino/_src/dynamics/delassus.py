@@ -96,7 +96,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -1799,6 +1799,16 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
     def constraint_jacobian(self) -> BlockSparseMatrices[wp.float32, wp.int32, vec6f]:
         return self._jacobians._J_cts.bsm
 
+    @property
+    def regularization(self) -> wp.array[wp.float32]:
+        """Active diagonal regularization used by sparse matrix-vector products."""
+        regularization = self._combined_regularization
+        if regularization is None:
+            regularization = self._eta
+        if regularization is None:
+            raise RuntimeError("Sparse Delassus regularization has not been configured.")
+        return regularization
+
     ###
     # Operations
     ###
@@ -1810,6 +1820,19 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 f"{op_name} is unavailable on a matrix-free Delassus operator (uses_raw_jacobian "
                 "solver such as CRF): no assembled matrices were allocated."
             )
+
+    def apply_jacobian_transpose(
+        self,
+        x: wp.array[wp.float32],
+        y: wp.array[wp.float32],
+        world_mask: wp.array[wp.bool],
+    ) -> None:
+        """Apply the current transposed constraint Jacobian to a vector."""
+        if self.ATy_op is None or self._transpose_op_matrix is None:
+            raise RuntimeError("Sparse Delassus transpose operator has not been assigned.")
+        if self._needs_update:
+            self.update()
+        self.ATy_op(self._transpose_op_matrix, x, y, world_mask)
 
     def matvec(self, x: wp.array[wp.float32], y: wp.array[wp.float32], world_mask: wp.array[wp.bool]):
         """

@@ -581,9 +581,10 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
     def __init__(
         self,
         operator: DenseLinearOperatorData[ScalarType, IndexType] | None = None,
-        block_size: int = 32,
+        factorize_block_size: int = 32,
+        solve_block_size: int = 32,
         solve_block_dim: int = 128,
-        factortize_block_dim: int = 128,
+        factorize_block_dim: int = 128,
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
@@ -591,21 +592,47 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
     ):
+        """Initialize a blocked Cholesky solver.
+
+        The factorization and triangular-solve kernels operate on the same
+        dense ``L`` matrix, but tile their computations independently. Larger
+        factorization tiles reduce the number of sequential panel steps, while
+        smaller solve tiles are generally preferable for a single right-hand
+        side.
+
+        Args:
+            operator: Linear operator to allocate for immediately, or ``None``
+                to defer allocation.
+            factorize_block_size: Matrix tile width and height used by the
+                factorization kernel.
+            solve_block_size: Matrix tile width and height used by the
+                triangular-solve kernels.
+            solve_block_dim: Number of threads per CUDA block used to launch
+                the triangular-solve kernels.
+            factorize_block_dim: Number of threads per CUDA block used to
+                launch the factorization kernel.
+            atol: Absolute solve tolerance.
+            rtol: Relative solve tolerance.
+            ftol: Factorization tolerance.
+            dtype: Scalar data type.
+            device: Device on which to allocate and run the solver.
+            **kwargs: Additional arguments forwarded to :class:`DirectSolver`.
+        """
         # Declare LLT-specific internal data
         self._L: wp.array[ScalarType] | None = None
         """A flat array containing the Cholesky factorization of each matrix block."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
 
-        # Cache the fixed block size
-        self._block_size: int = block_size
+        self._factorize_block_size: int = factorize_block_size
+        self._solve_block_size: int = solve_block_size
         self._solve_block_dim: int = solve_block_dim
-        self._factortize_block_dim: int = factortize_block_dim
+        self._factorize_block_dim: int = factorize_block_dim
 
         # Create the factorization and solve kernels
-        self._factorize_kernel = factorize.make_llt_blocked_factorize_kernel(block_size)
-        self._solve_kernel = factorize.make_llt_blocked_solve_kernel(block_size)
-        self._solve_inplace_kernel = factorize.make_llt_blocked_solve_inplace_kernel(block_size)
+        self._factorize_kernel = factorize.make_llt_blocked_factorize_kernel(self._factorize_block_size)
+        self._solve_kernel = factorize.make_llt_blocked_solve_kernel(self._solve_block_size)
+        self._solve_inplace_kernel = factorize.make_llt_blocked_solve_inplace_kernel(self._solve_block_size)
 
         # Initialize base class members
         super().__init__(
@@ -665,7 +692,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         factorize.llt_blocked_factorize(
             kernel=self._factorize_kernel,
             num_blocks=self._operator.info.num_blocks,
-            block_dim=self._factortize_block_dim,
+            block_dim=self._factorize_block_dim,
             dim=self._operator.info.dim,
             mio=self._operator.info.mio,
             A=A,

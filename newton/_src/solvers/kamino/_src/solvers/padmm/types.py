@@ -34,7 +34,6 @@ Data Containers:
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import Any
 
 import numpy as np
 import warp as wp
@@ -43,6 +42,7 @@ from ......core.types import override
 from ....config import PADMMSolverConfig
 from ...core.size import SizeKamino
 from ...core.types import to_warp_int32_array
+from ..common import DualSolution, WarmStartMode
 
 ###
 # Module interface
@@ -126,60 +126,8 @@ class PADMMPenaltyUpdate(IntEnum):
         return self.__str__()
 
 
-class PADMMWarmStartMode(IntEnum):
-    """
-    An enumeration of the warmstart modes used in PADMM.
-    """
-
-    NONE = -1
-    """
-    No warmstart:
-        The solver does not use any warmstart information and starts from
-        scratch, i.e. performs a cold-start regardless of any cached state.
-    """
-
-    INTERNAL = 0
-    """
-    From internally cached solution:
-        The solver uses its values currently in the solution
-        container as warmstart information for the current solve.
-    """
-
-    CONTAINERS = 1
-    """
-    From externally cached solution containers:
-        The solver uses values from externally provided solution
-        containers as warmstart information for the current solve.
-    """
-
-    @classmethod
-    def from_string(cls, s: str) -> PADMMWarmStartMode:
-        """Converts a string to a PADMMWarmStartMode enum value."""
-        try:
-            return cls[s.upper()]
-        except KeyError as e:
-            raise ValueError(f"Invalid PADMMWarmStartMode: {s}. Valid options are: {[e.name for e in cls]}") from e
-
-    @override
-    def __str__(self):
-        """Returns a string representation of the PADMMWarmStartMode."""
-        return f"PADMMWarmStartMode.{self.name} ({self.value})"
-
-    @override
-    def __repr__(self):
-        """Returns a string representation of the PADMMWarmStartMode."""
-        return self.__str__()
-
-    @staticmethod
-    def parse_usd_attribute(value: str, context: dict[str, Any] | None = None) -> str:
-        """Parse warmstart option imported from USD, following the KaminoSceneAPI schema."""
-        if not isinstance(value, str):
-            raise TypeError("Parser expects input of type 'str'.")
-        mapping = {"none": "none", "internal": "internal", "containers": "containers"}
-        lower_value = value.lower().strip()
-        if lower_value not in mapping:
-            raise ValueError(f"Warmstart parameter '{value}' is not a valid option.")
-        return mapping[lower_value]
+PADMMWarmStartMode = WarmStartMode
+"""Backward-compatible alias for the shared Kamino warm-start mode."""
 
 
 @wp.struct
@@ -815,59 +763,8 @@ class PADMMResiduals:
             self.r_dz.zero_()
 
 
-class PADMMSolution:
-    """
-    An interface container to the PADMM solver solution arrays.
-
-    Attributes:
-        lambdas: The constraint reactions (i.e. impulses) solution array.
-            Shape of ``(sum_of_max_total_cts,)``.
-        v_plus: The post-event constraint-space velocities solution array.
-            Shape of ``(sum_of_max_total_cts,)``.
-    """
-
-    def __init__(self, size: SizeKamino | None = None):
-        """
-        Initializes the PADMM solution container.
-
-        If a model size is provided, allocates the solution arrays accordingly.
-
-        Args:
-            size: The model-size utility container holding the dimensionality of the model.
-        """
-
-        self.lambdas: wp.array[wp.float32] | None = None
-        """
-        The constraint reactions (i.e. impulses) solution array.
-        Shape of ``(sum_of_max_total_cts,)``.
-        """
-
-        self.v_plus: wp.array[wp.float32] | None = None
-        """
-        The post-event constraint-space velocities solution array.
-        Shape of ``(sum_of_max_total_cts,)``.
-        """
-
-        # Perform memory allocations if model size is specified
-        if size is not None:
-            self.finalize(size)
-
-    def finalize(self, size: SizeKamino):
-        """
-        Allocates the PADMM solution arrays based on the model size.
-
-        Args:
-            size: The model-size utility container holding the dimensionality of the model.
-        """
-        self.lambdas = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
-        self.v_plus = wp.zeros(size.sum_of_max_total_cts, dtype=wp.float32)
-
-    def zero(self):
-        """
-        Resets all PADMM solution arrays to zeros.
-        """
-        self.lambdas.zero_()
-        self.v_plus.zero_()
+PADMMSolution = DualSolution
+"""Backward-compatible alias for the shared dual-solver solution container."""
 
 
 class PADMMInfo:
