@@ -303,6 +303,8 @@ class JointDoFType(IntEnum):
     Conventions:
     - Each joint connects a Base body `B` to a Follower body `F`.
     - The relative motion of body `F' w.r.t. body `B` defines the positive direction of the joint's DoFs.
+    - Mixed linear/angular vectors follow Newton's ``(linear, angular)`` ordering; translational entries
+      before rotational entries.
     - `R_x`, `R_y`, `R_z`: denote rotational DoFs about the local x, y, z axes respectively.
     - `T_x`, `T_y`, `T_z`: denote translational DoFs along the local x, y, z axes respectively.
     - Joints are indexed by `j`, and we often employ the subscript notation `*_j`.
@@ -314,13 +316,13 @@ class JointDoFType(IntEnum):
 
     FREE = 0
     """
-    A 6-DoF free-floating joint, with rotational + translational DoFs
-    along {`R_x`, `R_y`, `R_z`, `T_x`, `T_y`, `T_z`}.
+    A 6-DoF free-floating joint, with translational + rotational DoFs
+    along {`T_x`, `T_y`, `T_z`, `R_x`, `R_y`, `R_z`}.
 
     Coordinates:
         7D transform: 3D position + 4D unit quaternion
     DoFs:
-        6D twist: 3D angular velocity + 3D linear velocity
+        6D twist: 3D linear velocity + 3D angular velocity
     Constraints:
         None
     """
@@ -351,12 +353,12 @@ class JointDoFType(IntEnum):
 
     CYLINDRICAL = 3
     """
-    A 2-DoF cylindrical joint, with rotational + translational DoFs along {`R_x`, `T_x`}.
+    A 2-DoF cylindrical joint, with translational + rotational DoFs along {`T_x`, `R_x`}.
 
     Coordinates:
-        2D vector of angle {`R_x`} + 1D distance {`T_x`}
+        2D vector of distance {`T_x`} + angle {`R_x`}
     DoFs:
-        2D vector of angular velocity {`R_x`} + linear velocity {`T_x`}
+        2D vector of linear velocity {`T_x`} + angular velocity {`R_x`}
     """
 
     # TODO: Add support for PLANAR joints with 2D linear DOFS along {`T_x`, `T_y`}
@@ -442,7 +444,7 @@ class JointDoFType(IntEnum):
         elif self.value == self.PRISMATIC:
             return 1  # 1D distance
         elif self.value == self.CYLINDRICAL:
-            return 2  # 2D vector of angle + distance
+            return 2  # 2D vector of distance + angle
         elif self.value == self.UNIVERSAL:
             return 2  # 2D angles
         elif self.value == self.SPHERICAL:
@@ -460,13 +462,13 @@ class JointDoFType(IntEnum):
         Returns the number of DoFs defined by the joint DoF type.
         """
         if self.value == self.FREE:
-            return 6  # 3D angular velocity + 3D linear velocity
+            return 6  # 3D linear velocity + 3D angular velocity
         elif self.value == self.REVOLUTE:
             return 1  # 1D angular velocity
         elif self.value == self.PRISMATIC:
             return 1  # 1D linear velocity
         elif self.value == self.CYLINDRICAL:
-            return 2  # 1D angular velocity + 1D linear velocity
+            return 2  # 1D linear velocity + 1D angular velocity
         elif self.value == self.UNIVERSAL:
             return 2  # 2D angular velocities
         elif self.value == self.SPHERICAL:
@@ -882,7 +884,7 @@ class JointDoFType(IntEnum):
         elif dof_type == JointDoFType.PRISMATIC:
             return 1  # 1D distance
         elif dof_type == JointDoFType.CYLINDRICAL:
-            return 2  # 2D vector of angle + distance
+            return 2  # 2D vector of distance + angle
         elif dof_type == JointDoFType.UNIVERSAL:
             return 2  # 2D angles
         elif dof_type == JointDoFType.SPHERICAL:
@@ -907,13 +909,13 @@ class JointDoFType(IntEnum):
             invalid.
         """
         if dof_type == JointDoFType.FREE:
-            return 6  # 3D angular velocity + 3D linear velocity
+            return 6  # 3D linear velocity + 3D angular velocity
         elif dof_type == JointDoFType.REVOLUTE:
             return 1  # 1D angular velocity
         elif dof_type == JointDoFType.PRISMATIC:
             return 1  # 1D linear velocity
         elif dof_type == JointDoFType.CYLINDRICAL:
-            return 2  # 1D angular velocity + 1D linear velocity
+            return 2  # 1D linear velocity + 1D angular velocity
         elif dof_type == JointDoFType.UNIVERSAL:
             return 2  # 2D angular velocities
         elif dof_type == JointDoFType.SPHERICAL:
