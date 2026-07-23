@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.kamino._src.core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
@@ -22,6 +23,8 @@ def _build_revolute(
     limited: bool = False,
     actuator_mode: newton.JointTargetMode = newton.JointTargetMode.NONE,
     body_com: wp.vec3f | None = None,
+    shape_materials: tuple[tuple[float, float], ...] | None = None,
+    has_shape_collision: bool = True,
 ) -> newton.Model:
     """Build a tiny world-to-body revolute model for notify tests."""
     builder = newton.ModelBuilder()
@@ -36,7 +39,33 @@ def _build_revolute(
         com=body_com,
         lock_inertia=True,
     )
-    builder.add_shape_box(label="box", body=bid, hx=0.1, hy=0.1, hz=0.1)
+    if shape_materials is None:
+        builder.add_shape_box(
+            label="box",
+            body=bid,
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=has_shape_collision),
+        )
+    else:
+        for shape, (mu, restitution) in enumerate(shape_materials):
+            builder.add_shape_box(
+                label=f"box_{shape}",
+                body=bid,
+                xform=wp.transformf(
+                    wp.vec3f(0.3 * shape, 0.0, 0.0),
+                    wp.quat_identity(dtype=wp.float32),
+                ),
+                hx=0.1,
+                hy=0.1,
+                hz=0.1,
+                cfg=newton.ModelBuilder.ShapeConfig(
+                    mu=mu,
+                    restitution=restitution,
+                    has_shape_collision=has_shape_collision,
+                ),
+            )
 
     jid = builder.add_joint_revolute(
         label="world_to_link",
@@ -85,6 +114,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver = SolverKamino(model)
         snapshot = _snapshot_model_arrays(model)
         noop_flags = (
+            newton.ModelFlags.MODEL_PROPERTIES,
             newton.ModelFlags.BODY_PROPERTIES,
             newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
             newton.ModelFlags.SHAPE_PROPERTIES,
@@ -130,9 +160,11 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         bodies = solver._model_kamino.bodies
         joints = solver._model_kamino.joints
         geoms = solver._model_kamino.geoms
+        gravity = solver._model_kamino.gravity
 
         # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
         aliased_properties = [
+            ("gravity", gravity, "vector"),
             ("body_mass", bodies, "m_i"),
             ("body_inv_mass", bodies, "inv_m_i"),
             ("body_com", bodies, "i_r_com_i"),
@@ -167,21 +199,6 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 perturbed = newton_array.numpy() + np.float32(1.0)
                 newton_array.assign(perturbed)
                 np.testing.assert_array_equal(kamino_array.numpy(), perturbed)
-
-    def test_gravity_update(self):
-        """Model-property notifications refresh Kamino's gravity representation."""
-        model = _build_revolute(limited=True)
-        solver = SolverKamino(model)
-        gravity = np.tile(np.array([1.0, -2.0, 3.0], dtype=np.float32), (model.world_count, 1))
-        acceleration = np.linalg.norm(gravity, axis=1)
-
-        model.gravity.assign(gravity)
-        solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
-
-        expected_g_dir_acc = np.column_stack((gravity / acceleration[:, None], acceleration))
-        expected_vector = np.column_stack((gravity, np.ones(model.world_count, dtype=np.float32)))
-        np.testing.assert_allclose(solver._model_kamino.gravity.g_dir_acc.numpy(), expected_g_dir_acc, atol=1e-6)
-        np.testing.assert_allclose(solver._model_kamino.gravity.vector.numpy(), expected_vector, atol=1e-6)
 
     def test_joint_transform_update(self):
         """Joint-property notifications recompute Kamino's parent and child frames."""
@@ -295,6 +312,116 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver.reset(state)
         np.testing.assert_allclose(state.body_q.numpy(), model.body_q.numpy(), atol=1e-6)
 
+    def test_material_value_update_propagates(self):
+        """Two shapes sharing one material can update it together and keep sharing it."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        material_pairs = solver._model_kamino.material_pairs
+        arrays = (
+            materials.restitution,
+            materials.static_friction,
+            materials.dynamic_friction,
+            material_pairs.restitution,
+            material_pairs.static_friction,
+            material_pairs.dynamic_friction,
+        )
+        pointers = tuple(array.ptr for array in arrays)
+        pair_values = tuple(array.numpy().copy() for array in arrays[3:])
+
+        model.shape_material_mu.assign(np.array([0.4, 0.4], dtype=np.float32))
+        model.shape_material_restitution.assign(np.array([0.3, 0.3], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        self.assertEqual(tuple(array.ptr for array in arrays), pointers)
+        np.testing.assert_allclose(materials.static_friction.numpy(), [DEFAULT_FRICTION, 0.4])
+        np.testing.assert_allclose(materials.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.4])
+        np.testing.assert_allclose(materials.restitution.numpy(), [DEFAULT_RESTITUTION, 0.3])
+        for actual, expected in zip(arrays[3:], pair_values, strict=True):
+            np.testing.assert_array_equal(actual.numpy(), expected)
+
+    def test_default_material_update_propagates_to_default_pair(self):
+        """Updating material zero keeps its explicit self-pair synchronized."""
+        model = _build_revolute(shape_materials=((DEFAULT_FRICTION, DEFAULT_RESTITUTION),))
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        material_pairs = solver._model_kamino.material_pairs
+        np.testing.assert_array_equal(solver._model_kamino.geoms.material.numpy(), [0])
+
+        model.shape_material_mu.assign([0.4])
+        model.shape_material_restitution.assign([0.3])
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_allclose(materials.static_friction.numpy(), [0.4])
+        np.testing.assert_allclose(materials.dynamic_friction.numpy(), [0.4])
+        np.testing.assert_allclose(materials.restitution.numpy(), [0.3])
+        np.testing.assert_allclose(material_pairs.static_friction.numpy(), [0.4])
+        np.testing.assert_allclose(material_pairs.dynamic_friction.numpy(), [0.4])
+        np.testing.assert_allclose(material_pairs.restitution.numpy(), [0.3])
+
+    def test_material_ids_can_converge_to_same_values(self):
+        """Distinct material IDs remain valid when their coefficients become equal."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.6, 0.5)))
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        geoms = solver._model_kamino.geoms
+        material_mapping = geoms.material.numpy().copy()
+
+        model.shape_material_mu.assign(np.array([0.4, 0.4], dtype=np.float32))
+        model.shape_material_restitution.assign(np.array([0.3, 0.3], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        np.testing.assert_array_equal(geoms.material.numpy(), material_mapping)
+        np.testing.assert_allclose(materials.static_friction.numpy(), [DEFAULT_FRICTION, 0.4, 0.4])
+        np.testing.assert_allclose(materials.dynamic_friction.numpy(), [DEFAULT_FRICTION, 0.4, 0.4])
+        np.testing.assert_allclose(materials.restitution.numpy(), [DEFAULT_RESTITUTION, 0.3, 0.3])
+
+    def test_shape_without_material_is_ignored(self):
+        """Shapes without a Kamino material mapping do not modify material tables."""
+        model = _build_revolute(shape_materials=((0.2, 0.1),), has_shape_collision=False)
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        before = (
+            materials.restitution.numpy().copy(),
+            materials.static_friction.numpy().copy(),
+            materials.dynamic_friction.numpy().copy(),
+        )
+        # Non-collidable shapes use -1 to indicate that they need no contact material.
+        np.testing.assert_array_equal(solver._model_kamino.geoms.material.numpy(), [-1])
+        model.shape_material_mu.assign([0.7])
+        model.shape_material_restitution.assign([0.8])
+
+        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        for actual, expected in zip(
+            (materials.restitution, materials.static_friction, materials.dynamic_friction),
+            before,
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual.numpy(), expected)
+
+    def test_material_structural_change_raises(self):
+        """Two shapes sharing one material cannot update it to different values."""
+        model = _build_revolute(shape_materials=((0.2, 0.1), (0.2, 0.1)))
+        solver = SolverKamino(model)
+        materials = solver._model_kamino.materials
+        before = (
+            materials.restitution.numpy().copy(),
+            materials.static_friction.numpy().copy(),
+            materials.dynamic_friction.numpy().copy(),
+        )
+        model.shape_material_mu.assign(np.array([0.2, 0.4], dtype=np.float32))
+
+        with self.assertRaisesRegex(RuntimeError, "recreate"):
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+        for actual, expected in zip(
+            (materials.restitution, materials.static_friction, materials.dynamic_friction),
+            before,
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual.numpy(), expected)
+
     def test_dynamic_constraint_toggle_raises(self):
         """Adding or removing a joint's dynamic constraints requires solver recreation."""
         for built_dynamic in (False, True):
@@ -386,6 +513,18 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
                     expected = solver._kamino.JointActuationType.from_newton(changed_mode)
                     self.assertEqual(solver._model_kamino.joints.act_type.numpy()[0], expected)
+
+    def test_invalid_actuation_mode_raises_before_update(self):
+        """Invalid target modes do not mutate Kamino's actuation table."""
+        model = _build_revolute(actuator_mode=newton.JointTargetMode.POSITION)
+        solver = SolverKamino(model)
+        before = solver._model_kamino.joints.act_type.numpy().copy()
+        model.joint_target_mode.assign([99])
+
+        with self.assertRaisesRegex(ValueError, "Unsupported joint target mode"):
+            solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
+
+        np.testing.assert_array_equal(solver._model_kamino.joints.act_type.numpy(), before)
 
 
 if __name__ == "__main__":

@@ -511,6 +511,7 @@ class Model:
         ),
         "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
@@ -933,6 +934,8 @@ class Model:
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh_edge_indices, shape [shape_count]. (-1,0) if no edges."""
+        self._shape_mesh_properties: wp.array[wp.int32] | None = None
+        """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed

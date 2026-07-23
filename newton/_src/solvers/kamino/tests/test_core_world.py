@@ -12,12 +12,7 @@ import warp as wp
 from newton._src.geometry.types import GeoType
 from newton._src.solvers.kamino._src.core.bodies import RigidBodyDescriptor
 from newton._src.solvers.kamino._src.core.geometry import GeometryDescriptor
-from newton._src.solvers.kamino._src.core.gravity import (
-    GRAVITY_ACCEL_DEFAULT,
-    GRAVITY_DIREC_DEFAULT,
-    GRAVITY_NAME_DEFAULT,
-    GravityDescriptor,
-)
+from newton._src.solvers.kamino._src.core.gravity import GravityDescriptor
 from newton._src.solvers.kamino._src.core.joints import (
     JOINT_DQMAX,
     JOINT_QMAX,
@@ -44,71 +39,19 @@ from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 
 class TestGravityDescriptor(unittest.TestCase):
-    def setUp(self):
-        if not test_context.setup_done:
-            setup_tests(clear_cache=False)
-        self.default_device = wp.get_device(test_context.device)
-        self.verbose = test_context.verbose
+    def test_default_vector(self):
+        """Use Newton's default gravity along negative Z."""
+        gravity = GravityDescriptor(name="gravity")
 
-        # Set debug-level logging to print verbose test output to console
-        if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
-        else:
-            msg.reset_log_level()
+        self.assertEqual(gravity.name, "gravity")
+        np.testing.assert_array_equal(gravity.vector, np.array([0.0, 0.0, -9.81], dtype=np.float32))
 
-    def tearDown(self):
-        self.default_device = None
-        if self.verbose:
-            msg.reset_log_level()
+    def test_custom_vector(self):
+        """Store a custom gravity vector directly."""
+        gravity = GravityDescriptor(vector=wp.vec3f(1.0, -2.0, 3.0), name="custom")
 
-    def test_00_default_construction(self):
-        gravity = GravityDescriptor()
-        msg.info(f"gravity: {gravity}")
-        self.assertIsInstance(gravity, GravityDescriptor)
-        self.assertEqual(gravity.name, GRAVITY_NAME_DEFAULT)
-        self.assertEqual(gravity.enabled, True)
-        self.assertEqual(gravity.acceleration, GRAVITY_ACCEL_DEFAULT)
-        expected_direction = np.array(GRAVITY_DIREC_DEFAULT, dtype=np.float32)
-        expected_dir_accel = np.array([*GRAVITY_DIREC_DEFAULT, GRAVITY_ACCEL_DEFAULT], dtype=np.float32)
-        expected_vector = np.array([0.0, 0.0, -GRAVITY_ACCEL_DEFAULT, 1.0], dtype=np.float32)
-        np.testing.assert_array_equal(gravity.direction, expected_direction)
-        np.testing.assert_array_equal(gravity.dir_accel(), expected_dir_accel)
-        np.testing.assert_array_equal(gravity.vector(), expected_vector)
-
-    def test_01_with_parameters_and_dir_as_list(self):
-        gravity = GravityDescriptor(name="test_gravity", enabled=False, acceleration=15.0, direction=[1.0, 0.0, 0.0])
-        msg.info(f"gravity: {gravity}")
-        self.assertIsInstance(gravity, GravityDescriptor)
-        self.assertEqual(gravity.name, "test_gravity")
-        self.assertEqual(gravity.enabled, False)
-        self.assertEqual(gravity.acceleration, 15.0)
-        np.testing.assert_array_equal(gravity.direction, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-        np.testing.assert_array_equal(gravity.dir_accel(), np.array([1.0, 0.0, 0.0, 15.0], dtype=np.float32))
-        np.testing.assert_array_equal(gravity.vector(), np.array([15.0, 0.0, 0.0, 0.0], dtype=np.float32))
-
-    def test_02_with_parameters_and_dir_as_tuple(self):
-        gravity = GravityDescriptor(name="test_gravity", enabled=False, acceleration=9.0, direction=(1.0, 0.0, 0.0))
-        msg.info(f"gravity: {gravity}")
-        self.assertIsInstance(gravity, GravityDescriptor)
-        self.assertEqual(gravity.name, "test_gravity")
-        self.assertEqual(gravity.enabled, False)
-        self.assertEqual(gravity.acceleration, 9.0)
-        np.testing.assert_array_equal(gravity.direction, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-        np.testing.assert_array_equal(gravity.dir_accel(), np.array([1.0, 0.0, 0.0, 9.0], dtype=np.float32))
-        np.testing.assert_array_equal(gravity.vector(), np.array([9.0, 0.0, 0.0, 0.0], dtype=np.float32))
-
-    def test_03_with_parameters_and_dir_as_nparray(self):
-        direction = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        gravity = GravityDescriptor(name="test_gravity", enabled=False, acceleration=12.0, direction=direction)
-        msg.info(f"gravity: {gravity}")
-        self.assertIsInstance(gravity, GravityDescriptor)
-        self.assertEqual(gravity.name, "test_gravity")
-        self.assertEqual(gravity.enabled, False)
-        self.assertEqual(gravity.acceleration, 12.0)
-        np.testing.assert_array_equal(gravity.direction, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-        np.testing.assert_array_equal(gravity.dir_accel(), np.array([1.0, 0.0, 0.0, 12.0], dtype=np.float32))
-        np.testing.assert_array_equal(gravity.vector(), np.array([12.0, 0.0, 0.0, 0.0], dtype=np.float32))
+        self.assertEqual(gravity.name, "custom")
+        np.testing.assert_array_equal(gravity.vector, np.array([1.0, -2.0, 3.0], dtype=np.float32))
 
 
 class TestBodyDescriptor(unittest.TestCase):
