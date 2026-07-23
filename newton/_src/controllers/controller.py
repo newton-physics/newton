@@ -36,23 +36,9 @@ class Controller(ABC):
       ``+=``); composing laws is the user's job.
     """
 
-    @dataclass
-    class State:
-        """Pure data container. Subclasses declare their fields."""
-
     @abstractmethod
     def is_graphable(self) -> bool:
         """Whether :meth:`compute` is safe to capture in a CUDA graph."""
-
-    @abstractmethod
-    def state(self) -> Controller.State | None:
-        """Allocate a fresh :class:`State`, or ``None`` if stateless.
-
-        The return value is the canonical indicator of statefulness:
-        ``ctrl.state() is not None`` means the controller maintains state
-        between steps and callers should allocate two buffers for
-        double-buffering.
-        """
 
     @abstractmethod
     def input(self) -> Any:
@@ -73,9 +59,7 @@ class Controller(ABC):
         self,
         inputs: Any,
         outputs: Any,
-        controller_state_now: Controller.State | None,
-        controller_state_next: Controller.State | None,
-        time_step: float | wp.array[wp.float32],
+        dt: float | wp.array[wp.float32],
     ) -> None:
         """Run one control step.
 
@@ -87,10 +71,6 @@ class Controller(ABC):
             outputs: Same contract as ``inputs`` for write ports. The
                 kernel performs slot-replacing writes — slots outside the
                 declared port indices are left untouched.
-            controller_state_now: Current state (``None`` if stateless).
-            controller_state_next: Next-step state to populate (``None``
-                if stateless). Double-buffered against
-                ``controller_state_now``.
-            time_step: Step duration [s]. Either a plain ``float`` or a
+            dt: Step duration [s]. Either a plain ``float`` or a
                 ``wp.array`` of shape ``(1,)`` dtype ``wp.float32``.
         """
