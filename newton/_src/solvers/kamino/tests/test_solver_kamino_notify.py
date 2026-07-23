@@ -12,7 +12,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.kamino._src.core.gravity import GRAVITY_DIREC_DEFAULT
 from newton._src.solvers.kamino._src.core.materials import DEFAULT_FRICTION, DEFAULT_RESTITUTION
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.solvers.kamino.tests import setup_tests, test_context
@@ -115,6 +114,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         solver = SolverKamino(model)
         snapshot = _snapshot_model_arrays(model)
         noop_flags = (
+            newton.ModelFlags.MODEL_PROPERTIES,
             newton.ModelFlags.BODY_PROPERTIES,
             newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
             newton.ModelFlags.SHAPE_PROPERTIES,
@@ -160,9 +160,11 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         bodies = solver._model_kamino.bodies
         joints = solver._model_kamino.joints
         geoms = solver._model_kamino.geoms
+        gravity = solver._model_kamino.gravity
 
         # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
         aliased_properties = [
+            ("gravity", gravity, "vector"),
             ("body_mass", bodies, "m_i"),
             ("body_inv_mass", bodies, "inv_m_i"),
             ("body_com", bodies, "i_r_com_i"),
@@ -197,33 +199,6 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
                 perturbed = newton_array.numpy() + np.float32(1.0)
                 newton_array.assign(perturbed)
                 np.testing.assert_array_equal(kamino_array.numpy(), perturbed)
-
-    def test_gravity_update(self):
-        """Model-property notifications refresh Kamino's gravity representation."""
-        model = _build_revolute(limited=True)
-        solver = SolverKamino(model)
-        gravity = np.tile(np.array([1.0, -2.0, 3.0], dtype=np.float32), (model.world_count, 1))
-        acceleration = np.linalg.norm(gravity, axis=1)
-
-        model.gravity.assign(gravity)
-        solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
-
-        expected_g_dir_acc = np.column_stack((gravity / acceleration[:, None], acceleration))
-        expected_vector = np.column_stack((gravity, np.ones(model.world_count, dtype=np.float32)))
-        np.testing.assert_allclose(solver._model_kamino.gravity.g_dir_acc.numpy(), expected_g_dir_acc, atol=1e-6)
-        np.testing.assert_allclose(solver._model_kamino.gravity.vector.numpy(), expected_vector, atol=1e-6)
-
-    def test_zero_gravity_update(self):
-        """Zero gravity uses Kamino's fallback direction and disables gravity."""
-        model = _build_revolute(limited=True)
-        solver = SolverKamino(model)
-        model.gravity.zero_()
-
-        solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
-
-        expected_g_dir_acc = np.append(np.asarray(GRAVITY_DIREC_DEFAULT), 0.0)[None, :]
-        np.testing.assert_array_equal(solver._model_kamino.gravity.g_dir_acc.numpy(), expected_g_dir_acc)
-        np.testing.assert_array_equal(solver._model_kamino.gravity.vector.numpy(), [[0.0, 0.0, 0.0, 0.0]])
 
     def test_joint_transform_update(self):
         """Joint-property notifications recompute Kamino's parent and child frames."""
