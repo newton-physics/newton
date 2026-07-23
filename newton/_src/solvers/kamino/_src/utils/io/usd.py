@@ -1015,14 +1015,14 @@ class USDImporter:
                 q_j_min[2] = max(distance_unit * limit.second.lower, JOINT_QMIN)
                 q_j_max[2] = min(distance_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotX:
-                q_j_min[0] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[0] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[3] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[3] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotY:
-                q_j_min[1] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[1] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[4] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[4] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
             elif dof == self.UsdPhysics.JointDOF.RotZ:
-                q_j_min[2] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
-                q_j_max[2] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
+                q_j_min[5] = max(rotation_unit * limit.second.lower, JOINT_QMIN)
+                q_j_max[5] = min(rotation_unit * limit.second.upper, JOINT_QMAX)
 
         num_drives = len(joint_spec.jointDrives)
         if num_drives > 0:
@@ -1042,11 +1042,11 @@ class USDImporter:
                 elif dof == self.UsdPhysics.JointDOF.TransZ:
                     tau_j_max[2] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotX:
-                    tau_j_max[0] = drive.second.forceLimit
+                    tau_j_max[3] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotY:
-                    tau_j_max[1] = drive.second.forceLimit
+                    tau_j_max[4] = drive.second.forceLimit
                 elif dof == self.UsdPhysics.JointDOF.RotZ:
-                    tau_j_max[2] = drive.second.forceLimit
+                    tau_j_max[5] = drive.second.forceLimit
         else:
             act_type = JointActuationType.PASSIVE
         return dof_type, act_type, q_j_min, q_j_max, tau_j_max
