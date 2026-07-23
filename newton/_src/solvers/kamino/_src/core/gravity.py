@@ -26,11 +26,11 @@ GRAVITY_DEFAULT = -9.81
 class GravityDescriptor(Descriptor):
     """Describe a world's gravity vector."""
 
-    vector: wp.vec3f = field(default_factory=lambda: GravityDescriptor.default_for(Axis.Z).vector)
+    vector: wp.vec3f = field(default_factory=lambda: GravityDescriptor.default_from_up_axis(Axis.Z).vector)
     """Gravity vector [m/s²]."""
 
     @staticmethod
-    def default_for(up_axis: Axis, *, name: str = "gravity") -> GravityDescriptor:
+    def default_from_up_axis(up_axis: Axis, *, name: str = "gravity") -> GravityDescriptor:
         """Return Newton's default gravity along the negative up axis."""
         vector = wp.vec3f(*(component * GRAVITY_DEFAULT for component in up_axis.to_vector()))
         return GravityDescriptor(name=name, vector=vector)

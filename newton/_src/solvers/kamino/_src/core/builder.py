@@ -293,7 +293,7 @@ class ModelBuilderKamino:
 
         # Set gravity
         if gravity is None:
-            gravity = GravityDescriptor.default_for(up_axis)
+            gravity = GravityDescriptor.default_from_up_axis(up_axis)
         elif not isinstance(gravity, GravityDescriptor):
             gravity = GravityDescriptor.from_array(gravity)
         self._gravity.append(gravity)
