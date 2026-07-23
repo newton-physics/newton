@@ -23,7 +23,6 @@ from newton._src.solvers.kamino._src.core.joints import (
     JointDoFType,
 )
 from newton._src.solvers.kamino._src.core.materials import (
-    DEFAULT_DENSITY,
     DEFAULT_FRICTION,
     DEFAULT_RESTITUTION,
     MaterialDescriptor,
@@ -326,7 +325,6 @@ class TestMaterialDescriptor(unittest.TestCase):
 
         self.assertIsInstance(mat, MaterialDescriptor)
         self.assertEqual(mat.name, "test_mat")
-        self.assertEqual(mat.density, DEFAULT_DENSITY)
         self.assertEqual(mat.restitution, DEFAULT_RESTITUTION)
         self.assertEqual(mat.static_friction, DEFAULT_FRICTION)
         self.assertEqual(mat.dynamic_friction, DEFAULT_FRICTION)
@@ -336,7 +334,6 @@ class TestMaterialDescriptor(unittest.TestCase):
     def test_01_with_properties(self):
         mat = MaterialDescriptor(
             name="test_mat",
-            density=500.0,
             restitution=0.5,
             static_friction=0.6,
             dynamic_friction=0.4,
@@ -345,7 +342,6 @@ class TestMaterialDescriptor(unittest.TestCase):
 
         self.assertIsInstance(mat, MaterialDescriptor)
         self.assertEqual(mat.name, "test_mat")
-        self.assertEqual(mat.density, 500.0)
         self.assertEqual(mat.restitution, 0.5)
         self.assertEqual(mat.static_friction, 0.6)
         self.assertEqual(mat.dynamic_friction, 0.4)
