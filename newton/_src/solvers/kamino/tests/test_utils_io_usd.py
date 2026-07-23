@@ -49,11 +49,17 @@ class TestUSDImporter(unittest.TestCase):
         if self.verbose:
             msg.reset_log_level()
 
-    def test_gravity_descriptor_from_usd_sentinels(self):
-        """Resolve raw OpenUSD gravity sentinels to finite vectors."""
-        for magnitude in (-float("inf"), -1.0):
-            gravity = GravityDescriptor.from_usd((0.0, 0.0, 0.0), magnitude, Axis.Y, 1.0)
-            np.testing.assert_array_equal(gravity.vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+    def test_gravity_descriptor_from_usd_default_magnitude(self):
+        """Resolve OpenUSD's negative-infinity gravity sentinel."""
+        gravity = GravityDescriptor.from_usd((0.0, 0.0, 0.0), -float("inf"), Axis.Y, 1.0)
+
+        np.testing.assert_array_equal(gravity.vector, np.array([0.0, -9.81, 0.0], dtype=np.float32))
+
+    def test_gravity_descriptor_from_usd_negative_magnitude(self):
+        """Preserve an explicitly authored negative gravity magnitude."""
+        gravity = GravityDescriptor.from_usd((0.0, 0.0, -1.0), -1.0, Axis.Y, 1.0)
+
+        np.testing.assert_array_equal(gravity.vector, np.array([0.0, 0.0, 1.0], dtype=np.float32))
 
     def test_gravity_descriptor_from_usd_explicit_values(self):
         """Normalize and scale explicitly authored OpenUSD gravity."""

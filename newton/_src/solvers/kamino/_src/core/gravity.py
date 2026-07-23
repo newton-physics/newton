@@ -58,7 +58,7 @@ class GravityDescriptor(Descriptor):
         else:
             direction_array /= direction_length
 
-        if magnitude < 0.0:
+        if magnitude == -float("inf"):
             magnitude = abs(GRAVITY_DEFAULT)
         return GravityDescriptor.from_array(direction_array * (distance_unit * magnitude), name=name)
 

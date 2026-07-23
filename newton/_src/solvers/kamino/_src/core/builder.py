@@ -206,7 +206,7 @@ class ModelBuilderKamino:
 
     @property
     def gravity(self) -> list[GravityDescriptor]:
-        """Returns the gravity descriptors for each world contained in the model."""
+        """Returns the gravity descriptor for each world contained in the model."""
         return self._gravity
 
     @property
