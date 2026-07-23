@@ -412,7 +412,14 @@ class SchemaResolverManager:
         self._schema_attrs[resolver.name][prim_path] = resolver.collect_prim_attrs(prim)
 
     def get_value(
-        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any = None,
+        verbose: bool = False,
+        *,
+        comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> Any:
         """
         Resolve a value using the configured resolver policy.
@@ -422,19 +429,42 @@ class SchemaResolverManager:
             prim_type: Prim type (PrimType enum)
             key: Attribute key within the prim type
             default: Default value if not found
+            comparison_key: Convert a raw value and resolver into its
+                consumer-observable form for the compatibility audit.
 
         Returns:
             Resolved value according to the precedence above.
         """
-        value, _ = self._get_value_with_policy(prim, prim_type, key, default, compare_resolver=False)
+        value, _ = self._get_value_with_policy(
+            prim,
+            prim_type,
+            key,
+            default,
+            compare_resolver=False,
+            comparison_key=comparison_key,
+        )
         self._report_missing(prim, prim_type, key, value, verbose)
         return value
 
     def get_value_with_resolver(
-        self, prim: Usd.Prim, prim_type: PrimType, key: str, default: Any = None, verbose: bool = False
+        self,
+        prim: Usd.Prim,
+        prim_type: PrimType,
+        key: str,
+        default: Any = None,
+        verbose: bool = False,
+        *,
+        comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
     ) -> tuple[Any, SchemaResolver | None]:
         """Resolve a value and return the resolver that supplied it."""
-        value, resolver = self._get_value_with_policy(prim, prim_type, key, default, compare_resolver=True)
+        value, resolver = self._get_value_with_policy(
+            prim,
+            prim_type,
+            key,
+            default,
+            compare_resolver=True,
+            comparison_key=comparison_key,
+        )
         self._report_missing(prim, prim_type, key, value, verbose)
         return value, resolver
 
@@ -450,6 +480,7 @@ class SchemaResolverManager:
         default: Any,
         *,
         compare_resolver: bool,
+        comparison_key: Callable[[Any, SchemaResolver | None], Any] | None,
     ) -> tuple[Any, SchemaResolver | None]:
         value_cache: dict[tuple[int, str], Any | None] = {}
 
@@ -474,6 +505,7 @@ class SchemaResolverManager:
             value,
             resolver,
             compare_resolver=compare_resolver,
+            comparison_key=comparison_key,
             read_value=read_value,
         )
         return value, resolver
@@ -540,6 +572,7 @@ class SchemaResolverManager:
         legacy_resolver: SchemaResolver | None,
         *,
         compare_resolver: bool,
+        comparison_key: Callable[[Any, SchemaResolver | None], Any] | None = None,
         read_value: Callable[[SchemaResolver, str], Any | None] | None = None,
     ) -> None:
         """Record properties whose legacy and composed resolution diverge."""
@@ -563,8 +596,15 @@ class SchemaResolverManager:
             return
         if resolved.resolver is None or resolved.authored:
             return
-        values_differ = not self._values_equal(legacy_value, resolved.value)
-        resolvers_differ = compare_resolver and legacy_resolver is not resolved.resolver
+        if comparison_key is None:
+            legacy_comparison = legacy_value
+            composed_comparison = resolved.value
+            resolvers_differ = compare_resolver and legacy_resolver is not resolved.resolver
+        else:
+            legacy_comparison = comparison_key(legacy_value, legacy_resolver)
+            composed_comparison = comparison_key(resolved.value, resolved.resolver)
+            resolvers_differ = False
+        values_differ = not self._values_equal(legacy_comparison, composed_comparison)
         if not values_differ and not resolvers_differ:
             return
 

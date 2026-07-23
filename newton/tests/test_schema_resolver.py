@@ -41,7 +41,7 @@ from unittest.mock import patch
 
 import warp as wp
 
-from newton import Model, ModelBuilder
+from newton import Model, ModelBuilder, ShapeFlags
 from newton._src.usd._schema_fallbacks import _SCHEMA_FALLBACKS
 from newton._src.usd.schema_resolver import SchemaResolverManager, _registered_attribute_fallbacks
 from newton.solvers import SolverMuJoCo
@@ -249,6 +249,47 @@ class TestSchemaResolver(unittest.TestCase):
 
         shape = result["path_shape_map"]["/cube"]
         self.assertEqual(builder.shape_margin[shape], builder.default_shape_cfg.margin)
+
+    def test_applied_sdf_effective_defaults_do_not_warn(self):
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().AddAppliedSchema("NewtonSDFCollisionAPI")
+
+        for use_applied_schema_fallbacks in (False, True):
+            with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
+                builder = ModelBuilder()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    result = builder.add_usd(
+                        stage,
+                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                    )
+
+                shape = result["path_shape_map"]["/cube"]
+                self.assertEqual(builder.shape_sdf_max_resolution[shape], 64)
+                self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[shape][0], -0.1)
+                self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[shape][1], 0.1)
+                self.assertEqual(builder.shape_sdf_texture_format[shape], "uint16")
+                self.assertFalse(builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC)
+
+    def test_applied_sdf_effective_default_change_warns(self):
+        stage = Usd.Stage.CreateInMemory()
+        UsdPhysics.Scene.Define(stage, "/scene")
+        cube = UsdGeom.Cube.Define(stage, "/cube")
+        UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+        cube.GetPrim().AddAppliedSchema("NewtonSDFCollisionAPI")
+
+        builder = ModelBuilder()
+        builder.default_shape_cfg.kh = 123.0
+        with self.assertWarnsRegex(DeprecationWarning, "newton:hydroelasticStiffness"):
+            result = builder.add_usd(stage)
+
+        shape = result["path_shape_map"]["/cube"]
+        self.assertEqual(builder.shape_material_kh[shape], 123.0)
 
     def test_applied_schema_fallbacks_follow_resolver_priority(self):
         stage = Usd.Stage.CreateInMemory()

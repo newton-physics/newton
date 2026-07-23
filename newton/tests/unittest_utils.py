@@ -49,9 +49,7 @@ _SCHEMA_FALLBACK_MIGRATION = r"^This import retained legacy values for applied b
 
 
 @contextlib.contextmanager
-def assert_schema_fallback_migration(*additional_warnings: tuple[type[Warning], str]):
-    """Require the schema-fallback migration warning without hiding others."""
-    expected = ((DeprecationWarning, _SCHEMA_FALLBACK_MIGRATION), *additional_warnings)
+def _assert_only_warnings(*expected: tuple[type[Warning], str]):
     with warnings.catch_warnings(record=True) as caught:
         for category, message in expected:
             warnings.filterwarnings("always", message=message, category=category)
@@ -75,6 +73,23 @@ def assert_schema_fallback_migration(*additional_warnings: tuple[type[Warning], 
     ]
     if unexpected:
         raise AssertionError(f"Unexpected warnings: {[str(warning.message) for warning in unexpected]}")
+
+
+@contextlib.contextmanager
+def assert_schema_fallback_migration(*additional_warnings: tuple[type[Warning], str]):
+    """Require the schema-fallback migration warning without hiding others."""
+    with _assert_only_warnings(
+        (DeprecationWarning, _SCHEMA_FALLBACK_MIGRATION),
+        *additional_warnings,
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def assert_no_schema_fallback_migration(*expected_warnings: tuple[type[Warning], str]):
+    """Reject migration and unexpected warnings."""
+    with _assert_only_warnings(*expected_warnings):
+        yield
 
 
 @contextlib.contextmanager

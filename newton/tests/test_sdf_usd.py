@@ -24,6 +24,7 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import (
     add_function_test,
+    assert_no_schema_fallback_migration,
     assert_schema_fallback_migration,
     get_selected_cuda_test_devices,
 )
@@ -230,7 +231,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with assert_schema_fallback_migration():
+            with assert_no_schema_fallback_migration():
                 result = builder.add_usd(str(usd_path))
             psm = result["path_shape_map"]
 
@@ -332,7 +333,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with assert_schema_fallback_migration():
+            with assert_no_schema_fallback_migration():
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
@@ -367,7 +368,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with assert_schema_fallback_migration():
+            with assert_no_schema_fallback_migration():
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
@@ -396,7 +397,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with assert_schema_fallback_migration():
+            with assert_no_schema_fallback_migration():
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
 
@@ -592,7 +593,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with assert_schema_fallback_migration((UserWarning, ".*physics:approximation.*ignored")):
+            with assert_no_schema_fallback_migration((UserWarning, ".*physics:approximation.*ignored")):
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             # SDF configuration must survive the ignored approximation.
@@ -646,7 +647,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             builder.default_shape_cfg.is_hydroelastic = True
-            with assert_schema_fallback_migration():
+            with assert_no_schema_fallback_migration():
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
@@ -673,7 +674,7 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             # Must not raise: target_voxel_size and max_resolution are mutually exclusive.
-            with assert_schema_fallback_migration():
+            with assert_no_schema_fallback_migration():
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
@@ -704,7 +705,7 @@ class TestSDFUSDParsing(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            with assert_schema_fallback_migration():
+            with assert_no_schema_fallback_migration():
                 result = builder.add_usd(str(usd_path))
             s1 = result["path_shape_map"]["/World/Body1/CollisionSphere"]
 
