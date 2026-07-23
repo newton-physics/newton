@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         ConfigBase,
         ConstrainedDynamicsConfig,
         ConstraintStabilizationConfig,
+        DVISolverConfig,
         ForwardKinematicsSolverConfig,
         MaterialManagerConfig,
         PADMMSolverConfig,
@@ -57,9 +58,11 @@ class SolverKamino(SolverBase, CouplingInterface):
     A physics solver for simulating constrained multi-body systems containing kinematic loops,
     under-/overactuation, joint-limits, hard frictional contacts and restitutive impacts.
 
-    This solver uses the Proximal-ADMM algorithm to solve the forward dynamics formulated
-    as a Nonlinear Complementarity Problem (NCP) over the set of bilateral kinematic joint
-    constraints and unilateral constraints that include joint-limits and contacts.
+    Forward dynamics are formulated as a Nonlinear Complementarity Problem (NCP)
+    over bilateral kinematic joint constraints and unilateral joint-limit and
+    contact constraints. The default PADMM backend solves this problem with
+    Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
+    bilateral block solve.
 
     This solver is currently in Beta.
 
@@ -105,9 +108,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         A container to hold all configurations of the :class:`SolverKamino` solver.
         """
 
-        sparse_jacobian: bool = False
+        sparse_jacobian: bool | None = None
         """
-        Flag to indicate whether the solver should use sparse data representations for the Jacobian.
+        Whether to use a sparse Jacobian representation. When unspecified, defaults to `True` for DVI and `False`
+        for PADMM.
         """
 
         sparse_dynamics: bool = False
@@ -156,8 +160,15 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         padmm: PADMMSolverConfig | None = None
         """
-        Configurations for the dynamics solver.\n
+        Configurations for the PADMM dynamics solver.\n
         See :class:`PADMMSolverConfig` for more details.\n
+        If `None`, default values will be used.
+        """
+
+        dvi: DVISolverConfig | None = None
+        """
+        Configurations for the DVI dynamics solver.\n
+        See :class:`DVISolverConfig` for more details.\n
         If `None`, default values will be used.
         """
 
@@ -187,6 +198,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         The time-integrator to use for state integration.\n
         See available options in the `integrators` module.\n
         Defaults to `"euler"`.
+        """
+
+        dynamics_solver: Literal["padmm", "dvi"] = "padmm"
+        """
+        The forward dynamics solver to use. Construct the config with this value
+        so solver-dependent defaults are initialized consistently. Defaults to
+        `"padmm"`.
         """
 
         angular_velocity_damping: float = 0.0
@@ -232,6 +250,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             config.ConstrainedDynamicsConfig.register_custom_attributes(builder)
             config.CollisionDetectorConfig.register_custom_attributes(builder)
             config.PADMMSolverConfig.register_custom_attributes(builder)
+            config.DVISolverConfig.register_custom_attributes(builder)
             config.MaterialManagerConfig.register_custom_attributes(builder)
 
             # Register KaminoSceneAPI custom attributes for each individual solver-level configurations
@@ -285,13 +304,24 @@ class SolverKamino(SolverBase, CouplingInterface):
                 "constraints": config.ConstraintStabilizationConfig,
                 "dynamics": config.ConstrainedDynamicsConfig,
                 "padmm": config.PADMMSolverConfig,
+                "dvi": config.DVISolverConfig,
                 "fk": config.ForwardKinematicsSolverConfig,
                 "materials": config.MaterialManagerConfig,
             }
             for attr_name, config_cls in subconfigs.items():
                 nested_config = kwargs.get(attr_name, None)
-                nested_kwargs = nested_config.__dict__ if nested_config is not None else {}
+                if nested_config is not None:
+                    nested_kwargs = nested_config.__dict__
+                elif cfg.dynamics_solver == "dvi" and attr_name in {"dynamics", "dvi"}:
+                    nested_kwargs = getattr(cfg, attr_name).__dict__
+                else:
+                    nested_kwargs = {}
                 setattr(cfg, attr_name, config_cls.from_model(model, **nested_kwargs))
+
+            if cfg.dynamics_solver == "dvi" and "dynamics" not in kwargs:
+                cfg.dynamics.preconditioning = False
+
+            cfg.validate()
 
             # Return the fully constructed config with sub-configurations
             # parsed from the model's custom attributes if available,
@@ -320,6 +350,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                 raise ValueError("Constrained dynamics config cannot be None.")
             elif self.padmm is None:
                 raise ValueError("PADMM solver config cannot be None.")
+            elif self.dvi is None:
+                raise ValueError("DVI solver config cannot be None.")
 
             # Validate specialized sub-configurations
             # using their own built-in validations
@@ -330,7 +362,19 @@ class SolverKamino(SolverBase, CouplingInterface):
             self.constraints.validate()
             self.dynamics.validate()
             self.padmm.validate()
+            self.dvi.validate()
             self.materials.validate()
+
+            supported_dynamics_solvers = {"padmm", "dvi"}
+            if self.dynamics_solver not in supported_dynamics_solvers:
+                raise ValueError(
+                    f"Invalid dynamics solver: {self.dynamics_solver}. Must be one of {supported_dynamics_solvers}."
+                )
+            if self.dynamics_solver == "dvi" and self.dynamics.preconditioning:
+                raise ValueError(
+                    "The DVI solver currently requires `dynamics.preconditioning=False` so convergence checks and "
+                    "contact cone updates stay in physical constraint units."
+                )
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
@@ -355,6 +399,9 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Import here to avoid module-level imports and circular dependencies
             from . import config  # noqa: PLC0415
 
+            if self.sparse_jacobian is None:
+                self.sparse_jacobian = self.dynamics_solver == "dvi"
+
             # Default-initialize any sub-configurations that were not explicitly provided by the user
             if self.collision_detector is None and self.use_collision_detector:
                 self.collision_detector = config.CollisionDetectorConfig()
@@ -363,9 +410,33 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self.constraints is None:
                 self.constraints = config.ConstraintStabilizationConfig()
             if self.dynamics is None:
-                self.dynamics = config.ConstrainedDynamicsConfig()
+                if self.dynamics_solver == "dvi" and self.sparse_dynamics:
+                    self.dynamics = config.ConstrainedDynamicsConfig(
+                        preconditioning=False,
+                        linear_solver_type="CR",
+                        linear_solver_kwargs={"maxiter": 9},
+                    )
+                elif self.dynamics_solver == "dvi":
+                    self.dynamics = config.ConstrainedDynamicsConfig(
+                        preconditioning=False,
+                        linear_solver_type="LLTBRCM",
+                    )
+                else:
+                    self.dynamics = config.ConstrainedDynamicsConfig()
             if self.padmm is None:
                 self.padmm = config.PADMMSolverConfig()
+            if self.dvi is None:
+                if self.dynamics_solver == "dvi" and self.sparse_dynamics:
+                    self.dvi = config.DVISolverConfig(
+                        omega=0.3,
+                        block_iterations=16,
+                        contact_iterations=2,
+                        bilateral_solve_period=2,
+                        contact_jacobi_omega=0.45,
+                        contact_jacobi_relaxation=0.9,
+                    )
+                else:
+                    self.dvi = config.DVISolverConfig()
             if self.materials is None:
                 self.materials = config.MaterialManagerConfig()
 
