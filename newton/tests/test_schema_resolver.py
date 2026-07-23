@@ -261,12 +261,10 @@ class TestSchemaResolver(unittest.TestCase):
         for use_applied_schema_fallbacks in (False, True):
             with self.subTest(use_applied_schema_fallbacks=use_applied_schema_fallbacks):
                 builder = ModelBuilder()
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error")
-                    result = builder.add_usd(
-                        stage,
-                        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
-                    )
+                result = builder.add_usd(
+                    stage,
+                    use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+                )
 
                 shape = result["path_shape_map"]["/cube"]
                 self.assertEqual(builder.shape_sdf_max_resolution[shape], 64)

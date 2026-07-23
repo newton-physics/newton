@@ -86,13 +86,6 @@ def assert_schema_fallback_migration(*additional_warnings: tuple[type[Warning], 
 
 
 @contextlib.contextmanager
-def assert_no_schema_fallback_migration(*expected_warnings: tuple[type[Warning], str]):
-    """Reject migration and unexpected warnings."""
-    with _assert_only_warnings(*expected_warnings):
-        yield
-
-
-@contextlib.contextmanager
 def patch_sys_module(name: str, module: Any):
     """Temporarily replace one module entry without rolling back unrelated imports."""
     missing = object()

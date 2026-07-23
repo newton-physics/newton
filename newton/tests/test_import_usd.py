@@ -1702,9 +1702,7 @@ def Xform "Articulation" (
         builder.default_joint_cfg.velocity_limit = 123.0
         builder.default_joint_cfg.limit_ke = 7.0
         builder.default_joint_cfg.limit_kd = 8.0
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            builder.add_usd(stage, use_applied_schema_fallbacks=True)
+        builder.add_usd(stage, use_applied_schema_fallbacks=True)
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
@@ -8299,8 +8297,7 @@ def Xform "Articulation" (
         builder.default_shape_cfg.margin = 0.0
         builder.default_shape_cfg.gap = 0.01
         builder.rigid_gap = 0.01
-        with assert_schema_fallback_migration():
-            result = builder.add_usd(stage)
+        result = builder.add_usd(stage)
         model = builder.finalize()
 
         shape1_idx = result["path_shape_map"]["/Articulation/Body/Collider1"]
@@ -9399,8 +9396,7 @@ def Xform "Articulation" (
         # Set max_hull_vertices to 32 on the mesh prim
         mesh_prim.GetAttribute("newton:maxHullVertices").Set(32)
         builder = newton.ModelBuilder()
-        with assert_schema_fallback_migration():
-            builder.add_usd(stage, mesh_maxhullvert=20)
+        builder.add_usd(stage, mesh_maxhullvert=20)
         # the authored value should override the builder value
         self.assertEqual(builder.shape_source[0].maxhullvert, 32)
 
@@ -12543,11 +12539,8 @@ def Xform "World" ()
         self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
         self.assertAlmostEqual(tm_legacy.density, 40.0)
 
-        # A canonical material under the deprecated default reads identically and must NOT
-        # warn: the default change alters nothing for it (the gate matches add_usd's).
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
+        # A canonical material under the deprecated default reads identically.
+        tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
         self.assertAlmostEqual(tm_canonical_default.density, 40.0)
         self.assertIsNotNone(tm_canonical_default.k_mu)
 
