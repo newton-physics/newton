@@ -30,7 +30,7 @@ jobs:
 
       - name: Validate changelog contribution
         env:
-          ALLOW_CHANGELOG_UPDATE: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'changelog-maintenance') }}
+          ALLOW_CHANGELOG_UPDATE: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release-management') }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_NAME: ${{ github.event_name }}
           TARGET_BRANCH: ${{ github.event.pull_request.base.ref }}

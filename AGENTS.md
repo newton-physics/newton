@@ -65,7 +65,7 @@ uvx --with virtualenv asv run --launch-method spawn main^!
   `scripts/changelog.py release`, which strips provenance comments from the dated public section; post-release
   synchronization to `main` uses `scripts/changelog.py reconcile`. Add `--dry-run` to any of these commands to preview
   without editing files or consuming fragments. Commit each mutating operation in a changelog-only pull request labeled
-  `changelog-maintenance`.
+  `release-management`.
 - Run `uv run --no-project python scripts/changelog.py validate` after editing fragments.
 - If you want to annotate a changelog entry with a GitHub link following the #xxxx format, you must use the number of the pull request, not the issue number.
 

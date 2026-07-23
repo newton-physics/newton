@@ -7,7 +7,7 @@
 
 - [ ] New or existing tests cover these changes
 - [ ] The documentation is up to date with these changes
-- [ ] Added one `changelog.d/*.md` fragment or justified `.skip`, or labeled this `changelog-maintenance`
+- [ ] Added one `changelog.d/*.md` fragment or justified `.skip`, or labeled this `release-management`
 
 ## Test plan
 

@@ -60,7 +60,7 @@ uv run --no-project python scripts/changelog.py build
 `build` merges pending fragments into `[Unreleased]`, deduplicates exact
 entries, consumes `.md` and `.skip` files, and leaves all dated sections
 unchanged. Commit the result in a changelog-only PR labeled
-`changelog-maintenance`. Later pull requests continue adding fragments, and a
+`release-management`. Later pull requests continue adding fragments, and a
 later build extends the existing accumulator.
 
 ## Promote the final release
@@ -78,7 +78,7 @@ uv run --no-project python scripts/changelog.py release \
 fragments, resets `[Unreleased]`, inserts the dated section above older
 releases, strips internal provenance comments from that public section, and
 consumes pending fragments. Review the complete diff in a changelog-only PR
-labeled `changelog-maintenance`.
+labeled `release-management`.
 
 ## Reconcile to main
 
@@ -94,7 +94,7 @@ uv run --no-project python scripts/changelog.py reconcile \
 The command imports the exact tagged release, removes released entries from
 main's `[Unreleased]` accumulator and pending fragments, consolidates remaining
 main-only fragments, and preserves post-cut entries for the next release. Open
-the result as a changelog-only PR labeled `changelog-maintenance`.
+the result as a changelog-only PR labeled `release-management`.
 
 Do not replace `CHANGELOG.md` with the release-branch copy or blindly
 cherry-pick a promotion commit over a diverged main accumulator.

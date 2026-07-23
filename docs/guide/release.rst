@@ -168,7 +168,7 @@ merge is appropriate only when every intervening commit belongs in the release.
 
 Preview the complete ``[Unreleased]`` accumulator plus pending fragments on
 ``release-X.Y`` during release audits.  Fragments may be consolidated into
-``[Unreleased]`` at any time in a changelog-maintenance pull request.  Promote
+``[Unreleased]`` at any time in a release-management pull request.  Promote
 the complete accumulator for GA and reconcile the tagged release to ``main``
 afterward, as described in :ref:`post-release`.
 
@@ -256,7 +256,7 @@ otherwise.
        YYYY-MM-DD``.  Commit any editorial accumulator changes before running
        the promotion so provenance is recoverable from Git history.  Commit
        ``CHANGELOG.md`` and any consumed fragment
-       deletions in a pull request labeled ``changelog-maintenance`` before
+       deletions in a pull request labeled ``release-management`` before
        preparing the final version.  The ``release-changelog`` skill can assist
        with the audit and promotion.
    * - ☐
@@ -336,7 +336,7 @@ Post-release
      - On a changelog-only branch from current ``main``, run ``uv run
        --no-project python scripts/changelog.py reconcile --source-ref vX.Y.Z
        --version X.Y.Z`` and merge the result in a pull request labeled
-       ``changelog-maintenance``.  This imports the tagged release, removes
+       ``release-management``.  This imports the tagged release, removes
        released entries and fragments from ``[Unreleased]``, and retains
        main-only post-cut entries for the next release.  The
        ``release-changelog`` skill can assist with reconciliation.

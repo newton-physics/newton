@@ -44,7 +44,7 @@ reviews:
     - path: "CHANGELOG.md"
       instructions: |
         Direct changes are allowed only for the one-time workflow transition or
-        a changelog-maintenance pull request. Verify [Unreleased] retains all
+        a release-management pull request. Verify [Unreleased] retains all
         prior accumulated entries plus consolidated fragments, dated release
         history is unchanged, generated changelog-fragment comments are
         preserved only in [Unreleased] and absent from dated public releases,

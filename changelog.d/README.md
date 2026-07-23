@@ -100,4 +100,4 @@ uv run --no-project python scripts/changelog.py reconcile --source-ref vX.Y.Z --
 uv run --no-project python scripts/changelog.py reconcile --source-ref vX.Y.Z --version X.Y.Z
 ```
 
-Commit each mutating operation in a changelog-only pull request labeled `changelog-maintenance`.
+Commit each mutating operation in a changelog-only pull request labeled `release-management`.
