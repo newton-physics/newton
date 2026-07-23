@@ -123,6 +123,8 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | N
                 vmax = vmax + np.max(np.abs(src.scales), axis=0) * scale_arr
             return float(np.linalg.norm(vmax))
         return 10.0
+    elif geo_type == GeoType.CAMERA:
+        return 0.0
     else:
         return 10.0
 

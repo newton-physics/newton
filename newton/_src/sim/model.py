@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+    from ..sensors.camera_sensor_renderer import RenderContext
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -775,6 +776,8 @@ class Model:
         """Particle adhesion strength [m]."""
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
+        self.render_context: RenderContext | None = None
+        """Shared render context used by shape-backed camera sensors."""
         self.particle_flags: wp.array[wp.int32] | None = None
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
@@ -2055,6 +2058,32 @@ class Model:
             self, state, self.bvh_particles.lowers, self.bvh_particles.uppers, self.bvh_particles.groups
         )
         self.bvh_particles.refit()
+
+    def init_render_context(self, load_textures: bool = True) -> RenderContext:
+        """Initialize the shared render context for shape-backed camera sensors.
+
+        Args:
+            load_textures: Load mesh textures.
+
+        Returns:
+            Shared render context.
+        """
+        from ..sensors.camera_sensor_renderer import RenderContext  # noqa: PLC0415
+
+        if self.render_context is None:
+            self.render_context = RenderContext(world_count=self.world_count, device=self.device)
+            self.render_context.init_from_model(self, load_textures)
+
+        return self.render_context
+
+    def update_render_context(self, state: State) -> None:
+        """Synchronize the shared render context for shape-backed camera sensors.
+
+        Args:
+            state: Current simulation state with body and particle transforms.
+        """
+        self.init_render_context()
+        self.render_context.update(self, state)
 
     def state(self, requires_grad: bool | None = None) -> State:
         """

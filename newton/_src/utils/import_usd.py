@@ -34,6 +34,7 @@ import warp as wp
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
+from ..sensors.camera_sensor import CameraSensor
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
@@ -69,6 +70,7 @@ logger = logging.getLogger("newton")
 AttributeFrequency = Model.AttributeFrequency
 
 _NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
+DEFAULT_CAMERA_RESOLUTION = (640, 480)
 
 # Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
 _HARD_LIMIT_KE = 1.0e8
@@ -222,6 +224,7 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
+    load_cameras: bool = True,
     return_deformable_results: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -318,10 +321,11 @@ def parse_usd(
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
-        load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
-        load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
-        hide_collision_shapes: If True, collision shapes on bodies that already
-            have visual-only geometry are hidden unconditionally, regardless of
+            load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+            load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+            load_cameras: If True, perspective ``UsdGeom.Camera`` prims are loaded as shape-backed camera sensors. Default is True.
+            hide_collision_shapes: If True, collision shapes on bodies that already
+                have visual-only geometry are hidden unconditionally, regardless of
             whether the collider has authored PBR material data. Default is False.
         force_show_colliders: If True, collision shapes get the VISIBLE flag
             regardless of whether visual shapes exist on the same body. Note that
@@ -396,6 +400,8 @@ def parse_usd(
               - Mapping from prim path (str) of a joint prim (e.g. that implements the PhysicsJointAPI) to the respective joint index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_map"``
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
+            * - ``"path_camera_map"``
+              - Mapping from prim path (str) of a perspective ``UsdGeom.Camera`` prim to its camera shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
             * - ``"path_cable_map"``
@@ -566,6 +572,8 @@ def parse_usd(
     path_body_map: dict[str, int] = {}
     # mapping from prim path to shape index in ModelBuilder
     path_shape_map: dict[str, int] = {}
+    # mapping from camera prim path to shape index in ModelBuilder
+    path_camera_map: dict[str, int] = {}
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
@@ -1173,6 +1181,69 @@ def parse_usd(
     def _has_visual_material_properties(material_props: dict[str, Any]) -> bool:
         # Require PBR-like material cues to avoid promoting generic displayColor-only colliders.
         return any(material_props.get(key) is not None for key in ("texture", "roughness", "metallic"))
+
+    def _usd_camera_fov(camera: UsdGeom.Camera, time_code: Usd.TimeCode) -> float:
+        focal_length = camera.GetFocalLengthAttr().Get(time_code)
+        vertical_aperture = camera.GetVerticalApertureAttr().Get(time_code)
+        if focal_length is None or vertical_aperture is None:
+            return math.radians(45.0)
+
+        focal_length = float(focal_length)
+        vertical_aperture = float(vertical_aperture)
+        if focal_length <= 0.0 or vertical_aperture <= 0.0:
+            warnings.warn(
+                f"{camera.GetPrim().GetPath()}: invalid USD camera focal/aperture values; using 45 degree FOV.",
+                stacklevel=_external_stacklevel(),
+            )
+            return math.radians(45.0)
+
+        return 2.0 * math.atan(0.5 * vertical_aperture / focal_length)
+
+    def _add_camera_shape(prim: Usd.Prim) -> int | None:
+        path = str(prim.GetPath())
+        if path.startswith("/Prototypes/") or any(re.match(pattern, path) for pattern in ignore_paths):
+            return None
+
+        usd_camera = UsdGeom.Camera(prim)
+        time_code = Usd.TimeCode.Default()
+        if usd_camera.GetProjectionAttr().Get(time_code) == UsdGeom.Tokens.orthographic:
+            warnings.warn(
+                f"Skipping orthographic USD camera {path}",
+                UserWarning,
+                stacklevel=_external_stacklevel(),
+            )
+            return None
+
+        cam_world_xform = incoming_world_xform * usd.get_transform(prim, local=False, xform_cache=xform_cache)
+        body = -1
+        ancestor = prim.GetParent()
+        while ancestor and ancestor.IsValid() and ancestor.GetPath() != stage.GetPseudoRoot().GetPath():
+            ancestor_path = str(ancestor.GetPath())
+            if ancestor_path in path_body_map:
+                body = path_body_map[ancestor_path]
+                break
+            ancestor = ancestor.GetParent()
+
+        if body >= 0:
+            body_xform = wp.transform(*builder.body_q[body])
+            camera_xform = wp.transform_inverse(body_xform) * cam_world_xform
+        else:
+            camera_xform = cam_world_xform
+
+        width, height = DEFAULT_CAMERA_RESOLUTION
+        camera_rays = CameraSensor.compute_camera_rays_pinhole(
+            width,
+            height,
+            _usd_camera_fov(usd_camera, time_code),
+            device="cpu",
+        )
+        camera_sensor = CameraSensor(camera_rays)
+        return builder.add_shape_camera(
+            body=body,
+            xform=camera_xform,
+            camera=camera_sensor,
+            label=path,
+        )
 
     def _is_effectively_visible(prim: Usd.Prim) -> bool:
         """Return whether ``prim`` is effectively visible in USD.
@@ -4781,6 +4852,20 @@ def parse_usd(
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
 
+    if load_cameras:
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path), Usd.TraverseInstanceProxies()):
+            if not prim.IsA(UsdGeom.Camera):
+                continue
+            shape_id = _add_camera_shape(prim)
+            if shape_id is None:
+                continue
+            path = str(prim.GetPath())
+            path_camera_map[path] = shape_id
+            path_shape_map[path] = shape_id
+            path_shape_scale[path] = wp.vec3(1.0, 1.0, 1.0)
+            if verbose:
+                print(f"Added camera shape {path} with id {shape_id}.")
+
     result = {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
@@ -4788,6 +4873,7 @@ def parse_usd(
         "path_body_map": path_body_map,
         "path_joint_map": path_joint_map,
         "path_shape_map": path_shape_map,
+        "path_camera_map": path_camera_map,
         "path_shape_scale": path_shape_scale,
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
