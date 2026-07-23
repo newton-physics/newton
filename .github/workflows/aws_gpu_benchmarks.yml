@@ -137,13 +137,16 @@ jobs:
 
       - name: Run Benchmarks
         run: |
-          # ASV assumes smaller values are better, so compare only metrics with that direction.
+          # Gate this PR job on directly measured runtimes only.
           uvx --with virtualenv asv continuous \
             --launch-method spawn \
             --interleave-rounds \
             --append-samples \
             --no-only-changed \
-            -e -b '^(?!.*track_(simulation_steps_per_second|real_time_factor)).*Fast' \
+            -e \
+            -b 'Fast\w*\.time_' \
+            -b 'Fast(?!NewtonOverhead)\w*\.track_simulate(\(|$)' \
+            -b 'Fast\w*\.track_(mean|p95)_\w*(time|ms)(\(|$)' \
             ${{ inputs.base_ref }} \
             ${{ inputs.ref }}
         continue-on-error: true

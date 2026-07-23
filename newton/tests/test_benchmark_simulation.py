@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -182,6 +183,40 @@ class TestSimulationBenchmarks(unittest.TestCase):
         """Give the DR Legs cache longer than ASV's default timeout."""
         config = json.loads((BENCHMARK_DIR.parents[1] / "asv.conf.json").read_text(encoding="utf-8"))
         self.assertGreater(bench_kamino.KpiDRLegs.setup_cache.timeout, config["default_benchmark_timeout"])
+
+    def test_aws_benchmark_comparison_gates_only_runtime_metrics(self):
+        """Gate PR comparisons on runtime while retaining dashboard metrics."""
+        workflow_path = BENCHMARK_DIR.parents[1] / ".github" / "workflows" / "aws_gpu_benchmarks.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        patterns = tuple(re.compile(selection) for selection in re.findall(r"-b '([^']+)'", workflow))
+        self.assertTrue(patterns)
+
+        blocking_benchmarks = (
+            "simulation.bench_mujoco.FastG1.track_simulate(8192)",
+            "simulation.bench_mujoco.FastG1.track_p95_step_time(8192)",
+            "simulation.bench_anymal.FastMetricsExampleAnymalPretrained.track_mean_world_step_time",
+            "simulation.bench_teleop_mujoco.FastTeleopMuJoCo.track_mean_loop_ms('graph')",
+            "simulation.bench_kamino.FastDRLegs.time_simulate",
+            "simulation.bench_viewer.FastViewerGL.time_rendering_frame('g1', 256)",
+        )
+        dashboard_benchmarks = (
+            "simulation.bench_mujoco.FastG1.track_solver_niter_mean(8192)",
+            "simulation.bench_mujoco.FastG1.track_solver_niter_max(8192)",
+            "simulation.bench_mujoco.FastG1.track_simulation_steps_per_second(8192)",
+            "simulation.bench_mujoco.FastG1.track_real_time_factor(8192)",
+            "simulation.bench_mujoco.FastG1.track_steady_state_gpu_memory(8192)",
+            "simulation.bench_mujoco.FastG1.track_sim_dt(8192)",
+            "simulation.bench_mujoco.FastG1.track_sim_substeps(8192)",
+            "simulation.bench_mujoco.FastNewtonOverheadG1.track_simulate(8192)",
+            "simulation.bench_teleop_mujoco.TeleopMuJoCo.track_frame_overrun_pct('graph')",
+        )
+
+        for benchmark in blocking_benchmarks:
+            with self.subTest(benchmark=benchmark):
+                self.assertTrue(any(pattern.search(benchmark) for pattern in patterns), benchmark)
+        for benchmark in dashboard_benchmarks:
+            with self.subTest(benchmark=benchmark):
+                self.assertFalse(any(pattern.search(benchmark) for pattern in patterns), benchmark)
 
     def test_anymal_short_horizon_validation(self):
         """Validate short-horizon ANYmal posture and forward progress."""

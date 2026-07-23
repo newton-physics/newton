@@ -21,20 +21,29 @@ class Example:
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = max(1, round(self.frame_dt / 0.01))
-        self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
+        self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
         self.linear_solver_type = getattr(args, "linear_solver_type", "LLTB") if args else "LLTB"
         self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
+        target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "dvi" else 0.01
+        self.sim_substeps = max(1, round(self.frame_dt / target_sim_dt))
+        self.sim_dt = self.frame_dt / self.sim_substeps
+        # DVI benefits from early contact detection because it solves inequality
+        # constraints slightly less accurately than PADMM. Contact forces remain
+        # zero until the shapes overlap.
+        dvi_contact_margin = 5.0e-4 if self.dynamics_solver == "dvi" else 1e-6
+        self.dvi_contact_block_preconditioner = bool(getattr(args, "dvi_contact_block_preconditioner", False))
+        self.dvi_contact_jacobi_omega = float(getattr(args, "dvi_contact_jacobi_omega", 0.45))
+        self.dvi_contact_jacobi_relaxation = float(getattr(args, "dvi_contact_jacobi_relaxation", 0.9))
         self.viewer = viewer
         self.device = wp.get_device()
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
-        robot_builder.default_shape_cfg.margin = 1e-6
+        robot_builder.default_shape_cfg.margin = dvi_contact_margin
         robot_builder.default_shape_cfg.gap = 1e-2
 
         # Load the DR Legs USD and add it to the builder
@@ -54,7 +63,7 @@ class Example:
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         builder.request_contact_attributes("force")
-        builder.default_shape_cfg.margin = 1e-6
+        builder.default_shape_cfg.margin = dvi_contact_margin
         builder.default_shape_cfg.gap = 1e-2
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
@@ -64,10 +73,13 @@ class Example:
 
         # Create the model from the builder
         self.model = builder.finalize(skip_validation_joints=True)
-        self.model.rigid_contact_max = 72
+        self.model.rigid_contact_max = 72 * self.world_count
 
         # Create the Kamino solver for the given model
-        self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        self.config = newton.solvers.SolverKamino.Config.from_model(
+            self.model,
+            dynamics_solver=self.dynamics_solver,
+        )
         self.config.use_fk_solver = True
         self.config.use_collision_detector = self.use_kamino_contacts
         self.config.dynamics.linear_solver_type = self.linear_solver_type
@@ -78,6 +90,28 @@ class Example:
         self.config.padmm.dual_tolerance = 1e-4
         self.config.padmm.compl_tolerance = 1e-4
         self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
+        if self.dynamics_solver == "dvi":
+            self.config.use_fk_solver = False
+            self.config.integrator = "moreau"
+            self.config.constraints.alpha = 0.1
+            self.config.constraints.beta = 0.011
+            self.config.constraints.gamma = 0.015
+            self.config.dynamics.preconditioning = False
+            self.config.dynamics.linear_solver_type = "CR"
+            self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
+            self.config.sparse_dynamics = True
+            self.config.sparse_jacobian = True
+            self.config.dvi.max_iterations = 200
+            self.config.dvi.tolerance = 1e-4
+            self.config.dvi.regularization = 1e-5
+            self.config.dvi.omega = 0.3
+            self.config.dvi.block_iterations = 4
+            self.config.dvi.contact_iterations = 2
+            self.config.dvi.bilateral_solve_period = 1
+            self.config.dvi.contact_jacobi_omega = self.dvi_contact_jacobi_omega
+            self.config.dvi.contact_jacobi_relaxation = self.dvi_contact_jacobi_relaxation
+            self.config.dvi.contact_block_preconditioner = self.dvi_contact_block_preconditioner
+            self.config.dvi.contact_warmstart_method = "key_and_position_with_net_force_backup"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Set joint armature and viscous damping for better
@@ -120,6 +154,7 @@ class Example:
             base_pose=newton.solvers.SolverKamino.ResetConfig.FromBaseQ(base_q=self.base_q),
         )
         self.solver.reset(state=self.state_0, config=reset_config)
+        self.solver.reset(state=self.state_1, config=reset_config)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
@@ -175,6 +210,29 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
+        parser.add_argument(
+            "--dynamics-solver",
+            choices=("padmm", "dvi"),
+            default="padmm",
+            help="Kamino dynamics solver to use.",
+        )
+        parser.add_argument(
+            "--dvi-contact-block-preconditioner",
+            action="store_true",
+            help="Use the opt-in full 3x3 contact block preconditioner for the Kamino DVI solver.",
+        )
+        parser.add_argument(
+            "--dvi-contact-jacobi-omega",
+            type=float,
+            default=0.45,
+            help="Step size for Kamino DVI non-colored contact Jacobi and block-preconditioned contact updates.",
+        )
+        parser.add_argument(
+            "--dvi-contact-jacobi-relaxation",
+            type=float,
+            default=0.9,
+            help="Solution mixing for Kamino DVI non-colored contact Jacobi and block-preconditioned contact updates.",
+        )
         parser.add_argument(
             "--linear-solver-type",
             choices=("LLTB", "LLTBRCM", "CR"),
