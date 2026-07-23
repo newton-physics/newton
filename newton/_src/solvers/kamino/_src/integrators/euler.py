@@ -14,22 +14,9 @@ import warp as wp
 from .....core.types import override
 from ..core.control import ControlKamino
 from ..core.data import DataKamino
-from ..core.math import (
-    compute_body_pose_update_with_logmap,
-    compute_body_twist_update_with_eom,
-    screw,
-)
+from ..core.math import compute_body_pose_update_with_logmap, compute_body_twist_update_with_eom
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
-from ..core.types import (
-    float32,
-    int32,
-    mat33f,
-    transformf,
-    vec3f,
-    vec4f,
-    vec6f,
-)
 from ..geometry.contacts import ContactsKamino
 from ..geometry.detector import CollisionDetector
 from ..kinematics.limits import LimitsKamino
@@ -48,7 +35,7 @@ __all__ = ["IntegratorEuler"]
 ###
 
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -58,16 +45,16 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def euler_semi_implicit_with_logmap(
-    alpha: float32,
-    dt: float32,
-    g: vec3f,
-    inv_m_i: float32,
-    I_i: mat33f,
-    inv_I_i: mat33f,
-    p_i: transformf,
-    u_i: vec6f,
-    w_i: vec6f,
-) -> tuple[transformf, vec6f]:
+    alpha: wp.float32,
+    dt: wp.float32,
+    g: wp.vec3f,
+    inv_m_i: wp.float32,
+    I_i: wp.mat33f,
+    inv_I_i: wp.mat33f,
+    p_i: wp.transformf,
+    u_i: wp.spatial_vectorf,
+    w_i: wp.spatial_vectorf,
+) -> tuple[wp.transformf, wp.spatial_vectorf]:
     # Integrate the body twist using the maximal coordinate forward dynamics equations
     v_i_n, omega_i_n = compute_body_twist_update_with_eom(
         dt=dt,
@@ -91,7 +78,7 @@ def euler_semi_implicit_with_logmap(
     )
 
     # Return the new pose and twist
-    return p_i_n, screw(v_i_n, omega_i_n)
+    return p_i_n, wp.spatial_vectorf(*v_i_n, *omega_i_n)
 
 
 ###
@@ -103,16 +90,16 @@ def euler_semi_implicit_with_logmap(
 def _integrate_semi_implicit_euler_inplace(
     # Inputs:
     alpha: float,
-    model_dt: wp.array[float32],
-    model_gravity: wp.array[vec4f],
-    model_bodies_wid: wp.array[int32],
-    model_bodies_inv_m: wp.array[float32],
-    model_bodies_I: wp.array[mat33f],
-    model_bodies_inv_I: wp.array[mat33f],
-    state_bodies_w: wp.array[vec6f],
+    model_dt: wp.array[wp.float32],
+    model_gravity: wp.array[wp.vec4f],
+    model_bodies_wid: wp.array[wp.int32],
+    model_bodies_inv_m: wp.array[wp.float32],
+    model_bodies_I: wp.array[wp.mat33f],
+    model_bodies_inv_I: wp.array[wp.mat33f],
+    state_bodies_w: wp.array[wp.spatial_vectorf],
     # Outputs:
-    state_bodies_q: wp.array[transformf],
-    state_bodies_u: wp.array[vec6f],
+    state_bodies_q: wp.array[wp.transformf],
+    state_bodies_u: wp.array[wp.spatial_vectorf],
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -123,7 +110,7 @@ def _integrate_semi_implicit_euler_inplace(
     # Retrieve the time step and gravity vector
     dt = model_dt[wid]
     gv = model_gravity[wid]
-    g = gv.w * vec3f(gv.x, gv.y, gv.z)
+    g = gv.w * wp.vec3f(gv.x, gv.y, gv.z)
 
     # Retrieve the model data
     inv_m_i = model_bodies_inv_m[tid]
@@ -212,16 +199,14 @@ class IntegratorEuler(IntegratorBase):
         Initializes the Semi-Implicit Euler integrator with the given :class:`ModelKamino` instance.
 
         Args:
-            model (`ModelKamino`):
-                The model container holding the time-invariant parameters of the system being simulated.
-            alpha (`float`, optional):
-                The angular damping coefficient. Defaults to 0.0 if `None` is provided.
+            model: The model container holding the time-invariant parameters of the system being simulated.
+            alpha: The angular damping coefficient. Defaults to 0.0 if `None` is provided.
         """
         super().__init__(model)
 
         self._alpha: float = alpha if alpha is not None else 0.0
         """
-        Damping coefficient for angular velocity used to improve numerical stability of the integrator.\n
+        Damping coefficient for angular velocity used to improve numerical stability of the integrator.
         Defaults to `0.0`, corresponding to no damping being applied.
         """
 
@@ -247,26 +232,17 @@ class IntegratorEuler(IntegratorBase):
         to integrate the current state of the system over a single time-step.
 
         Args:
-            forward (`Callable`):
-                An operator that calls the underlying solver for the forward dynamics sub-problem.
-            model (`ModelKamino`):
-                The model container holding the time-invariant parameters of the system being simulated.
-            data (`DataKamino`):
-                The data container holding the time-varying parameters of the system being simulated.
-            state_in (`StateKamino`):
-                The state of the system at the current time-step.
-            state_out (`StateKamino`):
-                The state of the system at the next time-step.
-            control (`ControlKamino`):
-                The control inputs applied to the system at the current time-step.
-            limits (`LimitsKamino`, optional):
-                The joint limits of the system at the current time-step.
+            forward: An operator that calls the underlying solver for the forward dynamics sub-problem.
+            model: The model container holding the time-invariant parameters of the system being simulated.
+            data: The data container holding the time-varying parameters of the system being simulated.
+            state_in: The state of the system at the current time-step.
+            state_out: The state of the system at the next time-step.
+            control: The control inputs applied to the system at the current time-step.
+            limits: The joint limits of the system at the current time-step.
                 If `None`, no joint limits are considered for the current time-step.
-            contacts (`ContactsKamino`, optional):
-                The set of active contacts of the system at the current time-step.
+            contacts: The set of active contacts of the system at the current time-step.
                 If `None`, no contacts are considered for the current time-step.
-            detector (`CollisionDetector`, optional):
-                The collision detector to use for generating the set of active contacts at the current time-step.\n
+            detector: The collision detector to use for generating the set of active contacts at the current time-step.
                 If `None`, no collision detection is performed for the current time-step,
                 and active contacts must be provided via the `contacts` argument.
         """

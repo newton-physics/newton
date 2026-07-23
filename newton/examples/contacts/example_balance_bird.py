@@ -13,9 +13,6 @@
 
 from __future__ import annotations
 
-import math
-
-import numpy as np
 import warp as wp
 
 import newton
@@ -32,75 +29,11 @@ SUBSTEPS = {
     "xpbd": 10,
     "vbd": 10,
     "mujoco": 10,
-    "fs": 20,
+    "featherstone": 20,
     "kamino": 5,
 }
-SOLVER_CHOICES = ("xpbd", "vbd", "mujoco", "fs", "kamino")
+SOLVER_CHOICES = ("xpbd", "vbd", "mujoco", "featherstone", "kamino")
 NATIVE_CONTACT_SOLVERS = {"mujoco", "kamino"}
-
-
-def _validate_body_state(model: newton.Model, state: newton.State, *, max_abs_pos: float, min_z: float):
-    if state.body_q is None:
-        raise RuntimeError("Body state is not available.")
-    body_q = state.body_q.numpy()
-    if not np.all(np.isfinite(body_q)):
-        raise ValueError("NaN/Inf in body transforms.")
-    pos = body_q[:, 0:3]
-    if np.max(np.abs(pos)) > max_abs_pos:
-        raise ValueError(f"Body moved outside expected bounds for {model.body_count} bodies.")
-    if np.min(pos[:, 2]) < min_z:
-        raise ValueError("Body fell below the expected lower Z bound.")
-
-
-def _look_at_z_up(pos: wp.vec3, target: wp.vec3) -> tuple[float, float]:
-    dx = float(target[0] - pos[0])
-    dy = float(target[1] - pos[1])
-    dz = float(target[2] - pos[2])
-    length = math.sqrt(dx * dx + dy * dy + dz * dz)
-    pitch = math.degrees(math.asin(dz / length))
-    yaw = math.degrees(math.atan2(dy, dx))
-    return pitch, yaw
-
-
-def _set_camera_look_at(viewer, pos: wp.vec3, target: wp.vec3):
-    pitch, yaw = _look_at_z_up(pos, target)
-    viewer.set_camera(pos=pos, pitch=pitch, yaw=yaw)
-    camera = getattr(viewer, "camera", None)
-    if camera is not None and hasattr(camera, "look_at"):
-        camera.look_at(target)
-
-
-def _make_frustum_mesh(bottom_radius: float, top_radius: float, height: float, segments: int) -> newton.Mesh:
-    vertices: list[list[float]] = []
-    indices: list[int] = []
-
-    for i in range(segments):
-        angle = 2.0 * math.pi * i / segments
-        c = math.cos(angle)
-        s = math.sin(angle)
-        vertices.append([bottom_radius * c, bottom_radius * s, 0.0])
-        vertices.append([top_radius * c, top_radius * s, height])
-
-    bottom_center = len(vertices)
-    vertices.append([0.0, 0.0, 0.0])
-    top_center = len(vertices)
-    vertices.append([0.0, 0.0, height])
-
-    for i in range(segments):
-        n = (i + 1) % segments
-        b0 = 2 * i
-        t0 = 2 * i + 1
-        b1 = 2 * n
-        t1 = 2 * n + 1
-        indices.extend([b0, t0, b1, b1, t0, t1])
-        indices.extend([bottom_center, b0, b1])
-        indices.extend([top_center, t1, t0])
-
-    return newton.Mesh(
-        vertices=np.array(vertices, dtype=np.float32),
-        indices=np.array(indices, dtype=np.int32),
-        compute_inertia=False,
-    )
 
 
 class Example:
@@ -114,8 +47,7 @@ class Example:
         self.sim_substeps = SUBSTEPS[self.solver_name]
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        builder = newton.ModelBuilder()
-        builder.gravity = GRAVITY
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, GRAVITY))
         builder.rigid_gap = 0.001
         builder.default_shape_cfg.ke = 1.0e5
         builder.default_shape_cfg.kd = 0.0
@@ -124,12 +56,17 @@ class Example:
         builder.default_shape_cfg.restitution = 0.0
         builder.add_ground_plane(cfg=builder.default_shape_cfg.copy())
 
-        pedestal_mesh = _make_frustum_mesh(
-            PEDESTAL_BOTTOM_RADIUS, PEDESTAL_TOP_RADIUS, PEDESTAL_HEIGHT, PEDESTAL_SEGMENTS
+        pedestal_mesh = newton.Mesh.create_cylinder(
+            PEDESTAL_BOTTOM_RADIUS,
+            PEDESTAL_HEIGHT / 2.0,
+            up_axis=newton.Axis.Z,
+            segments=PEDESTAL_SEGMENTS,
+            top_radius=PEDESTAL_TOP_RADIUS,
+            compute_inertia=False,
         )
         builder.add_shape_mesh(
             -1,
-            xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=wp.quat_identity()),
+            xform=wp.transform(p=wp.vec3(0.0, 0.0, PEDESTAL_HEIGHT / 2.0), q=wp.quat_identity()),
             mesh=pedestal_mesh,
             cfg=builder.default_shape_cfg.copy(),
             color=wp.vec3(0.55, 0.48, 0.32),
@@ -192,13 +129,20 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
+        if self.solver_name in NATIVE_CONTACT_SOLVERS:
+            self.collision_pipeline = None
+            self.contacts = None
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
+
         if self.solver_name == "xpbd":
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10, enable_restitution=False)
         elif self.solver_name == "vbd":
             self.solver = newton.solvers.SolverVBD(self.model, iterations=10, rigid_contact_hard=False)
         elif self.solver_name == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=2048, nconmax=1024, cone="elliptic")
-        elif self.solver_name == "fs":
+        elif self.solver_name == "featherstone":
             self.solver = newton.solvers.SolverFeatherstone(self.model, angular_damping=0.0)
         elif self.solver_name == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(self.model)
@@ -209,14 +153,9 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
-        _set_camera_look_at(
-            self.viewer,
-            pos=wp.vec3(-0.42, -0.42, 0.28),
-            target=wp.vec3(0.02, 0.0, PEDESTAL_HEIGHT * 0.6),
-        )
+        self.viewer.set_camera(pos=wp.vec3(-0.42, -0.42, 0.28), pitch=-18.9, yaw=43.7)
 
         self.capture()
 
@@ -235,7 +174,7 @@ class Example:
             if self.solver_name in NATIVE_CONTACT_SOLVERS:
                 contacts = None
             else:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
                 contacts = self.contacts
             self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -248,7 +187,12 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        _validate_body_state(self.model, self.state_0, max_abs_pos=3.0, min_z=-0.5)
+        newton.examples.test_body_state(
+            self.model,
+            self.state_0,
+            "balance bird remains within scene bounds",
+            lambda q, qd: abs(q[0]) < 3.0 and abs(q[1]) < 3.0 and -0.5 < q[2] < 3.0,
+        )
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

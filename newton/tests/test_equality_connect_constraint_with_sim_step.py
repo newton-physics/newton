@@ -125,10 +125,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_link (body index 0 in Newton's list of bodies), fixed joint to world
@@ -194,7 +194,7 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
 
             _add_equality_constraint(
                 builder,
-                constraint_type=newton.EqType.CONNECT,
+                constraint_type=newton.solvers.SolverMuJoCo.EqType.CONNECT,
                 body1=connect_body_indices[0],
                 body2=connect_body_indices[1],
                 anchor=connect_anchor_leafbody1[w],
@@ -836,10 +836,10 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world
@@ -1312,10 +1312,10 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for _w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world

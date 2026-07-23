@@ -11,7 +11,6 @@ import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
-from newton._src.solvers.kamino._src.core.types import float32, int32
 from newton._src.solvers.kamino._src.linalg.linear import LinearSolverTypeToName as LinearSolverShorthand
 from newton._src.solvers.kamino._src.models.builders.utils import (
     add_ground_box,
@@ -28,7 +27,7 @@ from newton._src.solvers.kamino.examples import get_examples_output_path, run_he
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -39,23 +38,23 @@ wp.set_module_options({"enable_backward": False})
 @wp.kernel
 def _pd_control_callback(
     # Inputs:
-    decimation: int32,
-    model_info_joint_actuated_coords_offset: wp.array[int32],
-    model_info_joint_actuated_dofs_offset: wp.array[int32],
-    model_joints_wid: wp.array[int32],
-    model_joints_act_type: wp.array[int32],
-    model_joint_coords_offset: wp.array[int32],
-    model_joint_dofs_offset: wp.array[int32],
-    model_joint_actuated_coords_offset: wp.array[int32],
-    model_joint_actuated_dofs_offset: wp.array[int32],
-    data_time_steps: wp.array[int32],
-    animation_frame: wp.array[int32],
-    animation_q_j_ref: wp.array2d[float32],
-    animation_dq_j_ref: wp.array2d[float32],
+    decimation: wp.int32,
+    model_info_joint_actuated_coords_offset: wp.array[wp.int32],
+    model_info_joint_actuated_dofs_offset: wp.array[wp.int32],
+    model_joints_wid: wp.array[wp.int32],
+    model_joints_act_type: wp.array[wp.int32],
+    model_joint_coords_offset: wp.array[wp.int32],
+    model_joint_dofs_offset: wp.array[wp.int32],
+    model_joint_actuated_coords_offset: wp.array[wp.int32],
+    model_joint_actuated_dofs_offset: wp.array[wp.int32],
+    data_time_steps: wp.array[wp.int32],
+    animation_frame: wp.array[wp.int32],
+    animation_q_j_ref: wp.array2d[wp.float32],
+    animation_dq_j_ref: wp.array2d[wp.float32],
     # Outputs:
-    control_q_j_ref: wp.array[float32],
-    control_dq_j_ref: wp.array[float32],
-    control_tau_j_ref: wp.array[float32],
+    control_q_j_ref: wp.array[wp.float32],
+    control_dq_j_ref: wp.array[wp.float32],
+    control_tau_j_ref: wp.array[wp.float32],
 ):
     """
     A kernel to compute joint-space PID control outputs for force-actuated joints.
@@ -112,7 +111,7 @@ def pd_control_callback(sim: Simulator, animation: AnimationJointReference, deci
         dim=sim.model.size.sum_of_num_joints,
         inputs=[
             # Inputs
-            int32(decimation),
+            wp.int32(decimation),
             sim.model.info.joint_actuated_coords_offset,
             sim.model.info.joint_actuated_dofs_offset,
             sim.model.joints.wid,

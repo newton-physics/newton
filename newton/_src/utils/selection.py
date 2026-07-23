@@ -1,7 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import functools
+import re
+import warnings
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -9,7 +13,18 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 from warp.types import is_array
 
-from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
+from ..sim import (
+    Control,
+    JointType,
+    Model,
+    State,
+    eval_fk,
+    eval_inverse_dynamics_force,
+    eval_inverse_dynamics_passive,
+    eval_jacobian,
+    eval_mass_matrix,
+)
+from .deprecation import deprecate_nonkeyword_arguments
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -379,44 +394,64 @@ def get_name_from_label(label: str):
     return label.rsplit("/", maxsplit=1)[-1]
 
 
-def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
+def find_matching_ids(
+    pattern: str | list[str] | re.Pattern[str] | list[int],
+    labels: list[str],
+    world_ids,
+    world_count: int,
+) -> tuple[list[list[int]], list[int]]:
+    matching_ids = match_labels(labels, pattern)
+
+    if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
+        # ArticulationView derives its layouts from model order. String patterns already produce this order.
+        for idx in range(1, len(matching_ids)):
+            if matching_ids[idx] <= matching_ids[idx - 1]:
+                raise ValueError("Articulation indices must be unique and in ascending order")
+        if matching_ids[0] < 0 or matching_ids[-1] >= len(labels):
+            raise ValueError(f"Articulation indices must be in range [0, {len(labels)})")
+
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
-    for id, label in enumerate(labels):
-        if fnmatch(label, pattern):
-            world = world_ids[id]
-            if world == -1:
-                global_ids.append(id)
-            elif world >= 0 and world < world_count:
-                grouped_ids[world].append(id)
-            else:
-                raise ValueError(f"World index out of range: {world}")
+    for idx in matching_ids:
+        world = world_ids[idx]
+        if world == -1:
+            global_ids.append(idx)
+        elif world >= 0 and world < world_count:
+            grouped_ids[world].append(idx)
+        else:
+            raise ValueError(f"World index out of range: {world}")
     return grouped_ids, global_ids
 
 
-def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> list[int]:
+def match_labels(labels: list[str], pattern: str | list[str] | re.Pattern[str] | list[int]) -> list[int]:
     """Find indices of elements in ``labels`` that match ``pattern``.
 
     See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
 
     Args:
         labels: List of label strings to match against.
-        pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
-            A ``list[str]`` matches any pattern.
-            A ``list[int]`` is returned as-is (indices used directly).
-            Mixing ``str`` and ``int`` in the same list is not allowed.
+        pattern: Glob string, list of glob strings, compiled string regular expression,
+            or list of integer indices. Regular expressions use full matching. Integer
+            indices are returned as-is.
 
     Returns:
         Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
 
     Raises:
-        TypeError: If list elements are not all ``str`` or all ``int``.
+        TypeError: If the selector type is unsupported or list elements are not all
+            strings or all integers.
     """
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
+    if isinstance(pattern, re.Pattern):
+        return [idx for idx, label in enumerate(labels) if pattern.fullmatch(label) is not None]
+
     if not isinstance(pattern, list):
-        raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {type(pattern)}")
+        raise TypeError(
+            "Expected a glob string, list of glob strings, compiled string pattern, "
+            f"or list of int indices, got: {type(pattern)}"
+        )
 
     if len(pattern) == 0:
         return pattern
@@ -432,7 +467,7 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
         if not validation_failure:
             return pattern
     elif all(isinstance(item, str) for item in pattern):
-        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, item) for item in pattern)]
 
     types = {type(item).__name__ for item in pattern}
     raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
@@ -472,9 +507,17 @@ class ArticulationView:
     This is useful in RL and batched simulation workflows where a single policy or
     control routine operates on many parallel environments with consistent tensor shapes.
 
+    Methods that select articulations with a mask support per-world Boolean masks
+    with shape ``(world_count,)`` and per-articulation Boolean masks with shape
+    ``(world_count, count_per_world)``. Per-world masks select all articulations
+    in each selected world. :meth:`set_actuator_parameter` accepts only the
+    per-world layout. Masks provided as Warp arrays must be on the view's device.
+
     Example:
 
     .. code-block:: python
+
+        import re
 
         import newton
 
@@ -484,30 +527,48 @@ class ArticulationView:
         q_np[..., 0] = 0.0
         view.set_dof_positions(state, q_np)
 
+        regex_view = newton.selection.ArticulationView(
+            model,
+            pattern=re.compile(r"/World/envs/env_[0-9]+/Robot_(A|B|C)"),
+            include_links=re.compile(r"(LF|RF)_FOOT"),
+        )
+
     The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
-    and ``exclude_links`` parameters accept label patterns — see :ref:`label-matching`.
+    and ``exclude_links`` parameters accept label patterns or integer indices — see
+    :ref:`label-matching`. ``pattern`` is matched against full articulation labels.
+    Joint and link filters are matched against the final path component of each label.
 
     Args:
-        model (Model): The model containing the articulations.
-        pattern (str): Pattern to match articulation labels.
-        include_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to include.
-        exclude_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to exclude.
-        include_links (list[str] | list[int] | None): List of link names, patterns, or indices to include.
-        exclude_links (list[str] | list[int] | None): List of link names, patterns, or indices to exclude.
-        include_joint_types (list[int] | None): List of joint types to include.
-        exclude_joint_types (list[int] | None): List of joint types to exclude.
-        include_loop_closing_joints (bool): If True, include converted loop-closing joints.
-        verbose (bool | None): If True, prints selection summary.
+        model: The model containing the articulations.
+        pattern: Glob pattern, list of glob patterns, compiled regular-expression pattern,
+            or list of absolute articulation indices. Regular expressions use full matching.
+            Indices must be unique and in ascending order.
+        include_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to include. Unsorted integer indices are
+            deprecated and will be rejected in a future release.
+        exclude_joints: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of joint indices to exclude.
+        include_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to include. Unsorted integer indices are
+            deprecated and will be rejected in a future release.
+        exclude_links: Glob pattern, list of glob patterns, compiled regular-expression
+            pattern, or list of link indices to exclude.
+        include_joint_types: List of joint types to include.
+        exclude_joint_types: List of joint types to exclude.
+        include_loop_closing_joints: If True, include converted loop-closing joints.
+        verbose: If True, prints selection summary.
     """
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: Model,
-        pattern: str,
-        include_joints: list[str] | list[int] | None = None,
-        exclude_joints: list[str] | list[int] | None = None,
-        include_links: list[str] | list[int] | None = None,
-        exclude_links: list[str] | list[int] | None = None,
+        pattern: str | list[str] | re.Pattern[str] | list[int],
+        *,
+        include_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_joints: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        include_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        exclude_links: str | list[str] | re.Pattern[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
@@ -518,6 +579,20 @@ class ArticulationView:
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
+
+        for parameter_name, indices in (("include_joints", include_joints), ("include_links", include_links)):
+            if (
+                isinstance(indices, list)
+                and all(isinstance(index, int) for index in indices)
+                and any(indices[i] < indices[i - 1] for i in range(1, len(indices)))
+            ):
+                warnings.warn(
+                    f"Passing unsorted integer indices to ArticulationView({parameter_name}=...) is deprecated and "
+                    "will raise a ValueError in a future release. Sort the indices in ascending order before passing "
+                    "them.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
 
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()
@@ -777,9 +852,13 @@ class ArticulationView:
         else:
             joint_include_indices = set()
             if include_joints is not None:
-                joint_include_indices.update(
-                    idx for idx in match_labels(arti_joint_names, include_joints) if 0 <= idx < arti_joint_count
-                )
+                matching_joint_indices = match_labels(arti_joint_names, include_joints)
+                for index in matching_joint_indices:
+                    if index < 0 or index >= arti_joint_count:
+                        raise ValueError(
+                            f"include_joints indices must be in range [0, {arti_joint_count}), got {index}"
+                        )
+                joint_include_indices.update(matching_joint_indices)
             if include_joint_types is not None:
                 for idx in range(arti_joint_count):
                     if arti_joint_types[idx] in include_joint_types:
@@ -800,9 +879,11 @@ class ArticulationView:
         if include_links is None:
             link_include_indices = set(range(arti_link_count))
         else:
-            link_include_indices = {
-                idx for idx in match_labels(arti_link_names, include_links) if 0 <= idx < arti_link_count
-            }
+            matching_link_indices = match_labels(arti_link_names, include_links)
+            for index in matching_link_indices:
+                if index < 0 or index >= arti_link_count:
+                    raise ValueError(f"include_links indices must be in range [0, {arti_link_count}), got {index}")
+            link_include_indices = set(matching_link_indices)
 
         # create link exclusion set
         link_exclude_indices = set()
@@ -1361,23 +1442,29 @@ class ArticulationView:
         Get an attribute from the source (Model, State, or Control).
 
         Args:
-            name (str): The name of the attribute to get.
-            source (Model | State | Control): The source from which to get the attribute.
+            name: The name of the attribute to get.
+            source: The source from which to get the attribute.
 
         Returns:
             array: The attribute values (dtype matches the attribute).
         """
         return self._get_attribute_values(name, source)
 
-    def set_attribute(self, name: str, target: Model | State | Control, values, mask=None):
+    def set_attribute(
+        self,
+        name: str,
+        target: Model | State | Control,
+        values: wp.array[Any],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set an attribute in the target (Model, State, or Control).
 
         Args:
-            name (str): The name of the attribute to set.
-            target (Model | State | Control): The target where to set the attribute.
-            values (array): The values to set for the attribute.
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            name: The name of the attribute to set.
+            target: The target where to set the attribute.
+            values: The values to set for the attribute.
+            mask: Mask of articulations in this ArticulationView (all by default).
 
         .. note::
             When setting attributes on the Model, it may be necessary to inform the solver about
@@ -1394,7 +1481,7 @@ class ArticulationView:
         Get the root transforms of the articulations.
 
         Args:
-            source (Model | State): Where to get the root transforms (Model or State).
+            source: Where to get the root transforms (Model or State).
 
         Returns:
             array: The root transforms (dtype=wp.transform).
@@ -1409,15 +1496,20 @@ class ArticulationView:
         else:
             return wp.array(attrib, dtype=wp.transform, device=self.device, copy=False)
 
-    def set_root_transforms(self, target: Model | State, values: wp.array, mask=None):
+    def set_root_transforms(
+        self,
+        target: Model | State,
+        values: wp.array[wp.transform],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the root transforms of the articulations.
         Call :meth:`eval_fk` to apply changes to all articulation links.
 
         Args:
-            target (Model | State): Where to set the root transforms (Model or State).
-            values (array): The root transforms to set (dtype=wp.transform).
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            target: Where to set the root transforms (Model or State).
+            values: The root transforms to set (dtype=wp.transform).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         if self.is_floating_base:
             self._set_attribute_values("joint_q", target, values, mask=mask, _slice=Slice(0, 7))
@@ -1429,7 +1521,7 @@ class ArticulationView:
         Get the root velocities of the articulations.
 
         Args:
-            source (Model | State): Where to get the root velocities (Model or State).
+            source: Where to get the root velocities (Model or State).
 
         Returns:
             array: The root velocities (dtype=wp.spatial_vector).
@@ -1445,33 +1537,38 @@ class ArticulationView:
         else:
             return wp.array(attrib, dtype=wp.spatial_vector, device=self.device, copy=False)
 
-    def set_root_velocities(self, target: Model | State, values: wp.array, mask=None):
+    def set_root_velocities(
+        self,
+        target: Model | State,
+        values: wp.array[wp.spatial_vector],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the root velocities of the articulations.
 
         Args:
-            target (Model | State): Where to set the root velocities (Model or State).
-            values (array): The root velocities to set (dtype=wp.spatial_vector).
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            target: Where to set the root velocities (Model or State).
+            values: The root velocities to set (dtype=wp.spatial_vector).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         if self.is_floating_base:
             self._set_attribute_values("joint_qd", target, values, mask=mask, _slice=Slice(0, 6))
         else:
             return  # no-op
 
-    def get_link_transforms(self, source: "Model | State"):
+    def get_link_transforms(self, source: Model | State):
         """
         Get the world-space transforms of all links in the selected articulations.
 
         Args:
-            source (Model | State): The source from which to retrieve the link transforms.
+            source: The source from which to retrieve the link transforms.
 
         Returns:
             array: The link transforms (dtype=wp.transform).
         """
         return self._get_attribute_values("body_q", source)
 
-    def get_link_velocities(self, source: "Model | State"):
+    def get_link_velocities(self, source: Model | State):
         """
         Get the world-space spatial velocities of all links in the selected articulations.
 
@@ -1479,90 +1576,134 @@ class ArticulationView:
         ``(v_com_world, omega_world)``.
 
         Args:
-            source (Model | State): The source from which to retrieve the link velocities.
+            source: The source from which to retrieve the link velocities.
 
         Returns:
             array: The link velocities (dtype=wp.spatial_vector).
         """
         return self._get_attribute_values("body_qd", source)
 
-    def get_dof_positions(self, source: "Model | State"):
+    def get_dof_positions(self, source: Model | State):
         """
         Get the joint coordinate positions (DoF positions) for the selected articulations.
 
         Args:
-            source (Model | State): The source from which to retrieve the DoF positions.
+            source: The source from which to retrieve the DoF positions.
 
         Returns:
             array: The joint coordinate positions (dtype=float).
         """
         return self._get_attribute_values("joint_q", source)
 
-    def set_dof_positions(self, target: "Model | State", values, mask=None):
+    def set_dof_positions(
+        self,
+        target: Model | State,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the joint coordinate positions (DoF positions) for the selected articulations.
 
         Args:
-            target (Model | State): The target where to set the DoF positions.
-            values (array): The values to set (dtype=float).
-            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to set the DoF positions.
+            values: The values to set (dtype=float).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_q", target, values, mask=mask)
 
-    def get_dof_velocities(self, source: "Model | State"):
+    def get_dof_velocities(self, source: Model | State):
         """
         Get the joint coordinate velocities (DoF velocities) for the selected articulations.
 
         Args:
-            source (Model | State): The source from which to retrieve the DoF velocities.
+            source: The source from which to retrieve the DoF velocities.
 
         Returns:
             array: The joint coordinate velocities (dtype=float).
         """
         return self._get_attribute_values("joint_qd", source)
 
-    def set_dof_velocities(self, target: "Model | State", values, mask=None):
+    def set_dof_velocities(
+        self,
+        target: Model | State,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the joint coordinate velocities (DoF velocities) for the selected articulations.
 
         Args:
-            target (Model | State): The target where to set the DoF velocities.
-            values (array): The values to set (dtype=float).
-            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to set the DoF velocities.
+            values: The values to set (dtype=float).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_qd", target, values, mask=mask)
 
-    def get_dof_forces(self, source: "Control"):
+    def get_dof_forces(self, source: Control):
         """
         Get the joint forces (DoF forces) for the selected articulations.
 
         Args:
-            source (Control): The source from which to retrieve the DoF forces.
+            source: The source from which to retrieve the DoF forces.
 
         Returns:
             array: The joint forces (dtype=float).
         """
         return self._get_attribute_values("joint_f", source)
 
-    def set_dof_forces(self, target: "Control", values, mask=None):
+    def set_dof_forces(
+        self,
+        target: Control,
+        values: wp.array[float],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Set the joint forces (DoF forces) for the selected articulations.
 
         Args:
-            target (Control): The target where to set the DoF forces.
-            values (array): The values to set (dtype=float).
-            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to set the DoF forces.
+            values: The values to set (dtype=float).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_f", target, values, mask=mask)
 
     # ========================================================================================
     # Utilities
 
+    def _resolve_world_mask(self, mask):
+        if mask is None:
+            return self.full_mask
+        if isinstance(mask, wp.array):
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape != (self.world_count,):
+                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
+
+        try:
+            return wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
+        except Exception as error:
+            raise ValueError(f"Expected Boolean mask with shape ({self.world_count},)") from error
+
     def _resolve_mask(self, mask):
         # accept 1D and 2D Boolean masks
         if isinstance(mask, wp.array):
-            if mask.dtype is wp.bool and mask.ndim < 3:
-                return mask
+            expected_shapes = {
+                (self.world_count,),
+                (self.world_count, self.count_per_world),
+            }
+            if mask.dtype is not wp.bool:
+                raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+            if mask.shape not in expected_shapes:
+                raise ValueError(
+                    f"Expected Boolean mask with shape "
+                    f"({self.world_count}, {self.count_per_world}) or ({self.world_count},), got {mask.shape}"
+                )
+            if mask.device != self.device:
+                raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+            return mask
         else:
             # try interpreting as a 1D world mask
             try:
@@ -1582,12 +1723,12 @@ class ArticulationView:
             f"Expected Boolean mask with shape ({self.world_count}, {self.count_per_world}) or ({self.world_count},)"
         )
 
-    def get_model_articulation_mask(self, mask=None):
+    def get_model_articulation_mask(self, mask: wp.array[bool] | wp.array2d[bool] | None = None) -> wp.array[bool]:
         """
         Get Model articulation mask from a mask in this ArticulationView.
 
         Args:
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         if mask is None:
             return self.articulation_mask
@@ -1610,7 +1751,11 @@ class ArticulationView:
                 )
             return articulation_mask
 
-    def eval_fk(self, target: Model | State, mask=None):
+    def eval_fk(
+        self,
+        target: Model | State,
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
         """
         Evaluates forward kinematics given the joint coordinates and updates the body information.
 
@@ -1618,8 +1763,8 @@ class ArticulationView:
         convention ``(v_com_world, omega_world)``.
 
         Args:
-            target (Model | State): The target where to evaluate forward kinematics (Model or State).
-            mask (array): Mask of articulations in this ArticulationView (all by default).
+            target: The target where to evaluate forward kinematics (Model or State).
+            mask: Mask of articulations in this ArticulationView (all by default).
         """
         # translate view mask to Model articulation mask
         articulation_mask = self.get_model_articulation_mask(mask=mask)
@@ -1670,11 +1815,115 @@ class ArticulationView:
             self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
         )
 
+    def eval_inverse_dynamics_passive(
+        self,
+        state: State,
+        *,
+        mass_matrix: wp.array3d[wp.float32] | None = None,
+        gravity_force: wp.array[wp.float32] | None = None,
+        coriolis_force: wp.array[wp.float32] | None = None,
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Compute passive inverse-dynamics quantities for this view.
+
+        Forwards to :func:`~newton.eval_inverse_dynamics_passive` with an
+        articulation mask derived from this view and the optional view-local
+        ``mask``. Each non-``None`` output is computed; entries belonging to
+        articulations outside the selection are zero.
+
+        .. experimental::
+
+        Args:
+            state: The state containing the current generalized
+                coordinates and velocities. ``state.body_q`` must
+                already reflect ``state.joint_q``.
+            mass_matrix: Optional output, shape
+                ``(model.articulation_count,
+                model.max_dofs_per_articulation,
+                model.max_dofs_per_articulation)``, dtype float. Entry units
+                depend on the row and column DOF types: [kg] for two
+                translational DOFs, [kg·m] for mixed translational/rotational
+                DOFs, and [kg·m²] for two rotational DOFs.
+            gravity_force: Optional gravity-force output [N or N·m, depending
+                on joint type], shape ``(model.joint_dof_count,)``, dtype float.
+            coriolis_force: Optional Coriolis + centrifugal-force output [N or
+                N·m, depending on joint type], shape
+                ``(model.joint_dof_count,)``, dtype float.
+            mask: Optional mask of articulations in this
+                ArticulationView (all by default). Either 1-D
+                ``[world_count]`` selecting whole worlds or 2-D
+                ``[world_count, count_per_world]`` selecting individual
+                articulations per world.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        eval_inverse_dynamics_passive(
+            self.model,
+            state,
+            mass_matrix=mass_matrix,
+            gravity_force=gravity_force,
+            coriolis_force=coriolis_force,
+            mask=articulation_mask,
+        )
+
+    def eval_inverse_dynamics_force(
+        self,
+        state: State,
+        *,
+        mass_matrix: wp.array3d[wp.float32],
+        joint_qdd: wp.array[wp.float32],
+        coriolis_force: wp.array[wp.float32],
+        gravity_force: wp.array[wp.float32],
+        joint_f: wp.array[wp.float32],
+        mask: wp.array[bool] | wp.array2d[bool] | None = None,
+    ) -> None:
+        """Compute inverse-dynamics joint forces for articulations in this view.
+
+        Entries outside this view or the optional sub-selection are zeroed.
+
+        .. experimental::
+
+        Args:
+            state: State providing body transforms consistent with the
+                supplied mass matrix and bias forces.
+            mass_matrix: Joint-space mass matrix, shape
+                ``(model.articulation_count,
+                model.max_dofs_per_articulation,
+                model.max_dofs_per_articulation)``, dtype float. Entry units
+                depend on the row and column DOF types: [kg] for two
+                translational DOFs, [kg·m] for mixed translational/rotational
+                DOFs, and [kg·m²] for two rotational DOFs.
+            joint_qdd: Generalized joint accelerations [m/s² or rad/s²,
+                depending on joint type], shape
+                ``(model.joint_dof_count,)``, dtype float.
+            coriolis_force: Coriolis + centrifugal force [N or N·m, depending
+                on joint type], shape ``(model.joint_dof_count,)``, dtype float.
+            gravity_force: Gravity force [N or N·m, depending on joint type],
+                shape ``(model.joint_dof_count,)``, dtype float.
+            joint_f: Output generalized joint force :math:`\tau` [N or N·m,
+                depending on joint type], shape ``(model.joint_dof_count,)``,
+                dtype float. Uses the same layout and convention as
+                :attr:`~newton.Control.joint_f`.
+            mask: Optional mask of articulations in this ArticulationView.
+                Either 1-D ``[world_count]`` or 2-D
+                ``[world_count, count_per_world]``.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        eval_inverse_dynamics_force(
+            self.model,
+            state,
+            mass_matrix=mass_matrix,
+            joint_qdd=joint_qdd,
+            coriolis_force=coriolis_force,
+            gravity_force=gravity_force,
+            joint_f=joint_f,
+            mask=articulation_mask,
+        )
+
     # ========================================================================================
     # Actuator parameter access
 
     @functools.cache  # noqa: B019 - cache is tied to view lifetime
-    def _get_actuator_dof_mapping(self, actuator: "Actuator"):
+    def _get_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
@@ -1737,7 +1986,7 @@ class ArticulationView:
 
         return mapping
 
-    def get_actuator_parameter(self, actuator: "Actuator", component: Any, name: str):
+    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
 
         The returned array covers all DOFs selected by the view (one column
@@ -1779,7 +2028,7 @@ class ArticulationView:
 
     def set_actuator_parameter(
         self,
-        actuator: "Actuator",
+        actuator: Actuator,
         component: Any,
         name: str,
         values: wp.array,
@@ -1804,6 +2053,7 @@ class ArticulationView:
                 where ``dofs_per_world`` is the total number of DOFs in the view.
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
+        mask = self._resolve_world_mask(mask)
         mapping = self._get_actuator_dof_mapping(actuator)
         if len(mapping) == 0:
             return
@@ -1817,14 +2067,6 @@ class ArticulationView:
 
         if values.shape[:2] != expected_shape[:2]:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-
-        if mask is None:
-            mask = self.full_mask
-        else:
-            if not isinstance(mask, wp.array):
-                mask = wp.array(mask, dtype=bool, shape=(self.world_count,), device=self.device, copy=False)
-            if mask.shape != (self.world_count,):
-                raise ValueError(f"Expected mask shape ({self.world_count},), got {mask.shape}")
 
         wp.launch(
             _scatter_masked_2d_kernel,

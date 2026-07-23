@@ -14,11 +14,11 @@ kernels **per block**. For a workload with ``B`` blocks this scales linearly
 in ``B * max_bfs_iters``. At small problem sizes (e.g. ``n = 256``, ``B = 8``)
 the resulting hundreds of launches dominate wall time over the actual compute.
 
-The batched version amortizes kernel launch overhead by making each stage a
-single launch that covers **all** blocks. Each Warp thread block is
-responsible for processing a single graph-block's vertex. Out-of-range
-threads (``i >= dims[b]``) return early, which lets us safely launch with a
-uniform ``max_dim`` over heterogeneous block sizes.
+The CUDA/float32 fast path runs each graph block inside one tiled Warp
+kernel, using shared memory for the per-vertex RCM state and an in-kernel BFS
+loop. Larger or non-CUDA cases fall back to the staged batched path, which
+amortizes launch overhead by making each RCM stage a single launch that covers
+**all** blocks.
 
 Layout assumptions
 ------------------
@@ -26,9 +26,9 @@ Layout assumptions
 - ``A_flat``: a flat ``wp.array`` containing all block matrices concatenated
   in row-major order. Block ``b``'s matrix starts at offset ``mio[b]`` with
   size ``dims[b] * dims[b]``.
-- ``perm_flat``: flat int32 permutation output. Block ``b``'s output starts
+- ``perm_flat``: flat wp.int32 permutation output. Block ``b``'s output starts
   at offset ``vio[b]`` with size ``dims[b]``.
-- ``dims``, ``mio``, ``vio``: ``wp.array[int32]`` of length
+- ``dims``, ``mio``, ``vio``: ``wp.array[wp.int32]`` of length
   ``num_blocks``, precomputed on the device.
 
 API
@@ -116,8 +116,9 @@ def _make_rcm_batch_kernels(dtype):
     """
     module_name = f"rcm_batch_kernels_{getattr(dtype, '__name__', str(dtype))}"
     module = wp.get_module(module_name)
+    module.options.update({"enable_backward": False, "default_grid_stride": False})
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def init_and_degree_kernel(
         num_blocks: int,
         tol: dtype,  # type: ignore[valid-type]
@@ -165,7 +166,7 @@ def _make_rcm_batch_kernels(dtype):
             head[b] = int(0)
             root[b] = int(0)
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def select_and_seed_kernel(
         num_blocks: int,
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -206,7 +207,7 @@ def _make_rcm_batch_kernels(dtype):
         slot = wp.atomic_add(head, b, int(1))
         order_buf[vb + slot] = best_idx
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def bfs_step_kernel(
         num_blocks: int,
         cur: int,
@@ -261,7 +262,7 @@ def _make_rcm_batch_kernels(dtype):
                         slot = wp.atomic_add(head, b, int(1))
                         order_buf[vb + slot] = j
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def append_unreached_kernel(
         num_blocks: int,
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -286,7 +287,7 @@ def _make_rcm_batch_kernels(dtype):
                 pos += int(1)
         head[b] = pos
 
-    @wp.kernel(module=module, enable_backward=False)
+    @wp.kernel(module=module)
     def reverse_into_perm_kernel(
         num_blocks: int,
         dims: wp.array[wp.int32],  # type: ignore[valid-type]
@@ -313,6 +314,103 @@ def _make_rcm_batch_kernels(dtype):
     }
 
 
+def _fused_rcm_block_dim(max_dim: int) -> int:
+    """Pick one CUDA block large enough to assign one thread per vertex."""
+    return min(1024, max(32, 1 << (max_dim - 1).bit_length()))
+
+
+@cache
+def _make_rcm_batch_fused_tile_kernel(dtype, max_dim: int):
+    """Create a native-free tiled RCM kernel using shared tiles."""
+    module_name = f"rcm_batch_fused_tile_kernels_{getattr(dtype, '__name__', str(dtype))}_{max_dim}"
+    module = wp.get_module(module_name)
+    module.options.update({"enable_backward": False, "default_grid_stride": False})
+
+    @wp.kernel(module=module)
+    def fused_rcm_tile_kernel(
+        num_blocks: int,
+        max_bfs_iters: int,
+        tol: dtype,  # type: ignore[valid-type]
+        A: wp.array[dtype],  # type: ignore[valid-type]
+        dims: wp.array[wp.int32],
+        mio: wp.array[wp.int32],
+        vio: wp.array[wp.int32],
+        perm: wp.array[wp.int32],
+    ):
+        b, lane = wp.tid()
+        if b >= num_blocks:
+            return
+
+        n_b = dims[b]
+        if n_b > max_dim:
+            return
+
+        mb = mio[b]
+        vb = vio[b]
+
+        degree = wp.tile_zeros(shape=max_dim, dtype=wp.int32, storage="shared")
+        level = wp.tile_zeros(shape=max_dim, dtype=wp.int32, storage="shared")
+
+        d = int(0)
+        if lane < n_b:
+            row = mb + lane * n_b
+            for j in range(n_b):
+                if j == lane:
+                    continue
+                av = wp.abs(A[row + j])
+                if av > tol:
+                    d += int(1)
+
+        wp.tile_scatter_masked(level, lane, int(-1), lane < n_b)
+        wp.tile_scatter_masked(degree, lane, d, lane < n_b)
+
+        best_idx = int(0)
+        if lane == 0:
+            best_deg = int(2147483647)
+            for i in range(n_b):
+                deg_i = wp.tile_extract(degree, i)
+                if deg_i < best_deg:
+                    best_deg = deg_i
+                    best_idx = i
+
+        wp.tile_scatter_masked(level, best_idx, int(0), lane == 0)
+
+        for cur in range(max_bfs_iters):
+            discovered = wp.bool(False)
+            # Vertex-owned update: lane ``j`` is the only writer of
+            # ``level[j]``, so tile_scatter_masked is race-free without CAS.
+            if lane < n_b and wp.tile_extract(level, lane) == int(-1):
+                for i in range(n_b):
+                    if wp.tile_extract(level, i) == cur:
+                        av = wp.abs(A[mb + i * n_b + lane])
+                        if i != lane and av > tol:
+                            discovered = True
+            wp.tile_scatter_masked(level, lane, cur + int(1), discovered)
+
+        if lane < n_b:
+            lane_level = wp.tile_extract(level, lane)
+            cm_pos = int(0)
+            if lane_level == int(-1):
+                for i in range(n_b):
+                    if wp.tile_extract(level, i) != int(-1):
+                        cm_pos += int(1)
+                for i in range(lane):
+                    if wp.tile_extract(level, i) == int(-1):
+                        cm_pos += int(1)
+            else:
+                for i in range(n_b):
+                    level_i = wp.tile_extract(level, i)
+                    if level_i != int(-1):
+                        if level_i < lane_level:
+                            cm_pos += int(1)
+                        elif level_i == lane_level and i < lane:
+                            cm_pos += int(1)
+
+            perm[vb + (n_b - int(1) - cm_pos)] = lane
+
+    return fused_rcm_tile_kernel
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -337,11 +435,11 @@ def _default_bfs_iters(max_dim: int) -> int:
 
 
 def create_rcm_batch_launch(
-    A_flat: wp.array,
-    perm_flat: wp.array,
-    dims: wp.array,
-    mio: wp.array,
-    vio: wp.array,
+    A_flat: wp.array[wp.float32],
+    perm_flat: wp.array[wp.int32],
+    dims: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
     scratch: dict,
     num_blocks: int,
     max_dim: int,
@@ -358,7 +456,7 @@ def create_rcm_batch_launch(
     A_flat, perm_flat:
         Flat buffers for the concatenated block matrices and output permutations.
     dims, mio, vio:
-        ``int32`` arrays describing the per-block sizes and flat offsets.
+        ``wp.int32`` arrays describing the per-block sizes and flat offsets.
     scratch:
         Caller-owned scratch buffers from :func:`allocate_rcm_batch_scratch`.
         The caller must keep this dict alive for the lifetime of the returned
@@ -372,14 +470,43 @@ def create_rcm_batch_launch(
         Same semantics as :func:`rcm.create_rcm_launch`.
     """
     if perm_flat.dtype != wp.int32:
-        raise TypeError(f"perm_flat must be int32; got {perm_flat.dtype}")
+        raise TypeError(f"perm_flat must be wp.int32; got {perm_flat.dtype}")
     dtype = A_flat.dtype
 
     if device is None:
         device = A_flat.device
+    device = wp.get_device(device)
     if max_bfs_iters is None:
         max_bfs_iters = _default_bfs_iters(max_dim)
     max_bfs_iters = min(max_bfs_iters, max_dim)
+
+    if dtype == wp.float32 and device.is_cuda and max_dim <= 1024:
+        fused_kernel = _make_rcm_batch_fused_tile_kernel(dtype, max_dim)
+        fused_launch = wp.launch_tiled(
+            fused_kernel,
+            dim=num_blocks,
+            inputs=[
+                num_blocks,
+                int(max_bfs_iters),
+                float(tol),
+                A_flat,
+                dims,
+                mio,
+                vio,
+                perm_flat,
+            ],
+            device=device,
+            stream=stream,
+            block_dim=_fused_rcm_block_dim(max_dim),
+            record_cmd=True,
+        )
+
+        def callback():
+            fused_launch.launch()
+
+        if use_cuda_graph:
+            return create_cuda_graph_callback(callback, device=device, stream=stream)
+        return callback
 
     K = _make_rcm_batch_kernels(dtype)
 

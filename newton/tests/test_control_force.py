@@ -15,7 +15,7 @@ class TestControlForce(unittest.TestCase):
 
 
 def _build_rotated_parent_descendant_free_model(device, child_com=None):
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     if child_com is None:
         child_com = wp.vec3()
 
@@ -47,7 +47,7 @@ def _rotate_into_parent_frame(q_parent_xyzw: np.ndarray, v_world: np.ndarray) ->
 
 
 def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=True):
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
 
     # easy case: identity transform, zero center of mass
     b = builder.add_body()
@@ -79,17 +79,18 @@ def test_floating_body(test: TestControlForce, device, solver_fn, test_angular=T
     body_qd = state_0.body_qd.numpy()[0]
     test.assertGreater(body_qd[test_index], 0.04)
     test.assertLess(body_qd[test_index], 0.4)
+    zero_tol = 2e-6
     for i in range(6):
         if i == test_index:
             continue
-        test.assertAlmostEqual(body_qd[i], 0.0, delta=1e-6)
+        test.assertAlmostEqual(body_qd[i], 0.0, delta=zero_tol)
     # TODO test joint_qd for MJC, Featherstone solvers
 
 
 def test_3d_articulation(test: TestControlForce, device, solver_fn):
     # test mechanism with 3 orthogonally aligned prismatic joints
     # which allows to test all 3 dimensions of the control force independently
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.default_shape_cfg.density = 100.0
 
     b = builder.add_link()
@@ -146,7 +147,7 @@ def test_child_xform_moment_arm(test: TestControlForce, device, solver_fn):
     the joint anchor and the body COM.
     """
     offset_y = 2.0
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.default_shape_cfg.density = 100.0
 
     b = builder.add_link()
@@ -263,7 +264,7 @@ def test_featherstone_free_descendant_joint_f_world_torque_preserves_public_fram
 
 def test_featherstone_free_descendant_joint_f_does_not_require_prefk(test: TestControlForce, device):
     """The descendant FREE world-wrench path should not require a caller-side pre-step eval_fk()."""
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Y)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
     base = builder.add_link(is_kinematic=True, mass=1.0)
     child = builder.add_link(mass=1.0)

@@ -103,6 +103,7 @@ class Example:
         builder = newton.ModelBuilder()
 
         semantic_colors = []
+        robot_shape_indices: list[int] = []
 
         rng = random.Random(1234)
         for _ in range(self.world_count_total):
@@ -155,15 +156,19 @@ class Example:
                 )
                 semantic_colors.append(SEMANTIC_COLOR_GAUSSIAN)
 
+            robot_shape_start = builder.shape_count
             builder.add_builder(robot_builder, xform=wp.transform(p=wp.vec3(2.0, 0.0, 0.0), q=wp.quat_identity()))
+            robot_shape_indices.extend(range(robot_shape_start, robot_shape_start + robot_builder.shape_count))
             semantic_colors.extend([SEMANTIC_COLOR_ROBOT] * robot_builder.shape_count)
             builder.end_world()
 
-        builder.add_ground_plane(color=(0.6, 0.6, 0.6))
+        ground_shape_index = builder.add_ground_plane(color=(0.6, 0.6, 0.6))
         semantic_colors.append(SEMANTIC_COLOR_GROUND_PLANE)
 
         self.model = builder.finalize()
         self.state = self.model.state()
+        self.robot_shape_indices = np.asarray(robot_shape_indices, dtype=np.uint32)
+        self.ground_shape_indices = np.asarray([ground_shape_index], dtype=np.uint32)
 
         # Build per-DOF home pose and oscillation radius for animate_franka.
         # Joints not listed in _FRANKA_HOME_AND_ALPHA keep radius=0 and stay put.
@@ -194,15 +199,17 @@ class Example:
 
         # Setup Tiled Camera Sensor
         self.tiled_camera_sensor = SensorTiledCamera(model=self.model)
+        self.tiled_camera_sensor.default_render_config.enable_shadows = True
+        self.tiled_camera_sensor.default_render_config.enable_textures = True
         self.tiled_camera_sensor.utils.create_default_light(enable_shadows=True)
-        self.tiled_camera_sensor.utils.assign_checkerboard_material_to_all_shapes()
+        self.tiled_camera_sensor.utils.assign_checkerboard_material(shape_indices=self.ground_shape_indices)
 
         fov = 45.0
         if isinstance(self.viewer, ViewerGL):
             fov = self.viewer.camera.fov
 
-        self.camera_rays = self.tiled_camera_sensor.utils.compute_pinhole_camera_rays(
-            self.sensor_render_width, self.sensor_render_height, math.radians(fov)
+        self.camera_rays = self.tiled_camera_sensor.utils.compute_camera_rays_pinhole(
+            self.sensor_render_width, self.sensor_render_height, camera_fovs=math.radians(fov)
         )
         self.tiled_camera_sensor_color_image = self.tiled_camera_sensor.utils.create_color_image_output(
             self.sensor_render_width, self.sensor_render_height, self.camera_count
@@ -345,45 +352,71 @@ class Example:
         assert shape_index_image.shape == expected_shape
         assert shape_index_image.dtype == np.uint32
 
+        albedo_rgba = albedo_image.view(np.uint8).reshape(
+            self.world_count_total * self.camera_count, self.sensor_render_height, self.sensor_render_width, 4
+        )
+        ground_shape_mask = np.isin(shape_index_image.reshape(albedo_rgba.shape[:3]), self.ground_shape_indices)
+        ground_albedo = albedo_rgba[..., :3][ground_shape_mask]
+        assert ground_albedo.size > 0
+        assert np.unique(ground_albedo, axis=0).shape[0] > 1
+
+        robot_shape_mask = np.isin(shape_index_image.reshape(albedo_rgba.shape[:3]), self.robot_shape_indices)
+        robot_albedo = albedo_rgba[..., :3][robot_shape_mask]
+        assert robot_albedo.size > 0
+        checker_swatches = np.array([[128, 128, 128], [191, 191, 191]], dtype=np.uint8)
+        checker_swatch_mask = (robot_albedo[:, None, :] == checker_swatches[None, :, :]).all(axis=2).any(axis=1)
+        assert not checker_swatch_mask.any()
+
     def gui(self, ui):
         show_compile_kernel_info = False
 
         if ui.radio_button(
             "Gaussians: Fast",
-            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
+            self.tiled_camera_sensor.default_render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.FAST,
         ):
-            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.FAST:
-                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.FAST
+            if (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.FAST
+            ):
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.FAST
+                )
                 show_compile_kernel_info = True
 
         if ui.radio_button(
             "Gaussians: Quality",
-            self.tiled_camera_sensor.render_config.gaussians_mode == SensorTiledCamera.GaussianRenderMode.QUALITY,
+            self.tiled_camera_sensor.default_render_config.gaussians_mode
+            == SensorTiledCamera.GaussianRenderMode.QUALITY,
         ):
-            if self.tiled_camera_sensor.render_config.gaussians_mode != SensorTiledCamera.GaussianRenderMode.QUALITY:
-                self.tiled_camera_sensor.render_config.gaussians_mode = SensorTiledCamera.GaussianRenderMode.QUALITY
+            if (
+                self.tiled_camera_sensor.default_render_config.gaussians_mode
+                != SensorTiledCamera.GaussianRenderMode.QUALITY
+            ):
+                self.tiled_camera_sensor.default_render_config.gaussians_mode = (
+                    SensorTiledCamera.GaussianRenderMode.QUALITY
+                )
                 show_compile_kernel_info = True
 
         changed, value = ui.slider_float(
             "Min Transmittance",
-            self.tiled_camera_sensor.render_config.gaussians_min_transmittance,
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance,
             0.0,
             1.0,
             "%.2f",
         )
         if changed:
-            self.tiled_camera_sensor.render_config.gaussians_min_transmittance = value
+            self.tiled_camera_sensor.default_render_config.gaussians_min_transmittance = value
             show_compile_kernel_info = True
 
         changed, value = ui.slider_int(
             "Max Num Hits",
-            self.tiled_camera_sensor.render_config.gaussians_max_num_hits,
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits,
             1,
             40,
             "%d",
         )
         if changed:
-            self.tiled_camera_sensor.render_config.gaussians_max_num_hits = value
+            self.tiled_camera_sensor.default_render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
         if show_compile_kernel_info:

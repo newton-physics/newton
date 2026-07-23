@@ -1,6 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
+import math
+
 import numpy as np
 import warp as wp
 
@@ -25,7 +29,7 @@ class Picking:
         pick_stiffness: float = 50.0,
         pick_damping: float = 5.0,
         pick_max_acceleration: float = 5.0,
-        world_offsets: wp.array | None = None,
+        world_offsets: wp.array[wp.vec3] | None = None,
     ) -> None:
         """
         Initializes the picking system.
@@ -35,15 +39,22 @@ class Picking:
             pick_stiffness: The stiffness that will be used to compute the force applied to the picked body.
             pick_damping: The damping that will be used to compute the force applied to the picked body.
             pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
-                Clamps the picking force to prevent runaway divergence on light objects
-                near stiff contacts.
+                Clamps both linear and equivalent rotational acceleration to prevent
+                runaway divergence on light or low-inertia objects.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
+
+        Raises:
+            ValueError: If ``pick_max_acceleration`` is negative or non-finite.
         """
+        pick_max_acceleration = float(pick_max_acceleration)
+        if not math.isfinite(pick_max_acceleration) or pick_max_acceleration < 0.0:
+            raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
+
         self.model = model
         self.pick_stiffness = pick_stiffness
         self.pick_damping = pick_damping
         self.world_offsets = world_offsets
-        self.visible_worlds_mask: wp.array | None = None
+        self.visible_worlds_mask: wp.array[int] | None = None
 
         self.min_dist = None
         self.min_index = None
@@ -83,7 +94,13 @@ class Picking:
         Args:
             state: The simulation state.
         """
-        if self.model is None:
+        if (
+            self.model is None
+            or self.model.body_count == 0
+            or state.body_q is None
+            or state.body_qd is None
+            or state.body_f is None
+        ):
             return
 
         # Launch kernel always because of graph capture
@@ -99,13 +116,14 @@ class Picking:
                 self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
+                self.model.body_inv_inertia,
                 self._pick_effective_mass,
             ],
             device=self.model.device,
         )
 
     @staticmethod
-    def _compute_effective_mass(model: newton.Model) -> wp.array:
+    def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
         """Compute per-body effective mass for picking force clamping.
 
         For bodies in an articulation, returns the total mass of that

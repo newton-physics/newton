@@ -35,6 +35,8 @@ TABLE_TRACKING_RMS_ERROR_TOLERANCE = 0.0025
 CABLE_XY_ABS_BOUND = 0.30
 JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
+MOUSE_PICK_STIFFNESS = 0.01
+MOUSE_PICK_DAMPING = 0.001
 
 
 @wp.kernel
@@ -689,15 +691,21 @@ class Example:
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
+            body_frame_origin="com",
         )
-        initial_cable_xforms = [wp.transform(cable_points[i], cable_quats[i]) for i in range(len(self.cable_bodies))]
+        initial_cable_xforms = [
+            wp.transform(cable_points[i] + (cable_points[i + 1] - cable_points[i]) * 0.5, cable_quats[i])
+            for i in range(len(self.cable_bodies))
+        ]
         filter_body_group_collisions(builder, self.cable_bodies)
 
         # Ball joints close the cable loop at the table anchors.
         first_cable_body = self.cable_bodies[0]
         last_cable_body = self.cable_bodies[-1]
-        first_cable_anchor_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
-        last_cable_anchor_xform = wp.transform(wp.vec3(0.0, 0.0, cable_segment_length), wp.quat_identity())
+        first_endpoint_local = wp.vec3(0.0, 0.0, -0.5 * cable_segment_length)
+        last_endpoint_local = wp.vec3(0.0, 0.0, 0.5 * cable_segment_length)
+        first_cable_anchor_xform = wp.transform(first_endpoint_local, wp.quat_identity())
+        last_cable_anchor_xform = wp.transform(last_endpoint_local, wp.quat_identity())
         for i, (body, xform) in enumerate(
             (
                 (first_cable_body, first_cable_anchor_xform),
@@ -757,8 +765,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Device arrays used by kernels during simulation and CUDA graph replay.
         self.kinematic_body_indices = wp.array(
@@ -803,6 +811,13 @@ class Example:
 
         # Viewer setup.
         self.viewer.set_model(self.model)
+        picking = getattr(self.viewer, "picking", None)
+        if picking is not None:
+            pick_state = picking.pick_state.numpy()
+            pick_state[0]["pick_stiffness"] = MOUSE_PICK_STIFFNESS
+            pick_state[0]["pick_damping"] = MOUSE_PICK_DAMPING
+            picking.pick_state.assign(pick_state)
+
         self.viewer.set_camera(
             pos=wp.vec3(0.0, 0.0, 0.8),
             pitch=-90.0,
@@ -842,7 +857,7 @@ class Example:
             )
 
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

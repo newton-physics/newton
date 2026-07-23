@@ -12,7 +12,7 @@ from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.core.types import float32, int32, vec6f
+from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.geometry.contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
 from newton._src.solvers.kamino._src.geometry.primitive import (
     BoundingVolumeType,
@@ -93,22 +93,22 @@ class PrimitiveBroadPhaseTestBS:
         # Allocate the collision model data
         with wp.ScopedDevice(model.device):
             # Allocate the bounding volumes data
-            self.bvdata = BoundingVolumesData(radius=wp.zeros(shape=(num_geoms,), dtype=float32))
+            self.bvdata = BoundingVolumesData(radius=wp.zeros(shape=(num_geoms,), dtype=wp.float32))
             # Allocate the time-invariant collision candidates model
             self._cmodel = CollisionCandidatesModel(
                 num_model_geom_pairs=model.geoms.num_collidable_pairs,
                 num_world_geom_pairs=world_num_geom_pairs,
-                model_num_pairs=wp.array([model.geoms.num_collidable_pairs], dtype=int32),
-                world_num_pairs=wp.array(world_num_geom_pairs, dtype=int32),
-                wid=wp.array(model_wid, dtype=int32),
+                model_num_pairs=wp.array([model.geoms.num_collidable_pairs], dtype=wp.int32),
+                world_num_pairs=wp.array(world_num_geom_pairs, dtype=wp.int32),
+                wid=wp.array(model_wid, dtype=wp.int32),
                 geom_pair=model.geoms.collidable_pairs,
             )
             # Allocate the time-varying collision candidates data
             self._cdata = CollisionCandidatesData(
                 num_model_geom_pairs=model.geoms.num_collidable_pairs,
-                model_num_collisions=wp.zeros(shape=(1,), dtype=int32),
-                world_num_collisions=wp.zeros(shape=(num_worlds,), dtype=int32),
-                wid=wp.zeros(shape=(model.geoms.num_collidable_pairs,), dtype=int32),
+                model_num_collisions=wp.zeros(shape=(1,), dtype=wp.int32),
+                world_num_collisions=wp.zeros(shape=(num_worlds,), dtype=wp.int32),
+                wid=wp.zeros(shape=(model.geoms.num_collidable_pairs,), dtype=wp.int32),
                 geom_pair=wp.zeros_like(model.geoms.collidable_pairs),
             )
 
@@ -133,17 +133,17 @@ class PrimitiveBroadPhaseTestAABB:
             self._cmodel = CollisionCandidatesModel(
                 num_model_geom_pairs=model.geoms.num_collidable_pairs,
                 num_world_geom_pairs=world_num_geom_pairs,
-                model_num_pairs=wp.array([model.geoms.num_collidable_pairs], dtype=int32),
-                world_num_pairs=wp.array(world_num_geom_pairs, dtype=int32),
-                wid=wp.array(model_wid, dtype=int32),
+                model_num_pairs=wp.array([model.geoms.num_collidable_pairs], dtype=wp.int32),
+                world_num_pairs=wp.array(world_num_geom_pairs, dtype=wp.int32),
+                wid=wp.array(model_wid, dtype=wp.int32),
                 geom_pair=model.geoms.collidable_pairs,
             )
             # Allocate the time-varying collision candidates data
             self._cdata = CollisionCandidatesData(
                 num_model_geom_pairs=model.geoms.num_collidable_pairs,
-                model_num_collisions=wp.zeros(shape=(1,), dtype=int32),
-                world_num_collisions=wp.zeros(shape=(num_worlds,), dtype=int32),
-                wid=wp.zeros(shape=(model.geoms.num_collidable_pairs,), dtype=int32),
+                model_num_collisions=wp.zeros(shape=(1,), dtype=wp.int32),
+                world_num_collisions=wp.zeros(shape=(num_worlds,), dtype=wp.int32),
+                wid=wp.zeros(shape=(model.geoms.num_collidable_pairs,), dtype=wp.int32),
                 geom_pair=wp.zeros_like(model.geoms.collidable_pairs),
             )
 
@@ -918,26 +918,26 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
             "bid_AB": np.tile(np.array([0, 1], dtype=np.int32), reps=(8, 1)),
             "position_A": np.array(
                 [
-                    [-0.207107, -0.5, 0.5 * abs(distance)],
+                    [0.5, -0.207107, 0.5 * abs(distance)],
                     [0.207107, -0.5, 0.5 * abs(distance)],
                     [-0.5, -0.207107, 0.5 * abs(distance)],
-                    [-0.5, 0.207107, 0.5 * abs(distance)],
+                    [-0.207107, -0.5, 0.5 * abs(distance)],
                     [0.5, 0.207107, 0.5 * abs(distance)],
-                    [0.5, -0.207107, 0.5 * abs(distance)],
                     [0.207107, 0.5, 0.5 * abs(distance)],
+                    [-0.5, 0.207107, 0.5 * abs(distance)],
                     [-0.207107, 0.5, 0.5 * abs(distance)],
                 ],
                 dtype=np.float32,
             ),
             "position_B": np.array(
                 [
-                    [-0.207107, -0.5, -0.5 * abs(distance)],
+                    [0.5, -0.207107, -0.5 * abs(distance)],
                     [0.207107, -0.5, -0.5 * abs(distance)],
                     [-0.5, -0.207107, -0.5 * abs(distance)],
-                    [-0.5, 0.207107, -0.5 * abs(distance)],
+                    [-0.207107, -0.5, -0.5 * abs(distance)],
                     [0.5, 0.207107, -0.5 * abs(distance)],
-                    [0.5, -0.207107, -0.5 * abs(distance)],
                     [0.207107, 0.5, -0.5 * abs(distance)],
+                    [-0.5, 0.207107, -0.5 * abs(distance)],
                     [-0.207107, 0.5, -0.5 * abs(distance)],
                 ],
                 dtype=np.float32,

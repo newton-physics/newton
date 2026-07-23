@@ -16,7 +16,6 @@ import warp as wp
 import newton
 from newton._src.sim import Model, ModelBuilder, State
 from newton._src.sim.contacts import Contacts
-from newton._src.solvers.kamino._src.core.types import int32, mat33f, vec3f
 from newton._src.solvers.kamino._src.geometry.contacts import (
     ContactMode,
     ContactsKamino,
@@ -189,6 +188,12 @@ def build_dynamic_static_sphere_scene(
 
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 
@@ -196,9 +201,9 @@ def build_dynamic_static_sphere_scene(
 @wp.kernel
 def _compute_contact_frame_znorm(
     # Inputs:
-    normal: wp.array[vec3f],
+    normal: wp.array[wp.vec3f],
     # Outputs:
-    frame: wp.array[mat33f],
+    frame: wp.array[wp.mat33f],
 ):
     tid = wp.tid()
     frame[tid] = make_contact_frame_znorm(normal[tid])
@@ -207,9 +212,9 @@ def _compute_contact_frame_znorm(
 @wp.kernel
 def _compute_contact_frame_xnorm(
     # Inputs:
-    normal: wp.array[vec3f],
+    normal: wp.array[wp.vec3f],
     # Outputs:
-    frame: wp.array[mat33f],
+    frame: wp.array[wp.mat33f],
 ):
     tid = wp.tid()
     frame[tid] = make_contact_frame_xnorm(normal[tid])
@@ -218,9 +223,9 @@ def _compute_contact_frame_xnorm(
 @wp.kernel
 def _compute_contact_mode(
     # Inputs:
-    velocity: wp.array[vec3f],
+    velocity: wp.array[wp.vec3f],
     # Outputs:
-    mode: wp.array[int32],
+    mode: wp.array[wp.int32],
 ):
     tid = wp.tid()
     mode[tid] = wp.static(ContactMode.make_compute_mode_func())(velocity[tid])
@@ -231,7 +236,7 @@ def _compute_contact_mode(
 ###
 
 
-def compute_contact_frame_znorm(normal: wp.array, frame: wp.array, num_threads: int = 1):
+def compute_contact_frame_znorm(normal: wp.array[wp.vec3f], frame: wp.array[wp.mat33f], num_threads: int = 1):
     wp.launch(
         _compute_contact_frame_znorm,
         dim=num_threads,
@@ -241,7 +246,7 @@ def compute_contact_frame_znorm(normal: wp.array, frame: wp.array, num_threads: 
     )
 
 
-def compute_contact_frame_xnorm(normal: wp.array, frame: wp.array, num_threads: int = 1):
+def compute_contact_frame_xnorm(normal: wp.array[wp.vec3f], frame: wp.array[wp.mat33f], num_threads: int = 1):
     wp.launch(
         _compute_contact_frame_xnorm,
         dim=num_threads,
@@ -251,7 +256,7 @@ def compute_contact_frame_xnorm(normal: wp.array, frame: wp.array, num_threads: 
     )
 
 
-def compute_contact_mode(velocity: wp.array, mode: wp.array, num_threads: int = 1):
+def compute_contact_mode(velocity: wp.array[wp.vec3f], mode: wp.array[wp.int32], num_threads: int = 1):
     wp.launch(
         _compute_contact_mode,
         dim=num_threads,
@@ -326,19 +331,19 @@ class TestGeometryContactFrames(unittest.TestCase):
 
     def test_01_make_contact_frame_znorm(self):
         # Create a normal vectors
-        test_normals: list[vec3f] = []
+        test_normals: list[wp.vec3f] = []
 
         # Add normals for which to test contact frame creation
-        test_normals.append(vec3f(1.0, 0.0, 0.0))
-        test_normals.append(vec3f(0.0, 1.0, 0.0))
-        test_normals.append(vec3f(0.0, 0.0, 1.0))
-        test_normals.append(vec3f(-1.0, 0.0, 0.0))
-        test_normals.append(vec3f(0.0, -1.0, 0.0))
-        test_normals.append(vec3f(0.0, 0.0, -1.0))
+        test_normals.append(wp.vec3f(1.0, 0.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, 1.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, 0.0, 1.0))
+        test_normals.append(wp.vec3f(-1.0, 0.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, -1.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, 0.0, -1.0))
 
         # Create the input output arrays
-        normals = wp.array(test_normals, dtype=vec3f, device=self.default_device)
-        frames = wp.zeros(shape=(len(test_normals),), dtype=mat33f, device=self.default_device)
+        normals = wp.array(test_normals, dtype=wp.vec3f, device=self.default_device)
+        frames = wp.zeros(shape=(len(test_normals),), dtype=wp.mat33f, device=self.default_device)
 
         # Compute the contact frames
         compute_contact_frame_znorm(normal=normals, frame=frames, num_threads=len(test_normals))
@@ -376,19 +381,19 @@ class TestGeometryContactFrames(unittest.TestCase):
 
     def test_02_make_contact_frame_xnorm(self):
         # Create a normal vectors
-        test_normals: list[vec3f] = []
+        test_normals: list[wp.vec3f] = []
 
         # Add normals for which to test contact frame creation
-        test_normals.append(vec3f(1.0, 0.0, 0.0))
-        test_normals.append(vec3f(0.0, 1.0, 0.0))
-        test_normals.append(vec3f(0.0, 0.0, 1.0))
-        test_normals.append(vec3f(-1.0, 0.0, 0.0))
-        test_normals.append(vec3f(0.0, -1.0, 0.0))
-        test_normals.append(vec3f(0.0, 0.0, -1.0))
+        test_normals.append(wp.vec3f(1.0, 0.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, 1.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, 0.0, 1.0))
+        test_normals.append(wp.vec3f(-1.0, 0.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, -1.0, 0.0))
+        test_normals.append(wp.vec3f(0.0, 0.0, -1.0))
 
         # Create the input output arrays
-        normals = wp.array(test_normals, dtype=vec3f, device=self.default_device)
-        frames = wp.zeros(shape=(len(test_normals),), dtype=mat33f, device=self.default_device)
+        normals = wp.array(test_normals, dtype=wp.vec3f, device=self.default_device)
+        frames = wp.zeros(shape=(len(test_normals),), dtype=wp.mat33f, device=self.default_device)
 
         # Compute the contact frames
         compute_contact_frame_xnorm(normal=normals, frame=frames, num_threads=len(test_normals))
@@ -425,8 +430,8 @@ class TestGeometryContactMode(unittest.TestCase):
             msg.reset_log_level()
 
     def test_01_contact_mode_opening(self):
-        v_input = wp.array([vec3f(0.0, 0.0, 0.01)], dtype=vec3f, device=self.default_device)
-        mode_output = wp.zeros(shape=(1,), dtype=int32, device=self.default_device)
+        v_input = wp.array([wp.vec3f(0.0, 0.0, 0.01)], dtype=wp.vec3f, device=self.default_device)
+        mode_output = wp.zeros(shape=(1,), dtype=wp.int32, device=self.default_device)
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
@@ -434,8 +439,8 @@ class TestGeometryContactMode(unittest.TestCase):
         self.assertEqual(mode, ContactMode.OPENING)
 
     def test_02_contact_mode_sticking(self):
-        v_input = wp.array([vec3f(0.0, 0.0, 1e-7)], dtype=vec3f, device=self.default_device)
-        mode_output = wp.zeros(shape=(1,), dtype=int32, device=self.default_device)
+        v_input = wp.array([wp.vec3f(0.0, 0.0, 1e-7)], dtype=wp.vec3f, device=self.default_device)
+        mode_output = wp.zeros(shape=(1,), dtype=wp.int32, device=self.default_device)
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
@@ -443,8 +448,8 @@ class TestGeometryContactMode(unittest.TestCase):
         self.assertEqual(mode, ContactMode.STICKING)
 
     def test_03_contact_mode_slipping(self):
-        v_input = wp.array([vec3f(0.1, 0.0, 0.0)], dtype=vec3f, device=self.default_device)
-        mode_output = wp.zeros(shape=(1,), dtype=int32, device=self.default_device)
+        v_input = wp.array([wp.vec3f(0.1, 0.0, 0.0)], dtype=wp.vec3f, device=self.default_device)
+        mode_output = wp.zeros(shape=(1,), dtype=wp.int32, device=self.default_device)
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
@@ -653,7 +658,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         return model, state, contacts
 
     @staticmethod
@@ -1129,7 +1136,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-        contacts = model.collide(state)
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
         nc_orig = int(contacts.rigid_contact_count.numpy()[0])
         self.assertEqual(nc_orig, 9 + 9 + 4, f"Expected 22 contacts (9+9+4), got {nc_orig}")
 
@@ -1203,7 +1212,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         for margin in (0.0, 0.05):
             with self.subTest(margin=margin):
                 sphere = ModelBuilder()
-                body = sphere.add_link()
+                body = sphere.add_link(xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()))
                 sphere.add_shape_sphere(
                     body,
                     radius=radius,
@@ -1212,7 +1221,7 @@ class TestGeometryContactConversions(unittest.TestCase):
                 joint = sphere.add_joint_free(
                     parent=-1,
                     child=body,
-                    parent_xform=wp.transform(p=wp.vec3(0.0, 0.0, radius), q=wp.quat_identity()),
+                    parent_xform=wp.transform_identity(),
                     child_xform=wp.transform_identity(),
                 )
                 sphere.add_articulation([joint])
@@ -1224,7 +1233,9 @@ class TestGeometryContactConversions(unittest.TestCase):
 
                 state = model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                contacts = model.collide(state)
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
+                collision_pipeline.collide(state, contacts)
                 contact_count = int(contacts.rigid_contact_count.numpy()[0])
                 self.assertEqual(contact_count, 1)
 

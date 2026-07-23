@@ -76,18 +76,18 @@ def get_mc_tables(device):
         ]
     )
 
-    tri_range_table = wp._src.marching_cubes._get_mc_case_to_tri_range_table(device)
-    tri_local_inds_table = wp._src.marching_cubes._get_mc_tri_local_inds_table(device)
-    corner_offsets_table = wp.array(wp._src.marching_cubes.mc_cube_corner_offsets, dtype=wp.vec3ub, device=device)
+    tri_local_inds = np.asarray(wp.MarchingCubes.TRI_LOCAL_INDICES, dtype=np.int32)
+    tri_range_table = wp.array(wp.MarchingCubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
+    tri_local_inds_table = wp.array(tri_local_inds, dtype=wp.int32, device=device)
+    corner_offsets_table = wp.array(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
     edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
 
     # Create flattened table:
     # Instead of tri_local_inds_table[i] -> edge_to_verts_table[edge_idx, 0/1],
     # we directly map tri_local_inds_table[i] -> vec2i(v_from, v_to)
-    tri_local_inds_np = tri_local_inds_table.numpy()
-    flat_edge_verts = np.zeros((len(tri_local_inds_np), 2), dtype=np.uint8)
+    flat_edge_verts = np.zeros((len(tri_local_inds), 2), dtype=np.uint8)
 
-    for i, edge_idx in enumerate(tri_local_inds_np):
+    for i, edge_idx in enumerate(tri_local_inds):
         flat_edge_verts[i, 0] = edge_to_verts[edge_idx, 0]
         flat_edge_verts[i, 1] = edge_to_verts[edge_idx, 1]
 

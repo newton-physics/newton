@@ -5,7 +5,9 @@ import base64
 import os
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -14,6 +16,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
 
 try:
@@ -366,6 +369,46 @@ def parse_urdf(urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] 
 
 
 class TestImportUrdfBasic(unittest.TestCase):
+    def test_collision_visibility_is_scoped_to_entire_import(self):
+        """URDF collider visibility must follow roles authored by the whole asset."""
+        mixed_urdf = """
+<robot name="mixed_visibility">
+    <link name="visual_link">
+        <visual><geometry><box size="1 1 1"/></geometry></visual>
+    </link>
+    <link name="collision_link">
+        <collision><geometry><sphere radius="0.5"/></geometry></collision>
+    </link>
+    <joint name="fixed" type="fixed">
+        <parent link="visual_link"/>
+        <child link="collision_link"/>
+    </joint>
+</robot>
+"""
+        mixed_builder = newton.ModelBuilder()
+        parse_urdf(mixed_urdf, mixed_builder)
+
+        self.assertEqual(mixed_builder.shape_count, 2)
+        visual_flags, collision_flags = mixed_builder.shape_flags
+        self.assertTrue(visual_flags & newton.ShapeFlags.VISIBLE)
+        self.assertFalse(visual_flags & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_flags & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(collision_flags & newton.ShapeFlags.VISIBLE)
+
+        collision_only_urdf = """
+<robot name="collision_only">
+    <link name="collision_link">
+        <collision><geometry><sphere radius="0.5"/></geometry></collision>
+    </link>
+</robot>
+"""
+        collision_only_builder = newton.ModelBuilder()
+        parse_urdf(collision_only_urdf, collision_only_builder)
+
+        collision_only_flags = collision_only_builder.shape_flags[0]
+        self.assertTrue(collision_only_flags & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(collision_only_flags & newton.ShapeFlags.VISIBLE)
+
     def test_sphere_urdf(self):
         # load a urdf containing a sphere with r=0.5 and pos=(1.0,2.0,3.0)
         builder = newton.ModelBuilder()
@@ -458,6 +501,52 @@ class TestImportUrdfBasic(unittest.TestCase):
             self.assertIsNotNone(mesh.texture)
             self.assertEqual(mesh.texture, texture_uri)
 
+    def test_dae_pycollada_shape_deprecation_filtered(self):
+        """Verify known pycollada NumPy deprecations do not fail strict warning runs."""
+
+        def make_loader(message: str, module_name: str):
+            def fake_load(filename, force=None):
+                warnings.warn_explicit(
+                    message=message,
+                    category=DeprecationWarning,
+                    filename=str(filename),
+                    lineno=1,
+                    module=module_name,
+                )
+                return SimpleNamespace(
+                    vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+                    faces=np.array([[0, 1, 2]], dtype=np.int32),
+                    vertex_normals=np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=np.float32),
+                )
+
+            return fake_load
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dae_path = Path(temp_dir) / "triangle.dae"
+            dae_path.write_text("<COLLADA/>")
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader(
+                        "Setting the shape on a NumPy array has been deprecated in NumPy 2.5.",
+                        "collada.polylist",
+                    ),
+                ):
+                    meshes = load_meshes_from_file(str(dae_path), maxhullvert=0)
+
+            self.assertEqual(len(meshes), 1)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                with patch(
+                    "trimesh.load",
+                    side_effect=make_loader("Different Collada deprecation", "collada.polylist"),
+                ):
+                    with self.assertRaises(DeprecationWarning):
+                        load_meshes_from_file(str(dae_path), maxhullvert=0)
+
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
         parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
@@ -542,6 +631,35 @@ class TestImportUrdfBasic(unittest.TestCase):
                 else:
                     self.assertIn(filter_pair, builder.shape_collision_filter_pairs)
 
+    def test_self_collision_filter_pairs_reference_only_colliding_shapes(self):
+        urdf = """<?xml version="1.0"?>
+        <robot name="visual_filter_test">
+          <link name="link1">
+            <collision><geometry><sphere radius="0.1"/></geometry></collision>
+            <visual><geometry><sphere radius="0.1"/></geometry></visual>
+          </link>
+          <link name="link2">
+            <collision><geometry><sphere radius="0.1"/></geometry></collision>
+            <visual><geometry><sphere radius="0.1"/></geometry></visual>
+          </link>
+          <joint name="j1" type="revolute">
+            <parent link="link1"/>
+            <child link="link2"/>
+            <axis xyz="0 0 1"/>
+            <limit lower="-1" upper="1" effort="10" velocity="1"/>
+          </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_urdf(urdf, enable_self_collisions=False)
+
+        colliding = {i for i in range(builder.shape_count) if builder.shape_flags[i] & newton.ShapeFlags.COLLIDE_SHAPES}
+        self.assertEqual(len(colliding), 2)
+        filter_pairs = set(builder.shape_collision_filter_pairs)
+        self.assertIn(tuple(sorted(colliding)), filter_pairs)
+        for pair in filter_pairs:
+            self.assertLessEqual(set(pair), colliding)
+
     def test_revolute_joint_urdf(self):
         # Test a simple revolute joint with axis and limits
         builder = newton.ModelBuilder()
@@ -588,7 +706,8 @@ class TestImportUrdfBasic(unittest.TestCase):
                 state_0 = model.state()
                 state_1 = model.state()
                 control = model.control()
-                contacts = model.contacts()
+                collision_pipeline = newton.CollisionPipeline(model)
+                contacts = collision_pipeline.contacts()
                 newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
 
                 root_body = int(model.joint_child.numpy()[0])

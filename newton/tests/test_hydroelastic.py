@@ -992,6 +992,98 @@ def test_custom_pressure_func_reduced_matches_unreduced_cubic(test, device):
         )
 
 
+@wp.struct
+class _DecoupledPressureData:
+    coeff: wp.float32  # Pa/m, fixed — deliberately independent of shape_material_kh
+
+
+@wp.func
+def _decoupled_pressure(signed_depth: wp.float32, shape_idx: wp.int32, data: _DecoupledPressureData) -> wp.float32:
+    # Linear in penetration but with a coefficient that does NOT read
+    # shape_material_kh. Models the documented custom-pressure_func case where
+    # the pressure magnitude is decoupled from the per-shape hydroelastic
+    # stiffness. The direction-reliability gate must not assume otherwise.
+    return -data.coeff * signed_depth
+
+
+def _build_offset_cube_sphere_scene(device, kh, cube_half=0.1, sphere_radius=0.1, x_offset=0.05):
+    """Cube-on-ground + sphere-on-cube offset laterally so the contact patch is
+    off-center (non-trivial center of pressure and tilted normals) and the
+    shape ``kh`` is configurable. Returns (model, state, sphere_body, rest_z)."""
+    shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=128,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-0.01, 0.01),
+        gap=0.01,
+        kh=kh,
+    )
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = shape_cfg
+    builder.add_ground_plane()
+
+    cube_body = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, cube_half), wp.quat_identity()),
+        label="cube",
+    )
+    builder.add_shape_box(body=cube_body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    rest_z = 2 * cube_half + sphere_radius
+    sphere_body = builder.add_body(
+        xform=wp.transform(wp.vec3(x_offset, 0.0, rest_z), wp.quat_identity()),
+        label="sphere",
+    )
+    builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    return model, state, sphere_body, rest_z
+
+
+def test_reduction_preserves_force_at_high_kh_decoupled_pressure(test, device):
+    """Reduction must preserve net force under a kh-decoupled pressure law at high kh.
+
+    The direction-reliability gate uses a pressure-law-agnostic geometric
+    depth-volume, so reduction must reproduce the unreduced aggregate force at
+    any stiffness and for any pressure law. This guards against a regression to a
+    pressure-scaled gate (e.g. dividing the aggregate force magnitude by
+    ``shape_material_kh`` before the ``EPS_LARGE`` comparison): under a custom
+    ``pressure_func`` whose magnitude does not scale with kh, a large kh would
+    drive that scaled magnitude below ``EPS_LARGE`` and silently disable anchor /
+    normal matching, so the reduced contacts would stop reproducing the unreduced
+    force. The sphere-over-edge geometry spreads the contact normals so the
+    resulting direction error is observable in the net force.
+    """
+    kh = 1.0e10
+    model, state, sphere_body, rest_z = _build_offset_cube_sphere_scene(device, kh=kh, x_offset=0.1)
+    pdata = _DecoupledPressureData()
+    pdata.coeff = 1.0e6
+    common = {"output_contact_surface": True, "pressure_func": _decoupled_pressure, "pressure_data": pdata}
+    cfg_red = HydroelasticSDF.Config(
+        reduce_contacts=True, anchor_contact=True, normal_matching=True, moment_matching=True, **common
+    )
+    cfg_unr = HydroelasticSDF.Config(reduce_contacts=False, anchor_contact=False, **common)
+    (pipe_red, c_red), (pipe_unr, c_unr) = _make_pipelines(model, [cfg_red, cfg_unr], [500, 20000])
+
+    for pen in (2e-3, 5e-3):
+        wp.launch(_set_body_z_kernel, dim=1, inputs=[state.body_q, sphere_body, rest_z - pen], device=device)
+        pipe_red.collide(state, c_red)
+        pipe_unr.collide(state, c_unr)
+
+        f_red = _compute_net_force(c_red, model, state)
+        f_unr = _compute_net_force(c_unr, model, state)
+        fz = abs(f_unr[2])
+        test.assertGreater(fz, 0.0, f"pen={pen}: unreduced Fz should be nonzero")
+        rel = np.linalg.norm(f_red - f_unr) / fz
+        test.assertLess(
+            rel,
+            0.01,
+            f"pen={pen}: reduced net force deviates {rel * 100:.2f}% from unreduced at kh={kh:.0e} "
+            f"(red={f_red}, unr={f_unr})",
+        )
+
+
 def test_custom_pressure_func_requires_pressure_data(test, device):
     """Setting ``pressure_func`` without ``pressure_data`` must raise."""
     model, state, _, _ = _build_cube_cube_scene(device)
@@ -1166,7 +1258,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     inertia_lower = (1.0 / 6.0) * mass_lower * box_size_lower * box_size_lower
     I_m_lower = wp.mat33(inertia_lower, 0.0, 0.0, 0.0, inertia_lower, 0.0, 0.0, 0.0, inertia_lower)
 
-    builder = newton.ModelBuilder(gravity=-gravity)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
 
     lower_body_indices = []
     upper_body_indices = []
@@ -1345,6 +1437,40 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         )
 
 
+def test_convex_mesh_hydroelastic_contacts(test, device):
+    """SDF-backed convex meshes should be valid hydroelastic shapes."""
+    cube_mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    cube_mesh.build_sdf(max_resolution=32, narrow_band_range=(-0.1, 0.1), margin=0.02, device=device)
+
+    cfg = newton.ModelBuilder.ShapeConfig(is_hydroelastic=True, gap=0.02)
+    builder = newton.ModelBuilder()
+    body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+    body_b = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.9), wp.quat_identity()))
+    builder.add_shape_convex_hull(body=body_a, mesh=cube_mesh, cfg=cfg)
+    builder.add_shape_convex_hull(body=body_b, mesh=cube_mesh, cfg=cfg)
+
+    model = builder.finalize(device=device)
+    collision_pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="sap",
+        rigid_contact_max=256,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_mult_contact=2),
+    )
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(model.state(), contacts)
+
+    test.assertIsNotNone(collision_pipeline.hydroelastic_sdf)
+    test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
 # --- Test class ---
 
 
@@ -1460,6 +1586,14 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_convex_mesh_hydroelastic_contacts",
+    test_convex_mesh_hydroelastic_contacts,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_buffer_fraction_no_crash",
     test_buffer_fraction_no_crash,
     devices=cuda_devices,
@@ -1564,6 +1698,14 @@ add_function_test(
     TestHydroelastic,
     "test_custom_pressure_func_reduced_matches_unreduced_cubic",
     test_custom_pressure_func_reduced_matches_unreduced_cubic,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_reduction_preserves_force_at_high_kh_decoupled_pressure",
+    test_reduction_preserves_force_at_high_kh_decoupled_pressure,
     devices=cuda_devices,
     check_output=False,
 )

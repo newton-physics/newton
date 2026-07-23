@@ -3,7 +3,9 @@
 
 """Implicit MPM solver."""
 
-import warnings
+from __future__ import annotations
+
+import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -16,10 +18,13 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
-from ...sim import ModelFlags
+from ...sim import ModelFlags, StateFlags
+from ...utils.deprecation import deprecate_nonkeyword_arguments
+from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .rasterized_collisions import (
+    Collider,
     build_rigidity_operator,
     interpolate_collider_normals,
     project_outside_collider,
@@ -37,6 +42,7 @@ from .implicit_mpm_solver_kernels import (
     advect_particles,
     allocate_by_voxels,
     average_elastic_parameters,
+    build_active_particle_mask,
     collision_weight_field,
     compliance_form,
     compute_bounds,
@@ -45,6 +51,7 @@ from .implicit_mpm_solver_kernels import (
     compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
     free_velocity,
+    integrate_active_fraction,
     integrate_collider_fraction,
     integrate_collider_fraction_apic,
     integrate_elastic_parameters,
@@ -67,6 +74,7 @@ from .implicit_mpm_solver_kernels import (
     mat31,
     mat66,
     node_color,
+    record_volume_rebuild_status,
     rotate_matrix_columns,
     rotate_matrix_rows,
     scatter_field_dof_values,
@@ -87,6 +95,54 @@ def _as_2d_array(array, shape, dtype):
         dtype=dtype,
         grad=None if array.grad is None else _as_2d_array(array.grad, shape, dtype),
     )
+
+
+def _sparse_grid_rebuild_error(status: int) -> RuntimeError:
+    capacity_flags = (
+        (wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED, "active voxels"),
+        (wp.Volume.REBUILD_LEAF_CAPACITY_EXCEEDED, "leaf nodes"),
+        (wp.Volume.REBUILD_LOWER_CAPACITY_EXCEEDED, "lower internal nodes"),
+        (wp.Volume.REBUILD_UPPER_CAPACITY_EXCEEDED, "upper internal nodes"),
+    )
+    exceeded = [name for flag, name in capacity_flags if status & flag]
+    if exceeded:
+        details = ", ".join(exceeded)
+        suggestions = []
+        if status & wp.Volume.REBUILD_VOXEL_CAPACITY_EXCEEDED:
+            suggestions.append("increase Config.max_active_cell_count")
+        if status & wp.Volume.REBUILD_LEAF_CAPACITY_EXCEEDED:
+            suggestions.append("set or increase Config.max_leaf_node_count")
+        if status & wp.Volume.REBUILD_LOWER_CAPACITY_EXCEEDED:
+            suggestions.append("set or increase Config.max_lower_node_count")
+        if status & wp.Volume.REBUILD_UPPER_CAPACITY_EXCEEDED:
+            suggestions.append("set or increase Config.max_upper_node_count")
+        if status & (
+            wp.Volume.REBUILD_LEAF_CAPACITY_EXCEEDED
+            | wp.Volume.REBUILD_LOWER_CAPACITY_EXCEEDED
+            | wp.Volume.REBUILD_UPPER_CAPACITY_EXCEEDED
+        ):
+            suggestions.append("reduce the active grid's spatial spread")
+        suggestion = " or ".join(suggestions)
+        return RuntimeError(
+            f"Implicit MPM sparse grid rebuild capacity was exceeded for {details} (status {status}). "
+            f"To avoid overflow, {suggestion}."
+        )
+    return RuntimeError(f"Implicit MPM sparse grid rebuild failed with status {status}.")
+
+
+def _validate_sparse_grid_node_capacity(name: str, value: int) -> int:
+    """Validate one optional NanoVDB hierarchy capacity."""
+    if isinstance(value, bool):
+        raise ValueError(f"Config.{name} must be -1 or a positive integer, got {value!r}.")
+    try:
+        capacity = operator.index(value)
+    except TypeError as error:
+        raise ValueError(f"Config.{name} must be -1 or a positive integer, got {value!r}.") from error
+    if capacity != -1 and not 0 < capacity <= np.iinfo(np.uint32).max:
+        raise ValueError(
+            f"Config.{name} must be -1 or a positive integer no greater than {np.iinfo(np.uint32).max}, got {capacity}."
+        )
+    return capacity
 
 
 def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polynomial | None = None):
@@ -223,6 +279,8 @@ class ImplicitMPMScratchpad:
         use_pic_collider_basis = collider_basis_str[:3] == "pic"
         use_pic_strain_basis = strain_basis_str[:3] == "pic"
 
+        # The rebuildable sparse grid (like the fixed grid) reuses the same geometry object
+        # across steps, so refresh retained topologies before rebuilding their partitions.
         if self.domain.geometry is not self.grid:
             self.grid = self.domain.geometry
 
@@ -237,6 +295,15 @@ class ImplicitMPMScratchpad:
                 self._collision_basis = _make_grid_basis_space(
                     self.grid, collider_basis_str, family=fem.Polynomial.EQUISPACED_CLOSED
                 )
+        else:
+            topologies = {id(self._velocity_basis.topology): self._velocity_basis.topology}
+            if not use_pic_strain_basis:
+                topologies[id(self._strain_basis.topology)] = self._strain_basis.topology
+            if not use_pic_collider_basis:
+                topologies[id(self._collision_basis.topology)] = self._collision_basis.topology
+            for topology in topologies.values():
+                if hasattr(topology, "rebuild"):
+                    topology.rebuild()
 
         # Point-based basis space needs to be rebuilt even when the geo does not change
         if use_pic_strain_basis:
@@ -611,7 +678,7 @@ class LastStepData:
             self.body_q_prev.assign(collider_body_q)
 
 
-class SolverImplicitMPM(SolverBase):
+class SolverImplicitMPM(SolverBase, CouplingInterface):
     """Implicit MPM solver for granular and elasto-plastic materials.
 
     Implements an implicit Material Point Method (MPM) algorithm roughly
@@ -663,15 +730,16 @@ class SolverImplicitMPM(SolverBase):
         warmstart solvers left-to-right, e.g. ``("cr", "gs")`` or
         ``("cg", "jacobi", "gs")``."""
         warmstart_mode: Literal["none", "auto", "particles", "grid", "smoothed"] = "auto"
-        """Warmstart mode to use for the rheology solver."""
-        collider_velocity_mode: Literal["forward", "backward", "instantaneous", "finite_difference"] = "forward"
-        """Collider velocity computation mode. ``'forward'`` uses the current velocity,
-        ``'backward'`` uses the previous timestep position.
+        """Warmstart mode to use for the rheology solver.
 
-        .. deprecated:: 1.1
-            Aliases ``'instantaneous'`` (= ``'forward'``) and ``'finite_difference'``
-            (= ``'backward'``) are deprecated and will be removed in a future release.
+        ``"auto"`` uses particle-backed stress for rebuildable sparse grids
+        and ``P1d``/``Q1d`` strain bases, and grid-backed stress otherwise.
+        Grid-backed ``"grid"`` and ``"smoothed"`` modes are not supported for
+        rebuildable sparse grids because their topology changes in place.
         """
+        collider_velocity_mode: Literal["forward", "backward"] = "forward"
+        """Collider velocity computation mode. ``'forward'`` uses the current velocity,
+        ``'backward'`` uses the previous timestep position."""
 
         # grid
         voxel_size: float = 0.1
@@ -681,7 +749,28 @@ class SolverImplicitMPM(SolverBase):
         grid_padding: int = 0
         """Number of empty cells to add around particles when allocating the grid."""
         max_active_cell_count: int = -1
-        """Maximum number of active cells to use for active subsets of dense grids. -1 means unlimited."""
+        """Maximum number of active grid cells. A positive value reserves persistent
+        sparse-grid capacity and bounds active subsets of dense grids.
+        ``-1`` means unlimited and retains per-step sparse-grid allocation. Call
+        :meth:`check_status` after graph replay to detect overflow."""
+        max_leaf_node_count: int = -1
+        """Maximum NanoVDB leaf-node count for a rebuildable sparse grid.
+
+        ``-1`` reserves one leaf per :attr:`max_active_cell_count`, the worst
+        case for arbitrarily scattered active cells.
+        """
+        max_lower_node_count: int = -1
+        """Maximum NanoVDB lower internal-node count.
+
+        ``-1`` estimates the initial topology with spreading headroom, capped
+        by the resolved leaf-node capacity.
+        """
+        max_upper_node_count: int = -1
+        """Maximum NanoVDB upper internal-node count.
+
+        ``-1`` estimates the initial topology with spreading headroom, capped
+        by the resolved lower-node capacity.
+        """
         transfer_scheme: Literal["apic", "pic"] = "apic"
         """Transfer scheme to use for particle-grid transfers."""
         integration_scheme: Literal["pic", "gimp"] = "pic"
@@ -914,10 +1003,12 @@ class SolverImplicitMPM(SolverBase):
             )
         )
 
+    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: newton.Model,
         config: Config,
+        *,
         temporary_store: fem.TemporaryStore | None = None,
         verbose: bool | None = None,
         enable_timers: bool = False,
@@ -939,46 +1030,53 @@ class SolverImplicitMPM(SolverBase):
 
         self.grid_padding = config.grid_padding
         self.grid_type = config.grid_type
+        self.max_active_cell_count = config.max_active_cell_count
+        self.max_leaf_node_count = _validate_sparse_grid_node_capacity(
+            "max_leaf_node_count", config.max_leaf_node_count
+        )
+        self.max_lower_node_count = _validate_sparse_grid_node_capacity(
+            "max_lower_node_count", config.max_lower_node_count
+        )
+        self.max_upper_node_count = _validate_sparse_grid_node_capacity(
+            "max_upper_node_count", config.max_upper_node_count
+        )
+        strain_basis = config.strain_basis
+        collider_basis = config.collider_basis
+        strain_rebuild_safe = strain_basis[:3] == "pic" or strain_basis in ("P0", "P1d", "Q1d", "Q1")
+        collider_rebuild_safe = collider_basis[:3] == "pic" or collider_basis in ("Q1", "S2", "S3")
+        self._sparse_rebuildable = (
+            self.grid_type == "sparse"
+            and self.max_active_cell_count > 0
+            and self.grid_padding == 0
+            and self.velocity_basis == "Q1"
+            and strain_rebuild_safe
+            and collider_rebuild_safe
+        )
+        self._grid_status = None
+        self._grid_accumulated_status = None
+        self._grid_point_mask = None
         self.solver = _resolve_solver_spec(config.solver, self.velocity_basis)
         self.coloring = any("gauss-seidel" in solver or "gs" in solver for solver in self.solver)
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
-        self.max_active_cell_count = config.max_active_cell_count
-
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
 
-        # Map deprecated aliases to canonical values
-        if config.collider_velocity_mode == "finite_difference":
-            warnings.warn(
-                "collider_velocity_mode='finite_difference' is deprecated, use 'backward' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.collider_velocity_mode = "backward"
-        elif config.collider_velocity_mode == "instantaneous":
-            warnings.warn(
-                "collider_velocity_mode='instantaneous' is deprecated, use 'forward' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            self.collider_velocity_mode = "forward"
-        else:
-            if config.collider_velocity_mode not in ("forward", "backward"):
-                raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
-            self.collider_velocity_mode = config.collider_velocity_mode
+        if config.collider_velocity_mode not in ("forward", "backward"):
+            raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
+        self.collider_velocity_mode = config.collider_velocity_mode
 
-        if config.warmstart_mode == "none":
-            self._stress_warmstart = ""
-        elif config.warmstart_mode == "auto":
-            if self.strain_basis in ("P1d", "Q1d"):
-                self._stress_warmstart = "particles"
-            else:
-                self._stress_warmstart = "grid"
-        else:
-            if config.warmstart_mode not in ("particles", "grid", "smoothed"):
-                raise ValueError(f"Invalid warmstart mode: {config.warmstart_mode}")
-            self._stress_warmstart = config.warmstart_mode
+        warmstart_mode = config.warmstart_mode
+        if warmstart_mode not in ("none", "auto", "particles", "grid", "smoothed"):
+            raise ValueError(f"Invalid warmstart mode: {warmstart_mode}")
+        if warmstart_mode == "auto":
+            warmstart_mode = "particles" if self._sparse_rebuildable or self.strain_basis in ("P1d", "Q1d") else "grid"
+        if self._sparse_rebuildable and warmstart_mode in ("grid", "smoothed"):
+            raise ValueError(
+                f"Config.warmstart_mode={config.warmstart_mode!r} is not supported with rebuildable sparse grids "
+                "because their topology changes in place; use 'none', 'auto', or 'particles'."
+            )
+        self._stress_warmstart = "" if warmstart_mode == "none" else warmstart_mode
 
         self._use_cuda_graph = self.model.device.is_cuda and wp.is_conditional_graph_supported()
 
@@ -1002,12 +1100,14 @@ class SolverImplicitMPM(SolverBase):
 
     def setup_collider(
         self,
+        *,
         collider_meshes: list[wp.Mesh] | None = None,
         collider_body_ids: list[int] | None = None,
         collider_margins: list[float] | None = None,
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
+        collider_particle_ids: list[list[int] | wp.array[int] | None] | None = None,
         model: newton.Model | None = None,
         body_com: wp.array | None = None,
         body_mass: wp.array | None = None,
@@ -1027,6 +1127,7 @@ class SolverImplicitMPM(SolverBase):
             collider_friction: Per-mesh Coulomb friction coefficients.
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold (m).
+            collider_particle_ids: For deformable mesh colliders, model particle ids corresponding to each mesh vertex.
             model: The model to read collider properties from. Default to solver's model.
             body_com: For dynamic colliders, per-body center of mass.
             body_mass: For dynamic colliders, per-body mass. Pass zeros for kinematic bodies.
@@ -1040,6 +1141,7 @@ class SolverImplicitMPM(SolverBase):
             collider_friction=collider_friction,
             collider_adhesion=collider_adhesion,
             collider_projection_threshold=collider_projection_threshold,
+            collider_particle_ids=collider_particle_ids,
             model=model,
             body_com=body_com,
             body_mass=body_mass,
@@ -1053,6 +1155,94 @@ class SolverImplicitMPM(SolverBase):
     def voxel_size(self) -> float:
         """Grid voxel size used by the solver."""
         return self._mpm_model.voxel_size
+
+    @property
+    def supports_graph_capture(self) -> bool:
+        """Return whether this solver uses a validated graph-capture configuration."""
+        return self._graph_capture_unsupported_reason() is None
+
+    def _graph_capture_unsupported_reason(self) -> str | None:
+        device = self.model.device
+        if not device.is_cuda:
+            if self.grid_type == "sparse":
+                return "Rebuildable sparse-grid graph capture currently requires CUDA."
+            return "CPU graph capture is not currently supported for SolverImplicitMPM."
+        if not wp.is_mempool_enabled(device):
+            return "CUDA graph capture requires the Warp memory pool to be enabled."
+        if not wp.is_conditional_graph_supported():
+            return "CUDA graph capture requires Warp conditional graph support."
+        if self.enable_timers:
+            return "Graph capture requires enable_timers=False."
+
+        if self.grid_type == "fixed":
+            if self.max_active_cell_count <= 0:
+                return "Fixed-grid graph capture requires Config.max_active_cell_count > 0."
+            return None
+        if self.grid_type == "sparse":
+            if not self._sparse_rebuildable:
+                return (
+                    "Sparse-grid graph capture requires a rebuildable sparse grid with positive "
+                    "Config.max_active_cell_count, Config.grid_padding=0, velocity_basis='Q1', and supported "
+                    "strain and collider bases."
+                )
+            return None
+        return f"Graph capture does not support Config.grid_type={self.grid_type!r}."
+
+    def prepare_graph_capture(self, contacts: newton.Contacts | None = None) -> None:
+        """Materialize graph-persistent MPM topology and buffers without stepping.
+
+        Args:
+            contacts: Unused. Implicit MPM manages collisions internally.
+
+        Raises:
+            RuntimeError: If the resolved configuration is not supported in an
+                outer graph.
+        """
+        del contacts
+        unsupported_reason = self._graph_capture_unsupported_reason()
+        if unsupported_reason is not None:
+            raise RuntimeError(f"SolverImplicitMPM does not support outer graph capture. {unsupported_reason}")
+
+        with wp.ScopedDevice(self.model.device):
+            scratch = self._scratchpad
+            if isinstance(scratch.grid, fem.Nanogrid) and (
+                self.strain_basis in ("S2", "S3") or self.collider_basis in ("S2", "S3")
+            ):
+                _ = scratch.grid.edge_grid
+            self._require_velocity_space_fields(scratch, self._mpm_model.has_compliant_particles)
+            self._require_collision_space_fields(scratch, self._last_step_data)
+            self._require_strain_space_fields(scratch, self._last_step_data)
+
+    def _check_sparse_grid_rebuild_status(self) -> None:
+        """Raise if a rebuildable sparse grid exceeded its reserved capacity.
+
+        The check synchronizes the solver device and is therefore intended for
+        initialization diagnostics or calls made after graph replay, not
+        from inside graph capture.
+        """
+        if self._grid_status is None:
+            return
+        if self.model.device.is_capturing:
+            raise RuntimeError("Cannot inspect sparse grid rebuild status during graph capture")
+
+        status = int(self._grid_status.numpy()[0])
+        if self._grid_accumulated_status is not None:
+            status |= int(self._grid_accumulated_status.numpy()[0])
+        if status != wp.Volume.REBUILD_SUCCESS:
+            raise _sparse_grid_rebuild_error(status)
+
+    def check_status(self) -> None:
+        """Raise if a prior solver operation reported an asynchronous failure."""
+        self._check_sparse_grid_rebuild_status()
+
+    def _clear_sparse_grid_rebuild_status(self) -> None:
+        """Clear current and accumulated sparse-grid rebuild status."""
+        if self.model.device.is_capturing:
+            raise RuntimeError("Cannot clear sparse grid rebuild status during graph capture")
+        if self._grid_status is not None:
+            self._grid_status.zero_()
+        if self._grid_accumulated_status is not None:
+            self._grid_accumulated_status.zero_()
 
     @override
     def step(
@@ -1090,7 +1280,247 @@ class SolverImplicitMPM(SolverBase):
         if flags & ModelFlags.MODEL_PROPERTIES:
             self._mpm_model.notify_particle_material_changed()
 
-    def collect_collider_impulses(self, state: newton.State) -> tuple[wp.array, wp.array, wp.array]:
+    @override
+    def coupling_eval_gravity_acceleration(
+        self,
+        out_body_acceleration: wp.array[wp.vec3] | None,
+        out_particle_acceleration: wp.array[wp.vec3] | None,
+    ) -> None:
+        """Evaluate gravity acceleration applied internally by the MPM solver."""
+        if out_body_acceleration is not None:
+            out_body_acceleration.zero_()
+        if out_particle_acceleration is not None:
+            super().coupling_eval_gravity_acceleration(None, out_particle_acceleration)
+
+    def coupling_notify_input_state_update(
+        self,
+        state: newton.State,
+        flags: StateFlags | int,
+        *,
+        iteration_restart: bool = False,
+        dt: float = 0.0,
+    ) -> None:
+        """Synchronize deformable collider meshes after particle input-state updates."""
+        del dt
+        flags = int(flags)
+        update_points = bool(flags & StateFlags.PARTICLE_Q)
+        update_velocities = bool(flags & StateFlags.PARTICLE_QD)
+        if not (update_points or update_velocities) or not self._mpm_model.deformable_collider_vertex_ranges:
+            return
+
+        sync_points = update_points and state.particle_q is not None
+        sync_velocities = update_velocities and state.particle_qd is not None
+        if not (sync_points or sync_velocities):
+            return
+
+        # On iteration restart the source state is the same as at the start of
+        # the outer step, so the collider mesh and its BVH are still valid from
+        # the first call this step — skip the resync and refit.
+        if iteration_restart:
+            return
+
+        for collider_id, vertex_start, vertex_end in self._mpm_model.deformable_collider_vertex_ranges:
+            vertex_count = vertex_end - vertex_start
+            if vertex_count <= 0:
+                continue
+
+            mesh = self._mpm_model._collider_meshes[collider_id]
+            if sync_points:
+                wp.launch(
+                    _sync_mpm_proxy_particle_points_kernel,
+                    dim=vertex_count,
+                    inputs=[
+                        vertex_start,
+                        state.particle_q,
+                        self._mpm_model.collider.collider_particle_ids,
+                        mesh.points,
+                    ],
+                    device=self.model.device,
+                )
+                mesh.refit()
+            if sync_velocities:
+                wp.launch(
+                    _sync_mpm_proxy_particle_velocities_kernel,
+                    dim=vertex_count,
+                    inputs=[
+                        vertex_start,
+                        state.particle_qd,
+                        self._mpm_model.collider.collider_particle_ids,
+                        mesh.velocities,
+                    ],
+                    device=self.model.device,
+                )
+
+    def coupling_rewind_proxy_body(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        state: newton.State,
+        coupling_forces: wp.array[wp.spatial_vector],
+        body_gravity_acceleration: wp.array[wp.vec3],
+        dt: float,
+    ) -> None:
+        """Remove lagged velocity-level proxy wrenches from collider velocities."""
+        del body_gravity_acceleration
+        if state.body_q is None or state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
+            return
+
+        wp.launch(
+            _rewind_mpm_proxy_bodies_kernel,
+            dim=body_local_to_proxy_global.shape[0],
+            inputs=[
+                float(dt),
+                body_local_to_proxy_global,
+                coupling_forces,
+                state.body_q,
+                self.model.body_inv_inertia,
+                self.model.body_inv_mass,
+                state.body_qd,
+            ],
+            device=self.model.device,
+        )
+
+    def coupling_harvest_proxy_wrenches(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        out_body_f: wp.array[wp.spatial_vector],
+        *,
+        body_qd_before: wp.array[wp.spatial_vector],
+        state: newton.State,
+        state_out: newton.State,
+        contacts: newton.Contacts | None,
+        dt: float,
+    ) -> None:
+        """Convert MPM collider grid impulses to proxy-body wrenches."""
+        del body_qd_before, state_out, contacts
+        if dt <= 0.0:
+            raise ValueError("MPM proxy wrench harvesting requires a positive dt")
+        out_body_f.zero_()
+
+        impulses, positions, collider_ids = self.collect_collider_impulses(state)
+        if collider_ids.shape[0] == 0:
+            return
+        body_q = state.body_q if state.body_q is not None else self.model.body_q
+
+        wp.launch(
+            _harvest_mpm_proxy_wrenches_kernel,
+            dim=collider_ids.shape[0],
+            inputs=[
+                float(dt),
+                collider_ids,
+                impulses,
+                positions,
+                self.collider_body_index,
+                body_local_to_proxy_global,
+                int(newton.BodyFlags.PROXY),
+                self.model.body_flags,
+                self.model.body_com,
+                body_q,
+                out_body_f,
+            ],
+            device=self.model.device,
+        )
+
+    def coupling_rewind_proxy_particle(
+        self,
+        particle_local_to_proxy_global: wp.array[int],
+        state: newton.State,
+        coupling_forces: wp.array[wp.vec3],
+        particle_gravity_acceleration: wp.array[wp.vec3],
+        dt: float,
+    ) -> None:
+        """Remove lagged velocity-level proxy forces from proxy particle velocities."""
+        if state.particle_qd is None or particle_local_to_proxy_global.shape[0] == 0:
+            return
+
+        wp.launch(
+            _rewind_mpm_proxy_particles_kernel,
+            dim=particle_local_to_proxy_global.shape[0],
+            inputs=[
+                float(dt),
+                particle_local_to_proxy_global,
+                int(newton.ParticleFlags.PROXY),
+                int(newton.ParticleFlags.ACTIVE),
+                self.model.particle_flags,
+                self._mpm_model.particle_flags,
+                particle_gravity_acceleration,
+                coupling_forces,
+                self.model.particle_inv_mass,
+                state.particle_qd,
+            ],
+            device=self.model.device,
+        )
+        if (
+            not hasattr(self, "_proxy_particle_qd_before")
+            or self._proxy_particle_qd_before.shape != state.particle_qd.shape
+        ):
+            self._proxy_particle_qd_before = wp.empty_like(state.particle_qd)
+        wp.copy(self._proxy_particle_qd_before, state.particle_qd)
+
+    def coupling_harvest_proxy_particle_forces(
+        self,
+        particle_local_to_proxy_global: wp.array[int],
+        out_particle_f: wp.array[wp.vec3],
+        *,
+        particle_qd_before: wp.array[wp.vec3],
+        state: newton.State,
+        state_out: newton.State,
+        contacts: newton.Contacts | None,
+        dt: float,
+    ) -> None:
+        """Convert MPM proxy momentum changes and collider impulses to forces."""
+        if dt <= 0.0:
+            raise ValueError("MPM proxy particle-force harvesting requires a positive dt")
+        if particle_local_to_proxy_global.shape[0] == 0:
+            return
+
+        super().coupling_harvest_proxy_particle_forces(
+            particle_local_to_proxy_global,
+            out_particle_f,
+            particle_qd_before=particle_qd_before,
+            state=state,
+            state_out=state_out,
+            contacts=contacts,
+            dt=dt,
+        )
+
+        if not self._mpm_model.deformable_collider_vertex_ranges:
+            return
+
+        wp.launch(
+            _clear_inactive_mpm_proxy_particle_forces_kernel,
+            dim=particle_local_to_proxy_global.shape[0],
+            inputs=[
+                particle_local_to_proxy_global,
+                self._mpm_model.particle_flags,
+                int(newton.ParticleFlags.PROXY),
+                int(newton.ParticleFlags.ACTIVE),
+                out_particle_f,
+            ],
+            device=self.model.device,
+        )
+
+        impulses, positions, collider_ids = self.collect_collider_impulses(state)
+        if collider_ids.shape[0] == 0:
+            return
+
+        wp.launch(
+            _harvest_mpm_proxy_particle_forces_kernel,
+            dim=collider_ids.shape[0],
+            inputs=[
+                float(dt),
+                collider_ids,
+                impulses,
+                positions,
+                self._mpm_model.collider,
+                particle_local_to_proxy_global,
+                int(newton.ParticleFlags.PROXY),
+                self._mpm_model.particle_flags,
+                out_particle_f,
+            ],
+            device=self.model.device,
+        )
+
+    def collect_collider_impulses(self, state: newton.State | None) -> tuple[wp.array, wp.array, wp.array]:
         """Collect current collider impulses and their application positions.
 
         Returns a tuple of 3 arrays:
@@ -1141,7 +1571,7 @@ class SolverImplicitMPM(SolverBase):
                 state_in.particle_q,
                 state_in.particle_qd,
                 state_in.mpm.particle_qd_grad,
-                self.model.particle_flags,
+                self._mpm_model.particle_flags,
                 self.model.particle_mass,
                 self._mpm_model.collider,
                 state_in.body_q,
@@ -1248,8 +1678,29 @@ class SolverImplicitMPM(SolverBase):
         """
         with self._timer("Allocate grid"):
             if self.grid_type == "sparse":
-                volume = allocate_by_voxels(positions, voxel_size, padding_voxels=padding_voxels)
-                grid = fem.Nanogrid(volume, temporary_store=temporary_store)
+                point_mask = None
+                if self._sparse_rebuildable:
+                    if self._grid_status is None:
+                        self._grid_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
+                        self._grid_accumulated_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
+                    point_mask = self._update_grid_point_mask(positions, particle_flags)
+                volume = allocate_by_voxels(
+                    positions,
+                    voxel_size,
+                    padding_voxels=padding_voxels,
+                    rebuildable=self._sparse_rebuildable,
+                    max_active_voxels=self.max_active_cell_count if self._sparse_rebuildable else None,
+                    status=self._grid_status,
+                    point_mask=point_mask,
+                    max_leaf_node_count=self.max_leaf_node_count,
+                    max_lower_node_count=self.max_lower_node_count,
+                    max_upper_node_count=self.max_upper_node_count,
+                )
+                if self._sparse_rebuildable:
+                    self._check_sparse_grid_rebuild_status()
+                    grid = fem.Nanogrid(volume, temporary_store=temporary_store, rebuildable=True)
+                else:
+                    grid = fem.Nanogrid(volume, temporary_store=temporary_store)
             else:
                 # Compute bounds and transfer to host
                 device = positions.device
@@ -1293,6 +1744,28 @@ class SolverImplicitMPM(SolverBase):
                 )
 
         return grid
+
+    def _update_grid_point_mask(
+        self,
+        positions: wp.array[wp.vec3],
+        particle_flags: wp.array[wp.int32],
+    ) -> wp.array[wp.int32]:
+        if self._grid_point_mask is None:
+            self._grid_point_mask = wp.empty(
+                shape=particle_flags.shape,
+                dtype=wp.int32,
+                device=particle_flags.device,
+            )
+        elif self._grid_point_mask.shape != particle_flags.shape:
+            raise RuntimeError("Implicit MPM particle count changed after sparse grid initialization")
+
+        wp.launch(
+            build_active_particle_mask,
+            dim=particle_flags.shape[0],
+            inputs=[positions, particle_flags, self._grid_point_mask],
+            device=particle_flags.device,
+        )
+        return self._grid_point_mask
 
     def _create_geometry_partition(
         self, grid: fem.Geometry, positions: wp.array, particle_flags: wp.array, max_cell_count: int
@@ -1365,26 +1838,40 @@ class SolverImplicitMPM(SolverBase):
 
         # Rebuild grid
 
-        if self._scratchpad is not None and self.grid_type == "fixed":
+        # The fixed grid and the rebuildable sparse grid both persist across steps: the
+        # fixed grid is static, the sparse grid is refreshed in place from the current
+        # particles. Plain sparse (no rebuild support) reallocates the grid each step.
+        if self._scratchpad is not None and (self.grid_type == "fixed" or self._sparse_rebuildable):
             grid = self._scratchpad.grid
+            if self._sparse_rebuildable:
+                point_mask = self._update_grid_point_mask(positions, self._mpm_model.particle_flags)
+                grid.rebuild(positions, status=self._grid_status, point_mask=point_mask)
+                wp.launch(
+                    record_volume_rebuild_status,
+                    dim=1,
+                    inputs=[self._grid_status, self._grid_accumulated_status],
+                    device=positions.device,
+                )
         else:
             grid = self._allocate_grid(
                 positions,
-                self.model.particle_flags,
+                self._mpm_model.particle_flags,
                 voxel_size=self._mpm_model.voxel_size,
                 temporary_store=self.temporary_store,
                 padding_voxels=self.grid_padding,
             )
 
-        # Build active partition
+        # Build active partition. Plain sparse uses the whole grid; fixed and rebuildable
+        # sparse use a capacity-bounded partition that masks to the active cells (the
+        # rebuildable grid's cell buffers are capacity-sized and include unused slots).
         with self._timer("Build active partition"):
-            if self.grid_type == "sparse":
+            if self.grid_type == "sparse" and not self._sparse_rebuildable:
                 max_cell_count = -1
                 geo_partition = grid
             else:
                 max_cell_count = self.max_active_cell_count
                 geo_partition = self._create_geometry_partition(
-                    grid, positions, self.model.particle_flags, max_cell_count
+                    grid, positions, self._mpm_model.particle_flags, max_cell_count
                 )
 
         # Bin particles to grid cells
@@ -1640,6 +2127,7 @@ class SolverImplicitMPM(SolverBase):
                     "gravity": model.gravity,
                     "particle_world": model.particle_world,
                     "particle_density": mpm_model.particle_density,
+                    "particle_flags": mpm_model.particle_flags,
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=wp.vec3,
@@ -1654,6 +2142,7 @@ class SolverImplicitMPM(SolverBase):
                     values={
                         "velocity_gradients": state_in.mpm.particle_qd_grad,
                         "particle_density": mpm_model.particle_density,
+                        "particle_flags": mpm_model.particle_flags,
                         "inv_cell_volume": inv_cell_volume,
                     },
                     output=velocity_int,
@@ -1668,6 +2157,7 @@ class SolverImplicitMPM(SolverBase):
                 values={
                     "inv_cell_volume": inv_cell_volume,
                     "particle_density": mpm_model.particle_density,
+                    "particle_flags": mpm_model.particle_flags,
                 },
                 output_dtype=float,
                 temporary_store=self.temporary_store,
@@ -1769,14 +2259,19 @@ class SolverImplicitMPM(SolverBase):
             return None
 
         with self._timer("Collider compliance"):
+            body_q = state_in.body_q
+            if body_q is None:
+                body_q = wp.empty(0, dtype=wp.transform, device=self.model.device)
+
             rigidity_operator = build_rigidity_operator(
                 cell_volume=cell_volume,
                 node_volumes=scratch.collider_node_volume,
                 node_positions=scratch.collider_position_field.dof_values,
                 collider=self._mpm_model.collider,
-                body_q=state_in.body_q,
+                body_q=body_q,
                 body_mass=self._mpm_model.collider_body_mass,
                 body_inv_inertia=self._mpm_model.collider_body_inv_inertia,
+                particle_mass=self._mpm_model.model.particle_mass,
                 collider_ids=scratch.collider_ids,
             )
 
@@ -1800,10 +2295,13 @@ class SolverImplicitMPM(SolverBase):
 
         with self._timer("Elasticity"):
             node_particle_volume = fem.integrate(
-                integrate_fraction,
+                integrate_active_fraction,
                 quadrature=pic,
                 fields={"phi": scratch.fraction_test},
-                values={"inv_cell_volume": inv_cell_volume},
+                values={
+                    "inv_cell_volume": inv_cell_volume,
+                    "particle_flags": mpm_model.material_particle_flags,
+                },
                 output_dtype=float,
                 temporary_store=self.temporary_store,
             )
@@ -1814,6 +2312,7 @@ class SolverImplicitMPM(SolverBase):
                 fields={"u": scratch.velocity_test},
                 values={
                     "material_parameters": mpm_model.material_parameters,
+                    "particle_flags": mpm_model.material_particle_flags,
                     "inv_cell_volume": inv_cell_volume,
                 },
                 output_dtype=wp.vec3,
@@ -1839,6 +2338,7 @@ class SolverImplicitMPM(SolverBase):
                 },
                 values={
                     "elastic_strains": state_in.mpm.particle_elastic_strain,
+                    "particle_flags": mpm_model.material_particle_flags,
                     "inv_cell_volume": inv_cell_volume,
                     "dt": dt,
                 },
@@ -1856,6 +2356,7 @@ class SolverImplicitMPM(SolverBase):
                 },
                 values={
                     "elastic_strains": state_in.mpm.particle_elastic_strain,
+                    "particle_flags": mpm_model.material_particle_flags,
                     "inv_cell_volume": inv_cell_volume,
                     "dt": dt,
                 },
@@ -1883,6 +2384,7 @@ class SolverImplicitMPM(SolverBase):
                 values={
                     "particle_Jp": state_in.mpm.particle_Jp,
                     "material_parameters": mpm_model.material_parameters,
+                    "particle_flags": mpm_model.material_particle_flags,
                     "inv_cell_volume": inv_cell_volume,
                     "dt": dt,
                 },
@@ -1891,10 +2393,13 @@ class SolverImplicitMPM(SolverBase):
             )
 
             fem.integrate(
-                integrate_fraction,
+                integrate_active_fraction,
                 quadrature=pic,
                 fields={"phi": scratch.divergence_test},
-                values={"inv_cell_volume": inv_cell_volume},
+                values={
+                    "inv_cell_volume": inv_cell_volume,
+                    "particle_flags": mpm_model.material_particle_flags,
+                },
                 output=scratch.strain_node_particle_volume,
                 temporary_store=self.temporary_store,
             )
@@ -1964,6 +2469,7 @@ class SolverImplicitMPM(SolverBase):
                 values={
                     "dt": dt,
                     "inv_cell_volume": inv_cell_volume,
+                    "particle_flags": mpm_model.material_particle_flags,
                 },
                 output_dtype=float,
                 output=scratch.strain_matrix,
@@ -1982,7 +2488,7 @@ class SolverImplicitMPM(SolverBase):
             return None, None
         elif self.strain_basis[:3] == "pic":
             M_diag = scratch.strain_node_particle_volume
-            M_diag.assign(self._mpm_model.particle_volume * inv_cell_volume)
+            M_diag.assign(self._mpm_model.material_particle_volume * inv_cell_volume)
             return None, None
 
         # build mass matrix of PIC integration
@@ -1990,7 +2496,10 @@ class SolverImplicitMPM(SolverBase):
             mass_form,
             quadrature=pic,
             fields={"p": scratch.divergence_test, "q": scratch.divergence_trial},
-            values={"inv_cell_volume": inv_cell_volume},
+            values={
+                "inv_cell_volume": inv_cell_volume,
+                "particle_flags": self._mpm_model.material_particle_flags,
+            },
             output_dtype=float,
         )
 
@@ -2228,9 +2737,9 @@ class SolverImplicitMPM(SolverBase):
                     at=pic,
                     values={
                         "dt": dt,
-                        "particle_flags": model.particle_flags,
+                        "particle_flags": mpm_model.material_particle_flags,
                         "particle_density": mpm_model.particle_density,
-                        "particle_volume": mpm_model.particle_volume,
+                        "particle_volume": mpm_model.material_particle_volume,
                         "elastic_strain_prev": elastic_strain_prev,
                         "elastic_strain": state_out.mpm.particle_elastic_strain,
                         "particle_stress": state_out.mpm.particle_stress,
@@ -2257,7 +2766,7 @@ class SolverImplicitMPM(SolverBase):
                 advect_particles,
                 at=pic,
                 values={
-                    "particle_flags": model.particle_flags,
+                    "particle_flags": mpm_model.particle_flags,
                     "particle_volume": mpm_model.particle_volume,
                     "pos": state_out.particle_q,
                     "vel": state_out.particle_qd,
@@ -2330,6 +2839,7 @@ class SolverImplicitMPM(SolverBase):
                     },
                     values={
                         "particle_stress": state_in.mpm.particle_stress,
+                        "particle_flags": self._mpm_model.material_particle_flags,
                         "inv_cell_volume": inv_cell_volume,
                     },
                     output=scratch.stress_field.dof_values,
@@ -2355,10 +2865,16 @@ class SolverImplicitMPM(SolverBase):
 
         domain = scratch.velocity_test.domain
 
+        # The rebuildable sparse grid is refreshed in place, so the previous step's grid
+        # topology no longer exists: a grid-to-grid (nonconforming) warmstart would read
+        # stale cells. Skip those transfers (they only accelerate convergence); the
+        # particle/point paths below still apply since they go through the PIC quadrature.
+        grid_to_grid_warmstart = not self._sparse_rebuildable
+
         if isinstance(prev_impulse_field.space.basis, fem.PointBasisSpace):
             # point-based collisions, simply copy the previous impulses
             scratch.impulse_field.dof_values.assign(prev_impulse_field.dof_values[pic.cell_particle_indices])
-        else:
+        elif grid_to_grid_warmstart:
             # Interpolate previous impulse
             prev_impulse_field = fem.NonconformingField(
                 domain, prev_impulse_field, background=scratch.background_impulse_field
@@ -2370,11 +2886,13 @@ class SolverImplicitMPM(SolverBase):
                 reduction="first",
                 temporary_store=self.temporary_store,
             )
+        else:
+            scratch.impulse_field.dof_values.zero_()
 
         # Interpolate previous stress
         if isinstance(prev_stress_field.space.basis, fem.PointBasisSpace):
             scratch.stress_field.dof_values.assign(prev_stress_field.dof_values[pic.cell_particle_indices])
-        elif self._stress_warmstart in ("grid", "smoothed"):
+        elif self._stress_warmstart in ("grid", "smoothed") and grid_to_grid_warmstart:
             prev_stress_field = fem.NonconformingField(
                 domain, prev_stress_field, background=scratch.background_stress_field
             )
@@ -2385,6 +2903,11 @@ class SolverImplicitMPM(SolverBase):
                 reduction="first",
                 temporary_store=self.temporary_store,
             )
+        elif not self._sparse_rebuildable:
+            pass
+        else:
+            # No grid-to-grid stress warmstart available for the rebuilt grid; start cold.
+            scratch.stress_field.dof_values.zero_()
 
     def _save_for_next_warmstart(
         self, scratch: ImplicitMPMScratchpad, pic: fem.PicQuadrature, last_step_data: LastStepData
@@ -2552,3 +3075,187 @@ class SolverImplicitMPM(SolverBase):
             use_nvtx=self._timers_use_nvtx,
             synchronize=not self._timers_use_nvtx,
         )
+
+
+@wp.kernel(enable_backward=False)
+def _sync_mpm_proxy_particle_points_kernel(
+    collider_particle_offset: int,
+    particle_q: wp.array[wp.vec3],
+    collider_particle_ids: wp.array[int],
+    collider_points: wp.array[wp.vec3],
+):
+    local_vertex = wp.tid()
+    dst_particle = collider_particle_ids[collider_particle_offset + local_vertex]
+    collider_points[local_vertex] = particle_q[dst_particle]
+
+
+@wp.kernel(enable_backward=False)
+def _sync_mpm_proxy_particle_velocities_kernel(
+    collider_particle_offset: int,
+    particle_qd: wp.array[wp.vec3],
+    collider_particle_ids: wp.array[int],
+    collider_velocities: wp.array[wp.vec3],
+):
+    local_vertex = wp.tid()
+    dst_particle = collider_particle_ids[collider_particle_offset + local_vertex]
+    collider_velocities[local_vertex] = particle_qd[dst_particle]
+
+
+@wp.kernel(enable_backward=False)
+def _rewind_mpm_proxy_particles_kernel(
+    dt: float,
+    particle_local_to_proxy_global: wp.array[int],
+    proxy_flag: int,
+    active_flag: int,
+    particle_flags: wp.array[wp.int32],
+    transfer_flags: wp.array[wp.int32],
+    particle_gravity_acceleration: wp.array[wp.vec3],
+    coupling_forces: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
+    particle_qd: wp.array[wp.vec3],
+):
+    local_particle = wp.tid()
+    proxy_global = particle_local_to_proxy_global[local_particle]
+    if proxy_global < 0 or (particle_flags[local_particle] & proxy_flag) == 0:
+        return
+
+    delta_v = dt * particle_inv_mass[local_particle] * coupling_forces[proxy_global]
+    if (transfer_flags[local_particle] & active_flag) != 0:
+        delta_v = delta_v + dt * particle_gravity_acceleration[local_particle]
+
+    particle_qd[local_particle] = particle_qd[local_particle] - delta_v
+
+
+@wp.kernel(enable_backward=False)
+def _harvest_mpm_proxy_particle_forces_kernel(
+    dt: float,
+    collider_ids: wp.array[int],
+    collider_impulses: wp.array[wp.vec3],
+    collider_impulse_pos: wp.array[wp.vec3],
+    collider: Collider,
+    particle_local_to_proxy_global: wp.array[int],
+    proxy_flag: int,
+    particle_flags: wp.array[wp.int32],
+    out_particle_f: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    cid = collider_ids[i]
+
+    if cid < 0 or cid + 1 >= collider.collider_particle_offsets.shape[0]:
+        return
+
+    vertex_offset = collider.collider_particle_offsets[cid]
+    vertex_end = collider.collider_particle_offsets[cid + 1]
+    if vertex_end <= vertex_offset:
+        return
+
+    mesh = collider.collider_mesh[cid]
+    max_dist = collider.query_max_dist + collider.collider_max_thickness[cid]
+    query = wp.mesh_query_point_no_sign(mesh, collider_impulse_pos[i], max_dist)
+    if not query.result:
+        return
+
+    indices = wp.mesh_get(mesh).indices
+    tri = query.face
+    local_i = indices[3 * tri + 0]
+    local_j = indices[3 * tri + 1]
+    local_k = indices[3 * tri + 2]
+
+    dst_i = collider.collider_particle_ids[vertex_offset + local_i]
+    dst_j = collider.collider_particle_ids[vertex_offset + local_j]
+    dst_k = collider.collider_particle_ids[vertex_offset + local_k]
+
+    f = collider_impulses[i] / dt
+    w_j = query.u
+    w_k = query.v
+    w_i = 1.0 - w_j - w_k
+
+    if dst_i >= 0 and dst_i < particle_local_to_proxy_global.shape[0]:
+        proxy_global_i = particle_local_to_proxy_global[dst_i]
+        if proxy_global_i >= 0 and (particle_flags[dst_i] & proxy_flag) != 0 and w_i > 0.0:
+            wp.atomic_add(out_particle_f, proxy_global_i, w_i * f)
+    if dst_j >= 0 and dst_j < particle_local_to_proxy_global.shape[0]:
+        proxy_global_j = particle_local_to_proxy_global[dst_j]
+        if proxy_global_j >= 0 and (particle_flags[dst_j] & proxy_flag) != 0 and w_j > 0.0:
+            wp.atomic_add(out_particle_f, proxy_global_j, w_j * f)
+    if dst_k >= 0 and dst_k < particle_local_to_proxy_global.shape[0]:
+        proxy_global_k = particle_local_to_proxy_global[dst_k]
+        if proxy_global_k >= 0 and (particle_flags[dst_k] & proxy_flag) != 0 and w_k > 0.0:
+            wp.atomic_add(out_particle_f, proxy_global_k, w_k * f)
+
+
+@wp.kernel(enable_backward=False)
+def _clear_inactive_mpm_proxy_particle_forces_kernel(
+    particle_local_to_proxy_global: wp.array[int],
+    particle_flags: wp.array[wp.int32],
+    proxy_flag: int,
+    active_flag: int,
+    out_particle_f: wp.array[wp.vec3],
+):
+    local_particle = wp.tid()
+    proxy_global = particle_local_to_proxy_global[local_particle]
+    if proxy_global < 0 or proxy_global >= out_particle_f.shape[0]:
+        return
+    particle_flag = particle_flags[local_particle]
+    if (particle_flag & proxy_flag) != 0 and (particle_flag & active_flag) == 0:
+        out_particle_f[proxy_global] = wp.vec3(0.0)
+
+
+@wp.kernel(enable_backward=False)
+def _rewind_mpm_proxy_bodies_kernel(
+    dt: float,
+    body_local_to_proxy_global: wp.array[int],
+    coupling_forces: wp.array[wp.spatial_vector],
+    body_q: wp.array[wp.transform],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    local_body = wp.tid()
+    proxy_global = body_local_to_proxy_global[local_body]
+    if proxy_global < 0:
+        return
+
+    f = coupling_forces[proxy_global]
+    delta_v = dt * body_inv_mass[local_body] * wp.spatial_top(f)
+    rot = wp.transform_get_rotation(body_q[local_body])
+    delta_w = dt * wp.quat_rotate(
+        rot,
+        body_inv_inertia[local_body] * wp.quat_rotate_inv(rot, wp.spatial_bottom(f)),
+    )
+
+    body_qd[local_body] = body_qd[local_body] - wp.spatial_vector(delta_v, delta_w)
+
+
+@wp.kernel(enable_backward=False)
+def _harvest_mpm_proxy_wrenches_kernel(
+    dt: float,
+    collider_ids: wp.array[int],
+    collider_impulses: wp.array[wp.vec3],
+    collider_impulse_pos: wp.array[wp.vec3],
+    collider_body_ids: wp.array[int],
+    body_local_to_proxy_global: wp.array[int],
+    proxy_flag: int,
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    out_body_f: wp.array[wp.spatial_vector],
+):
+    i = wp.tid()
+    cid = collider_ids[i]
+
+    if cid < 0 or cid >= collider_body_ids.shape[0]:
+        return
+
+    local_body = collider_body_ids[cid]
+    if local_body < 0 or local_body >= body_local_to_proxy_global.shape[0]:
+        return
+
+    proxy_global = body_local_to_proxy_global[local_body]
+    if proxy_global < 0 or proxy_global >= out_body_f.shape[0] or (body_flags[local_body] & proxy_flag) == 0:
+        return
+
+    f_world = collider_impulses[i] / dt
+    center = wp.transform_point(body_q[local_body], body_com[local_body])
+    r = collider_impulse_pos[i] - center
+    wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(f_world, wp.cross(r, f_world)))

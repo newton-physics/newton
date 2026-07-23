@@ -122,26 +122,14 @@ After installing Newton with the ``examples`` extra, launch the default
 
     python -m newton.examples
 
-Run an example that runs RL policy inference. Choose the extra matching your
-NVIDIA driver's CUDA support (``torch-cu12`` for CUDA 12.x, ``torch-cu13`` for
-CUDA 13.x) and the corresponding pytorch wheel (e.g, ``128`` for CUDA 12.8); run ``nvidia-smi``
-to check the supported CUDA version (shown in the top-right corner of the output):
+Run an example that performs RL policy inference. The ``examples`` extra
+includes ``newton[onnx]``, which installs Warp-NN's ONNX runtime and the ONNX
+parser:
 
 .. code-block:: console
 
-    pip install newton[torch-cu12] --extra-index-url https://download.pytorch.org/whl/cu128
+    pip install "newton[examples]"
     python -m newton.examples robot_anymal_c_walk
-
-.. note::
-
-    The ``torch-cu12`` extra installs PyTorch built against CUDA 12.8. If your
-    driver only supports CUDA 12.4 or 12.5 (check with ``nvidia-smi``), you
-    need to install PyTorch 2.6.0 manually instead:
-
-    .. code-block:: console
-
-        pip install "newton[examples]"
-        pip install torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cu124
 
 See a list of all available examples (also browsable from the viewer's side panel):
 
@@ -176,14 +164,15 @@ required dependencies installed by ``pip install newton``:
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     # Step the simulation
     for step in range(120):
         state_0.clear_forces()
-        model.collide(state_0, contacts)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
         state_0, state_1 = state_1, state_0
 
@@ -212,8 +201,9 @@ simultaneously on the GPU:
     # The solver steps all 1024 worlds in parallel
     solver = newton.solvers.SolverMuJoCo(model)
 
-See the :doc:`/guide/overview` guide and :doc:`/integrations/isaac-lab`
-for more details.
+See the :doc:`MuJoCo solver guide </solvers/mujoco>` for solver-specific
+details, the :doc:`/guide/overview` for Newton's core workflow, and
+:doc:`/lab/isaac-lab` for Isaac Lab integration details.
 
 .. _extra-dependencies:
 
@@ -235,12 +225,14 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
      - Asset import and mesh processing dependencies
    * - ``remesh``
      - Remeshing dependencies (Open3D, pyfqmr) for :func:`newton.utils.remesh_mesh`
+   * - ``onnx``
+     - Warp-NN ONNX runtime dependencies for neural actuators and RL policy examples
    * - ``examples``
-     - Dependencies for running examples, including visualization (includes ``sim`` + ``importers``)
+     - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12.8+) for running RL policy examples (includes ``examples``); see :ref:`note above <running-examples>` for CUDA 12.4–12.5
+     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``torch-cu13``
-     - PyTorch (CUDA 13) for running RL policy examples (includes ``examples``)
+     - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``
      - Jupyter notebook support with Rerun visualization (includes ``examples``)
    * - ``dev``
@@ -248,9 +240,9 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``docs``
      - Dependencies for building the documentation
 
-Some extras transitively include others. For example, ``examples`` pulls in both
-``sim`` and ``importers``, and ``dev`` pulls in ``examples``. You only need to
-install the most specific set for your use case.
+Some extras transitively include others. For example, ``examples`` pulls in
+``sim``, ``importers``, and ``onnx``, and ``dev`` pulls in ``examples``. You only
+need to install the most specific set for your use case.
 
 Next Steps
 ----------

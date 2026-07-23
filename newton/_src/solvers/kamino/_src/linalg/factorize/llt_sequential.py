@@ -8,7 +8,6 @@ from __future__ import annotations
 import warp as wp
 
 from ...core.math import FLOAT32_EPS
-from ...core.types import float32, int32
 
 ###
 # Module interface
@@ -25,7 +24,7 @@ __all__ = [
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -33,14 +32,14 @@ wp.set_module_options({"enable_backward": False})
 ###
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def _llt_sequential_factorize(
     # Inputs:
-    dim_in: wp.array[int32],
-    mio_in: wp.array[int32],
-    A_in: wp.array[float32],
+    dim_in: wp.array[wp.int32],
+    mio_in: wp.array[wp.int32],
+    A_in: wp.array[wp.float32],
     # Outputs:
-    L_out: wp.array[float32],
+    L_out: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -60,7 +59,7 @@ def _llt_sequential_factorize(
             m_ij = m_i + j
             A_ij = A_in[m_ij]
             L_jj = L_out[m_jj]
-            sum = float32(0.0)
+            sum = wp.float32(0.0)
             for k in range(j):
                 m_ik = m_i + k
                 m_jk = m_j + k
@@ -71,17 +70,17 @@ def _llt_sequential_factorize(
                 L_out[m_ij] = (A_ij - sum) / L_jj
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def _llt_sequential_solve(
     # Inputs:
-    dim_in: wp.array[int32],
-    mio_in: wp.array[int32],
-    vio_in: wp.array[int32],
-    L_in: wp.array[float32],
-    b_in: wp.array[float32],
+    dim_in: wp.array[wp.int32],
+    mio_in: wp.array[wp.int32],
+    vio_in: wp.array[wp.int32],
+    L_in: wp.array[wp.float32],
+    b_in: wp.array[wp.float32],
     # Outputs:
-    y_out: wp.array[float32],
-    x_out: wp.array[float32],
+    y_out: wp.array[wp.float32],
+    x_out: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -114,14 +113,14 @@ def _llt_sequential_solve(
         x_out[vio + i] = sum_i / LT_ii
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel
 def _llt_sequential_solve_inplace(
     # Inputs:
-    dim_in: wp.array[int32],
-    mio_in: wp.array[int32],
-    vio_in: wp.array[int32],
-    L_in: wp.array[float32],
-    x_inout: wp.array[float32],
+    dim_in: wp.array[wp.int32],
+    mio_in: wp.array[wp.int32],
+    vio_in: wp.array[wp.int32],
+    L_in: wp.array[wp.float32],
+    x_inout: wp.array[wp.float32],
 ):
     # Retrieve the thread index
     tid = wp.tid()
@@ -161,20 +160,20 @@ def _llt_sequential_solve_inplace(
 
 def llt_sequential_factorize(
     num_blocks: int,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    A: wp.array[float32],
-    L: wp.array[float32],
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    A: wp.array[wp.float32],
+    L: wp.array[wp.float32],
 ):
     """
     Launches the sequential Cholesky factorization kernel for a block partitioned matrix.
 
     Args:
-        num_blocks (int): The number of matrix blocks to process.
-        dim (wp.array): An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
-        mio (wp.array): An array of shape `(num_blocks,)` containing the start indices of each matrix block.
-        A (wp.array): The flat input array containing the input matrix blocks to be factorized.
-        L (wp.array): The flat output array containing the Cholesky factorization of each matrix block.
+        num_blocks: The number of matrix blocks to process.
+        dim: An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
+        mio: An array of shape `(num_blocks,)` containing the start indices of each matrix block.
+        A: The flat input array containing the input matrix blocks to be factorized.
+        L: The flat output array containing the Cholesky factorization of each matrix block.
     """
     wp.launch(
         kernel=_llt_sequential_factorize,
@@ -186,26 +185,26 @@ def llt_sequential_factorize(
 
 def llt_sequential_solve(
     num_blocks: int,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    vio: wp.array[int32],
-    L: wp.array[float32],
-    b: wp.array[float32],
-    y: wp.array[float32],
-    x: wp.array[float32],
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    L: wp.array[wp.float32],
+    b: wp.array[wp.float32],
+    y: wp.array[wp.float32],
+    x: wp.array[wp.float32],
 ):
     """
     Launches the sequential solve kernel using the Cholesky factorization of a block partitioned matrix.
 
     Args:
-        num_blocks (int): The number of matrix blocks to process.
-        dim (wp.array): An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
-        mio (wp.array): An array of shape `(num_blocks,)` containing the start indices of each matrix block.
-        vio (wp.array): An array of shape `(num_blocks,)` containing the start indices of each vector block.
-        L (wp.array): The flat input array containing the Cholesky factorization of each matrix block.
-        b (wp.array): The flat input array containing the stacked right-hand side vectors.
-        y (wp.array): The output array where the intermediate result will be stored.
-        x (wp.array): The output array where the solution to the linear system `A @ x = b` will be stored.
+        num_blocks: The number of matrix blocks to process.
+        dim: An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
+        mio: An array of shape `(num_blocks,)` containing the start indices of each matrix block.
+        vio: An array of shape `(num_blocks,)` containing the start indices of each vector block.
+        L: The flat input array containing the Cholesky factorization of each matrix block.
+        b: The flat input array containing the stacked right-hand side vectors.
+        y: The output array where the intermediate result will be stored.
+        x: The output array where the solution to the linear system `A @ x = b` will be stored.
     """
     wp.launch(
         kernel=_llt_sequential_solve,
@@ -217,22 +216,22 @@ def llt_sequential_solve(
 
 def llt_sequential_solve_inplace(
     num_blocks: int,
-    dim: wp.array[int32],
-    mio: wp.array[int32],
-    vio: wp.array[int32],
-    L: wp.array[float32],
-    x: wp.array[float32],
+    dim: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    L: wp.array[wp.float32],
+    x: wp.array[wp.float32],
 ):
     """
     Launches the sequential in-place solve kernel using the Cholesky factorization of a block partitioned matrix.
 
     Args:
-        num_blocks (int): The number of matrix blocks to process.
-        dim (wp.array): An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
-        mio (wp.array): An array of shape `(num_blocks,)` containing the start indices of each matrix block.
-        vio (wp.array): An array of shape `(num_blocks,)` containing the start indices of each vector block.
-        L (wp.array): The flat input array containing the Cholesky factorization of each matrix block.
-        x (wp.array): The array where the solution to the linear system `A @ x = b` will be stored in-place.
+        num_blocks: The number of matrix blocks to process.
+        dim: An array of shape `(num_blocks,)` containing the dimensions of each matrix block.
+        mio: An array of shape `(num_blocks,)` containing the start indices of each matrix block.
+        vio: An array of shape `(num_blocks,)` containing the start indices of each vector block.
+        L: The flat input array containing the Cholesky factorization of each matrix block.
+        x: The array where the solution to the linear system `A @ x = b` will be stored in-place.
     """
     wp.launch(
         kernel=_llt_sequential_solve_inplace,

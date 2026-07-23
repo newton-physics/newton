@@ -10,11 +10,12 @@
 #
 # The example loads a humanoid model that falls under gravity and collides
 # with the ground, collecting per-step metrics:
-#   - Solver iteration count (how hard the solver works each step)
-#   - Kinetic and potential energy (conservation / dissipation)
-#   - Active constraint count (contact events)
+#   - Solver iteration count (max across worlds — worst-case effort)
+#   - Kinetic and potential energy (world 0 — replicated worlds are identical)
+#   - Active constraint count (world 0 — replicated worlds are identical)
 #
-# These are displayed as live plots in the viewer GUI.
+# Worlds are deterministic replicates, so per-world values are identical;
+# iteration count is reported as a max to surface worst-case solver cost.
 #
 # Command: python -m newton.examples basic_plotting --world-count 4
 #
@@ -40,6 +41,7 @@ class Example:
         self.viewer = viewer
 
         humanoid = newton.ModelBuilder()
+        humanoid.rigid_gap = 0.0
 
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
         humanoid.add_mjcf(
@@ -49,6 +51,7 @@ class Example:
         )
 
         builder = newton.ModelBuilder()
+        builder.rigid_gap = humanoid.rigid_gap
         builder.replicate(humanoid, args.world_count)
         builder.add_ground_plane()
 
@@ -71,7 +74,8 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Per-step diagnostics (lists grow unbounded for interactive use)
         self.log_iterations: list[float] = []
@@ -84,40 +88,37 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            try:
-                with wp.ScopedCapture() as capture:
-                    self.simulate()
-                self.graph = capture.graph
-            except Exception as exc:
-                self.graph = None
-                warnings.warn(f"CUDA graph capture failed: {exc}", stacklevel=2)
-        else:
+        try:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        except Exception as exc:
             self.graph = None
+            warnings.warn(f"Graph capture failed: {exc}", stacklevel=2)
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def _read_status(self):
         d = self.solver.mjw_data if hasattr(self.solver, "mjw_data") else self.solver.mj_data
 
-        # Solver iterations (max across constraint islands)
+        # Max across worlds: worst-case solver cost.
         niter_np = d.solver_niter.numpy() if hasattr(d.solver_niter, "numpy") else d.solver_niter
         self.log_iterations.append(float(np.max(niter_np)))
 
-        # Energy: (world_count, 2) → sum across worlds
+        # mjData.energy columns are (potential, kinetic); read world 0.
         energy_np = d.energy.numpy() if hasattr(d.energy, "numpy") else np.asarray(d.energy)
-        self.log_energy_kinetic.append(float(energy_np[:, 0].sum()))
-        self.log_energy_potential.append(float(energy_np[:, 1].sum()))
+        self.log_energy_potential.append(float(energy_np[0, 0]))
+        self.log_energy_kinetic.append(float(energy_np[0, 1]))
 
-        # Active constraint count
+        # nefc = active constraint rows; read world 0.
         nefc_np = d.nefc.numpy() if hasattr(d.nefc, "numpy") else d.nefc
-        self.log_nefc.append(float(np.max(nefc_np)))
+        self.log_nefc.append(float(nefc_np[0]) if hasattr(nefc_np, "__len__") else float(nefc_np))
 
     def step(self):
         if self.graph:
@@ -128,9 +129,10 @@ class Example:
 
         self._read_status()
 
-        self.viewer.log_scalar("Solver Iterations", self.log_iterations[-1])
-        self.viewer.log_scalar("Kinetic Energy", self.log_energy_kinetic[-1])
-        self.viewer.log_scalar("Potential Energy", self.log_energy_potential[-1])
+        # Raw per-frame values so the overlay matches the latest plot point and side panel.
+        self.viewer.log_scalar("Solver Iterations (max)", self.log_iterations[-1])
+        self.viewer.log_scalar("Kinetic Energy [J]", self.log_energy_kinetic[-1])
+        self.viewer.log_scalar("Potential Energy [J]", self.log_energy_potential[-1])
         self.viewer.log_scalar("Active Constraints", self.log_nefc[-1])
 
     def test_final(self):
@@ -188,10 +190,10 @@ class Example:
             return
         iters = np.array(self.log_iterations)
         print(f"\nSimulation diagnostics summary ({n} steps):")
-        print(f"  Iterations:   mean={np.mean(iters):.1f}, max={np.max(iters):.0f}")
-        print(f"  Kinetic E:    final={self.log_energy_kinetic[-1]:.4f}")
-        print(f"  Potential E:  final={self.log_energy_potential[-1]:.4f}")
-        print(f"  Constraints:  mean={np.mean(self.log_nefc):.1f}, max={np.max(self.log_nefc):.0f}")
+        print(f"  Iterations (max):   mean={np.mean(iters):.1f}, peak={np.max(iters):.0f}")
+        print(f"  Kinetic E [J]:    final={self.log_energy_kinetic[-1]:.4f}")
+        print(f"  Potential E [J]:  final={self.log_energy_potential[-1]:.4f}")
+        print(f"  Constraints:        mean={np.mean(self.log_nefc):.1f}, peak={np.max(self.log_nefc):.1f}")
 
     def gui(self, ui):
         n = len(self.log_iterations)
@@ -200,10 +202,10 @@ class Example:
             return
 
         ui.text(f"Step: {n}")
-        ui.text(f"Last iters: {int(self.log_iterations[-1])}")
-        ui.text(f"Kinetic E: {self.log_energy_kinetic[-1]:.4f}")
-        ui.text(f"Potential E: {self.log_energy_potential[-1]:.4f}")
-        ui.text(f"Constraints: {int(self.log_nefc[-1])}")
+        ui.text(f"Solver iterations (max): {int(self.log_iterations[-1])}")
+        ui.text(f"Kinetic E: {self.log_energy_kinetic[-1]:.4f} J")
+        ui.text(f"Potential E: {self.log_energy_potential[-1]:.4f} J")
+        ui.text(f"Active constraints: {int(self.log_nefc[-1])}")
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)

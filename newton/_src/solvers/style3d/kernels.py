@@ -6,6 +6,16 @@ import warp as wp
 from ...geometry import ParticleFlags
 
 
+@wp.kernel
+def deactivate_zero_mass_particles_kernel(
+    particle_masses: wp.array[float],
+    particle_flags: wp.array[wp.int32],
+):
+    tid = wp.tid()
+    if particle_masses[tid] <= 0.0:
+        particle_flags[tid] = particle_flags[tid] & ~ParticleFlags.ACTIVE
+
+
 @wp.func
 def triangle_deformation_gradient(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, inv_dm: wp.mat22):
     x01, x02 = x1 - x0, x2 - x0
@@ -67,21 +77,36 @@ def eval_bend_kernel(
     # outputs
     forces: wp.array[wp.vec3],
 ):
+    """
+    Crouzeix-Raviart isometric bending model from
+
+    "A Quadratic Bending Model for Inextensible Surfaces" (Bergou et al. 2006).
+
+    For one interior edge with local stencil x = (x0, x1, x2, x3)^T,
+    the paper defines
+
+        E_b = 1/2 * k * x^T Q x,
+        Q = 3 / (A0 + A1) * w^T w,
+
+    where A0 and A1 are the incident triangle rest areas and w is built
+    from rest-pose cotangents. The conservative force is
+
+        F_i = -dE_b/dx_i = -k * sum_j Q_ij x_j.
+    """
     eid = wp.tid()
     if edges[eid][0] < 0 or edges[eid][1] < 0:
         return
     edge = edges[eid]
-    edge_stiff = edge_bending_properties[eid][0] / edge_rest_area[eid]
+    edge_stiff = edge_bending_properties[eid][0] * (3.0 / edge_rest_area[eid])
     bend_weight = wp.vec4(0.0)
     bend_weight[2] = edge_bending_cot[eid][2] + edge_bending_cot[eid][3]
     bend_weight[3] = edge_bending_cot[eid][0] + edge_bending_cot[eid][1]
     bend_weight[0] = -edge_bending_cot[eid][0] - edge_bending_cot[eid][2]
     bend_weight[1] = -edge_bending_cot[eid][1] - edge_bending_cot[eid][3]
-    bend_weight = bend_weight * edge_stiff
     for i in range(4):
         force = wp.vec3(0.0)
         for j in range(4):
-            force = force - bend_weight[i] * bend_weight[j] * pos[edge[j]]
+            force = force - edge_stiff * bend_weight[i] * bend_weight[j] * pos[edge[j]]
         wp.atomic_add(forces, edge[i], force)
 
 

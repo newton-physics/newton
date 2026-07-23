@@ -4,6 +4,7 @@
 import inspect
 import typing as _t
 import unittest
+import warnings
 
 
 def _get_type_hints(obj):
@@ -14,6 +15,11 @@ def _get_type_hints(obj):
 def _param_list(sig: inspect.Signature):
     """Return list of parameters excluding the first one."""
     return list(sig.parameters.values())[1:]
+
+
+def _is_builder_arg_doc_line(line: str) -> bool:
+    """Return True for legacy and type-less Google-style builder arg docs."""
+    return line.startswith("builder (ModelBuilder):") or line.startswith("builder:")
 
 
 def _check_builder_method_matches_importer_function_signature(func, method):
@@ -75,15 +81,40 @@ def _check_builder_method_matches_importer_function_signature(func, method):
     lines_doc_func = [line.strip() for line in (func.__doc__ or "").splitlines()]
     # Remove line that contains the docstring for the ModelBuilder argument
     # because this argument does not exist in the method
-    doc_func = "\n".join(line for line in lines_doc_func if "builder (ModelBuilder)" not in line).strip()
-    doc_method = "\n".join(line.strip() for line in (method.__doc__ or "").splitlines()).strip()
-    assert "builder (ModelBuilder)" not in doc_method, (
-        f"Docstring for {method_name} must not contain 'builder (ModelBuilder)'"
+    doc_func = "\n".join(line for line in lines_doc_func if not _is_builder_arg_doc_line(line)).strip()
+    lines_doc_method = [line.strip() for line in (method.__doc__ or "").splitlines()]
+    assert not any(_is_builder_arg_doc_line(line) for line in lines_doc_method), (
+        f"Docstring for {method_name} must not document the builder argument"
     )
+    doc_method = "\n".join(lines_doc_method).strip()
     assert doc_func == doc_method, f"Docstring mismatch between {func_name} and {method_name}"
 
 
 class TestApi(unittest.TestCase):
+    def test_geometry_match_constants_deprecated(self):
+        import newton  # noqa: PLC0415
+        from newton._src.geometry.contact_match import MATCH_BROKEN, MATCH_NOT_FOUND  # noqa: PLC0415
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            public_match_broken = newton.geometry.MATCH_BROKEN
+            public_match_not_found = newton.geometry.MATCH_NOT_FOUND
+
+        self.assertEqual(public_match_broken, MATCH_BROKEN)
+        self.assertEqual(public_match_not_found, MATCH_NOT_FOUND)
+        self.assertEqual(len(caught), 2)
+        self.assertTrue(all(issubclass(warning.category, DeprecationWarning) for warning in caught))
+
+        with self.assertRaises(AttributeError):
+            _ = newton.geometry.UNKNOWN_MATCH_STATUS
+
+        star_namespace = {}
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            exec("from newton.geometry import *", star_namespace)
+        self.assertNotIn("MATCH_BROKEN", star_namespace)
+        self.assertNotIn("MATCH_NOT_FOUND", star_namespace)
+
     def test_builder_urdf_signature_parity(self):
         from newton import ModelBuilder  # noqa: PLC0415
         from newton._src.utils.import_urdf import parse_urdf  # noqa: PLC0415
@@ -109,6 +140,70 @@ class TestApi(unittest.TestCase):
         doc_func = "\n".join(line.strip() for line in (get_tetmesh.__doc__ or "").splitlines()).strip()
         doc_method = "\n".join(line.strip() for line in (TetMesh.create_from_usd.__doc__ or "").splitlines()).strip()
         assert doc_func == doc_method, "Docstring mismatch between get_tetmesh and TetMesh.create_from_usd"
+
+    def test_keyword_only_deprecation_shim_rebinds_builder_args(self):
+        import warp as wp  # noqa: PLC0415
+
+        from newton import ModelBuilder  # noqa: PLC0415
+
+        builder = ModelBuilder()
+
+        with self.assertWarnsRegex(DeprecationWarning, "Passing 'xform', 'hx', 'hy', 'hz' positionally"):
+            shape = builder.add_shape_box(-1, wp.transform(), 0.1, 0.2, 0.3)
+
+        self.assertEqual(shape, 0)
+        self.assertEqual(builder.shape_count, 1)
+
+        with self.assertWarnsRegex(DeprecationWarning, "Passing 'xform' positionally"):
+            body = builder.add_body(wp.transform())
+
+        self.assertEqual(body, 0)
+
+    def test_keyword_only_deprecation_shim_rejects_duplicate_keyword(self):
+        import warp as wp  # noqa: PLC0415
+
+        from newton import ModelBuilder  # noqa: PLC0415
+
+        builder = ModelBuilder()
+
+        with self.assertRaisesRegex(TypeError, "multiple values for argument 'xform'"):
+            builder.add_shape_box(-1, wp.transform(), xform=wp.transform())
+
+    def test_keyword_only_deprecation_shim_rebinds_config_constructors(self):
+        import newton  # noqa: PLC0415
+
+        with self.assertWarnsRegex(DeprecationWarning, "Passing 'density', 'ke' positionally"):
+            shape_cfg = newton.ModelBuilder.ShapeConfig(12.0, 34.0)
+        self.assertEqual(shape_cfg.density, 12.0)
+        self.assertEqual(shape_cfg.ke, 34.0)
+
+        with self.assertWarnsRegex(DeprecationWarning, "Passing 'axis' positionally"):
+            dof_cfg = newton.ModelBuilder.JointDofConfig(newton.Axis.Y)
+        self.assertAlmostEqual(dof_cfg.axis[1], 1.0)
+
+    def test_keyword_only_deprecation_shim_rebinds_solver_options(self):
+        import newton  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        model = builder.finalize()
+
+        with self.assertWarnsRegex(DeprecationWarning, "Passing 'angular_damping' positionally"):
+            solver = newton.solvers.SolverSemiImplicit(model, 0.123)
+
+        self.assertEqual(solver.angular_damping, 0.123)
+
+    def test_keyword_only_deprecation_shim_preserves_signature(self):
+        import newton  # noqa: PLC0415
+
+        body_sig = inspect.signature(newton.ModelBuilder.add_body)
+        link_sig = inspect.signature(newton.ModelBuilder.add_link)
+        shape_sig = inspect.signature(newton.ModelBuilder.add_shape_box)
+        solver_sig = inspect.signature(newton.solvers.SolverSemiImplicit.__init__)
+
+        self.assertEqual(body_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertEqual(link_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertEqual(shape_sig.parameters["xform"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertEqual(solver_sig.parameters["angular_damping"].kind, inspect.Parameter.KEYWORD_ONLY)
 
 
 if __name__ == "__main__":

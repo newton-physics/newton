@@ -166,11 +166,7 @@ Basic usage:
 
 .. testcode:: pipeline-basics
 
-    # Default: creates CollisionPipeline with EXPLICIT broad phase (precomputed pairs)
-    contacts = model.contacts()
-    model.collide(state, contacts)
-
-    # Or create a pipeline explicitly to choose broad phase mode
+    # Create a pipeline with the desired broad phase mode
     from newton import CollisionPipeline
 
     pipeline = CollisionPipeline(
@@ -207,13 +203,14 @@ solver (see also the :doc:`Introduction tutorial </tutorials/00_introduction>` a
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
 
     dt = 1.0 / 60.0 / 10.0
     for frame in range(120):
         for substep in range(10):
             state_0.clear_forces()
-            model.collide(state_0, contacts)
+            pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt)
             state_0, state_1 = state_1, state_0
 
@@ -503,7 +500,10 @@ UsdPhysics ``physics:filteredPairs`` relationships).
 
 Filter pairs are automatically populated in several cases:
 
-- **Adjacent bodies**: Parent-child body pairs connected by joints (when ``collision_filter_parent=True``). Also applies to max-coordinate jointed bodies.
+- **Adjacent bodies**: Parent-child body pairs connected by joints (when
+  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
+  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
+  create a body-pair filter. Also applies to max-coordinate jointed bodies.
 - **Same-body shapes**: Shapes attached to the same rigid body
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
@@ -511,6 +511,12 @@ Filter pairs are automatically populated in several cases:
 
 The resulting filter pairs are stored in :attr:`~Model.shape_collision_filter_pairs` as a set of
 ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``).
+
+.. deprecated:: 1.4
+   Mutating this finalized-model set is deprecated; update
+   :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
+   model instead, because the precomputed :attr:`~Model.shape_contact_pairs` array is not rebuilt by
+   post-finalize filter edits.
 
 **USD Import Example**
 
@@ -1059,7 +1065,9 @@ Shape collision behavior is controlled via :class:`~ModelBuilder.ShapeConfig`:
    * - ``is_hydroelastic``
      - Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See :ref:`Hydroelastic Contacts`. Default: False.
    * - ``kh``
-     - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
+     - Hydroelastic contact stiffness coefficient. Under the default linear
+       pressure law, pressure scales with ``kh`` and penetration depth; contact
+       force also scales with contact area. Default: 1.0e10.
 
 .. _margin-gap-semantics:
 
@@ -1195,7 +1203,7 @@ There are two common patterns for when to call ``collide`` relative to the subst
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
-    contacts = model.contacts()
+    contacts = pipeline.contacts()
     num_frames = 2
     sim_substeps = 3
     sim_dt = 1.0 / 60.0 / sim_substeps
@@ -1207,7 +1215,7 @@ There are two common patterns for when to call ``collide`` relative to the subst
 
     for frame in range(num_frames):
         for substep in range(sim_substeps):
-            model.collide(state_0, contacts)
+            pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt=sim_dt)
             state_0, state_1 = state_1, state_0
 
@@ -1216,7 +1224,7 @@ There are two common patterns for when to call ``collide`` relative to the subst
 .. testcode:: sim-loop
 
     for frame in range(num_frames):
-        contacts = model.collide(state_0, collision_pipeline=pipeline)
+        pipeline.collide(state_0, contacts)
         for substep in range(sim_substeps):
             solver.step(state_0, state_1, control, contacts, dt=sim_dt)
             state_0, state_1 = state_1, state_0
@@ -1293,13 +1301,12 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
      - Per-shape thickness: effective radius + margin (scalar).
    * - ``rigid_contact_match_index``
-     - Per-contact frame-to-frame match result (int32). ``>= 0``: matched old
-       index, ``-1``: new, ``-2``: broken.  Only allocated when
+     - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
-     - Compact index list of new contacts in the current sorted buffer (where
-       ``match_index < 0``). Only allocated when ``contact_report=True``.
+     - Compact index list of new contacts in the current sorted buffer. Only
+       allocated when ``contact_report=True``.
        See :ref:`Contact Reports`.
    * - ``rigid_contact_broken_indices``, ``rigid_contact_broken_count``
      - Compact index list of contacts from the previous frame that no current
@@ -1315,9 +1322,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    * - Attribute
      - Description
    * - ``soft_contact_count``
-     - Number of active soft contacts.
+     - Total number of soft contacts (single element). With full-surface contact off, this equals the per-particle contact count and is unchanged from earlier releases.
+   * - ``soft_contact_indices``
+     - Soft-side particle ids per contact, a ``vec3i`` with ``-1`` padding: ``(p, -1, -1)`` particle, ``(v0, v1, -1)`` edge, ``(v0, v1, v2)`` face. The number of non-negative slots gives the feature kind; pair with ``soft_contact_barycentric`` to recover the contact point.
    * - ``soft_contact_particle``
-     - Particle indices.
+     - Particle id for particle contacts (``-1`` for edge/face records) — the particle-only view of ``soft_contact_indices``, for solvers that consume particle contacts exclusively.
+   * - ``soft_contact_barycentric``
+     - Barycentric weights of the contact point over the record's soft particles (``(1, 0, 0)`` for a particle contact).
    * - ``soft_contact_shape``
      - Shape indices.
    * - ``soft_contact_body_pos``, ``soft_contact_body_vel``
@@ -1360,8 +1371,9 @@ Example usage:
 
 .. testcode:: contact-data
 
-    contacts = model.contacts()
-    model.collide(state, contacts)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
     
     n = contacts.rigid_contact_count.numpy()[0]
     points0 = contacts.rigid_contact_point0.numpy()[:n]
@@ -1427,7 +1439,7 @@ treated as a frozen constant.
 
 .. testcode:: diff-contacts
 
-    builder = newton.ModelBuilder(gravity=0.0)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.3)))
     builder.add_shape_sphere(body=body, radius=0.5)
     builder.add_ground_plane()
@@ -1459,9 +1471,8 @@ treated as a frozen constant.
 Creating and Populating Contacts
 --------------------------------
 
-:meth:`~Model.contacts` creates a :class:`~Contacts` buffer using a default
-:class:`~CollisionPipeline` (EXPLICIT broad phase, cached on first call).
-:meth:`~Model.collide` populates it and returns the :class:`~Contacts` object:
+Create a :class:`~CollisionPipeline` explicitly, then allocate and populate a
+:class:`~Contacts` buffer through that pipeline:
 
 .. testsetup:: creating-contacts
 
@@ -1477,13 +1488,13 @@ Creating and Populating Contacts
 
 .. testcode:: creating-contacts
 
-    contacts = model.contacts()
-    model.collide(state, contacts)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 The contacts buffer can be reused across steps -- ``collide`` clears it each time.
-
-Both methods accept an optional ``collision_pipeline`` keyword to override the default
-pipeline. When ``contacts`` is omitted from ``collide``, a buffer is allocated automatically:
+Construct the pipeline and contacts before CUDA graph capture so all collision
+storage is allocated explicitly.
 
 .. testcode:: creating-contacts
 
@@ -1495,16 +1506,8 @@ pipeline. When ``contacts`` is omitted from ``collide``, a buffer is allocated a
         rigid_contact_max=50000,
     )
 
-    # Option A: explicit buffer
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
-
-    # Option B: use model helpers with a custom pipeline
-    contacts = model.contacts(collision_pipeline=pipeline)
-    model.collide(state, contacts)
-
-    # Option C: let collide allocate the buffer for you
-    contacts = model.collide(state, collision_pipeline=pipeline)
 
 .. _Hydroelastic Contacts:
 
@@ -1638,74 +1641,68 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
 
 .. list-table::
    :header-rows: 1
-   :widths: 10 25 18 9 19 19
+   :widths: 12 34 10 22 22
 
    * - Property
      - Description
-     - Solvers
      - Default
      - ShapeConfig
      - Model Array
    * - ``mu``
-     - Dynamic friction coefficient
-     - All
+     - Coefficient of friction
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
    * - ``ke``
-     - Contact elastic stiffness
-     - SemiImplicit, Featherstone, MuJoCo
+     - Normal contact stiffness
      - 2.5e3
      - :attr:`~ModelBuilder.ShapeConfig.ke`
      - :attr:`~Model.shape_material_ke`
    * - ``kd``
-     - Contact damping
-     - SemiImplicit, Featherstone, MuJoCo
+     - Normal contact damping
      - 100.0
      - :attr:`~ModelBuilder.ShapeConfig.kd`
      - :attr:`~Model.shape_material_kd`
    * - ``kf``
-     - Friction damping coefficient
-     - SemiImplicit, Featherstone
+     - Contact friction gain
      - 1000.0
      - :attr:`~ModelBuilder.ShapeConfig.kf`
      - :attr:`~Model.shape_material_kf`
    * - ``ka``
      - Adhesion distance
-     - SemiImplicit, Featherstone
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.ka`
      - :attr:`~Model.shape_material_ka`
    * - ``restitution``
-     - Bounciness (requires ``enable_restitution=True`` in solver)
-     - XPBD
+     - Bounciness
      - 0.0
      - :attr:`~ModelBuilder.ShapeConfig.restitution`
      - :attr:`~Model.shape_material_restitution`
    * - ``mu_torsional``
      - Resistance to spinning at contact
-     - XPBD, MuJoCo
      - 0.005
      - :attr:`~ModelBuilder.ShapeConfig.mu_torsional`
      - :attr:`~Model.shape_material_mu_torsional`
    * - ``mu_rolling``
      - Resistance to rolling motion
-     - XPBD, MuJoCo
      - 0.0001
      - :attr:`~ModelBuilder.ShapeConfig.mu_rolling`
      - :attr:`~Model.shape_material_mu_rolling`
    * - ``kh``
-     - Hydroelastic stiffness
-     - SemiImplicit, Featherstone, MuJoCo
+     - Hydroelastic stiffness coefficient
      - 1.0e10
      - :attr:`~ModelBuilder.ShapeConfig.kh`
      - :attr:`~Model.shape_material_kh`
 
 .. note::
-   Material properties interact differently with each solver. ``ke``, ``kd``, ``kf``, and ``ka``
-   are used by force-based solvers (SemiImplicit, Featherstone, MuJoCo), while ``restitution``
-   only applies to XPBD. See the :doc:`../api/newton_solvers` API reference for solver-specific
-   behavior.
+   Material properties are generic model data. Solvers and contact backends may
+   use, combine, or ignore fields according to their formulation. See the
+   :ref:`Contact material support` reference for built-in solver behavior, and
+   external solver documentation for third-party solvers.
+
+.. note::
+   :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True`` on
+   the solver constructor before ``restitution`` takes effect.
 
 Example:
 
@@ -1716,7 +1713,7 @@ Example:
         mu=0.8,           # High friction
         ke=1.0e6,         # Stiff contact
         kd=1000.0,        # Damping
-        restitution=0.5,  # Bouncy (XPBD only)
+        restitution=0.5,  # Bouncy where supported
     )
 
 .. _USD Collision:
@@ -1882,12 +1879,6 @@ Any non-disabled mode implies ``deterministic=True``.
 
     pipeline.collide(state, contacts)
 
-    # Per-contact match index (int32):
-    #   >= 0 : index of the matched contact in the previous frame
-    #     -1 : new contact (no match found)
-    #     -2 : key matched but position/normal thresholds exceeded (broken)
-    match_idx = contacts.rigid_contact_match_index.numpy()
-
 Each frame, the matcher binary-searches the current contacts against the
 previous frame's sorted keys, then verifies candidates against a world-space
 distance threshold and a normal dot-product threshold.  The sort key encodes
@@ -1914,8 +1905,8 @@ as motion on both sides of the contact, not just one.
 
 Replay of the matched previous-frame geometry happens after the deterministic
 sort, so ``match_index`` already addresses the final sorted layout.  Unmatched
-rows (``MATCH_NOT_FOUND`` / ``MATCH_BROKEN``) are left untouched, so new and
-threshold-broken contacts keep their fresh narrow-phase geometry.  Because
+rows are left untouched, so new and threshold-broken contacts keep their fresh
+narrow-phase geometry.  Because
 matching requires both a position delta below the threshold and a normal dot
 product above the threshold, the saved values are guaranteed to be a close
 approximation of the current geometry and are safe to reuse.  The extra
@@ -1949,12 +1940,7 @@ matching mode:
     broken_indices = contacts.rigid_contact_broken_indices.numpy()[:n_broken]
 
 ``rigid_contact_new_indices`` holds indices into the current frame's sorted
-contact buffer for every contact with ``match_index < 0``.  This includes both
-genuinely new contacts (``MATCH_NOT_FOUND``, ``match_index == -1``) and
-threshold-broken contacts whose sort key matched a previous-frame contact but
-whose position or normal exceeded the configured thresholds
-(``MATCH_BROKEN``, ``match_index == -2``).  Inspect
-``contacts.rigid_contact_match_index`` to distinguish the two cases.
+contact buffer for contacts without an accepted previous-frame match.
 
 ``rigid_contact_broken_indices`` holds indices into the *previous* frame's
 sorted buffer for contacts that no current contact matched.
@@ -1982,24 +1968,24 @@ Performance
 - **Objects tunneling through each other?** Increase ``gap`` to detect contacts earlier, or increase substep count (decrease simulation ``dt``).
 - **Hydroelastic buffer overflow warnings?** Increase ``buffer_fraction`` in :class:`~geometry.HydroelasticSDF.Config`.
 
-**CUDA graph capture**
+**Graph capture**
 
-On CUDA devices, the simulation loop (including ``collide`` and ``solver.step``) can be
-captured into a CUDA graph with ``wp.ScopedCapture`` for reduced kernel launch overhead.
-Place ``collide`` inside the captured region so it is replayed each frame:
+The simulation loop (including ``collide`` and ``solver.step``) can be captured with
+``wp.ScopedCapture`` for reduced launch overhead. Place ``collide`` inside the
+captured region so it is replayed each frame:
 
 .. code-block:: python
 
     if wp.get_device().is_cuda:
         with wp.ScopedCapture() as capture:
-            model.collide(state_0, contacts)
+            pipeline.collide(state_0, contacts)
             for _ in range(sim_substeps):
                 solver.step(state_0, state_1, control, contacts, dt)
                 state_0, state_1 = state_1, state_0
         graph = capture.graph
 
-    # Each frame:
-    wp.capture_launch(graph)
+        # Each frame:
+        wp.capture_launch(graph)
 
 .. _Solver Integration:
 
@@ -2201,8 +2187,8 @@ See Also
 
 **API Reference:**
 
-- :meth:`~Model.contacts` - Create a contacts buffer (accepts ``collision_pipeline=``)
-- :meth:`~Model.collide` - Run collision detection (accepts ``collision_pipeline=``, returns :class:`~Contacts`)
+- :meth:`~CollisionPipeline.contacts` - Create a compatible contacts buffer
+- :meth:`~CollisionPipeline.collide` - Run collision detection
 - :class:`~CollisionPipeline` - Collision pipeline with configurable broad phase
 - ``broad_phase`` - Broad phase algorithm: ``"nxn"``, ``"sap"``, or ``"explicit"``
 - :class:`~Contacts` - Contact data container
@@ -2210,7 +2196,6 @@ See Also
 - :class:`~ModelBuilder.ShapeConfig` - Shape configuration options
 - :meth:`~ModelBuilder.ShapeConfig.configure_sdf` - Set SDF and hydroelastic options in one call
 - :class:`~geometry.HydroelasticSDF.Config` - Hydroelastic contact configuration
-- :meth:`~CollisionPipeline.contacts` - Allocate a contacts buffer for a custom pipeline
 - :meth:`~Mesh.build_sdf` - Precompute SDF for a mesh
 - :meth:`~ModelBuilder.approximate_meshes` - Replace mesh collision shapes with simpler geometry
 - :meth:`~ModelBuilder.replicate` - Stamp out multi-world copies of a template builder
@@ -2226,7 +2211,7 @@ See Also
 
 **Related documentation:**
 
-- :doc:`../api/newton_solvers` - Solver API reference (material property behavior per solver)
+- :ref:`Contact material support` - Material property behavior by solver
 - :doc:`custom_attributes` - USD custom attributes for collision properties
 - :doc:`usd_parsing` - USD import options including collision settings
 - :doc:`sites` - Non-colliding reference points

@@ -10,7 +10,6 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
-from newton._src.solvers.kamino._src.core.types import float32
 from newton._src.solvers.kamino._src.models.builders import basics
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import SimulationLogger, Simulator, ViewerKamino
@@ -20,7 +19,7 @@ from newton._src.solvers.kamino.examples import get_examples_output_path, run_he
 # Module configs
 ###
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 ###
@@ -30,8 +29,8 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.kernel
 def _test_control_callback(
-    state_t: wp.array[float32],
-    control_tau_j: wp.array[float32],
+    state_t: wp.array[wp.float32],
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     An example control callback kernel.
@@ -40,8 +39,8 @@ def _test_control_callback(
     wid = int(0)
 
     # Define the time window for the active external force profile
-    t_start = float32(1.0)
-    t_end = float32(3.0)
+    t_start = wp.float32(1.0)
+    t_end = wp.float32(3.0)
 
     # Get the current time
     t = state_t[wid]

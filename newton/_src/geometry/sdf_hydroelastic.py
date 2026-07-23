@@ -242,8 +242,8 @@ class HydroelasticSDF:
         writer_func: Callback for writing decoded contact data.
 
     Note:
-        Instances are typically created internally by the collision pipeline
-        (via :meth:`~newton.Model.collide`) rather than constructed directly.
+        Instances are typically created internally when constructing a
+        :class:`~newton.CollisionPipeline` rather than constructed directly.
         The pipeline automatically extracts the required SDF data and shape
         information from the simulation :class:`~newton.Model`.
 
@@ -1686,6 +1686,9 @@ def get_generate_contacts_kernel(
                         wp.atomic_add(reducer_data.agg_force, entry_idx, force_weight * normal)
                         wp.atomic_add(reducer_data.weighted_pos_sum, entry_idx, force_weight * face_center)
                         wp.atomic_add(reducer_data.weight_sum, entry_idx, force_weight)
+                        # Pressure-law-agnostic geometric depth-volume used for the
+                        # direction-reliability gate during reduction/export.
+                        wp.atomic_add(reducer_data.agg_depth_volume, entry_idx, (area * (-pen_depth)) * normal)
                         # ``entry_k_eff`` is retained as the linear-law slope used
                         # for margin (non-penetrating) contact regularization, where
                         # the user pressure law is documented as undefined.

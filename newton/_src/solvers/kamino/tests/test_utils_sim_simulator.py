@@ -9,7 +9,6 @@ import unittest
 import numpy as np
 import warp as wp
 
-from newton._src.solvers.kamino._src.core.types import float32
 from newton._src.solvers.kamino._src.models.builders.basics import build_cartpole
 from newton._src.solvers.kamino._src.models.builders.utils import make_homogeneous_builder
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -18,15 +17,21 @@ from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 ###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+###
 # Kernels
 ###
 
 
 @wp.kernel
 def _test_control_callback(
-    model_dt: wp.array[float32],
-    data_time: wp.array[float32],
-    control_tau_j: wp.array[float32],
+    model_dt: wp.array[wp.float32],
+    data_time: wp.array[wp.float32],
+    control_tau_j: wp.array[wp.float32],
 ):
     """
     An example control callback kernel.
@@ -39,7 +44,7 @@ def _test_control_callback(
     t = data_time[wid]
 
     # Define the time window for the active external force profile
-    t_start = float32(0.0)
+    t_start = wp.float32(0.0)
     t_end = 10.0 * dt
 
     # Compute the first actuated joint index for the current world

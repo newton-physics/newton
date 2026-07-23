@@ -9,21 +9,12 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from warp._src.types import Any, Float
+from warp._src.types import Any
 
+from .....core.types import Axis, AxisType
 from .types import (
-    float32,
-    mat22f,
-    mat33f,
     mat34f,
-    mat44f,
     mat63f,
-    mat66f,
-    quatf,
-    transformf,
-    vec3f,
-    vec4f,
-    vec6f,
 )
 
 ###
@@ -37,59 +28,17 @@ wp.set_module_options({"enable_backward": False})
 # Constants
 ###
 
-FLOAT32_MIN = wp.constant(float32(np.finfo(np.float32).min))
+FLOAT32_MIN = wp.constant(wp.float32(np.finfo(np.float32).min))
 """The lowest 32-bit floating-point value."""
 
-FLOAT32_MAX = wp.constant(float32(np.finfo(np.float32).max))
+FLOAT32_MAX = wp.constant(wp.float32(np.finfo(np.float32).max))
 """The highest 32-bit floating-point value."""
 
-FLOAT32_EPS = wp.constant(float32(np.finfo(np.float32).eps))
+FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 """Machine epsilon for 32-bit float: the smallest value such that 1.0 + eps != 1.0."""
 
-UNIT_X = wp.constant(vec3f(1.0, 0.0, 0.0))
-""" 3D unit vector for the X axis """
-
-UNIT_Y = wp.constant(vec3f(0.0, 1.0, 0.0))
-""" 3D unit vector for the Y axis """
-
-UNIT_Z = wp.constant(vec3f(0.0, 0.0, 1.0))
-""" 3D unit vector for the Z axis """
-
-PI = wp.constant(3.141592653589793)
-"""Convenience constant for PI"""
-
-TWO_PI = wp.constant(6.283185307179586)
-"""Convenience constant for 2 * PI"""
-
-HALF_PI = wp.constant(1.5707963267948966)
-"""Convenience constant for PI / 2"""
-
-COS_PI_6 = wp.constant(0.8660254037844387)
-"""Convenience constant for cos(PI / 6)"""
-
-I_2 = wp.constant(mat22f(1, 0, 0, 1))
-""" The 2x2 identity matrix."""
-
-I_3 = wp.constant(mat33f(1, 0, 0, 0, 1, 0, 0, 0, 1))
+I_3 = wp.constant(wp.mat33f(1, 0, 0, 0, 1, 0, 0, 0, 1))
 """ The 3x3 identity matrix."""
-
-I_4 = wp.constant(mat44f(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1))
-""" The 4x4 identity matrix."""
-
-I_6 = wp.constant(
-    mat66f(1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1)
-)
-""" The 6x6 identity matrix."""
-
-
-###
-# General-purpose functions
-###
-
-
-@wp.func
-def squared_norm(x: Any) -> Float:
-    return wp.dot(x, x)
 
 
 ###
@@ -97,66 +46,22 @@ def squared_norm(x: Any) -> Float:
 ###
 
 
-@wp.func
-def R_x(theta: float32) -> mat33f:
-    """
-    Computes the rotation matrix around the X axis.
+def axis_to_mat33(axis: AxisType) -> wp.mat33f:
+    """Return a 3x3 frame matrix whose first column is the unit vector for ``axis``.
+
+    The remaining two columns are the standard basis vectors cycled so the matrix
+    is a permutation of the identity (i.e. a proper rotation).
 
     Args:
-        theta (float32): The angle in radians.
-
-    Returns:
-        mat33f: The rotation matrix.
+        axis: Axis identifier (:class:`Axis`, string, or int) to use as the first
+            column of the output matrix.
     """
-    c = wp.cos(theta)
-    s = wp.sin(theta)
-    return mat33f(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c)
-
-
-@wp.func
-def R_y(theta: float32) -> mat33f:
-    """
-    Computes the rotation matrix around the Y axis.
-
-    Args:
-        theta (float32): The angle in radians.
-
-    Returns:
-        mat33f: The rotation matrix.
-    """
-    c = wp.cos(theta)
-    s = wp.sin(theta)
-    return mat33f(c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c)
-
-
-@wp.func
-def R_z(theta: float32) -> mat33f:
-    """
-    Computes the rotation matrix around the Z axis.
-
-    Args:
-        theta (float32): The angle in radians.
-
-    Returns:
-        mat33f: The rotation matrix.
-    """
-    c = wp.cos(theta)
-    s = wp.sin(theta)
-    return mat33f(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0)
-
-
-@wp.func
-def unskew(S: mat33f) -> vec3f:
-    """
-    Extracts the 3D vector from a 3x3 skew-symmetric matrix.
-
-    Args:
-        S (mat33f): The 3x3 skew-symmetric matrix.
-
-    Returns:
-        vec3f: The vector extracted from the skew-symmetric matrix.
-    """
-    return vec3f(S[2, 1], S[0, 2], S[1, 0])
+    a = Axis.from_any(axis)
+    if a == Axis.X:
+        return wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    if a == Axis.Y:
+        return wp.mat33f(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+    return wp.mat33f(0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0)
 
 
 ###
@@ -165,15 +70,15 @@ def unskew(S: mat33f) -> vec3f:
 
 
 @wp.func
-def G_of(q: quatf) -> mat34f:
+def G_of(q: wp.quatf) -> mat34f:
     """
     Computes the G matrix from a quaternion.
 
     Args:
-        q (quatf): The quaternion.
+        q: The quaternion.
 
     Returns:
-        mat34f: The G matrix.
+        The G matrix.
     """
     G = mat34f(0.0)
     G[0, 0] = q.w
@@ -192,15 +97,15 @@ def G_of(q: quatf) -> mat34f:
 
 
 @wp.func
-def H_of(q: quatf) -> mat34f:
+def H_of(q: wp.quatf) -> mat34f:
     """
     Computes the H matrix from a quaternion.
 
     Args:
-        q (quatf): The quaternion.
+        q: The quaternion.
 
     Returns:
-        mat34f: The H matrix.
+        The H matrix.
     """
     H = mat34f(0.0)
     H[0, 0] = q.w
@@ -219,32 +124,7 @@ def H_of(q: quatf) -> mat34f:
 
 
 @wp.func
-def quat_from_vec4(v: vec4f) -> quatf:
-    """
-    Convert a vec4f to a quaternion type.
-    """
-    return quatf(v[0], v[1], v[2], v[3])
-
-
-@wp.func
-def quat_to_vec4(q: quatf) -> vec4f:
-    """
-    Convert a quaternion type to a vec4f.
-    """
-    return vec4f(q.x, q.y, q.z, q.w)
-
-
-@wp.func
-def quat_conj(q: quatf) -> quatf:
-    """
-    Compute the conjugate of a quaternion.
-    The conjugate of a quaternion q = (x, y, z, w) is defined as: q_conj = (x, y, z, -w)
-    """
-    return quatf(q.x, q.y, q.z, -q.w)
-
-
-@wp.func
-def quat_positive(q: quatf) -> quatf:
+def quat_positive(q: wp.quatf) -> wp.quatf:
     """
     Compute the positive representation of a quaternion.
     The positive representation is defined as the quaternion with a non-negative scalar part.
@@ -257,46 +137,16 @@ def quat_positive(q: quatf) -> quatf:
 
 
 @wp.func
-def quat_imaginary(q: quatf) -> vec3f:
+def quat_imaginary(q: wp.quatf) -> wp.vec3f:
     """
     Extract the imaginary part of a quaternion.
     The imaginary part is defined as the vector part of the quaternion (x, y, z).
     """
-    return vec3f(q.x, q.y, q.z)
+    return wp.vec3f(q.x, q.y, q.z)
 
 
 @wp.func
-def quat_apply(q: quatf, v: vec3f) -> vec3f:
-    """
-    Apply a quaternion to a vector.
-    The quaternion is applied to the vector using the formula:
-    v' = s * v + q.w * uv + qv x uv, where s = ||q||^2, uv = 2 * qv x v, and qv is the imaginary part of the quaternion.
-    """
-    qv = quat_imaginary(q)
-    uv = 2.0 * wp.cross(qv, v)
-    s = wp.dot(q, q)
-    return s * v + q.w * uv + wp.cross(qv, uv)
-
-
-@wp.func
-def quat_derivative(q: quatf, omega: vec3f) -> quatf:
-    """
-    Computes the quaternion derivative from a quaternion and angular velocity.
-
-    Args:
-        q (quatf): The quaternion of the current pose of the body.
-        omega (vec3f): The angular velocity of the body.
-
-    Returns:
-        quatf: The quaternion derivative.
-    """
-    vdq = 0.5 * wp.transpose(G_of(q)) * omega
-    dq = wp.quaternion(vdq.x, vdq.y, vdq.z, vdq.w, dtype=float32)
-    return dq
-
-
-@wp.func
-def quat_log(q: quatf) -> vec3f:
+def quat_log(q: wp.quatf) -> wp.vec3f:
     """
     Computes the logarithm of a quaternion using the stable
     `4 * atan()` formulation to render a rotation vector.
@@ -324,53 +174,20 @@ def quat_log(q: quatf) -> vec3f:
 
 
 @wp.func
-def quat_log_decomposed(q: quatf) -> vec4f:
-    """
-    Computes the logarithm of a quaternion using the stable
-    `4 * atan()` formulation to render an angle-axis vector.
-
-    The output is a vec4f with the following format:
-        - `a = [x, y, z, c]` is the angle-axis output
-        - `[x, y, z]` is the axis of rotation
-        - `c` is the angle.
-    """
-    p = quat_positive(q)
-    pv = quat_imaginary(p)
-    pv_norm_sq = wp.dot(pv, pv)
-    pw_sq = p.w * p.w
-    pv_norm = wp.sqrt(pv_norm_sq)
-
-    # Check if the norm of the imaginary part is infinitesimal
-    if pv_norm_sq > FLOAT32_EPS:
-        # Regular solution for larger angles
-        # Use more stable 4 * atan() formulation over the 2 * atan(pv_norm / pw)
-        # TODO: angle = 4.0 * wp.atan2(pv_norm, (p.w + wp.sqrt(pw_sq + pv_norm_sq)))
-        angle = 4.0 * wp.atan(pv_norm / (p.w + wp.sqrt(pw_sq + pv_norm_sq)))
-        c = angle / pv_norm
-    else:
-        # Taylor expansion solution for small angles
-        # For the alternative branch use the limit of angle / pv_norm for angle -> 0.0
-        c = (2.0 - wp.static(2.0 / 3.0) * (pv_norm_sq / pw_sq)) / p.w
-
-    # Return the scaled imaginary part of the quaternion
-    return vec4f(pv.x, pv.y, pv.z, c)
-
-
-@wp.func
-def quat_exp(v: vec3f) -> quatf:
+def quat_exp(v: wp.vec3f) -> wp.quatf:
     """
     Computes the exponential map of a 3D vector as a quaternion.
     using Rodrigues' formula: R = I + sin(θ)*K (1-cos(θ)*K^2),
     were q = quat(R).
 
     Args:
-        v (vec3f): The 3D rotation vector to be mapped to quaternion space.
+        v: The 3D rotation vector to be mapped to quaternion space.
 
     Returns:
-        quatf: The quaternion resulting from the exponential map of the input rotation vector.
+        The quaternion resulting from the exponential map of the input rotation vector.
     """
     eps = FLOAT32_EPS
-    q = wp.quat_identity(dtype=float32)
+    q = wp.quat_identity(dtype=wp.float32)
     vn = wp.length(v)
     if vn > eps:
         a = 0.5 * vn
@@ -390,93 +207,7 @@ def quat_exp(v: vec3f) -> quatf:
 
 
 @wp.func
-def quat_product(q1: quatf, q2: quatf) -> quatf:
-    """
-    Computes the quaternion product of two quaternions.
-
-    Args:
-        q1 (quatf): The first quaternion.
-        q2 (quatf): The second quaternion.
-
-    Returns:
-        quatf: The result of the quaternion product.
-    """
-    q3 = wp.quat_identity(dtype=float32)
-    q3.x = q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y
-    q3.y = q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x
-    q3.z = q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w
-    q3.w = q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z
-    return q3
-
-
-@wp.func
-def quat_box_plus(q: quatf, v: vec3f) -> quatf:
-    """
-    Computes the box-plus operation for a quaternion and a vector:
-        R(q) [+] v == exp(v) * R(q), where R(q) is the rotation matrix of the quaternion q.
-
-    Args:
-        q (vec3f): The quaternion.
-        v (vec3f): The vector.
-
-    Returns:
-        quatf: The result of the box-plus operation.
-    """
-    return quat_product(quat_exp(v), q)
-
-
-@wp.func
-def quat_from_x_rot(angle_rad: float32) -> quatf:
-    """
-    Computes a unit quaternion corresponding to rotation by given angle about the x axis
-    """
-    return wp.quatf(wp.sin(0.5 * angle_rad), 0.0, 0.0, wp.cos(0.5 * angle_rad))
-
-
-@wp.func
-def quat_from_y_rot(angle_rad: float32) -> quatf:
-    """
-    Computes a unit quaternion corresponding to rotation by given angle about the y axis
-    """
-    return wp.quatf(0.0, wp.sin(0.5 * angle_rad), 0.0, wp.cos(0.5 * angle_rad))
-
-
-@wp.func
-def quat_from_z_rot(angle_rad: float32) -> quatf:
-    """
-    Computes a unit quaternion corresponding to rotation by given angle about the z axis
-    """
-    return wp.quatf(0.0, 0.0, wp.sin(0.5 * angle_rad), wp.cos(0.5 * angle_rad))
-
-
-@wp.func
-def quat_to_euler_xyz(q: quatf) -> vec3f:
-    """
-    Converts a unit quaternion to XYZ Euler angles (also known as Cardan angles).
-    """
-    rpy = vec3f(0.0)
-    R_20 = -2.0 * (q.x * q.z - q.w * q.y)
-    if wp.abs(R_20) < 1.0:
-        rpy[1] = wp.asin(-R_20)
-        rpy[0] = wp.atan2(2.0 * (q.y * q.z + q.w * q.x), q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z)
-        rpy[2] = wp.atan2(2.0 * (q.x * q.y + q.w * q.z), q.w * q.w + q.x * q.x - q.y * q.y - q.z * q.z)
-    else:  # Gimbal lock
-        rpy[0] = wp.atan2(-2.0 * (q.x * q.y - q.w * q.z), q.w * q.w - q.x * q.x + q.y * q.y - q.z * q.z)
-        rpy[1] = wp.half_pi if R_20 <= -1.0 else -wp.half_pi
-        rpy[2] = 0.0
-    return rpy
-
-
-@wp.func
-def quat_from_euler_xyz(rpy: vec3f) -> quatf:
-    """
-    Converts XYZ Euler angles (also known as Cardan angles) to a unit quaternion.
-    """
-    return wp.quat_from_matrix(R_z(rpy.z) @ R_y(rpy.y) @ R_x(rpy.x))
-
-
-@wp.func
-def quat_left_jacobian_inverse(q: quatf) -> mat33f:
+def quat_left_jacobian_inverse(q: wp.quatf) -> wp.mat33f:
     """
     Computes the left-Jacobian inverse of the quaternion log map
     """
@@ -496,33 +227,11 @@ def quat_left_jacobian_inverse(q: quatf) -> mat33f:
         c1 = wp.static(1.0 / 3.0) / pw_sq
         c0 = (1.0 - c1 * pv_norm_sq) / p.w
 
-    return wp.identity(3, dtype=float32) - wp.skew(c0 * pv) + wp.skew(c1 * pv) * wp.skew(pv)
+    return wp.identity(3, dtype=wp.float32) - wp.skew(c0 * pv) + wp.skew(c1 * pv) * wp.skew(pv)
 
 
 @wp.func
-def quat_normalized_apply(q: quatf, v: vec3f) -> vec3f:
-    """
-    Combines quaternion normalization and applying a unit quaternion to a vector
-    """
-    qv = quat_imaginary(q)
-    s = wp.dot(q, q)
-    uv_s = (2.0 / s) * wp.cross(qv, v)
-    return v + q[3] * uv_s + wp.cross(qv, uv_s)
-
-
-@wp.func
-def quat_conj_normalized_apply(q: quatf, v: vec3f) -> vec3f:
-    """
-    Combines quaternion conjugation, normalization and applying a unit quaternion to a vector
-    """
-    qv = quat_imaginary(q)
-    s = wp.dot(q, q)
-    uv_s = (2.0 / s) * wp.cross(qv, v)
-    return v - q[3] * uv_s + wp.cross(qv, uv_s)
-
-
-@wp.func
-def quat_twist_angle(q: quatf, axis: vec3f) -> wp.float32:
+def quat_twist_angle(q: wp.quatf, axis: wp.vec3f) -> wp.float32:
     """
     Computes the twist angle of a quaternion around a specific axis.
 
@@ -543,7 +252,7 @@ def quat_twist_angle(q: quatf, axis: vec3f) -> wp.float32:
 
 
 @wp.func
-def unit_quat_apply(q: quatf, v: vec3f) -> vec3f:
+def unit_quat_apply(q: wp.quatf, v: wp.vec3f) -> wp.vec3f:
     """
     Applies a unit quaternion to a vector (making use of the unit norm assumption to simplify the result)
     """
@@ -553,7 +262,7 @@ def unit_quat_apply(q: quatf, v: vec3f) -> vec3f:
 
 
 @wp.func
-def unit_quat_conj_apply(q: quatf, v: vec3f) -> vec3f:
+def unit_quat_conj_apply(q: wp.quatf, v: wp.vec3f) -> wp.vec3f:
     """
     Applies the conjugate of a unit quaternion to a vector (making use of the unit norm assumption to simplify
     the result)
@@ -564,7 +273,7 @@ def unit_quat_conj_apply(q: quatf, v: vec3f) -> vec3f:
 
 
 @wp.func
-def unit_quat_to_rotation_matrix(q: quatf) -> mat33f:
+def unit_quat_to_rotation_matrix(q: wp.quatf) -> wp.mat33f:
     """
     Converts a unit quaternion to a rotation matrix (making use of the unit norm assumption to simplify the result)
     """
@@ -577,11 +286,11 @@ def unit_quat_to_rotation_matrix(q: quatf) -> mat33f:
     wy = 2.0 * q.w * q.y
     zz = 2.0 * q.z * q.z
     wz = 2.0 * q.w * q.z
-    return mat33f(1.0 - yy - zz, xy - wz, xz + wy, xy + wz, 1.0 - xx - zz, yz - wx, xz - wy, yz + wx, 1.0 - xx - yy)
+    return wp.mat33f(1.0 - yy - zz, xy - wz, xz + wy, xy + wz, 1.0 - xx - zz, yz - wx, xz - wy, yz + wx, 1.0 - xx - yy)
 
 
 @wp.func
-def unit_quat_conj_to_rotation_matrix(q: quatf) -> mat33f:
+def unit_quat_conj_to_rotation_matrix(q: wp.quatf) -> wp.mat33f:
     """
     Converts the conjugate of a unit quaternion to a rotation matrix (making use of the unit norm assumption
     to simplify the result); this is simply the transpose of unit_quat_to_rotation_matrix(q)
@@ -595,11 +304,11 @@ def unit_quat_conj_to_rotation_matrix(q: quatf) -> mat33f:
     wy = 2.0 * q.w * q.y
     zz = 2.0 * q.z * q.z
     wz = 2.0 * q.w * q.z
-    return mat33f(1.0 - yy - zz, xy + wz, xz - wy, xy - wz, 1.0 - xx - zz, yz + wx, xz + wy, yz - wx, 1.0 - xx - yy)
+    return wp.mat33f(1.0 - yy - zz, xy + wz, xz - wy, xy - wz, 1.0 - xx - zz, yz + wx, xz + wy, yz - wx, 1.0 - xx - yy)
 
 
 @wp.func
-def unit_quat_apply_jacobian(q: quatf, v: vec3f) -> mat34f:
+def unit_quat_apply_jacobian(q: wp.quatf, v: wp.vec3f) -> mat34f:
     """
     Returns the Jacobian of unit_quat_apply(q, v) with respect to q
     """
@@ -632,7 +341,7 @@ def unit_quat_apply_jacobian(q: quatf, v: vec3f) -> mat34f:
 
 
 @wp.func
-def unit_quat_conj_apply_jacobian(q: quatf, v: vec3f) -> mat34f:
+def unit_quat_conj_apply_jacobian(q: wp.quatf, v: wp.vec3f) -> mat34f:
     """
     Returns the Jacobian of unit_quat_conj_apply(q, v) with respect to q
     """
@@ -670,50 +379,7 @@ def unit_quat_conj_apply_jacobian(q: quatf, v: vec3f) -> mat34f:
 
 
 @wp.func
-def screw(linear: vec3f, angular: vec3f) -> vec6f:
-    """
-    Constructs a 6D screw (as `vec6f`) from 3D linear and angular components.
-
-    Args:
-        linear (vec3f): The linear component of the screw.
-        angular (vec3f): The angular component of the screw.
-
-    Returns:
-        vec6f: The resulting screw represented as a 6D vector.
-    """
-    return vec6f(linear[0], linear[1], linear[2], angular[0], angular[1], angular[2])
-
-
-@wp.func
-def screw_linear(s: vec6f) -> vec3f:
-    """
-    Extracts the linear component from a 6D screw vector.
-
-    Args:
-        s (vec6f): The 6D screw vector.
-
-    Returns:
-        vec3f: The linear component of the screw.
-    """
-    return vec3f(s[0], s[1], s[2])
-
-
-@wp.func
-def screw_angular(s: vec6f) -> vec3f:
-    """
-    Extracts the angular component from a 6D screw vector.
-
-    Args:
-        s (vec6f): The 6D screw vector.
-
-    Returns:
-        vec3f: The angular component of the screw.
-    """
-    return vec3f(s[3], s[4], s[5])
-
-
-@wp.func
-def screw_transform_matrix_from_points(r_A: vec3f, r_B: vec3f) -> mat66f:
+def screw_transform_matrix_from_points(r_A: wp.vec3f, r_B: wp.vec3f) -> wp.spatial_matrixf:
     """
     Generates a 6x6 screw transformation matrix given the starting (`r_A`)
     and ending (`r_B`) positions defining the line-of-action of the screw.
@@ -729,14 +395,14 @@ def screw_transform_matrix_from_points(r_A: vec3f, r_B: vec3f) -> mat66f:
     where `S_BA` is the skew-symmetric matrix of the vector `r_BA = r_A - r_B`.
 
     Args:
-        r_A (vec3f): The starting position of the line-of-action in world coordinates.
-        r_B (vec3f): The ending position of the line-of-action in world coordinates.
+        r_A: The starting position of the line-of-action in world coordinates.
+        r_B: The ending position of the line-of-action in world coordinates.
 
     Returns:
-        mat66f: The 6x6 screw transformation matrix.
+        The 6x6 screw transformation matrix.
     """
     # Initialize the wrench matrix
-    W_BA = I_6
+    W_BA = wp.identity(n=6, dtype=wp.float32)
 
     # Fill the lower left block with the skew-symmetric matrix
     S_BA = wp.skew(r_A - r_B)
@@ -758,7 +424,7 @@ W_C_I = wp.constant(mat63f(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 
 @wp.func
-def contact_wrench_matrix_from_points(r_k: vec3f, r_i: vec3f) -> mat63f:
+def contact_wrench_matrix_from_points(r_k: wp.vec3f, r_i: wp.vec3f) -> mat63f:
     """
     Generates a 6x3 screw transformation matrix given the contact (`r_k`)
     and body CoM (`r_i`) positions defining the line-of-action of the force.
@@ -774,11 +440,11 @@ def contact_wrench_matrix_from_points(r_k: vec3f, r_i: vec3f) -> mat63f:
     where `S_ki` is the skew-symmetric matrix of the vector `r_ki = r_k - r_i`.
 
     Args:
-        r_k (vec3f): The position of the contact point in world coordinates.
-        r_i (vec3f): The position of the body CoM in world coordinates.
+        r_k: The position of the contact point in world coordinates.
+        r_i: The position of the body CoM in world coordinates.
 
     Returns:
-        mat66f: The 6x6 screw transformation matrix.
+        The 6x6 screw transformation matrix.
     """
     # Initialize the wrench matrix
     W_ki = W_C_I
@@ -794,19 +460,19 @@ def contact_wrench_matrix_from_points(r_k: vec3f, r_i: vec3f) -> mat63f:
 
 
 @wp.func
-def expand6d(X: mat33f) -> mat66f:
+def expand6d(X: wp.mat33f) -> wp.spatial_matrixf:
     """
     Expands a 3x3 rotation matrix to a 6x6 matrix operator by filling
     the upper left and lower right blocks with the input matrix.
 
     Args:
-        X (mat33f): The 3x3 matrix to be expanded.
+        X: The 3x3 matrix to be expanded.
 
     Returns:
-        mat66: The expanded 6x6 matrix.
+        The expanded 6x6 matrix.
     """
     # Initialize the 6D matrix
-    X_6d = mat66f(0.0)
+    X_6d = wp.spatial_matrixf(0.0)
 
     # Fill the upper left 3x3 block with the input matrix
     for i in range(3):
@@ -819,19 +485,19 @@ def expand6d(X: mat33f) -> mat66f:
 
 
 @wp.func
-def concat6d(X1: mat33f, X2: mat33f) -> mat66f:
+def concat6d(X1: wp.mat33f, X2: wp.mat33f) -> wp.spatial_matrixf:
     """
     Concatenates two 3x3 rotation matrix as diagonal blocks of a 6x6 matrix.
 
     Args:
-        X1 (mat33f): The 3x3 top-left matrix.
-        X2 (mat33f): The 3x3 bottom-right matrix.
+        X1: The 3x3 top-left matrix.
+        X2: The 3x3 bottom-right matrix.
 
     Returns:
-        mat66: The 6x6 matrix concatenating X1, X2 along the diagonal.
+        The 6x6 matrix concatenating X1 and X2 along the diagonal.
     """
     # Initialize the 6D matrix
-    X_6d = mat66f(0.0)
+    X_6d = wp.spatial_matrixf(0.0)
 
     # Fill the upper left 3x3 block with the input matrix
     for i in range(3):
@@ -850,20 +516,20 @@ def concat6d(X1: mat33f, X2: mat33f) -> mat66f:
 
 @wp.func
 def compute_body_twist_update_with_eom(
-    dt: float32,
-    g: vec3f,
-    inv_m_i: float32,
-    I_i: mat33f,
-    inv_I_i: mat33f,
-    u_i: vec6f,
-    w_i: vec6f,
-) -> tuple[vec3f, vec3f]:
+    dt: wp.float32,
+    g: wp.vec3f,
+    inv_m_i: wp.float32,
+    I_i: wp.mat33f,
+    inv_I_i: wp.mat33f,
+    u_i: wp.spatial_vectorf,
+    w_i: wp.spatial_vectorf,
+) -> tuple[wp.vec3f, wp.vec3f]:
     # Extract linear and angular parts
-    v_i = screw_linear(u_i)
-    omega_i = screw_angular(u_i)
+    v_i = wp.spatial_top(u_i)
+    omega_i = wp.spatial_bottom(u_i)
     S_i = wp.skew(omega_i)
-    f_i = screw_linear(w_i)
-    tau_i = screw_angular(w_i)
+    f_i = wp.spatial_top(w_i)
+    tau_i = wp.spatial_bottom(w_i)
 
     # Compute velocity update equations
     v_i_n = v_i + dt * (g + inv_m_i * f_i)
@@ -875,19 +541,19 @@ def compute_body_twist_update_with_eom(
 
 @wp.func
 def compute_body_pose_update_with_logmap(
-    dt: float32,
-    p_i: transformf,
-    v_i: vec3f,
-    omega_i: vec3f,
-) -> transformf:
+    dt: wp.float32,
+    p_i: wp.transformf,
+    v_i: wp.vec3f,
+    omega_i: wp.vec3f,
+) -> wp.transformf:
     # Extract linear and angular parts
     r_i = wp.transform_get_translation(p_i)
     q_i = wp.transform_get_rotation(p_i)
 
     # Compute configuration update equations
     r_i_n = r_i + dt * v_i
-    q_i_n = quat_box_plus(q_i, dt * omega_i)
-    p_i_n = transformf(r_i_n, q_i_n)
+    q_i_n = quat_exp(dt * omega_i) * q_i
+    p_i_n = wp.transformf(r_i_n, q_i_n)
 
     # Return the new pose and twist
     return p_i_n
@@ -904,10 +570,10 @@ def tril_index(row: Any, col: Any) -> Any:
     Computes the index in a flattened lower-triangular matrix.
 
     Args:
-        row (Any): The row index.
-        col (Any): The column index.
+        row: The row index.
+        col: The column index.
 
     Returns:
-        Any: The index in the flattened lower-triangular matrix.
+        The index in the flattened lower-triangular matrix.
     """
     return (row * (row + 1)) // 2 + col
