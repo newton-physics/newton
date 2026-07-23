@@ -15,6 +15,7 @@ import warp as wp
 
 from .....core.types import Axis
 from .....geometry import ShapeFlags
+from ..utils import logger as msg
 from .bodies import RigidBodiesModel, RigidBodyDescriptor
 from .geometry import GeometriesModel, GeometryDescriptor
 from .gravity import GravityDescriptor, GravityModel
@@ -913,7 +914,10 @@ class ModelBuilderKamino:
         # Validate base body/joint data for each world, and fill in missing data if possible
         for w, world in enumerate(self._worlds):
             if world.has_base_joint:
-                follower_idx = self._joints[w][world.base_joint_idx].bid_F  # Note: index among world bodies
+                base_joint = self._joints[w][world.base_joint_idx]
+                if base_joint.dof_type != JointDoFType.FREE:
+                    raise ValueError(f"Invalid base joint for world {world.name} ({w}), must be a free joint.")
+                follower_idx = joint.bid_F  # Note: index among world bodies
                 if world.has_base_body:  # Ensure base joint & body are compatible if both were set
                     if world.base_body_idx != follower_idx:
                         raise ValueError(
@@ -922,16 +926,21 @@ class ModelBuilderKamino:
                 else:  # Set base body to be the follower of the base joint
                     world.set_base_body(follower_idx)
             elif not world.has_base_body and base_auto:
-                # Look for a non-universal unary joint connecting the world to a follower body
+                # Look for a unary free joint connecting the world to a follower body
+                has_unary_joint = False
                 for jt_idx, joint in enumerate(self._joints[w]):
-                    if joint.bid_B == -1 and joint.dof_type != JointDoFType.UNIVERSAL:
-                        world.set_base_joint(jt_idx)
-                        world.set_base_body(joint.bid_F)
-                        break
-                # As a last fallback, set body 0 in that world as base body (no base joint)
-                if not world.has_base_body:
+                    if joint.bid_B == -1:
+                        has_unary_joint = True
+                        if joint.dof_type == JointDoFType.FREE:
+                            world.set_base_joint(jt_idx)
+                            world.set_base_body(joint.bid_F)
+                            break
+                # As a last fallback, set body 0 in that world as base body (no base joint), if no unary
+                # joints were found (else this is not a floating-base model and we assign no base body).
+                if not world.has_base_body and not has_unary_joint:
                     if world.num_bodies == 0:
-                        raise RuntimeError(f"Zero bodies in world {w}, cannot set base body.")
+                        msg.warning(f"Zero bodies in world {w}, no base body assigned.")
+                        continue
                     world.set_base_body(0)
 
         ###
@@ -970,10 +979,6 @@ class ModelBuilderKamino:
         info_jkcio = []
         info_base_bid = []
         info_base_jid = []
-        info_mass_min = []
-        info_mass_max = []
-        info_mass_total = []
-        info_inertia_total = []
 
         # Initialize the gravity data collections
         gravity_g_dir_acc = []
@@ -997,6 +1002,7 @@ class ModelBuilderKamino:
         joints_jid = []
         joints_dofid = []
         joints_actid = []
+        joints_fk_act_flag = []
         joints_q_j_0 = []
         joints_dq_j_0 = []
         joints_bid_B = []
@@ -1077,12 +1083,6 @@ class ModelBuilderKamino:
                 info_jio.append(world.joints_idx_offset)
                 info_gio.append(world.geoms_idx_offset)
 
-                # Collect the model mass and inertia data
-                info_mass_min.append(world.mass_min)
-                info_mass_max.append(world.mass_max)
-                info_mass_total.append(world.mass_total)
-                info_inertia_total.append(world.inertia_total)
-
             # Collect the index offsets for bodies and joints
             for world in self._worlds:
                 info_bdio.append(world.body_dofs_idx_offset)
@@ -1128,11 +1128,27 @@ class ModelBuilderKamino:
                 joints_jid.append(joint.jid)
                 joints_dofid.append(joint.dof_type.value)
                 joints_actid.append(joint.act_type.value)
+                joints_fk_act_flag.append(joint.fk_act_flag)
                 joints_B_r_Bj.append(joint.B_r_Bj)
                 joints_F_r_Fj.append(joint.F_r_Fj)
                 joints_X_Bj.append(joint.X_Bj)
                 joints_X_Fj.append(joint.X_Fj)
-                joints_q_j_0.extend(joint.dof_type.reference_coords)
+                if joint.dof_type == JointDoFType.FREE:
+                    # For free joints, the frame of the joint on the base and follower body might not
+                    # coincide on the initial pose (this allows e.g. joint_q to directly represent the
+                    # follower body pose for a unary free joint with the base frame at the origin).
+                    # We therefore deduce here the initial joint_q
+                    q_B = wp.transform_identity() if joint.bid_B < 0 else self.bodies[joint.wid][joint.bid_B].q_i_0
+                    q_F = self.bodies[joint.wid][joint.bid_F].q_i_0
+                    quat_X_B = wp.quat_from_matrix(joint.X_Bj)
+                    quat_X_F = wp.quat_from_matrix(joint.X_Fj) if joint.X_Fj is not None else quat_X_B
+                    T_B = wp.transformf(joint.B_r_Bj, quat_X_B)
+                    T_F = wp.transformf(joint.F_r_Fj, quat_X_F)
+                    q_j_0 = wp.transform_inverse(q_B * T_B) * q_F * T_F
+                    wp.transform_set_rotation(q_j_0, wp.normalize(wp.transform_get_rotation(q_j_0)))
+                    joints_q_j_0.extend(list(q_j_0))
+                else:
+                    joints_q_j_0.extend(joint.dof_type.reference_coords)
                 joints_dq_j_0.extend(joint.dof_type.num_dofs * [0.0])
                 joints_q_j_min.extend(joint.q_j_min)
                 joints_q_j_max.extend(joint.q_j_max)
@@ -1251,6 +1267,10 @@ class ModelBuilderKamino:
             max_of_num_passive_joint_dofs=max([world.num_passive_joint_dofs for world in self._worlds]),
             sum_of_num_actuated_joint_coords=self._num_joint_actuated_coords,
             max_of_num_actuated_joint_coords=max([world.num_actuated_joint_coords for world in self._worlds]),
+            sum_of_num_fk_actuated_joint_coords=sum([world.num_fk_actuated_joint_coords for world in self._worlds]),
+            max_of_num_fk_actuated_joint_coords=max([world.num_fk_actuated_joint_coords for world in self._worlds]),
+            sum_of_num_fk_actuated_joint_dofs=sum([world.num_fk_actuated_joint_dofs for world in self._worlds]),
+            max_of_num_fk_actuated_joint_dofs=max([world.num_fk_actuated_joint_dofs for world in self._worlds]),
             sum_of_num_actuated_joint_dofs=self._num_joint_actuated_dofs,
             max_of_num_actuated_joint_dofs=max([world.num_actuated_joint_dofs for world in self._worlds]),
             sum_of_num_joint_cts=self._num_joint_cts,
@@ -1336,10 +1356,6 @@ class ModelBuilderKamino:
                 joint_kinematic_cts_offset=to_warp_int32_array(info_jkcio),
                 base_body_index=to_warp_int32_array(info_base_bid),
                 base_joint_index=to_warp_int32_array(info_base_jid),
-                mass_min=wp.array(info_mass_min, dtype=wp.float32),
-                mass_max=wp.array(info_mass_max, dtype=wp.float32),
-                mass_total=wp.array(info_mass_total, dtype=wp.float32),
-                inertia_total=wp.array(info_inertia_total, dtype=wp.float32),
             )
 
             # Create the model time data
@@ -1376,6 +1392,9 @@ class ModelBuilderKamino:
                 jid=to_warp_int32_array(joints_jid),
                 dof_type=to_warp_int32_array(joints_dofid),
                 act_type=to_warp_int32_array(joints_actid),
+                fk_act_flag=to_warp_int32_array(joints_fk_act_flag)
+                if any(act_flag != -1 for act_flag in joints_fk_act_flag)
+                else None,
                 bid_B=to_warp_int32_array(joints_bid_B),
                 bid_F=to_warp_int32_array(joints_bid_F),
                 B_r_Bj=wp.array(joints_B_r_Bj, dtype=wp.vec3f, requires_grad=requires_grad),

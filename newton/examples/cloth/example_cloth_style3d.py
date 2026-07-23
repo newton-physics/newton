@@ -128,7 +128,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(0.0, -1.7, 1.4), 0.0, -270.0)
@@ -136,15 +137,16 @@ class Example:
         self.capture()
 
     def capture(self):
-        if wp.get_device().is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
+        # SolverStyle3D makes host calls (PCG dot products, BVH refit) that CPU graph capture cannot record
+        if wp.get_device().is_cpu:
             self.graph = None
+            return
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 

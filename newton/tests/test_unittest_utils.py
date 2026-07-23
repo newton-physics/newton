@@ -167,6 +167,25 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertIn("subprocess stdout", result.failures[0][1])
         self.assertIn("subprocess stderr", result.failures[0][1])
 
+    def test_caught_subprocess_failure_does_not_report_output_again(self):
+        unittest_utils.wp.init()
+
+        class CatchesFailingSubprocess(NewtonTestCase):
+            def test_output(self):
+                result = subprocess.CompletedProcess(
+                    args=["fake-command"],
+                    returncode=7,
+                    stdout="subprocess stdout\n",
+                    stderr="subprocess stderr\n",
+                )
+
+                with self.assertRaisesRegex(AssertionError, "Failed with return code 7"):
+                    self.assertSubprocessSuccess(result, command=result.args)
+
+        result = self._run_test_case(CatchesFailingSubprocess)
+
+        self.assertTrue(result.wasSuccessful(), result.failures)
+
     def test_synchronized_output_is_captured(self):
         class SynchronizeEmitsOutput(NewtonTestCase):
             def test_output(self):
@@ -236,6 +255,27 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertEqual(len(result.failures), 1)
         self.assertIn("Unexpected stdout", result.failures[0][1])
         self.assertIn("generated test output", result.failures[0][1])
+
+    def test_add_function_test_without_devices_skips_before_output_capture(self):
+        class GeneratedTest(NewtonTestCase):
+            pass
+
+        def test_func(test, device):
+            pass
+
+        unittest_utils.add_function_test(GeneratedTest, "test_generated", test_func, devices=[])
+
+        stderr_capture = unittest_utils.StdErrCapture()
+        stderr_capture.begin()
+        try:
+            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(GeneratedTest)
+            )
+        finally:
+            runner_output = stderr_capture.end()
+
+        self.assertTrue(result.wasSuccessful(), runner_output)
+        self.assertEqual(len(result.skipped), 1)
 
     def test_output_capture_begin_rolls_back_stdout_if_stderr_fails(self):
         class CaptureStub:

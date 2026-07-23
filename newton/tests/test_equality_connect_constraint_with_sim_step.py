@@ -124,10 +124,10 @@ class TestConnectConstraintWithSimStepBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_link (body index 0 in Newton's list of bodies), fixed joint to world
@@ -835,10 +835,10 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world
@@ -1311,10 +1311,10 @@ class TestMixedWeldAndConnectLoopJointBase(TestEqualityConstraintWithSimStepBase
             body_inertia,
         )
 
-        all_worlds_builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+        all_worlds_builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
 
         for _w in range(num_worlds):
-            builder = newton.ModelBuilder(gravity=0.0, up_axis=1)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=1)
             newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
             # root_body (body 0), fixed to world

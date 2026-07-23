@@ -9,6 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.geometry import ContactAggregation
+from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.sensors import SensorContact
 from newton.solvers import SolverKamino, SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
@@ -747,8 +748,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         num_steps = 240 * 2
 
         device = model.device
-        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-        if use_cuda_graph:
+        use_graph = is_graph_capture_allocation_enabled(device)
+        if use_graph:
             # warmup (2 steps to allocate both buffers)
             solver.step(state_in, state_out, control, None, sim_dt)
             solver.step(state_out, state_in, control, None, sim_dt)
@@ -758,14 +759,14 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             graph = capture.graph
 
         avg_steps = 10  # average forces over last few steps for stability
-        remaining = num_steps - avg_steps - (4 if use_cuda_graph else 0)
-        for _ in range(remaining // 2 if use_cuda_graph else remaining):
-            if use_cuda_graph:
+        remaining = num_steps - avg_steps - (4 if use_graph else 0)
+        for _ in range(remaining // 2 if use_graph else remaining):
+            if use_graph:
                 wp.capture_launch(graph)
             else:
                 solver.step(state_in, state_out, control, None, sim_dt)
                 state_in, state_out = state_out, state_in
-        if use_cuda_graph and remaining % 2 == 1:
+        if use_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
@@ -891,8 +892,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         num_steps = 240 * 2
 
         device = model.device
-        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
-        if use_cuda_graph:
+        use_graph = is_graph_capture_allocation_enabled(device)
+        if use_graph:
             # warmup (2 steps to allocate both buffers)
             solver.step(state_in, state_out, control, None, sim_dt)
             solver.step(state_out, state_in, control, None, sim_dt)
@@ -902,14 +903,14 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             graph = capture.graph
 
         avg_steps = 10  # average forces over last few steps for stability
-        remaining = num_steps - avg_steps - (4 if use_cuda_graph else 0)
-        for _ in range(remaining // 2 if use_cuda_graph else remaining):
-            if use_cuda_graph:
+        remaining = num_steps - avg_steps - (4 if use_graph else 0)
+        for _ in range(remaining // 2 if use_graph else remaining):
+            if use_graph:
                 wp.capture_launch(graph)
             else:
                 solver.step(state_in, state_out, control, None, sim_dt)
                 state_in, state_out = state_out, state_in
-        if use_cuda_graph and remaining % 2 == 1:
+        if use_graph and remaining % 2 == 1:
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
