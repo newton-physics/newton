@@ -417,6 +417,19 @@ add_basic_example_test(
     test_options={"num-frames": 50},
 )
 
+# The load_usd example takes a filesystem path; point it at a bundled asset via
+# its --path alias (the test harness cannot pass positional arguments).
+_LOAD_USD_TEST_ASSET = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "assets", "cartpole.usda"
+)
+add_basic_example_test(
+    name="basic.example_load_usd",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"usd_required": True, "path": _LOAD_USD_TEST_ASSET, "num-frames": 30},
+    test_options_cpu={"num-frames": 10},
+)
+
 
 class TestCableExamples(NewtonTestCase):
     pass
