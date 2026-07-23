@@ -37,11 +37,19 @@ class DeformableVisualBinding:
 
     def __init__(
         self,
-        kind,
+        kind: DeformableVisualMesh.Kind,
         parent: wp.array[wp.int32],
         weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
         local_offsets: wp.array[wp.vec3] | None = None,
-    ):
+    ) -> None:
+        """Store a visual-to-simulation binding.
+
+        Args:
+            kind: Simulation element kind driving the visual points.
+            parent: Driver index for each visual point.
+            weights: Barycentric weights for triangle or tetrahedron bindings.
+            local_offsets: Body-local binding offsets [m].
+        """
         self.kind = kind
         """Embedding kind."""
         self.parent = parent
@@ -49,7 +57,7 @@ class DeformableVisualBinding:
         self.weights = weights
         """Barycentric weights for triangle or tet bindings, or ``None``."""
         self.local_offsets = local_offsets
-        """Body-local offsets for rigid body bindings, or ``None``."""
+        """Body-local offsets [m] for rigid body bindings, or ``None``."""
 
 
 class DeformableVisualMesh:
@@ -110,7 +118,7 @@ class DeformableVisualMesh:
         body_path: str | None = None,
         sim_path: str | None = None,
         graphics_path: str | None = None,
-    ):
+    ) -> None:
         self.kind = DeformableVisualMesh.Kind(kind)
         """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
         self.rest_vertices = rest_vertices
@@ -135,7 +143,7 @@ class DeformableVisualMesh:
         :attr:`Kind.TET`, shape [vertex_count, 3] (vec3) for
         :attr:`Kind.TRIANGLE`; ``None`` for other kinds."""
         self.local_offsets = local_offsets
-        """Body-local bind offsets for :attr:`Kind.BODY`,
+        """Body-local bind offsets [m] for :attr:`Kind.BODY`,
         shape [vertex_count, 3]; ``None`` for other kinds."""
         self.uvs = uvs
         """Per-visual-vertex texture coordinates, shape [vertex_count, 2], or ``None``."""
@@ -176,7 +184,7 @@ class DeformableVisuals:
         deprecation cycle while deformable visual support is experimental.
     """
 
-    def __init__(self, model: Model):
+    def __init__(self, model: Model) -> None:
         self._model = model
         self.device = model.device
         """Device containing :attr:`points` and :attr:`normals`."""
@@ -386,10 +394,10 @@ def _normalize_normals(normals: wp.array[wp.vec3], normal_offset: int):
 
 def skin_deformable_visual_mesh(
     mesh: DeformableVisualMesh,
-    state,
-    model,
+    state: State,
+    model: Model,
     out_points: wp.array[wp.vec3],
-    device=None,
+    device: wp.DeviceLike | None = None,
     out_offset: int = 0,
 ) -> None:
     """Evaluate a visual mesh's current vertex positions from the simulation state.
@@ -399,6 +407,14 @@ def skin_deformable_visual_mesh(
     consumer's responsibility so viewers, sensors, and external integrations can
     apply their own placement. Runs entirely on ``device`` (the simulation
     device by default).
+
+    Args:
+        mesh: Visual mesh and its simulation binding.
+        state: Simulation state providing current driver positions [m] and poses.
+        model: Model providing triangle and tetrahedron topology.
+        out_points: Destination positions [m].
+        device: Device on which to evaluate the binding.
+        out_offset: First destination vertex to write.
     """
     device = device if device is not None else out_points.device
     kind = DeformableVisualMesh.Kind
@@ -440,13 +456,24 @@ def compute_deformable_visual_mesh_normals(
     points: wp.array[wp.vec3],
     indices: wp.array[wp.int32],
     out_normals: wp.array[wp.vec3],
-    device=None,
+    device: wp.DeviceLike | None = None,
     point_offset: int = 0,
     normal_offset: int = 0,
     vertex_count: int | None = None,
     clear: bool = True,
 ) -> None:
-    """Recompute area-weighted vertex normals from current positions and topology."""
+    """Recompute area-weighted vertex normals from current positions and topology.
+
+    Args:
+        points: Current visual vertex positions [m].
+        indices: Flattened triangle vertex indices.
+        out_normals: Destination unit normals.
+        device: Device on which to compute the normals.
+        point_offset: Offset applied to each triangle vertex index.
+        normal_offset: First destination normal to write.
+        vertex_count: Number of destination normals to normalize.
+        clear: Whether to clear the complete destination before accumulating.
+    """
     device = device if device is not None else out_normals.device
     if vertex_count is None:
         vertex_count = len(out_normals) - normal_offset
