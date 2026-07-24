@@ -74,6 +74,7 @@
 
 ### Fixed
 
+- Complete Kamino RCM traversal for large and disconnected systems and reuse the resulting permutation by default; set `reuse_permutation=False` to recompute it for changing matrix topology.
 - Fix panel-parallel RCM-blocked LLT factorization hanging when a matrix ends in a partial tile.
 - Fix USD capsule, cylinder, and cone visual and site scaling to follow the authored primitive axis.
 - Fix USD plane visual width and length to scale along the axes defined by the `UsdGeomPlane` schema, and orient X- and Y-axis plane visuals along the authored axis.

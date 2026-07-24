@@ -51,6 +51,76 @@ class TestLinAlgLLTBlockedRCMSolver(unittest.TestCase):
         self.assertIsNone(llt._operator)
         self.assertEqual(llt.dtype, wp.float32)
         self.assertEqual(llt.device, self.default_device)
+        self.assertTrue(llt._reuse_permutation)
+
+    @staticmethod
+    def _run_rcm(matrix: np.ndarray, device, use_cuda_graph: bool = False) -> np.ndarray:
+        n = matrix.shape[0]
+        matrix_wp = wp.array(matrix.reshape(-1), dtype=wp.float32, device=device)
+        dims = wp.array([n], dtype=wp.int32, device=device)
+        offsets = wp.array([0], dtype=wp.int32, device=device)
+        permutation = wp.zeros(n, dtype=wp.int32, device=device)
+        scratch = rcm_batch.allocate_rcm_batch_scratch(n, 1, device)
+        reorder = rcm_batch.create_rcm_batch_launch(
+            A_flat=matrix_wp,
+            perm_flat=permutation,
+            dims=dims,
+            mio=offsets,
+            vio=offsets,
+            scratch=scratch,
+            num_blocks=1,
+            max_dim=n,
+            use_cuda_graph=use_cuda_graph,
+            device=device,
+        )
+        reorder()
+        return permutation.numpy()
+
+    @staticmethod
+    def _path_bandwidth(permutation: np.ndarray, paths: tuple[np.ndarray, ...]) -> int:
+        positions = np.empty(permutation.size, dtype=np.int64)
+        positions[permutation] = np.arange(permutation.size)
+        return max(int(np.max(np.abs(positions[path[:-1]] - positions[path[1:]]))) for path in paths)
+
+    def test_complete_rcm_across_legacy_boundary(self):
+        """Traverse long paths completely across the former 1024-row boundary."""
+        if not self.default_device.is_cuda:
+            self.skipTest("The legacy boundary applied only to the CUDA fast path")
+
+        for n in (1024, 1025):
+            with self.subTest(n=n):
+                rng = np.random.default_rng(self.seed + n)
+                path = rng.permutation(n)
+                matrix = np.eye(n, dtype=np.float32) * 2.0
+                matrix[path[:-1], path[1:]] = -0.25
+                matrix[path[1:], path[:-1]] = -0.25
+
+                permutation = self._run_rcm(matrix, self.default_device, use_cuda_graph=True)
+
+                np.testing.assert_array_equal(np.sort(permutation), np.arange(n))
+                self.assertEqual(self._path_bandwidth(permutation, (path,)), 1)
+
+    def test_complete_rcm_on_disconnected_components(self):
+        """Traverse every disconnected path component on each backend."""
+        devices = [wp.get_device("cpu")]
+        if self.default_device.is_cuda:
+            devices.append(self.default_device)
+
+        n = 96
+        rng = np.random.default_rng(self.seed)
+        labels = rng.permutation(n)
+        paths = (labels[: n // 2], labels[n // 2 :])
+        matrix = np.eye(n, dtype=np.float32) * 2.0
+        for path in paths:
+            matrix[path[:-1], path[1:]] = -0.25
+            matrix[path[1:], path[:-1]] = -0.25
+
+        for device in devices:
+            with self.subTest(device=device):
+                permutation = self._run_rcm(matrix, device, use_cuda_graph=device.is_cuda)
+
+                np.testing.assert_array_equal(np.sort(permutation), np.arange(n))
+                self.assertEqual(self._path_bandwidth(permutation, paths), 1)
 
     def test_cached_permutation_with_changed_sparsity(self):
         """Verify cached RCM remains correct when numeric sparsity changes."""
