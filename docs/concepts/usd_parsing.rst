@@ -330,7 +330,8 @@ Schema resolvers bridge the gap between solver-specific USD schemas and Newton's
 
 .. experimental::
 
-   The ``schema_resolvers`` argument in :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
+   The ``schema_resolvers`` and ``schema_resolution`` arguments in
+   :meth:`newton.ModelBuilder.add_usd` may change without prior notice.
 
 Solver Attribute Remapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -474,7 +475,21 @@ The attribute resolution process follows a three-layer fallback hierarchy to det
 
 1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
-3. **Approximated Schema Defaults**: If neither an authored value nor an importer default is available, Newton falls back to a hardcoded approximation of each solver's schema default, defined in Newton's resolver mapping. These approximations will be replaced by actual USD schema defaults in a future release.
+3. **Resolver Compatibility Defaults**: If neither an authored value nor an importer default is available, Newton falls back to the resolver mapping's compatibility default.
+
+This order is retained during a compatibility period. In the future, applying a
+schema will give it ownership of its properties: an unauthored property will use
+the fallback from its registered USD schema definition before a lower-priority
+resolver or importer default. Newton does not treat resolver compatibility
+defaults as schema-declared fallbacks; the relevant codeless or code-generated
+schema plugin must be registered with USD for first-class fallback ownership.
+Unregistered schemas retain their resolver compatibility defaults after
+importer defaults as a second-class path. Newton emits a
+:class:`DeprecationWarning` when the future rule would select a different
+resolver value or source. Author the intended property value explicitly to
+preserve it across the transition, or pass
+``use_applied_schema_fallbacks=True`` to adopt the future behavior now without
+migration warnings.
 
 **Configuring Resolver Priority:**
 

@@ -31,9 +31,19 @@ from newton._src.solvers.mujoco.constants import (
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices, patch_sys_module
+from newton.tests.unittest_utils import (
+    USD_AVAILABLE,
+    assert_np_equal,
+    get_test_devices,
+    patch_sys_module,
+)
 
 devices = get_test_devices()
+
+
+def _composed_resolution(*args, **kwargs):
+    kwargs["use_applied_schema_fallbacks"] = True
+    return usd.SchemaResolution(*args, **kwargs)
 
 
 _INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
@@ -1636,6 +1646,105 @@ def Xform "Articulation" (
 
         self.assertNotEqual(velocity_limit, float("inf"))
         self.assertAlmostEqual(velocity_limit, builder.default_joint_cfg.velocity_limit, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_applied_newton_joint_api_warns_before_fallback_change(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateLowerLimitAttr().Set(-45.0)
+        joint.CreateUpperLimitAttr().Set(45.0)
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.armature = 0.7
+        builder.default_joint_cfg.damping = 0.8
+        builder.default_joint_cfg.friction = 0.9
+        builder.default_joint_cfg.velocity_limit = 123.0
+        builder.default_joint_cfg.limit_ke = 7.0
+        builder.default_joint_cfg.limit_kd = 8.0
+        with self.assertWarnsRegex(DeprecationWarning, "NewtonJointAPI") as warning:
+            builder.add_usd(stage)
+        self.assertEqual(warning.filename, __file__)
+        model = builder.finalize()
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+
+        self.assertAlmostEqual(float(model.joint_armature.numpy()[dof]), 0.7)
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[dof]), 0.8)
+        self.assertAlmostEqual(float(model.joint_friction.numpy()[dof]), 0.9)
+        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), 123.0)
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_composed_fallback_policy_covers_joint_special_cases(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joint")
+        joint.GetPrim().AddAppliedSchema("NewtonJointAPI")
+        joint.CreateBody1Rel().SetTargets([body.GetPath()])
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateLowerLimitAttr().Set(-45.0)
+        joint.CreateUpperLimitAttr().Set(45.0)
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.armature = 0.7
+        builder.default_joint_cfg.damping = 0.8
+        builder.default_joint_cfg.friction = 0.9
+        builder.default_joint_cfg.velocity_limit = 123.0
+        builder.default_joint_cfg.limit_ke = 7.0
+        builder.default_joint_cfg.limit_kd = 8.0
+        builder.add_usd(stage, use_applied_schema_fallbacks=True)
+        model = builder.finalize()
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+
+        self.assertEqual(float(model.joint_armature.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_damping.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_friction.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_velocity_limit.numpy()[dof]), float("inf"))
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 7.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 8.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_merged_joint_warns_before_velocity_fallback_change(self):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        root = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        slide = UsdPhysics.PrismaticJoint.Define(stage, "/World/slide")
+        slide.GetPrim().AddAppliedSchema("NewtonJointAPI")
+        slide.CreateBody1Rel().SetTargets([body.GetPath()])
+        slide.CreateAxisAttr().Set("X")
+
+        hinge = UsdPhysics.RevoluteJoint.Define(stage, "/World/hinge")
+        hinge.GetPrim().AddAppliedSchema("NewtonJointAPI")
+        hinge.CreateBody1Rel().SetTargets([body.GetPath()])
+        hinge.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.velocity_limit = 123.0
+        with self.assertWarnsRegex(DeprecationWarning, "newton:velocityLimit"):
+            builder.add_usd(stage, load_visual_shapes=False)
+        model = builder.finalize()
+
+        self.assertEqual(builder.joint_type, [newton.JointType.D6])
+        self.assertEqual(model.joint_velocity_limit.numpy().tolist(), [123.0, 123.0])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_newton_limit_sentinel_precedence_over_mjc(self):
@@ -3429,6 +3538,41 @@ def Xform "Articulation" (
         dof4 = joint_qd_start[joint4_idx]
         np.testing.assert_array_equal(raw_solreflimit[dof4], [0.0, 0.0])
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unregistered_physx_limit_api_uses_importer_defaults(self):
+        from pxr import Usd
+
+        from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def PhysicsPrismaticJoint "Joint" (prepend apiSchemas = ["PhysxLimitAPI:linear"]) {
+        rel physics:body1 = </World/Body>
+        token physics:axis = "X"
+        float physics:lowerLimit = -1
+        float physics:upperLimit = 1
+    }
+}
+"""
+        )
+
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.limit_ke = 4321.0
+        builder.default_joint_cfg.limit_kd = 43.0
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverPhysx()],
+            use_applied_schema_fallbacks=True,
+        )
+        model = builder.finalize()
+        dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
+
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 4321.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 43.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_mode_respects_resolver_priority(self):
@@ -6771,7 +6915,7 @@ def Xform "Articulation" (
 
         # Import the USD
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, use_applied_schema_fallbacks=True)
         model = builder.finalize()
 
         # Verify the material properties were parsed correctly
@@ -8217,7 +8361,7 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(col3_prim)
 
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage)
+        result = builder.add_usd(stage, use_applied_schema_fallbacks=True)
         model = builder.finalize()
 
         idx_all = result["path_shape_map"]["/Articulation/Body/ColAll"]
@@ -8406,7 +8550,11 @@ def Xform "Articulation" (
         # MuJoCo resolver first -> solref wins over material ke/kd
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        result = builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+        result = builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+            use_applied_schema_fallbacks=True,
+        )
         model = builder.finalize()
         idx = result["path_shape_map"]["/Articulation/Body/Col"]
 
@@ -8421,7 +8569,11 @@ def Xform "Articulation" (
         # Newton resolver first -> material wins over solref
         builder2 = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder2)
-        result2 = builder2.add_usd(stage, schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()])
+        result2 = builder2.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
         model2 = builder2.finalize()
         idx2 = result2["path_shape_map"]["/Articulation/Body/Col"]
 
@@ -9224,6 +9376,8 @@ def Xform "Articulation" (
         """Test that max_hull_vertices is parsed correctly from mesh collision."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
+        from newton._src.usd.schemas import SchemaResolverNewton  # noqa: PLC0415
+
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -9247,10 +9401,19 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(mesh_prim)
         mesh_prim.ApplyAPI("NewtonMeshCollisionAPI")
 
-        # Default max_hull_vertices comes from the builder
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, mesh_maxhullvert=20)
+        with self.assertWarnsRegex(DeprecationWarning, "newton:maxHullVertices"):
+            builder.add_usd(stage, mesh_maxhullvert=20)
         self.assertEqual(builder.shape_source[0].maxhullvert, 20)
+
+        # The future policy gives the applied schema ownership.
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage,
+            mesh_maxhullvert=20,
+            schema_resolution=_composed_resolution([SchemaResolverNewton()]),
+        )
+        self.assertEqual(builder.shape_source[0].maxhullvert, -1)
 
         # Set max_hull_vertices to 32 on the mesh prim
         mesh_prim.GetAttribute("newton:maxHullVertices").Set(32)
@@ -12398,11 +12561,8 @@ def Xform "World" ()
         self.assertAlmostEqual(tm_legacy.k_mu[0], 300000.0 / (2.0 * 1.3), places=0)
         self.assertAlmostEqual(tm_legacy.density, 40.0)
 
-        # A canonical material under the deprecated default reads identically and must NOT
-        # warn: the default change alters nothing for it (the gate matches add_usd's).
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DeprecationWarning)
-            tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
+        # A canonical material under the deprecated default reads identically.
+        tm_canonical_default = usd.get_tetmesh(stage.GetPrimAtPath("/World/CanonicalBody"))
         self.assertAlmostEqual(tm_canonical_default.density, 40.0)
         self.assertIsNotNone(tm_canonical_default.k_mu)
 

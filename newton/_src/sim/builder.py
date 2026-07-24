@@ -49,7 +49,7 @@ from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_c
 from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..math import quat_between_vectors_robust
-from ..usd.schema_resolver import SchemaResolver
+from ..usd.schema_resolver import SchemaResolution, SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.mesh import MeshAdjacency
@@ -3422,6 +3422,8 @@ class ModelBuilder:
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
+        schema_resolution: SchemaResolution | None = None,
+        use_applied_schema_fallbacks: bool = False,
         force_position_velocity_actuation: bool = False,
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
@@ -3546,7 +3548,19 @@ class ModelBuilder:
 
                 .. experimental::
 
-                    The ``schema_resolvers`` argument may change without prior notice.
+                    The ``schema_resolvers``, ``schema_resolution``, and
+                    ``use_applied_schema_fallbacks`` arguments may change without
+                    prior notice.
+            schema_resolution: Reusable source-neutral schema resolution. It is
+                mutually exclusive with ``schema_resolvers`` and owns the applied
+                schema fallback policy when provided.
+            use_applied_schema_fallbacks: True uses an applied schema's registered
+                USD fallback before importer defaults and lower-priority resolvers,
+                opting into the future behavior without migration warnings. The
+                relevant schema plugins must be registered with USD for first-class
+                fallback ownership; unregistered schemas retain resolver compatibility
+                defaults after importer defaults. False explicitly retains legacy
+                resolution and is the default during the compatibility period.
             force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
                 If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -3666,6 +3680,8 @@ class ModelBuilder:
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
+            schema_resolution=schema_resolution,
+            use_applied_schema_fallbacks=use_applied_schema_fallbacks,
             force_position_velocity_actuation=force_position_velocity_actuation,
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
