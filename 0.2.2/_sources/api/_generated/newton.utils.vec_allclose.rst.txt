@@ -1,0 +1,6 @@
+﻿newton.utils.vec\_allclose
+==========================
+
+.. currentmodule:: newton.utils
+
+.. autowarpfunc:: vec_allclose

@@ -1,0 +1,1452 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>MuJoCo-Warp Contact Tuning &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=5243179c" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+
+    <script src="../_static/documentation_options.js?v=3404b2f3"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true, "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"ignoreHtmlClass": "annotation", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/simulation_tuning_mujoco';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Coupled Solvers" href="coupling.html" />
+    <link rel="prev" title="Solver Tuning Reference" href="simulation_tuning_solvers.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.5.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1 current active"><a class="reference internal" href="simulation_tuning.html">Simulation Tuning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="simulation_tuning.html" class="nav-link">Simulation Tuning</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">MuJoCo-Warp Contact Tuning</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="mujoco-warp-contact-tuning">
+<span id="tuning-mujoco"></span><h1>MuJoCo-Warp Contact Tuning<a class="headerlink" href="#mujoco-warp-contact-tuning" title="Link to this heading">#</a></h1>
+<p>This page explains how <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> interprets contact
+and constraint parameters, so that <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_ke" title="newton.Model.shape_material_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_ke</span></code></a> and
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_kd" title="newton.Model.shape_material_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_kd</span></code></a> can be tuned with intent. See
+<a class="reference internal" href="simulation_tuning.html#simulation-tuning"><span class="std std-ref">Simulation Tuning</span></a> for the diagnostic workflow and
+<a class="reference internal" href="simulation_tuning_solvers.html#tuning-solver-reference"><span class="std std-ref">Solver Tuning Reference</span></a> for the full knob list. For more details about
+Newton-to-MuJoCo mappings, contact-pipeline behavior, and solver-option
+resolution, see <a class="reference internal" href="../solvers/mujoco.html"><span class="doc">MuJoCo Solver</span></a>.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>The specific values, mode names, and formulas on this page reflect the code at
+a point in time and can drift. Treat them as starting points and verify any you
+rely on against the cited source (for example
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> and its kernels). See
+<a class="reference internal" href="simulation_tuning.html#simulation-tuning"><span class="std std-ref">Simulation Tuning</span></a> for the full guidance.</p>
+</div>
+<section id="constraint-mental-model">
+<h2>Constraint Mental Model<a class="headerlink" href="#constraint-mental-model" title="Link to this heading">#</a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This section condenses MuJoCo’s own constraint model into the terms a Newton
+user tunes; it is not a new formulation. For the authoritative treatment, see
+the MuJoCo references on <a class="reference external" href="https://mujoco.readthedocs.io/en/stable/computation/index.html#constraint-model">constraint computation</a>
+and <a class="reference external" href="https://mujoco.readthedocs.io/en/stable/modeling.html#solver-parameters">solver parameters</a>.</p>
+</div>
+<p>MuJoCo-style contact, limit, and equality constraints are not explicit
+spring-damper penalties in world space. A more accurate picture is a <em>soft servo
+in constraint space</em>. For one scalar constraint row with residual <code class="docutils literal notranslate"><span class="pre">r</span></code>,
+constraint-space velocity <code class="docutils literal notranslate"><span class="pre">v</span></code>, impedance <code class="docutils literal notranslate"><span class="pre">d</span></code> (from <code class="docutils literal notranslate"><span class="pre">solimp</span></code>), and the
+constrained and unconstrained accelerations <code class="docutils literal notranslate"><span class="pre">a</span></code> and <code class="docutils literal notranslate"><span class="pre">a0</span></code>:</p>
+<div class="math notranslate nohighlight">
+\[a + d (b v + k r) = (1 - d) a_0\]</div>
+<p><code class="docutils literal notranslate"><span class="pre">solref</span></code> sets <em>how</em> the constraint corrects error (<code class="docutils literal notranslate"><span class="pre">b</span></code>/<code class="docutils literal notranslate"><span class="pre">k</span></code>, i.e.
+<code class="docutils literal notranslate"><span class="pre">timeconst</span></code>/<code class="docutils literal notranslate"><span class="pre">dampratio</span></code>); <code class="docutils literal notranslate"><span class="pre">solimp</span></code> sets <em>how much authority</em> it has
+(impedance <code class="docutils literal notranslate"><span class="pre">d(r)</span></code> and regularization).</p>
+</section>
+<section id="solref-formats">
+<h2><code class="docutils literal notranslate"><span class="pre">solref</span></code> Formats<a class="headerlink" href="#solref-formats" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Positive format</strong> <code class="docutils literal notranslate"><span class="pre">solref</span> <span class="pre">=</span> <span class="pre">(timeconst,</span> <span class="pre">dampratio)</span></code>: <code class="docutils literal notranslate"><span class="pre">timeconst</span></code> is how
+fast error is removed (smaller is harder, faster); <code class="docutils literal notranslate"><span class="pre">dampratio</span></code> is the
+damping ratio (below 1 rebounds, ~1 is near-critical, above 1 is sluggish and
+dissipative). Raising <code class="docutils literal notranslate"><span class="pre">dampratio</span></code> at fixed <code class="docutils literal notranslate"><span class="pre">timeconst</span></code> also changes the
+effective stiffness — compare damping at fixed <code class="docutils literal notranslate"><span class="pre">ke</span></code> instead.</p></li>
+<li><p><strong>Direct format</strong> <code class="docutils literal notranslate"><span class="pre">solref</span> <span class="pre">=</span> <span class="pre">(-stiffness,</span> <span class="pre">-damping)</span></code> (both negative):
+directly specifies position-error stiffness and velocity-error damping.
+Clearer for system identification.</p></li>
+</ul>
+</section>
+<section id="solimp-impedance-curve">
+<h2><code class="docutils literal notranslate"><span class="pre">solimp</span></code> Impedance Curve<a class="headerlink" href="#solimp-impedance-curve" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">solimp</span> <span class="pre">=</span> <span class="pre">(d0,</span> <span class="pre">dmax,</span> <span class="pre">width,</span> <span class="pre">midpoint,</span> <span class="pre">power)</span></code> defines the impedance <code class="docutils literal notranslate"><span class="pre">d(r)</span></code>;
+<code class="docutils literal notranslate"><span class="pre">d</span></code> near 1 is hard, near 0 is soft. It is not a second stiffness — it sets
+regularization and the soft-to-hard transition.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 18.0%" />
+<col style="width: 42.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Meaning</p></th>
+<th class="head"><p>Tuning intuition</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">d0</span></code></p></td>
+<td><p>impedance near zero residual</p></td>
+<td><p>raise to harden shallow contact; expect possible force jumps</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dmax</span></code></p></td>
+<td><p>plateau impedance at depth</p></td>
+<td><p>raise to cut deep penetration; conditioning may worsen</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">width</span></code></p></td>
+<td><p>residual scale of the <code class="docutils literal notranslate"><span class="pre">d0``→``dmax</span></code> transition</p></td>
+<td><p>reduce to reach hard contact sooner</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">midpoint</span></code></p></td>
+<td><p>inflection of the transition curve</p></td>
+<td><p>controls whether hardening happens early or late</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">power</span></code></p></td>
+<td><p>shape of the transition curve</p></td>
+<td><p>controls smoothness; larger is not simply harder</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>At solver level, <code class="docutils literal notranslate"><span class="pre">invweight</span></code> is the row’s inverse weight and <code class="docutils literal notranslate"><span class="pre">ε</span></code> prevents
+division by zero. The effective regularization satisfies
+<code class="docutils literal notranslate"><span class="pre">R_eff</span> <span class="pre">=</span> <span class="pre">max(invweight·(1-d)/d,</span> <span class="pre">ε)</span></code> and <code class="docutils literal notranslate"><span class="pre">efc_D</span> <span class="pre">=</span> <span class="pre">1/R_eff</span></code>. A smaller
+<code class="docutils literal notranslate"><span class="pre">R_eff</span></code> (larger <code class="docutils literal notranslate"><span class="pre">efc_D</span></code>) is a harder constraint row but can condition worse;
+<code class="docutils literal notranslate"><span class="pre">efc_D</span></code> is the inverse regularization, not the regularizer itself.</p>
+</section>
+<section id="reference-dynamics">
+<h2>Reference Dynamics<a class="headerlink" href="#reference-dynamics" title="Link to this heading">#</a></h2>
+<p>For one constraint row, MuJoCo-Warp computes the reference acceleration as</p>
+<div class="math notranslate nohighlight">
+\[a_{\mathrm{ref}} = -k_0\,d\,\mathtt{pos} - b_0\,\mathtt{vel}\]</div>
+<p>Here <code class="docutils literal notranslate"><span class="pre">pos</span></code> and <code class="docutils literal notranslate"><span class="pre">vel</span></code> are the implementation names for the constraint
+residual <code class="docutils literal notranslate"><span class="pre">r</span></code> and constraint-space velocity <code class="docutils literal notranslate"><span class="pre">v</span></code> introduced above, and <code class="docutils literal notranslate"><span class="pre">d</span></code>
+is the current impedance <code class="docutils literal notranslate"><span class="pre">d(r)</span></code>. The gains depend on the active <code class="docutils literal notranslate"><span class="pre">solref</span></code>
+format:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 45.0%" />
+<col style="width: 35.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Format</p></th>
+<th class="head"><p><span class="math notranslate nohighlight">\(k_0\)</span></p></th>
+<th class="head"><p><span class="math notranslate nohighlight">\(b_0\)</span></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Positive</p></td>
+<td><p><span class="math notranslate nohighlight">\(\dfrac{1}{d_{\max}^2\,\mathtt{timeconst}^2\,\mathtt{dampratio}^2}\)</span></p></td>
+<td><p><span class="math notranslate nohighlight">\(\dfrac{2}{d_{\max}\,\mathtt{timeconst}}\)</span></p></td>
+</tr>
+<tr class="row-odd"><td><p>Direct</p></td>
+<td><p><span class="math notranslate nohighlight">\(\dfrac{\mathtt{stiffness}}{d_{\max}^2}\)</span></p></td>
+<td><p><span class="math notranslate nohighlight">\(\dfrac{\mathtt{damping}}{d_{\max}}\)</span></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">solimp</span></code> plateau impedance <code class="docutils literal notranslate"><span class="pre">dmax</span></code> therefore normalizes both gains; raising
+<code class="docutils literal notranslate"><span class="pre">dmax</span></code> hardens the row but couples into <code class="docutils literal notranslate"><span class="pre">k_0</span></code> and <code class="docutils literal notranslate"><span class="pre">b_0</span></code> together.</p>
+</section>
+<section id="identify-the-active-contact-mapping">
+<h2>Identify the Active Contact Mapping<a class="headerlink" href="#identify-the-active-contact-mapping" title="Link to this heading">#</a></h2>
+<p>Newton <code class="docutils literal notranslate"><span class="pre">ke</span></code>/<code class="docutils literal notranslate"><span class="pre">kd</span></code> arrays retain their documented units (<code class="docutils literal notranslate"><span class="pre">N/m</span></code> and
+<code class="docutils literal notranslate"><span class="pre">N·s/m</span></code>), but their realized meaning on the
+<a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> path depends on the active mapping. The
+legacy per-geometry conversion treats their numeric values as unit-mass
+reference dynamics and does not preserve a physical force-space response across
+masses. Existing force-space-mode contacts apply inverse-weight scaling before
+the same conversion. Neither path is a Young’s modulus or a world-space penalty
+spring; see <a class="reference internal" href="../solvers/mujoco.html#mujoco-contact-solref-conversion"><span class="std std-ref">Contact solref conversion</span></a>.</p>
+<p>Before tuning <code class="docutils literal notranslate"><span class="pre">ke</span></code> and <code class="docutils literal notranslate"><span class="pre">kd</span></code>, determine whether the contact uses authored raw
+MuJoCo values, Newton’s per-geometry conversion, or the per-contact force-space
+path. The active interpretation depends on imported metadata, contact path, and
+backend. See <a class="reference internal" href="../solvers/mujoco.html#shape-material-contact-stiffness-and-damping"><span class="std std-ref">Shape-material contact stiffness and damping</span></a> for the mode
+definitions and path conditions, and <a class="reference internal" href="../solvers/mujoco.html#mujoco-contact-solref-conversion"><span class="std std-ref">Contact solref conversion</span></a> for
+the exact conversion and <code class="docutils literal notranslate"><span class="pre">refsafe</span></code> behavior.</p>
+<p>Authored raw <code class="docutils literal notranslate"><span class="pre">solref</span></code> retains native MuJoCo meaning. Existing force-space-mode
+contacts aim to make normal-contact tuning more transferable across effective
+masses, but the mode constants and direct symbolic selection are internal; do
+not import them from <code class="docutils literal notranslate"><span class="pre">newton._src</span></code> or use a magic integer to opt in. Imported
+metadata selects authored/default behavior automatically. The force-space mode
+is documented here to interpret existing models and implementation behavior,
+not as a supported user-selection workflow.</p>
+<p>If an existing model uses force-space mode, evaluate damping and timestep safety
+with <a class="reference internal" href="simulation_tuning_solvers.html#contact-stiffness-sanity-checks"><span class="std std-ref">Contact Stiffness Sanity Checks</span></a>. The mode does not add friction,
+normal force, contacts, or controller effort. If <code class="docutils literal notranslate"><span class="pre">refsafe</span></code> limits the requested
+positive-format response, reduce <code class="docutils literal notranslate"><span class="pre">dt</span></code> or increase substeps rather than
+repeatedly raising the gains.</p>
+</section>
+<section id="make-harder-vs-make-stable">
+<h2>Make Harder vs. Make Stable<a class="headerlink" href="#make-harder-vs-make-stable" title="Link to this heading">#</a></h2>
+<p>These two goals require different actions and have different costs. Choose the
+goal that matches the actual failure, not the one that seems most intuitive.</p>
+<p><strong>Making contact harder</strong> (less penetration, faster correction):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 28.0%" />
+<col style="width: 44.0%" />
+<col style="width: 28.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Goal</p></th>
+<th class="head"><p>Action</p></th>
+<th class="head"><p>Cost</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Less penetration</p></td>
+<td><p>Raise <code class="docutils literal notranslate"><span class="pre">ke</span></code> and retune <code class="docutils literal notranslate"><span class="pre">kd</span></code> for the desired damping ratio</p></td>
+<td><p>Stability margin; may require smaller <code class="docutils literal notranslate"><span class="pre">dt</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Faster error correction</p></td>
+<td><p>Raise the active mode’s natural frequency; for raw positive <code class="docutils literal notranslate"><span class="pre">solref</span></code>,
+reduce <code class="docutils literal notranslate"><span class="pre">timeconst</span></code> at fixed <code class="docutils literal notranslate"><span class="pre">dampratio</span></code></p></td>
+<td><p>Stability margin; harder constraint rows</p></td>
+</tr>
+<tr class="row-even"><td><p>Higher plateau impedance</p></td>
+<td><p>Raise <code class="docutils literal notranslate"><span class="pre">dmax</span></code> in <code class="docutils literal notranslate"><span class="pre">solimp</span></code></p></td>
+<td><p>Solver conditioning may worsen</p></td>
+</tr>
+<tr class="row-odd"><td><p>Sharper soft-to-hard transition</p></td>
+<td><p>Reduce <code class="docutils literal notranslate"><span class="pre">width</span></code> in <code class="docutils literal notranslate"><span class="pre">solimp</span></code></p></td>
+<td><p>Less cushioning; potential force jumps</p></td>
+</tr>
+<tr class="row-even"><td><p>Finer timestep support for stiffness</p></td>
+<td><p>Reduce <code class="docutils literal notranslate"><span class="pre">dt</span></code> or increase substeps</p></td>
+<td><p>Runtime</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Making contact more stable</strong> (reduce jitter, NaN, energy injection):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 28.0%" />
+<col style="width: 44.0%" />
+<col style="width: 28.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Goal</p></th>
+<th class="head"><p>Action</p></th>
+<th class="head"><p>Cost</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Less bounce without changing stiffness</p></td>
+<td><p>Hold <code class="docutils literal notranslate"><span class="pre">ke</span></code> fixed; raise <code class="docutils literal notranslate"><span class="pre">kd</span></code> toward critical damping for the active
+<code class="docutils literal notranslate"><span class="pre">solref_mode</span></code></p></td>
+<td><p>Less desired rebound; excessive <code class="docutils literal notranslate"><span class="pre">kd</span></code> can overdamp</p></td>
+</tr>
+<tr class="row-odd"><td><p>Eliminate NaN or energy injection</p></td>
+<td><p>Reduce <code class="docutils literal notranslate"><span class="pre">ke</span></code> and <code class="docutils literal notranslate"><span class="pre">dmax</span></code>; raise <code class="docutils literal notranslate"><span class="pre">width</span></code>; reduce <code class="docutils literal notranslate"><span class="pre">dt</span></code></p></td>
+<td><p>More penetration; runtime</p></td>
+</tr>
+<tr class="row-even"><td><p>Reduce jitter at steady contact</p></td>
+<td><p>Reduce <code class="docutils literal notranslate"><span class="pre">dt</span></code>; increase substeps; improve collision geometry and
+body inertia</p></td>
+<td><p>Runtime; setup effort</p></td>
+</tr>
+<tr class="row-odd"><td><p>Improve grasp stability</p></td>
+<td><p>Verify friction, contact count, and normal force; check controller
+limits and drive gains</p></td>
+<td><p>Setup effort</p></td>
+</tr>
+<tr class="row-even"><td><p>Reduce oscillation at impact</p></td>
+<td><p>Move <code class="docutils literal notranslate"><span class="pre">dampratio</span></code> toward 1 (raise it if below 1, lower it only if
+overdamped); measure energy per step before changing stiffness</p></td>
+<td><p>Fidelity at impact</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Hardness is mainly <code class="docutils literal notranslate"><span class="pre">timeconst</span></code>/<code class="docutils literal notranslate"><span class="pre">ke</span></code> and <code class="docutils literal notranslate"><span class="pre">d(r)</span></code>; stability depends on
+<code class="docutils literal notranslate"><span class="pre">timeconst</span></code>, <code class="docutils literal notranslate"><span class="pre">ke</span></code>, <code class="docutils literal notranslate"><span class="pre">kd</span></code>, <code class="docutils literal notranslate"><span class="pre">d(r)</span></code>, <code class="docutils literal notranslate"><span class="pre">dt</span></code>, solver, friction, cone,
+geometry, mass/inertia, and controller.</p>
+<p>Do not treat raising <code class="docutils literal notranslate"><span class="pre">kd</span></code> as equivalent to reducing an independently authored
+<code class="docutils literal notranslate"><span class="pre">timeconst</span></code>. In Newton’s positive conversion, raising <code class="docutils literal notranslate"><span class="pre">kd</span></code> also changes the
+mapped <code class="docutils literal notranslate"><span class="pre">dampratio</span></code>. For force-space contacts, choose damping using the
+effective-mass check in <a class="reference internal" href="simulation_tuning_solvers.html#contact-stiffness-sanity-checks"><span class="std std-ref">Contact Stiffness Sanity Checks</span></a>; see
+<a class="reference internal" href="../solvers/mujoco.html#mujoco-contact-solref-conversion"><span class="std std-ref">Contact solref conversion</span></a> for the exact mapping.</p>
+</section>
+<section id="friction-cone-choice">
+<span id="id1"></span><h2>Friction Cone Choice<a class="headerlink" href="#friction-cone-choice" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> exposes MuJoCo’s elliptic and pyramidal
+friction cones; inspect the constructor or resolved model option for the active
+choice. MuJoCo describes elliptic cones as closer to physical friction and
+better for suppressing slip, but more expensive. Pyramidal cones can improve
+algorithm performance, though not necessarily for every model. If the elliptic
+solve is too costly or does not converge within the available budget, compare
+pyramidal with the timestep, solver settings, and contact parameters held fixed;
+do not assume either cone is universally more stable.</p>
+<p>Changing the cone changes the soft-contact model, not only the solver. See
+MuJoCo’s <a class="reference external" href="https://mujoco.readthedocs.io/en/stable/modeling.html#solver-settings">solver-setting guidance</a>,
+<a class="reference external" href="https://mujoco.readthedocs.io/en/stable/XMLreference.html#option-cone">cone option reference</a>, and
+<a class="reference external" href="https://mujoco.readthedocs.io/en/stable/computation/index.html#friction-cones">friction-cone formulation</a>.</p>
+</section>
+<section id="solver-options-and-capacity">
+<h2>Solver Options and Capacity<a class="headerlink" href="#solver-options-and-capacity" title="Link to this heading">#</a></h2>
+<p>A few <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> options dominate behavior in
+practice:</p>
+<ul class="simple">
+<li><p><strong>Integrator.</strong> Inspect the resolved integrator before tuning stiff joint
+drives. Compare alternatives only for a specific integration failure and
+expect the stable timestep to change.</p></li>
+<li><p><strong>Contact path.</strong> Determine whether MuJoCo or Newton generates contacts and
+tune within that path rather than mixing assumptions from both. See
+<a class="reference internal" href="../solvers/mujoco.html#mujoco-collision-pipeline"><span class="std std-ref">Collision pipeline</span></a> for the exact selection behavior.</p></li>
+<li><p><strong>Contact margin and gap.</strong> In Newton collision generation, <code class="docutils literal notranslate"><span class="pre">margin</span></code> sets
+the shifted contact surface and <code class="docutils literal notranslate"><span class="pre">gap</span></code> adds speculative detection distance.
+Positive gaps increase detected contacts before they become active and can
+therefore affect capacity and cost. See <a class="reference internal" href="../solvers/mujoco.html#mujoco-margin-gap-mapping"><span class="std std-ref">Margin and gap mapping</span></a> for
+exact forwarding, import, inactive-contact, and native-CCD behavior.</p></li>
+<li><p><strong>Armature as a stabilizer.</strong> A small <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_armature" title="newton.Model.joint_armature"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_armature</span></code></a> on light,
+high-gain joints raises effective joint inertia and tames stiff drives on the
+MuJoCo path; justify the magnitude with actuator or gearbox data where
+possible.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">nconmax</span></code> and <code class="docutils literal notranslate"><span class="pre">njmax</span></code> size the <strong>per-world</strong> contact and constraint buffers.
+Set them for the busiest world, not the average: a buffer that fits a quiet
+world can truncate contacts or constraints in a heavier one, while an oversized
+buffer wastes GPU memory multiplied across every world. If left unset, they are
+estimated from the initial state; monitor overflow counters or warnings and raise
+the relevant buffer when needed. A positive gap can increase the number of
+detected contacts even though contacts outside the margin remain inactive.
+After changing gaps or upgrading margin/gap behavior, remeasure peak contacts,
+constraints, and overflow in the busiest world before compensating with
+stiffness or iterations; do not assume the previous run generated the same rows.
+Large gaps and oversized buffers also increase work and memory.</p>
+<p>In batched, many-world runs everything per step is multiplied by the world
+count: total buffer memory scales with <code class="docutils literal notranslate"><span class="pre">nconmax</span></code>/<code class="docutils literal notranslate"><span class="pre">njmax</span></code> times the number of
+worlds, and a parameter that is only marginally stable will diverge in <em>some</em>
+worlds even if most are fine. Tune to the worst-case world and keep per-step
+work (solver iterations, substeps, contact count) modest, since each multiplies
+by the world count.</p>
+</section>
+<section id="task-templates">
+<h2>Task Templates<a class="headerlink" href="#task-templates" title="Link to this heading">#</a></h2>
+<p>Each template below gives a goal and a sequence of parameter-direction steps.
+The workflow logic applies to any solver; <code class="docutils literal notranslate"><span class="pre">solimp</span></code>/<code class="docutils literal notranslate"><span class="pre">solref</span></code> advice is
+MuJoCo-specific. For which solvers support armature, effort limits, and joint
+friction, see <a class="reference internal" href="simulation_tuning_solvers.html#tuning-solver-reference"><span class="std std-ref">Solver Tuning Reference</span></a>.</p>
+<section id="new-asset-import">
+<h3>New Asset Import<a class="headerlink" href="#new-asset-import" title="Link to this heading">#</a></h3>
+<p><em>Goal: verify stable simulation before adding performance requirements; catch
+geometry, joint, and controller problems early.</em></p>
+<ul class="simple">
+<li><p>Start with conservative contact gains and inspect the resolved <code class="docutils literal notranslate"><span class="pre">solimp</span></code>;
+do not assume its current default is loose or firm without checking it.</p></li>
+<li><p>Inspect initial contacts — overlapping geometries at spawn cause immediate
+instability.</p></li>
+<li><p>Check joint parameters: ranges, damping, and effective inertia. Zero armature
+is valid; inspect it only when reflected actuator or gearbox inertia is
+expected, and flag zero or implausible effective inertia instead.</p></li>
+<li><p>Check drives: verify gains, effort limits, and target values are physically
+reasonable.</p></li>
+<li><p>Check model plausibility: confirm mass, inertia, and friction are physically
+reasonable.</p></li>
+<li><p>Check capacity: ensure contact/constraint row limits (<code class="docutils literal notranslate"><span class="pre">nconmax</span></code>, <code class="docutils literal notranslate"><span class="pre">njmax</span></code>)
+and contact buffers are not overflowing or dropping contacts.</p></li>
+<li><p>Only harden contact (raise <code class="docutils literal notranslate"><span class="pre">ke</span></code>/<code class="docutils literal notranslate"><span class="pre">kd</span></code>, tighten <code class="docutils literal notranslate"><span class="pre">solimp</span></code>) once the asset
+simulates stably with gravity and light loading.</p></li>
+</ul>
+</section>
+<section id="tabletop-support-pressing-stacking">
+<h3>Tabletop Support / Pressing / Stacking<a class="headerlink" href="#tabletop-support-pressing-stacking" title="Link to this heading">#</a></h3>
+<p><em>Goal: reduce penetration, keep support stable, and suppress bounce and chatter.</em></p>
+<ul class="simple">
+<li><p>Choose <code class="docutils literal notranslate"><span class="pre">ke</span></code> and <code class="docutils literal notranslate"><span class="pre">kd</span></code> together using the active contact mapping. For
+force-space contacts, use <a class="reference internal" href="simulation_tuning_solvers.html#contact-stiffness-sanity-checks"><span class="std std-ref">Contact Stiffness Sanity Checks</span></a>; for the exact
+positive conversion, see <a class="reference internal" href="../solvers/mujoco.html#mujoco-contact-solref-conversion"><span class="std std-ref">Contact solref conversion</span></a>.</p></li>
+<li><p>Raise <code class="docutils literal notranslate"><span class="pre">dmax</span></code> in <code class="docutils literal notranslate"><span class="pre">solimp</span></code> to cut deep penetration; raise <code class="docutils literal notranslate"><span class="pre">d0</span></code> only if
+shallow contact is also too soft.</p></li>
+<li><p>Increase substeps if the contact must be hard and the timestep cannot shrink.</p></li>
+<li><p>Verify the controller maintains a downward force; loss of support often
+traces to drive saturation, not contact stiffness.</p></li>
+</ul>
+</section>
+<section id="impact-rebound">
+<h3>Impact / Rebound<a class="headerlink" href="#impact-rebound" title="Link to this heading">#</a></h3>
+<p><em>Goal: limit penetration on collision, preserve reasonable rebound, and maintain
+energy and velocity transfer.</em></p>
+<ul class="simple">
+<li><p>Raise stiffness (higher <code class="docutils literal notranslate"><span class="pre">ke</span></code>, lower <code class="docutils literal notranslate"><span class="pre">timeconst</span></code>) to limit penetration
+depth.</p></li>
+<li><p>If contact is overdamped, move <code class="docutils literal notranslate"><span class="pre">dampratio</span></code> toward 1 or reduce <code class="docutils literal notranslate"><span class="pre">kd</span></code> using
+the active mapping; overdamped contact absorbs energy that should transfer.</p></li>
+<li><p>Reduce <code class="docutils literal notranslate"><span class="pre">dt</span></code> or increase substeps — high stiffness is more stable at small
+timesteps.</p></li>
+<li><p>Judge contact quality by energy retention and rebound height, not penetration
+alone; excessive dissipation is as wrong as excessive bounce.</p></li>
+</ul>
+</section>
+<section id="grasping-holding">
+<h3>Grasping / Holding<a class="headerlink" href="#grasping-holding" title="Link to this heading">#</a></h3>
+<p><em>Goal: prevent slipping, reduce stick-slip oscillation, and keep contact forces
+stable across the grasp.</em></p>
+<ul class="simple">
+<li><p>Check commanded and clamped gripping force first: insufficient available
+normal force cannot be replaced by friction or stiffness tuning.</p></li>
+<li><p>Then check friction: raise <code class="docutils literal notranslate"><span class="pre">mu</span></code> before touching stiffness.</p></li>
+<li><p>Then check contact stiffness: raise <code class="docutils literal notranslate"><span class="pre">ke</span></code>/<code class="docutils literal notranslate"><span class="pre">kd</span></code> to stiffen the contact
+patch if friction is adequate but the grasp deflects.</p></li>
+<li><p>Prefer an elliptic cone and tune <code class="docutils literal notranslate"><span class="pre">impratio</span></code> if stick-slip persists. Try a
+pyramidal cone if solver convergence or cost is the limiting issue, then
+revalidate the grasp; see <a class="reference internal" href="#friction-cone-choice"><span class="std std-ref">Friction Cone Choice</span></a>.</p></li>
+<li><p>Never use higher stiffness as a substitute for insufficient friction capacity;
+it increases constraint load without fixing the root cause.</p></li>
+</ul>
+</section>
+<section id="articulated-joints">
+<h3>Articulated Joints<a class="headerlink" href="#articulated-joints" title="Link to this heading">#</a></h3>
+<p><em>Goal: doors, drawers, knobs, and switches stop naturally; joint limits do not
+jitter; drives behave as intended.</em></p>
+<ul class="simple">
+<li><p>Verify drive import: confirm gains, effort limits, and target mode match the
+intended behavior.</p></li>
+<li><p>Add joint friction (<code class="docutils literal notranslate"><span class="pre">Model.joint_friction</span></code>; MJCF <code class="docutils literal notranslate"><span class="pre">frictionloss</span></code>) so joints
+resist motion without a drive. This is Coulomb friction loss, not viscous
+damping. On solvers without Coulomb friction, damping can slow motion but
+cannot reproduce static friction or hold a load at zero velocity.</p></li>
+<li><p>Add physically justified armature to low-inertia joints to damp high-frequency
+oscillation. Scale it relative to reflected inertia; its units are <code class="docutils literal notranslate"><span class="pre">kg·m²</span></code>
+for revolute joints and <code class="docutils literal notranslate"><span class="pre">kg</span></code> for prismatic joints.</p></li>
+<li><p>Add passive damping (<code class="docutils literal notranslate"><span class="pre">Model.joint_damping</span></code>; MJCF <code class="docutils literal notranslate"><span class="pre">damping</span></code>) to slow
+unwanted motion at zero command.</p></li>
+<li><p>Tune joint limit stiffness and damping separately from contact stiffness;
+limit jitter usually requires raising <code class="docutils literal notranslate"><span class="pre">kd</span></code> on the limit, not on the contact.</p></li>
+<li><p>Clip controller targets to the joint range; drives that demand positions beyond
+the limits fight the limit constraint and destabilize the joint.</p></li>
+</ul>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#constraint-mental-model">Constraint Mental Model</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solref-formats"><code class="docutils literal notranslate"><span class="pre">solref</span></code> Formats</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solimp-impedance-curve"><code class="docutils literal notranslate"><span class="pre">solimp</span></code> Impedance Curve</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-dynamics">Reference Dynamics</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#identify-the-active-contact-mapping">Identify the Active Contact Mapping</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#make-harder-vs-make-stable">Make Harder vs. Make Stable</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#friction-cone-choice">Friction Cone Choice</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-options-and-capacity">Solver Options and Capacity</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#task-templates">Task Templates</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#new-asset-import">New Asset Import</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tabletop-support-pressing-stacking">Tabletop Support / Pressing / Stacking</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#impact-rebound">Impact / Rebound</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#grasping-holding">Grasping / Holding</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#articulated-joints">Articulated Joints</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.18.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

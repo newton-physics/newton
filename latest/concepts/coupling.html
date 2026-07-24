@@ -1,0 +1,1377 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Coupled Solvers &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=0790524f97105ba85085" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=5243179c" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=0790524f97105ba85085"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=0790524f97105ba85085" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085" />
+
+    <script src="../_static/documentation_options.js?v=3404b2f3"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/coupling';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.18.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Actuators" href="actuators.html" />
+    <link rel="prev" title="MuJoCo-Warp Contact Tuning" href="simulation_tuning_mujoco.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.5.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulation_tuning.html">Simulation Tuning</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Coupled Solvers</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="coupled-solvers">
+<h1>Coupled Solvers<a class="headerlink" href="#coupled-solvers" title="Link to this heading">#</a></h1>
+<div class="experimental admonition">
+<p class="admonition-title">Experimental</p>
+<p>Experimental feature. API, behavior, defaults, and supported use cases may change without prior notice.</p>
+</div>
+<p>Newton’s coupled-solver framework lets one simulation step be split across
+multiple solver backends while those backends still exchange forces, poses, and
+constraint information through a shared <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>. This is useful when a
+scene combines material models or algorithms that are best handled by different
+solvers: for example a MuJoCo or Kamino rigid mechanism coupled to VBD cloth,
+XPBD particles coupled to MPM material, or rigid bodies connected to particles
+through an ADMM constraint.</p>
+<p>The framework is exposed as an experimental namespace rather than as flat
+symbols on <a class="reference internal" href="../api/newton_solvers.html#module-newton.solvers" title="newton.solvers"><code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.solvers</span></code></a>. Import the coupled solver types directly from
+that namespace:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">SolverMuJoCo</span><span class="p">,</span> <span class="n">SolverVBD</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers.experimental.coupled</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">SolverCoupledADMM</span><span class="p">,</span>
+    <span class="n">SolverCoupled</span><span class="p">,</span>
+    <span class="n">SolverCoupledProxy</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>The main public types are:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.ModelView" title="newton.solvers.experimental.coupled.ModelView"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.ModelView</span></code></a>: a view-local overlay
+on a shared <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>.</p></li>
+<li><p><a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.CouplingInterface" title="newton.solvers.experimental.coupled.CouplingInterface"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.CouplingInterface</span></code></a>: the hook
+protocol implemented by solvers that need custom coupled behavior.</p></li>
+<li><p><a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupled" title="newton.solvers.experimental.coupled.SolverCoupled"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.SolverCoupled</span></code></a>: the shared base
+for partitioning models, distributing state, stepping entries, and
+reconciling results.</p></li>
+<li><p><a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupledProxy" title="newton.solvers.experimental.coupled.SolverCoupledProxy"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.SolverCoupledProxy</span></code></a>: a lagged or
+staggered proxy coupling wrapper.</p></li>
+<li><p><a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupledADMM" title="newton.solvers.experimental.coupled.SolverCoupledADMM"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.SolverCoupledADMM</span></code></a>: a fixed
+iteration ADMM coupling wrapper for model-derived joints, attachments, and
+contacts.</p></li>
+</ul>
+<section id="shared-model-entry-views-and-ownership">
+<h2>Shared Model, Entry Views, and Ownership<a class="headerlink" href="#shared-model-entry-views-and-ownership" title="Link to this heading">#</a></h2>
+<p>Coupled simulations start from a single <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a>. Each sub-solver receives
+a <a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.ModelView" title="newton.solvers.experimental.coupled.ModelView"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelView</span></code></a> rather than the raw
+model. A view delegates reads to the parent model until the coupler or user
+applies a view-local override. The important idea is that sub-solvers can see
+the same model topology while owning only the bodies, particles, joints, or
+shapes assigned to their entry.</p>
+<p>A <a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupled.Entry" title="newton.solvers.experimental.coupled.SolverCoupled.Entry"><code class="xref py py-class docutils literal notranslate"><span class="pre">Entry</span></code></a> describes
+one sub-solver:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">entry</span> <span class="o">=</span> <span class="n">SolverCoupled</span><span class="o">.</span><span class="n">Entry</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;soft&quot;</span><span class="p">,</span>
+    <span class="n">solver</span><span class="o">=</span><span class="k">lambda</span> <span class="n">view</span><span class="p">:</span> <span class="n">SolverVBD</span><span class="p">(</span><span class="n">model</span><span class="o">=</span><span class="n">view</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">20</span><span class="p">),</span>
+    <span class="n">bodies</span><span class="o">=</span><span class="n">soft_body_ids</span><span class="p">,</span>
+    <span class="n">particles</span><span class="o">=</span><span class="n">cloth_particle_ids</span><span class="p">,</span>
+    <span class="n">shapes</span><span class="o">=</span><span class="n">cloth_shape_ids</span><span class="p">,</span>
+    <span class="n">substeps</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>The entry lists the objects the sub-solver owns. During construction,
+<code class="docutils literal notranslate"><span class="pre">SolverCoupled</span></code> creates a model view for every entry, deactivates non-owned
+dynamic endpoints where appropriate, constructs the sub-solver by calling the
+entry’s <code class="docutils literal notranslate"><span class="pre">solver(view)</span></code> factory, and keeps per-entry input and output states.
+Bind any extra solver constructor arguments in the factory itself. After a
+top-level step, only owned outputs are reconciled back into the caller’s shared
+<code class="docutils literal notranslate"><span class="pre">state_out</span></code>. This prevents two sub-solvers from overwriting the same body or
+particle unless an explicit coupling algorithm is responsible for arbitration.</p>
+<p>The shared base also manages:</p>
+<ul class="simple">
+<li><p>per-entry substeps, so one solver can take smaller time intervals than
+another;</p></li>
+<li><p>copying public force input from <code class="docutils literal notranslate"><span class="pre">State</span></code> and <code class="docutils literal notranslate"><span class="pre">Control</span></code> into entry-local
+state;</p></li>
+<li><p>entry-local collision visibility and shape ownership;</p></li>
+<li><p>input-state notifications for solvers with private history buffers;</p></li>
+<li><p>fallback effective-mass estimates from public model mass and inertia arrays.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">ModelView</span></code> applies view-local changes with copy-on-write semantics so the
+coupler can hide, immobilize, or rescale endpoints without changing the parent
+model. Parent-derived view masks are refreshed when relevant model-change
+notifications arrive. Direct writes through returned Warp arrays are not
+intercepted, so view-local edits should go through the coupled-solver API that
+owns the view.</p>
+</section>
+<section id="coupling-hooks">
+<h2>Coupling Hooks<a class="headerlink" href="#coupling-hooks" title="Link to this heading">#</a></h2>
+<p>Some solvers keep important state outside the public <a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> arrays or
+can report interface forces more accurately than a generic momentum fallback.
+Those solvers implement
+<a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.CouplingInterface" title="newton.solvers.experimental.coupled.CouplingInterface"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.CouplingInterface</span></code></a> hooks. The
+hooks are ordinary methods with default mixin implementations. Solvers override
+only the methods that need solver-specific behavior. A solver that cannot
+support a hook raises <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#NotImplementedError" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">NotImplementedError</span></code></a> from that hook instead of
+silently using an invalid path.</p>
+<p>The protocol currently covers these concepts:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">coupling_notify_input_state_update()</span></code> tells a solver that public state
+arrays or force-input buffers were changed by the coupler. Its <code class="docutils literal notranslate"><span class="pre">flags</span></code>
+argument uses <a class="reference internal" href="../api/_generated/newton.StateFlags.html#newton.StateFlags" title="newton.StateFlags"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.StateFlags</span></code></a>. VBD uses this to realign private
+previous-pose state after proxy synchronization or ADMM iteration restarts.
+MPM uses it to keep collider caches consistent.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">coupling_eval_gravity_acceleration()</span></code> lets a solver report the body and
+particle acceleration that it applies internally for gravity-like forces.
+Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
+and harvest hooks so solvers that scale or compensate gravity can avoid
+double-applying it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">coupling_rewind_proxy_body()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">coupling_rewind_proxy_particle()</span></code> let a
+destination solver prepare proxy velocities before a lagged proxy pass.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">coupling_harvest_proxy_wrenches()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">coupling_harvest_proxy_particle_forces()</span></code> let a destination solver
+report feedback forces from solver-native contact or transfer data.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">coupling_prepare_proxy_contacts()</span></code> lets a destination solver filter or prepare
+proxy-local contacts before its step.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">coupling_eval_effective_mass()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">coupling_eval_effective_mass_block()</span></code> let a solver provide endpoint
+effective mass instead of using raw model mass and inertia.</p></li>
+</ul>
+<p>Force injection itself is not a hook. Couplers write into public
+<code class="docutils literal notranslate"><span class="pre">state.body_f</span></code>, <code class="docutils literal notranslate"><span class="pre">state.particle_f</span></code>, and <code class="docutils literal notranslate"><span class="pre">control.joint_f</span></code> buffers, then
+call the normal solver step. Likewise, virtual and proximal mass changes are
+applied to a <code class="docutils literal notranslate"><span class="pre">ModelView</span></code> and refreshed through the usual
+<code class="docutils literal notranslate"><span class="pre">notify_model_changed()</span></code> path when a solver must rebuild private caches.</p>
+</section>
+<section id="proxy-coupling">
+<h2>Proxy Coupling<a class="headerlink" href="#proxy-coupling" title="Link to this heading">#</a></h2>
+<p>Proxy coupling represents an endpoint owned by one solver as a proxy endpoint in
+another solver. The source solver owns the real object. The destination solver
+receives a proxy body or proxy particle with scaled virtual inertia, solves its
+own local problem against that proxy, then returns feedback to the source on a
+later pass or iteration.</p>
+<p>This is a good match for coupling algorithms that are naturally one-way within a
+substep but can converge through repeated lagged iterations. Examples include a
+rigid body acting as a proxy collider inside a soft-body solve, XPBD particles
+driving MPM transfer particles, or VBD reporting contact forces back to a rigid
+source body.</p>
+<p>A proxy pair is declared with
+<a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupledProxy.Proxy" title="newton.solvers.experimental.coupled.SolverCoupledProxy.Proxy"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.SolverCoupledProxy.Proxy</span></code></a>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">SolverCoupledProxy</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">entries</span><span class="o">=</span><span class="p">[</span><span class="n">rigid_entry</span><span class="p">,</span> <span class="n">soft_entry</span><span class="p">],</span>
+    <span class="n">coupling</span><span class="o">=</span><span class="n">SolverCoupledProxy</span><span class="o">.</span><span class="n">Config</span><span class="p">(</span>
+        <span class="n">proxies</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">SolverCoupledProxy</span><span class="o">.</span><span class="n">Proxy</span><span class="p">(</span>
+                <span class="n">source</span><span class="o">=</span><span class="s2">&quot;rigid&quot;</span><span class="p">,</span>
+                <span class="n">destination</span><span class="o">=</span><span class="s2">&quot;soft&quot;</span><span class="p">,</span>
+                <span class="n">bodies</span><span class="o">=</span><span class="n">robot_body_ids</span><span class="p">,</span>
+                <span class="n">proxy_bodies</span><span class="o">=</span><span class="n">robot_proxy_body_ids</span><span class="p">,</span>
+                <span class="n">particles</span><span class="o">=</span><span class="p">(),</span>
+                <span class="n">proxy_particles</span><span class="o">=</span><span class="p">(),</span>
+                <span class="n">mass_scale</span><span class="o">=</span><span class="mf">0.25</span><span class="p">,</span>
+                <span class="n">mode</span><span class="o">=</span><span class="s2">&quot;lagged&quot;</span><span class="p">,</span>
+                <span class="n">proxy_relaxation</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="p">],</span>
+        <span class="n">iterations</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+    <span class="p">),</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">source</span></code> and <code class="docutils literal notranslate"><span class="pre">destination</span></code> name entries. <code class="docutils literal notranslate"><span class="pre">bodies</span></code> and <code class="docutils literal notranslate"><span class="pre">particles</span></code> are
+source endpoints. <code class="docutils literal notranslate"><span class="pre">proxy_bodies</span></code> and <code class="docutils literal notranslate"><span class="pre">proxy_particles</span></code> name the
+corresponding destination endpoints. If a proxy list is <code class="docutils literal notranslate"><span class="pre">None</span></code>, the source
+indices are reused in the destination view. <code class="docutils literal notranslate"><span class="pre">mass_scale</span></code> scales proxy body
+mass/inertia and proxy particle mass in that destination view.
+<code class="docutils literal notranslate"><span class="pre">proxy_relaxation</span></code> blends harvested feedback with the previously lagged
+feedback buffer after each destination solve. Values below <code class="docutils literal notranslate"><span class="pre">1</span></code> underrelax the
+update, <code class="docutils literal notranslate"><span class="pre">1</span></code> keeps the harvested feedback unchanged, and values above <code class="docutils literal notranslate"><span class="pre">1</span></code>
+overrelax it.</p>
+<p>Two proxy modes are available through the <code class="docutils literal notranslate"><span class="pre">mode</span></code> string:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">LAGGED</span></code> synchronizes the source begin pose and end velocity into the
+destination proxy, rewinds destination proxy velocity by previously applied
+feedback, public force input, and gravity, then steps the destination. This is
+the most common mode for relaxed fixed-point coupling.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">STAGGERED</span></code> synchronizes the source end pose and velocity into the
+destination and skips the generic lagged rewind. This is useful when the
+scheduling already gives the destination a current source state.</p></li>
+</ul>
+<p>After the destination step, the coupler harvests feedback. If the destination
+solver implements a body or particle harvest hook, that hook can report
+contact-native forces or transfer impulses. Otherwise the shared fallback
+estimates feedback from proxy momentum change. The fallback is convenient for
+simple particle proxy cases, but contact-rich or solver-private interactions are
+usually better served by a custom harvest hook.</p>
+<p>Proxy-local collision detection is optional. A proxy can provide a
+<code class="docutils literal notranslate"><span class="pre">collision_pipeline</span></code> factory that receives the destination <code class="docutils literal notranslate"><span class="pre">ModelView</span></code>. If
+the factory returns a pipeline, the coupler owns a persistent contact buffer and
+refreshes it at <code class="docutils literal notranslate"><span class="pre">collide_interval</span></code>. If the factory returns <code class="docutils literal notranslate"><span class="pre">None</span></code> or no
+factory is supplied, the destination solve uses contacts passed to the outer
+<code class="docutils literal notranslate"><span class="pre">step()</span></code> call.</p>
+<p>The generic proxy loop currently supports at most two solver entries. Within
+that limit, body and particle mappings are grouped by <code class="docutils literal notranslate"><span class="pre">(source,</span>
+<span class="pre">destination)</span></code>. One source step and one destination step are performed for each
+solver pair and proxy iteration, so a single proxy declaration can carry both
+body and particle mappings around the same destination solve.</p>
+</section>
+<section id="admm-coupling">
+<h2>ADMM Coupling<a class="headerlink" href="#admm-coupling" title="Link to this heading">#</a></h2>
+<p>ADMM coupling is the symmetric coupling path. Instead of placing a virtual proxy
+inside another solver, it constructs interface rows between endpoints owned by
+different entries. Each iteration restores entry states, applies a proximal
+velocity target when configured, lets sub-solvers advance, solves local
+interface rows, updates dual variables, and splats equal and opposite coupling
+forces back to endpoint force buffers.</p>
+<p>Compared with proxy coupling, ADMM is less invasive for sub-solvers: entries do
+not need to represent proxy bodies or particles, filter proxy contacts, or
+harvest proxy-native feedback. The tradeoff is that the coupler must implement
+each supported interface row explicitly, so every cross-solver joint, attachment,
+and contact type needs ADMM row support. Transient contacts and stiff
+attachments also generally need several coupling iterations per step, while the
+proxy path is often useful with a single lagged or staggered pass.</p>
+<p>The implemented ADMM wrapper discovers constraint rows from the shared model and
+enables contact rows through explicit
+<a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupledADMM.ContactPair" title="newton.solvers.experimental.coupled.SolverCoupledADMM.ContactPair"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.solvers.experimental.coupled.SolverCoupledADMM.ContactPair</span></code></a>
+objects. It does not currently accept arbitrary user-authored endpoint records
+as public API. Supported row sources are:</p>
+<ul class="simple">
+<li><p>cross-solver model joints;</p></li>
+<li><p>custom body-particle attachment attributes;</p></li>
+<li><p>internally detected rigid-rigid, rigid-particle, and particle-particle
+contacts.</p></li>
+</ul>
+<p>Cross-solver model joints are owned by the coupler only when the two connected
+bodies belong to different entries and the joint itself is not owned by either
+sub-solver. This avoids solving the same constraint twice. The current generic
+ADMM path supports <code class="docutils literal notranslate"><span class="pre">BALL</span></code>, <code class="docutils literal notranslate"><span class="pre">FIXED</span></code>, and <code class="docutils literal notranslate"><span class="pre">REVOLUTE</span></code> joints. Ball joints
+create translational anchor-coincidence rows. Fixed joints add angular rows.
+Revolute joints preserve the hinge axis and can add a dry-friction row from
+model joint friction. Prismatic, distance, and D6 joint rows are not yet part of
+the experimental API.</p>
+<p>Body-particle attachments cover interfaces that cannot be represented by a
+model joint because one endpoint is a particle. The helper
+<code class="docutils literal notranslate"><span class="pre">SolverCoupledADMM.add_body_particle_attachment()</span></code> registers and fills custom
+attributes under <code class="docutils literal notranslate"><span class="pre">coupling:body_particle_attachment</span></code> with body id, particle id,
+body-local point, stiffness, damping, and enabled state. Importers can author the
+same custom attributes directly. Rows whose endpoints are unowned or owned by
+the same entry are ignored; only cross-solver attachments are coupled by ADMM.</p>
+<p>Contact coupling is enabled by adding one or more <code class="docutils literal notranslate"><span class="pre">ContactPair</span></code> values to
+<code class="docutils literal notranslate"><span class="pre">SolverCoupledADMM.Config.contact_pairs</span></code>. A contact pair names two entries.
+<code class="docutils literal notranslate"><span class="pre">SolverCoupledADMM.auto_detect_contact_pairs(entries)</span></code> can build the complete
+pair list for every distinct entry combination.</p>
+<p>For enabled contact pairs, the coupler owns private detection data and builds
+rows from solver ownership: particle-shape rows between particle entries and
+shapes on bodies owned by other entries, rigid-rigid rows from cross-entry shape
+pairs, and particle-particle rows from cross-entry particle sets through a
+private hash-grid stream. Friction is read from model material properties such
+as <code class="docutils literal notranslate"><span class="pre">shape_material_mu</span></code> and <code class="docutils literal notranslate"><span class="pre">Model.particle_mu</span></code> at row-fill time; it is not a
+<code class="docutils literal notranslate"><span class="pre">ContactPair</span></code> field. Contact rows use an isotropic Coulomb
+maximum-dissipation projection. They do not solve cone complementarity directly.</p>
+<p>ADMM contact buffers are fixed-capacity device arrays. Persistent contacts
+warm-start local variables and dual variables by stable contact keys across
+steps. The particle-particle stream is contacts-like and hash-grid based, but it
+is internal to the ADMM coupler and should not be treated as a public contact
+stream.</p>
+<p>The main ADMM parameters are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">iterations</span></code>: fixed iteration count, chosen to be graph-capture friendly;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rho</span></code>: penalty weight for interface rows;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">gamma</span></code>: proximal inertia and velocity weight;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">baumgarte</span></code>: positional error stabilization for attachment/contact rows;</p></li>
+<li><p>stiffness and damping values for model-joint and body-particle attachment
+rows;</p></li>
+<li><p>rigid contact matching mode, thresholds, and warm-start force scale.</p></li>
+</ul>
+<p>When <code class="docutils literal notranslate"><span class="pre">gamma</span></code> is positive, the coupler scales owned body and particle masses in
+each entry <code class="docutils literal notranslate"><span class="pre">ModelView</span></code>, asks sub-solvers to refresh model-derived caches, and
+shifts entry input velocities toward the previous ADMM iterate. Endpoint
+effective mass uses solver hooks when available and model fallbacks otherwise.
+This keeps the implementation compatible with solvers that can provide an
+articulated mass estimate, such as MuJoCo Warp, while still allowing simpler
+solvers to participate.</p>
+</section>
+<section id="choosing-proxy-or-admm-coupling">
+<h2>Choosing Proxy or ADMM Coupling<a class="headerlink" href="#choosing-proxy-or-admm-coupling" title="Link to this heading">#</a></h2>
+<p>Use proxy coupling when one solver can reasonably treat the other solver’s
+endpoint as an obstacle, transfer participant, or virtual body over a substep.
+Proxy coupling is often easier to tune for collider-style interactions and can
+reuse destination solver contact machinery. It is also the path that currently
+supports MPM transfer-active proxy particles and deformable collider particles.</p>
+<p>Use ADMM coupling when the interface should be represented as a symmetric
+constraint or frictional contact between entries. ADMM is better suited for
+cross-solver joints, body-particle attachments, and contact rows that need equal
+and opposite forces. It is more structured, but it also has more tuning
+parameters and a narrower set of supported row types.</p>
+<p>The two approaches share the same base concepts: model views, ownership,
+entry-local state, force-buffer injection, input-state notifications, and
+effective-mass hooks. A scene can often be formulated either way, but the
+numerical behavior will differ. Proxy coupling behaves like a relaxed
+fixed-point iteration over solver-specific dynamics. ADMM behaves like a fixed
+iteration constrained optimization split over the entry solvers and interface
+rows.</p>
+</section>
+<section id="solver-specific-behavior">
+<h2>Solver-Specific Behavior<a class="headerlink" href="#solver-specific-behavior" title="Link to this heading">#</a></h2>
+<p>Coupled solvers rely on solver-specific hooks only where generic public
+model/state behavior is insufficient.</p>
+<p>VBD uses proxy contact preparation, body-proxy harvesting, and input-state
+notifications. The notification hook keeps private previous-body state aligned
+when proxy poses are synchronized or ADMM iterations restart. The harvest path
+reduces final rigid-rigid and body-particle contact forces onto proxy bodies
+instead of relying on aggregate momentum differences. VBD also supports proxy
+joints: <a class="reference internal" href="../api/newton_solvers_experimental_coupled.html#newton.solvers.experimental.coupled.SolverCoupledProxy" title="newton.solvers.experimental.coupled.SolverCoupledProxy"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverCoupledProxy</span></code></a> keeps
+configured fixed, prismatic, or revolute joints (or their <code class="docutils literal notranslate"><span class="pre">proxy_joints</span></code>
+aliases) enabled in the destination view so their constraints continue to act
+between proxy bodies. For one-DoF drives, the coupler remaps source targets to
+destination-local indices and copies <code class="docutils literal notranslate"><span class="pre">joint_target_q</span></code> and <code class="docutils literal notranslate"><span class="pre">joint_target_qd</span></code>
+before each destination solve.</p>
+<p>Implicit MPM supports proxy body and proxy particle rewind/harvest hooks.
+Transfer-active proxy particles can participate in P2G/G2P momentum transfer
+while being excluded from material volume, stress, strain, and constitutive
+updates. Deformable collider particles registered through collider-particle ids
+use collider impulse collection rather than material transfer.</p>
+<p>XPBD understands proxy particles and proxy bodies in particle contact kernels.
+Owned particles may collide with destination proxy particles, but proxy-proxy,
+proxy-static, and proxy-particle versus proxy-body contacts are filtered so the
+destination solve does not create feedback between two proxy endpoints or
+against immovable particles.</p>
+<p>MuJoCo provides GPU effective-mass hooks from MuJoCo Warp data so proxy virtual
+inertia and ADMM endpoint weights can use articulated mass estimates rather than
+raw body mass.</p>
+</section>
+<section id="current-limitations">
+<h2>Current Limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h2>
+<p>The coupled-solver framework is useful today, but it is still experimental:</p>
+<ul class="simple">
+<li><p>Proxy stability is tuning-sensitive. Virtual inertia scale, contact
+stiffness, solver iterations, and lagged versus staggered scheduling strongly
+affect damping and convergence.</p></li>
+<li><p>Generic momentum harvesting is only a fallback. Solver-private contact modes
+should expose custom harvest hooks where possible.</p></li>
+<li><p>ADMM contact detection is internal and does not consume arbitrary caller
+<a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> rows as a public interface stream.</p></li>
+<li><p>ADMM joint support is limited to ball, fixed, and revolute rows.</p></li>
+<li><p>Particle-particle ADMM contacts use a private stream, not a public contact API.</p></li>
+<li><p>Effective-mass weighting falls back to simple model mass/inertia where no
+custom hook is available.</p></li>
+<li><p>USD ownership, automatic coupled-solver construction, and high-level tuning
+guidance are not part of the experimental public API yet.</p></li>
+</ul>
+<p>Treat coupled solvers as an advanced feature for controlled experiments and
+solver integration work. Prefer focused regression tests and explicit scene
+tuning when using them in new examples.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shared-model-entry-views-and-ownership">Shared Model, Entry Views, and Ownership</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#coupling-hooks">Coupling Hooks</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#proxy-coupling">Proxy Coupling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#admm-coupling">ADMM Coupling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-proxy-or-admm-coupling">Choosing Proxy or ADMM Coupling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-specific-behavior">Solver-Specific Behavior</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limitations">Current Limitations</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=0790524f97105ba85085"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=0790524f97105ba85085"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.18.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+﻿newton.StateFlags
+=================
+
+.. autoclass:: newton.StateFlags
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
