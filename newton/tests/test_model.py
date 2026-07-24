@@ -215,6 +215,7 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         builder.default_bvh_cfg.mesh_constructor = "cubql"
         builder.default_bvh_cfg.gaussian_constructor = "sah"
         builder.default_bvh_cfg.shape_constructor = "lbvh"
+        builder.default_bvh_cfg.shape_flags = newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES
 
         mesh = newton.Mesh(
             vertices=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
@@ -239,7 +240,12 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         wp_mesh.assert_called_once()
         self.assertEqual(wp_mesh.call_args.kwargs["bvh_constructor"], "cubql")
         finalize.assert_called_once_with(gaussian, device="cpu", bvh_constructor="sah")
-        build_shapes.assert_called_once_with(model, model, bvh_constructor="lbvh")
+        build_shapes.assert_called_once_with(
+            model,
+            model,
+            bvh_constructor="lbvh",
+            shape_flags=newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES,
+        )
 
     def test_gaussian_finalize_forwards_bvh_constructor_to_warp_bvh(self):
         gaussian = newton.Gaussian(
