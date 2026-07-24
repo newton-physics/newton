@@ -474,7 +474,19 @@ The attribute resolution process follows a three-layer fallback hierarchy to det
 
 1. **Authored Values**: Resolvers are queried in priority order; the first resolver that finds an authored value on the prim returns it and remaining resolvers are not consulted.
 2. **Importer Defaults**: If no authored value is found, Newton's importer uses a property-specific fallback (e.g. ``builder.default_joint_cfg.armature`` for joint armature). This takes precedence over schema-level defaults.
-3. **Approximated Schema Defaults**: If neither an authored value nor an importer default is available, Newton falls back to a hardcoded approximation of each solver's schema default, defined in Newton's resolver mapping. These approximations will be replaced by actual USD schema defaults in a future release.
+3. **Resolver Compatibility Defaults**: If neither an authored value nor an importer default is available, Newton falls back to the resolver mapping's compatibility default.
+
+This order is retained during a compatibility period. In the future, applying a
+schema will give it ownership of its properties: an unauthored property will use
+its schema fallback before a lower-priority resolver or importer default.
+Registered schema definitions supply fallbacks when available. Built-in
+resolvers provide equivalent fallback data for supported schemas without public
+plugins, so registration does not affect priority. Newton emits a
+:class:`DeprecationWarning` when the future rule would select a different value
+or source. Author the intended property value explicitly to preserve it across
+the transition, or pass
+``use_applied_schema_fallbacks=True`` to adopt the future behavior now without
+migration warnings.
 
 **Configuring Resolver Priority:**
 

@@ -218,6 +218,7 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
+    use_applied_schema_fallbacks: bool = False,
     force_position_velocity_actuation: bool = False,
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
@@ -343,7 +344,15 @@ def parse_usd(
 
             .. experimental::
 
-                The ``schema_resolvers`` argument may change without prior notice.
+                The ``schema_resolvers`` and ``use_applied_schema_fallbacks``
+                arguments may change without prior notice.
+        use_applied_schema_fallbacks: True uses an applied schema's USD fallback
+            before importer defaults and lower-priority resolvers, opting into the
+            future behavior without migration warnings. Registered schema
+            definitions supply fallbacks when available; built-in resolvers may
+            supply them for schemas without public plugins. False explicitly
+            retains legacy resolution and is the default during the compatibility
+            period.
         force_position_velocity_actuation: If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
             If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
@@ -546,7 +555,10 @@ def parse_usd(
     ret_dict = UsdPhysics.LoadUsdPhysicsFromRange(stage, [root_path], excludePaths=native_exclude_paths)
 
     # Initialize schema resolver according to precedence
-    R = SchemaResolverManager(schema_resolvers)
+    R = SchemaResolverManager(
+        schema_resolvers,
+        use_applied_schema_fallbacks=use_applied_schema_fallbacks,
+    )
 
     # Vendor namespaces (e.g. omniphysics, physxDeformableBody) accepted as a
     # fallback to the canonical physics: deformable schema. Empty unless a
@@ -748,7 +760,6 @@ def parse_usd(
     def _should_write_solreflimit_mode() -> bool:
         return mjc_resolver is not None and solreflimit_mode_key in builder.custom_attributes
 
-    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
     def _get_mjc_joint_limit_default(prim: Usd.Prim, key: str) -> float | None:
         if mjc_resolver is None or not _has_api_schema(prim, "MjcJointAPI"):
             return None
@@ -763,6 +774,49 @@ def parse_usd(
         prim: Usd.Prim, key: str, builder_default: float
     ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
         """Resolve a limit gain and report the semantics of its source."""
+        value_cache: dict[int, Any] = {}
+
+        def read_value(resolver: SchemaResolver, _key: str) -> Any:
+            resolver_id = id(resolver)
+            if resolver_id not in value_cache:
+                value_cache[resolver_id] = resolver._get_value_state(prim, PrimType.JOINT, key)
+            return value_cache[resolver_id]
+
+        if R._uses_composed_fallbacks:
+            resolved = R._resolve_value(
+                prim,
+                PrimType.JOINT,
+                key,
+                default=builder_default,
+                read_value=read_value,
+            )
+            if resolved.resolver is None or resolved.resolver.name != "mjc":
+                return resolved.value, "force"
+            R._collect_on_first_use(resolved.resolver, prim)
+            if resolved.authored:
+                value = resolved.value
+                if value is None:
+                    value = _get_mjc_joint_limit_default(prim, key)
+                return builder_default if value is None else value, "mjc_authored"
+            return builder_default if resolved.value is None else resolved.value, "mjc_default"
+
+        def finish(
+            value: float,
+            source: Literal["force", "mjc_authored", "mjc_default"],
+            resolver: SchemaResolver | None = None,
+        ) -> tuple[float, Literal["force", "mjc_authored", "mjc_default"]]:
+            R._record_legacy_fallback(
+                prim,
+                PrimType.JOINT,
+                key,
+                builder_default,
+                value,
+                resolver,
+                compare_resolver=False,
+                read_value=read_value,
+            )
+            return value, source
+
         for resolver in R.resolvers:
             spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
             if spec is None:
@@ -773,26 +827,45 @@ def parse_usd(
                 if raw_value is None:
                     continue
                 R._collect_on_first_use(resolver, prim)
-                authored_value = (
-                    spec.usd_value_transformer(raw_value) if spec.usd_value_transformer is not None else raw_value
-                )
+                authored_value = read_value(resolver, key).value
                 if authored_value is not None:
-                    return authored_value, "mjc_authored"
+                    return finish(authored_value, "mjc_authored", resolver)
                 mjc_default = _get_mjc_joint_limit_default(prim, key)
                 if mjc_default is not None:
-                    return mjc_default, "mjc_authored"
-                return builder_default, "mjc_authored"
+                    return finish(mjc_default, "mjc_authored", resolver)
+                return finish(builder_default, "mjc_authored", resolver)
 
-            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
+            authored_value = read_value(resolver, key).value
             if authored_value is not None:
                 R._collect_on_first_use(resolver, prim)
-                return authored_value, "force"
+                return finish(authored_value, "force", resolver)
 
         if mjc_resolver is not None:
             mjc_default = _get_mjc_joint_limit_default(prim, key)
             if mjc_default is not None:
-                return mjc_default, "mjc_default"
-        return builder_default, "force"
+                return finish(mjc_default, "mjc_default")
+        return finish(builder_default, "force")
+
+    def _resolve_joint_velocity_limit(prim: Usd.Prim) -> float | None:
+        value = R.get_value(
+            prim,
+            prim_type=PrimType.JOINT,
+            key="velocity_limit",
+            default=None,
+            verbose=verbose,
+        )
+        if value != float("inf") or R._uses_composed_fallbacks:
+            return value
+        R._record_legacy_fallback(
+            prim,
+            PrimType.JOINT,
+            "velocity_limit",
+            None,
+            default_joint_velocity_limit,
+            None,
+            compare_resolver=False,
+        )
+        return None
 
     def _joint_limit_solref_mode(ke_source: str, kd_source: str) -> int:
         """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
@@ -1570,12 +1643,7 @@ def parse_usd(
         _damping_usd = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="damping", default=None, verbose=verbose)
         damping_authored = _damping_usd is not None
         damping = _damping_usd if damping_authored else default_joint_damping
-        velocity_limit = R.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
-        )
-        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-        if velocity_limit == float("inf"):
-            velocity_limit = None
+        velocity_limit = _resolve_joint_velocity_limit(jp_prim)
         newton_limit_ke = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
         newton_limit_kd = R.get_value(jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
         limit_key = "limit_angular" if is_revolute else "limit_linear"
@@ -1743,12 +1811,7 @@ def parse_usd(
             )
             joint_damping_authored = _joint_damping_usd is not None
             joint_damping = _joint_damping_usd if joint_damping_authored else default_joint_damping
-            joint_velocity_limit = R.get_value(
-                joint_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=verbose
-            )
-            # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-            if joint_velocity_limit == float("inf"):
-                joint_velocity_limit = None
+            joint_velocity_limit = _resolve_joint_velocity_limit(joint_prim)
             limit_ke = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=verbose)
             limit_kd = R.get_value(joint_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=verbose)
             linear_axes = []
@@ -3318,18 +3381,33 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
+                def _effective_margin(value, resolver, prim=prim):
+                    value = builder.default_shape_cfg.margin if value is None else value
+                    if legacy_margin_gap and resolver is not None and resolver.name == "mjc":
+                        mjc_gap = usd.get_attribute(prim, "mjc:gap")
+                        value = float(value) - (0.0 if mjc_gap is None else float(mjc_gap))
+                    return value
+
                 margin_val, margin_resolver = R.get_value_with_resolver(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="margin",
                     default=builder.default_shape_cfg.margin,
                     verbose=verbose,
+                    comparison_key=_effective_margin,
                 )
                 gap_val = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="gap",
                     verbose=verbose,
+                    comparison_key=lambda value, _resolver: (
+                        builder.rigid_gap
+                        if value is None or (value == float("-inf") and builder.default_shape_cfg.gap is None)
+                        else builder.default_shape_cfg.gap
+                        if value == float("-inf")
+                        else value
+                    ),
                 )
                 if gap_val == float("-inf"):
                     gap_val = builder.default_shape_cfg.gap
@@ -3344,7 +3422,7 @@ def parse_usd(
                             f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
                             stacklevel=2,
                         )
-                    margin_val = newton_margin
+                margin_val = _effective_margin(margin_val, margin_resolver)
 
                 has_body_visual_shapes = load_visual_shapes and body_id in bodies_with_visual_shapes
                 model_has_visual_shapes = load_visual_shapes and bool(bodies_with_visual_shapes)
@@ -3416,8 +3494,17 @@ def parse_usd(
                 # Resolve target_voxel_size first because it overrides
                 # sdf_max_resolution and the two are mutually exclusive in
                 # ShapeConfig.validate().
+                def _effective_sdf_target_voxel_size(value, _resolver):
+                    if value == float("-inf") or (value is not None and value <= 0):
+                        value = None
+                    return builder.default_shape_cfg.sdf_target_voxel_size if value is None else value
+
                 sdf_target_voxel_size = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="sdf_target_voxel_size",
+                    verbose=verbose,
+                    comparison_key=_effective_sdf_target_voxel_size,
                 )
                 if sdf_target_voxel_size == float("-inf"):
                     sdf_target_voxel_size = None
@@ -3431,8 +3518,28 @@ def parse_usd(
                 if sdf_target_voxel_size is None:
                     sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
 
+                def _effective_sdf_max_resolution(
+                    value,
+                    _resolver,
+                    sdf_target_voxel_size=sdf_target_voxel_size,
+                    has_sdf_api=has_sdf_api,
+                ):
+                    if value == float("-inf") or (value is not None and (value <= 0 or value % 8 != 0)):
+                        value = None
+                    if sdf_target_voxel_size is not None and value is not None:
+                        value = None
+                    if value is None:
+                        if has_sdf_api and sdf_target_voxel_size is None:
+                            return 64
+                        return builder.default_shape_cfg.sdf_max_resolution
+                    return value
+
                 sdf_max_resolution = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="sdf_max_resolution",
+                    verbose=verbose,
+                    comparison_key=_effective_sdf_max_resolution,
                 )
                 if sdf_max_resolution == float("-inf"):
                     sdf_max_resolution = None
@@ -3467,26 +3574,46 @@ def parse_usd(
                     else:
                         sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
 
+                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
                 sdf_narrow_band_inner = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="sdf_narrow_band_inner",
+                    verbose=verbose,
+                    comparison_key=lambda value, _resolver, default=default_nb[0]: (
+                        default if value is None or value == float("-inf") else value
+                    ),
                 )
                 if sdf_narrow_band_inner == float("-inf"):
                     sdf_narrow_band_inner = None
                 sdf_narrow_band_outer = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="sdf_narrow_band_outer",
+                    verbose=verbose,
+                    comparison_key=lambda value, _resolver, default=default_nb[1]: (
+                        default if value is None or value == float("-inf") else value
+                    ),
                 )
                 if sdf_narrow_band_outer == float("-inf"):
                     sdf_narrow_band_outer = None
-                default_nb = builder.default_shape_cfg.sdf_narrow_band_range
                 sdf_narrow_band_range = (
                     sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
                     sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
                 )
 
-                sdf_texture_format = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose
-                )
                 _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
+                sdf_texture_format = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="sdf_texture_format",
+                    verbose=verbose,
+                    comparison_key=lambda value, _resolver, valid_formats=_valid_sdf_tex_fmts: (
+                        builder.default_shape_cfg.sdf_texture_format
+                        if value is None or value not in valid_formats
+                        else value
+                    ),
+                )
                 if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
                     warnings.warn(
                         f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
@@ -3497,7 +3624,15 @@ def parse_usd(
                 if sdf_texture_format is None:
                     sdf_texture_format = builder.default_shape_cfg.sdf_texture_format
 
-                sdf_padding = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
+                sdf_padding = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="sdf_padding",
+                    verbose=verbose,
+                    comparison_key=lambda value, _resolver: (
+                        None if value == float("-inf") or (value is not None and value < 0) else value
+                    ),
+                )
                 if sdf_padding == float("-inf"):
                     sdf_padding = None
                 elif sdf_padding is not None and sdf_padding < 0:
@@ -3509,9 +3644,27 @@ def parse_usd(
                     sdf_padding = None
 
                 hydroelastic_enabled = R.get_value(
-                    prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="hydroelastic_enabled",
+                    verbose=verbose,
+                    comparison_key=lambda value, _resolver, has_sdf_api=has_sdf_api: (
+                        value
+                        if value is True or value is False
+                        else False
+                        if has_sdf_api
+                        else builder.default_shape_cfg.is_hydroelastic
+                    ),
                 )
-                kh = R.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
+                kh = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="kh",
+                    verbose=verbose,
+                    comparison_key=lambda value, _resolver: (
+                        builder.default_shape_cfg.kh if value == float("-inf") or value is None or value <= 0 else value
+                    ),
+                )
                 if kh == float("-inf"):
                     kh = None
                 elif kh is not None and kh <= 0:
@@ -4990,6 +5143,24 @@ def parse_usd(
                 "path_attachment_map": path_attachment_map,
                 "path_attachment_attrs": path_attachment_attrs,
             }
+        )
+
+    if R._legacy_fallback_properties or R._legacy_fallback_failures:
+        details = []
+        if R._legacy_fallback_properties:
+            properties = ", ".join(sorted(R._legacy_fallback_properties))
+            details.append(f"schema fallbacks will take precedence for {properties}")
+        if R._legacy_fallback_failures:
+            failures = ", ".join(sorted(R._legacy_fallback_failures))
+            details.append(f"schema fallbacks could not be audited for {failures}")
+        warnings.warn(
+            "This import retained legacy values for applied but unauthored USD schema properties; "
+            f"{' and '.join(details)}. In a future release, applied-schema fallbacks will "
+            "take precedence; "
+            "pass use_applied_schema_fallbacks=True to adopt that behavior now, or author the intended values "
+            "explicitly to preserve them.",
+            DeprecationWarning,
+            stacklevel=_external_stacklevel(),
         )
 
     return result

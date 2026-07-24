@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, ClassVar
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ..core.types import override
-from ..usd.schema_resolver import PrimType, SchemaResolver
+from ..usd.schema_resolver import PrimType, SchemaResolver, _reader_schema_attribute
 from . import utils as usd
+from ._missing_schema_fallbacks import _MJC_SCHEMA_FALLBACKS, _PHYSX_SCHEMA_FALLBACKS
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -21,16 +22,17 @@ if TYPE_CHECKING:
 
 
 SchemaAttribute = SchemaResolver.SchemaAttribute
+_AttributeReader = Callable[[str], Any | None]
 
 
-def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
+def _physx_gap_from_reader(read_attribute: _AttributeReader) -> float | None:
     """Compute Newton gap from PhysX: contactOffset - restOffset [m].
 
     Returns None if either attribute is missing or -inf (PhysX uses -inf for "engine default").
     Only when both are finite do we compute a concrete gap.
     """
-    contact_offset = usd.get_attribute(prim, "physxCollision:contactOffset")
-    rest_offset = usd.get_attribute(prim, "physxCollision:restOffset")
+    contact_offset = read_attribute("physxCollision:contactOffset")
+    rest_offset = read_attribute("physxCollision:restOffset")
     if contact_offset is None or rest_offset is None:
         return None
     inf = float("-inf")
@@ -120,6 +122,31 @@ class SchemaResolverNewton(SchemaResolver):
     """
 
     name: ClassVar[str] = "newton"
+    _use_legacy_unowned_defaults: ClassVar[bool] = False
+    _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+        PrimType.SCENE: "NewtonSceneAPI",
+        PrimType.JOINT: dict.fromkeys(
+            ("armature", "damping", "friction", "limit_ke", "limit_kd", "velocity_limit"),
+            "NewtonJointAPI",
+        ),
+        PrimType.SHAPE: {
+            "max_hull_vertices": "NewtonMeshCollisionAPI",
+            "margin": "NewtonCollisionAPI",
+            "gap": "NewtonCollisionAPI",
+            "sdf_max_resolution": "NewtonSDFCollisionAPI",
+            "sdf_narrow_band_inner": "NewtonSDFCollisionAPI",
+            "sdf_narrow_band_outer": "NewtonSDFCollisionAPI",
+            "sdf_target_voxel_size": "NewtonSDFCollisionAPI",
+            "sdf_texture_format": "NewtonSDFCollisionAPI",
+            "sdf_padding": "NewtonSDFCollisionAPI",
+            "hydroelastic_enabled": "NewtonSDFCollisionAPI",
+            "kh": "NewtonSDFCollisionAPI",
+            "mass_model": "NewtonMassAPI",
+            "shell_thickness": "NewtonMassAPI",
+        },
+        PrimType.ARTICULATION: "NewtonArticulationRootAPI",
+        PrimType.MATERIAL: "NewtonMaterialAPI",
+    }
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {
             "max_solver_iterations": SchemaAttribute("newton:maxSolverIterations", -1),
@@ -308,6 +335,41 @@ class SchemaResolverPhysx(SchemaResolver):
     """
 
     name: ClassVar[str] = "physx"
+    _schema_fallbacks: ClassVar[dict[str, dict[str, Any]]] = _PHYSX_SCHEMA_FALLBACKS
+    _use_legacy_unowned_defaults: ClassVar[bool] = False
+    _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+        PrimType.SCENE: {
+            "max_solver_iterations": "PhysxSceneAPI",
+            "time_steps_per_second": "PhysxSceneAPI",
+        },
+        PrimType.JOINT: {
+            "armature": "PhysxJointAPI",
+            "velocity_limit": "PhysxJointAPI",
+            **{
+                f"limit_{axis}_{gain}": f"PhysxLimitAPI:{axis}"
+                for axis in ("linear", "angular", "rotX", "rotY", "rotZ")
+                for gain in ("ke", "kd")
+            },
+            **{
+                f"limit_{axis}_{gain}": f"PhysxLimitAPI:{axis}"
+                for axis in ("transX", "transY", "transZ")
+                for gain in ("ke", "kd")
+            },
+            **{
+                f"{axis}_{quantity}": f"PhysicsJointStateAPI:{axis}"
+                for axis in ("linear", "angular", "rotX", "rotY", "rotZ")
+                for quantity in ("position", "velocity")
+            },
+        },
+        PrimType.SHAPE: {
+            "max_hull_vertices": "PhysxConvexHullCollisionAPI",
+            "margin": "PhysxCollisionAPI",
+            "gap": "PhysxCollisionAPI",
+        },
+        PrimType.MATERIAL: "PhysxMaterialAPI",
+        PrimType.BODY: "PhysxRigidBodyAPI",
+        PrimType.ARTICULATION: "PhysxArticulationAPI",
+    }
     # Deformable material/geometry vendor namespaces (AOUSD proposal). The public
     # schema authors under ``physics:``; these carry the same parameters in existing
     # content. Kept separate from extra_attr_namespaces so they are only consulted
@@ -381,10 +443,10 @@ class SchemaResolverPhysx(SchemaResolver):
             "margin": SchemaAttribute(
                 "physxCollision:restOffset", 0.0, lambda v: None if v == float("-inf") else float(v)
             ),
-            "gap": SchemaAttribute(
+            "gap": _reader_schema_attribute(
                 "physxCollision:contactOffset",
                 float("-inf"),
-                usd_value_getter=_physx_gap_from_prim,
+                _reader_value_getter=_physx_gap_from_reader,
                 attribute_names=("physxCollision:contactOffset", "physxCollision:restOffset"),
             ),
         },
@@ -483,6 +545,25 @@ class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
+    _schema_fallbacks: ClassVar[dict[str, dict[str, Any]]] = _MJC_SCHEMA_FALLBACKS
+    _use_legacy_unowned_defaults: ClassVar[bool] = False
+    _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
+        PrimType.SCENE: "MjcSceneAPI",
+        PrimType.JOINT: "MjcJointAPI",
+        PrimType.SHAPE: {
+            "max_hull_vertices": "MjcMeshCollisionAPI",
+            "margin": "MjcCollisionAPI",
+            "gap": "MjcCollisionAPI",
+            "mass_model": "MjcCollisionAPI",
+            "ke": "MjcCollisionAPI",
+            "kd": "MjcCollisionAPI",
+        },
+        PrimType.MATERIAL: {
+            "mu_torsional": "MjcMaterialAPI",
+            "mu_rolling": "MjcMaterialAPI",
+        },
+        PrimType.ACTUATOR: "MjcActuator",
+    }
 
     mapping: ClassVar[dict[PrimType, dict[str, SchemaAttribute]]] = {
         PrimType.SCENE: {

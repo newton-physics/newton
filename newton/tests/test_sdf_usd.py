@@ -22,7 +22,10 @@ from pathlib import Path
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices
+from newton.tests.unittest_utils import (
+    add_function_test,
+    get_selected_cuda_test_devices,
+)
 
 CUBE_POINTS = [
     (-0.5, -0.5, -0.5),
@@ -611,7 +614,10 @@ class TestSDFUSDParsing(unittest.TestCase):
 
             builder = newton.ModelBuilder()
             with self.assertWarnsRegex(UserWarning, "independent collision representations"):
-                result = builder.add_usd(str(usd_path))
+                result = builder.add_usd(
+                    str(usd_path),
+                    use_applied_schema_fallbacks=True,
+                )
             s1 = result["path_shape_map"]["/World/Body1/CollisionMesh"]
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
 
