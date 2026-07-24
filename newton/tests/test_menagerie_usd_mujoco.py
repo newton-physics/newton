@@ -1510,9 +1510,10 @@ class TestMenagerieUSD(TestMenagerieBase):
             ``StepResponseControlStrategy`` would drive different actuators on
             each side when USD vs MJCF orderings differ).
           - JOINT_TARGET actuators (USD-imported MjcActuator position-shortcut rows)
-            are routed through ``Control.joint_target_pos`` / ``joint_target_vel``
+            are routed through ``Control.joint_target_q`` / ``joint_target_qd``
             rather than ``mujoco.ctrl`` — see ``mjc_actuator_ctrl_source`` on the
-            solver. Both arrays are written here, indexed via
+            solver. Position targets are indexed via the coord-layout
+            ``mjc_actuator_to_newton_target_q_idx``; velocity targets via
             ``mjc_actuator_to_newton_idx``.
           - Newton's per-step ``qpos`` / ``qvel`` are permuted via ``_qpos_map`` /
             ``_dof_map`` before comparison.
@@ -1541,14 +1542,29 @@ class TestMenagerieUSD(TestMenagerieBase):
             # Per-world step-response control with actuator remap.
             ctrl_source = newton_solver.mjc_actuator_ctrl_source.numpy()
             act_to_newton_idx = newton_solver.mjc_actuator_to_newton_idx.numpy()
-            # Start from zero so non-driven JOINT_TARGET actuators have target=0,
+            act_to_target_q_idx = newton_solver.mjc_actuator_to_newton_target_q_idx.numpy()
+            act_to_ball_jnt = newton_solver.mjc_actuator_to_newton_ball_jnt.numpy()
+            act_to_axis_idx = newton_solver.mjc_actuator_to_target_q_axis_idx.numpy()
+            newton_model = newton_solver.model
+            # Start from neutral so non-driven JOINT_TARGET actuators have target=0,
             # matching native_ctrl=0 for those slots. Without this, Newton's pre-existing
-            # joint_target_pos (initial DOF targets from the USD posture) would apply
+            # position targets (initial targets from the USD posture) would apply
             # nonzero forces every world for actuators we didn't drive — surfaced on
             # WonikAllegro where tha0's initial target 0.8295 stayed in every world.
+            # Neutral means zero scalars and identity quaternions in the BALL/FREE
+            # coord-layout slots.
             joint_target_pos = np.zeros_like(newton_control.joint_target_q.numpy())
             joint_target_vel = np.zeros_like(newton_control.joint_target_qd.numpy())
-            dofs_per_world = joint_target_pos.shape[0] // num_worlds
+            dofs_per_world = joint_target_vel.shape[0] // num_worlds
+            target_q_per_world = joint_target_pos.shape[0] // num_worlds
+            joint_types_np = newton_model.joint_type.numpy()
+            target_q_starts_np = newton_model.joint_target_q_start.numpy()
+            for j in range(newton_model.joint_count):
+                jt = int(joint_types_np[j])
+                if jt == int(newton.JointType.BALL):
+                    joint_target_pos[int(target_q_starts_np[j]) + 3] = 1.0
+                elif jt in (int(newton.JointType.FREE), int(newton.JointType.DISTANCE)):
+                    joint_target_pos[int(target_q_starts_np[j]) + 6] = 1.0
 
             native_ctrl_np = np.zeros((num_worlds, num_actuators), dtype=np.float32)
             newton_ctrl_np = np.zeros_like(native_ctrl_np)
@@ -1567,7 +1583,16 @@ class TestMenagerieUSD(TestMenagerieBase):
                     newton_ctrl_np[w, idx] = target
                 elif ctrl_source[newton_act] == 0:  # JOINT_TARGET
                     if idx >= 0:
-                        joint_target_pos[w * dofs_per_world + idx] = target
+                        # Template-world coord index; offset into world w's block.
+                        tq = w * target_q_per_world + int(act_to_target_q_idx[newton_act])
+                        if int(act_to_ball_jnt[newton_act]) >= 0:
+                            # BALL position target is a quaternion; compose the
+                            # single-axis rotation matching the scalar step target.
+                            axis = int(act_to_axis_idx[newton_act])
+                            joint_target_pos[tq + axis] = np.sin(0.5 * target)
+                            joint_target_pos[tq + 3] = np.cos(0.5 * target)
+                        else:
+                            joint_target_pos[tq] = target
                     elif idx <= -2:
                         joint_target_vel[w * dofs_per_world + (-(idx + 2))] = target
             native_mjw_data.ctrl.assign(native_ctrl_np)

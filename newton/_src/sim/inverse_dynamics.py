@@ -47,6 +47,7 @@ class _InverseDynamicsScratchBuffer:
         body_count: int,
         articulation_count: int,
         joint_dof_count: int,
+        joint_target_q_count: int,
         max_dofs_per_articulation: int,
         max_joints_per_articulation: int,
         world_count: int,
@@ -61,6 +62,10 @@ class _InverseDynamicsScratchBuffer:
                 :attr:`Model.articulation_count`).
             joint_dof_count: Total number of joint DOFs across all
                 articulations (matches :attr:`Model.joint_dof_count`).
+            joint_target_q_count: Length of :attr:`Model.joint_target_q`
+                (coord- or DOF-shaped depending on
+                :data:`newton.use_coord_layout_targets`), used to size the
+                constant-zero position-target input.
             max_dofs_per_articulation: Per-articulation DOF count (inclusive
                 of floating-base root DOFs, if any). Matches
                 :attr:`Model.max_dofs_per_articulation`.
@@ -94,8 +99,13 @@ class _InverseDynamicsScratchBuffer:
         # Reused as the eval_mass_matrix Jacobian scratch.
         self.J = wp.empty((ac, max_links * 6, max_dofs), dtype=wp.float32, device=device)
 
-        # Constant-zero inputs (allocated once, never written).
+        # Constant-zero inputs (allocated once, never written). The position
+        # target buffer is sized separately: it is indexed via
+        # joint_target_q_start, which is coord-shaped under
+        # newton.use_coord_layout_targets, so a DOF-sized buffer would read
+        # out of bounds.
         self.zeros_dof = wp.zeros(jdc, dtype=wp.float32, device=device)
+        self.zeros_target_q = wp.zeros(joint_target_q_count, dtype=wp.float32, device=device)
         self.zeros_body = wp.zeros(bc, dtype=wp.spatial_vector, device=device)
         self.zero_gravity = wp.zeros(world_count, dtype=wp.vec3, device=device)
 
@@ -247,7 +257,7 @@ def _rnea_compensation_pass(
             model.joint_qd_start,
             model.joint_target_q_start,
             model.joint_dof_dim,
-            scratch.zeros_dof,  # joint_target_q
+            scratch.zeros_target_q,  # joint_target_q
             scratch.zeros_dof,  # joint_target_qd
             state.joint_q,
             scratch.joint_qd_internal,
@@ -443,6 +453,7 @@ def eval_inverse_dynamics_passive(
         body_count=model.body_count,
         articulation_count=model.articulation_count,
         joint_dof_count=model.joint_dof_count,
+        joint_target_q_count=model.joint_target_q.shape[0],
         max_dofs_per_articulation=model.max_dofs_per_articulation,
         max_joints_per_articulation=model.max_joints_per_articulation,
         world_count=model.world_count,

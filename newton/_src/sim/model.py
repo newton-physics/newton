@@ -1085,16 +1085,14 @@ class Model:
 
         Shape matches :attr:`joint_q` (``joint_coord_count``) when
         :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
-        is shaped ``(joint_dof_count,)`` for backward compatibility with the
-        deprecated :attr:`joint_target_pos` alias. Index via
+        is shaped ``(joint_dof_count,)`` (legacy layout). Index via
         :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
         :attr:`joint_qd_start` to match the active layout.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.
 
-        Matches the layout of :attr:`joint_qd`. Replaces the deprecated
-        :attr:`joint_target_vel`.
+        Matches the layout of :attr:`joint_qd`.
         """
         self.joint_act: wp.array[wp.float32] | None = None
         """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
@@ -1364,17 +1362,6 @@ class Model:
         """
 
         self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
-        if not self.use_coord_layout_targets:
-            self.attribute_specs["joint_target_pos"] = Model.AttributeSpec(
-                target_q_freq,
-                deprecated=True,
-                alias_of="joint_target_q",
-            )
-            self.attribute_specs["joint_target_vel"] = Model.AttributeSpec(
-                Model.AttributeFrequency.JOINT_DOF,
-                deprecated=True,
-                alias_of="joint_target_qd",
-            )
 
         # Extended state attributes live on State and are allocated only when
         # explicitly requested via request_state_attributes().
@@ -1566,80 +1553,6 @@ class Model:
         index :attr:`joint_target_q` through this regardless of layout.
         """
         return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
-
-    @property
-    def joint_target_pos(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_q` (DOF-shape only).
-        Raises :class:`AttributeError` when this Model was built under
-        :attr:`use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_q` instead.
-        """
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.joint_target_q
-
-    @joint_target_pos.setter
-    def joint_target_pos(self, value: wp.array | None) -> None:
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_POS_DEPRECATION_MSG, _JOINT_TARGET_POS_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_POS_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_POS_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.joint_target_q = value
-
-    @property
-    def joint_target_vel(self) -> wp.array | None:
-        """Deprecated alias for :attr:`joint_target_qd`. Raises
-        :class:`AttributeError` when this Model was built under
-        :attr:`use_coord_layout_targets` ``True``.
-
-        .. deprecated:: 1.3
-            Use :attr:`joint_target_qd` instead.
-        """
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.joint_target_qd
-
-    @joint_target_vel.setter
-    def joint_target_vel(self, value: wp.array | None) -> None:
-        import warnings  # noqa: PLC0415
-
-        from .control import _JOINT_TARGET_VEL_DEPRECATION_MSG, _JOINT_TARGET_VEL_UNAVAILABLE_MSG  # noqa: PLC0415
-
-        if self.use_coord_layout_targets:
-            raise AttributeError(_JOINT_TARGET_VEL_UNAVAILABLE_MSG.replace("Control.", "Model."))
-        warnings.warn(
-            _JOINT_TARGET_VEL_DEPRECATION_MSG.replace("Control.", "Model."),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.joint_target_qd = value
 
     def bvh_build_shapes(self, state: State, *, bvh_constructor: str | None = None) -> None:
         """Build or rebuild the shape BVH stored on this model.
@@ -1911,7 +1824,6 @@ class Model:
             The initialized control object.
         """
         c = Control()
-        c._use_coord_layout_targets = self.use_coord_layout_targets
         if requires_grad is None:
             requires_grad = self.requires_grad
         if clone_variables:

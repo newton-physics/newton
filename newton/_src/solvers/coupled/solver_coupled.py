@@ -2603,7 +2603,6 @@ def _entry_control(view: ModelView) -> Control:
 
     control = Control()
     use_coord_layout_targets = bool(getattr(view.parent, "use_coord_layout_targets", False))
-    control._use_coord_layout_targets = use_coord_layout_targets
     target_q_count = int(view.joint_coord_count if use_coord_layout_targets else view.joint_dof_count)
     dof_count = int(view.joint_dof_count)
     requires_grad = bool(getattr(view.parent, "requires_grad", False))

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -89,158 +88,65 @@ def test_ball_controller(
     test: TestJointController,
     device,
     solver_fn,
-    pos_target_vals,
+    target_axis_angle,
     vel_target_vals,
     expected_quat,
     expected_vel,
     target_ke,
     target_kd,
 ):
-    """Test ball joint controller with position and velocity targets."""
-    # Ball-joint per-axis targets exercise the legacy DOF layout.
-    prev_flag = newton.use_coord_layout_targets
-    newton.use_coord_layout_targets = False
-    try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
-        box_mass = 1.0
-        box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
-        # easy case: identity transform, zero center of mass
-        b = builder.add_link(inertia=box_inertia, mass=box_mass)
-        builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
-
-        # Create a ball joint
-        j = builder.add_joint_ball(
-            parent=-1,
-            child=b,
-            parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
-            armature=0.0,
-            actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
-        )
-        builder.add_articulation([j])
-
-        test.assertEqual(builder.joint_count, 1)
-        test.assertEqual(builder.joint_dof_count, 3)
-        test.assertEqual(builder.joint_coord_count, 4)
-        test.assertEqual(builder.joint_type[0], newton.JointType.BALL)
-        test.assertEqual(builder.joint_parent[0], -1)
-        test.assertEqual(builder.joint_child[0], b)
-        test.assertEqual(builder.joint_armature[0], 0.0)
-        test.assertEqual(builder.joint_friction[0], 0.0)
-
-        # Set controller gains for the ball joint axes
-        # Ball joints have 3 axes (X, Y, Z) that are added to joint_target_ke/kd arrays
-        qd_start = builder.joint_qd_start[j]
-        for i in range(3):  # 3 angular axes
-            builder.joint_target_ke[qd_start + i] = target_ke
-            builder.joint_target_kd[qd_start + i] = target_kd
-
-        model = builder.finalize(device=device)
-
-        solver = solver_fn(model)
-
-        state_0, state_1 = model.state(), model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-        control = model.control()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            control.joint_target_pos = wp.array(pos_target_vals, dtype=wp.float32, device=device)
-            control.joint_target_vel = wp.array(vel_target_vals, dtype=wp.float32, device=device)
-
-        sim_dt = 1.0 / 60.0
-        sim_time = 0.0
-        for _ in range(100):
-            state_0.clear_forces()
-            solver.step(state_0, state_1, control, None, sim_dt)
-            state_0, state_1 = state_1, state_0
-
-            sim_time += sim_dt
-
-        if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
-            newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
-
-        joint_q = state_0.joint_q.numpy()
-        joint_qd = state_0.joint_qd.numpy()
-
-        # Ball joint has 4 position coordinates (quaternion) and 3 velocity coordinates
-        if expected_quat is not None:
-            # Check quaternion (allowing for sign flip since q and -q represent same rotation)
-            # Compute dot product between actual and expected quaternions
-            dot = abs(
-                joint_q[0] * expected_quat[0]
-                + joint_q[1] * expected_quat[1]
-                + joint_q[2] * expected_quat[2]
-                + joint_q[3] * expected_quat[3]
-            )
-            test.assertAlmostEqual(dot, 1.0, delta=1e-2)
-
-        if expected_vel is not None:
-            for i in range(3):
-                test.assertAlmostEqual(joint_qd[i], expected_vel[i], delta=1e-2)
-    finally:
-        newton.use_coord_layout_targets = prev_flag
-
-
-def test_ball_controller_coord_layout(
-    test: TestJointController,
-    device,
-    solver_fn,
-    target_axis_angle,
-    expected_quat,
-    target_ke,
-    target_kd,
-):
-    """Ball-joint position target under the coord layout: the user writes a
-    target quaternion and the MuJoCo solver must convert it to the matching
+    """Ball-joint position and velocity targets: the user writes a target
+    quaternion and the MuJoCo solver must convert it to the matching
     axis-angle component before feeding it to per-axis position actuators.
     Without the conversion the equilibrium for a 90° setpoint sits at ~40.5°.
+    Velocity targets are per-axis 3-vectors.
     """
-    prev_flag = newton.use_coord_layout_targets
-    newton.use_coord_layout_targets = True
-    try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
-        box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
-        b = builder.add_link(inertia=box_inertia, mass=1.0)
-        builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
-        j = builder.add_joint_ball(
-            parent=-1,
-            child=b,
-            parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
-            armature=0.0,
-            actuator_mode=newton.JointTargetMode.POSITION,
-        )
-        builder.add_articulation([j])
-        qd_start = builder.joint_qd_start[j]
-        for i in range(3):
-            builder.joint_target_ke[qd_start + i] = target_ke
-            builder.joint_target_kd[qd_start + i] = target_kd
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+    box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    b = builder.add_link(inertia=box_inertia, mass=1.0)
+    builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
+    j = builder.add_joint_ball(
+        parent=-1,
+        child=b,
+        parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
+        armature=0.0,
+        actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
+    )
+    builder.add_articulation([j])
+    qd_start = builder.joint_qd_start[j]
+    for i in range(3):
+        builder.joint_target_ke[qd_start + i] = target_ke
+        builder.joint_target_kd[qd_start + i] = target_kd
 
-        model = builder.finalize(device=device)
-        solver = solver_fn(model)
-        state_0, state_1 = model.state(), model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-        # Convert axis-angle target to a quaternion and write to joint_target_q.
-        ax = np.asarray(target_axis_angle, dtype=np.float32)
-        angle = float(np.linalg.norm(ax))
-        if angle > 0.0:
-            n = ax / angle
-            s = float(np.sin(angle / 2.0))
-            target_quat = [n[0] * s, n[1] * s, n[2] * s, float(np.cos(angle / 2.0))]
-        else:
-            target_quat = [0.0, 0.0, 0.0, 1.0]
-        control = model.control()
-        control.joint_target_q = wp.array(target_quat, dtype=wp.float32, device=device)
+    # Convert axis-angle target to a quaternion and write to joint_target_q.
+    ax = np.asarray(target_axis_angle, dtype=np.float32)
+    angle = float(np.linalg.norm(ax))
+    if angle > 0.0:
+        n = ax / angle
+        s = float(np.sin(angle / 2.0))
+        target_quat = [n[0] * s, n[1] * s, n[2] * s, float(np.cos(angle / 2.0))]
+    else:
+        target_quat = [0.0, 0.0, 0.0, 1.0]
+    control = model.control()
+    control.joint_target_q = wp.array(target_quat, dtype=wp.float32, device=device)
+    control.joint_target_qd = wp.array(vel_target_vals, dtype=wp.float32, device=device)
 
-        sim_dt = 1.0 / 60.0
-        for _ in range(100):
-            state_0.clear_forces()
-            solver.step(state_0, state_1, control, None, sim_dt)
-            state_0, state_1 = state_1, state_0
+    sim_dt = 1.0 / 60.0
+    for _ in range(100):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
 
-        joint_q = state_0.joint_q.numpy()
+    joint_q = state_0.joint_q.numpy()
+    joint_qd = state_0.joint_qd.numpy()
+
+    if expected_quat is not None:
         dot = abs(
             joint_q[0] * expected_quat[0]
             + joint_q[1] * expected_quat[1]
@@ -248,11 +154,13 @@ def test_ball_controller_coord_layout(
             + joint_q[3] * expected_quat[3]
         )
         test.assertAlmostEqual(dot, 1.0, delta=1e-2)
-    finally:
-        newton.use_coord_layout_targets = prev_flag
+
+    if expected_vel is not None:
+        for i in range(3):
+            test.assertAlmostEqual(joint_qd[i], expected_vel[i], delta=1e-2)
 
 
-def test_ball_controller_coord_layout_rotated_anchor(
+def test_ball_controller_rotated_anchor(
     test: TestJointController,
     device,
     solver_fn,
@@ -263,7 +171,7 @@ def test_ball_controller_coord_layout_rotated_anchor(
     target_ke,
     target_kd,
 ):
-    """Ball-joint coord-layout target under non-identity ``child_xform`` rotation.
+    """Ball-joint targets under non-identity ``child_xform`` rotation.
 
     The joint_target_q quaternion and joint_target_qd 3-vector live in Newton's
     parent anchor frame; the MuJoCo solver must conjugate them by ``q_cj``
@@ -271,152 +179,141 @@ def test_ball_controller_coord_layout_rotated_anchor(
     no-op, so this test only fails under non-identity rotation. A preceding free joint keeps the
     ball target starts nonzero.
     """
-    prev_flag = newton.use_coord_layout_targets
-    newton.use_coord_layout_targets = True
-    try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
-        box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, 0.0, 0.0))
+    box_inertia = wp.mat33((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 
-        base = builder.add_link(inertia=box_inertia, mass=1.0)
-        j_free = builder.add_joint_free(child=base)
-        builder.add_articulation([j_free])
+    base = builder.add_link(inertia=box_inertia, mass=1.0)
+    j_free = builder.add_joint_free(child=base)
+    builder.add_articulation([j_free])
 
-        b = builder.add_link(inertia=box_inertia, mass=1.0)
-        builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
-        j = builder.add_joint_ball(
-            parent=-1,
-            child=b,
-            parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), child_rot),
-            armature=0.0,
-            actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
+    b = builder.add_link(inertia=box_inertia, mass=1.0)
+    builder.add_shape_box(body=b, hx=0.2, hy=0.2, hz=0.2, cfg=newton.ModelBuilder.ShapeConfig(density=1))
+    j = builder.add_joint_ball(
+        parent=-1,
+        child=b,
+        parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), child_rot),
+        armature=0.0,
+        actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
+    )
+    builder.add_articulation([j])
+    qd_start = builder.joint_qd_start[j]
+    for i in range(3):
+        builder.joint_target_ke[qd_start + i] = target_ke
+        builder.joint_target_kd[qd_start + i] = target_kd
+
+    model = builder.finalize(device=device)
+    q_start = int(model.joint_q_start.numpy()[j])
+    qd_start = int(model.joint_qd_start.numpy()[j])
+    test.assertGreater(q_start, 0)
+    test.assertGreater(qd_start, 0)
+
+    solver = solver_fn(model)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+    ax = np.asarray(target_axis_angle, dtype=np.float32)
+    angle = float(np.linalg.norm(ax))
+    if angle > 0.0:
+        n = ax / angle
+        s = float(np.sin(angle / 2.0))
+        target_quat = [n[0] * s, n[1] * s, n[2] * s, float(np.cos(angle / 2.0))]
+    else:
+        target_quat = [0.0, 0.0, 0.0, 1.0]
+    control = model.control()
+    joint_target_q = control.joint_target_q.numpy()
+    joint_target_q[q_start : q_start + 4] = target_quat
+    wp.copy(control.joint_target_q, wp.array(joint_target_q, dtype=wp.float32, device=device))
+    joint_target_qd = control.joint_target_qd.numpy()
+    joint_target_qd[qd_start : qd_start + 3] = expected_vel
+    wp.copy(control.joint_target_qd, wp.array(joint_target_qd, dtype=wp.float32, device=device))
+
+    sim_dt = 1.0 / 60.0
+    for _ in range(100):
+        state_0.clear_forces()
+        solver.step(state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    joint_q = state_0.joint_q.numpy()
+    joint_qd = state_0.joint_qd.numpy()
+
+    if expected_quat is not None:
+        dot = abs(
+            joint_q[q_start + 0] * expected_quat[0]
+            + joint_q[q_start + 1] * expected_quat[1]
+            + joint_q[q_start + 2] * expected_quat[2]
+            + joint_q[q_start + 3] * expected_quat[3]
         )
-        builder.add_articulation([j])
-        qd_start = builder.joint_qd_start[j]
+        test.assertAlmostEqual(dot, 1.0, delta=1e-2)
+
+    if target_ke == 0.0:
         for i in range(3):
-            builder.joint_target_ke[qd_start + i] = target_ke
-            builder.joint_target_kd[qd_start + i] = target_kd
-
-        model = builder.finalize(device=device)
-        q_start = int(model.joint_q_start.numpy()[j])
-        qd_start = int(model.joint_qd_start.numpy()[j])
-        test.assertGreater(q_start, 0)
-        test.assertGreater(qd_start, 0)
-
-        solver = solver_fn(model)
-        state_0, state_1 = model.state(), model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-
-        ax = np.asarray(target_axis_angle, dtype=np.float32)
-        angle = float(np.linalg.norm(ax))
-        if angle > 0.0:
-            n = ax / angle
-            s = float(np.sin(angle / 2.0))
-            target_quat = [n[0] * s, n[1] * s, n[2] * s, float(np.cos(angle / 2.0))]
-        else:
-            target_quat = [0.0, 0.0, 0.0, 1.0]
-        control = model.control()
-        joint_target_q = control.joint_target_q.numpy()
-        joint_target_q[q_start : q_start + 4] = target_quat
-        wp.copy(control.joint_target_q, wp.array(joint_target_q, dtype=wp.float32, device=device))
-        joint_target_qd = control.joint_target_qd.numpy()
-        joint_target_qd[qd_start : qd_start + 3] = expected_vel
-        wp.copy(control.joint_target_qd, wp.array(joint_target_qd, dtype=wp.float32, device=device))
-
-        sim_dt = 1.0 / 60.0
-        for _ in range(100):
-            state_0.clear_forces()
-            solver.step(state_0, state_1, control, None, sim_dt)
-            state_0, state_1 = state_1, state_0
-
-        joint_q = state_0.joint_q.numpy()
-        joint_qd = state_0.joint_qd.numpy()
-
-        if expected_quat is not None:
-            dot = abs(
-                joint_q[q_start + 0] * expected_quat[0]
-                + joint_q[q_start + 1] * expected_quat[1]
-                + joint_q[q_start + 2] * expected_quat[2]
-                + joint_q[q_start + 3] * expected_quat[3]
-            )
-            test.assertAlmostEqual(dot, 1.0, delta=1e-2)
-
-        if target_ke == 0.0:
-            for i in range(3):
-                test.assertAlmostEqual(joint_qd[qd_start + i], expected_vel[i], delta=1e-2)
-    finally:
-        newton.use_coord_layout_targets = prev_flag
+            test.assertAlmostEqual(joint_qd[qd_start + i], expected_vel[i], delta=1e-2)
 
 
 def test_free_plus_revolute_position_target(
     test: TestJointController,
     device,
     solver_fn,
-    coord_layout: bool,
 ):
-    """Position target on a revolute behind a free joint must be applied under
-    both layouts (coord-index 7 vs DOF-index 6). One step + ``qfrc_actuator``
-    isolates the indexing path from floating-base dynamics.
+    """Position target on a revolute behind a free joint must be applied at
+    coord index 7, not DOF index 6. One step + ``qfrc_actuator`` isolates the
+    indexing path from floating-base dynamics.
     """
-    prev_flag = newton.use_coord_layout_targets
-    newton.use_coord_layout_targets = coord_layout
-    try:
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
-        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
-        base = builder.add_link(inertia=wp.mat33(np.eye(3) * 0.1), mass=1.0)
-        builder.add_shape_box(body=base, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
-        j_free = builder.add_joint_free(child=base)
+    base = builder.add_link(inertia=wp.mat33(np.eye(3) * 0.1), mass=1.0)
+    builder.add_shape_box(body=base, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+    j_free = builder.add_joint_free(child=base)
 
-        child = builder.add_link(inertia=wp.mat33(np.eye(3) * 0.1), mass=1.0)
-        builder.add_shape_box(body=child, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
-        target_pos = wp.pi / 4.0
-        target_ke = 100.0
-        j_rev = builder.add_joint_revolute(
-            parent=base,
-            child=child,
-            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
-            child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
-            axis=wp.vec3(0.0, 0.0, 1.0),
-            target_pos=target_pos,
-            target_vel=0.0,
-            target_ke=target_ke,
-            target_kd=0.0,
-            armature=0.0,
-            limit_ke=0.0,
-            limit_kd=0.0,
-            actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
-        )
-        builder.add_articulation([j_free, j_rev])
-        builder.request_state_attributes("mujoco:qfrc_actuator")
+    child = builder.add_link(inertia=wp.mat33(np.eye(3) * 0.1), mass=1.0)
+    builder.add_shape_box(body=child, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+    target_pos = wp.pi / 4.0
+    target_ke = 100.0
+    j_rev = builder.add_joint_revolute(
+        parent=base,
+        child=child,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.5), wp.quat_identity()),
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        target_pos=target_pos,
+        target_vel=0.0,
+        target_ke=target_ke,
+        target_kd=0.0,
+        armature=0.0,
+        limit_ke=0.0,
+        limit_kd=0.0,
+        actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
+    )
+    builder.add_articulation([j_free, j_rev])
+    builder.request_state_attributes("mujoco:qfrc_actuator")
 
-        model = builder.finalize(device=device)
-        model.ground = False
+    model = builder.finalize(device=device)
+    model.ground = False
 
-        test.assertEqual(model.joint_dof_count, 7)
-        test.assertEqual(model.joint_coord_count, 8)
+    test.assertEqual(model.joint_dof_count, 7)
+    test.assertEqual(model.joint_coord_count, 8)
 
-        solver = solver_fn(model)
-        if not isinstance(solver, newton.solvers.SolverMuJoCo):
-            test.skipTest("qfrc_actuator-based check is MuJoCo-specific")
+    solver = solver_fn(model)
+    if not isinstance(solver, newton.solvers.SolverMuJoCo):
+        test.skipTest("qfrc_actuator-based check is MuJoCo-specific")
 
-        state_0, state_1 = model.state(), model.state()
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-        control = model.control()
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    control = model.control()
 
-        solver.step(state_0, state_1, control, None, dt=0.01)
+    solver.step(state_0, state_1, control, None, dt=0.01)
 
-        qfrc = state_1.mujoco.qfrc_actuator.numpy()
-        applied = float(qfrc[6])
-        expected = target_ke * target_pos
-        test.assertAlmostEqual(
-            applied,
-            expected,
-            delta=expected * 0.1,
-            msg=f"expected ~{expected:.2f}, got {applied:.4f} (coord_layout={coord_layout})",
-        )
-    finally:
-        newton.use_coord_layout_targets = prev_flag
+    qfrc = state_1.mujoco.qfrc_actuator.numpy()
+    applied = float(qfrc[6])
+    expected = target_ke * target_pos
+    test.assertAlmostEqual(
+        applied,
+        expected,
+        delta=expected * 0.1,
+        msg=f"expected ~{expected:.2f}, got {applied:.4f}",
+    )
 
 
 def test_effort_limit_clamping(
@@ -724,15 +621,13 @@ for device in devices:
                 solver_fn=solver_fn,
             )
         if solver_name in ("mujoco_cpu", "mujoco_warp"):
-            for layout_name, layout_value in (("dof_layout", False), ("coord_layout", True)):
-                add_function_test(
-                    TestJointController,
-                    f"test_free_plus_revolute_position_target_{layout_name}_{solver_name}",
-                    test_free_plus_revolute_position_target,
-                    devices=[device],
-                    solver_fn=solver_fn,
-                    coord_layout=layout_value,
-                )
+            add_function_test(
+                TestJointController,
+                f"test_free_plus_revolute_position_target_{solver_name}",
+                test_free_plus_revolute_position_target,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
 
         # Revolute joint tests
         add_function_test(
@@ -763,99 +658,8 @@ for device in devices:
         )
 
         if solver_name == "mujoco_cpu" or solver_name == "mujoco_warp":
-            # Ball joint tests
-            # Test 1: Position control - rotation around Z axis
-            add_function_test(
-                TestJointController,
-                f"test_ball_joint_controller_position_target_z_{solver_name}",
-                test_ball_controller,
-                devices=[device],
-                solver_fn=solver_fn,
-                pos_target_vals=[0.0, 0.0, wp.pi / 2.0],  # Rotate 90 degrees around Z
-                vel_target_vals=[0.0, 0.0, 0.0],
-                expected_quat=[0.0, 0.0, 0.7071068, 0.7071068],  # quat for 90 deg around Z
-                expected_vel=[0.0, 0.0, 0.0],
-                target_ke=2000.0,
-                target_kd=500.0,
-            )
-
-            # Test 2: Position control - rotation around X axis
-            add_function_test(
-                TestJointController,
-                f"test_ball_joint_controller_position_target_x_{solver_name}",
-                test_ball_controller,
-                devices=[device],
-                solver_fn=solver_fn,
-                pos_target_vals=[wp.pi / 2.0, 0.0, 0.0],  # Rotate 90 degrees around X
-                vel_target_vals=[0.0, 0.0, 0.0],
-                expected_quat=[0.7071068, 0.0, 0.0, 0.7071068],  # quat for 90 deg around X
-                expected_vel=[0.0, 0.0, 0.0],
-                target_ke=2000.0,
-                target_kd=500.0,
-            )
-
-            # Test 3: Position control - rotation around Y axis
-            add_function_test(
-                TestJointController,
-                f"test_ball_joint_controller_position_target_y_{solver_name}",
-                test_ball_controller,
-                devices=[device],
-                solver_fn=solver_fn,
-                pos_target_vals=[0.0, wp.pi / 2.0, 0.0],  # Rotate 90 degrees around Y
-                vel_target_vals=[0.0, 0.0, 0.0],
-                expected_quat=[0.0, 0.7071068, 0.0, 0.7071068],  # quat for 90 deg around Y
-                expected_vel=[0.0, 0.0, 0.0],
-                target_ke=2000.0,
-                target_kd=500.0,
-            )
-
-            # Test 4: Velocity control - angular velocity around Z axis
-            add_function_test(
-                TestJointController,
-                f"test_ball_joint_controller_velocity_target_z_{solver_name}",
-                test_ball_controller,
-                devices=[device],
-                solver_fn=solver_fn,
-                pos_target_vals=[0.0, 0.0, 0.0],
-                vel_target_vals=[0.0, 0.0, wp.pi / 2.0],  # Angular velocity around Z
-                expected_quat=None,  # Don't check position for velocity control
-                expected_vel=[0.0, 0.0, wp.pi / 2.0],
-                target_ke=0.0,
-                target_kd=500.0,
-            )
-
-            # Test 5: Velocity control - angular velocity around X axis
-            add_function_test(
-                TestJointController,
-                f"test_ball_joint_controller_velocity_target_x_{solver_name}",
-                test_ball_controller,
-                devices=[device],
-                solver_fn=solver_fn,
-                pos_target_vals=[0.0, 0.0, 0.0],
-                vel_target_vals=[wp.pi / 2.0, 0.0, 0.0],  # Angular velocity around X
-                expected_quat=None,
-                expected_vel=[wp.pi / 2.0, 0.0, 0.0],
-                target_ke=0.0,
-                target_kd=500.0,
-            )
-
-            # Test 6: Velocity control - angular velocity around Y axis
-            add_function_test(
-                TestJointController,
-                f"test_ball_joint_controller_velocity_target_y_{solver_name}",
-                test_ball_controller,
-                devices=[device],
-                solver_fn=solver_fn,
-                pos_target_vals=[0.0, 0.0, 0.0],
-                vel_target_vals=[0.0, wp.pi / 2.0, 0.0],  # Angular velocity around Y
-                expected_quat=None,
-                expected_vel=[0.0, wp.pi / 2.0, 0.0],
-                target_ke=0.0,
-                target_kd=500.0,
-            )
-
-            # Coord layout: target quaternion must be converted to axis-angle
-            # before being fed to MuJoCo position actuators on a ball joint.
+            # The target quaternion must be converted to axis-angle before
+            # being fed to MuJoCo position actuators on a ball joint.
             for axis_name, axis_angle, quat in (
                 ("z", [0.0, 0.0, wp.pi / 2.0], [0.0, 0.0, 0.7071068, 0.7071068]),
                 ("x", [wp.pi / 2.0, 0.0, 0.0], [0.7071068, 0.0, 0.0, 0.7071068]),
@@ -863,25 +667,47 @@ for device in devices:
             ):
                 add_function_test(
                     TestJointController,
-                    f"test_ball_joint_controller_coord_layout_{axis_name}_{solver_name}",
-                    test_ball_controller_coord_layout,
+                    f"test_ball_joint_controller_position_target_{axis_name}_{solver_name}",
+                    test_ball_controller,
                     devices=[device],
                     solver_fn=solver_fn,
                     target_axis_angle=axis_angle,
+                    vel_target_vals=[0.0, 0.0, 0.0],
                     expected_quat=quat,
+                    expected_vel=[0.0, 0.0, 0.0],
                     target_ke=2000.0,
                     target_kd=500.0,
                 )
 
-            # Coord layout with non-identity child_xform.rot: targets in Newton's
-            # parent anchor frame must be conjugated by q_cj before reaching MuJoCo.
+            # Velocity control: per-axis angular velocity targets.
+            for axis_name, vel in (
+                ("z", [0.0, 0.0, wp.pi / 2.0]),
+                ("x", [wp.pi / 2.0, 0.0, 0.0]),
+                ("y", [0.0, wp.pi / 2.0, 0.0]),
+            ):
+                add_function_test(
+                    TestJointController,
+                    f"test_ball_joint_controller_velocity_target_{axis_name}_{solver_name}",
+                    test_ball_controller,
+                    devices=[device],
+                    solver_fn=solver_fn,
+                    target_axis_angle=[0.0, 0.0, 0.0],
+                    vel_target_vals=vel,
+                    expected_quat=None,
+                    expected_vel=vel,
+                    target_ke=0.0,
+                    target_kd=500.0,
+                )
+
+            # Non-identity child_xform.rot: targets in Newton's parent anchor
+            # frame must be conjugated by q_cj before reaching MuJoCo.
             # Use a child anchor rotated 30° around Y so the conjugation is non-trivial
             # and the target axis (X or Z) doesn't commute with it.
             child_rot_y30 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 6.0)
             add_function_test(
                 TestJointController,
-                f"test_ball_joint_controller_coord_layout_rotated_anchor_pos_{solver_name}",
-                test_ball_controller_coord_layout_rotated_anchor,
+                f"test_ball_joint_controller_rotated_anchor_pos_{solver_name}",
+                test_ball_controller_rotated_anchor,
                 devices=[device],
                 solver_fn=solver_fn,
                 child_rot=child_rot_y30,
@@ -891,19 +717,24 @@ for device in devices:
                 target_ke=2000.0,
                 target_kd=500.0,
             )
-            add_function_test(
-                TestJointController,
-                f"test_ball_joint_controller_coord_layout_rotated_anchor_vel_{solver_name}",
-                test_ball_controller_coord_layout_rotated_anchor,
-                devices=[device],
-                solver_fn=solver_fn,
-                child_rot=child_rot_y30,
-                target_axis_angle=[0.0, 0.0, 0.0],
-                expected_quat=None,
-                expected_vel=[wp.pi / 2.0, 0.0, 0.0],
-                target_ke=0.0,
-                target_kd=500.0,
-            )
+            for vel_axis_name, vel in (
+                ("x", [wp.pi / 2.0, 0.0, 0.0]),
+                ("y", [0.0, wp.pi / 2.0, 0.0]),
+                ("z", [0.0, 0.0, wp.pi / 2.0]),
+            ):
+                add_function_test(
+                    TestJointController,
+                    f"test_ball_joint_controller_rotated_anchor_vel_{vel_axis_name}_{solver_name}",
+                    test_ball_controller_rotated_anchor,
+                    devices=[device],
+                    solver_fn=solver_fn,
+                    child_rot=child_rot_y30,
+                    target_axis_angle=[0.0, 0.0, 0.0],
+                    expected_quat=None,
+                    expected_vel=vel,
+                    target_ke=0.0,
+                    target_kd=500.0,
+                )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

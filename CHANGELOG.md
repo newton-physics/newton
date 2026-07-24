@@ -65,6 +65,11 @@
 - Deprecate `SensorTiledCamera(..., config=...)` in favor of `SensorTiledCamera(..., default_render_config=...)`; migrate constructor calls that pass a render config to the new keyword.
 - Deprecate `SensorTiledCamera.render_config` in favor of `SensorTiledCamera.default_render_config`; migrate `sensor.render_config.enable_shadows = True` to `sensor.default_render_config.enable_shadows = True`.
 - Deprecate `SensorTiledCamera.utils.compute_pinhole_camera_rays()` in favor of `SensorTiledCamera.utils.compute_camera_rays_pinhole()`.
+- Deprecate the legacy DOF-shaped `joint_target_q` layout (`newton.use_coord_layout_targets = False`) for models whose joint coordinate and DOF counts differ (free/ball/distance joints); `ModelBuilder.finalize()` now emits a `DeprecationWarning` for such models. Set `newton.use_coord_layout_targets = True` before building models and index targets via `Model.joint_target_q_start`. A future release will make the coordinate layout the only layout and remove the flag.
+
+### Removed
+
+- Remove the deprecated `joint_target_pos` / `joint_target_vel` aliases from `Model`, `Control`, and `ModelBuilder` (deprecated in 1.3.0); use `joint_target_q` / `joint_target_qd` instead. `Actuator` now always defaults `control_target_pos_attr` / `control_target_vel_attr` to the canonical `joint_target_q` / `joint_target_qd` names.
 
 ### Removed
 
@@ -96,6 +101,7 @@
 - Fix `FastKitchenG1` ASV metrics to build the kitchen scene instead of a plain G1 model.
 - Fix the `diffsim_bear` example crashing with its default CUDA configuration and diverging after a few training iterations.
 - Fix masked PID state reset to execute on the integral-state device. (#3447)
+- Fix `eval_inverse_dynamics_passive()` reading past a DOF-sized scratch buffer under `newton.use_coord_layout_targets = True`, producing intermittent NaNs for models with free, ball, or distance joints.
 - Reject invalid hollow primitive shell thickness before computing inertia.
 - Fix `ModelBuilder.add_mjcf()` ignoring positive explicit mass on mesh geoms. (#3595)
 - Preserve muscles and rigid-body color groups when copying or replicating a `ModelBuilder`.

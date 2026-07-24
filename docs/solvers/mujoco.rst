@@ -405,7 +405,7 @@ angular axis behaves as a revolute closure and three as a ball closure;
 any other configuration is skipped.
 
 Only the kinematic coupling implied by the joint type is enforced. Any
-drive (``joint_target_pos`` / ``joint_target_vel``, PD gains,
+drive (``joint_target_q`` / ``joint_target_qd``, PD gains,
 ``control.joint_f``), joint limits, armature, friction, and
 effort/velocity limits authored on the loop-closing joint are **ignored**
 by :class:`~newton.solvers.SolverMuJoCo`. Loop-joint DOFs and coordinates

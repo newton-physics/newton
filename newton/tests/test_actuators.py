@@ -2146,7 +2146,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
 
 class TestTargetPosIndicesSeparation(unittest.TestCase):
-    """Actuator must read joint_target_pos via target_pos_indices, not pos_indices."""
+    """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
     def test_target_pos_read_from_dof_index_not_coord_index(self):
         device = wp.get_device()
@@ -2161,32 +2161,29 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (joint_target_pos layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
 
         ctrl = ControllerPD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
-        # This test deliberately exercises the legacy DOF-shaped target layout via
-        # the default attr resolution, which is deprecated and warns.
-        with self.assertWarns(DeprecationWarning):
-            actuator = Actuator(
-                indices=indices,
-                controller=ctrl,
-                pos_indices=pos_indices,
-                target_pos_indices=target_pos_indices,
-            )
+        actuator = Actuator(
+            indices=indices,
+            controller=ctrl,
+            pos_indices=pos_indices,
+            target_pos_indices=target_pos_indices,
+        )
 
         # joint_q is coord-shaped; actual position at coord index 3
         joint_q = _a([0.0, 0.0, 0.0, actual_pos])
         joint_qd = _a([0.0, 0.0])
-        # joint_target_pos padded to size 4 so both index 1 (correct) and
+        # joint_target_q padded to size 4 so both index 1 (correct) and
         # index 3 (sentinel) are reachable — lets us distinguish the two code paths
-        joint_target_pos = _a([0.0, correct_target, 0.0, sentinel])
-        joint_target_vel = _a([0.0, 0.0, 0.0, 0.0])
+        joint_target_q = _a([0.0, correct_target, 0.0, sentinel])
+        joint_target_qd = _a([0.0, 0.0, 0.0, 0.0])
         joint_f = wp.zeros(4, dtype=wp.float32, device=device)
 
         sim_state = types.SimpleNamespace(joint_q=joint_q, joint_qd=joint_qd)
         sim_control = types.SimpleNamespace(
-            joint_target_pos=joint_target_pos,
-            joint_target_vel=joint_target_vel,
+            joint_target_q=joint_target_q,
+            joint_target_qd=joint_target_qd,
             joint_act=None,
             joint_f=joint_f,
         )

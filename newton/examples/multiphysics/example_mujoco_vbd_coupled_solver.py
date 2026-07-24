@@ -99,6 +99,7 @@ def _launch_frame_graph(model: newton.Model, graph) -> bool:
 
 class Example:
     def __init__(self, viewer, args):
+        newton.use_coord_layout_targets = True
         self.args = args
         self.viewer = viewer
         self.sim_time = 0.0
