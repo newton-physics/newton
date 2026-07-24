@@ -10358,7 +10358,12 @@ class ModelBuilder:
             margin = self.shape_margin[i]
             gap = self.shape_gap[i]
             sdf_padding = self.shape_sdf_padding[i]
-            if self.shape_flags[i] & ShapeFlags.HYDROELASTIC and sdf_padding is not None and sdf_padding < margin + gap:
+            if (
+                self.shape_flags[i] & ShapeFlags.HYDROELASTIC
+                and self.shape_flags[i] & ShapeFlags.COLLIDE_SHAPES
+                and sdf_padding is not None
+                and sdf_padding < margin + gap
+            ):
                 raise ValueError(
                     f"Hydroelastic shape {i} requires sdf_padding >= margin + gap "
                     f"({margin + gap:.6g}), got {sdf_padding:.6g}."
@@ -11414,7 +11419,9 @@ class ModelBuilder:
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
                 sdf_tex_fmt = self.shape_sdf_texture_format[i]
                 sdf_padding = self.shape_sdf_padding[i]
-                is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
+                is_hydroelastic = bool(
+                    shape_flags & ShapeFlags.HYDROELASTIC and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                )
                 required_sdf_padding = shape_gap + self.shape_margin[i] if is_hydroelastic else shape_gap
                 if sdf_padding is not None and is_hydroelastic and sdf_padding < required_sdf_padding:
                     raise ValueError(
@@ -11461,6 +11468,12 @@ class ModelBuilder:
                             deferred_collision_edges[i] = deferred_collision_edges_cache[deferred_key]
                     if mesh_sdf is not None:
                         construction_padding = getattr(mesh_sdf, "_construction_padding", None)
+                        if is_hydroelastic and mesh_sdf.texture_data is not None and construction_padding is None:
+                            raise ValueError(
+                                f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
+                                "Recreate it with SDF.create_from_data(construction_padding=margin + gap), "
+                                "or rebuild it with Mesh.build_sdf(margin=margin + gap)."
+                            )
                         if (
                             is_hydroelastic
                             and construction_padding is not None

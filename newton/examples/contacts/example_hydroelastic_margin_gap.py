@@ -32,6 +32,7 @@ class Example:
         self.sphere_radius = 0.3
         self.margin_sum = 0.2
         self.gap_sum = 0.16
+        self.saw_no_contact = False
         self.saw_speculative_contact = False
         self.saw_penetrating_contact = False
 
@@ -81,6 +82,27 @@ class Example:
             ),
         )
         self.contacts = self.collision_pipeline.contacts()
+        guide_half_width = 0.65
+        guide_starts = []
+        guide_ends = []
+        guide_colors = []
+        for height, color in (
+            (self.box_half_height + self.margin_sum, (0.2, 0.9, 0.2)),
+            (self.box_half_height + self.margin_sum + self.gap_sum, (0.9, 0.7, 0.1)),
+        ):
+            corners = (
+                (-guide_half_width, -guide_half_width, height),
+                (guide_half_width, -guide_half_width, height),
+                (guide_half_width, guide_half_width, height),
+                (-guide_half_width, guide_half_width, height),
+            )
+            for index in range(4):
+                guide_starts.append(corners[index])
+                guide_ends.append(corners[(index + 1) % 4])
+                guide_colors.append(color)
+        self.guide_starts = wp.array(guide_starts, dtype=wp.vec3)
+        self.guide_ends = wp.array(guide_ends, dtype=wp.vec3)
+        self.guide_colors = wp.array(guide_colors, dtype=wp.vec3)
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         self.viewer.set_model(self.model)
@@ -104,6 +126,7 @@ class Example:
     def _record_contact_bands(self):
         count = int(self.contacts.rigid_contact_count.numpy()[0])
         if count == 0:
+            self.saw_no_contact = True
             return
 
         point0 = self.contacts.rigid_contact_point0.numpy()[:count]
@@ -136,6 +159,13 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.log_hydro_contact_surface(self.collision_pipeline.hydroelastic_sdf.get_contact_surface())
+        self.viewer.log_lines(
+            "/contact_band_guides",
+            self.guide_starts,
+            self.guide_ends,
+            self.guide_colors,
+            0.01,
+        )
         self.viewer.end_frame()
 
     def test_final(self):
@@ -143,6 +173,7 @@ class Example:
         sphere_z = float(self.state_0.body_q.numpy()[self.sphere_body, 2])
         real_surface_separation = sphere_z - self.sphere_radius - self.box_half_height
 
+        assert self.saw_no_contact, "Sphere never started outside the hydroelastic contact envelope."
         assert self.saw_speculative_contact, "Sphere never produced a speculative hydroelastic contact."
         assert self.saw_penetrating_contact, "Sphere never activated a hydroelastic contact."
         assert abs(real_surface_separation - self.margin_sum) < 0.06, (

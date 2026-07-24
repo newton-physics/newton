@@ -391,6 +391,10 @@ selected raw face's position, normal, pair separation, geometric area, and
 local activation stiffness. Normal matching and synthetic center-of-pressure
 anchors apply only to penetrating contacts.
 
+Use a disjoint reduction-key namespace for speculative candidates. This keeps
+their geometric selection bounded without letting them compete for
+penetrating winner slots or contribute to penetrating aggregates.
+
 This stronger invariant makes it impossible for reduction to move a
 speculative representative into the margin regime. Do not clamp its
 separation, copy an aggregate penetrating depth onto it, rotate its normal, or

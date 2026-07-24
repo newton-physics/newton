@@ -101,6 +101,55 @@ def test_hydroelastic_sdf_padding_covers_margin_and_gap(test, device):
         builder.finalize(device=device)
 
 
+def test_particle_only_hydroelastic_shape_ignores_sdf_padding(test, device):
+    """Allow unused SDF padding when hydroelastic shape collisions are disabled."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(
+        body=-1,
+        hx=0.5,
+        hy=0.5,
+        hz=0.5,
+        cfg=newton.ModelBuilder.ShapeConfig(
+            is_hydroelastic=True,
+            has_shape_collision=False,
+            margin=0.2,
+            gap=0.1,
+            sdf_padding=0.0,
+        ),
+    )
+
+    builder.finalize(device=device)
+
+
+def test_hydroelastic_attached_sdf_requires_padding_metadata(test, device):
+    """Reject hydroelastic texture SDF data with unknown construction padding."""
+    mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    mesh.build_sdf(max_resolution=32, margin=0.3)
+    mesh.sdf = newton.SDF.create_from_data(texture_data=mesh.sdf.texture_data)
+
+    builder = newton.ModelBuilder()
+    builder.add_shape_mesh(
+        body=-1,
+        mesh=mesh,
+        cfg=newton.ModelBuilder.ShapeConfig(
+            is_hydroelastic=True,
+            margin=0.2,
+            gap=0.1,
+        ),
+    )
+
+    with test.assertRaisesRegex(ValueError, "unknown construction padding"):
+        builder.finalize(device=device)
+
+
 def simulate(solver, model, state_0, state_1, control, contacts, collision_pipeline, sim_dt, substeps):
     for _ in range(substeps):
         state_0.clear_forces()
@@ -193,7 +242,7 @@ def build_stacked_cubes_scene(
         )
 
     # Hydroelastic without contact reduction can generate many contacts
-    rigid_contact_max = 6000 if not reduce_contacts else 100
+    rigid_contact_max = 6000 if not reduce_contacts else 200
 
     collision_pipeline = newton.CollisionPipeline(
         model,
@@ -672,6 +721,64 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
         test.assertTrue(np.all(stiffness > 0.0))
         if expected_distance >= 0.0:
             test.assertTrue(np.all(distances >= -tolerance))
+
+
+def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
+    """Keep speculative contacts inactive until they enter the margin band."""
+    model, state_0, body_b = _build_margin_gap_boxes(device)
+    state_1 = model.state()
+    control = model.control()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        rigid_contact_max=20000,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(
+            reduce_contacts=True,
+            buffer_fraction=1.0,
+        ),
+    )
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverMuJoCo(
+        model,
+        use_mujoco_contacts=False,
+        solver="newton",
+        nconmax=20000,
+        njmax=20000,
+    )
+
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state_0.body_q, body_b, 1.16],
+        device=device,
+    )
+    pipeline.collide(state_0, contacts)
+    test.assertTrue(np.all(_get_contact_distances(contacts, model, state_0) >= 0.0))
+    solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
+
+    nacon = int(solver.mjw_data.nacon.numpy()[0])
+    test.assertGreater(nacon, 0)
+    speculative_dist = solver.mjw_data.contact.dist.numpy().reshape(-1)[:nacon]
+    speculative_efc = solver.mjw_data.contact.efc_address.numpy()[:nacon]
+    test.assertTrue(np.all(speculative_dist >= 0.0))
+    test.assertTrue(np.all(speculative_efc == -1))
+
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state_0.body_q, body_b, 1.08],
+        device=device,
+    )
+    pipeline.collide(state_0, contacts)
+    test.assertTrue(np.any(_get_contact_distances(contacts, model, state_0) < 0.0))
+    solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
+
+    nacon = int(solver.mjw_data.nacon.numpy()[0])
+    active_efc = solver.mjw_data.contact.efc_address.numpy()[:nacon]
+    active_solref = solver.mjw_data.contact.solref.numpy().reshape(-1, 2)[:nacon]
+    test.assertTrue(np.any(active_efc >= 0))
+    test.assertTrue(np.all(np.isfinite(active_solref)))
+    test.assertTrue(np.all(active_solref[:, 0] > 0.0))
 
 
 def test_reduced_vs_unreduced_contact_forces(test, device, anchor_contact=False):
@@ -1714,6 +1821,20 @@ add_function_test(
 
 add_function_test(
     TestHydroelastic,
+    "test_particle_only_hydroelastic_shape_ignores_sdf_padding",
+    test_particle_only_hydroelastic_shape_ignores_sdf_padding,
+    devices=["cpu"],
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_hydroelastic_attached_sdf_requires_padding_metadata",
+    test_hydroelastic_attached_sdf_requires_padding_metadata,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
     "test_hydroelastic_margin_gap_bands_reduced",
     test_hydroelastic_margin_gap_bands,
     devices=cuda_devices,
@@ -1726,6 +1847,13 @@ add_function_test(
     test_hydroelastic_margin_gap_bands,
     devices=cuda_devices,
     reduce_contacts=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_mujoco_warp_hydroelastic_speculative_activation",
+    test_mujoco_warp_hydroelastic_speculative_activation,
+    devices=cuda_devices,
 )
 
 add_function_test(
