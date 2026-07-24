@@ -16,10 +16,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Generic
 
+import numpy as np
 import warp as wp
 
 from .....core.types import override
 from . import conjugate, factorize
+from .conjugate_fused import MAX_BLOCKS_PER_ROW, build_row_index, build_transpose_index, make_fused_cr_kernel
 from .core import DenseLinearOperatorData, DenseSquareMultiLinearInfo, make_dtype_tolerance
 from .sparse_matrix import (
     BlockSparseMatrices,
@@ -36,6 +38,7 @@ from .types import IndexType, ScalarType
 __all__ = [
     "ConjugateGradientSolver",
     "ConjugateResidualSolver",
+    "ConjugateResidualSolverFused",
     "DirectSolver",
     "LLTBlockedSolver",
     "LLTSequentialSolver",
@@ -430,6 +433,13 @@ class IterativeSolver(LinearSolver[ScalarType, IndexType]):
 
     def get_solve_metadata(self) -> dict[str, Any]:
         return {"iterations": self._solve_iterations, "residual_norm": self._solve_residual_norm}
+
+    def prepare_step(self) -> None:
+        """Hook run once per sim step before the (possibly graph-captured) solve loop.
+
+        Raw-Jacobian solvers override this to rebuild their per-step index structures outside the
+        captured loop. The default is a no-op so callers can invoke it unconditionally.
+        """
 
     def _update_sparse_bsm(self) -> None:
         """Updates the block-sparse matrix from the dense operator. Called during compute()."""
@@ -955,11 +965,313 @@ class ConjugateResidualSolver(IterativeSolver[ScalarType, IndexType]):
         )
 
 
+class ConjugateResidualSolverFused(IterativeSolver):
+    """Single-kernel sparse Conjugate Residual solver for the matrix-free Delassus operator.
+
+    Unlike :class:`ConjugateResidualSolver` (a multi-launch CR loop over the operator's ``matvec``),
+    this runs the whole CR iteration -- the ``A = P J M⁻¹ Jᵀ P + diag(eta)`` products and all vector
+    updates -- in one Warp tile-block per world, reading the raw constraint Jacobian directly and
+    applying ``P`` and ``M⁻¹`` on the fly (no ``P J M⁻¹`` or ``(P J)ᵀ`` value copy is materialized;
+    the only auxiliary data are ``int32`` index arrays).
+
+    Requires a :class:`.delassus.BlockSparseMatrixFreeDelassusOperator`.
+    """
+
+    # Signals the matrix-free operator to skip assembling its P·J·M⁻¹ / column-major copies, since
+    # this solver consumes the raw Jacobian directly (see BlockSparseMatrixFreeDelassusOperator).
+    uses_raw_jacobian: bool = True
+
+    def __init__(self, block_dim: int = 128, **kwargs: dict[str, Any]):
+        self._delassus_op = None
+        if int(block_dim) <= 0:
+            raise ValueError("ConjugateResidualSolverFused requires block_dim > 0.")
+        # Threads per block (one block solves one world). 128 (four warps) is the measured sweet
+        # spot for the dr_legs workload: faster than 64 (more warps hide matvec memory latency) and
+        # than 256 (which over-subscribes and loses occupancy).
+        self._block_dim = int(block_dim)
+        super().__init__(**kwargs)
+
+    @override
+    def finalize(self, operator, maxiter=None, world_active=None, preconditioner=None, **kwargs) -> None:
+        # Skip IterativeSolver.finalize's batched-operator construction (which would require the
+        # operator's assembled block-sparse copy): this solver needs only the raw operator.
+        from ..dynamics.delassus import BlockSparseMatrixFreeDelassusOperator  # noqa: PLC0415
+
+        if not isinstance(operator, BlockSparseMatrixFreeDelassusOperator):
+            raise ValueError("ConjugateResidualSolverFused requires a BlockSparseMatrixFreeDelassusOperator.")
+
+        self._delassus_op = operator
+        self._operator = None
+        self._dtype = wp.float32
+        if maxiter is not None:
+            self._maxiter = maxiter
+        if world_active is not None:
+            self._world_active = world_active
+        if preconditioner is not None:
+            self._preconditioner = preconditioner
+        if self._preconditioner is not None:
+            # The fused kernel applies the operator's dual preconditioner inline; a solver-side
+            # preconditioner (e.g. "jacobi") has no effect here, so reject it instead of ignoring it.
+            raise ValueError("ConjugateResidualSolverFused does not support a solver-side preconditioner.")
+
+        n_worlds = operator._model.size.num_worlds
+        with wp.ScopedDevice(operator.device):
+            if self._world_active is None:
+                self._world_active = wp.full(n_worlds, True, dtype=wp.bool)
+            if self._maxiter is None:
+                self._maxiter = wp.full(n_worlds, int(operator._model.size.max_of_max_total_cts), dtype=wp.int32)
+            elif isinstance(self._maxiter, int):
+                self._maxiter = wp.full(n_worlds, self._maxiter, dtype=wp.int32)
+
+        self._solve_iterations = None
+        self._solve_residual_norm = None
+        self._allocate_impl(operator, **kwargs)
+
+    @override
+    def _allocate_impl(self, operator, **kwargs: dict[str, Any]) -> None:
+        op = operator
+        model = op._model
+        device = op.device
+        self._device = device
+
+        n_worlds = model.size.num_worlds
+        max_rows = int(model.size.max_of_max_total_cts)
+        # Pad the logical row count to a multiple of block_dim so the scatter tile divides evenly.
+        self._max_rows = ((max_rows + self._block_dim - 1) // self._block_dim) * self._block_dim
+        self._max_cols = 6 * int(model.size.max_of_num_bodies)
+        self._max_major_cols = max(1, int(model.size.max_of_num_bodies))
+        self._total_rows = int(model.size.sum_of_max_total_cts)
+
+        cj = op.constraint_jacobian
+        self._total_nnz = int(cj.nzb_values.shape[0])
+        self._max_of_num_nzb = int(cj.max_of_num_nzb)
+        # row_blk packs the body index into the block id's high bits (gb in low 24 bits); guard the range assumptions.
+        if self._total_nnz >= (1 << 24):
+            raise ValueError(f"fused CR row-block packing needs total_nnz < 2^24, got {self._total_nnz}.")
+        if int(model.size.max_of_num_bodies) >= (1 << 7):
+            raise ValueError("fused CR row-block packing needs max bodies/world < 128.")
+
+        self._kernel = make_fused_cr_kernel(self._max_rows, self._max_cols, MAX_BLOCKS_PER_ROW, self._block_dim)
+
+        with wp.ScopedDevice(device):
+            self._row_blk = wp.empty((self._total_rows, MAX_BLOCKS_PER_ROW), dtype=wp.int32)
+            self._slot_count = wp.empty((self._total_rows,), dtype=wp.int32)
+            self._sort_key = wp.empty((max(2 * self._total_nnz, 2),), dtype=wp.int32)
+            self._sort_val = wp.empty((max(2 * self._total_nnz, 2),), dtype=wp.int32)
+            # Column-sorted block rows for the transpose gather, refilled each step (see
+            # build_transpose_index): lets the transpose hot loop read row_idx_sorted[idx]
+            # sequentially instead of chasing the scattered block id nzb_coords[sort_val[idx], 0].
+            self._row_idx_sorted = wp.empty((max(2 * self._total_nnz, 2),), dtype=wp.int32)
+            self._seg_end = wp.empty((n_worlds,), dtype=wp.int32)
+            self._cursor = wp.empty((n_worlds, self._max_major_cols), dtype=wp.int32)
+            self._iters = wp.zeros((n_worlds,), dtype=wp.int32)
+            self._resid = wp.zeros((n_worlds,), dtype=wp.float32)
+            bodies_offset = model.info.bodies_offset.numpy()
+            self._nbd = wp.array((np.diff(bodies_offset) * 6).astype(np.int32), dtype=wp.int32)
+            self._precond_dummy = wp.zeros((1,), dtype=wp.float32)
+            # Full-length zero eta fallback (the fused kernel reads eta[voff + row] for every active row).
+            self._eta_dummy = wp.zeros((self._total_rows,), dtype=wp.float32)
+        # Combined regularization, refreshed together with the index structures (see _solve_impl).
+        self._cached_eta = self._eta_dummy
+
+        # Per-world stopping controls are read in the kernel as device arrays so per-world or
+        # PADMM-adaptive (``linear_solver_atol``) tolerances are honored rather than scalarized.
+        # ``self.atol``/``self.rtol`` may be a wp.array (used directly, contents read live each solve),
+        # a scalar, or None; scalars/None materialize into these cached fallback arrays (see _solve_impl).
+        self._atol_arr = wp.full(n_worlds, 1e-8, dtype=wp.float32, device=device)
+        self._rtol_arr = wp.full(n_worlds, 1e-8, dtype=wp.float32, device=device)
+
+    @override
+    def _reset_impl(self, A: wp.array | None = None, **kwargs: dict[str, Any]) -> None:
+        self._solve_iterations = None
+        self._solve_residual_norm = None
+
+    @override
+    def _compute_impl(self, A: wp.array | None = None, **kwargs: dict[str, Any]) -> None:
+        # Matrix-free: nothing to precompute; the index structures are rebuilt per solve.
+        pass
+
+    @override
+    def _solve_inplace_impl(self, x: wp.array, **kwargs: dict[str, Any]) -> None:
+        self._solve_impl(x, x, **kwargs)
+
+    def _refresh_combined_regularization(self, op) -> wp.array:
+        # Mirror BlockSparseMatrixFreeDelassusOperator.update()'s regularization step (eta plus
+        # armature) without assembling any Jacobian copy. Uses the raw Jacobian's row_start.
+        if op._combined_regularization is None:
+            return op._eta
+
+        from ..dynamics.delassus import (  # noqa: PLC0415
+            _add_armature_regularization_preconditioned_sparse,
+            _add_armature_regularization_sparse,
+        )
+
+        model = op._model
+        data = op._data
+        device = op.device
+        row_start = op.constraint_jacobian.row_start
+        if op._eta is not None:
+            wp.copy(op._combined_regularization, op._eta)
+        else:
+            op._combined_regularization.zero_()
+
+        if op._preconditioner is None:
+            wp.launch(
+                _add_armature_regularization_sparse,
+                dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
+                inputs=[
+                    model.info.num_joint_dynamic_cts,
+                    model.info.joint_dynamic_cts_offset,
+                    row_start,
+                    data.joints.inv_m_j,
+                ],
+                outputs=[op._combined_regularization],
+                device=device,
+            )
+        else:
+            wp.launch(
+                _add_armature_regularization_preconditioned_sparse,
+                dim=(op.num_matrices, model.size.max_of_num_dynamic_joint_cts),
+                inputs=[
+                    model.info.num_joint_dynamic_cts,
+                    model.info.joint_dynamic_cts_offset,
+                    data.joints.inv_m_j,
+                    row_start,
+                    op._preconditioner,
+                ],
+                outputs=[op._combined_regularization],
+                device=device,
+            )
+        return op._combined_regularization
+
+    def prepare_step(self) -> None:
+        """Rebuild the per-step index structures and combined regularization, if the operator was
+        marked changed since the last build.
+
+        The index structures and combined regularization depend only on the Jacobian sparsity and
+        the regularization -- both fixed across a sim step's PADMM iterations -- so this only does
+        work once per step (when ``_raw_jacobian_dirty`` is set). PADMM calls this *before* the
+        (possibly CUDA-graph-captured) iteration loop, keeping the build (which includes a segmented
+        sort) out of the replayed graph; ``_solve_impl`` also calls it as a lazy fallback.
+        """
+        op = self._delassus_op
+        if not (op._raw_jacobian_dirty or op._regularization_dirty):
+            return
+        device = op.device
+        cj = op.constraint_jacobian  # raw constraint Jacobian J (coordinate block-sparse)
+
+        # Regularization (eta) refresh is needed on either flag; it depends only on eta / armature /
+        # preconditioner, not on the Jacobian sparsity, so it never needs the index structures.
+        eta = self._refresh_combined_regularization(op)
+        self._cached_eta = eta if eta is not None else self._eta_dummy
+        op._regularization_dirty = False
+
+        # The index structures depend only on the Jacobian sparsity, so rebuild them (the segmented
+        # transpose sort is the expensive part) only when the structure actually changed.
+        if not op._raw_jacobian_dirty:
+            return
+        build_row_index(
+            num_nzb=cj.num_nzb,
+            nzb_start=cj.nzb_start,
+            nzb_coords=cj.nzb_coords,
+            row_offset=op._info.vio,
+            total_rows=self._total_rows,
+            max_of_num_nzb=self._max_of_num_nzb,
+            out_row_blk=self._row_blk,
+            out_slot_count=self._slot_count,
+            device=device,
+        )
+        build_transpose_index(
+            num_nzb=cj.num_nzb,
+            nzb_start=cj.nzb_start,
+            nzb_coords=cj.nzb_coords,
+            total_nnz=self._total_nnz,
+            max_of_num_nzb=self._max_of_num_nzb,
+            max_major_cols=self._max_major_cols,
+            out_sort_key=self._sort_key,
+            out_sort_val=self._sort_val,
+            out_seg_end=self._seg_end,
+            out_cursor=self._cursor,
+            out_row_idx_sorted=self._row_idx_sorted,
+            device=device,
+        )
+        op._raw_jacobian_dirty = False
+
+    @override
+    def _solve_impl(self, b: wp.array, x: wp.array, **kwargs: dict[str, Any]) -> None:
+        op = self._delassus_op
+        model = op._model
+        data = op._data
+        device = op.device
+        cj = op.constraint_jacobian  # raw constraint Jacobian J (coordinate block-sparse)
+
+        # Lazy fallback: build once per step if PADMM hasn't already done so before the loop.
+        self.prepare_step()
+
+        eta = self._cached_eta
+        use_precond = 1 if op._preconditioner is not None else 0
+        precond = op._preconditioner if op._preconditioner is not None else self._precond_dummy
+
+        # Resolve per-world stopping controls to device arrays. A wp.array (e.g. PADMM's adaptive
+        # ``linear_solver_atol``) is used directly so the kernel reads its live contents; a scalar
+        # is written into the cached fallback array; None keeps the 1e-8 default.
+        maxiter = self._maxiter
+        atol = self.atol if isinstance(self.atol, wp.array) else self._atol_arr
+        rtol = self.rtol if isinstance(self.rtol, wp.array) else self._rtol_arr
+        if isinstance(self.atol, (int, float)):
+            self._atol_arr.fill_(float(self.atol))
+        if isinstance(self.rtol, (int, float)):
+            self._rtol_arr.fill_(float(self.rtol))
+
+        wp.launch_tiled(
+            self._kernel,
+            dim=op.num_matrices,
+            inputs=[
+                op._info.dim,
+                self._nbd,
+                op._info.vio,
+                op._info.vio,
+                self._world_active,
+                cj.num_nzb,
+                cj.nzb_start,
+                cj.nzb_coords,
+                cj.nzb_values,
+                self._row_blk,
+                self._sort_key,
+                self._sort_val,
+                self._row_idx_sorted,
+                self._cursor,
+                model.bodies.inv_m_i,
+                data.bodies.inv_I_i,
+                model.info.bodies_offset,
+                precond,
+                use_precond,
+                eta,
+                b,
+                x,
+                maxiter,
+                atol,
+                rtol,
+            ],
+            outputs=[self._iters, self._resid],
+            block_dim=self._block_dim,
+            device=device,
+        )
+        self._solve_iterations = self._iters
+        self._solve_residual_norm = self._resid
+
+
 ###
 # Summary
 ###
 
-LinearSolverType = LLTSequentialSolver | LLTBlockedSolver | ConjugateGradientSolver | ConjugateResidualSolver
+LinearSolverType = (
+    LLTSequentialSolver
+    | LLTBlockedSolver
+    | ConjugateGradientSolver
+    | ConjugateResidualSolver
+    | ConjugateResidualSolverFused
+)
 """Type alias over all linear solvers."""
 
 LinearSolverTypeToName = {
@@ -967,6 +1279,7 @@ LinearSolverTypeToName = {
     LLTBlockedSolver: "LLTB",
     ConjugateGradientSolver: "CG",
     ConjugateResidualSolver: "CR",
+    ConjugateResidualSolverFused: "CRF",
 }
 
 LinearSolverNameToType = {
@@ -974,4 +1287,5 @@ LinearSolverNameToType = {
     "LLTB": LLTBlockedSolver,
     "CG": ConjugateGradientSolver,
     "CR": ConjugateResidualSolver,
+    "CRF": ConjugateResidualSolverFused,
 }
