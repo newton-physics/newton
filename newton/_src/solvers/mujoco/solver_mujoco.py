@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
+import math
 import os
 import re
 import sys
@@ -117,6 +118,42 @@ else:
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _finalize_dof_passive_damping(
+    builder: ModelBuilder, model: Model, custom_attr: ModelBuilder.CustomAttribute
+) -> None:
+    """Copy mjc:damping values parsed from USD into model.joint_damping."""
+    if not custom_attr.values:
+        return
+
+    updated_joint_damping = None
+    if isinstance(custom_attr.values, dict):
+        damping_items = custom_attr.values.items()
+    else:
+        damping_items = enumerate(custom_attr.values)
+
+    for index, value in damping_items:
+        if value is None:
+            continue
+        damping_index = int(index)
+        canonical_value = builder.joint_damping[damping_index]
+        if canonical_value == value:
+            continue
+
+        alias_value = float(value)
+        canonical_value = float(canonical_value)
+        if canonical_value != 0.0 and not math.isclose(canonical_value, alias_value, rel_tol=1e-05, abs_tol=1e-08):
+            raise ValueError(
+                "mjc:damping conflicts with an existing joint_damping value "
+                f"at DOF {damping_index}: {alias_value} != {canonical_value}."
+            )
+        if updated_joint_damping is None:
+            updated_joint_damping = list(builder.joint_damping)
+        updated_joint_damping[damping_index] = alias_value
+
+    if updated_joint_damping is not None:
+        model.joint_damping.assign(np.asarray(updated_joint_damping, dtype=np.float32))
 
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
@@ -953,6 +990,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 usd_attribute_name="mjc:stiffness",
                 mjcf_attribute_name="stiffness",
             )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                # mjc:damping is authored in SI units (N·m·s/rad for angular joints).
+                # The finalizer copies parsed values directly into model.joint_damping.
+                name="dof_passive_damping",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                usd_attribute_name="mjc:damping",
+            )
+        )
+        builder._add_custom_attribute_model_finalizer(
+            "mujoco:dof_passive_damping",
+            _finalize_dof_passive_damping,
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
