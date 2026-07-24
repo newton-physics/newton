@@ -156,7 +156,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples basic_dzhanibekov</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples load_usd &lt;file.usdz&gt;</code>
+      <code>python -m newton.examples load_usd &lt;path-to-usd-file&gt;</code>
     </td>
   </tr>
   <tr>
