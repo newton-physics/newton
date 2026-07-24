@@ -170,7 +170,7 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples load_usd &lt;file.usdz&gt;</code>
+      <code>python -m newton.examples load_usd &lt;path-to-usd-file&gt;</code>
     </td>
     <td></td>
     <td></td>

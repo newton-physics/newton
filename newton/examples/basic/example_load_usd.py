@@ -84,12 +84,23 @@ class Example:
             articulation.joint_q[base_q + _UP_AXIS_INDEX[args.up_axis]] += args.height
 
         # Hold the imported configuration with a PD drive so articulated robots
-        # stand instead of collapsing under gravity.
+        # stand instead of collapsing under gravity. Targets are in joint_q (coord)
+        # layout while gains are per-DOF, and the two diverge at free and ball
+        # joints, so walk the per-joint layout instead of one flat range. A free
+        # base is unactuated and is left undriven.
         if args.hold_pose:
-            for i in range(articulation.joint_dof_count):
-                articulation.joint_target_ke[i] = args.kp
-                articulation.joint_target_kd[i] = args.kd
-                articulation.joint_target_mode[i] = int(JointTargetMode.POSITION)
+            joint_count = len(articulation.joint_type)
+            for j in range(joint_count):
+                if articulation.joint_type[j] == newton.JointType.FREE:
+                    continue
+                q_end = articulation.joint_q_start[j + 1] if j + 1 < joint_count else articulation.joint_coord_count
+                for q in range(articulation.joint_q_start[j], q_end):
+                    articulation.joint_target_q[q] = articulation.joint_q[q]
+                d_end = articulation.joint_qd_start[j + 1] if j + 1 < joint_count else articulation.joint_dof_count
+                for d in range(articulation.joint_qd_start[j], d_end):
+                    articulation.joint_target_ke[d] = args.kp
+                    articulation.joint_target_kd[d] = args.kd
+                    articulation.joint_target_mode[d] = int(JointTargetMode.POSITION)
 
         builder = newton.ModelBuilder(up_axis=up_axis)
         for _ in range(args.world_count):
@@ -97,18 +108,28 @@ class Example:
         if args.ground:
             builder.add_ground_plane()
 
-        self.model = builder.finalize()
-        self.solver = _SOLVERS[args.solver](self.model)
+        # Build into locals so a failure part-way through leaves the instance on the
+        # previous scene, which is what _reload() reports when it catches.
+        model = builder.finalize()
+        solver = _SOLVERS[args.solver](model)
 
-        self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
-        self.control = self.model.control()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
 
         # Populate maximal-coordinate state from the imported joint configuration.
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+
+        self.model = model
+        self.solver = solver
+        self.state_0 = state_0
+        self.state_1 = state_1
+        self.control = control
+        self.collision_pipeline = collision_pipeline
+        self.contacts = contacts
 
         self.sim_time = 0.0
         self.current_path = path
