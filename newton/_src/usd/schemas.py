@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from ..core.types import override
 from ..usd.schema_resolver import PrimType, SchemaResolver, _reader_schema_attribute
 from . import utils as usd
+from ._missing_schema_fallbacks import _MJC_SCHEMA_FALLBACKS, _PHYSX_SCHEMA_FALLBACKS
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -334,6 +335,7 @@ class SchemaResolverPhysx(SchemaResolver):
     """
 
     name: ClassVar[str] = "physx"
+    _schema_fallbacks: ClassVar[dict[str, dict[str, Any]]] = _PHYSX_SCHEMA_FALLBACKS
     _use_legacy_unowned_defaults: ClassVar[bool] = False
     _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: {
@@ -543,6 +545,7 @@ class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
     name: ClassVar[str] = "mjc"
+    _schema_fallbacks: ClassVar[dict[str, dict[str, Any]]] = _MJC_SCHEMA_FALLBACKS
     _use_legacy_unowned_defaults: ClassVar[bool] = False
     _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {
         PrimType.SCENE: "MjcSceneAPI",

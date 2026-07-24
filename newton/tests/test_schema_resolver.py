@@ -102,6 +102,18 @@ class TestSchemaResolver(unittest.TestCase):
 
         self.assertEqual(_registered_attribute_fallbacks(PrimDefinition()), {"withFallback": 0.0})
 
+    def test_missing_schema_fallback_tables_are_complete(self):
+        for resolver_type in (SchemaResolverPhysx, SchemaResolverMjc):
+            resolver = resolver_type()
+            for prim_type, mapping in resolver.mapping.items():
+                for key, spec in mapping.items():
+                    schema_name = resolver._schema_name(prim_type, key)
+                    if schema_name is None:
+                        continue
+                    self.assertIn(schema_name, resolver._schema_fallbacks)
+                    for name in spec.attribute_names or (spec.name,):
+                        self.assertIn(name, resolver._schema_fallbacks[schema_name], f"{schema_name}:{name}")
+
     def test_schema_application_controls_fallback_ownership(self):
         stage = Usd.Stage.CreateInMemory()
         joint = UsdPhysics.RevoluteJoint.Define(stage, "/joint").GetPrim()
@@ -274,14 +286,18 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(builder.shape_material_kh[shape], 123.0)
 
     def test_applied_schema_fallbacks_follow_resolver_priority(self):
-        class PhysicsSceneResolver(SchemaResolver):
-            name = "physics"
-            _schema_names: ClassVar = {PrimType.SCENE: "PhysicsScene"}
+        class UnregisteredSceneResolver(SchemaResolver):
+            name = "unregistered"
+            _schema_names: ClassVar = {PrimType.SCENE: "UnregisteredSceneAPI"}
+            _schema_fallbacks: ClassVar = {
+                "UnregisteredSceneAPI": {
+                    "unregistered:gravityEnabled": False,
+                }
+            }
             mapping: ClassVar = {
                 PrimType.SCENE: {
                     "gravity_enabled": SchemaResolver.SchemaAttribute(
-                        "physics:gravityMagnitude",
-                        usd_value_transformer=math.isfinite,
+                        "unregistered:gravityEnabled",
                     )
                 }
             }
@@ -289,17 +305,24 @@ class TestSchemaResolver(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         scene = UsdPhysics.Scene.Define(stage, "/scene").GetPrim()
         scene.AddAppliedSchema("NewtonSceneAPI")
+        scene.AddAppliedSchema("UnregisteredSceneAPI")
 
-        physics_first = SchemaResolverManager([PhysicsSceneResolver(), SchemaResolverNewton()])
-        newton_first = SchemaResolverManager([SchemaResolverNewton(), PhysicsSceneResolver()])
+        unregistered_first = SchemaResolverManager([UnregisteredSceneResolver(), SchemaResolverNewton()])
+        newton_first = SchemaResolverManager([SchemaResolverNewton(), UnregisteredSceneResolver()])
 
-        self.assertFalse(physics_first._resolve_value(scene, PrimType.SCENE, "gravity_enabled").value)
+        self.assertFalse(unregistered_first._resolve_value(scene, PrimType.SCENE, "gravity_enabled").value)
         self.assertTrue(newton_first._resolve_value(scene, PrimType.SCENE, "gravity_enabled").value)
 
-    def test_unregistered_schema_uses_compatibility_fallback(self):
+    def test_unregistered_schema_fallback_precedes_importer_default(self):
         class UnregisteredResolver(SchemaResolver):
             name = "unregistered"
             _schema_names: ClassVar = {PrimType.JOINT: "UnregisteredJointAPI"}
+            _schema_fallbacks: ClassVar = {
+                "UnregisteredJointAPI": {
+                    "unregistered:armature": 9.0,
+                    "physics:lowerLimit": 8.0,
+                }
+            }
             mapping: ClassVar = {
                 PrimType.JOINT: {
                     "armature": SchemaResolver.SchemaAttribute("unregistered:armature", 9.0),
@@ -315,9 +338,9 @@ class TestSchemaResolver(unittest.TestCase):
             use_applied_schema_fallbacks=True,
         )
 
-        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=4.0), 4.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature", default=4.0), 9.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "armature"), 9.0)
-        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "lower_limit", default=4.0), 4.0)
+        self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "lower_limit", default=4.0), 8.0)
         self.assertEqual(resolver.get_value(joint, PrimType.JOINT, "lower_limit"), 8.0)
 
         unapplied = UsdPhysics.RevoluteJoint.Define(stage, "/unapplied").GetPrim()

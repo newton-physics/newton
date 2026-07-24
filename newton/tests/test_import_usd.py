@@ -3498,7 +3498,11 @@ def Xform "Articulation" (
         builder.default_joint_cfg.limit_ke = 4321.0
         builder.default_joint_cfg.limit_kd = 43.0
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        builder.add_usd(
+            stage,
+            schema_resolvers=[SchemaResolverMjc()],
+            use_applied_schema_fallbacks=True,
+        )
         model = builder.finalize()
 
         joint1_idx = model.joint_label.index("/Articulation/Joint1")
@@ -3535,7 +3539,7 @@ def Xform "Articulation" (
         self.assertEqual(int(solreflimit_mode[dof4]), SOLREF_MODE_RAW)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_unregistered_physx_limit_api_uses_importer_defaults(self):
+    def test_unregistered_physx_limit_api_uses_schema_defaults(self):
         from pxr import Usd
 
         from newton._src.usd.schemas import SchemaResolverPhysx  # noqa: PLC0415
@@ -3566,8 +3570,8 @@ def Xform "World" (prepend apiSchemas = ["PhysicsArticulationRootAPI"]) {
         model = builder.finalize()
         dof = int(model.joint_qd_start.numpy()[model.joint_label.index("/World/Joint")])
 
-        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 4321.0)
-        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 43.0)
+        self.assertEqual(float(model.joint_limit_ke.numpy()[dof]), 0.0)
+        self.assertEqual(float(model.joint_limit_kd.numpy()[dof]), 0.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreflimit_mode_respects_resolver_priority(self):

@@ -70,8 +70,7 @@ class SchemaResolver:
 
         Args:
             name: The name of the USD attribute (or primary attribute when using a getter).
-            default: Compatibility fallback used after importer defaults when no
-                registered schema fallback is available.
+            default: Legacy compatibility fallback used after importer defaults.
             usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
             usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
             attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
@@ -98,6 +97,8 @@ class SchemaResolver:
 
     # Applied or typed schema that owns each mapping entry.
     _schema_names: ClassVar[dict[PrimType, str | dict[str, str]]] = {}
+    # Raw fallbacks for schemas unavailable to USD's registry.
+    _schema_fallbacks: ClassVar[dict[str, dict[str, Any]]] = {}
     _use_legacy_unowned_defaults: ClassVar[bool] = True
 
     # extra_attr_namespaces is a list of additional USD attribute namespaces in which the schema attributes may be authored.
@@ -297,7 +298,7 @@ def _registered_attribute_fallbacks(prim_definition: Any) -> dict[str, Any]:
 
 
 class _SchemaResolution:
-    """Registered-schema resolution policy for one ordered resolver set."""
+    """Applied-schema resolution policy for one ordered resolver set."""
 
     def __init__(self, resolvers: Sequence[SchemaResolver]):
         self._resolvers = tuple(resolvers)
@@ -372,13 +373,14 @@ class SchemaResolverManager:
         Args:
             resolvers: List of instantiated resolvers in priority order.
             use_applied_schema_fallbacks: Use the owning applied schema's fallback
-                from USD's registered schema definition before importer defaults.
+                before importer defaults. Registered schema definitions supply
+                fallbacks when available; resolvers may supply them otherwise.
                 Defaults to False.
         """
         self.resolvers = list(resolvers)
         self._use_applied_schema_fallbacks = use_applied_schema_fallbacks
         self._resolution = _SchemaResolution(self.resolvers)
-        self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any]] = {}
+        self._registered_schema_fallbacks: dict[tuple[str, str], dict[str, Any] | None] = {}
         self._legacy_fallback_properties: set[str] = set()
         self._legacy_fallback_failures: set[str] = set()
 
@@ -627,13 +629,13 @@ class SchemaResolverManager:
         return self._resolution._resolve_value(
             read_from_prim if read_value is None else read_value,
             lambda resolver, key: resolver._schema_is_applied(prim, prim_type, key),
-            lambda resolver, key: self._registered_fallback(resolver, prim, prim_type, key),
+            lambda resolver, key: self._schema_fallback(resolver, prim, prim_type, key),
             prim_type,
             key,
             default=default,
         )
 
-    def _registered_fallback(
+    def _schema_fallback(
         self,
         resolver: SchemaResolver,
         prim: Usd.Prim,
@@ -660,9 +662,13 @@ class SchemaResolverManager:
                     if schema_definition is not None
                     else None
                 )
-            self._registered_schema_fallbacks[cache_key] = _registered_attribute_fallbacks(prim_definition)
+            self._registered_schema_fallbacks[cache_key] = (
+                _registered_attribute_fallbacks(prim_definition) if prim_definition is not None else None
+            )
 
         fallbacks = self._registered_schema_fallbacks[cache_key]
+        if fallbacks is None:
+            fallbacks = resolver._schema_fallbacks.get(schema_name, {})
         value = resolver._get_fallback_with_reader(
             lambda name: fallbacks.get(name, _MISSING_FALLBACK),
             prim_type,
