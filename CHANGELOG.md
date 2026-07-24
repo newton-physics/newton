@@ -4,7 +4,7 @@
 
 ### Added
 
-- Add `SolverXPBD.rigid_contact_restitution_iterations` to configure rigid restitution convergence; defaults to 2 contact-weighted Jacobi iterations, must be at least 1.
+- Add `SolverXPBD.rigid_contact_restitution_iterations` to configure rigid restitution convergence; defaults to 2 outer iterations, must be at least 1.
 - Add `forward_depth_image` output support to `SensorTiledCamera.update()` and `SensorTiledCamera.utils.create_forward_depth_image_output()` for native forward-depth rendering without post-processing `depth_image`.
 
 ### Changed

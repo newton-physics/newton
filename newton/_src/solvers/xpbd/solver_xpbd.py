@@ -141,8 +141,12 @@ class SolverXPBD(SolverBase, CouplingInterface):
             joint_angular_compliance: Compliance shared by angular joint constraints [rad/(N·m)]. Defaults to 0.0.
             rigid_contact_relaxation: Relaxation factor applied to rigid contact constraint corrections
                 [dimensionless]. Defaults to 0.8.
-            rigid_contact_restitution_iterations: Number of contact-weighted Jacobi iterations for rigid-body
-                restitution. Defaults to 2.
+            rigid_contact_restitution_iterations: Number of outer iterations of the rigid-body restitution
+                velocity solve. Each outer iteration solves every contact manifold (body pair) independently
+                with a fixed number of inner Gauss-Seidel sweeps, then couples manifolds by averaging the
+                resulting velocity changes per body, so values above 1 primarily matter when a body
+                participates in several manifolds (or when a large manifold leaves its inner sweeps
+                under-converged). Defaults to 2.
             rigid_contact_con_weighting: Whether to divide each rigid body's contact correction by its number of
                 active contacts. Defaults to ``True``.
             angular_damping: Rigid-body angular velocity damping coefficient [1/s]. Defaults to 0.0.
