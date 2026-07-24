@@ -6239,32 +6239,46 @@ class TestMuJoCoConversion(unittest.TestCase):
         )
 
     def test_per_world_mesh_selection_drives_contacts(self):
-        """Select precompiled mesh geometry independently in each MuJoCo-Warp world."""
-        small_mesh = newton.Mesh.create_box(0.2, 0.2, 0.2)
-        large_mesh = newton.Mesh.create_box(0.8, 0.8, 0.8)
-
-        world = newton.ModelBuilder()
-        world.add_shape_box(
-            body=-1,
-            xform=wp.transform(wp.vec3(0.7, 0.0, 0.0), wp.quat_identity()),
-            hx=0.1,
-            hy=0.1,
-            hz=0.1,
+        """Initialize each MuJoCo-Warp world from its Newton mesh shape."""
+        mesh_small = newton.Mesh.create_box(0.2, 0.2, 0.2)
+        mesh_large_centered = newton.Mesh.create_box(0.8, 0.5, 0.3)
+        angle = np.deg2rad(27.0)
+        rotation = np.array(
+            [
+                [np.cos(angle), -np.sin(angle), 0.0],
+                [np.sin(angle), np.cos(angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
         )
-        body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        joint = world.add_joint_free(child=body)
-        world.add_articulation([joint])
-        active_shape = world.add_shape_mesh(
-            body=body,
-            mesh=small_mesh,
-            cfg=newton.ModelBuilder.ShapeConfig(density=0.0),
+        mesh_large = newton.Mesh(
+            vertices=np.asarray(mesh_large_centered.vertices) @ rotation.T + np.array((0.10, 0.05, -0.02)),
+            indices=np.asarray(mesh_large_centered.indices),
         )
-        carrier_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, collision_group=0)
-        small_carrier = world.add_shape_mesh(body=body, mesh=small_mesh, cfg=carrier_cfg)
-        large_carrier = world.add_shape_mesh(body=body, mesh=large_mesh, cfg=carrier_cfg)
 
+        def make_world(mesh: newton.Mesh) -> tuple[newton.ModelBuilder, int]:
+            builder_world = newton.ModelBuilder()
+            builder_world.add_shape_box(
+                body=-1,
+                xform=wp.transform(wp.vec3(0.7, 0.0, 0.0), wp.quat_identity()),
+                hx=0.1,
+                hy=0.1,
+                hz=0.1,
+            )
+            body = builder_world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder_world.add_joint_free(child=body)
+            builder_world.add_articulation([joint])
+            id_shape_mesh = builder_world.add_shape_mesh(
+                body=body,
+                mesh=mesh,
+                cfg=newton.ModelBuilder.ShapeConfig(density=0.0),
+            )
+            return builder_world, id_shape_mesh
+
+        world_small, id_shape_mesh = make_world(mesh_small)
+        world_large, _ = make_world(mesh_large)
         builder = newton.ModelBuilder()
-        builder.replicate(world, 2)
+        builder.add_world(world_small)
+        builder.add_world(world_large)
         model = builder.finalize()
         model.set_gravity((0.0, 0.0, 0.0))
         solver = SolverMuJoCo(
@@ -6278,16 +6292,28 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         self.assertEqual(solver.mjw_model.geom_dataid.shape[0], 2)
         self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 2)
-        shape_mapping = solver.mjc_geom_to_newton_shape.numpy()
-        for world_id, carrier_shape in ((0, small_carrier), (1, large_carrier)):
-            shape_offset = world_id * world.shape_count
-            active_geom = int(np.flatnonzero(shape_mapping[world_id] == active_shape + shape_offset)[0])
-            carrier_geom = int(np.flatnonzero(shape_mapping[world_id] == carrier_shape + shape_offset)[0])
-            for field in ("geom_dataid", "geom_size", "geom_aabb", "geom_rbound", "geom_pos", "geom_quat"):
-                target = getattr(solver.mjw_model, field)
-                values = target.numpy()
-                values[world_id, active_geom] = values[world_id, carrier_geom]
-                target.assign(values)
+        id_geom_mesh = int(np.flatnonzero(solver.mjc_geom_to_newton_shape.numpy()[0] == id_shape_mesh)[0])
+        id_mesh_by_world = solver.mjw_model.geom_dataid.numpy()[:, id_geom_mesh]
+        self.assertNotEqual(id_mesh_by_world[0], id_mesh_by_world[1])
+        self.assertLess(
+            solver.mjw_model.geom_rbound.numpy()[0, id_geom_mesh],
+            solver.mjw_model.geom_rbound.numpy()[1, id_geom_mesh],
+        )
+        id_mesh_large = int(id_mesh_by_world[1])
+        self.assertGreater(np.linalg.norm(solver.mj_model.mesh_pos[id_mesh_large]), 1.0e-3)
+        self.assertGreater(np.linalg.norm(solver.mj_model.mesh_quat[id_mesh_large, 1:]), 1.0e-3)
+        np.testing.assert_allclose(
+            solver.mjw_model.geom_pos.numpy()[1, id_geom_mesh],
+            solver.mj_model.mesh_pos[id_mesh_large],
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            solver.mjw_model.geom_quat.numpy()[1, id_geom_mesh],
+            solver.mj_model.mesh_quat[id_mesh_large],
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
 
         state_in = model.state()
         state_out = model.state()
@@ -6300,6 +6326,53 @@ class TestMuJoCoConversion(unittest.TestCase):
             solver.mjw_data.contact.worldid.numpy()[:contact_count],
             np.array([1], dtype=np.int32),
         )
+
+    def test_per_world_mesh_scale_registers_distinct_assets(self):
+        """Compile one shared Newton mesh at each world's authored scale."""
+        mesh = newton.Mesh.create_box(0.2, 0.3, 0.4)
+
+        def make_world(scale: float) -> tuple[newton.ModelBuilder, int]:
+            builder_world = newton.ModelBuilder()
+            body = builder_world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder_world.add_joint_free(child=body)
+            builder_world.add_articulation([joint])
+            id_shape_mesh = builder_world.add_shape_mesh(
+                body=body,
+                mesh=mesh,
+                scale=(scale, scale, scale),
+                cfg=newton.ModelBuilder.ShapeConfig(density=0.0),
+            )
+            return builder_world, id_shape_mesh
+
+        world_small, id_shape_mesh = make_world(1.0)
+        world_large, _ = make_world(2.0)
+        builder = newton.ModelBuilder()
+        builder.add_world(world_small)
+        builder.add_world(world_large)
+        solver = SolverMuJoCo(builder.finalize(), separate_worlds=True)
+
+        id_geom_mesh = int(np.flatnonzero(solver.mjc_geom_to_newton_shape.numpy()[0] == id_shape_mesh)[0])
+        id_mesh_by_world = solver.mjw_model.geom_dataid.numpy()[:, id_geom_mesh]
+        self.assertNotEqual(id_mesh_by_world[0], id_mesh_by_world[1])
+        self.assertEqual(solver.mj_model.nmesh, 2)
+        np.testing.assert_allclose(
+            solver.mjw_model.geom_aabb.numpy()[1, id_geom_mesh, 1],
+            2.0 * solver.mjw_model.geom_aabb.numpy()[0, id_geom_mesh, 1],
+            rtol=1.0e-6,
+            atol=1.0e-6,
+        )
+        self.assertAlmostEqual(
+            float(solver.mjw_model.geom_rbound.numpy()[1, id_geom_mesh]),
+            2.0 * float(solver.mjw_model.geom_rbound.numpy()[0, id_geom_mesh]),
+            places=5,
+        )
+        dataid_before = solver.mjw_model.geom_dataid.numpy().copy()
+        aabb_before = solver.mjw_model.geom_aabb.numpy().copy()
+        rbound_before = solver.mjw_model.geom_rbound.numpy().copy()
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_array_equal(solver.mjw_model.geom_dataid.numpy(), dataid_before)
+        np.testing.assert_allclose(solver.mjw_model.geom_aabb.numpy(), aabb_before, rtol=0.0, atol=0.0)
+        np.testing.assert_allclose(solver.mjw_model.geom_rbound.numpy(), rbound_before, rtol=0.0, atol=0.0)
 
 
 class TestMuJoCoAttributes(unittest.TestCase):

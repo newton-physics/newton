@@ -3387,6 +3387,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32."""
         self.mjc_geom_to_newton_shape: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32."""
+        self._shape_mesh_dataid: wp.array[wp.int32] | None = None
+        """Compiled MuJoCo mesh asset for each Newton shape, or ``-1`` for non-mesh shapes."""
+        self._shape_mesh_aabb_center: wp.array[wp.vec3f] | None = None
+        """Compiled MuJoCo mesh AABB center for each Newton shape."""
+        self._shape_mesh_aabb_size: wp.array[wp.vec3f] | None = None
+        """Compiled MuJoCo mesh AABB half-size for each Newton shape."""
+        self._shape_mesh_rbound: wp.array[wp.float32] | None = None
+        """Compiled MuJoCo mesh bounding-sphere radius for each Newton shape."""
         # Template-relative for per-world sites and absolute for global sites.
         self._mjc_site_shape_index: wp.array[wp.int32] | None = None
         self._mjc_site_is_global: wp.array[bool] | None = None
@@ -5360,6 +5368,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mujoco_attrs = getattr(model, "mujoco", None)
 
         mujoco_pair_contact_shapes: set[int] = set()
+        all_mujoco_pair_contact_shapes: set[int] = set()
         pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
         if mujoco_attrs is not None and pair_count > 0:
             pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
@@ -5372,9 +5381,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_count = min(pair_count, len(pair_world_np), len(pair_geom1_np), len(pair_geom2_np))
                 for pair_index in range(pair_count):
                     pair_world = int(pair_world_np[pair_index])
+                    pair_shapes = (int(pair_geom1_np[pair_index]), int(pair_geom2_np[pair_index]))
+                    all_mujoco_pair_contact_shapes.update(shape for shape in pair_shapes if shape >= 0)
                     if pair_world != first_world and pair_world >= 0:
                         continue
-                    for pair_shape in (int(pair_geom1_np[pair_index]), int(pair_geom2_np[pair_index])):
+                    for pair_shape in pair_shapes:
                         if pair_shape >= 0 and pair_shape in selected_shapes_set:
                             mujoco_pair_contact_shapes.add(pair_shape)
 
@@ -5452,6 +5463,56 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         required_shapes = tendon_required_shapes | actuator_required_shapes | mujoco_pair_contact_shapes
         mesh_export_cache: dict[tuple[int, tuple[float, float, float]], tuple[np.ndarray, np.ndarray, int, bool]] = {}
+        mesh_asset_name_by_key: dict[tuple[int, tuple[float, float, float]], str] = {}
+        shape_mesh_key: dict[int, tuple[int, tuple[float, float, float]]] = {}
+
+        def add_mesh_asset(shape: int, name: str) -> str:
+            """Register one distinct Newton mesh-and-scale asset in the MuJoCo spec."""
+            mesh_src = model.shape_source[shape]
+            size = shape_size[shape]
+            key_mesh = _mesh_scale_key(mesh_src, size)
+            mesh_export = mesh_export_cache.get(key_mesh)
+            if mesh_export is None:
+                vertices = mesh_src.vertices * size
+                indices = mesh_src.indices.flatten()
+                maxhullvert = mesh_src.maxhullvert
+                extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
+                is_planar = _mujoco_mesh_vertices_are_planar(vertices, extent_axis)
+                if is_planar:
+                    # MuJoCo compiles every mesh geom through its convex-hull path,
+                    # which rejects lower-dimensional vertex clouds. When Newton
+                    # supplies contacts, the MuJoCo mesh only needs to compile and
+                    # keep a stable geom id, so add a tiny referenced off-plane
+                    # vertex to the exported asset.
+                    vertices, indices, maxhullvert = _make_nonplanar_mujoco_mesh(
+                        vertices, indices, maxhullvert, extent_axis
+                    )
+                mesh_export = (vertices, indices, maxhullvert, is_planar)
+                mesh_export_cache[key_mesh] = mesh_export
+
+            vertices, indices, maxhullvert, is_planar = mesh_export
+            uses_mujoco_contacts = (
+                bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and int(shape_collision_group[shape]) != 0
+            ) or shape in all_mujoco_pair_contact_shapes
+            if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
+                raise ValueError(
+                    f"MuJoCo contact generation does not support planar mesh collider "
+                    f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
+                    "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
+                )
+
+            mesh_name = mesh_asset_name_by_key.get(key_mesh)
+            if mesh_name is None:
+                mesh_name = name
+                spec.add_mesh(
+                    name=mesh_name,
+                    uservert=vertices.flatten(),
+                    userface=indices.flatten(),
+                    maxhullvert=maxhullvert,
+                )
+                mesh_asset_name_by_key[key_mesh] = mesh_name
+            shape_mesh_key[shape] = key_mesh
+            return mesh_name
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -5548,45 +5609,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         tf.q,
                     )
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
-                    mesh_src = model.shape_source[shape]
-                    size = shape_size[shape]
-                    key = _mesh_scale_key(mesh_src, size)
-                    mesh_export = mesh_export_cache.get(key)
-                    if mesh_export is None:
-                        vertices = mesh_src.vertices * size
-                        indices = mesh_src.indices.flatten()
-                        maxhullvert = mesh_src.maxhullvert
-                        extent_axis = vertices.max(axis=0) - vertices.min(axis=0)
-                        is_planar = _mujoco_mesh_vertices_are_planar(vertices, extent_axis)
-                        if is_planar:
-                            # MuJoCo compiles every mesh geom through its convex-hull path,
-                            # which rejects lower-dimensional vertex clouds. When Newton
-                            # supplies contacts, the MuJoCo mesh only needs to compile and
-                            # keep a stable geom id, so add a tiny referenced off-plane
-                            # vertex to the exported asset.
-                            vertices, indices, maxhullvert = _make_nonplanar_mujoco_mesh(
-                                vertices, indices, maxhullvert, extent_axis
-                            )
-                        mesh_export = (vertices, indices, maxhullvert, is_planar)
-                        mesh_export_cache[key] = mesh_export
-
-                    vertices, indices, maxhullvert, is_planar = mesh_export
-                    uses_mujoco_contacts = (
-                        bool(shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and int(shape_collision_group[shape]) != 0
-                    ) or shape in mujoco_pair_contact_shapes
-                    if is_planar and self._use_mujoco_contacts and not disable_contacts and uses_mujoco_contacts:
-                        raise ValueError(
-                            f"MuJoCo contact generation does not support planar mesh collider "
-                            f"{model.shape_label[shape]!r} (shape {shape}). Use use_mujoco_contacts=False so "
-                            "Newton's collision pipeline handles this mesh, or replace it with a plane/box/thick mesh."
-                        )
-                    spec.add_mesh(
-                        name=name,
-                        uservert=vertices.flatten(),
-                        userface=indices.flatten(),
-                        maxhullvert=maxhullvert,
-                    )
-                    geom_params["meshname"] = name
+                    geom_params["meshname"] = add_mesh_asset(shape, name)
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
@@ -6214,6 +6237,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             add_geoms(child)
 
+        if separate_worlds and model.world_count > 1:
+            # The MuJoCo topology comes from the template world, but each
+            # corresponding mesh slot may reference a different Newton mesh.
+            # Register those assets without adding carrier geoms; the compiled
+            # per-world geom fields select the matching asset below.
+            shape_ids_by_world = [
+                np.flatnonzero(shape_world == world_id).astype(np.int32) for world_id in range(model.world_count)
+            ]
+            template_shape_ids = shape_ids_by_world[first_world]
+            template_shape_position = {int(shape_id): position for position, shape_id in enumerate(template_shape_ids)}
+            for shape_id_template in tuple(shape_mapping):
+                if shape_world[shape_id_template] < 0 or shape_type[shape_id_template] not in (
+                    GeoType.MESH,
+                    GeoType.CONVEX_MESH,
+                ):
+                    continue
+                position = template_shape_position[shape_id_template]
+                for shape_ids_world in shape_ids_by_world:
+                    shape_id = int(shape_ids_world[position])
+                    add_mesh_asset(shape_id, f"{model.shape_label[shape_id]}_{shape_id}")
+
         def get_body_name(body_idx: int) -> str:
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
@@ -6550,6 +6594,43 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ]
 
         self.mj_model = spec.compile()
+
+        # Resolve every registered Newton mesh shape to its compiled MuJoCo
+        # asset and cache the broadphase metadata derived by MuJoCo's mesh
+        # compiler. Mesh vertices are stored in the asset's centered frame, so
+        # their bounds reproduce the geom AABB and rbound calculations.
+        shape_mesh_dataid = np.full(model.shape_count, -1, dtype=np.int32)
+        shape_mesh_aabb_center = np.zeros((model.shape_count, 3), dtype=np.float32)
+        shape_mesh_aabb_size = np.zeros((model.shape_count, 3), dtype=np.float32)
+        shape_mesh_rbound = np.zeros(model.shape_count, dtype=np.float32)
+        mesh_metadata_by_key: dict[
+            tuple[int, tuple[float, float, float]],
+            tuple[int, np.ndarray, np.ndarray, float],
+        ] = {}
+        for key_mesh, mesh_name in mesh_asset_name_by_key.items():
+            id_mesh = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_MESH, mesh_name)
+            if id_mesh < 0:
+                raise RuntimeError(f"Compiled MuJoCo mesh asset {mesh_name!r} could not be resolved.")
+            vertex_start = int(self.mj_model.mesh_vertadr[id_mesh])
+            vertex_count = int(self.mj_model.mesh_vertnum[id_mesh])
+            vertices = np.asarray(
+                self.mj_model.mesh_vert[vertex_start : vertex_start + vertex_count],
+                dtype=np.float64,
+            )
+            lower = vertices.min(axis=0)
+            upper = vertices.max(axis=0)
+            aabb_center = 0.5 * (lower + upper)
+            aabb_size = 0.5 * (upper - lower)
+            rbound = float(np.linalg.norm(np.maximum(np.abs(lower), np.abs(upper))))
+            mesh_metadata_by_key[key_mesh] = (id_mesh, aabb_center, aabb_size, rbound)
+
+        for shape_id, key_mesh in shape_mesh_key.items():
+            id_mesh, aabb_center, aabb_size, rbound = mesh_metadata_by_key[key_mesh]
+            shape_mesh_dataid[shape_id] = id_mesh
+            shape_mesh_aabb_center[shape_id] = aabb_center
+            shape_mesh_aabb_size[shape_id] = aabb_size
+            shape_mesh_rbound[shape_id] = rbound
+
         # Keep the compiled qM layout, but restore the physical COM and derived constants.
         for body_id, body, body_ipos in full_inertia_bodies:
             body.ipos = body_ipos
@@ -6617,6 +6698,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
                 self.mjw_model.mesh_pos = wp.array(self.mj_model.mesh_pos, dtype=wp.vec3)
+
+            self._shape_mesh_dataid = wp.array(shape_mesh_dataid, dtype=wp.int32, device=model.device)
+            self._shape_mesh_aabb_center = wp.array(
+                shape_mesh_aabb_center,
+                dtype=wp.vec3f,
+                device=model.device,
+            )
+            self._shape_mesh_aabb_size = wp.array(
+                shape_mesh_aabb_size,
+                dtype=wp.vec3f,
+                device=model.device,
+            )
+            self._shape_mesh_rbound = wp.array(shape_mesh_rbound, dtype=wp.float32, device=model.device)
 
             # Determine nworld for mapping dimensions
             nworld = model.world_count if separate_worlds else 1
@@ -7866,6 +7960,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mjc_solref = getattr(mujoco_attrs, "solref", None) if mujoco_attrs is not None else None
         shape_mjc_solref_mode = getattr(mujoco_attrs, "solref_mode", None) if mujoco_attrs is not None else None
 
+        if (
+            self._shape_mesh_dataid is None
+            or self._shape_mesh_aabb_center is None
+            or self._shape_mesh_aabb_size is None
+            or self._shape_mesh_rbound is None
+        ):
+            raise RuntimeError("MuJoCo mesh metadata was not initialized during model conversion.")
+
         # Shape-material force-space scaling is strictly opt-in (no
         # auto-promote, unlike joint limits from PR #2610): per-example
         # ``default_shape_cfg.ke``/``kd`` overrides are too common for a
@@ -7881,11 +7983,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.shape_material_ke,
                 self.model.shape_material_kd,
                 self.model.shape_scale,
+                self._shape_mesh_dataid,
+                self._shape_mesh_aabb_center,
+                self._shape_mesh_aabb_size,
+                self._shape_mesh_rbound,
                 self.model.shape_transform,
                 self.mjc_geom_to_newton_shape,
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
-                self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
                 self.model.shape_material_mu_torsional,
@@ -7908,6 +8013,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_solmix,
                 self.mjw_model.geom_gap,
                 self.mjw_model.geom_margin,
+                self.mjw_model.geom_dataid,
+                self.mjw_model.geom_aabb,
+                self.mjw_model.geom_rbound,
             ],
             device=self.model.device,
         )
