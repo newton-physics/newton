@@ -77,6 +77,7 @@
 - Reject runtime changes that alter `SolverKamino`'s as-built joint constraint counts, passive/actuated partition, or finite-limit structure; recreate the solver after making one of these structural changes. (#3532)
 - Cull positive-distance speculative contacts by default when converting Newton contacts for `SolverKamino` as a temporary workaround for restitution issues. No public compatibility option restores the old behavior; if a scene needs contact forces before geometry surfaces touch, increase `ModelBuilder.ShapeConfig.margin` so margin-shifted surfaces overlap at the desired force onset, and re-test contact behavior. (#3779)
 - Refine contact visualizations (showing contact force and color-coded contact mode) in Newton viewer.
+- Interpret Newton joint limits and position targets as displacements from the authored pose for MuJoCo joints with a nonzero reference value (MJCF `ref` / `mujoco.dof_ref`): `ModelBuilder.add_mjcf` now shifts authored joint ranges by `-ref`, and `SolverMuJoCo` shifts limits and `Control.joint_target_q` back to absolute `qpos` at the MuJoCo boundary. Callers that authored `joint_limit_lower`/`joint_limit_upper` or `joint_target_q` in absolute MuJoCo coordinates on models with nonzero `mujoco.dof_ref` must subtract the reference value.
 
 ### Deprecated
 
@@ -295,6 +296,8 @@
 - Fix `SensorTiledCamera.utils.convert_ray_depth_to_forward_depth()` to preserve the clear-depth sentinel for zero-direction rays and non-positive depths.
 - Fix `SolverMuJoCo` placing articulations whose root is a fully-locked D6 joint (e.g. imported from a generic USD `PhysicsJoint`) at the first world's root pose in every world; such roots now become mocap bodies like fixed-joint roots. (#3499; fixes #3430)
 - Fix `SensorTiledCamera` rendering cloth and volume deformable vertices as particle spheres while preserving standalone particle rendering in mixed scenes. (#3518)
+- Fix the USD importer loading `guide`- and `render`-purpose prims as visible visual shapes; visual shapes and Gaussian splats now follow USD viewport semantics and are drawn only for the `default` and `proxy` purposes.
+- Fix `SolverMuJoCo` CONNECT equality anchors being derived at a pose displaced by the joint reference values (`mujoco:dof_ref`), which applied the reference a second time on top of the joint-coordinate offset convention.
 - Fix `ViewerGL.get_frame()` crashing when a CPU model is rendered while a CUDA context is active.
 - Fix `ViewerUSD` leaving stale particle geometry visible when the active particle count drops to zero. (#2992)
 - Fix `eval_inverse_dynamics_passive()` and `SolverFeatherstone` intermittently dropping descendant wrench contributions during the articulated-body backward pass on CUDA. (#3443)
