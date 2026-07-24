@@ -415,7 +415,7 @@ def less_than_op(i: wp.int32, threshold: wp.int32) -> wp.float32:
 def make_dot_kernel(tile_size: int, maxdim: int):
     num_tiles = (maxdim + tile_size - 1) // tile_size
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def dot(
         a: wp.array2d[Any],
         b: wp.array2d[Any],

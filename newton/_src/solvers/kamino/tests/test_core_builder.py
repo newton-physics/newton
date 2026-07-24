@@ -420,9 +420,7 @@ class TestModelBuilder(unittest.TestCase):
         wid = builder.add_world(name="test_world", up_axis=Axis.Z)
         self.assertEqual(builder.num_materials, 1)  # Default material exists
 
-        material = MaterialDescriptor(
-            name="test_material", density=500.0, restitution=0.8, static_friction=0.6, dynamic_friction=0.4
-        )
+        material = MaterialDescriptor(name="test_material", restitution=0.8, static_friction=0.6, dynamic_friction=0.4)
 
         mid = builder.add_material(material=material)
         self.assertEqual(builder.num_materials, 2)
@@ -430,7 +428,6 @@ class TestModelBuilder(unittest.TestCase):
         self.assertEqual(mid, builder.materials[mid].mid)
         self.assertEqual(builder.materials[mid].name, "test_material")
         self.assertEqual(builder.materials[mid].wid, wid)
-        self.assertEqual(builder.materials[mid].density, 500.0)
         self.assertEqual(builder.materials[mid].restitution, 0.8)
         self.assertEqual(builder.materials[mid].static_friction, 0.6)
         self.assertEqual(builder.materials[mid].dynamic_friction, 0.4)

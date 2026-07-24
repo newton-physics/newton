@@ -304,6 +304,9 @@ class ImplicitMPMModel:
         self.air_drag = float(options.air_drag)
         """Drag for the background air"""
 
+        self._separate_worlds = bool(options.separate_worlds and model.world_count > 1)
+        """Whether colliders and particles are isolated by Newton world."""
+
         self.collider = Collider()
         """Collider struct"""
 
@@ -403,14 +406,15 @@ class ImplicitMPMModel:
             self.has_viscosity = False
             self.has_dilatancy = False
 
-    def notify_collider_changed(self):
+    def notify_collider_changed(self, body_mass: np.ndarray | None = None):
         """Refresh cached extrema for collider parameters.
 
         Tracks the minimum collider mass to determine whether compliant
         colliders are present and to enable/disable related computations.
         """
         body_ids = self.collider.collider_body_index.numpy()
-        body_mass = self.collider_body_mass.numpy()
+        if body_mass is None:
+            body_mass = self.collider_body_mass.numpy()
         dynamic_body_ids = body_ids[body_ids >= 0]
         dynamic_body_ids = dynamic_body_ids[body_mass[dynamic_body_ids] > 0.0]
         dynamic_body_masses = body_mass[dynamic_body_ids]
@@ -439,6 +443,7 @@ class ImplicitMPMModel:
         body_mass: wp.array | None = None,
         body_inv_inertia: wp.array | None = None,
         body_q: wp.array | None = None,
+        collider_world_ids: list[int] | None = None,
     ):
         """Initialize collider parameters and defaults from inputs.
 
@@ -446,8 +451,9 @@ class ImplicitMPMModel:
         properties (thickness, friction, adhesion, projection threshold).
 
         By default, this will setup collisions against all collision shapes in the model with flag `newton.ShapeFlag.COLLIDE_PARTICLES`.
-        Rigid body colliders will be treated as kinematic if their mass is zero; for all model bodies to be treated as kinematic,
-        pass ``body_mass=wp.zeros_like(model.body_mass)``.
+        Rigid body colliders will be treated as kinematic if their effective mass is zero. When ``body_mass`` is omitted,
+        bodies flagged with :attr:`newton.BodyFlags.KINEMATIC` have zero effective mass regardless of their stored mass.
+        An explicit ``body_mass`` array is authoritative.
 
         For any collider index `i`, only one of ``collider_meshes[i]`` and ``collider_body_ids`` may not be `None`.
         If material properties are not provided for a collider, but a body index is provided,
@@ -461,61 +467,219 @@ class ImplicitMPMModel:
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold, i.e. how far below the surface the
               particle may be before it is projected out. (m)
-            collider_particle_ids: For deformable mesh colliders, model particle ids corresponding to each mesh vertex.
+            collider_particle_ids: For deformable mesh colliders, solver-model particle IDs corresponding to each
+                mesh vertex. These IDs cannot be combined with an external ``model``. In isolated multi-world mode,
+                every ID must belong to the collider's local world; global deformable colliders are rejected.
             model: The model to read collider properties from. Default to self.model.
             body_com: For dynamic colliders, per-body center of mass. Default to model.body_com.
-            body_mass: For dynamic colliders, per-body mass. Default to model.body_mass.
+            body_mass: For dynamic colliders, per-body effective mass. By default, use ``model.body_mass`` with
+                zero mass for bodies flagged with :attr:`newton.BodyFlags.KINEMATIC`.
             body_inv_inertia: For dynamic colliders, per-body inverse inertia. Default to model.body_inv_inertia.
             body_q: For dynamic colliders, per-body initial transform. Default to model.body_q.
+            collider_world_ids: Per-collider Newton world IDs. Custom meshes default to global
+                (``-1``), while body-backed colliders infer their body's world.
+
+        Raises:
+            ValueError: If collider inputs are inconsistent, world IDs are invalid, an isolated external model has a
+                different world count, a global body-backed collider is dynamic, or deformable collider particle
+                ownership cannot be mapped safely to the solver model and world.
         """
 
         if model is None:
             model = self.model
+        elif self._separate_worlds and model is not self.model and model.world_count != self.model.world_count:
+            raise ValueError(
+                "An external collider model must have the same world_count as the isolated solver model; "
+                f"got {model.world_count} and {self.model.world_count}."
+            )
 
-        if collider_body_ids is None:
-            if collider_meshes is None:
-                collider_body_ids = [
-                    body_id
-                    for body_id in range(-1, model.body_count)
-                    if len(_get_body_collision_shapes(model, body_id)) > 0
-                ]
-            else:
-                collider_body_ids = [None] * len(collider_meshes)
-        if collider_meshes is None:
-            collider_meshes = [None] * len(collider_body_ids)
+        collider_meshes = None if collider_meshes is None else list(collider_meshes)
+        collider_body_ids = None if collider_body_ids is None else list(collider_body_ids)
+        collider_thicknesses = None if collider_thicknesses is None else list(collider_thicknesses)
+        collider_friction = None if collider_friction is None else list(collider_friction)
+        collider_adhesion = None if collider_adhesion is None else list(collider_adhesion)
+        collider_projection_threshold = (
+            None if collider_projection_threshold is None else list(collider_projection_threshold)
+        )
+        collider_particle_ids = None if collider_particle_ids is None else list(collider_particle_ids)
+        supplied_world_ids = None if collider_world_ids is None else list(collider_world_ids)
 
-        for collider_id, (mesh, body_id) in enumerate(zip(collider_meshes, collider_body_ids, strict=True)):
-            if mesh is None:
-                if body_id is None:
-                    raise ValueError(
-                        f"Either a mesh or a body_id must be provided for each collider; collider {collider_id} is missing both"
-                    )
-            elif body_id is not None:
-                raise ValueError(
-                    f"Either a mesh or a body_id must be provided for each collider; collider {collider_id} provides both"
+        shape_world = None
+        body_world = None
+
+        def get_shape_world():
+            nonlocal shape_world
+            if shape_world is None:
+                shape_world = (
+                    model.shape_world.numpy()
+                    if model.shape_world is not None
+                    else np.full(model.shape_count, -1, dtype=int)
                 )
+            return shape_world
+
+        def get_body_world():
+            nonlocal body_world
+            if body_world is None:
+                body_world = (
+                    model.body_world.numpy()
+                    if model.body_world is not None
+                    else np.full(model.body_count, -1, dtype=int)
+                )
+            return body_world
+
+        default_discovery = collider_meshes is None and collider_body_ids is None
+        collider_shapes = []
+        inferred_world_ids = []
+        if default_discovery:
+            collider_meshes = []
+            collider_body_ids = []
+
+            static_shapes = _get_body_collision_shapes(model, -1)
+            if self._separate_worlds:
+                static_collider_worlds = sorted({int(world) for world in get_shape_world()[static_shapes]})
+            else:
+                static_collider_worlds = [-1] if len(static_shapes) > 0 else []
+            for world_id in static_collider_worlds:
+                collider_meshes.append(None)
+                collider_body_ids.append(-1)
+                collider_shapes.append(
+                    static_shapes[get_shape_world()[static_shapes] == world_id]
+                    if self._separate_worlds
+                    else static_shapes
+                )
+                inferred_world_ids.append(world_id)
+
+            for body_id in range(model.body_count):
+                shapes = _get_body_collision_shapes(model, body_id)
+                if len(shapes) == 0:
+                    continue
+                collider_meshes.append(None)
+                collider_body_ids.append(body_id)
+                collider_shapes.append(shapes)
+                inferred_world_ids.append(int(get_body_world()[body_id]) if self._separate_worlds else -1)
+        else:
+            if collider_body_ids is None:
+                collider_body_ids = [None] * len(collider_meshes)
+            elif collider_meshes is None:
+                collider_meshes = [None] * len(collider_body_ids)
+            elif len(collider_meshes) != len(collider_body_ids):
+                raise ValueError(
+                    "collider_meshes and collider_body_ids must have the same length; "
+                    f"got {len(collider_meshes)} and {len(collider_body_ids)}."
+                )
+            collider_shapes = [None] * len(collider_body_ids)
 
         collider_count = len(collider_body_ids)
 
-        if collider_thicknesses is None:
-            collider_thicknesses = [None] * collider_count
-        if collider_projection_threshold is None:
-            collider_projection_threshold = [None] * collider_count
-        if collider_friction is None:
-            collider_friction = [None] * collider_count
-        if collider_adhesion is None:
-            collider_adhesion = [None] * collider_count
-        if collider_particle_ids is None:
-            collider_particle_ids = [None] * collider_count
+        def require_aligned(name, values, default=None):
+            if values is None:
+                return [default] * collider_count
+            if len(values) != collider_count:
+                raise ValueError(f"{name} must have one value per collider ({collider_count}); got {len(values)}.")
+            return values
 
-        assert len(collider_body_ids) == len(collider_thicknesses)
-        assert len(collider_body_ids) == len(collider_projection_threshold)
-        assert len(collider_body_ids) == len(collider_friction)
-        assert len(collider_body_ids) == len(collider_adhesion)
-        assert len(collider_body_ids) == len(collider_particle_ids)
+        collider_meshes = require_aligned("collider_meshes", collider_meshes)
+        collider_thicknesses = require_aligned("collider_thicknesses", collider_thicknesses)
+        collider_projection_threshold = require_aligned("collider_projection_threshold", collider_projection_threshold)
+        collider_friction = require_aligned("collider_friction", collider_friction)
+        collider_adhesion = require_aligned("collider_adhesion", collider_adhesion)
+        collider_particle_ids = require_aligned("collider_particle_ids", collider_particle_ids)
+        supplied_world_ids = require_aligned("collider_world_ids", supplied_world_ids)
+
+        def validate_world_id(world_id, collider_id):
+            if not isinstance(world_id, (int, np.integer)):
+                raise ValueError(f"Invalid collider world ID {world_id!r} for collider {collider_id}.")
+            world_id = int(world_id)
+            if world_id < -1 or world_id >= self.model.world_count:
+                raise ValueError(
+                    f"Invalid collider world ID {world_id} for collider {collider_id}; expected -1 or an ID in "
+                    f"[0, {self.model.world_count})."
+                )
+            return world_id
+
+        if default_discovery:
+            collider_world_ids = []
+            for collider_id, raw_inferred_world_id in enumerate(inferred_world_ids):
+                inferred_world_id = validate_world_id(raw_inferred_world_id, collider_id)
+                supplied_world_id = supplied_world_ids[collider_id]
+                if supplied_world_id is not None:
+                    supplied_world_id = validate_world_id(supplied_world_id, collider_id)
+                    if supplied_world_id != inferred_world_id:
+                        raise ValueError(
+                            f"Collider world ID {supplied_world_id} for collider {collider_id} does not match "
+                            f"its inferred world ID {inferred_world_id}."
+                        )
+                collider_world_ids.append(inferred_world_id)
+        else:
+            collider_world_ids = []
+            static_shapes = None
+            for collider_id, (mesh, raw_body_id, requested_world_id) in enumerate(
+                zip(collider_meshes, collider_body_ids, supplied_world_ids, strict=True)
+            ):
+                if mesh is None and raw_body_id is None:
+                    raise ValueError(
+                        f"Either a mesh or a body_id must be provided for each collider; collider {collider_id} is missing both"
+                    )
+                if mesh is not None and raw_body_id is not None:
+                    raise ValueError(
+                        f"Either a mesh or a body_id must be provided for each collider; collider {collider_id} provides both"
+                    )
+
+                if raw_body_id is None:
+                    world_id = -1 if requested_world_id is None else requested_world_id
+                else:
+                    try:
+                        body_id = int(raw_body_id)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"Invalid collider body ID {raw_body_id!r} for collider {collider_id}."
+                        ) from exc
+                    if body_id < -1 or body_id >= model.body_count:
+                        raise ValueError(
+                            f"Invalid collider body ID {body_id} for collider {collider_id}; expected -1 or an ID "
+                            f"in [0, {model.body_count})."
+                        )
+                    collider_body_ids[collider_id] = body_id
+
+                    if body_id >= 0:
+                        if self._separate_worlds:
+                            world_id = validate_world_id(get_body_world()[body_id], collider_id)
+                        else:
+                            world_id = -1
+                        if requested_world_id is not None and self._separate_worlds:
+                            validated_world_id = validate_world_id(requested_world_id, collider_id)
+                            if validated_world_id != world_id:
+                                raise ValueError(
+                                    f"Collider world ID {validated_world_id} for collider {collider_id} does not "
+                                    f"match body {body_id}'s inferred world ID {world_id}."
+                                )
+                        elif requested_world_id is not None:
+                            world_id = requested_world_id
+                        collider_shapes[collider_id] = _get_body_collision_shapes(model, body_id)
+                    else:
+                        if static_shapes is None:
+                            static_shapes = _get_body_collision_shapes(model, -1)
+                        if self._separate_worlds:
+                            if requested_world_id is None:
+                                static_world_ids = sorted({int(world) for world in get_shape_world()[static_shapes]})
+                                if len(static_world_ids) != 1:
+                                    raise ValueError(
+                                        "An explicit body -1 collider is ambiguous in isolated multi-world mode; "
+                                        "supply its collider world ID or use default discovery/custom meshes."
+                                    )
+                                world_id = static_world_ids[0]
+                            else:
+                                world_id = validate_world_id(requested_world_id, collider_id)
+                            collider_shapes[collider_id] = static_shapes[get_shape_world()[static_shapes] == world_id]
+                        else:
+                            world_id = -1 if requested_world_id is None else requested_world_id
+                            collider_shapes[collider_id] = static_shapes
+
+                collider_world_ids.append(validate_world_id(world_id, collider_id))
 
         if body_com is None:
             body_com = model.body_com
+        body_mass_is_explicit = body_mass is not None
         if body_mass is None:
             body_mass = model.body_mass
         if body_inv_inertia is None:
@@ -523,17 +687,30 @@ class ImplicitMPMModel:
         if body_q is None:
             body_q = model.body_q
 
+        effective_body_mass = body_mass.numpy().copy()
+        if not body_mass_is_explicit and model.body_flags is not None:
+            body_flags = model.body_flags.numpy()
+            kinematic_bodies = (body_flags & int(newton.BodyFlags.KINEMATIC)) != 0
+            if np.any(kinematic_bodies & (effective_body_mass != 0.0)):
+                effective_body_mass[kinematic_bodies] = 0.0
+                body_mass = wp.array(effective_body_mass, dtype=body_mass.dtype, device=body_mass.device)
+        if self._separate_worlds:
+            for collider_id, (body_id, world_id) in enumerate(zip(collider_body_ids, collider_world_ids, strict=True)):
+                if world_id == -1 and body_id is not None and body_id >= 0 and effective_body_mass[body_id] > 0.0:
+                    raise ValueError(
+                        f"Collider {collider_id} is a global dynamic collider backed by body {body_id}, which would "
+                        "couple isolated worlds. Replicate it into each world, make it static or kinematic, or disable "
+                        "Config.separate_worlds."
+                    )
+
         # count materials and shapes
         material_count = 1  # default material
-        body_shapes = {}
         collider_material_ids = []
-        for body_id in collider_body_ids:
+        for body_id, shapes in zip(collider_body_ids, collider_shapes, strict=True):
             if body_id is not None:
-                shapes = _get_body_collision_shapes(model, body_id)
                 if len(shapes) == 0:
-                    raise ValueError(f"Body {body_id} has no collision shapes")
+                    raise ValueError(f"Body {body_id} has no collision shapes for its collider world ID")
 
-                body_shapes[body_id] = shapes
                 collider_material_ids.append(list(range(material_count, material_count + len(shapes))))
                 material_count += len(shapes)
             else:
@@ -575,7 +752,7 @@ class ImplicitMPMModel:
             if body_id is not None:
                 for material_id, shape_margin, shape_friction in zip(
                     collider_material_ids[collider_id],
-                    *_get_shape_collision_materials(model, body_shapes[body_id]),
+                    *_get_shape_collision_materials(model, collider_shapes[collider_id]),
                     strict=True,
                 ):
                     # use material from shapes as default
@@ -590,6 +767,16 @@ class ImplicitMPMModel:
             max((material_thickness[material_id] for material_id in collider_material_ids[collider_id]), default=0.0)
             for collider_id in range(collider_count)
         ]
+        has_deformable_colliders = any(particle_ids is not None for particle_ids in collider_particle_ids)
+        if has_deformable_colliders and model is not self.model:
+            raise ValueError(
+                "collider_particle_ids are solver-state particle indices and may only be used with the solver model; "
+                "external collider models are not supported"
+            )
+
+        solver_particle_world = (
+            self.model.particle_world.numpy() if self._separate_worlds and has_deformable_colliders else None
+        )
         collider_particle_offsets = [0]
         collider_particle_id_chunks = []
         for collider_id, particle_ids in enumerate(collider_particle_ids):
@@ -614,9 +801,24 @@ class ImplicitMPMModel:
                     f"but collider mesh has {vertex_count} vertices"
                 )
             if particle_ids_np.size and (
-                np.min(particle_ids_np) < 0 or np.max(particle_ids_np) >= model.particle_count
+                np.min(particle_ids_np) < 0 or np.max(particle_ids_np) >= self.model.particle_count
             ):
-                raise ValueError(f"collider_particle_ids[{collider_id}] contains particle ids outside the model")
+                raise ValueError(f"collider_particle_ids[{collider_id}] contains particle ids outside the solver model")
+
+            if self._separate_worlds:
+                collider_world_id = collider_world_ids[collider_id]
+                if collider_world_id < 0:
+                    raise ValueError(
+                        f"collider_particle_ids[{collider_id}] cannot define a global deformable collider across "
+                        "isolated worlds; assign the collider to one local world"
+                    )
+
+                particle_world_ids = np.unique(solver_particle_world[particle_ids_np])
+                if np.any(particle_world_ids != collider_world_id):
+                    raise ValueError(
+                        f"collider_particle_ids[{collider_id}] must reference particles in collider world "
+                        f"{collider_world_id}; found particle world IDs {particle_world_ids.tolist()}"
+                    )
 
             collider_particle_id_chunks.append(particle_ids_np)
             collider_particle_offsets.append(collider_particle_offsets[-1] + particle_ids_np.shape[0])
@@ -631,7 +833,10 @@ class ImplicitMPMModel:
         # Create device arrays
         with wp.ScopedDevice(self.model.device):
             # Create collider meshes from bodies if necessary
-            face_material_ids = [[]]
+            packed_body_ids = []
+            face_material_ids = []
+            collider_face_offsets = []
+            face_offset = 0
             for collider_id in range(collider_count):
                 body_index = collider_body_ids[collider_id]
 
@@ -640,24 +845,47 @@ class ImplicitMPMModel:
                     # This may not correspond to the model's body -1, but as far as the collision kernels
                     # are concerned, it does not matter.
 
-                    collider_body_ids[collider_id] = -1
+                    packed_body_ids.append(-1)
                     material_id = collider_material_ids[collider_id][0]
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
                     mesh_face_material_ids = np.full(face_count, material_id, dtype=int)
                 else:
                     collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
-                        model, body_shapes[body_index], collider_material_ids[collider_id]
+                        model, collider_shapes[collider_id], collider_material_ids[collider_id]
                     )
+                    packed_body_ids.append(body_index)
+                    face_count = collider_meshes[collider_id].indices.shape[0] // 3
 
                 face_material_ids.append(mesh_face_material_ids)
+                collider_face_offsets.append(face_offset)
+                face_offset += face_count
 
-            self.collider.collider_body_index = wp.array(collider_body_ids, dtype=int)
+            global_collider_ids = [
+                collider_id for collider_id, collider_world_id in enumerate(collider_world_ids) if collider_world_id < 0
+            ]
+            world_collider_ids = []
+            world_collider_offsets = [0]
+            for world_id in range(self.model.world_count):
+                world_collider_ids.extend(global_collider_ids)
+                world_collider_ids.extend(
+                    collider_id
+                    for collider_id, collider_world_id in enumerate(collider_world_ids)
+                    if collider_world_id == world_id
+                )
+                world_collider_offsets.append(len(world_collider_ids))
+
+            self.collider.collider_body_index = wp.array(packed_body_ids, dtype=int)
             self.collider.collider_particle_offsets = wp.array(collider_particle_offsets, dtype=int)
             self.collider.collider_particle_ids = wp.array(flat_collider_particle_ids, dtype=int)
             self.collider.collider_mesh = wp.array([collider.id for collider in collider_meshes], dtype=wp.uint64)
             self.collider.collider_max_thickness = wp.array(collider_max_thickness, dtype=float)
+            self.collider.collider_world = wp.array(collider_world_ids, dtype=int)
+            self.collider.collider_face_offset = wp.array(collider_face_offsets, dtype=int)
+            self.collider.world_collider_ids = wp.array(world_collider_ids, dtype=int)
+            self.collider.world_collider_offsets = wp.array(world_collider_offsets, dtype=int)
 
-            self.collider.face_material_index = wp.array(np.concatenate(face_material_ids), dtype=int)
+            all_face_material_ids = np.concatenate(face_material_ids) if face_material_ids else np.empty(0, dtype=int)
+            self.collider.face_material_index = wp.array(all_face_material_ids, dtype=int)
 
             self.collider.material_thickness = wp.array(material_thickness, dtype=float)
             self.collider.material_friction = wp.array(material_friction, dtype=float)
@@ -676,7 +904,7 @@ class ImplicitMPMModel:
         ]
 
         self._refresh_particle_flags_and_extrema()
-        self.notify_collider_changed()
+        self.notify_collider_changed(effective_body_mass)
 
     @property
     def has_compliant_particles(self):

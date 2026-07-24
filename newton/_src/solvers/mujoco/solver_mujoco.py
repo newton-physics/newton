@@ -3243,7 +3243,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         disable_contacts: bool = False,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
-        ls_parallel: bool | None = None,  # Deprecated: ignored since mujoco_warp 3.9.1
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
@@ -3283,7 +3282,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             disable_contacts: If True, disable contact computation in MuJoCo.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
-            ls_parallel: Deprecated and ignored. Parallel line search was removed from ``mujoco_warp`` in 3.9.1; passing this option emits a ``DeprecationWarning`` and has no effect.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
@@ -3291,14 +3289,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
                 ``wp.config.deterministic``.
         """
-        if ls_parallel is not None:
-            warnings.warn(
-                "ls_parallel is deprecated and no longer has any effect: parallel "
-                "line search was removed from mujoco_warp in 3.9.1.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         super().__init__(model)
 
         # Import and cache MuJoCo modules (only happens once per class)
