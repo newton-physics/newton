@@ -32,9 +32,110 @@ from .import_usd_deformable_utils import (
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_subset_material_bindings,
-    _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+from .mesh import MeshAdjacency
+
+
+def _cloth_rest_data(points: np.ndarray, triangles: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute inverse rest bases and areas for ordered cloth elements."""
+    p = points[triangles[:, 0]]
+    qp = points[triangles[:, 1]] - p
+    rp = points[triangles[:, 2]] - p
+    normals = np.cross(qp, rp)
+    normal_lengths = np.linalg.norm(normals, axis=1)
+    edge_lengths = np.linalg.norm(qp, axis=1)
+    if not np.all(np.isfinite(normal_lengths)) or not np.all(np.isfinite(edge_lengths)):
+        raise ValueError("rest shape contains non-finite triangle geometry")
+    if np.any(normal_lengths <= 1.0e-12) or np.any(edge_lengths <= 1.0e-12):
+        raise ValueError("rest shape contains a degenerate triangle")
+    normals /= normal_lengths[:, None]
+    e1 = qp / edge_lengths[:, None]
+    e2 = np.cross(normals, e1)
+    rest_basis = np.stack((e1, e2), axis=1) @ np.stack((qp, rp), axis=2)
+    areas = np.linalg.det(rest_basis) * 0.5
+    if not np.all(np.isfinite(areas)):
+        raise ValueError("rest shape contains non-finite triangle areas")
+    if np.any(areas <= 1.0e-12):
+        raise ValueError("rest shape contains an inverted or degenerate triangle")
+    return np.linalg.inv(rest_basis), areas
+
+
+def _cloth_rest_angles(
+    sim_triangles: np.ndarray,
+    rest_points: np.ndarray,
+    rest_triangles: np.ndarray,
+    default_mode: str,
+    authored_pairs,
+    authored_angles,
+) -> np.ndarray:
+    """Resolve rest angles in the simulation mesh's deterministic edge order."""
+    adjacency = MeshAdjacency(sim_triangles)
+    rest_angles = np.zeros(len(adjacency.edge_indices), dtype=np.float64)
+    rest_positions = rest_points[rest_triangles]
+
+    if default_mode == "restShape":
+        normals = np.cross(rest_positions[:, 1] - rest_positions[:, 0], rest_positions[:, 2] - rest_positions[:, 0])
+        normals /= np.linalg.norm(normals, axis=1)[:, None]
+        for edge_index, ((_, opposite, v0, v1), (tri0, tri1)) in enumerate(
+            zip(adjacency.edge_indices, adjacency.edge_tri_indices, strict=True)
+        ):
+            if opposite == -1 or tri1 == -1:
+                continue
+            sim_tri = sim_triangles[tri0]
+            local_v0 = int(np.flatnonzero(sim_tri == v0)[0])
+            local_v1 = int(np.flatnonzero(sim_tri == v1)[0])
+            edge = rest_positions[tri0, local_v1] - rest_positions[tri0, local_v0]
+            edge /= np.linalg.norm(edge)
+            sin_angle = np.dot(np.cross(normals[tri0], normals[tri1]), edge)
+            cos_angle = np.clip(np.dot(normals[tri0], normals[tri1]), -1.0, 1.0)
+            rest_angles[edge_index] = math.atan2(sin_angle, cos_angle)
+
+    if authored_pairs is None and authored_angles is None:
+        return rest_angles
+    pairs = np.asarray(authored_pairs if authored_pairs is not None else [], dtype=np.int64).reshape(-1, 2)
+    angles = np.asarray(authored_angles if authored_angles is not None else [], dtype=np.float64).reshape(-1)
+    if len(pairs) != len(angles):
+        raise ValueError("restAdjTriPairs and restBendAngles must have matching lengths")
+    edge_by_pair = {
+        tuple(sorted((int(tri0), int(tri1)))): edge_index
+        for edge_index, (tri0, tri1) in enumerate(adjacency.edge_tri_indices)
+        if tri1 != -1
+    }
+    for pair, angle in zip(pairs, angles, strict=True):
+        key = tuple(sorted((int(pair[0]), int(pair[1]))))
+        if key not in edge_by_pair:
+            raise ValueError(f"restAdjTriPairs contains non-adjacent triangle pair {key}")
+        if not math.isfinite(float(angle)):
+            raise ValueError(f"restBendAngles contains non-finite value {angle}")
+        rest_angles[edge_by_pair[key]] = float(angle)
+    return rest_angles
+
+
+def _cloth_rest_edge_lengths(
+    sim_triangles: np.ndarray, rest_points: np.ndarray, rest_triangles: np.ndarray
+) -> np.ndarray:
+    """Compute bending-edge lengths from corresponding rest-shape edges."""
+    adjacency = MeshAdjacency(sim_triangles)
+    lengths = np.empty(len(adjacency.edge_indices), dtype=np.float64)
+    for edge_index, ((_, _, v0, v1), (tri0, tri1)) in enumerate(
+        zip(adjacency.edge_indices, adjacency.edge_tri_indices, strict=True)
+    ):
+        triangle_lengths = []
+        for tri in (tri0, tri1):
+            if tri == -1:
+                continue
+            sim_tri = sim_triangles[tri]
+            local_v0 = int(np.flatnonzero(sim_tri == v0)[0])
+            local_v1 = int(np.flatnonzero(sim_tri == v1)[0])
+            rest_edge = rest_points[rest_triangles[tri, local_v1]] - rest_points[rest_triangles[tri, local_v0]]
+            triangle_lengths.append(float(np.linalg.norm(rest_edge)))
+        if len(triangle_lengths) == 2 and not math.isclose(
+            triangle_lengths[0], triangle_lengths[1], rel_tol=1.0e-6, abs_tol=1.0e-12
+        ):
+            raise ValueError(f"disjoint rest topology assigns inconsistent lengths to simulation edge ({v0}, {v1})")
+        lengths[edge_index] = triangle_lengths[0]
+    return lengths
 
 
 def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
@@ -106,15 +207,12 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         tri_faces = usd.fan_triangulate_faces(np.asarray(face_counts), np.asarray(face_indices))
         # A left-handed mesh and a reflective world transform (negative determinant) each reverse
         # triangle winding, so flip on their XOR to keep consistent outward orientation.
-        if (mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded) != _world_matrix_reflects(world_mat):
+        flip_winding = (mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded) != _world_matrix_reflects(
+            world_mat
+        )
+        if flip_winding:
             tri_faces = tri_faces[:, ::-1]
         tri_vertex_indices = tri_faces.reshape(-1).tolist()
-        _warn_unsupported_rest_fields(
-            prim,
-            path,
-            ("restShapePoints", "restBendAngles", "restAdjTriPairs", "restBendAnglesDefault"),
-            deformable_read,
-        )
         _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsSurfaceDeformableMaterialAPI", deformable_read)
         _warn_subset_material_bindings(prim, path)
@@ -123,13 +221,12 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # the full world affine (incl. non-uniform scale, shear, reflection) into the vertices and
         # pass an identity placement -- wp.transform_decompose would drop reflection parity.
         cloth_vertices = _bake_world_points(mesh_points, world_mat)
+        cloth_vertices_np = np.asarray(cloth_vertices, dtype=np.float64)
 
-        # A zero-area triangle cannot form an FEM element; add_cloth_mesh would drop it and
-        # leave a partial import (particles without their triangle). Contain it like other
-        # malformed topology: warn and skip the prim before any builder mutation.
-        vert_np = np.array([[v[0], v[1], v[2]] for v in cloth_vertices], dtype=np.float64)
-        edge1 = vert_np[tri_faces[:, 1]] - vert_np[tri_faces[:, 0]]
-        edge2 = vert_np[tri_faces[:, 2]] - vert_np[tri_faces[:, 0]]
+        # A zero-area live triangle cannot form an FEM element. Validate before resolving
+        # rest-state fallbacks so malformed simulation geometry never becomes a rest error.
+        edge1 = cloth_vertices_np[tri_faces[:, 1]] - cloth_vertices_np[tri_faces[:, 0]]
+        edge2 = cloth_vertices_np[tri_faces[:, 2]] - cloth_vertices_np[tri_faces[:, 0]]
         tri_areas = 0.5 * np.linalg.norm(np.cross(edge1, edge2), axis=1)
         degenerate = int(np.count_nonzero(tri_areas < 1.0e-12))
         if degenerate:
@@ -138,6 +235,73 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                 stacklevel=2,
             )
             continue
+
+        rest_points_value = deformable_read(prim, "restShapePoints")
+        rest_indices_value = deformable_read(prim, "restTriVertexIndices")
+        rest_points = cloth_vertices_np
+        rest_triangles = np.asarray(tri_faces, dtype=np.int64)
+        if rest_points_value is not None:
+            try:
+                rest_points = np.asarray(_bake_world_points(rest_points_value, world_mat), dtype=np.float64)
+                if rest_indices_value is None or len(rest_indices_value) == 0:
+                    if len(rest_points) != len(mesh_points):
+                        raise ValueError("restShapePoints must match points when restTriVertexIndices is omitted")
+                    rest_triangles = np.asarray(tri_faces, dtype=np.int64)
+                else:
+                    rest_triangles = np.asarray(rest_indices_value, dtype=np.int64).reshape(-1, 3)
+                    if len(rest_triangles) != len(tri_faces):
+                        raise ValueError("restTriVertexIndices must contain one triangle per simulation triangle")
+                    if np.any(rest_triangles < 0) or np.any(rest_triangles >= len(rest_points)):
+                        raise ValueError("restTriVertexIndices contains an out-of-range point index")
+                    if flip_winding:
+                        rest_triangles = rest_triangles[:, ::-1]
+                rest_poses, rest_areas = _cloth_rest_data(rest_points, rest_triangles)
+                rest_edge_lengths = _cloth_rest_edge_lengths(
+                    np.asarray(tri_faces, dtype=np.int64), rest_points, rest_triangles
+                )
+            except (TypeError, ValueError) as exc:
+                warnings.warn(f"{path}: invalid cloth rest shape ({exc}); using the simulation shape.", stacklevel=2)
+                rest_points = cloth_vertices_np
+                rest_triangles = np.asarray(tri_faces, dtype=np.int64)
+                rest_poses, rest_areas = _cloth_rest_data(rest_points, rest_triangles)
+                rest_edge_lengths = _cloth_rest_edge_lengths(
+                    np.asarray(tri_faces, dtype=np.int64), rest_points, rest_triangles
+                )
+        else:
+            if rest_indices_value is not None and len(rest_indices_value):
+                warnings.warn(
+                    f"{path}: restTriVertexIndices is authored without restShapePoints; using the simulation shape.",
+                    stacklevel=2,
+                )
+            rest_poses, rest_areas = _cloth_rest_data(rest_points, rest_triangles)
+            rest_edge_lengths = _cloth_rest_edge_lengths(
+                np.asarray(tri_faces, dtype=np.int64), rest_points, rest_triangles
+            )
+
+        rest_default_value = deformable_read(prim, "restBendAnglesDefault")
+        rest_default = "flat" if rest_default_value is None else str(rest_default_value)
+        if rest_default not in ("flat", "restShape"):
+            warnings.warn(
+                f"{path}: invalid restBendAnglesDefault '{rest_default}'; using 'flat'.",
+                stacklevel=2,
+            )
+            rest_default = "flat"
+        try:
+            rest_angles = _cloth_rest_angles(
+                np.asarray(tri_faces, dtype=np.int64),
+                rest_points,
+                rest_triangles,
+                rest_default,
+                deformable_read(prim, "restAdjTriPairs"),
+                deformable_read(prim, "restBendAngles"),
+            )
+        except (IndexError, TypeError, ValueError) as exc:
+            warnings.warn(
+                f"{path}: invalid authored rest bend angles ({exc}); using '{rest_default}' defaults.", stacklevel=2
+            )
+            rest_angles = _cloth_rest_angles(
+                np.asarray(tri_faces, dtype=np.int64), rest_points, rest_triangles, rest_default, None, None
+            )
 
         cloth_mat = usd._get_surface_deformable_material(prim, deformable_read) or {}
         # Surface thickness: prefer the material's authored value; otherwise fall back to a
@@ -234,6 +398,17 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             particle_radius=particle_radius,
             label=path,
         )
+        for local_tri, (pose, area) in enumerate(zip(rest_poses, rest_areas, strict=True)):
+            builder.tri_poses[t0 + local_tri] = pose.tolist()
+            builder.tri_areas[t0 + local_tri] = float(area)
+        for particle in range(p0, builder.particle_count):
+            builder.particle_mass[particle] = 0.0
+        for local_tri, area in enumerate(rest_areas):
+            for vertex in tri_faces[local_tri]:
+                builder.particle_mass[p0 + int(vertex)] += density * float(area) / 3.0
+        for local_edge, angle in enumerate(rest_angles):
+            builder.edge_rest_angle[e0 + local_edge] = float(angle)
+            builder.edge_rest_length[e0 + local_edge] = float(rest_edge_lengths[local_edge])
         _apply_particle_masses(builder, prim, p0, builder.particle_count, deformable_read)
         path_cloth_map[path] = {
             "particle": (p0, builder.particle_count),

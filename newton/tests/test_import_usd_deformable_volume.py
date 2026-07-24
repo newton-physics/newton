@@ -98,6 +98,70 @@ class TestUSDDeformableVolume(unittest.TestCase):
         result = builder.add_usd(stage, return_deformable_results=True)
         return builder, result
 
+    def test_volume_rest_shape_drives_material_state(self):
+        """Rest points set tet pose and mass while live points remain the initial state."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)])
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)]
+        )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set([(0, 1, 2, 3)])
+        _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=6.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        np.testing.assert_allclose(
+            np.asarray(builder.particle_q),
+            [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(np.asarray(builder.tet_poses[0]), np.eye(3), atol=1.0e-6)
+        self.assertAlmostEqual(sum(builder.particle_mass), 1.0, places=6)
+
+    def test_invalid_live_tet_skips_without_partial_state(self):
+        """A flat live tet with valid rest data is rejected before particles are appended."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.0, 1.0, 1.0)])
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)]
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "skipping before builder mutation"):
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.particle_count, 0)
+        self.assertEqual(builder.tet_count, 0)
+        self.assertEqual(group_labels(builder, "soft"), [])
+
+    def test_left_handed_rest_indices_follow_tet_orientation(self):
+        """Explicit rest indices use the same left-handed correction as live indices."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+        tet.CreateTetVertexIndicesAttr([(0, 2, 1, 3)])
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)]
+        )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set([(0, 2, 1, 3)])
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            builder.add_usd(stage)
+
+        self.assertFalse(any("invalid volume rest shape" in str(item.message) for item in caught))
+        np.testing.assert_allclose(np.asarray(builder.tet_poses[0]), np.eye(3) * 0.5, atol=1.0e-6)
+
     def test_volume_mass_precedence(self):
         """Per-prim mass sources resolve in precedence order: physics:masses on the simulation
         geometry beats a body-mass override; a body-mass override rescales the density-derived
