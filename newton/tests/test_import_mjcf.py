@@ -2849,6 +2849,97 @@ f 4 5 8
             msg="Visual geom with explicit mass should contribute non-zero inertia",
         )
 
+    def test_visual_geom_mass_without_parsing_visuals(self):
+        """Test that skipping visual shapes does not change inferred body mass."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <geom name="visual" class="visual" type="sphere" size="0.1"
+            contype="0" conaffinity="0" group="2" mass="0.012"/>
+      <geom name="collision" class="collision" type="box" size="0.1 0.1 0.1"
+            group="3" mass="0"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        for parse_visuals, expected_shape_count in ((False, 1), (True, 2)):
+            with self.subTest(parse_visuals=parse_visuals):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf, parse_visuals=parse_visuals)
+
+                self.assertEqual(builder.shape_count, expected_shape_count)
+                self.assertAlmostEqual(builder.body_mass[0], 0.012, places=7)
+                self.assertGreater(float(np.trace(np.array(builder.body_inertia[0]).reshape(3, 3))), 0.0)
+
+    def test_compiler_inertiagrouprange(self):
+        """Test that only geom groups in the compiler range contribute inertia."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiagrouprange="0 2"/>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <geom type="sphere" size="0.1" group="2" mass="0.5"/>
+      <geom type="box" size="0.1 0.1 0.1" group="3" mass="8"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        self.assertAlmostEqual(builder.body_mass[0], 0.5, places=6)
+        np.testing.assert_allclose(
+            np.array(builder.body_inertia[0]).reshape(3, 3),
+            np.diag([0.002, 0.002, 0.002]),
+            atol=1e-7,
+            rtol=1e-6,
+        )
+
+    def test_compiler_inertiafromgeom_modes(self):
+        """Test compiler control over geom inference when inertial data exists."""
+        expected_properties = {
+            "auto": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "false": (1.0, [0.1, 0.2, 0.3], [0.01, 0.02, 0.03]),
+            "true": (2.0, [-0.2, 0.4, 0.1], [0.008, 0.008, 0.008]),
+        }
+        for mode, (expected_mass, expected_com, expected_inertia) in expected_properties.items():
+            with self.subTest(mode=mode):
+                mjcf = f"""<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="{mode}"/>
+  <worldbody>
+    <body name="test">
+      <freejoint/>
+      <inertial pos="0.1 0.2 0.3" mass="1" diaginertia="0.01 0.02 0.03"/>
+      <geom type="sphere" size="0.1" pos="-0.2 0.4 0.1" mass="2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+
+                self.assertAlmostEqual(builder.body_mass[0], expected_mass, places=6)
+                np.testing.assert_allclose(builder.body_com[0], expected_com, atol=1e-7)
+                np.testing.assert_allclose(
+                    np.array(builder.body_inertia[0]).reshape(3, 3),
+                    np.diag(expected_inertia),
+                    atol=1e-7,
+                )
+
+        mjcf_missing_inertial = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler inertiafromgeom="false"/>
+  <worldbody>
+    <body name="missing_inertial">
+      <freejoint/>
+      <geom type="sphere" size="0.1" mass="2"/>
+    </body>
+  </worldbody>
+</mujoco>"""
+        with self.assertRaisesRegex(ValueError, "requires an <inertial> element"):
+            newton.ModelBuilder().add_mjcf(mjcf_missing_inertial)
+
     def test_inertial_locks_body_against_frame_geom_mass(self):
         """Regression: explicit <inertial> must lock body mass/COM against later frame geoms.
 
