@@ -142,7 +142,11 @@ If you run the examples from a source checkout with uv, use
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_basic_dzhanibekov.jpg" alt="Dzhanibekov">
       </a>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/basic/example_load_usd.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_load_usd.jpg" alt="Load USD">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center" width="33%">
@@ -151,7 +155,9 @@ If you run the examples from a source checkout with uv, use
     <td align="center" width="33%">
       <code>python -m newton.examples basic_dzhanibekov</code>
     </td>
-    <td></td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples load_usd &lt;path-to-usd-file&gt;</code>
+    </td>
   </tr>
   <tr>
     <td colspan="3"><h3>Robot Examples</h3></td>
