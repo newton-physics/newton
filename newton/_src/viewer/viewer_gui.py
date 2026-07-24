@@ -826,6 +826,7 @@ class ViewerGui:
                                 "Wireframe Width (px)", renderer.wireframe_line_width, 0.5, 5.0
                             )
                     _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
+                    _changed, viewer.show_ground = imgui.checkbox("Show Ground", viewer.show_ground)
                     _changed, viewer.show_inertia_boxes = imgui.checkbox(
                         "Show Inertia Boxes", viewer.show_inertia_boxes
                     )

@@ -567,6 +567,7 @@ class ViewerBase(ABC):
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
+        layer.show_ground = True
         layer.show_static = False
         layer.show_inertia_boxes = False
         layer.show_hydro_contact_surface = False
@@ -950,7 +951,7 @@ class ViewerBase(ABC):
 
         # compute shape transforms and render
         for shapes in self._shape_instances.values():
-            visible = self._should_show_shape(shapes.flags, shapes.static) and not layer_hidden
+            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
 
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets, layer_xform=self.layer.xform)
@@ -1918,8 +1919,12 @@ class ViewerBase(ABC):
     def _hash_shape(self, geo_hash, shape_static, shape_flags) -> int:
         return hash((geo_hash, shape_static, shape_flags))
 
-    def _should_show_shape(self, flags: int, is_static: bool) -> bool:
+    def _should_show_shape(self, flags: int, is_static: bool, geo_type: int | None = None) -> bool:
         """Determine if a shape should be visible based on current settings."""
+
+        # A dedicated ground toggle hides plane shapes (e.g. the ground plane).
+        if geo_type is not None and int(geo_type) == int(newton.GeoType.PLANE) and not self.show_ground:
+            return False
 
         has_collide_flag = bool(flags & int(newton.ShapeFlags.COLLIDE_SHAPES))
         has_visible_flag = bool(flags & int(newton.ShapeFlags.VISIBLE))
