@@ -391,7 +391,7 @@ class DRTestMechanismRandomPosesCheckForwardKinematics(unittest.TestCase):
             model,
             num_poses,
             rng,
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -424,7 +424,7 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
         seed = int(hashlib.sha256(test_name.encode("utf8")).hexdigest(), 16)
         rng = np.random.default_rng(seed)
 
-        # Load the DR TestMech and DR Legs models from the `newton-assets` repository
+        # Load the DR Legs model from the `newton-assets` repository
         asset_path = newton.utils.download_asset("disneyresearch")
         asset_file = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
         builder = USDImporter().import_from(asset_file)
@@ -440,7 +440,7 @@ class DRLegsRandomPosesCheckForwardKinematics(unittest.TestCase):
             rng,
             max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
             max_ang_vel=np.radians(30.0),
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             tolerance=1e-6,
@@ -491,7 +491,7 @@ class HeterogenousModelRandomPosesCheckForwardKinematics(unittest.TestCase):
             rng,
             max_angle=np.radians(10.0),  # Angles too far from the initial pose lead to singularities
             max_ang_vel=np.radians(30.0),
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -575,7 +575,7 @@ class FourBarTieRodRandomPosesCheckForwardKinematics(unittest.TestCase):
             model,
             num_poses,
             rng,
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -627,7 +627,7 @@ class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
             model,
             num_poses,
             rng,
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -672,7 +672,7 @@ class AllJointsExampleRandomPosesCheckForwardKinematics(unittest.TestCase):
             model,
             num_poses,
             rng,
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,
@@ -726,7 +726,7 @@ class CartpoleRandomPosesCheckForwardKinematics(unittest.TestCase):
             model,
             num_poses,
             rng,
-            use_graph=self.has_cuda,
+            use_graph=self.has_cuda and not wp.config.verify_cuda,
             verbose=self.verbose,
             reset_state=True,
             use_incremental_solve=True,

@@ -1744,9 +1744,10 @@ class JointsModel:
     """
     Minimum (a.k.a. lower) joint DoF limits of each joint (as flat array).
 
-    Limits are dimensioned according to the number of DoFs of each joint,
-    as opposed to the number of coordinates in order to handle cases such
-    where joints have more coordinates than DoFs (e.g. spherical joints).
+    Although applying to joint coordinates, limits are dimensioned
+    according to the number of DoFs of each joint, as the number of limits
+    depends on the intrinsic number of DoFs, not on its (possibly redundant,
+    e.g. for spherical joints) parameterization into coordinates.
 
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
@@ -1755,9 +1756,10 @@ class JointsModel:
     """
     Maximum (a.k.a. upper) joint DoF limits of each joint (as flat array).
 
-    Limits are dimensioned according to the number of DoFs of each joint,
-    as opposed to the number of coordinates in order to handle cases such
-    where joints have more coordinates than DoFs (e.g. spherical joints).
+    Although applying to joint coordinates, limits are dimensioned
+    according to the number of DoFs of each joint, as the number of limits
+    depends on the intrinsic number of DoFs, not on its (possibly redundant,
+    e.g. for spherical joints) parameterization into coordinates.
 
     Shape of ``(sum_of_num_joint_dofs,)``.
     """

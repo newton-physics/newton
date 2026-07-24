@@ -29,7 +29,6 @@ from ...core.joints import (
     JointDoFType,
 )
 from ...core.materials import (
-    DEFAULT_DENSITY,
     DEFAULT_FRICTION,
     DEFAULT_RESTITUTION,
     MaterialDescriptor,
@@ -502,12 +501,9 @@ class USDImporter:
         ###
 
         # Retrieve the USD material properties
-        density_scale = mass_unit / distance_unit**3
-        density = (density_scale) * self._parse_float(material_prim, "physics:density", default=DEFAULT_DENSITY)
         restitution = self._parse_float(material_prim, "physics:restitution", default=DEFAULT_RESTITUTION)
         static_friction = self._parse_float(material_prim, "physics:staticFriction", default=DEFAULT_FRICTION)
         dynamic_friction = self._parse_float(material_prim, "physics:dynamicFriction", default=DEFAULT_FRICTION)
-        msg.debug(f"density: {density}")
         msg.debug(f"restitution: {restitution}")
         msg.debug(f"static_friction: {static_friction}")
         msg.debug(f"dynamic_friction: {dynamic_friction}")
@@ -519,7 +515,6 @@ class USDImporter:
         return MaterialDescriptor(
             name=name,
             uid=uid,
-            density=density,
             restitution=restitution,
             static_friction=static_friction,
             dynamic_friction=dynamic_friction,

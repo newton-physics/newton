@@ -891,7 +891,7 @@ def make_compute_joints_data_kernel(correction: JointCorrectionMode = JointCorre
 @wp.kernel
 def _extract_actuators_state_from_joints(
     # Inputs:
-    world_mask: wp.array[wp.bool],
+    world_mask: wp.array[wp.bool],  # None also supported
     model_joint_wid: wp.array[wp.int32],
     model_joint_act_type: wp.array[wp.int32],
     model_joint_coords_offset: wp.array[wp.int32],
@@ -912,7 +912,7 @@ def _extract_actuators_state_from_joints(
     act_type = model_joint_act_type[jid]
 
     # Early exit the operation if the joint's world is flagged as skipped or if the joint is not actuated
-    if not world_mask[wid] or act_type == JointActuationType.PASSIVE:
+    if (world_mask and not world_mask[wid]) or act_type == JointActuationType.PASSIVE:
         return
 
     # Retrieve the joint model data
@@ -1059,11 +1059,11 @@ def compute_joints_data(
 
 def extract_actuators_state_from_joints(
     model: ModelKamino,
-    world_mask: wp.array[wp.bool],
     joint_q: wp.array[wp.float32],
     joint_u: wp.array[wp.float32],
     actuator_q: wp.array[wp.float32],
     actuator_u: wp.array[wp.float32],
+    world_mask: wp.array[wp.bool] | None = None,
 ):
     """
     Extracts the states of the actuated joints from the full joint state arrays.
@@ -1081,7 +1081,7 @@ def extract_actuators_state_from_joints(
             Shape of ``(sum_of_num_actuated_joint_coords,)``.
         actuator_u: The output array to store the actuated joint velocities.
             Shape of ``(sum_of_actuated_joint_dofs,)``.
-        world_mask: An array indicating which worlds are active (True) or skipped (False).
+        world_mask: Per-world boolean mask. If provided, indicates in which worlds to perform the operation.
             Shape of ``(num_worlds,)``.
     """
     wp.launch(

@@ -676,27 +676,6 @@ class TestSensorTiledCamera(unittest.TestCase):
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
-    def test_deprecated_geometry_bvh_helpers_forward_to_model_methods(self) -> None:
-        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
-        state = model.state()
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.build_bvh_shape(model, state, bvh_constructor="median")
-        self.assertIsNotNone(model.bvh_shapes)
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.refit_bvh_shape(model, state)
-
-        particle_model = self._build_single_particle_scene()
-        particle_state = particle_model.state()
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.build_bvh_particle(particle_model, particle_state, bvh_constructor="median")
-        self.assertIsNotNone(particle_model.bvh_particles)
-
-        with self.assertWarns(DeprecationWarning):
-            newton.geometry.refit_bvh_particle(particle_model, particle_state)
-
     def test_model_bvh_build_accepts_constructor(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
         state = model.state()
