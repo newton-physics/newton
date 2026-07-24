@@ -2385,11 +2385,14 @@ def update_geom_properties_kernel(
     shape_ke: wp.array[float],
     shape_kd: wp.array[float],
     shape_size: wp.array[wp.vec3f],
+    shape_mesh_dataid: wp.array[int],
+    shape_mesh_aabb_center: wp.array[wp.vec3f],
+    shape_mesh_aabb_size: wp.array[wp.vec3f],
+    shape_mesh_rbound: wp.array[float],
     shape_transform: wp.array[wp.transform],
     mjc_geom_to_newton_shape: wp.array2d[wp.int32],
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
-    geom_dataid: wp.array2d[int],
     mesh_pos: wp.array[wp.vec3],
     mesh_quat: wp.array[wp.quat],
     shape_mu_torsional: wp.array[float],
@@ -2411,15 +2414,14 @@ def update_geom_properties_kernel(
     geom_solmix: wp.array2d[float],
     geom_gap: wp.array2d[float],
     geom_margin: wp.array2d[float],
+    geom_dataid_out: wp.array2d[int],
+    geom_aabb: wp.array3d[wp.vec3f],
+    geom_rbound: wp.array2d[float],
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
     Iterates over MuJoCo geoms [world, geom], looks up Newton shape index,
     and copies shape properties to geom properties.
-
-    Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
-    this internally based on the geometry, and Newton's shape_collision_radius
-    is not compatible with MuJoCo's bounding sphere calculation.
 
     Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
     gap widens the detection envelope without affecting force generation).
@@ -2479,7 +2481,11 @@ def update_geom_properties_kernel(
 
     # check if this is a mesh geom and apply mesh transformation
     if geom_type[geom_idx] == GEOM_TYPE_MESH:
-        mesh_id = geom_dataid[world % geom_dataid.shape[0], geom_idx]
+        mesh_id = shape_mesh_dataid[shape_idx]
+        geom_dataid_out[world, geom_idx] = mesh_id
+        geom_aabb[world, geom_idx, 0] = shape_mesh_aabb_center[shape_idx]
+        geom_aabb[world, geom_idx, 1] = shape_mesh_aabb_size[shape_idx]
+        geom_rbound[world, geom_idx] = shape_mesh_rbound[shape_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
         mesh_tf = wp.transform(mesh_p, quat_wxyz_to_xyzw(mesh_q))
