@@ -991,7 +991,7 @@ def Xform "World"
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_distance_joint_label(self):
+    def test_distance_joint(self):
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -1006,11 +1006,16 @@ class TestImportUsdJoints(unittest.TestCase):
         joint = UsdPhysics.DistanceJoint.Define(stage, "/World/DistanceJoint")
         joint.CreateBody0Rel().SetTargets([body0.GetPath()])
         joint.CreateBody1Rel().SetTargets([body1.GetPath()])
+        joint.CreateMinDistanceAttr(0.25)
+        joint.CreateMaxDistanceAttr(1.5)
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
 
-        self.assertIn("/World/DistanceJoint", builder.joint_label)
+        joint_index = builder.joint_label.index("/World/DistanceJoint")
+        dof_index = builder.joint_qd_start[joint_index]
+        self.assertEqual(builder.joint_limit_lower[dof_index], 0.25)
+        self.assertEqual(builder.joint_limit_upper[dof_index], 1.5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_collision_enabled(self):
