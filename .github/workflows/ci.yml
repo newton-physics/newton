@@ -138,6 +138,8 @@ jobs:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
+          # Warp names lambda-generated kernels via Python's salted hash(); fix the seed so kernel caches are reusable across processes
+          PYTHONHASHSEED: "0"
         run: >
           uv run --extra dev -m newton.tests
           --strict-warnings
