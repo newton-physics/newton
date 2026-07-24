@@ -928,6 +928,11 @@ def parse_usd(
             mesh.texture = None
         if material_props.get("color") is not None and mesh.texture is None:
             mesh.color = material_props["color"]
+        elif mesh.texture is not None:
+            # A textured mesh with no scalar color must use a white base so the
+            # default per-shape palette color does not tint the texture (matches
+            # the material-subset path in _make_visual_submesh).
+            mesh.color = (1.0, 1.0, 1.0)
         if material_props.get("roughness") is not None:
             mesh.roughness = material_props["roughness"]
         if material_props.get("metallic") is not None:
@@ -1028,7 +1033,7 @@ def parse_usd(
         )
 
         texture = material_props.get("texture")
-        if texture:
+        if texture is not None:
             submesh.texture = texture
         if submesh.texture is not None and submesh.uvs is None:
             logger.info("Mesh material subset %s: dropping texture because UVs could not be recovered.", path_name)
@@ -1060,7 +1065,11 @@ def parse_usd(
             return []
 
         subset_props = [(str(subset.GetPath()), usd.resolve_material_properties_for_prim(subset)) for subset in subsets]
-        mesh = _get_mesh_cached(prim)
+        # Load UVs (and matching authored normals) so each submesh slices real
+        # per-corner texture coordinates instead of recovering per-vertex UVs,
+        # which scrambles faceVarying UV sets. UV loading unwelds vertices while
+        # preserving triangle order, so the per-face subset selection still aligns.
+        mesh = _get_mesh_cached(prim, load_uvs=True, load_normals=True)
         triangle_face_indices = np.repeat(np.arange(len(face_counts), dtype=np.int32), face_counts - 2)
         covered_faces = np.zeros(len(face_counts), dtype=bool)
 
