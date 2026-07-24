@@ -1651,6 +1651,16 @@ def parse_mjcf(
                 has_range = "range" in joint_attrib
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
+                # MJCF ranges are absolute qpos values, while Newton joint
+                # coordinates measure displacement from the authored pose
+                # (qpos - ref). Shift authored limits into Newton's convention;
+                # SolverMuJoCo shifts them back when it builds jnt_range.
+                if has_range:
+                    joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
+                    if is_angular and use_degrees:
+                        joint_ref_value = np.deg2rad(joint_ref_value)
+                    limit_lower -= joint_ref_value
+                    limit_upper -= joint_ref_value
 
                 # Parse solreflimit for joint limit stiffness and damping
                 solreflimit = parse_vec(joint_attrib, "solreflimit", DEFAULT_LIMIT_SOLREF)
@@ -2890,8 +2900,17 @@ def parse_mjcf(
                 # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
                 if inheritrange > 0 and joint_name and qd_start >= 0:
-                    lower = builder.joint_limit_lower[qd_start]
-                    upper = builder.joint_limit_upper[qd_start]
+                    # Newton stores joint limits as displacements from the
+                    # authored pose (qpos - ref), but inheritrange copies the
+                    # joint's absolute qpos range to ctrlrange, which is
+                    # authored as native MuJoCo (absolute qpos). Shift back by
+                    # +ref so the derived range matches native MuJoCo.
+                    dof_ref_value = 0.0
+                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+                    if ref_attr is not None and isinstance(ref_attr.values, dict):
+                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
+                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
+                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
                     if lower < upper:
                         mean = (upper + lower) / 2.0
                         radius = (upper - lower) / 2.0 * inheritrange

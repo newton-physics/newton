@@ -1047,13 +1047,11 @@ def build_ref_q_kernel(
     joint_type: wp.array[wp.int32],
     joint_q: wp.array[wp.float32],
     joint_q_start: wp.array[wp.int32],
-    joint_qd_start: wp.array[wp.int32],
     joint_dof_dim: wp.array2d[wp.int32],
-    dof_ref: wp.array[wp.float32],
     # output
     ref_q: wp.array[wp.float32],
 ):
-    """Build reference joint coordinates from joint types and ``dof_ref``.
+    """Build the joint coordinates of the reference pose.
 
     Iterates over joints ``[j]``. Produces joint coordinates in Newton
     convention (xyzw quaternions) suitable for ``eval_articulation_fk``.
@@ -1062,8 +1060,10 @@ def build_ref_q_kernel(
     - **FREE / DISTANCE**: copies position and quaternion [xyzw] from
       ``joint_q``.
     - **BALL**: identity quaternion [xyzw].
-    - **PRISMATIC / REVOLUTE / D6**: copies ``dof_ref`` values [m or rad]
-      (or zero when ``dof_ref`` is ``None``).
+    - **PRISMATIC / REVOLUTE / D6**: zero. Newton scalar coordinates are
+      offsets from the MuJoCo reference (``qpos = joint_q + ref``), so the
+      reference pose — where the authored body poses hold — is at zero
+      scalar coordinates regardless of ``dof_ref``.
     - **FIXED** and others: no DOFs, no writes.
 
     Args:
@@ -1072,19 +1072,14 @@ def build_ref_q_kernel(
             ``[joint_coord_count]``.
         joint_q_start: Start index into ``ref_q`` for each joint,
             shape ``[joint_count]``.
-        joint_qd_start: Start index into ``dof_ref`` for each joint,
-            shape ``[joint_count]``.
         joint_dof_dim: Positional and rotational DOF counts per joint,
             shape ``[joint_count, 2]``.
-        dof_ref: Reference DOF values [m or rad], shape ``[joint_dof_count]``.
-            May be ``None``, in which case zeros are used.
         ref_q: *(output)* Reference joint coordinates [m or rad],
             shape ``[joint_coord_count]``.
     """
     j = wp.tid()
     jtype = joint_type[j]
     q_start = joint_q_start[j]
-    qd_start = joint_qd_start[j]
 
     if jtype == JointType.FREE or jtype == JointType.DISTANCE:
         for i in range(7):
@@ -1097,10 +1092,7 @@ def build_ref_q_kernel(
     elif jtype == JointType.PRISMATIC or jtype == JointType.REVOLUTE or jtype == JointType.D6:
         coord_count = joint_dof_dim[j, 0] + joint_dof_dim[j, 1]
         for k in range(coord_count):
-            ref_val = float(0.0)
-            if dof_ref:
-                ref_val = dof_ref[qd_start + k]
-            ref_q[q_start + k] = ref_val
+            ref_q[q_start + k] = 0.0
 
 
 @wp.kernel
@@ -1554,6 +1546,7 @@ def apply_mjc_control_kernel(
     joint_target_qd: wp.array[wp.float32],
     joint_q: wp.array[wp.float32],
     mujoco_ctrl: wp.array[wp.float32],
+    dof_ref: wp.array[wp.float32],
     target_q_per_world: wp.int32,
     coords_per_world: wp.int32,
     dofs_per_world: wp.int32,
@@ -1566,8 +1559,11 @@ def apply_mjc_control_kernel(
     """Apply Newton control inputs to MuJoCo control array.
 
     For JOINT_TARGET (source=0), uses sign encoding in mjc_actuator_to_newton_idx:
-    - Positive value (>=0): position actuator; the index into
-      ``joint_target_q`` is read from ``mjc_actuator_to_newton_target_q_idx``.
+    - Positive value (>=0): position actuator; the value is the per-world DOF
+      index and the index into ``joint_target_q`` is read from
+      ``mjc_actuator_to_newton_target_q_idx``. Scalar targets are shifted by
+      ``dof_ref`` [m or rad] because Newton targets are displacements from the
+      authored pose while MuJoCo ctrl is absolute qpos.
     - Value of -1: unmapped/skip
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
@@ -1593,7 +1589,13 @@ def apply_mjc_control_kernel(
             axis_idx = mjc_actuator_to_target_q_axis_idx[actuator]
             if axis_idx < 0:
                 if world_target_q < joint_target_q.shape[0]:
-                    mj_ctrl[world, actuator] = joint_target_q[world_target_q]
+                    # Newton position targets are displacements from the
+                    # authored pose; MuJoCo ctrl for a joint position actuator
+                    # is absolute qpos, so shift by ref.
+                    ref = float(0.0)
+                    if dof_ref:
+                        ref = dof_ref[world * dofs_per_world + idx]
+                    mj_ctrl[world, actuator] = joint_target_q[world_target_q] + ref
             else:
                 # Ball-joint position target
                 # Coord layout stores a 4-float quat (needs log-map); DOF layout stores
@@ -2207,6 +2209,7 @@ def update_jnt_properties_kernel(
     solimplimit: wp.array[vec5],
     joint_stiffness: wp.array[float],
     limit_margin: wp.array[float],
+    dof_ref: wp.array[wp.float32],
     # outputs
     jnt_solimp: wp.array2d[vec5],
     jnt_stiffness: wp.array2d[float],
@@ -2241,8 +2244,12 @@ def update_jnt_properties_kernel(
     if limit_margin:
         jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
-    # Update joint range
-    jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof], joint_limit_upper[newton_dof])
+    # Update joint range. Newton limits are displacements from the authored
+    # pose; MuJoCo's jnt_range is absolute qpos, so shift by ref.
+    ref = float(0.0)
+    if dof_ref:
+        ref = dof_ref[newton_dof]
+    jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof] + ref, joint_limit_upper[newton_dof] + ref)
     # update joint actuator force range (effort limit)
     effort_limit = joint_effort_limit[newton_dof]
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)

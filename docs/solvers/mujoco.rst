@@ -74,6 +74,37 @@ Joint types
      - *unsupported*
      - Not forwarded to MuJoCo.
 
+Joint reference values (``ref``)
+--------------------------------
+
+MuJoCo scalar joints (hinge and slide) may carry a reference value
+(MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the
+authored body poses correspond to ``qpos = ref``, and MuJoCo interprets
+limits, position-actuator controls, and keyframes as absolute ``qpos``
+values. Newton has no reference concept — its scalar joint coordinates
+measure displacement from the authored pose — so the two conventions are
+reconciled at the solver boundary:
+
+* Newton-side quantities are displacements from the authored pose:
+  ``joint_q``, ``joint_qd``, joint limits
+  (``joint_limit_lower`` / ``joint_limit_upper``), and position targets
+  (``Control.joint_target_q``). The MJCF importer shifts authored joint
+  ranges by ``-ref`` accordingly.
+* MuJoCo-side quantities keep MuJoCo's absolute convention: the solver
+  adds ``ref`` back when it writes ``qpos``, ``jnt_range``, and
+  position-actuator ``ctrl``, so the compiled MuJoCo model and its
+  runtime observables (``qpos``, sensors) match the authored MJCF and
+  native MuJoCo exactly.
+* Attributes in the ``mujoco.*`` custom-attribute namespace (for example
+  ``dof_springref`` or authored ``actuator_ctrlrange``) are native MuJoCo
+  data and remain in MuJoCo's absolute units.
+
+Changing ``mujoco.dof_ref`` at runtime (via
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) relabels the MuJoCo
+coordinates only: Newton displacements keep their meaning, while the
+exported ``qpos0``, ``jnt_range``, and position controls shift with the
+new reference.
+
 
 Geometry types
 --------------

@@ -3301,7 +3301,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         np.testing.assert_allclose(eq_data[:3], np.array(anchor1), atol=1.0e-6)
         np.testing.assert_allclose(eq_data[3:6], np.array(expected_anchor2), atol=1.0e-5)
 
-        ref_q = SolverMuJoCo._copy_dof_ref_to_qref(model)
+        ref_q = SolverMuJoCo._build_ref_q(model)
         np.testing.assert_allclose(ref_q.numpy(), model.joint_q.numpy(), atol=1.0e-6)
         ref_body_q = SolverMuJoCo._compute_body_poses_at_qref(model, ref_q).numpy()
         assert_np_equal(ref_body_q[body1], np.array(body1_xform), tol=1.0e-5)
@@ -9873,6 +9873,133 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
                 places=3,
                 msg=f"Expected joint_q value: {expected}, Measured value: {measured}",
             )
+
+
+class TestMuJoCoRefCoordinates(unittest.TestCase):
+    """Verify the joint-reference (MJCF ``ref``) coordinate convention.
+
+    Newton joint coordinates, limits, and position targets are displacements
+    from the authored pose; MuJoCo's qpos, jnt_range, and position-actuator
+    ctrl are absolute. The importer shifts authored ranges by -ref and the
+    solver shifts limits and targets back at the MuJoCo boundary.
+    """
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco model="refmodel">
+        <compiler angle="radian"/>
+        <option gravity="0 0 0"/>
+        <worldbody>
+            <body name="base" pos="0 0 0">
+                <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                <body name="child" pos="0 0 0">
+                    <joint name="hinge" type="hinge" axis="0 0 1" ref="0.5" range="0.1 0.9"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="drive" joint="hinge" kp="500" kv="50"/>
+        </actuator>
+    </mujoco>
+    """
+
+    def _make_sim(self):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.MJCF)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        return model, solver
+
+    def test_jnt_range_is_absolute(self):
+        """Exported jnt_range must equal the authored absolute range."""
+        model, solver = self._make_sim()
+
+        # Newton stores the range as a displacement from the authored pose.
+        self.assertAlmostEqual(float(model.joint_limit_lower.numpy()[0]), 0.1 - 0.5, places=5)
+        self.assertAlmostEqual(float(model.joint_limit_upper.numpy()[0]), 0.9 - 0.5, places=5)
+
+        # Both the compiled model and the warp model hold the authored range.
+        np.testing.assert_allclose(solver.mj_model.jnt_range[0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [0.1, 0.9], atol=1e-5)
+
+    def test_runtime_limit_and_ref_updates(self):
+        """Runtime limit and ref changes keep jnt_range = limits + ref."""
+        model, solver = self._make_sim()
+
+        model.joint_limit_lower.assign([-0.3])
+        model.joint_limit_upper.assign([0.3])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [0.2, 0.8], atol=1e-5)
+
+        # Changing ref relabels the MuJoCo coordinates: Newton displacements
+        # keep their meaning, jnt_range and qpos0 shift with the new ref.
+        model.mujoco.dof_ref.assign([0.2])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0, 0], [-0.1, 0.5], atol=1e-5)
+        self.assertAlmostEqual(float(solver.mjw_model.qpos0.numpy()[0][0]), 0.2, places=5)
+
+    def test_position_target_is_displacement(self):
+        """A position target of x must drive joint_q to x regardless of ref."""
+        model, solver = self._make_sim()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        control.joint_target_q.assign([0.2])
+        for _ in range(500):
+            solver.step(state_0, state_1, control, None, 0.01)
+            state_0, state_1 = state_1, state_0
+
+        self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.2, delta=1e-3)
+
+    def test_limit_clamps_displacement_range(self):
+        """Driving past the limit clamps joint_q at the displacement-space bound."""
+        model, solver = self._make_sim()
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        # Target beyond the upper limit (0.9 - 0.5 = 0.4 in displacement space).
+        control.joint_target_q.assign([0.8])
+        for _ in range(500):
+            solver.step(state_0, state_1, control, None, 0.01)
+            state_0, state_1 = state_1, state_0
+
+        self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), 0.4, delta=0.02)
+
+    def test_inheritrange_ctrlrange_is_absolute(self):
+        """An inheritrange ctrlrange must be authored in absolute qpos, not displacement.
+
+        ``inheritrange`` copies the joint's range to the actuator ctrlrange.
+        Newton stores limits as displacements from the authored pose, so the
+        derived ctrlrange must be shifted back by ``ref`` to match native
+        MuJoCo, otherwise the actuator can only reach part of its range.
+        """
+        mjcf = """<?xml version="1.0" ?>
+        <mujoco model="inheritrange">
+            <compiler angle="radian" autolimits="true"/>
+            <worldbody>
+                <body name="base" pos="0 0 0">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <body name="child" pos="0 0 0">
+                        <joint name="hinge" type="hinge" axis="0 0 1" ref="0.5" range="0.1 0.9"/>
+                        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="drive" joint="hinge" kp="500" inheritrange="1"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        # ctrlrange must equal the authored absolute range, matching jnt_range.
+        np.testing.assert_allclose(solver.mj_model.actuator_ctrlrange[0], [0.1, 0.9], atol=1e-5)
+        np.testing.assert_allclose(solver.mj_model.jnt_range[0], [0.1, 0.9], atol=1e-5)
 
 
 class TestActuatorDampratio(unittest.TestCase):
