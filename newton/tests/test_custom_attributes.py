@@ -1623,6 +1623,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_almost_equal(model.test.row_value.numpy(), [1.5, 2.5], decimal=6)
 
     def test_custom_frequency_world_reference_inference(self):
+        """Test that custom-frequency rows infer omitted world references."""
         builder = ModelBuilder()
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
         builder.add_custom_attribute(
@@ -1670,6 +1671,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_equal(model.test.item_value.numpy(), [10, 20, 30, 40, 50, 60])
 
     def test_custom_frequency_inferred_world_remaps_during_merge(self):
+        """Test that inferred world references remap when builders are merged."""
         template = ModelBuilder()
         template.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
         template.add_custom_attribute(
