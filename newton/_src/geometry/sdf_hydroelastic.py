@@ -1221,6 +1221,7 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any):
 
             gap_a = shape_gap[shape_a]
             gap_b = shape_gap[shape_b]
+            gap_sum = gap_a + gap_b
             margin_a = shape_data[shape_a][3]
             margin_b = shape_data[shape_b][3]
 
@@ -1248,7 +1249,7 @@ def create_count_iso_voxels_block_kernel(pressure_func: Any):
                         is_valid = not (wp.isnan(vb) or wp.isnan(va))
                         effective_va = va - margin_a
                         effective_vb = vb - margin_b
-                        if not is_valid or effective_va > r + gap_a or effective_vb > r + gap_b:
+                        if not is_valid or effective_va + effective_vb > 2.0 * r + gap_sum:
                             continue
 
                         # Bound p_a, p_b across the subblock using monotonicity of

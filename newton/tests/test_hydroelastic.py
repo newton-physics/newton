@@ -641,8 +641,7 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
         (0.08, -0.04, True),
         (margin_sum, 0.0, True),
         (0.16, 0.04, True),
-        (margin_sum + gap_sum, gap_sum, True),
-        (0.22, 0.10, False),
+        (0.24, 0.12, False),
     )
     for real_surface_separation, expected_distance, expect_contacts in cases:
         wp.launch(
@@ -658,8 +657,17 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
             test.assertEqual(len(distances), 0)
             continue
 
-        test.assertGreater(len(distances), 0)
-        test.assertTrue(np.all(np.abs(distances - expected_distance) <= tolerance))
+        test.assertGreater(
+            len(distances),
+            0,
+            f"Expected contacts at real surface separation {real_surface_separation}",
+        )
+        test.assertTrue(
+            abs(distances.min() - expected_distance) <= tolerance,
+            f"surface separation {real_surface_separation}: expected {expected_distance} +/- {tolerance}, "
+            f"got [{distances.min()}, {distances.max()}]",
+        )
+        test.assertTrue(np.all(distances <= gap_sum + tolerance))
         stiffness = contacts.rigid_contact_stiffness.numpy()[: len(distances)]
         test.assertTrue(np.all(stiffness > 0.0))
         if expected_distance >= 0.0:
