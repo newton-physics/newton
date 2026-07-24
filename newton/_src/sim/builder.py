@@ -9517,6 +9517,10 @@ class ModelBuilder:
             :attr:`default_tet_k_mu`, :attr:`default_tet_k_lambda`,
             :attr:`default_tet_k_damp`).
 
+            Negative-volume tetrahedra are reoriented automatically before mass,
+            elasticity, and surface topology are generated. Degenerate tetrahedra
+            remain excluded.
+
             The generated surface triangles and optional edges are for collision purposes.
             Their stiffness and damping values default to zero so they do not introduce additional
             elastic forces. Set the stiffness parameters above to non-zero values if you
@@ -9525,6 +9529,7 @@ class ModelBuilder:
         from ..geometry.types import TetMesh  # noqa: PLC0415
 
         # Resolve parameters: explicit args > mesh attributes > error
+        indices_from_mesh = False
         if mesh is not None:
             if not isinstance(mesh, TetMesh):
                 raise TypeError(f"mesh must be a TetMesh, got {type(mesh).__name__}")
@@ -9532,6 +9537,7 @@ class ModelBuilder:
                 vertices = mesh.vertices
             if indices is None:
                 indices = mesh.tet_indices
+                indices_from_mesh = True
             if density is None:
                 density = mesh.density
             if k_mu is None:
@@ -9552,6 +9558,23 @@ class ModelBuilder:
             validate_tet_mesh(verts_np, inds_np, label=label, stacklevel=3)
             if inds_np.size > 0 and inds_np.size % 4 != 0:
                 return
+
+        reoriented_tets = False
+        indices_array = np.asarray(indices, dtype=np.int32)
+        if indices_array.size > 0 and indices_array.size % 4 == 0:
+            tet_indices = indices_array.reshape(-1, 4)
+            scaled_vertices = np.asarray(vertices, dtype=float).reshape(-1, 3) * scale
+            v0 = scaled_vertices[tet_indices[:, 0]]
+            d1 = scaled_vertices[tet_indices[:, 1]] - v0
+            d2 = scaled_vertices[tet_indices[:, 2]] - v0
+            d3 = scaled_vertices[tet_indices[:, 3]] - v0
+            inverted = np.einsum("ij,ij->i", d1, np.cross(d2, d3)) < 0.0
+            if np.any(inverted):
+                # External tetrahedralizers may use the opposite winding convention.
+                tet_indices = tet_indices.copy()
+                tet_indices[inverted, 1:3] = tet_indices[inverted][:, [2, 1]]
+                indices = tet_indices.flatten()
+                reoriented_tets = True
 
         if density is None:
             density = self.default_tet_density
@@ -9630,8 +9653,16 @@ class ModelBuilder:
 
         # Compute surface triangles — reuse pre-computed result from TetMesh
         # only when the caller did not override the indices.
-        if mesh is not None and indices is mesh.tet_indices and len(mesh.surface_tri_indices) > 0:
-            surface_tri_indices = mesh.surface_tri_indices
+        if mesh is not None and indices_from_mesh and len(mesh.surface_tri_indices) > 0:
+            if reoriented_tets:
+                normalized_surface = TetMesh.compute_surface_triangles(indices).reshape(-1, 3)
+                normalized_by_face = {tuple(sorted(face)): face for face in normalized_surface}
+                surface_tri_indices = np.asarray(
+                    [normalized_by_face[tuple(sorted(face))] for face in mesh.surface_tri_indices.reshape(-1, 3)],
+                    dtype=np.int32,
+                ).flatten()
+            else:
+                surface_tri_indices = mesh.surface_tri_indices
         else:
             surface_tri_indices = TetMesh.compute_surface_triangles(indices)
 
