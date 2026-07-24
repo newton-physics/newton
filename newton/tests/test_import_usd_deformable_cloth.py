@@ -53,7 +53,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertEqual(builder.particle_count, 4)
 
     def test_cloth_rest_shape_drives_material_state(self):
-        """Disjoint rest topology sets FEM poses, mass, and authored bend angles."""
+        """Disjoint rest topology sets FEM poses, mass, edge lengths, and authored bend angles."""
         from pxr import Sdf, UsdGeom
 
         stage = _deformable_stage()
@@ -90,6 +90,31 @@ class TestUSDDeformableCloth(unittest.TestCase):
         self.assertAlmostEqual(sum(builder.particle_mass), 1.0, places=6)
         interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
         self.assertAlmostEqual(builder.edge_rest_angle[interior_edge], 0.4, places=6)
+        self.assertAlmostEqual(builder.edge_rest_length[interior_edge], math.sqrt(2.0), places=6)
+
+    def test_disjoint_rest_topology_rejects_conflicting_edge_lengths(self):
+        """Two rest copies of one simulation edge must agree on its bending length."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+        mesh.CreatePointsAttr([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 2.0, 0.0), (0.0, 2.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr([3, 3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
+        mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 0.0, 0.0), (2.0, 2.0, 0.0), (0.0, 1.0, 0.0)]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.Int3Array).Set(
+            [(0, 1, 2), (3, 4, 5)]
+        )
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "inconsistent lengths"):
+            builder.add_usd(stage)
+
+        interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
+        self.assertAlmostEqual(builder.edge_rest_length[interior_edge], math.sqrt(8.0), places=6)
 
     def test_cloth_left_handed_orientation_flips_winding(self):
         """A left-handed cloth mesh flips triangle winding, matching the rigid mesh path."""

@@ -62,6 +62,8 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
     TetMeshes (graphics / collision, or bare) still import as legacy soft bodies. Results land in
     ``path_soft_map`` / attrs.
     """
+    from pxr import UsdGeom
+
     from ..usd import utils as usd  # noqa: PLC0415
 
     builder = ctx.builder
@@ -204,6 +206,31 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             flipped[:, [1, 2]] = flipped[:, [2, 1]]
             add_soft_mesh_kwargs["indices"] = flipped.reshape(-1)
 
+        if is_volume_deformable:
+            simulation_indices = np.asarray(
+                add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
+            ).reshape(-1, 4)
+            simulation_tets = world_vertices[simulation_indices]
+            simulation_matrices = np.stack(
+                (
+                    simulation_tets[:, 1] - simulation_tets[:, 0],
+                    simulation_tets[:, 2] - simulation_tets[:, 0],
+                    simulation_tets[:, 3] - simulation_tets[:, 0],
+                ),
+                axis=2,
+            )
+            simulation_volumes = np.linalg.det(simulation_matrices) / 6.0
+            invalid_simulation_tets = np.count_nonzero(
+                ~np.isfinite(simulation_volumes) | (simulation_volumes <= 1.0e-12)
+            )
+            if invalid_simulation_tets:
+                warnings.warn(
+                    f"{path}: simulation TetMesh has {invalid_simulation_tets} inverted, degenerate, or non-finite "
+                    "tetrahedron(s); skipping before builder mutation.",
+                    stacklevel=2,
+                )
+                continue
+
         rest_data = None
         if is_volume_deformable:
             rest_points_value = deformable_read(prim, "restShapePoints")
@@ -223,6 +250,10 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                             )
                         if np.any(rest_indices < 0) or np.any(rest_indices >= len(rest_points)):
                             raise ValueError("restTetVertexIndices contains an out-of-range point index")
+                        handedness = UsdGeom.TetMesh(prim).GetOrientationAttr().Get()
+                        if handedness and str(handedness).lower() == "lefthanded":
+                            rest_indices = rest_indices.copy()
+                            rest_indices[:, [1, 2]] = rest_indices[:, [2, 1]]
                     if _world_matrix_reflects(soft_mesh_mat):
                         rest_indices = rest_indices.copy()
                         rest_indices[:, [1, 2]] = rest_indices[:, [2, 1]]
@@ -264,9 +295,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 builder.tet_poses[soft_t0 + local_tet] = pose.tolist()
             for particle in range(soft_p0, builder.particle_count):
                 builder.particle_mass[particle] = 0.0
-            simulation_indices = np.asarray(
-                add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
-            ).reshape(-1, 4)
             mass_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)
             if mass_density is None:
                 mass_density = builder.default_tet_density
