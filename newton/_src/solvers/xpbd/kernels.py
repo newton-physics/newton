@@ -3047,6 +3047,7 @@ def solve_manifold_restitution(
     contact_axn_lo_target: wp.array[wp.vec4],
     contact_axn_hi_sigma: wp.array[wp.vec4],
     inner_iterations: int,
+    outer_iteration: int,
     # outputs
     deltas: wp.array[wp.spatial_vector],
     body_manifold_count: wp.array[float],
@@ -3056,12 +3057,25 @@ def solve_manifold_restitution(
     One thread per occupied hash-table slot (canonical body pair) iterates the
     manifold's contacts Gauss-Seidel style against local working copies of the
     two bodies' velocities, using the per-contact records cached by
-    :func:`build_restitution_manifolds` and an accumulated non-negativity clamp
-    on each contact impulse (PGS). The manifold's net velocity change is
-    written to ``deltas`` with atomics and averaged per body by the caller
-    over manifolds that fired (``body_manifold_count``). Restitution targets
-    stay anchored to the pre-solve velocities, matching
-    :func:`apply_rigid_restitution` semantics.
+    :func:`build_restitution_manifolds` and an accumulated lower-bounded clamp
+    on each contact impulse (PGS). On the first outer iteration only
+    (``outer_iteration == 0``), a contact whose starting separating velocity
+    already exceeds its restitution target gets a bounded negative allowance,
+    ``(target - rel_vel_start) / k_eff``, attributing the over-separation to
+    the contact's own positional impulse through its effective mass — so the
+    velocity pass can reduce a positional over-separation down to the target
+    and the authored coefficient is honored across the full ``[0, 1]`` range.
+    Later outer iterations clamp at zero: after the first pass, above-target
+    separation at a pair can be another manifold's restitution impulse, and a
+    re-frozen bound would claw it back (adhesive; dissipates energy at
+    ``e = 1``). Contacts starting at or below their target keep the plain
+    non-negative clamp on every pass. The one-shot attribution ignores
+    off-diagonal effective-mass coupling between contacts, so it bounds the
+    allowance but does not strictly guarantee per-contact non-adhesion. The
+    manifold's net velocity change is written to ``deltas`` with atomics and
+    averaged per body by the caller over manifolds that fired
+    (``body_manifold_count``). Restitution targets stay anchored to the
+    pre-solve velocities, matching :func:`apply_rigid_restitution` semantics.
     """
     tid = wp.tid()
 
@@ -3115,6 +3129,33 @@ def solve_manifold_restitution(
     v_hi = v_hi0
     w_hi = w_hi0
 
+    # Per-contact impulse lower bound, frozen at the sweep-start working
+    # velocities of the FIRST outer iteration only: the positional solve can
+    # reconstruct a separating velocity above the restitution target, and the
+    # velocity pass must be able to pull that overshoot back down (Eq. 34
+    # drives to the target from either side). Bounding the accumulator at
+    # (target - rel_vel_start) / k_eff instead of zero allows that reduction
+    # and no more. Later outer iterations must NOT re-freeze the bound:
+    # above-target separation there can be another manifold's restitution
+    # impulse from an earlier pass, and clawing it back is adhesive (measured
+    # 23% KE loss at e=1 for a body impacting two supports simultaneously).
+    lambda_min = _restitution_vecNf()
+    if outer_iteration == 0:
+        for k in range(num_contacts):
+            c = con[k]
+            d_nK = contact_n_K[c]
+            k_eff = d_nK[3]
+            if k_eff == 0.0:
+                continue
+            n = wp.vec3(d_nK[0], d_nK[1], d_nK[2])
+            d_lot = contact_axn_lo_target[c]
+            axn_lo = wp.vec3(d_lot[0], d_lot[1], d_lot[2])
+            d_his = contact_axn_hi_sigma[c]
+            axn_hi = wp.vec3(d_his[0], d_his[1], d_his[2])
+            sigma = d_his[3]
+            rel_vel_start = sigma * (wp.dot(n, v_lo) + wp.dot(axn_lo, w_lo) - wp.dot(n, v_hi) - wp.dot(axn_hi, w_hi))
+            lambda_min[k] = wp.min((d_lot[3] - rel_vel_start) / k_eff, 0.0)
+
     # Gauss-Seidel sweeps with accumulated clamp on local working copies
     lambda_acc = _restitution_vecNf()
     fired = wp.bool(False)
@@ -3135,7 +3176,7 @@ def solve_manifold_restitution(
 
             rel_vel_new = sigma * (wp.dot(n, v_lo) + wp.dot(axn_lo, w_lo) - wp.dot(n, v_hi) - wp.dot(axn_hi, w_hi))
             dv = (target - rel_vel_new) / k_eff
-            new_acc = wp.max(lambda_acc[k] + dv, 0.0)
+            new_acc = wp.max(lambda_acc[k] + dv, lambda_min[k])
             d_lambda = new_acc - lambda_acc[k]
             lambda_acc[k] = new_acc
             if d_lambda == 0.0:

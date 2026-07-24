@@ -949,7 +949,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                         # accumulators, so they only need zeroing once
                         body_deltas.zero_()
                         restitution_body_manifold_count.zero_()
-                    for _ in range(self.rigid_contact_restitution_iterations):
+                    for outer_iteration in range(self.rigid_contact_restitution_iterations):
                         if requires_grad:
                             body_deltas = wp.zeros_like(body_deltas)
                             restitution_body_manifold_count.zero_()
@@ -970,6 +970,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                                 restitution_contact_axn_lo_target,
                                 restitution_contact_axn_hi_sigma,
                                 self._restitution_manifold_inner_iterations,
+                                outer_iteration,
                             ],
                             outputs=[body_deltas, restitution_body_manifold_count],
                             device=model.device,
