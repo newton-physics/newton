@@ -242,7 +242,7 @@ def build_stacked_cubes_scene(
         )
 
     # Hydroelastic without contact reduction can generate many contacts
-    rigid_contact_max = 6000 if not reduce_contacts else 200
+    rigid_contact_max = 6000 if not reduce_contacts else 100
 
     collision_pipeline = newton.CollisionPipeline(
         model,
@@ -721,6 +721,13 @@ def test_hydroelastic_margin_gap_bands(test, device, reduce_contacts):
         test.assertTrue(np.all(stiffness > 0.0))
         if expected_distance >= 0.0:
             test.assertTrue(np.all(distances >= -tolerance))
+            if reduce_contacts and expected_distance > tolerance:
+                reducer = pipeline.hydroelastic_sdf.contact_reduction.reducer
+                active_slots = reducer.hashtable.active_slots.numpy()
+                active_count = int(active_slots[reducer.hashtable.capacity])
+                active_keys = reducer.hashtable.keys.numpy()[active_slots[:active_count]]
+                bin_ids = (active_keys >> np.uint64(55)) & np.uint64(0xFF)
+                test.assertTrue(np.all(bin_ids >= 128), "Speculative contacts must use disjoint reduction keys.")
 
 
 def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
@@ -763,13 +770,51 @@ def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
     test.assertTrue(np.all(speculative_dist >= 0.0))
     test.assertTrue(np.all(speculative_efc == -1))
 
+    contact_count = int(contacts.rigid_contact_count.numpy()[0])
+    stiffness = contacts.rigid_contact_stiffness.numpy()[:contact_count]
+    damping = contacts.rigid_contact_damping.numpy()[:contact_count]
+    tid_to_cid = solver._contact_tid_to_cid.numpy()[:contact_count]
+    solref = solver.mjw_data.contact.solref.numpy().reshape(-1, 2)
+    solimp = solver.mjw_data.contact.solimp.numpy().reshape(-1, 5)
+    for tid, cid in enumerate(tid_to_cid):
+        if cid < 0:
+            continue
+        contact_ke = stiffness[tid] * (1.0 - solimp[cid, 1])
+        if damping[tid] > 0.0:
+            expected_timeconst = 2.0 / damping[tid]
+            expected_dampratio = np.sqrt(1.0 / (expected_timeconst**2 * contact_ke))
+        else:
+            expected_timeconst = np.sqrt(1.0 / contact_ke)
+            expected_dampratio = 1.0
+        np.testing.assert_allclose(
+            solref[cid],
+            (expected_timeconst, expected_dampratio),
+            rtol=1.0e-5,
+        )
+
+    # Move the bodies while retaining the generated speculative contacts. The
+    # MuJoCo Warp fast path must update their separation without regenerating
+    # contact geometry or material data.
+    voxel_size = max(model._texture_sdf_data.numpy()["voxel_size"][0])
+    boundary_tolerance = 2.0 * voxel_size
+    wp.launch(
+        kernel=_set_body_z_kernel,
+        dim=1,
+        inputs=[state_0.body_q, body_b, 1.12 + boundary_tolerance],
+        device=device,
+    )
+    cached_distances = _get_contact_distances(contacts, model, state_0)
+    test.assertTrue(np.all(cached_distances >= 0.0))
+    test.assertTrue(np.any(cached_distances <= 2.0 * boundary_tolerance))
+    solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
+    test.assertTrue(np.all(solver.mjw_data.contact.efc_address.numpy()[:nacon] == -1))
+
     wp.launch(
         kernel=_set_body_z_kernel,
         dim=1,
         inputs=[state_0.body_q, body_b, 1.08],
         device=device,
     )
-    pipeline.collide(state_0, contacts)
     test.assertTrue(np.any(_get_contact_distances(contacts, model, state_0) < 0.0))
     solver.step(state_0, state_1, control, contacts, 1.0 / 600.0)
 

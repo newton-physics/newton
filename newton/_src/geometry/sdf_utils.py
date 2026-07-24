@@ -573,27 +573,8 @@ class SDF:
         scale_baked: bool = False,
         shape_margin: float = 0.0,
         texture_data: "TextureSDFData | None" = None,
-        construction_padding: float | None = None,
     ) -> "SDF":
-        """Create an SDF from precomputed runtime resources.
-
-        Args:
-            sparse_volume: Sparse SDF volume.
-            coarse_volume: Coarse SDF volume.
-            block_coords: Sparse volume block coordinates.
-            center: Local-space SDF center [m].
-            half_extents: Local-space SDF half extents [m].
-            background_value: Distance outside allocated blocks [m].
-            scale_baked: Whether shape scale is baked into the SDF.
-            shape_margin: Shape margin represented by the SDF [m].
-            texture_data: Texture SDF resources.
-            construction_padding: Outward distance covered when constructing
-                the SDF [m]. Required when attaching precomputed texture data
-                to a hydroelastic shape.
-
-        Returns:
-            The reconstructed SDF.
-        """
+        """Create an SDF from precomputed runtime resources."""
         sdf_data = create_empty_sdf_data()
         if sparse_volume is not None:
             sdf_data.sparse_sdf_ptr = sparse_volume.id
@@ -617,7 +598,7 @@ class SDF:
             block_coords=block_coords,
             shape_margin=shape_margin,
             texture_data=texture_data,
-            construction_padding=construction_padding,
+            construction_padding=None,
             _internal=True,
         )
         sdf.validate()

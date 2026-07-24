@@ -67,7 +67,7 @@ MIN_FRICTION_SCALE = 1e-2
 SPECULATIVE_BIN_OFFSET = 128
 _NUM_VOXEL_GROUPS = (NUM_VOXEL_DEPTH_SLOTS + NUM_SPATIAL_DIRECTIONS) // (NUM_SPATIAL_DIRECTIONS + 1)
 assert NUM_NORMAL_BINS + _NUM_VOXEL_GROUPS <= SPECULATIVE_BIN_OFFSET
-assert SPECULATIVE_BIN_OFFSET + NUM_NORMAL_BINS + _NUM_VOXEL_GROUPS <= 256
+assert SPECULATIVE_BIN_OFFSET + _NUM_VOXEL_GROUPS <= 256
 
 
 @wp.func
@@ -219,39 +219,6 @@ def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any):
                 # cannot replace penetrating winners. These entries carry no
                 # aggregate force and therefore export the selected raw faces.
                 ht_capacity = reducer_data.ht_capacity
-                bin_id = get_slot(normal)
-                entry_idx = hashtable_find_or_insert(
-                    make_contact_key(shape_a, shape_b, wp.static(SPECULATIVE_BIN_OFFSET) + bin_id),
-                    reducer_data.ht_keys,
-                    reducer_data.ht_active_slots,
-                )
-                if entry_idx >= 0:
-                    reducer_data.entry_k_eff[entry_idx] = _effective_stiffness(
-                        shape_material_k_hydro[shape_a],
-                        shape_material_k_hydro[shape_b],
-                    )
-                    if reducer_data.contact_nbin_entry.shape[0] > 0:
-                        reducer_data.contact_nbin_entry[i] = entry_idx
-                    pos_2d = project_point_to_plane(bin_id, position)
-                    for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                        score = wp.dot(pos_2d, get_spatial_direction_2d(dir_i))
-                        reduction_update_slot(
-                            entry_idx,
-                            dir_i,
-                            _make_contact_value_fast(score, 0, i),
-                            reducer_data.ht_values,
-                            ht_capacity,
-                        )
-                    reduction_update_slot(
-                        entry_idx,
-                        wp.static(NUM_SPATIAL_DIRECTIONS),
-                        _make_contact_value_fast(-depth, 0, i),
-                        reducer_data.ht_values,
-                        ht_capacity,
-                    )
-                else:
-                    wp.atomic_add(reducer_data.ht_insert_failures, 0, 1)
-
                 aabb_lower = shape_collision_aabb_lower[shape_b]
                 aabb_upper = shape_collision_aabb_upper[shape_b]
                 voxel_idx = compute_voxel_index(
@@ -268,7 +235,7 @@ def get_reduce_hydroelastic_contacts_kernel(pressure_func: Any):
                     make_contact_key(
                         shape_a,
                         shape_b,
-                        wp.static(SPECULATIVE_BIN_OFFSET + NUM_NORMAL_BINS) + voxel_group,
+                        wp.static(SPECULATIVE_BIN_OFFSET) + voxel_group,
                     ),
                     reducer_data.ht_keys,
                     reducer_data.ht_active_slots,

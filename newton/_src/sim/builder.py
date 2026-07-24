@@ -11471,8 +11471,7 @@ class ModelBuilder:
                         if is_hydroelastic and mesh_sdf.texture_data is not None and construction_padding is None:
                             raise ValueError(
                                 f"Hydroelastic shape {i} has precomputed SDF data with unknown construction padding. "
-                                "Recreate it with SDF.create_from_data(construction_padding=margin + gap), "
-                                "or rebuild it with Mesh.build_sdf(margin=margin + gap)."
+                                "Rebuild it with Mesh.build_sdf(margin=margin + gap)."
                             )
                         if (
                             is_hydroelastic
