@@ -2200,19 +2200,7 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     del device
 
     builder = newton.ModelBuilder()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        newton.solvers.SolverVBD.register_custom_attributes(builder)
-    test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
-    test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
-    test.assertIn("vbd:dahl_tau", builder.custom_attributes)
-    test.assertEqual(builder.custom_attributes["vbd:joint_is_hard"].default, 1)
-    test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.5)
-    test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 1.0)
-    test.assertTrue(any(issubclass(w.category, DeprecationWarning) for w in caught))
-
-    builder = newton.ModelBuilder()
-    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
     test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
     test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
     test.assertIn("vbd:dahl_tau", builder.custom_attributes)
@@ -2221,11 +2209,11 @@ def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
     test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
 
 
-def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_max=None, dahl_tau=None):
+def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=dahl_defaults_enabled)
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
 
     parent = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     child = builder.add_link(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
@@ -2249,35 +2237,28 @@ def _make_vbd_dahl_detection_model(device, *, dahl_defaults_enabled, dahl_eps_ma
 
 
 def _vbd_dahl_detection_requires_positive_values(test, device):
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False)
+    model = _make_vbd_dahl_detection_model(device)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5)
+    model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_tau=1.0)
+    model = _make_vbd_dahl_detection_model(device, dahl_tau=1.0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         solver = newton.solvers.SolverVBD(model)
     test.assertFalse(solver.enable_dahl_friction)
 
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=True)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        solver = newton.solvers.SolverVBD(model)
-    test.assertTrue(solver.enable_dahl_friction)
-
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5, dahl_tau=1.0)
+    model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5, dahl_tau=1.0)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -2287,7 +2268,7 @@ def _vbd_dahl_detection_requires_positive_values(test, device):
 
 def _rigid_reset_cable_history(test, device):
     """Reset defers the cable tuple, then rebaselines it from the post-reset pose."""
-    model = _make_vbd_dahl_detection_model(device, dahl_defaults_enabled=False, dahl_eps_max=0.5, dahl_tau=1.0)
+    model = _make_vbd_dahl_detection_model(device, dahl_eps_max=0.5, dahl_tau=1.0)
     solver = newton.solvers.SolverVBD(model, iterations=0)
 
     state_in = model.state()

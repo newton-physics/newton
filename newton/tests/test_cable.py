@@ -5496,7 +5496,7 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     half_segment = 0.5 * segment_length
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
 
     points = newton.utils.create_straight_cable_points(
         start=wp.vec3(0.0, 0.0, 0.0),
@@ -5736,7 +5736,7 @@ def _split_cable_bend_twist_deformation_derivative_matches_finite_difference(tes
 def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     """A solver step with Dahl enabled should not leak pure bend history into twist, or vice versa."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    newton.solvers.SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
 
     bend_body = builder.add_link(xform=wp.transform_identity())
     twist_body = builder.add_link(xform=wp.transform_identity())

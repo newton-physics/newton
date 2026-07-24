@@ -1544,7 +1544,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     @override
     @classmethod
-    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = True) -> None:
+    def register_custom_attributes(cls, builder: ModelBuilder, *, dahl_defaults_enabled: bool = False) -> None:
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
@@ -1554,19 +1554,26 @@ class SolverVBD(SolverBase, CouplingInterface):
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes and in USD as ``newton:vbd:<attr>``.
 
+        Dahl cable friction is enabled per joint only where both
+        ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
+        positive; the attributes default to zero.
+
         Args:
             builder: Model builder to register attributes on.
             dahl_defaults_enabled: Deprecated compatibility mode. When True, Dahl parameters
-                default to positive values. Prefer passing ``False`` and explicitly authoring
-                positive Dahl values only when Dahl cable friction is desired.
+                default to positive values instead of zero.
+
+                .. deprecated:: 1.5
+                    The compatibility mode will be removed; author positive Dahl
+                    values explicitly when Dahl cable friction is desired.
         """
         dahl_eps_default = 0.5 if dahl_defaults_enabled else 0.0
         dahl_tau_default = 1.0 if dahl_defaults_enabled else 0.0
         if dahl_defaults_enabled:
             warnings.warn(
-                "Implicit positive Dahl defaults in SolverVBD.register_custom_attributes() are deprecated "
-                "and will be disabled by default in a future release. Pass dahl_defaults_enabled=False and "
-                "explicitly author positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
+                "SolverVBD.register_custom_attributes(dahl_defaults_enabled=True) is deprecated "
+                "and the compatibility mode will be removed in a future release. Explicitly author "
+                "positive model.vbd.dahl_eps_max and model.vbd.dahl_tau values to enable "
                 "Dahl cable friction.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -1720,7 +1727,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         build time via the ``vbd:joint_is_hard`` custom attribute, avoiding a
         runtime :meth:`set_joint_constraint_mode` call::
 
-            SolverVBD.register_custom_attributes(builder, dahl_defaults_enabled=False)  # before adding joints
+            SolverVBD.register_custom_attributes(builder)  # before adding joints
             builder.add_joint_fixed(..., custom_attributes={"vbd:joint_is_hard": 0})
             model = builder.finalize()
             solver = SolverVBD(model, ...)
