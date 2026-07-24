@@ -77,9 +77,11 @@ class Example:
         )
 
         # Lift the free-floating base along the up axis so the scene starts above
-        # the ground plane. A free joint stores [translation (3), rotation (4)].
-        if args.height and len(articulation.joint_q) >= 7:
-            articulation.joint_q[_UP_AXIS_INDEX[args.up_axis]] += args.height
+        # the ground plane. A free joint stores [translation (3), rotation (4)];
+        # a fixed base has no translation coordinate to offset.
+        if args.height and articulation.joint_type and articulation.joint_type[0] == newton.JointType.FREE:
+            base_q = articulation.joint_q_start[0]
+            articulation.joint_q[base_q + _UP_AXIS_INDEX[args.up_axis]] += args.height
 
         # Hold the imported configuration with a PD drive so articulated robots
         # stand instead of collapsing under gravity.
