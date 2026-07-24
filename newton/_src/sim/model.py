@@ -31,11 +31,6 @@ if TYPE_CHECKING:
     from .collide import CollisionPipeline
 
 
-_HAS_HEIGHTFIELDS_DEPRECATION_MSG = (
-    "Model.has_heightfields is deprecated; use Model.heightfield_count, "
-    "or model.heightfield_count > 0 for boolean checks, instead."
-)
-
 _SHAPE_COLLISION_FILTER_MUTATION_DEPRECATION_MSG = (
     "Mutating Model.shape_collision_filter_pairs after ModelBuilder.finalize() is deprecated. "
     "Configure collision filters on ModelBuilder before finalizing; post-finalize filter changes "
@@ -1781,26 +1776,6 @@ class Model:
         )
         self._sdf_block_coords_cache = block_coords
         self._sdf_index2blocks_cache = index2blocks
-
-    @property
-    def has_heightfields(self) -> bool:
-        """Deprecated boolean alias for :attr:`heightfield_count`.
-
-        .. deprecated:: 1.3
-            Use :attr:`heightfield_count`, or ``heightfield_count > 0`` for
-            boolean checks, instead.
-        """
-        import warnings  # noqa: PLC0415
-
-        warnings.warn(_HAS_HEIGHTFIELDS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.heightfield_count > 0
-
-    @has_heightfields.setter
-    def has_heightfields(self, value: bool) -> None:
-        import warnings  # noqa: PLC0415
-
-        warnings.warn(_HAS_HEIGHTFIELDS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.heightfield_count = 1 if value else 0
 
     @property
     def joint_target_q_start(self) -> wp.array | None:

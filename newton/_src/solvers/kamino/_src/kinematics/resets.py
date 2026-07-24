@@ -15,9 +15,10 @@ from ..core.state import StateKamino
 from ..kinematics.joints import (
     compute_joint_pose_and_relative_motion,
     convert_angular_vel_to_universal_joint_intermediary_frame,
+    correct_quat_vector_coord,
+    correct_rotational_coord,
     get_joint_coords_mapping_function,
 )
-from ..solvers.fk.kernels import _correct_joint_angle, _correct_joint_quaternion
 
 ###
 # Module interface
@@ -59,25 +60,25 @@ def make_correct_joint_coords(dof_type: JointDoFType):
             pass  # No correction needed
 
         elif wp.static(dof_type == JointDoFType.CYLINDRICAL):  # Correct angle up to +/- 2 pi
-            coords[1] = _correct_joint_angle(coords[1], coords_ref[1])
+            coords[1] = correct_rotational_coord(coords[1], coords_ref[1])
 
         elif wp.static(dof_type == JointDoFType.FREE):  # Correct quaternion up to sign
             quat = wp.vec4f(coords[3], coords[4], coords[5], coords[6])
             quat_ref = wp.vec4f(coords_ref[3], coords_ref[4], coords_ref[5], coords_ref[6])
-            quat_corrected = _correct_joint_quaternion(quat, quat_ref)
+            quat_corrected = correct_quat_vector_coord(quat, quat_ref)
             for i in range(4):
                 coords[3 + i] = quat_corrected[i]
 
         elif wp.static(dof_type == JointDoFType.REVOLUTE):  # Correct angle up to +/- 2 pi
-            coords[0] = _correct_joint_angle(coords[0], coords_ref[0])
+            coords[0] = correct_rotational_coord(coords[0], coords_ref[0])
 
         elif wp.static(dof_type == JointDoFType.SPHERICAL):  # Correct quaternion up to sign
             quat_ref = wp.vec4f(coords_ref[0], coords_ref[1], coords_ref[2], coords_ref[3])
-            coords = _correct_joint_quaternion(coords, quat_ref)
+            coords = correct_quat_vector_coord(coords, quat_ref)
 
         elif wp.static(dof_type == JointDoFType.UNIVERSAL):  # Correct angles up to +/- 2 pi
-            coords[0] = _correct_joint_angle(coords[0], coords_ref[0])
-            coords[1] = _correct_joint_angle(coords[1], coords_ref[1])
+            coords[0] = correct_rotational_coord(coords[0], coords_ref[0])
+            coords[1] = correct_rotational_coord(coords[1], coords_ref[1])
 
         return coords
 

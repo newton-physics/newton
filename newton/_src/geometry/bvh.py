@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -396,56 +395,6 @@ def compute_shape_world_transforms_launch(model: Model, state: State) -> None:
     )
 
 
-def build_bvh_shape(
-    model: Model,
-    state: State,
-    *,
-    bvh_constructor: str | None = None,
-    include_collision_shapes: bool = False,
-) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_build_shapes`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_build_shapes` instead.
-
-    Args:
-        model: Simulation model providing shape metadata.
-        state: Current simulation state with body transforms.
-        bvh_constructor: Warp BVH construction algorithm forwarded to
-            :meth:`newton.Model.bvh_build_shapes`.
-        include_collision_shapes: Whether to include shapes marked for shape
-            or particle collisions in addition to visible shapes.
-    """
-    warnings.warn(
-        "newton.geometry.build_bvh_shape(model, state) is deprecated; use model.bvh_build_shapes(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_build_shapes(
-        state,
-        bvh_constructor=bvh_constructor,
-        include_collision_shapes=include_collision_shapes,
-    )
-
-
-def refit_bvh_shape(model: Model, state: State) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_refit_shapes`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_refit_shapes` instead.
-
-    Args:
-        model: Simulation model providing shape metadata.
-        state: Current simulation state with body transforms.
-    """
-    warnings.warn(
-        "newton.geometry.refit_bvh_shape(model, state) is deprecated; use model.bvh_refit_shapes(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_refit_shapes(state)
-
-
 def compute_particle_bvh_bounds_launch(
     model: Model,
     state: State,
@@ -469,41 +418,3 @@ def compute_particle_bvh_bounds_launch(
         ],
         device=model.device,
     )
-
-
-def build_bvh_particle(model: Model, state: State, *, bvh_constructor: str | None = None) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_build_particles`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_build_particles` instead.
-
-    Args:
-        model: Simulation model providing particle metadata.
-        state: Current simulation state with particle positions.
-        bvh_constructor: Warp BVH construction algorithm forwarded to
-            :meth:`newton.Model.bvh_build_particles`.
-    """
-    warnings.warn(
-        "newton.geometry.build_bvh_particle(model, state) is deprecated; use model.bvh_build_particles(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_build_particles(state, bvh_constructor=bvh_constructor)
-
-
-def refit_bvh_particle(model: Model, state: State) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_refit_particles`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_refit_particles` instead.
-
-    Args:
-        model: Simulation model providing particle metadata.
-        state: Current simulation state with particle positions.
-    """
-    warnings.warn(
-        "newton.geometry.refit_bvh_particle(model, state) is deprecated; use model.bvh_refit_particles(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_refit_particles(state)

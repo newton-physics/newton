@@ -112,6 +112,53 @@ _PROXY_RELAXATION_MODE_BY_NAME = {
 }
 
 
+@wp.func
+def _reset_world_selected(world: int, world_mask: wp.array[wp.bool]) -> bool:
+    if world >= 0 and world < world_mask.shape[0]:
+        return world_mask[world]
+    return world < 0 and world_mask.shape[0] == 1 and world_mask[0]
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _zero_global_proxy_values_masked_kernel(
+    proxy_ids_global: wp.array[int],
+    entity_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    values: wp.array[Any],
+):
+    index = wp.tid()
+    proxy_id = proxy_ids_global[index]
+    if _reset_world_selected(entity_world[proxy_id], world_mask):
+        values[proxy_id] = values.dtype(0.0)
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _zero_proxy_row_values_masked_kernel(
+    proxy_ids_global: wp.array[int],
+    entity_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    values: wp.array[Any],
+):
+    index = wp.tid()
+    proxy_id = proxy_ids_global[index]
+    if _reset_world_selected(entity_world[proxy_id], world_mask):
+        values[index] = values.dtype(0.0)
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _zero_local_proxy_values_masked_kernel(
+    proxy_ids_global: wp.array[int],
+    proxy_ids_local: wp.array[int],
+    entity_world: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    values: wp.array[Any],
+):
+    index = wp.tid()
+    proxy_id = proxy_ids_global[index]
+    if _reset_world_selected(entity_world[proxy_id], world_mask):
+        values[proxy_ids_local[index]] = values.dtype(0.0)
+
+
 @wp.kernel(enable_backward=False)
 def _copy_indexed_float_kernel(
     src_indices: wp.array[int],
@@ -408,19 +455,24 @@ class SolverCoupledProxy(SolverCoupled):
             )
 
     @staticmethod
-    def _validate_proxy_body_worlds(model: Model, source_ids: Sequence[int], proxy_ids: Sequence[int]) -> None:
-        if model.body_world is None:
+    def _validate_proxy_entity_worlds(
+        entity_world: wp.array[int] | None,
+        source_ids: Sequence[int],
+        proxy_ids: Sequence[int],
+        entity_name: str,
+    ) -> None:
+        if entity_world is None:
             return
 
-        body_world = model.body_world.numpy()
+        worlds = entity_world.numpy()
         for source_id, proxy_id in zip(source_ids, proxy_ids, strict=True):
-            source_world = int(body_world[source_id])
-            proxy_world = int(body_world[proxy_id])
+            source_world = int(worlds[source_id])
+            proxy_world = int(worlds[proxy_id])
             if source_world != proxy_world:
                 raise ValueError(
-                    "Proxy source body and destination proxy body must live in the same world: "
-                    f"source body {source_id} is in world {source_world}, "
-                    f"proxy body {proxy_id} is in world {proxy_world}"
+                    f"Proxy source {entity_name} and destination proxy {entity_name} must live in the same world: "
+                    f"source {entity_name} {source_id} is in world {source_world}, "
+                    f"proxy {entity_name} {proxy_id} is in world {proxy_world}"
                 )
 
     def _proxy_body_sets_by_destination(self) -> dict[str, set[int]]:
@@ -602,8 +654,8 @@ class SolverCoupledProxy(SolverCoupled):
             self._validate_proxy_ids(f"Proxy destination {entity_name}", proxy_local_ids, entity_count)
             self._validate_unique_proxy_ids(f"source {entity_name}", src_ids)
             self._validate_unique_proxy_ids(f"proxy {entity_name}", proxy_local_ids)
-            if is_body:
-                self._validate_proxy_body_worlds(model, src_ids, proxy_local_ids)
+            entity_world = model.body_world if is_body else model.particle_world
+            self._validate_proxy_entity_worlds(entity_world, src_ids, proxy_local_ids, entity_name)
             self._validate_proxy_source_ids_owned(
                 entity_name,
                 src_ids,
@@ -1032,21 +1084,55 @@ class SolverCoupledProxy(SolverCoupled):
     ) -> None:
         """Clear lagged proxy feedback and collision caches after reset."""
         super()._reset_coupling_state(state, world_mask=world_mask, flags=flags)
-        for mapping in [*self._proxy_mappings, *self._proxy_particle_mappings]:
+        for mapping, entity_world in (
+            *((mapping, self.model.body_world) for mapping in self._proxy_mappings),
+            *((mapping, self.model.particle_world) for mapping in self._proxy_particle_mappings),
+        ):
+            if world_mask is None or entity_world is None:
+                if mapping.coupling_forces is not None:
+                    mapping.coupling_forces.zero_()
+                if mapping.coupling_forces_previous is not None:
+                    mapping.coupling_forces_previous.zero_()
+                if mapping.aitken_residual_previous is not None:
+                    mapping.aitken_residual_previous.zero_()
+                if mapping.aitken_stats is not None:
+                    mapping.aitken_stats.zero_()
+                if mapping.aitken_relaxation is not None:
+                    mapping.aitken_relaxation.fill_(mapping.proxy_relaxation)
+                if mapping.aitken_has_previous is not None:
+                    mapping.aitken_has_previous.zero_()
+                if mapping.proxy_qd_before is not None:
+                    mapping.proxy_qd_before.zero_()
+                continue
+
             if mapping.coupling_forces is not None:
-                mapping.coupling_forces.zero_()
-            if mapping.coupling_forces_previous is not None:
-                mapping.coupling_forces_previous.zero_()
-            if mapping.aitken_residual_previous is not None:
-                mapping.aitken_residual_previous.zero_()
-            if mapping.aitken_stats is not None:
-                mapping.aitken_stats.zero_()
-            if mapping.aitken_relaxation is not None:
-                mapping.aitken_relaxation.fill_(mapping.proxy_relaxation)
-            if mapping.aitken_has_previous is not None:
-                mapping.aitken_has_previous.zero_()
+                wp.launch(
+                    _zero_global_proxy_values_masked_kernel,
+                    dim=mapping.proxy_ids_global.shape[0],
+                    inputs=[mapping.proxy_ids_global, entity_world, world_mask, mapping.coupling_forces],
+                    device=self.model.device,
+                )
+            for values in (mapping.coupling_forces_previous, mapping.aitken_residual_previous):
+                if values is not None:
+                    wp.launch(
+                        _zero_proxy_row_values_masked_kernel,
+                        dim=mapping.proxy_ids_global.shape[0],
+                        inputs=[mapping.proxy_ids_global, entity_world, world_mask, values],
+                        device=self.model.device,
+                    )
             if mapping.proxy_qd_before is not None:
-                mapping.proxy_qd_before.zero_()
+                wp.launch(
+                    _zero_local_proxy_values_masked_kernel,
+                    dim=mapping.proxy_ids_global.shape[0],
+                    inputs=[
+                        mapping.proxy_ids_global,
+                        mapping.proxy_ids_local,
+                        entity_world,
+                        world_mask,
+                        mapping.proxy_qd_before,
+                    ],
+                    device=self.model.device,
+                )
         for config in self._proxy_collision_configs.values():
             config.collide_counter = 0
             if config.contacts is not None:

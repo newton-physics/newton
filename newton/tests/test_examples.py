@@ -473,6 +473,13 @@ add_example_test(
     use_viewer=True,
     test_options={"num-frames": 20},
 )
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_plectoneme",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
 
 
 class TestClothExamples(unittest.TestCase):

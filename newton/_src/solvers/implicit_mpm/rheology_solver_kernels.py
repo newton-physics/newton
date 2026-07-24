@@ -308,6 +308,13 @@ def postprocess_stress_and_strain(
     """
     tau_i = wp.tid()
 
+    strain_block_beg = strain_mat_offsets[tau_i]
+    strain_block_end = strain_mat_offsets[tau_i + 1]
+    if strain_block_beg == strain_block_end:
+        elastic_strain[tau_i] = vec6(0.0)
+        plastic_strain[tau_i] = vec6(0.0)
+        return
+
     minus_elastic_strain = strain_rhs[tau_i]
     minus_elastic_strain -= unilateral_offset_to_strain_rhs(unilateral_strain_offset[tau_i])
     comp_block_beg = compliance_mat_offsets[tau_i]
@@ -317,9 +324,7 @@ def postprocess_stress_and_strain(
         minus_elastic_strain += compliance_mat_values[b] * stress[sig_i]
 
     world_plastic_strain = minus_elastic_strain
-    block_beg = strain_mat_offsets[tau_i]
-    block_end = strain_mat_offsets[tau_i + 1]
-    for b in range(block_beg, block_end):
+    for b in range(strain_block_beg, strain_block_end):
         u_i = strain_mat_columns[b]
         world_plastic_strain += _symmetric_part_op(strain_mat_values[b], velocity[u_i])
 
@@ -705,7 +710,6 @@ def make_apply_stress_delta(strain_velocity_node_count: int = -1):
         """Updates particle velocities from a local stress delta."""
 
         block_beg = strain_mat_offsets[tau_i]
-
         if wp.static(strain_velocity_node_count > 0):
             for bk in range(strain_velocity_node_count):
                 b = block_beg + bk
@@ -941,6 +945,10 @@ def make_jacobi_solve_kernel(
     ):
         tau_i = wp.tid()
 
+        if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1]:
+            delta_correction[tau_i] = vec6(0.0)
+            return
+
         local_strain = wp.static(make_compute_local_strain(has_compliance_mat, strain_velocity_node_count))(
             tau_i,
             compliance_mat_offsets,
@@ -1012,6 +1020,10 @@ def make_gs_solve_kernel(
         for color_offset in range(color_beg, color_end, launch_dim):
             beg, end = color_blocks[0, color_offset], color_blocks[1, color_offset]
             for tau_i in range(beg, end):
+                if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1]:
+                    delta_correction[tau_i] = vec6(0.0)
+                    continue
+
                 local_strain = wp.static(make_compute_local_strain(has_compliance_mat, strain_velocity_node_count))(
                     tau_i,
                     compliance_mat_offsets,
