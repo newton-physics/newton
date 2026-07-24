@@ -10,6 +10,7 @@ from newton._src.solvers.kamino.tests.test_solvers_dvi import TestDVISolver
 _DVI_CUDA_QUALITY_TESTS = (
     "test_08b_dr_legs_contact_capacity_scales_with_world_count",
     "test_09_dr_legs_dvi_first_contact_remains_finite",
+    "test_10_dr_legs_dvi_tipped_contact_does_not_creep",
     "test_11_dr_legs_dvi_contact_force_balances_weight",
 )
 

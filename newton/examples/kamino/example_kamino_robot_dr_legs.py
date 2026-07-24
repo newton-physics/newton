@@ -34,9 +34,6 @@ class Example:
         # constraints slightly less accurately than PADMM. Contact forces remain
         # zero until the shapes overlap.
         dvi_contact_margin = 5.0e-4 if self.dynamics_solver == "dvi" else 1e-6
-        self.dvi_contact_block_preconditioner = bool(getattr(args, "dvi_contact_block_preconditioner", False))
-        self.dvi_contact_jacobi_omega = float(getattr(args, "dvi_contact_jacobi_omega", 0.45))
-        self.dvi_contact_jacobi_relaxation = float(getattr(args, "dvi_contact_jacobi_relaxation", 0.9))
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -108,9 +105,6 @@ class Example:
             self.config.dvi.block_iterations = 4
             self.config.dvi.contact_iterations = 2
             self.config.dvi.bilateral_solve_period = 1
-            self.config.dvi.contact_jacobi_omega = self.dvi_contact_jacobi_omega
-            self.config.dvi.contact_jacobi_relaxation = self.dvi_contact_jacobi_relaxation
-            self.config.dvi.contact_block_preconditioner = self.dvi_contact_block_preconditioner
             self.config.dvi.contact_warmstart_method = "key_and_position_with_net_force_backup"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
@@ -215,23 +209,6 @@ class Example:
             choices=("padmm", "dvi"),
             default="padmm",
             help="Kamino dynamics solver to use.",
-        )
-        parser.add_argument(
-            "--dvi-contact-block-preconditioner",
-            action="store_true",
-            help="Use the opt-in full 3x3 contact block preconditioner for the Kamino DVI solver.",
-        )
-        parser.add_argument(
-            "--dvi-contact-jacobi-omega",
-            type=float,
-            default=0.45,
-            help="Step size for Kamino DVI non-colored contact Jacobi and block-preconditioned contact updates.",
-        )
-        parser.add_argument(
-            "--dvi-contact-jacobi-relaxation",
-            type=float,
-            default=0.9,
-            help="Solution mixing for Kamino DVI non-colored contact Jacobi and block-preconditioned contact updates.",
         )
         parser.add_argument(
             "--linear-solver-type",

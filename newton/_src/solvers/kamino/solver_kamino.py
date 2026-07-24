@@ -432,8 +432,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                         block_iterations=16,
                         contact_iterations=2,
                         bilateral_solve_period=2,
-                        contact_jacobi_omega=0.45,
-                        contact_jacobi_relaxation=0.9,
                     )
                 else:
                     self.dvi = config.DVISolverConfig()

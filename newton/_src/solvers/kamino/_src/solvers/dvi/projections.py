@@ -57,7 +57,7 @@ def project_contact_block_update(
 
 
 @wp.func
-def contact_trace_preconditioner(D_diag: vec3f) -> vec3f:
-    """Return the isotropic contact preconditioner derived from block trace."""
-    D_eff = (D_diag.x + D_diag.y + D_diag.z) / float32(3.0)
+def contact_normal_preconditioner(D_diag: vec3f) -> vec3f:
+    """Return an isotropic contact preconditioner based on normal effective mass."""
+    D_eff = D_diag.z
     return vec3f(D_eff, D_eff, D_eff)

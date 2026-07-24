@@ -18,6 +18,7 @@ float32 = wp.float32
 int32 = wp.int32
 mat33f = wp.mat33f
 vec2f = wp.vec2f
+vec2i = wp.vec2i
 
 
 @wp.struct
@@ -105,8 +106,11 @@ class DVIState:
         self.bilateral_preconditioner: wp.array[float32] | None = None
         self.bilateral_active_dim: wp.array[int32] | None = None
         self.contact_block_inv: wp.array[mat33f] | None = None
-        self.contact_colors: wp.array[int32] | None = None
-        self.contact_num_colors: wp.array[int32] | None = None
+        self.limit_indices: wp.array[int32] | None = None
+        self.contact_indices: wp.array[int32] | None = None
+        self.inequality_bodies: wp.array[vec2i] | None = None
+        self.inequality_colors: wp.array[int32] | None = None
+        self.inequality_num_colors: wp.array[int32] | None = None
         if size is not None:
             self.finalize(size)
 
@@ -121,8 +125,11 @@ class DVIState:
         self.bilateral_preconditioner = wp.zeros(size.sum_of_num_joint_cts, dtype=float32)
         self.bilateral_active_dim = wp.zeros(size.num_worlds, dtype=int32)
         self.contact_block_inv = wp.zeros(max(1, size.sum_of_max_contacts), dtype=mat33f)
-        self.contact_colors = wp.full(max(1, size.sum_of_max_contacts), -1, dtype=int32)
-        self.contact_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
+        self.limit_indices = wp.full(max(1, size.sum_of_max_limits), -1, dtype=int32)
+        self.contact_indices = wp.full(max(1, size.sum_of_max_contacts), -1, dtype=int32)
+        self.inequality_bodies = wp.full(max(1, size.sum_of_max_unilaterals), vec2i(-1, -1), dtype=vec2i)
+        self.inequality_colors = wp.full(max(1, size.sum_of_max_unilaterals), -1, dtype=int32)
+        self.inequality_num_colors = wp.zeros(max(1, size.num_worlds), dtype=int32)
 
     def reset(self):
         """Reset scratch arrays to zero."""
@@ -135,8 +142,11 @@ class DVIState:
         self.bilateral_preconditioner.zero_()
         self.bilateral_active_dim.zero_()
         self.contact_block_inv.zero_()
-        self.contact_colors.fill_(-1)
-        self.contact_num_colors.zero_()
+        self.limit_indices.fill_(-1)
+        self.contact_indices.fill_(-1)
+        self.inequality_bodies.fill_(vec2i(-1, -1))
+        self.inequality_colors.fill_(-1)
+        self.inequality_num_colors.zero_()
 
 
 class DVIData:
