@@ -1144,7 +1144,7 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         self._seed_constant_linear_force(contacts, f_world)
 
-        kamino_out = ContactsKamino(capacity=nc_orig + 32, device=self.default_device)
+        kamino_out = ContactsKamino(capacity=[9 + 10, 9 + 10, 4 + 10], device=self.default_device)
         convert_contacts_newton_to_kamino(model, state, contacts, kamino_out, convert_forces=True)
         nc_kamino = int(kamino_out.model_active_contacts.numpy()[0])
         self.assertGreater(nc_kamino, 0)
