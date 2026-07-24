@@ -126,7 +126,7 @@ class Example:
         template.rigid_gap = 0.005
         SolverMuJoCo.register_custom_attributes(template)
         if self.payload_kind == "vbd-cable":
-            SolverVBD.register_custom_attributes(template, dahl_defaults_enabled=False)
+            SolverVBD.register_custom_attributes(template)
         self._emit_template(template)
 
         bodies_per_world = template.body_count
