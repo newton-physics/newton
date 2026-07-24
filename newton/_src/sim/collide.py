@@ -1156,6 +1156,8 @@ class CollisionPipeline:
             self._contact_matcher = ContactMatcher(
                 rigid_contact_max,
                 sorter=self._contact_sorter,
+                shape_world=model.shape_world,
+                world_count=model.world_count,
                 pos_threshold=contact_matching_pos_threshold,
                 normal_dot_threshold=contact_matching_normal_dot_threshold,
                 contact_report=contact_report,
@@ -1221,6 +1223,26 @@ class CollisionPipeline:
         # attach custom attributes with assignment==CONTACT
         self.model._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
         return contacts
+
+    def reset_contact_matching(self, world_mask: wp.array[wp.bool] | None = None) -> None:
+        """Clear all or reset-selected previous-frame contact history."""
+        if world_mask is not None:
+            if not isinstance(world_mask, wp.array) or world_mask.dtype != wp.bool:
+                raise TypeError("'world_mask' must be a Warp boolean array or None.")
+            if world_mask.ndim != 1:
+                raise ValueError("'world_mask' must be one-dimensional.")
+            if world_mask.device != self.model.device:
+                raise ValueError(
+                    f"'world_mask' device {world_mask.device} does not match model device {self.model.device}."
+                )
+            world_count = int(self.model.world_count)
+            if world_mask.shape[0] not in (world_count, world_count + 1):
+                raise ValueError(
+                    f"'world_mask' length {world_mask.shape[0]} must equal model.world_count "
+                    f"({world_count}) or model.world_count + 1 ({world_count + 1})."
+                )
+        if self._contact_matcher is not None:
+            self._contact_matcher.reset(world_mask)
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:

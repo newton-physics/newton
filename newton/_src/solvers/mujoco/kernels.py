@@ -888,6 +888,7 @@ def convert_mj_coords_to_warp_kernel(
 def convert_warp_coords_to_mj_kernel(
     joint_q: wp.array[wp.float32],
     joint_qd: wp.array[wp.float32],
+    world_mask: wp.array[wp.bool],
     joints_per_world: int,
     joint_type: wp.array[wp.int32],
     joint_q_start: wp.array[wp.int32],
@@ -905,6 +906,9 @@ def convert_warp_coords_to_mj_kernel(
     qvel: wp.array2d[wp.float32],
 ):
     worldid, jntid = wp.tid()
+
+    if world_mask and not world_mask[worldid]:
+        return
 
     joint_id = joints_per_world * worldid + jntid
 

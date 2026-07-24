@@ -1857,6 +1857,8 @@ def _rigid_reset_state_and_history(test, device):
     solver.joint_lambda_lin.fill_(5.0)
     with test.assertRaisesRegex(ValueError, "argument is required"):
         solver.reset(None)
+    with test.assertRaisesRegex(TypeError, "dtype bool"):
+        solver.reset(state, world_mask=wp.array([1, 0, 0], dtype=wp.int32, device=device))
     with test.assertRaisesRegex(ValueError, "world_mask has size 1, expected 2 or 3"):
         solver.reset(state, world_mask=wp.array([True], dtype=wp.bool, device=device))
     np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), 5.0)

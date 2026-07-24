@@ -703,6 +703,7 @@ class LastStepData:
         collider_body_q: wp.array[wp.transform] | None,
         body_world: wp.array[wp.int32] | None = None,
         world_mask: wp.array[wp.bool] | None = None,
+        world_count: int | None = None,
     ):
         had_previous = self.body_q_prev is not None and (
             collider_body_q is None or self.body_q_prev.shape == collider_body_q.shape
@@ -712,10 +713,12 @@ class LastStepData:
             if world_mask is None or body_world is None or not had_previous:
                 self.body_q_prev.assign(collider_body_q)
             else:
+                if world_count is None:
+                    raise ValueError("world_count is required with world_mask.")
                 wp.launch(
                     reset_mpm_collider_history,
                     dim=collider_body_q.shape[0],
-                    inputs=[body_world, world_mask, collider_body_q, self.body_q_prev],
+                    inputs=[body_world, world_mask, world_count, collider_body_q, self.body_q_prev],
                     device=collider_body_q.device,
                 )
 
@@ -1444,17 +1447,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 device=device,
             )
 
-        if world_mask is None:
-            return
-        if not isinstance(world_mask, wp.array):
-            raise TypeError("world_mask must be a Warp array with dtype wp.bool.")
-        expected_shape = (self._initial_world_count + 1,)
-        if world_mask.shape != expected_shape:
-            raise ValueError(f"world_mask has shape {world_mask.shape}, expected {expected_shape}.")
-        if world_mask.dtype != wp.bool:
-            raise TypeError(f"world_mask has dtype {world_mask.dtype}, expected {wp.bool}.")
-        if world_mask.device != device:
-            raise ValueError(f"world_mask is on device {world_mask.device}, expected {device}.")
+        self._validate_reset_world_mask(world_mask)
 
     def _reset_grid_warmstart_partition(self, name, field, scratch_field) -> fem.SpacePartition:
         scratch_partition = scratch_field.space_partition
@@ -1528,14 +1521,20 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 wp.launch(
                     reset_mpm_point_warmstart,
                     dim=self._initial_particle_count,
-                    inputs=[self.model.particle_world, world_mask, field.dof_values],
+                    inputs=[self.model.particle_world, world_mask, self._initial_world_count, field.dof_values],
                     device=self.model.device,
                 )
             elif partition is not None and partition.node_count() > 0:
                 wp.launch(
                     reset_mpm_grid_warmstart,
                     dim=partition.node_count(),
-                    inputs=[world_mask, partition.env_offsets, partition.space_node_indices(), field.dof_values],
+                    inputs=[
+                        world_mask,
+                        self._initial_world_count,
+                        partition.env_offsets,
+                        partition.space_node_indices(),
+                        field.dof_values,
+                    ],
                     device=self.model.device,
                 )
 
@@ -1557,16 +1556,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         :attr:`Config.separate_worlds` or a full reset. A full reset clears
         every warm-start field. Sparse-grid rebuild status is always cleared at
         a valid reset boundary, and the previous-collider-pose cache is
-        refreshed from ``state``. The final mask entry selects global
-        particle-backed history and collider poses whose world index is ``-1``.
+        refreshed from ``state``. When present, the final mask entry selects
+        global particle-backed history and collider poses whose world index is
+        ``-1``.
 
         Args:
             state: Simulation state whose MPM history is modified in place.
-            world_mask: Optional boolean mask of shape
-                ``(model.world_count + 1,)`` selecting worlds to reset. Entries
-                before the last select local worlds by index, and the last
-                entry selects global objects whose world index is ``-1``. If
-                ``None``, reset all worlds and global objects.
+            world_mask: Optional one-dimensional boolean mask on the model
+                device. Shape ``(model.world_count,)`` selects local worlds
+                only. Shape ``(model.world_count + 1,)`` additionally uses the
+                final entry to select global objects whose world index is
+                ``-1``. If ``None``, reset all worlds and global objects.
 
                 .. experimental::
 
@@ -1575,6 +1575,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 history.
         """
         self._validate_reset_inputs(state, world_mask)
+        if not self._reset_world_mask_selects_any(world_mask):
+            return
+
         reset_partitions = self._validate_reset_warmstart_fields(world_mask)
         state_flags = int(StateFlags.ALL if flags is None else flags)
         reset_particle_history = bool(state_flags & int(StateFlags.PARTICLE))
@@ -1601,6 +1604,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         inputs=[
                             self.model.particle_world,
                             world_mask,
+                            self._initial_world_count,
                             state.mpm.particle_elastic_strain,
                             state.mpm.particle_transform,
                             state.mpm.particle_qd_grad,
@@ -1614,6 +1618,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 state.body_q,
                 body_world=self.model.body_world,
                 world_mask=world_mask,
+                world_count=self._initial_world_count,
             )
 
     @override
@@ -1722,6 +1727,34 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
+
+    def coupling_sync_reset_state(
+        self,
+        state_in: newton.State,
+        state_out: newton.State,
+        world_mask: wp.array[wp.bool],
+        flags: StateFlags | int | None,
+    ) -> None:
+        """Reset selected custom history in a coupled output state."""
+        del state_in
+        state_flags = int(StateFlags.ALL if flags is None else flags)
+        if not state_flags & int(StateFlags.PARTICLE) or self.model.particle_count == 0:
+            return
+        wp.launch(
+            reset_mpm_particle_history,
+            dim=self.model.particle_count,
+            inputs=[
+                self.model.particle_world,
+                world_mask,
+                self._initial_world_count,
+                state_out.mpm.particle_elastic_strain,
+                state_out.mpm.particle_transform,
+                state_out.mpm.particle_qd_grad,
+                state_out.mpm.particle_stress,
+                state_out.mpm.particle_Jp,
+            ],
+            device=self.model.device,
+        )
 
     def coupling_rewind_proxy_body(
         self,

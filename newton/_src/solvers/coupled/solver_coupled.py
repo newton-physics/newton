@@ -224,6 +224,31 @@ class SolverEntry:
     particle_gravity_acceleration: wp.array[wp.vec3] | None = None
 
 
+_RESET_STATE_FIELDS = (
+    (StateFlags.BODY_Q, "body_q", "body"),
+    (StateFlags.BODY_QD, "body_qd", "body"),
+    (StateFlags.PARTICLE_Q, "particle_q", "particle"),
+    (StateFlags.PARTICLE_QD, "particle_qd", "particle"),
+    (StateFlags.JOINT_Q, "joint_q", "joint_coord"),
+    (StateFlags.JOINT_QD, "joint_qd", "joint_dof"),
+)
+_RESET_INPUT_FIELDS = (
+    *_RESET_STATE_FIELDS,
+    (StateFlags.BODY_F, "body_f", "body"),
+    (StateFlags.PARTICLE_F, "particle_f", "particle"),
+)
+
+
+@dataclass(frozen=True)
+class _ResetRows:
+    """Selected entry-view and parent-owned rows for one state domain."""
+
+    view_local: wp.array
+    view_global: wp.array
+    owned_local: wp.array
+    owned_global: wp.array
+
+
 class SolverCoupled(SolverBase, CouplingInterface):
     """Couple multiple solvers through explicit ownership and coupling config.
 
@@ -1932,16 +1957,28 @@ class SolverCoupled(SolverBase, CouplingInterface):
             raise ValueError("'state' argument is required.")
         world_mask = self._normalize_reset_world_mask(world_mask)
 
-        self._distribute_state(state, iteration_restart=True)
+        output_state_was_valid = self._entry_output_state_valid
+        if world_mask is None:
+            self._distribute_state(state, iteration_restart=True)
+        else:
+            reset_rows = self._reset_rows(world_mask.numpy())
+            self._distribute_reset_state(state, reset_rows)
         for entry in self._entries.values():
             entry.solver.reset(entry.state_0, world_mask=world_mask, flags=flags)
-            self._sync_entry_reset_state(entry)
+            if world_mask is None:
+                self._sync_entry_reset_state(entry)
+            else:
+                self._sync_entry_masked_reset_state(entry, reset_rows[entry.name], world_mask, flags)
 
-        self._reconcile_state(state)
+        if world_mask is None:
+            self._reconcile_state(state)
+        else:
+            self._reconcile_reset_state(state, reset_rows, flags)
         self._reset_coupling_state(state, world_mask=world_mask, flags=flags)
-        self._clear_entry_contact_buffers()
+        if world_mask is None:
+            self._clear_entry_contact_buffers()
         self._rebuild_entry_solver_state_caches()
-        self._entry_output_state_valid = False
+        self._entry_output_state_valid = False if world_mask is None else output_state_was_valid
 
     # ------------------------------------------------------------------
     # SolverBase interface
@@ -1984,6 +2021,39 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if entry_state is not None:
                 _clear_transient_state_buffers(entry_state)
 
+    def _sync_entry_masked_reset_state(
+        self,
+        entry: SolverEntry,
+        rows: dict[str, _ResetRows],
+        world_mask: wp.array,
+        flags: StateFlags | int | None,
+    ) -> None:
+        """Synchronize selected public and solver-owned output history."""
+        reset_flags = int(StateFlags.ALL if flags is None else flags)
+        if entry.state_1 is not None and entry.state_1 is not entry.state_0:
+            for flag, name, domain in _RESET_STATE_FIELDS:
+                if not reset_flags & flag:
+                    continue
+                src = getattr(entry.state_0, name, None)
+                dst = getattr(entry.state_1, name, None)
+                if src is not None and dst is not None:
+                    selected = rows[domain].view_local
+                    _copy_selected_rows(src, dst, selected, selected)
+            entry.solver.coupling_sync_reset_state(entry.state_0, entry.state_1, world_mask, flags)
+
+        for entry_state in (entry.state_0, entry.state_1):
+            if entry_state is None:
+                continue
+            for name, domain in (
+                ("body_f", "body"),
+                ("particle_f", "particle"),
+                ("body_qdd", "body"),
+                ("body_parent_f", "body"),
+            ):
+                values = getattr(entry_state, name, None)
+                if values is not None:
+                    values[rows[domain].view_local].zero_()
+
     def _reset_coupling_state(
         self,
         state: State,
@@ -1993,6 +2063,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> None:
         """Hook for subclasses to clear algorithm-specific reset state."""
         del state, world_mask, flags
+
+    @staticmethod
+    def _reset_collision_provider_contact_matching(pipeline: object, world_mask: wp.array | None) -> None:
+        """Reset an optional provider's contact history using the shared mask contract."""
+        reset_contact_matching = getattr(pipeline, "reset_contact_matching", None)
+        if callable(reset_contact_matching):
+            reset_contact_matching(world_mask)
 
     def _clear_entry_contact_buffers(self) -> None:
         """Invalidate cached entry-local contact buffers after a reset."""
@@ -2026,6 +2103,70 @@ class SolverCoupled(SolverBase, CouplingInterface):
     # ------------------------------------------------------------------
     # State distribution and reconciliation
     # ------------------------------------------------------------------
+
+    def _reset_rows(self, mask: np.ndarray) -> dict[str, dict[str, _ResetRows]]:
+        """Build selected view and ownership mappings for a masked reset."""
+        model = self.model
+        global_worlds = {
+            "body": model.body_world.numpy(),
+            "particle": model.particle_world.numpy(),
+            "joint_coord": _joint_value_worlds(model, "joint_q_start", model.joint_coord_count),
+            "joint_dof": _joint_value_worlds(model, "joint_qd_start", model.joint_dof_count),
+        }
+        result = {}
+        for entry in self._entries.values():
+            domain_maps = {
+                "body": (
+                    entry.body_local_to_global,
+                    entry.body_indices,
+                    entry.body_global_to_local,
+                ),
+                "particle": (
+                    entry.particle_local_to_global,
+                    entry.particle_indices,
+                    entry.particle_global_to_local,
+                ),
+                "joint_coord": (
+                    entry.joint_coord_local_to_global,
+                    entry.joint_q_indices,
+                    entry.joint_coord_global_to_local,
+                ),
+                "joint_dof": (
+                    entry.joint_dof_local_to_global,
+                    entry.joint_qd_indices,
+                    entry.joint_dof_global_to_local,
+                ),
+            }
+            result[entry.name] = {
+                domain: _selected_reset_rows(
+                    local_to_global,
+                    owned_global,
+                    global_to_local,
+                    global_worlds[domain],
+                    mask,
+                    model.world_count,
+                    model.device,
+                )
+                for domain, (local_to_global, owned_global, global_to_local) in domain_maps.items()
+            }
+        return result
+
+    def _distribute_reset_state(
+        self,
+        state_in: State,
+        reset_rows: dict[str, dict[str, _ResetRows]],
+    ) -> None:
+        """Copy reset-selected parent rows into entry input states."""
+        for entry in self._entries.values():
+            rows = reset_rows[entry.name]
+            for _, name, domain in _RESET_INPUT_FIELDS:
+                src = getattr(state_in, name, None)
+                dst = getattr(entry.state_0, name, None)
+                if dst is None:
+                    continue
+                _copy_selected_rows(src, dst, rows[domain].view_global, rows[domain].view_local)
+            notify_flags = self._input_state_copy_flags(state_in, entry.state_0)
+            self._notify_input_state_update(entry, notify_flags, iteration_restart=True)
 
     def _distribute_state(
         self,
@@ -2109,6 +2250,25 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     ],
                     device=self.model.device,
                 )
+
+    def _reconcile_reset_state(
+        self,
+        state_out: State,
+        reset_rows: dict[str, dict[str, _ResetRows]],
+        flags: StateFlags | int | None,
+    ) -> None:
+        """Merge reset-selected entry input rows into the parent state."""
+        reset_flags = int(StateFlags.ALL if flags is None else flags)
+        for entry in self._entries.values():
+            rows = reset_rows[entry.name]
+            for flag, name, domain in _RESET_STATE_FIELDS:
+                if not reset_flags & flag:
+                    continue
+                src = getattr(entry.state_0, name, None)
+                dst = getattr(state_out, name, None)
+                if src is None or dst is None:
+                    continue
+                _copy_selected_rows(src, dst, rows[domain].owned_local, rows[domain].owned_global)
 
     # ------------------------------------------------------------------
     # Generic proxy implementation
@@ -2790,6 +2950,76 @@ def _copy_state_to_entry(src: State, dst: State, entry: SolverEntry) -> None:
             inputs=[entry.joint_dof_local_to_global, src.joint_qd, dst.joint_qd],
             device=device,
         )
+
+
+def _joint_value_worlds(model: Model, start_name: str, value_count: int) -> np.ndarray:
+    """Expand joint world ids to joint-coordinate or joint-DOF rows."""
+    worlds = np.empty(int(value_count), dtype=np.int32)
+    starts = getattr(model, start_name).numpy()
+    joint_world = model.joint_world.numpy()
+    for joint in range(int(model.joint_count)):
+        worlds[int(starts[joint]) : int(starts[joint + 1])] = int(joint_world[joint])
+    return worlds
+
+
+def _selected_reset_rows(
+    local_to_global: wp.array,
+    owned_global: wp.array,
+    global_to_local: wp.array,
+    global_world: np.ndarray,
+    mask: np.ndarray,
+    world_count: int,
+    device,
+) -> _ResetRows:
+    """Return selected entry-view rows and selected parent-owned rows."""
+    local_to_global_host = local_to_global.numpy().astype(np.int32, copy=False)
+    view_selected = _selected_global_rows(local_to_global_host, global_world, mask, world_count)
+    view_local = np.flatnonzero(view_selected).astype(np.int32)
+    view_global = local_to_global_host[view_local]
+
+    owned_global_host = owned_global.numpy().astype(np.int32, copy=False)
+    owned_selected = _selected_global_rows(owned_global_host, global_world, mask, world_count)
+    owned_global_host = owned_global_host[owned_selected]
+    global_to_local_host = global_to_local.numpy().astype(np.int32, copy=False)
+    owned_local = global_to_local_host[owned_global_host]
+
+    return _ResetRows(
+        view_local=wp.array(view_local, dtype=int, device=device),
+        view_global=wp.array(view_global, dtype=int, device=device),
+        owned_local=wp.array(owned_local, dtype=int, device=device),
+        owned_global=wp.array(owned_global_host, dtype=int, device=device),
+    )
+
+
+def _selected_global_rows(
+    global_ids: np.ndarray,
+    global_world: np.ndarray,
+    mask: np.ndarray,
+    world_count: int,
+) -> np.ndarray:
+    """Return a host mask selecting global rows under the reset contract."""
+    selected = np.zeros(global_ids.shape, dtype=bool)
+    valid = global_ids >= 0
+    worlds = np.full(global_ids.shape, -2, dtype=np.int32)
+    worlds[valid] = global_world[global_ids[valid]]
+    local = (worlds >= 0) & (worlds < world_count)
+    selected[local] = mask[worlds[local]]
+    if mask.shape[0] == world_count + 1 and mask[world_count]:
+        selected |= worlds == -1
+    return selected
+
+
+def _copy_selected_rows(
+    src: wp.array | None,
+    dst: wp.array,
+    src_ids: wp.array,
+    dst_ids: wp.array,
+) -> None:
+    """Copy selected indexed rows, or clear them when no source exists."""
+    if src is None:
+        dst[dst_ids].zero_()
+    else:
+        wp.copy(dst[dst_ids], src[src_ids])
 
 
 def _copy_state(src: State, dst: State) -> None:

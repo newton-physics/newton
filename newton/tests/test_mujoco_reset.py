@@ -76,7 +76,14 @@ class TestMuJoCoReset(unittest.TestCase):
     def test_reset_masked_world_only(self):
         """A per-world mask clears the selected world and leaves the others intact."""
         self._poison()
-        mask = wp.array([True, False, True], dtype=wp.bool, device=self.model.device)
+        self.solver.reset(
+            self.state_out,
+            world_mask=wp.array([False, False, True], dtype=wp.bool, device=self.model.device),
+        )
+        for name, buf in self._cleared_buffers().items():
+            self.assertTrue(np.all(buf.numpy() == 7.0), f"{name} changed for a global-only mask")
+
+        mask = wp.array([True, False, False], dtype=wp.bool, device=self.model.device)
         self.solver.reset(self.state_out, world_mask=mask)
 
         for name, buf in self._cleared_buffers().items():
@@ -187,18 +194,23 @@ class TestMuJoCoReset(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        # The reference is whatever syncing the current state produces (the same
-        # path reset uses); capture it, then poison qpos with NaNs.
+        # Capture the same conversion path reset uses, then distinguish worlds.
         solver._update_mjc_data(solver.mjw_data, model, state)
         qpos_synced = solver.mjw_data.qpos.numpy().copy()
-        solver.mjw_data.qpos.assign(np.full_like(qpos_synced, np.nan))
+        poisoned = qpos_synced + np.array(((10.0,), (20.0,)), dtype=np.float32)
+        solver.mjw_data.qpos.assign(poisoned)
 
-        # With the per-step sync disabled, reset must push the state into qpos now.
-        solver.reset(state, world_mask=None, flags=StateFlags.JOINT_Q)
+        # With the per-step sync disabled, reset must push only the selected
+        # world's state into qpos now.
+        solver.reset(
+            state,
+            world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
+            flags=StateFlags.JOINT_Q,
+        )
 
         result = solver.mjw_data.qpos.numpy()
-        self.assertTrue(np.all(np.isfinite(result)), "reset did not overwrite NaN qpos")
-        np.testing.assert_allclose(result, qpos_synced, atol=1e-6)
+        np.testing.assert_allclose(result[0], qpos_synced[0], atol=1e-6)
+        np.testing.assert_allclose(result[1], poisoned[1], atol=1e-6)
 
 
 if __name__ == "__main__":

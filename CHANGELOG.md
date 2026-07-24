@@ -100,6 +100,7 @@
 - Validate `ArticulationView` mask shapes and devices before launching selection kernels. (#3448)
 - Exclude active particles with non-finite positions from rebuildable `SolverImplicitMPM` sparse-grid packing.
 - Fix masked `SolverCoupledProxy.reset()` calls clearing proxy feedback history for unselected worlds.
+- Fix masked solver resets modifying unselected worlds or discarding their coupling and contact history.
 - Fix hydroelastic primitive texture SDF generation to sample analytic primitive distances instead of temporary tessellated meshes. (#3239)
 - Fix MJCF, URDF, and USD imports rendering collision-only bodies as visuals when the asset authors visual geometry elsewhere. (#3291)
 - Fix `SchemaResolverPhysx` reading every D6 translational limit gain from the `linear` instance instead of its `transX`, `transY`, or `transZ` instance.

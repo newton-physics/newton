@@ -378,6 +378,7 @@ class SolverBase:
                 which state attributes need to be reset.  If ``None``, all
                 state attributes are reset.
         """
+        del state, flags
         self._normalize_reset_world_mask(world_mask)
 
     def step(

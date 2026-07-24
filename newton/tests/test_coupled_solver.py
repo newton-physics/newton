@@ -342,6 +342,20 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _ResetRecordingCopySolver(_StepCountingCopySolver):
+    """Copy solver that records validated reset calls."""
+
+    instances: ClassVar[dict[str, "_ResetRecordingCopySolver"]] = {}
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.reset_calls = []
+
+    def reset(self, state, world_mask=None, flags=None):
+        super().reset(state, world_mask, flags)
+        self.reset_calls.append((state, world_mask, flags))
+
+
 class _ContactRecordingCopySolver(_StepCountingCopySolver):
     """Copy solver that records rigid contact shape ids seen by step()."""
 
@@ -734,20 +748,22 @@ class TestSolverCoupledContactsAndMPM(unittest.TestCase):
 
         assign_history(entry.state_0, 0.0)
         assign_history(entry.state_1, 1000.0)
-        expected = history(entry.state_0)
-        expected["particle_elastic_strain"][0] = np.eye(3, dtype=np.float32)
-        expected["particle_transform"][0] = np.eye(3, dtype=np.float32)
-        expected["particle_qd_grad"][0] = 0.0
-        expected["particle_stress"][0] = 0.0
-        expected["particle_Jp"][0] = 1.0
+        expected_input = history(entry.state_0)
+        expected_output = history(entry.state_1)
+        for expected in (expected_input, expected_output):
+            expected["particle_elastic_strain"][0] = np.eye(3, dtype=np.float32)
+            expected["particle_transform"][0] = np.eye(3, dtype=np.float32)
+            expected["particle_qd_grad"][0] = 0.0
+            expected["particle_stress"][0] = 0.0
+            expected["particle_Jp"][0] = 1.0
 
         parent_state_0 = model.state()
         parent_state_1 = model.state()
         coupled.reset(parent_state_0, world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device))
 
-        for name, values in expected.items():
-            np.testing.assert_array_equal(history(entry.state_0)[name], values)
-            np.testing.assert_array_equal(history(entry.state_1)[name], values)
+        for name in expected_input:
+            np.testing.assert_array_equal(history(entry.state_0)[name], expected_input[name])
+            np.testing.assert_array_equal(history(entry.state_1)[name], expected_output[name])
 
         # Implicit MPM attaches output-only arrays to entry states during a
         # step. Repeated substeps and post-step reset must remain compatible
@@ -779,6 +795,86 @@ class TestSolverCoupledContactsAndMPM(unittest.TestCase):
         for name, values in history(entry.state_tmp).items():
             np.testing.assert_array_equal(history_after_odd_substeps[name], values)
         np.testing.assert_array_equal(history_after_odd_substeps["particle_Jp"], np.full(model.particle_count, 7.0))
+
+
+class TestSolverCoupledResetMask(unittest.TestCase):
+    """Test world-selective coupled reset behavior."""
+
+    def test_mask_is_forwarded_without_touching_unselected_rows(self):
+        """Forward both mask forms and make an all-false mask an exact no-op."""
+
+        def spatial(values):
+            return np.repeat(np.asarray(values, dtype=np.float32)[:, None], 6, axis=1)
+
+        cases = (
+            ((True, False), (1,)),
+            ((False, False, True), (0,)),
+            ((False, False, False), ()),
+        )
+        for mask_values, selected_rows in cases:
+            with self.subTest(mask=mask_values):
+                world = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                world.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                builder.add_world(world)
+                builder.add_world(world)
+                model = builder.finalize(device="cpu")
+                model.request_state_attributes("body_qdd", "body_parent_f")
+                coupled = SolverCoupled(
+                    model,
+                    [SolverCoupled.Entry("recording", _ResetRecordingCopySolver, bodies=range(3), substeps=2)],
+                )
+                entry = coupled._entries["recording"]
+                np.testing.assert_array_equal(entry.view.body_world.numpy(), (-1, 0, 1))
+
+                parent = model.state()
+                parent.body_qd.assign(spatial((10.0, 20.0, 30.0)))
+                parent.body_f.assign(spatial((11.0, 21.0, 31.0)))
+                entry_states = (entry.state_0, entry.state_1, entry.state_tmp)
+                before = {}
+                for index, entry_state in enumerate(entry_states, start=1):
+                    entry_state.body_qd.assign(spatial((100 * index + 1, 100 * index + 2, 100 * index + 3)))
+                    entry_state.body_f.assign(spatial((100 * index + 4, 100 * index + 5, 100 * index + 6)))
+                    entry_state.body_qdd.fill_(100 * index + 7)
+                    entry_state.body_parent_f.fill_(100 * index + 8)
+                    before[entry_state] = {
+                        name: getattr(entry_state, name).numpy().copy()
+                        for name in ("body_qd", "body_f", "body_qdd", "body_parent_f")
+                    }
+                parent_before = {name: getattr(parent, name).numpy().copy() for name in ("body_qd", "body_f")}
+                coupled._entry_output_state_valid = True
+                world_mask = wp.array(mask_values, dtype=wp.bool, device=model.device)
+
+                coupled.reset(parent, world_mask=world_mask, flags=newton.StateFlags.BODY_QD)
+
+                if selected_rows:
+                    self.assertEqual(len(entry.solver.reset_calls), 1)
+                    self.assertIs(entry.solver.reset_calls[0][1], world_mask)
+                    self.assertEqual(entry.solver.reset_calls[0][2], newton.StateFlags.BODY_QD)
+                else:
+                    self.assertEqual(entry.solver.reset_calls, [])
+                self.assertTrue(coupled.entry_output_state_valid())
+
+                for entry_state in entry_states[:2]:
+                    expected_qd = before[entry_state]["body_qd"].copy()
+                    expected_qd[list(selected_rows)] = parent_before["body_qd"][list(selected_rows)]
+                    np.testing.assert_array_equal(entry_state.body_qd.numpy(), expected_qd)
+                    for name in ("body_f", "body_qdd", "body_parent_f"):
+                        expected = before[entry_state][name].copy()
+                        expected[list(selected_rows)] = 0.0
+                        np.testing.assert_array_equal(getattr(entry_state, name).numpy(), expected)
+                for name, expected in before[entry.state_tmp].items():
+                    np.testing.assert_array_equal(getattr(entry.state_tmp, name).numpy(), expected)
+                for name, expected in parent_before.items():
+                    np.testing.assert_array_equal(getattr(parent, name).numpy(), expected)
+
+        model = newton.ModelBuilder().finalize(device="cpu")
+        with self.assertRaises(ValueError):
+            SolverSemiImplicit(model).reset(
+                model.state(),
+                world_mask=wp.array((False, False, False), dtype=wp.bool, device=model.device),
+            )
 
 
 class TestSolverCoupledBasic(unittest.TestCase):
@@ -2014,7 +2110,6 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
 def _assert_proxy_reset_buffers(test, model, coupled, mapping, entity_world):
     """Check masked and full reset behavior for one two-world proxy mapping."""
     proxy_ids_global = mapping.proxy_ids_global.numpy()
-    proxy_ids_local = mapping.proxy_ids_local.numpy()
     proxy_worlds = entity_world.numpy()[proxy_ids_global]
     np.testing.assert_array_equal(proxy_worlds, [0, 1])
 
@@ -2050,6 +2145,22 @@ def _assert_proxy_reset_buffers(test, model, coupled, mapping, entity_world):
 
     coupled.reset(
         model.state(),
+        world_mask=wp.array((False, False, False), dtype=wp.bool, device=model.device),
+        flags=0,
+    )
+    for array, expected in (
+        (mapping.coupling_forces, coupling_forces),
+        (mapping.coupling_forces_previous, coupling_forces_previous),
+        (mapping.aitken_residual_previous, aitken_residual_previous),
+        (mapping.proxy_qd_before, proxy_qd_before),
+        (mapping.aitken_stats, aitken_stats),
+        (mapping.aitken_relaxation, aitken_relaxation),
+        (mapping.aitken_has_previous, aitken_has_previous),
+    ):
+        np.testing.assert_array_equal(array.numpy(), expected)
+
+    coupled.reset(
+        model.state(),
         world_mask=wp.array((True, False, False), dtype=wp.bool, device=model.device),
         flags=0,
     )
@@ -2057,17 +2168,11 @@ def _assert_proxy_reset_buffers(test, model, coupled, mapping, entity_world):
     selected_rows = proxy_worlds == 0
     expected_forces = coupling_forces.copy()
     expected_forces[proxy_ids_global[selected_rows]] = 0.0
-    expected_forces_previous = coupling_forces_previous.copy()
-    expected_forces_previous[selected_rows] = 0.0
-    expected_residual_previous = aitken_residual_previous.copy()
-    expected_residual_previous[selected_rows] = 0.0
-    expected_qd_before = proxy_qd_before.copy()
-    expected_qd_before[proxy_ids_local[selected_rows]] = 0.0
 
     np.testing.assert_array_equal(mapping.coupling_forces.numpy(), expected_forces)
-    np.testing.assert_array_equal(mapping.coupling_forces_previous.numpy(), expected_forces_previous)
-    np.testing.assert_array_equal(mapping.aitken_residual_previous.numpy(), expected_residual_previous)
-    np.testing.assert_array_equal(mapping.proxy_qd_before.numpy(), expected_qd_before)
+    np.testing.assert_array_equal(mapping.coupling_forces_previous.numpy(), coupling_forces_previous)
+    np.testing.assert_array_equal(mapping.aitken_residual_previous.numpy(), aitken_residual_previous)
+    np.testing.assert_array_equal(mapping.proxy_qd_before.numpy(), proxy_qd_before)
     np.testing.assert_array_equal(mapping.aitken_stats.numpy(), aitken_stats)
     np.testing.assert_array_equal(mapping.aitken_relaxation.numpy(), aitken_relaxation)
     np.testing.assert_array_equal(mapping.aitken_has_previous.numpy(), aitken_has_previous)

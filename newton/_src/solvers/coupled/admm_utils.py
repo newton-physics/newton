@@ -69,6 +69,37 @@ def _point_angular_lump(arm: wp.vec3) -> float:
     return _POINT_ANGULAR_LUMP_SCALE * wp.dot(arm, arm)
 
 
+@wp.func
+def _reset_world_selected(world: int, world_mask: wp.array[wp.bool], world_count: int) -> bool:
+    if world >= 0 and world < world_count:
+        return world_mask[world]
+    return world == -1 and world_mask.shape[0] == world_count + 1 and world_mask[world_count]
+
+
+@wp.kernel(enable_backward=False)
+def reset_admm_history_kernel(
+    endpoint_a: wp.array[int],
+    endpoint_world_a: wp.array[int],
+    endpoint_b: wp.array[int],
+    endpoint_world_b: wp.array[int],
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    u: wp.array[wp.vec3],
+    lambda_: wp.array[wp.vec3],
+):
+    """Clear persistent ADMM history when either endpoint world is reset."""
+    row = wp.tid()
+    index_a = endpoint_a[row]
+    index_b = endpoint_b[row]
+    if index_a < 0 or index_b < 0:
+        return
+    if _reset_world_selected(endpoint_world_a[index_a], world_mask, world_count) or _reset_world_selected(
+        endpoint_world_b[index_b], world_mask, world_count
+    ):
+        u[row] = wp.vec3()
+        lambda_[row] = wp.vec3()
+
+
 @wp.kernel(enable_backward=False)
 def scatter_effective_mass_kernel(
     global_id: wp.array[int],

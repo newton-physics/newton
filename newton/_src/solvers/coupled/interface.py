@@ -41,6 +41,9 @@ Supported hook signatures are:
     def coupling_notify_input_state_update(state, flags, *, iteration_restart=False, dt=0.0) -> None: ...
 
 
+    def coupling_sync_reset_state(state_in, state_out, world_mask, flags) -> None: ...
+
+
     def coupling_supports_inertial_property_refresh() -> bool: ...
 
 
@@ -241,6 +244,20 @@ class CouplingInterface:
         state arrays and public force-input buffers.
         """
         del state, flags, iteration_restart, dt
+
+    def coupling_sync_reset_state(
+        self,
+        state_in: State,
+        state_out: State,
+        world_mask: wp.array[wp.bool],
+        flags: StateFlags | int | None,
+    ) -> None:
+        """Synchronize solver-owned state after a masked coupled reset.
+
+        Public state arrays are synchronized by the coupled solver. Override
+        this hook only for persistent custom state arrays.
+        """
+        del state_in, state_out, world_mask, flags
 
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial property refresh is safe during graph capture.
