@@ -2042,6 +2042,49 @@ def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
     return None
 
 
+def _get_deformable_bind_pose(prim: Usd.Prim, *, strict: bool = False) -> np.ndarray | None:
+    """Read a geometry's proposal bind pose from ``PhysicsDeformablePoseAPI``.
+
+    Enumerates the prim's applied multi-apply ``PhysicsDeformablePoseAPI:<instance>``
+    schemas (by token, since the schema is unregistered) and returns the ``points``
+    of the first instance whose ``purposes`` contains ``bindPose``, in authored
+    order. Returns ``None`` when no bind pose is authored (the caller falls back to
+    the geometry's default ``points``, per the proposal). A bind pose whose length
+    does not match the geometry's ``points`` warns and is ignored unless ``strict``
+    is true, in which case malformed data raises with a stable reason name.
+    """
+    geometry_points = prim.GetAttribute("points").Get() if prim.GetAttribute("points") else None
+    # Raw apiSchemas metadata: the proposal schema is unregistered, so
+    # GetAppliedSchemas() would drop its multi-apply instances.
+    for schema in _get_raw_api_schemas(prim):
+        if not schema.startswith("PhysicsDeformablePoseAPI:"):
+            continue
+        instance = schema.split(":", 1)[1]
+        purposes = prim.GetAttribute(f"physics:deformablePose:{instance}:purposes").Get()
+        if not purposes or "bindPose" not in [str(p) for p in purposes]:
+            continue
+        points = prim.GetAttribute(f"physics:deformablePose:{instance}:points").Get()
+        if points is None:
+            continue
+        if geometry_points is not None and len(points) != len(geometry_points):
+            message = (
+                f"{prim.GetPath()}: PhysicsDeformablePoseAPI:{instance} bind pose has "
+                f"{len(points)} points but the geometry has {len(geometry_points)}"
+            )
+            if strict:
+                raise ValueError(f"invalid_bind_pose_count: {message}")
+            warnings.warn(
+                f"{message}; ignoring it.",
+                stacklevel=2,
+            )
+            continue
+        points = np.asarray(points, dtype=np.float64)
+        if strict and not np.all(np.isfinite(points)):
+            raise ValueError(f"non_finite_bind_point: {prim.GetPath()} bind pose contains non-finite points")
+        return points
+    return None
+
+
 def _get_deformable_body_overrides(
     prim: Usd.Prim, read_attr: Callable[[Usd.Prim, str], Any]
 ) -> tuple[float | None, float | None]:

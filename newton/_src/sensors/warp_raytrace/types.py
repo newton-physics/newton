@@ -64,6 +64,9 @@ class RenderConfig:
     spheres.
     """
 
+    enable_simulation_triangles: bool = True
+    """Enable rendering of deformable simulation triangle surfaces."""
+
     enable_backface_culling: bool = True
     """Cull back-facing triangles."""
 

@@ -812,6 +812,11 @@ class ViewerGui:
                     if viewer.show_com and renderer is not None and hasattr(renderer, "com_scale"):
                         _, renderer.com_scale = imgui.slider_float("COM Scale", renderer.com_scale, 0.25, 5.0)
                     _changed, viewer.show_triangles = imgui.checkbox("Show Cloth", viewer.show_triangles)
+                    if getattr(viewer.model, "deformable_visual_mesh_count", 0) > 0:
+                        _changed, viewer.show_deformable_visual_meshes = imgui.checkbox(
+                            "Show Skinned Meshes", viewer.show_deformable_visual_meshes
+                        )
+                    _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
                     _changed, viewer.show_collision = imgui.checkbox("Show Collision", viewer.show_collision)
                     if renderer is not None and hasattr(renderer, "draw_edges"):
                         _changed, renderer.draw_edges = imgui.checkbox("Show Edges", renderer.draw_edges)
@@ -825,7 +830,6 @@ class ViewerGui:
                             _, renderer.wireframe_line_width = imgui.slider_float(
                                 "Wireframe Width (px)", renderer.wireframe_line_width, 0.5, 5.0
                             )
-                    _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
                     _changed, viewer.show_inertia_boxes = imgui.checkbox(
                         "Show Inertia Boxes", viewer.show_inertia_boxes
                     )

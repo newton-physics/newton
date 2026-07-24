@@ -4,6 +4,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -294,6 +295,30 @@ class TestViewerLayers(unittest.TestCase):
 
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
+
+    def test_rtx_runtime_log_mesh_queues_visibility_updates(self):
+        """Runtime mesh logs must apply hidden=True to existing RTX mesh prims."""
+        viewer = _MinimalRTXViewer()
+        viewer._phase = viewer._PHASE_RENDER
+        viewer._mesh_prim_paths = {"/mesh": "/root/mesh"}
+        viewer._pending_mesh_points = {}
+        viewer._pending_mesh_normals = {}
+        viewer._pending_mesh_visibility = {}
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.log_mesh("/mesh", points, indices, hidden=True)
+
+        self.assertFalse(getattr(viewer, "_pending_mesh_visibility", {}).get("/mesh", True))
+        self.assertNotIn("/mesh", viewer._pending_mesh_points)
+        self.assertNotIn("/mesh", viewer._pending_mesh_normals)
+
+        moved = wp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]], dtype=wp.vec3)
+        viewer.log_mesh("/mesh", moved, indices, hidden=False)
+
+        self.assertTrue(viewer._pending_mesh_visibility["/mesh"])
+        np.testing.assert_array_equal(viewer._pending_mesh_points["/mesh"], moved.numpy())
 
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""

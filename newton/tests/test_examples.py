@@ -865,6 +865,29 @@ add_example_test(
 
 add_example_test(
     TestSensorExamples,
+    name="sensors.example_deformable_visual_mesh_camera",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 2},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSensorExamples,
+    name="sensors.example_deformable_visual_mesh_camera",
+    devices=cuda_test_devices,
+    test_options={
+        "usd_required": True,
+        "num-frames": 2,
+        "camera-width": 64,
+        "camera-height": 64,
+        "load-from-usd": True,
+    },
+    use_viewer=True,
+    test_suffix="usd",
+)
+
+add_example_test(
+    TestSensorExamples,
     name="sensors.example_sensor_imu",
     devices=test_devices,
     test_options={"num-frames": 200},  # allow cubes to settle
@@ -1156,6 +1179,30 @@ add_example_test(
     devices=test_devices,
     test_options={"num-frames": 120},
     test_options_cpu={"num-frames": 2},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_visual_mesh",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 60},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestClothExamples,
+    name="cloth.example_cloth_visual_mesh",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 60},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_visual_mesh",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 60},
     use_viewer=True,
 )
 

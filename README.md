@@ -300,6 +300,22 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_visual_mesh.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_visual_mesh.jpg" alt="Cable Visual Mesh">
+      </a>
+    </td>
+    <td align="center" width="33%"></td>
+    <td align="center" width="33%"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_visual_mesh</code>
+    </td>
+    <td align="center" width="33%"></td>
+    <td align="center" width="33%"></td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Cloth Examples</h3></td>
   </tr>
   <tr>
@@ -370,6 +386,9 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_cloth_visual_mesh.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_visual_mesh.jpg" alt="Cloth Visual Mesh">
+      </a>
     </td>
   </tr>
   <tr>
@@ -380,6 +399,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples cloth_poker_cards</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples cloth_visual_mesh</code>
     </td>
   </tr>
   <tr>
@@ -545,6 +565,35 @@ If you run the examples from a source checkout with uv, use
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples sensor_imu</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_deformable_visual_mesh_camera.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_deformable_visual_mesh_camera.jpg" alt="Deformable Visual Mesh Camera">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_deformable_visual_mesh_camera.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_deformable_visual_mesh_camera_rgb.jpg" alt="Deformable Visual Mesh Camera RGB">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_deformable_visual_mesh_camera.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_deformable_visual_mesh_camera_depth.jpg" alt="Deformable Visual Mesh Camera Depth">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples deformable_visual_mesh_camera</code><br>
+      <code>python -m newton.examples deformable_visual_mesh_camera --load-from-usd</code>
+    </td>
+    <td align="center" width="33%">
+      Tiled camera RGB
+    </td>
+    <td align="center" width="33%">
+      Tiled camera depth
     </td>
   </tr>
   <tr>
@@ -780,6 +829,9 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_visual_mesh.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_visual_mesh.jpg" alt="Softbody Visual Mesh">
+      </a>
     </td>
   </tr>
   <tr>
@@ -790,6 +842,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples softbody_franka</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples softbody_visual_mesh</code>
     </td>
   </tr>
   <tr>
