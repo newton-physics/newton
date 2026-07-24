@@ -12,6 +12,15 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
 .. py:module:: newton.usd
 .. currentmodule:: newton.usd
 
+.. toctree::
+   :hidden:
+
+   newton_usd_runtime
+
+.. rubric:: Submodules
+
+- :doc:`newton.usd.runtime <newton_usd_runtime>`
+
 .. rubric:: Classes
 
 .. autosummary::

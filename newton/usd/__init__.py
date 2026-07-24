@@ -10,7 +10,7 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
 # ==================================================================================
 # USD utility functions
 # ==================================================================================
-from ._src.usd.utils import (
+from .._src.usd.utils import (
     DEFORMABLE_LEGACY_NAMESPACES,
     find_tetmesh_prims,
     get_attribute,
@@ -55,11 +55,11 @@ __all__ = [
 # USD schema resolution
 # ==================================================================================
 
-from ._src.usd.schema_resolver import (
+from .._src.usd.schema_resolver import (
     PrimType,
     SchemaResolver,
 )
-from ._src.usd.schemas import (
+from .._src.usd.schemas import (
     SchemaResolverMjc,
     SchemaResolverNewton,
     SchemaResolverPhysx,
@@ -72,3 +72,12 @@ __all__ += [
     "SchemaResolverNewton",
     "SchemaResolverPhysx",
 ]
+
+
+# ==================================================================================
+# Stage-driven simulation runtime
+# ==================================================================================
+
+from . import runtime  # noqa: E402
+
+__all__ += ["runtime"]

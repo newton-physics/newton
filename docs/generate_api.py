@@ -180,6 +180,29 @@ def solver_submodule_pages() -> list[str]:
     return modules
 
 
+def usd_submodule_pages() -> list[str]:
+    """Return newton.usd submodules that expose their own API page."""
+    modules: list[str] = []
+    public_usd = importlib.import_module("newton.usd")
+
+    def add_public_module_tree(mod_name: str, module: ModuleType) -> None:
+        if mod_name not in modules:
+            modules.append(mod_name)
+        for child_name in public_symbols(module):
+            child = getattr(module, child_name)
+            if not inspect.ismodule(child):
+                continue
+            add_public_module_tree(f"{mod_name}.{child_name}", child)
+
+    for name in public_symbols(public_usd):
+        attr = getattr(public_usd, name)
+        if not inspect.ismodule(attr):
+            continue
+        add_public_module_tree(f"newton.usd.{name}", attr)
+
+    return modules
+
+
 def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None) -> None:
     """Create an .rst file for *mod_name* under *OUTPUT_DIR*."""
 
@@ -413,8 +436,9 @@ def write_api_toctree(modules: list[str]) -> None:
     """Write the API Reference toctree fragment to :data:`TOCTREE_RST`.
 
     The file is included from ``docs/index.rst`` via ``.. include::``. Solver
-    sub-module pages (from :func:`solver_submodule_pages`) are intentionally
-    excluded: those nest under ``api/newton_solvers.rst`` and are not
+    and USD sub-module pages (from :func:`solver_submodule_pages` and
+    :func:`usd_submodule_pages`) are intentionally excluded: those nest under
+    their parent's page (e.g. ``api/newton_solvers.rst``) and are not
     top-level toctree entries.
     """
     lines = [
@@ -442,8 +466,8 @@ def generate_all() -> None:
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 
     modules = api_modules()
-    extra_solver_modules = solver_submodule_pages()
-    all_modules = modules + [mod for mod in extra_solver_modules if mod not in modules]
+    extra_modules = solver_submodule_pages() + usd_submodule_pages()
+    all_modules = modules + [mod for mod in extra_modules if mod not in modules]
 
     for mod in all_modules:
         write_module_page(mod, set(modules))

@@ -566,11 +566,13 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
                     f"Warning: Custom attribute '{attr_name}' has invalid assignment or frequency in customData. Skipping."
                 )
                 continue
-        else:
-            # No metadata found - skip with warning
+        elif assignment_meta or frequency_meta:
             print(
-                f"Warning: Custom attribute '{attr_name}' is missing required customData (assignment and frequency). Skipping."
+                f"Warning: Custom attribute '{attr_name}' has incomplete customData (needs both assignment and frequency). Skipping."
             )
+            continue
+        else:
+            # plain attribute, not a declaration
             continue
 
         # Infer dtype from default value
