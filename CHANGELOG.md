@@ -108,6 +108,8 @@
 - Fix `SensorTiledCamera` tiled rendering for image sizes that are not exact multiples of the configured tile dimensions.
 - Fix `SensorTiledCamera` deformable triangle rendering to respect per-particle world indices.
 
+<!-- changelog releases start -->
+
 ## [1.4.0] - 2026-07-16
 
 ### Added

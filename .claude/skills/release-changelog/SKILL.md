@@ -1,103 +1,113 @@
 ---
 name: release-changelog
-description: Use when editing, auditing, or preparing Newton CHANGELOG.md for a release, especially to make upgrade-impact information actionable for developers.
+description: Use when auditing or consolidating Newton changelog fragments, promoting Unreleased for a release, or reconciling a released changelog back to main.
 ---
 
 # Newton Release Changelog
 
-Maintain `CHANGELOG.md` as the detailed upgrade source of truth. Release notes
-and release announcements carry the high-level summary; the changelog should
-preserve specific breaking changes, removals, deprecations, behavior/default
-changes, dependency constraints, and migration guidance.
+Treat `CHANGELOG.md` as the durable accumulator. Pending user-facing changes
+are the union of its `[Unreleased]` section and unconsumed `.md` files under
+`changelog.d/`. Dated sections are immutable release history.
 
-## Workflow
+## Audit pending changes
 
-1. Protect released history first. Diff `CHANGELOG.md` from the latest stable
-   tag and inspect every hunk under a dated version header. Move late PR entries
-   accidentally added to a released section into the current `[Unreleased]`
-   section. Change released history only with explicit maintainer approval.
-2. Identify the release ref and comparison base. For final releases, use the
-   final tag or release branch. For RC prep, use the latest RC tag as temporary
-   ground truth and verify against the previous released tag.
-3. Read the current `CHANGELOG.md` section being edited, the release audit if
-   one exists, and PRs behind unclear entries. Do not rely only on commit
-   subjects for migration guidance.
-4. Check completeness from the previous GA or micro release through the release
-   ref, including RC fixes. Compare the range with the release audit and add
-   missed user-visible changes.
-5. Preserve information. Rephrase, split, merge, and regroup entries only when
-   the facts remain intact. Ask before deleting information, omitting a
-   questionable entry, or downgrading a user-visible change to silence.
-6. Use the existing Keep-a-Changelog categories (`Added`, `Changed`,
-   `Deprecated`, `Removed`, `Fixed`). Keep migration and retesting guidance in
-   the affected entries; release notes carry the summary.
-7. Within each category, group entries by the current release's user-facing
-   feature areas or migration themes when this improves readability.
-8. Remove exact and semantic duplicates within the release, not only identical
-   wording. If a feature and a fix for that feature both landed during the same
-   release cycle, consolidate the entries around the final user-visible
-   behavior instead of recording it once as `Added` and again as `Fixed`.
-9. Audit category boundaries before finalizing. Keep `Added` for new public
-   APIs, options, features, examples, and docs; move existing-API behavior
-   changes, new warnings, default changes, and importer/solver semantics into
+1. Protect released history. Diff `CHANGELOG.md` from the latest stable tag and
+   require explicit maintainer approval for changes to existing dated sections.
+2. Identify the release ref and comparison base. Audit the release branch once
+   it exists; otherwise audit the intended main ref.
+3. Validate the checked-out accumulator and render a non-mutating preview:
+   ```bash
+   uv run --no-project python scripts/changelog.py validate
+   uv run --no-project python scripts/changelog.py build --dry-run
+   ```
+   The preview combines existing `[Unreleased]` entries with pending fragments.
+4. Compare the preview with the release audit and commit range from the previous
+   release. Confirm `.skip` files contain credible reasons.
+5. Preserve information. Rephrase, split, merge, or recategorize only when the
+   facts remain intact. Ask before deleting information or downgrading a
+   user-visible change.
+6. Use only `Added`, `Changed`, `Deprecated`, `Removed`, and `Fixed`, in that
+   order. Keep migration and retesting guidance in affected entries.
+7. Remove exact and semantic duplicates. When a feature and its fix both land
+   in one cycle, describe the final user-visible behavior once.
+8. Keep `Added` for new public APIs, options, features, examples, and docs. Put
+   existing-API behavior, warning, default, importer, and solver changes in
    `Changed`, even when they expand support.
-10. Add same-repository PR references as compact `(#NNNN)` references
-   selectively, not mechanically. Prioritize high-importance entries:
-   breaking/default-changing behavior, public API additions that affect
-   migration, deprecations, removals, and major support fixes. Do not add PR
-   refs to every routine docs, example, cleanup, or minor fix entry.
-11. Before adding a PR reference, verify that the PR actually introduced the
-   change being cited. Prefer local history such as `git log --oneline` and
-   `git show --name-only <commit>`; skip ambiguous references rather than
-   guessing.
-12. For each breaking, removed, deprecated, or default-changing entry, include
-   migration guidance or a clear action: replacement symbol, opt-out flag,
-   compatibility setting, or what to re-test.
-13. Avoid directing users to private/internal APIs as migration targets. If a
-   public alias is deprecated because storage is becoming internal, say to avoid
-   depending on that data directly rather than pointing at underscore-prefixed
-   members.
-14. Separate internal cleanup from public API removals. If an internal symbol is
-   mentioned for completeness, label it as internal and do not imply users must
-   migrate unless it was public.
-15. Verify restored APIs against the final/RC tag before classifying removals.
-    For example, if a public symbol was removed during development but restored
-    before the release tag, do not list it as removed.
-16. When moving entries between release sections, make sure the information is
-    not duplicated under an older released version and the historical section
-    still reflects what actually shipped there.
-17. Perform a second editorial pass after regrouping. Re-read the source entries
-    and the final diff to catch user-relevant behavior, limitations, opt-in
-    conditions, changed defaults, compatibility details, or migration actions
-    lost during condensation.
+9. Add compact `(#NNNN)` references only after verifying the PR introduced the
+   change. Prioritize breaking/default changes, public API additions,
+   deprecations, removals, and major fixes.
+10. Give every breaking, removed, deprecated, or default-changing entry a
+    concrete action. Never direct users to `newton._src`.
 
-## Post-release reconciliation
+Generated `<!-- changelog-fragment: ... -->` comments preserve fragment
+identity while entries are accumulated under `[Unreleased]`. They are invisible
+in rendered Markdown. Preserve them when editing accumulated entries; never
+invent or reassign them manually. Commit any editorial accumulator changes
+before promotion. The final promotion strips the comments from the dated public
+section, and reconciliation recovers available IDs from the committed state
+immediately before promotion while retaining exact-text compatibility for
+legacy entries.
 
-Merge a release branch's finalized changelog back to `main` through a dedicated
-feature branch and changelog-only PR:
+## Consolidate during development
 
-1. Fetch the canonical remote and create the feature branch from the latest
-   `upstream/main`, not from the release branch.
-2. Use the final tag as the source of truth.
-3. Keep `## [Unreleased]` first and preserve all post-cut entries not shipped
-   in the release. Do not replace the whole file with the release-branch copy.
-4. Insert the finalized release section immediately below `[Unreleased]` and
-   keep shipped entries only in that dated section. Resolve semantic overlap so
-   the same user-facing change is not recorded twice.
-5. Verify that only `CHANGELOG.md` changes, the dated section matches the final
-   tag, and older released sections remain unchanged.
+Consolidation is safe at any time on `main` or a release branch:
+
+```bash
+uv run --no-project python scripts/changelog.py build --dry-run
+uv run --no-project python scripts/changelog.py build
+```
+
+`build` merges pending fragments into `[Unreleased]`, deduplicates exact
+entries, consumes `.md` and `.skip` files, and leaves all dated sections
+unchanged. Commit the result in a changelog-only PR labeled
+`release-management`. Later pull requests continue adding fragments, and a
+later build extends the existing accumulator.
+
+## Promote the final release
+
+On the release branch, preview and then promote the full accumulator for GA:
+
+```bash
+uv run --no-project python scripts/changelog.py release \
+  --version X.Y.Z --date YYYY-MM-DD --dry-run
+uv run --no-project python scripts/changelog.py release \
+  --version X.Y.Z --date YYYY-MM-DD
+```
+
+`release` includes both previously consolidated entries and any remaining
+fragments, resets `[Unreleased]`, inserts the dated section above older
+releases, strips internal provenance comments from that public section, and
+consumes pending fragments. Review the complete diff in a changelog-only PR
+labeled `release-management`.
+
+## Reconcile to main
+
+After tagging, create a changelog-only branch from current `main` and run:
+
+```bash
+uv run --no-project python scripts/changelog.py reconcile \
+  --source-ref vX.Y.Z --version X.Y.Z --dry-run
+uv run --no-project python scripts/changelog.py reconcile \
+  --source-ref vX.Y.Z --version X.Y.Z
+```
+
+The command imports the exact tagged release, removes released entries from
+main's `[Unreleased]` accumulator and pending fragments, consolidates remaining
+main-only fragments, and preserves post-cut entries for the next release. Open
+the result as a changelog-only PR labeled `release-management`.
+
+Do not replace `CHANGELOG.md` with the release-branch copy or blindly
+cherry-pick a promotion commit over a diverged main accumulator.
 
 ## Checks
 
-Run targeted searches before finishing:
-
 ```bash
-git diff v<latest-release> -- CHANGELOG.md
-git log --oneline <previous-release>..<release-ref>
-rg -n "removed|removal|deprecated|will be removed|in favor of|use .* instead|renam|replac|default|breaking" CHANGELOG.md
-git diff -- CHANGELOG.md
+uv run --no-project python scripts/changelog.py validate
+git diff v<latest-release> -- CHANGELOG.md changelog.d
+git diff --name-status -- CHANGELOG.md changelog.d
+rg -n "removed|deprecated|in favor of|use .* instead|renam|replac|default|breaking" \
+  CHANGELOG.md changelog.d
 ```
 
-Confirm that no new hunk lands in a released section, then check for missing or
-duplicate entries, accidental deletions, stale removal targets, and missing
-migration guidance or PR references.
+Confirm that `[Unreleased]` is complete, no dated history changed, released
+entries appear exactly once, and post-cut main entries survive reconciliation.

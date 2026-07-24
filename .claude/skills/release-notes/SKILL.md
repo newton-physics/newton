@@ -23,8 +23,19 @@ what users should know. Do not reproduce the full changelog; link to it.
    - RCs: state that this is a release candidate and what needs validation.
      If drafting final-release text from an RC tag or release branch, do not
      mention the RC; use the RC only as the temporary source of truth.
-2. Read the matching `CHANGELOG.md` section from the release tag or release
-   branch. Do not rely on `main` unless the release is actually cut from `main`.
+2. Choose changelog source material from the authoritative release ref:
+   - After GA promotion or tagging, read the matching dated `CHANGELOG.md`
+     section from the release tag or release branch.
+   - Before GA promotion, check out the release branch, validate its
+     `[Unreleased]` accumulator and pending fragments, and render a non-mutating
+     preview:
+     ```bash
+     uv run --no-project python scripts/changelog.py validate
+     uv run --no-project python scripts/changelog.py build --dry-run
+     ```
+     Draft from that preview and the underlying sources. Do not mutate the
+     accumulator merely to draft release notes.
+   Do not rely on `main` unless the release is actually cut from `main`.
 3. Determine the previous release tag:
    - Patch release `X.Y.Z`, `Z > 0`: use the highest earlier `vX.Y.<Z'>` tag.
    - Feature release `X.Y.0`: use the highest `vX.<Y-1>.*` tag. If `Y == 0`,

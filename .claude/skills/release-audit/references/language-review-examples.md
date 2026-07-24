@@ -56,7 +56,7 @@ For entry "Add support for Gaussian splats (GH-NNNN)", fetch commits tagged `GH-
 
 Don't flag if:
 - Commits touch `newton/_src/geometry/**` or `newton/_src/sim/builder.py` for a geometry-addition entry → topic matches.
-- Commits touch `docs/**` and the entry is in the Documentation section → topic matches.
+- Commits touch `docs/**` and the `Added` or `Changed` entry describes that documentation → topic matches.
 - Commits touch `newton/_src/solvers/**` for a solver-capability entry → topic matches.
 
 **Tier-2 heuristic (only if `gh` CLI is installed + authenticated):**
@@ -114,7 +114,7 @@ Before flagging, cross-check against existing sibling symbols in the same module
 
 **Err on "mention, don't block"**: flagging should raise a question for human review, not gate the report. The audit appendix shows flagged entries and a one-line reason; a human decides.
 
-**Don't auto-rewrite**: Claude flags the entry, never modifies it. The release manager updates CHANGELOG.md manually.
+**Don't auto-rewrite**: Claude flags the entry, never modifies it. Before GA promotion, the release manager updates the pending fragment or `[Unreleased]` accumulator during changelog maintenance while preserving generated provenance comments; after release, corrections to dated history require explicit maintainer approval.
 
 **Prefer false positives over false negatives**: a flag that turns out to be fine costs a 5-second eyeball. A missed wrong-ref or jargon-leak ships to users.
 
